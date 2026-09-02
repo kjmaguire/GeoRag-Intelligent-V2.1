@@ -520,6 +520,11 @@ def _assign_ocr_metadata(
         layer extraction). If every spanned page is None, the section
         confidence is None. If any page has a confidence number, it
         propagates as the chunk's confidence (worst-case wins).
+      - 2026-09-02 (ADR-0019): when the winning method is an engine that
+        reports no confidence (Cohere Parse), the section confidence is
+        None even if a tesseract-read page in the span carries a number.
+        ``ocr_method`` is the discriminator downstream; a ``cohere_parse``
+        section with a tesseract confidence attached would break it.
 
     Mutates ``sections`` in place. No-op when a section has no
     ``page_first`` (preamble blocks).
@@ -543,6 +548,12 @@ def _assign_ocr_metadata(
         ]
         if confidences:
             s.ocr_confidence = float(min(confidences))
+        if s.ocr_method in _NO_CONFIDENCE_METHODS:
+            s.ocr_confidence = None
+
+
+#: Engines whose pages never carry a confidence; their sections persist NULL.
+_NO_CONFIDENCE_METHODS: frozenset[str] = frozenset({"cohere_parse"})
 
 
 def _build_page_index(
@@ -2297,9 +2308,8 @@ def _ocr_max_pages_per_doc() -> int:
 def _ocr_budget_take(pdf_path: str, pages: int = 1) -> bool:
     """Consume ``pages`` from the document's DI budget; False when exhausted.
 
-    Perf audit 2026-08-15: guarded by _OCR_STATE_LOCK (shared with the pikepdf
-    cache above — see its docstring) now that the per-page OCR loop calls
-    this from multiple concurrent threads. The check-and-increment must be
+    Perf audit 2026-08-15: guarded by _OCR_STATE_LOCK now that the per-page
+    OCR loop calls this from multiple concurrent threads. The check-and-increment must be
     atomic: without the lock, two threads could both read
     _OCR_PAGES_USED[pdf_path] before either writes it back, letting the
     budget overrun by up to (concurrency - 1) pages, and both could race on
@@ -2458,6 +2468,41 @@ def _reported_confidence(assessment: dict[str, Any] | None, mean_conf: float) ->
     return mean_conf
 
 
+_ENGINE_NOT_CONFIGURED_WARNED = False
+
+
+def _warn_engine_not_configured_once(detail: str) -> None:
+    """One CRITICAL per process for an unconfigured remote engine.
+
+    The per-page ladder runs once per short page; logging at CRITICAL
+    there would page on-call once per page of every document.
+    """
+    global _ENGINE_NOT_CONFIGURED_WARNED
+    if _ENGINE_NOT_CONFIGURED_WARNED:
+        return
+    _ENGINE_NOT_CONFIGURED_WARNED = True
+    logger.critical(
+        "pdf_report: %s. EVERY page from now on falls back to tesseract, "
+        "which extracts no tables. Check the AZURE_FOUNDRY_PARSE_DEPLOYMENT / "
+        "foundry-key secret references on the worker.",
+        detail,
+    )
+
+
+def _meter_ocr_page(engine: str, count: int = 1) -> None:
+    """Best-effort per-engine page metering for the local engines.
+
+    The remote adapter meters its own successful requests; the tesseract
+    rungs are metered here so `georag_ocr_pages_total{engine}` can answer
+    "did the corpus silently downgrade to tesseract?", which is what the
+    on-call runbook uses it for.
+    """
+    with contextlib.suppress(Exception):
+        from app.metrics import OCR_PAGES_TOTAL  # noqa: PLC0415
+
+        OCR_PAGES_TOTAL.labels(engine=engine).inc(max(0, count))
+
+
 def _engine_single_page_request(engine, pdf_path: str, page_num: int):
     """One page, one remote OCR request.
 
@@ -2575,12 +2620,26 @@ def _ocr_single_page(
     from . import cohere_parse_client as _engine
 
     engine_selected = _engine.is_engine_selected()
+    if engine_selected and not _engine.is_configured():
+        # A configuration error, not a page that would not OCR: a rotated
+        # Foundry key or a missing deployment name must not silently
+        # downgrade the ENTIRE corpus to the fallback engine, losing every
+        # table. CRITICAL because CRITICAL pages (georag-fastapi-critical,
+        # 2026-08-21) — once per process, not once per page, and before the
+        # budget is charged for a request that will never be sent.
+        _warn_engine_not_configured_once(
+            "OCR_ENGINE selects Cohere Parse but AZURE_FOUNDRY_ENDPOINT / "
+            "AZURE_FOUNDRY_API_KEY / AZURE_FOUNDRY_PARSE_DEPLOYMENT are not all set"
+        )
+        engine_selected = False
     # 2026-08-14 — per-document remote-OCR page budget (OCR_MAX_PAGES_PER_DOC,
     # default 300). Beyond it, this page skips the engine and goes straight
-    # to the tesseract fallback below.
+    # to the tesseract fallback below. A page charged here and then not
+    # actually read by the engine is refunded on every failure branch.
     if engine_selected and not skip_engine_page_request and not _ocr_budget_take(pdf_path):
         engine_selected = False
     if engine_selected:
+        _charged = not skip_engine_page_request
         try:
             if skip_engine_page_request:
                 # Succeeded-but-empty is exactly what the group reported,
@@ -2590,37 +2649,29 @@ def _ocr_single_page(
             else:
                 result = _engine_single_page_request(_engine, pdf_path, page_num)
         except _engine.CohereParseNotConfigured as exc:
-            # A configuration error, not a page that would not OCR. Its own
-            # docstring calls it "a startup/config error a caller should
-            # surface loudly rather than swallow", and both call sites
-            # swallowed it into a generic except and fell through to
-            # tesseract — so a rotated Foundry key silently downgraded the
-            # ENTIRE corpus to the fallback engine, losing every table, and
-            # nothing said so. CRITICAL because CRITICAL now pages
-            # (georag-fastapi-critical, added 2026-08-21).
-            logger.critical(
-                "pdf_report: OCR_ENGINE selects Cohere Parse but it is not "
-                "configured (%s). EVERY page from now on falls back to "
-                "tesseract, which extracts no tables. Check the "
-                "AZURE_FOUNDRY_PARSE_DEPLOYMENT / foundry-key secret "
-                "references on the worker.",
-                exc,
-            )
+            # Belt and braces: the guard above should have caught this.
+            _warn_engine_not_configured_once(str(exc))
+            if _charged:
+                _ocr_budget_refund(pdf_path, 1)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "pdf_report: cohere_parse OCR failed on page %d of '%s': %s "
                 "— falling back to tesseract",
                 page_num, pdf_path, exc,
             )
+            if _charged:
+                _ocr_budget_refund(pdf_path, 1)
         else:
             if not result.request_succeeded:
                 # Transport/throttle/vendor-4xx failure (NOT merely empty
-                # text): go to the tesseract fallback.
+                # text): go to the tesseract fallback. Not a billed page.
                 logger.warning(
                     "pdf_report: cohere_parse_request_failed on page %d of '%s': "
                     "%s — falling back to tesseract",
                     page_num, pdf_path, result.error or "unknown error",
                 )
+                if _charged:
+                    _ocr_budget_refund(pdf_path, 1)
             elif result.text.strip():
                 # Parse reports no word confidence, so the assessment is
                 # content-only (gibberish, repeated characters, coverage)
@@ -2717,6 +2768,7 @@ def _ocr_single_page(
                     detected_region_count=len(data.get("text", [])),
                     ocr_method="tesseract",
                 )
+                _meter_ocr_page("tesseract")
                 return _format_ocr_page_return(
                     processed_text,
                     mean_conf,
@@ -2746,6 +2798,7 @@ def _ocr_single_page(
             detected_region_count=0,
             ocr_method="tesseract",
         )
+        _meter_ocr_page("tesseract")
         return _format_ocr_page_return(
             out_text,
             0.0,
@@ -3486,12 +3539,7 @@ def _attempt_ocr_cohere_parse(path: str) -> OcrAttemptResult:
             )
 
             if isinstance(_exc, CohereParseNotConfigured):
-                logger.critical(
-                    "pdf_report: OCR_ENGINE selects Cohere Parse but "
-                    "it is not configured (%s). EVERY page falls back to "
-                    "tesseract, which extracts no tables.",
-                    _exc,
-                )
+                _warn_engine_not_configured_once(str(_exc))
             else:
                 logger.warning(
                     "pdf_report: cohere_parse OCR failed on page %d of "
@@ -3694,6 +3742,7 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
                 detected_region_count=detected_region_count,
                 ocr_method="tesseract",
             )
+            _meter_ocr_page("tesseract")
             page_attempts.append(
                 OcrPageAttempt(
                     page_number=i + 1,
@@ -3981,7 +4030,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                 ]
                 per_page_method = {
                     page.page_number: str(
-                        page.assessment.get("ocr_method") or "unknown"
+                        page.assessment.get("ocr_method") or "unavailable"
                     )
                     for page in ocr_result.pages
                     if page.text.strip()

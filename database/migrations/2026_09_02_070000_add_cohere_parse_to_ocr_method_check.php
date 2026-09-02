@@ -34,6 +34,19 @@ return new class extends Migration
         }
 
         $this->replaceCheck(self::VALUES);
+
+        // The column comments are part of the §04e contract and both said
+        // NULL confidence meant "text layer". Cohere Parse reports no
+        // confidence, so NULL now means "no engine confidence"; ocr_method
+        // is the discriminator.
+        DB::statement(<<<'SQL'
+            COMMENT ON COLUMN silver.document_passages.ocr_confidence IS
+              'Per-passage OCR engine confidence, 0.0–1.0, from engines that measure one (tesseract). NULL means no engine confidence exists: the passage came from the PDF text layer, or from cohere_parse, which reports none (ADR-0019). ocr_method is the discriminator. Travels with the qdrant payload so retrieval can weight low-confidence chunks down.'
+        SQL);
+        DB::statement(<<<'SQL'
+            COMMENT ON COLUMN silver.document_passages.ocr_method IS
+              'Which engine produced the text: fitz_native, pdfplumber_native, tesseract, cohere_parse (ADR-0019), document_intelligence (historical rows), or unavailable. NULL when extraction predates Phase 3.'
+        SQL);
     }
 
     public function down(): void
@@ -43,6 +56,15 @@ return new class extends Migration
         }
 
         $this->replaceCheck(self::PREVIOUS);
+
+        DB::statement(<<<'SQL'
+            COMMENT ON COLUMN silver.document_passages.ocr_confidence IS
+              'Phase 3 — per-passage OCR engine confidence, 0.0–1.0. NULL means the passage came from the PDF text layer (no OCR involved). Travels with the qdrant payload so retrieval can weight low-confidence chunks down.'
+        SQL);
+        DB::statement(<<<'SQL'
+            COMMENT ON COLUMN silver.document_passages.ocr_method IS
+              'Phase 3 — which engine produced the text: fitz_native, pdfplumber_native, docling_rapidocr, or tesseract. NULL when extraction predates Phase 3.'
+        SQL);
     }
 
     private function replaceCheck(string $quotedValues): void

@@ -149,7 +149,12 @@ def html_table_to_grid(fragment: str) -> list[list[str]]:
     if not parser.cells:
         return []
 
-    row_count = max(r + rs for r, _c, rs, _cs, _t in parser.cells)
+    # Rows are bounded by the rows the document actually has: a rowspan
+    # that overhangs the last <tr> (routine in model-generated HTML) must
+    # not invent rows and fill them with the spanning cell's text — that
+    # would put values in a passage the page does not contain. Columns may
+    # legitimately extend past the widest anchor via colspan.
+    row_count = max(r for r, _c, _rs, _cs, _t in parser.cells) + 1
     col_count = max(c + cs for _r, c, _rs, cs, _t in parser.cells)
     grid = [["" for _ in range(col_count)] for _ in range(row_count)]
 
@@ -164,14 +169,34 @@ def html_table_to_grid(fragment: str) -> list[list[str]]:
     return grid
 
 
-_TABLE_FRAGMENT_RE = re.compile(r"<table\b.*?</table\s*>", re.IGNORECASE | re.DOTALL)
+_TABLE_TAG_RE = re.compile(r"<(/?)table\b[^>]*>", re.IGNORECASE)
 
 
 def find_table_fragments(text: str) -> list[str]:
-    """Every top-level ``<table>…</table>`` fragment in ``text``, in order."""
+    """Every top-level ``<table>…</table>`` fragment in ``text``, in order.
+
+    Depth-aware, so a nested table stays inside its outer fragment — the
+    same reading `_TableGridParser` applies. A non-greedy regex would stop
+    at the inner ``</table>``, yielding a truncated grid and leaving a
+    stray closing tag in the passage text.
+    """
     if not text or "<table" not in text.lower():
         return []
-    return _TABLE_FRAGMENT_RE.findall(text)
+    fragments: list[str] = []
+    depth = 0
+    start = -1
+    for match in _TABLE_TAG_RE.finditer(text):
+        closing = bool(match.group(1))
+        if not closing:
+            if depth == 0:
+                start = match.start()
+            depth += 1
+        elif depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                fragments.append(text[start : match.end()])
+                start = -1
+    return fragments
 
 
 __all__ = ["find_table_fragments", "html_table_to_grid"]

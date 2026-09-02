@@ -228,77 +228,96 @@ def _dpi_for(width_points: float, height_points: float, cap: int) -> float:
     return dpi_for_page(width_points, height_points, max_pixels=cap)
 
 
-def _render_pages(pdf_path: str, page_numbers: Sequence[int]) -> dict[int, bytes]:
-    """Render each 1-indexed page to PNG under the pixel cap; open the file once.
+def _page_count(pdf_path: str) -> int:
+    """Number of pages in the PDF; raises when the file cannot be opened."""
+    import pypdfium2 as pdfium  # noqa: PLC0415 — heavy import, lazy
 
-    Raises on a file that cannot be opened at all; a page that fails to
-    render is simply absent from the mapping (logged), so one bad page does
-    not sink its group.
+    with _RENDER_LOCK:
+        pdf = pdfium.PdfDocument(pdf_path)
+        try:
+            return len(pdf)
+        finally:
+            with contextlib.suppress(Exception):
+                pdf.close()
+
+
+def _render_page(pdf_path: str, page_number: int) -> bytes | None:
+    """Render ONE 1-indexed page to PNG under the pixel cap; None on failure.
+
+    Opens and closes the document per call, under the render lock. One
+    page's PNG is resident per in-flight request — never a whole group —
+    so the memory profile is bounded by PDF_OCR_PAGE_CONCURRENCY rather
+    than OCR_PAGES_PER_BATCH (ADR-0018 is the OOM ADR; this path must not
+    reintroduce a resident-set that scales with an operator knob).
     """
     import pypdfium2 as pdfium  # noqa: PLC0415 — heavy import, lazy
 
     cap = max_pixels()
-    rendered: dict[int, bytes] = {}
-    with _RENDER_LOCK:
-        pdf = pdfium.PdfDocument(pdf_path)
-        try:
-            page_count = len(pdf)
-            for page_number in page_numbers:
-                if not 1 <= page_number <= page_count:
+    try:
+        with _RENDER_LOCK:
+            pdf = pdfium.PdfDocument(pdf_path)
+            try:
+                if not 1 <= page_number <= len(pdf):
                     logger.warning(
                         "cohere_parse: page %d is outside 1..%d of '%s' — skipped",
                         page_number,
-                        page_count,
+                        len(pdf),
                         pdf_path,
                     )
-                    continue
+                    return None
+                page = pdf[page_number - 1]
                 try:
-                    page = pdf[page_number - 1]
-                    try:
-                        width_points, height_points = page.get_size()
-                        dpi = _dpi_for(width_points, height_points, cap)
-                        if dpi < _DOWNSCALE_WARN_DPI:
-                            logger.warning(
-                                "cohere_parse: page %d of '%s' is %.0fx%.0f pt — "
-                                "downscaled to %.0f DPI to fit %d px; small text "
-                                "may be lost (no tiling without word polygons)",
-                                page_number,
-                                pdf_path,
-                                width_points,
-                                height_points,
-                                dpi,
-                                cap,
-                            )
-                        bitmap = page.render(
-                            scale=dpi / _PDF_POINTS_PER_INCH, rotation=0
+                    width_points, height_points = page.get_size()
+                    dpi = _dpi_for(width_points, height_points, cap)
+                    if dpi < _DOWNSCALE_WARN_DPI:
+                        logger.warning(
+                            "cohere_parse: page %d of '%s' is %.0fx%.0f pt — "
+                            "downscaled to %.0f DPI to fit %d px; small text "
+                            "may be lost (no tiling without word polygons)",
+                            page_number,
+                            pdf_path,
+                            width_points,
+                            height_points,
+                            dpi,
+                            cap,
                         )
-                        image = bitmap.to_pil()
-                    finally:
-                        with contextlib.suppress(Exception):
-                            page.close()
-                    # Trust but verify — PIL rounding is the one thing between
-                    # our arithmetic and a vendor-side 4xx.
-                    if image.width * image.height > cap:
-                        shrink = math.sqrt(cap / (image.width * image.height))
-                        image = image.resize(
-                            (
-                                max(1, int(image.width * shrink)),
-                                max(1, int(image.height * shrink)),
-                            )
-                        )
-                    buf = io.BytesIO()
-                    image.save(buf, format="PNG", optimize=False)
-                    rendered[page_number] = buf.getvalue()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "cohere_parse: render failed for page %d of '%s': %s",
-                        page_number,
-                        pdf_path,
-                        exc,
-                    )
-        finally:
-            with contextlib.suppress(Exception):
-                pdf.close()
+                    bitmap = page.render(scale=dpi / _PDF_POINTS_PER_INCH, rotation=0)
+                    image = bitmap.to_pil()
+                finally:
+                    with contextlib.suppress(Exception):
+                        page.close()
+            finally:
+                with contextlib.suppress(Exception):
+                    pdf.close()
+        # Trust but verify — PIL rounding is the one thing between our
+        # arithmetic and a vendor-side 4xx. Encoding runs outside the lock.
+        if image.width * image.height > cap:
+            shrink = math.sqrt(cap / (image.width * image.height))
+            image = image.resize(
+                (max(1, int(image.width * shrink)), max(1, int(image.height * shrink)))
+            )
+        buf = io.BytesIO()
+        image.save(buf, format="PNG", optimize=False)
+        return buf.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "cohere_parse: render failed for page %d of '%s': %s",
+            page_number,
+            pdf_path,
+            exc,
+        )
+        return None
+
+
+def _render_pages(pdf_path: str, page_numbers: Sequence[int]) -> dict[int, bytes]:
+    """Render several pages one at a time; absent = failed. Raises if the file
+    cannot be opened at all."""
+    _page_count(pdf_path)
+    rendered: dict[int, bytes] = {}
+    for page_number in page_numbers:
+        png = _render_page(pdf_path, page_number)
+        if png is not None:
+            rendered[page_number] = png
     return rendered
 
 
@@ -527,20 +546,7 @@ def ocr_page_sync(pdf_path: str, page_num: int) -> PageOcrResult:
     caller should surface loudly rather than swallow.
     """
     _require_config()
-    try:
-        rendered = _render_pages(pdf_path, [page_num])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "cohere_parse: could not open '%s' for page %d: %s", pdf_path, page_num, exc
-        )
-        return PageOcrResult(
-            "",
-            0.0,
-            request_succeeded=False,
-            error=f"render_failed: {exc}",
-            confidence_reported=False,
-        )
-    png = rendered.get(page_num)
+    png = _render_page(pdf_path, page_num)
     if png is None:
         return PageOcrResult(
             "",
@@ -555,20 +561,23 @@ def ocr_page_sync(pdf_path: str, page_num: int) -> PageOcrResult:
 def ocr_page_block_sync(
     pdf_path: str, page_numbers: Sequence[int]
 ) -> dict[int, PageOcrResult]:
-    """OCR a group of pages: render together, post concurrently.
+    """OCR a group of pages: each worker renders its page, then posts it.
 
     Returns ``{absolute_page_number: PageOcrResult}`` for the pages whose
     request succeeded. A page that is absent must be re-driven by the
     caller (render failed, request failed); a page that is present with
     empty text ran and came back blank, which is a different — cheaper —
     situation. Returns ``{}`` when the file cannot be opened at all.
+
+    Rendering happens inside the worker so at most PDF_OCR_PAGE_CONCURRENCY
+    page PNGs are resident, whatever OCR_PAGES_PER_BATCH is set to.
     """
     _require_config()
     ordered = sorted(set(int(n) for n in page_numbers))
     if not ordered:
         return {}
     try:
-        rendered = _render_pages(pdf_path, ordered)
+        _page_count(pdf_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "cohere_parse: could not open '%s' for a %d-page group: %s",
@@ -577,21 +586,21 @@ def ocr_page_block_sync(
             exc,
         )
         return {}
-    if not rendered:
-        return {}
 
-    def _one(item: tuple[int, bytes]) -> tuple[int, PageOcrResult]:
-        page_number, png = item
+    def _one(page_number: int) -> tuple[int, PageOcrResult | None]:
+        png = _render_page(pdf_path, page_number)
+        if png is None:
+            return page_number, None
         return page_number, _parse_png(png, log_page=page_number)
 
-    workers = max(1, min(page_concurrency(), len(rendered)))
+    workers = max(1, min(page_concurrency(), len(ordered)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        results = list(executor.map(_one, sorted(rendered.items())))
+        results = list(executor.map(_one, ordered))
 
     return {
         page_number: result
         for page_number, result in results
-        if result.request_succeeded
+        if result is not None and result.request_succeeded
     }
 
 

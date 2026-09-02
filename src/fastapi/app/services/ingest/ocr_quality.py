@@ -174,10 +174,24 @@ class OcrQualityAssessment:
 
     @property
     def review_queue_routing_decision(self) -> str:
-        """Map internal bands onto the existing Postgres enum."""
+        """Map internal bands onto the persisted routing decision.
+
+        ``auto_pass``: nothing to do. ``review_required``: the page is
+        queued for review AND its passages persist ``ocr_status =
+        'low_confidence'``, which retrieval demotes and annotates.
+        ``spot_check`` (2026-09-02): the page is queued for a human sample
+        but its passages stay ``accepted`` — the tier means "probably fine,
+        look at some", and demoting every spot-check page below every
+        born-digital page pushed scanned assay and resource tables out of
+        the context window once an engine with no confidence (Cohere
+        Parse, ADR-0019) put its whole output in this band via
+        ``floor_tier``.
+        """
 
         if self.tier is OcrRoutingTier.AutoAccept:
             return "auto_pass"
+        if self.tier is OcrRoutingTier.SpotCheck:
+            return "spot_check"
         return "review_required"
 
 

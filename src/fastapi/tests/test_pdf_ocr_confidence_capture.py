@@ -651,8 +651,9 @@ def test_parse_with_fitz_persists_null_confidence_for_cohere_parse_pages(parser_
     assert recovered["ocr_confidence"] is None
 
 
-def test_assign_ocr_metadata_min_confidence_ignores_null_engine_pages(parser_module):
-    """A chunk spanning a Parse page (None) and a tesseract page keeps tesseract's number."""
+def test_assign_ocr_metadata_keeps_null_confidence_for_a_parse_led_section(parser_module):
+    """ocr_method is the discriminator: a cohere_parse section never carries
+    another engine's confidence, even when a tesseract page sits in its span."""
     sections = [
         parser_module.ReportSection(
             section_number="1",
@@ -669,4 +670,24 @@ def test_assign_ocr_metadata_min_confidence_ignores_null_engine_pages(parser_mod
     )
 
     assert sections[0].ocr_method == "cohere_parse"
+    assert sections[0].ocr_confidence is None
+
+
+def test_assign_ocr_metadata_tesseract_led_section_keeps_its_confidence(parser_module):
+    sections = [
+        parser_module.ReportSection(
+            section_number="1",
+            section_title="Summary",
+            text="x",
+            page_first=1,
+            page_last=2,
+        )
+    ]
+    parser_module._assign_ocr_metadata(
+        sections,
+        {1: "tesseract", 2: "cohere_parse"},
+        {1: 0.7, 2: None},
+    )
+
+    assert sections[0].ocr_method == "tesseract"
     assert sections[0].ocr_confidence == 0.7

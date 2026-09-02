@@ -94,3 +94,25 @@ def test_find_table_fragments_returns_each_top_level_table_in_order() -> None:
     assert fragments[0].startswith("<table>") and "1" in fragments[0]
     assert "2" in fragments[1]
     assert find_table_fragments("plain") == []
+
+
+def test_a_rowspan_overhanging_the_last_row_does_not_invent_rows() -> None:
+    """Model-generated HTML routinely over-declares rowspan; no phantom rows."""
+    html = "<table><tr><td rowspan='3'>Zone A</td><td>1.2</td></tr><tr><td>3.4</td></tr></table>"
+
+    grid = html_table_to_grid(html)
+
+    assert grid == [["Zone A", "1.2"], ["Zone A", "3.4"]]
+
+
+def test_find_table_fragments_keeps_a_nested_table_inside_its_outer_fragment() -> None:
+    text = "a <table><tr><td>outer</td><td><table><tr><td>inner</td></tr></table></td></tr></table> b <table><tr><td>2</td></tr></table>"
+
+    fragments = find_table_fragments(text)
+
+    assert len(fragments) == 2
+    assert fragments[0].endswith("</td></tr></table>") and "inner" in fragments[0]
+    assert fragments[0].count("</table>") == 2
+    assert "2" in fragments[1]
+    # And the whole fragment converts, with the inner flattened into its cell.
+    assert html_table_to_grid(fragments[0])[0][0] == "outer"

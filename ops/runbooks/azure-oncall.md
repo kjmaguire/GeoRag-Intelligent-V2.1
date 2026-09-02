@@ -169,6 +169,12 @@ line and runs tesseract for every page — the `docintel-endpoint` /
 `docintel-key` secret refs on `hatchet-worker` are dead and
 `AZURE_FOUNDRY_PARSE_DEPLOYMENT` must be set instead.
 
+Known false-positive source: the `ClientErrors > 50 / 15m` threshold was
+tuned for the answer path. A large scanned ingest sends one Parse request
+per page, and a 429 storm that the adapter retries and recovers from still
+counts toward it. Check `georag_ocr_pages_total{engine="cohere_parse"}` is
+still rising before treating it as an outage.
+
 ```bash
 az monitor metrics list --resource georag-foundry-cc --resource-group georag \
   --resource-type Microsoft.CognitiveServices/accounts \

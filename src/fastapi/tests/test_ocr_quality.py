@@ -220,3 +220,17 @@ def test_uncalibrated_without_confidence_still_fails_closed() -> None:
 
     assert assessment.tier is OcrRoutingTier.MandatoryReview
     assert assessment.reasons == ("routing_thresholds_not_calibrated",)
+
+
+def test_spot_check_is_its_own_routing_decision() -> None:
+    """Queued for a sample, not demoted: spot_check != review_required."""
+    signals = calculate_ocr_quality(
+        "Geological report contains mineral resource estimates",
+        [0.80] * 7,
+        detected_region_count=6,
+    )
+
+    assessment = assess_ocr_quality(signals, _thresholds())
+
+    assert assessment.tier is OcrRoutingTier.SpotCheck
+    assert assessment.review_queue_routing_decision == "spot_check"

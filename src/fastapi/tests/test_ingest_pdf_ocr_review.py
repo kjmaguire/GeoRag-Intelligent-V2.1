@@ -228,3 +228,44 @@ def test_a_page_with_no_engine_confidence_keeps_a_numeric_record_and_says_so() -
     assert row["confidence_per_field"]["confidence_reported"] is False
     assert row["parser_version"] == "pdf_report:2.1.0:cohere_parse:ocr-quality-v1"
     assert row["payload"]["ocr_method"] == "cohere_parse"
+
+
+def test_a_spot_check_page_is_queued_but_its_passages_are_not_demoted() -> None:
+    """The floor_tier posture: every Parse page gets a review row, none is low_confidence."""
+    parsed = {
+        "warnings": [
+            {
+                "code": "ocr_quality_assessment",
+                "page": 4,
+                "parser_version": "2.1.0",
+                "ocr_method": "cohere_parse",
+                "extracted_text": "Measured 1.2 Mt at 2.4 g/t Au",
+                "tier": "spot_check",
+                "routing_decision": "spot_check",
+                "reasons": ["floor_tier"],
+                "signals": {"mean_confidence": 0.0, "confidence_reported": False},
+            },
+            {
+                "code": "ocr_quality_assessment",
+                "page": 5,
+                "routing_decision": "review_required",
+                "tier": "mandatory_review",
+                "reasons": ["gibberish_word_ratio"],
+                "signals": {},
+            },
+        ]
+    }
+    arguments = {
+        "report_id": "5c896a88-5fd8-48e3-a93f-3805490b39c5",
+        "workspace_id": "29188735-7bb5-4262-8b3c-6a236ed90bf0",
+        "project_id": "f96f7413-4f1e-4f84-8baf-c3bd3ea027ee",
+        "bronze_uri": "s3://bronze/reports/project/scan.pdf",
+    }
+
+    rows = _build_ocr_review_rows(parsed, **arguments)
+
+    assert [row["payload"]["page_number"] for row in rows] == [4, 5]
+    assert rows[0]["payload"]["ocr_quality_tier"] == "spot_check"
+    assert _ocr_review_pages(parsed) == {5}
+    assert _ocr_status_for_section({"page_first": 4, "page_last": 4}, _ocr_review_pages(parsed)) == "accepted"
+    assert _ocr_status_for_section({"page_first": 5, "page_last": 5}, _ocr_review_pages(parsed)) == "low_confidence"

@@ -14,7 +14,7 @@ requests.  If the key is absent, the endpoint returns 404.
 There is no standalone preflight stage in this repository — the module that
 wrote the normalised bytes and a PreflightReport JSON was removed 2026-08-28
 having never had a caller.  The live ingestion path
-(services/ingest/pdf_report.py) opens pikepdf directly and does not populate
+(services/ingest/pdf_report.py) opens the PDF itself and does not populate
 this store.
 
 Lifespan integration

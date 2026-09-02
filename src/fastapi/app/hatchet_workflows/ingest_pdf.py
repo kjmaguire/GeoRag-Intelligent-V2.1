@@ -1249,6 +1249,10 @@ ON CONFLICT (queue_id) DO NOTHING
 """
 
 
+#: Routing decisions that produce a silver.review_queue row.
+_QUEUED_ROUTING_DECISIONS = frozenset({"review_required", "spot_check"})
+
+
 def _build_ocr_review_rows(
     parsed: dict,
     *,
@@ -1263,7 +1267,12 @@ def _build_ocr_review_rows(
     for warning in parsed.get("warnings") or []:
         if warning.get("code") != "ocr_quality_assessment":
             continue
-        if warning.get("routing_decision") != "review_required":
+        # spot_check pages are queued for a human sample too; only
+        # review_required pages also demote their passages (see
+        # _ocr_review_pages). The queue row's routing_decision column is
+        # the enum value 'review_required' either way — the tier travels in
+        # payload.ocr_quality_tier.
+        if warning.get("routing_decision") not in _QUEUED_ROUTING_DECISIONS:
             continue
 
         try:
@@ -1329,7 +1338,11 @@ def _build_ocr_review_rows(
 
 
 def _ocr_review_pages(parsed: dict) -> set[int]:
-    """Return pages whose OCR assessment requires human review."""
+    """Pages whose passages persist ``ocr_status='low_confidence'``.
+
+    Only ``review_required`` pages. ``spot_check`` pages get a review-queue
+    row (see `_build_ocr_review_rows`) but stay ``accepted`` in retrieval.
+    """
 
     pages: set[int] = set()
     for warning in parsed.get("warnings") or []:

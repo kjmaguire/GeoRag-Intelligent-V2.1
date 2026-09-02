@@ -220,6 +220,8 @@ def _write(report: dict[str, Any], out: str | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, default=str))
     print(f"report: {path}")
+    print("NOTE: the report carries the parsed text of the probed pages — probe the committed "
+          "fixture PDF, not a customer document, if the report is going to be committed.")
 
 
 if __name__ == "__main__":

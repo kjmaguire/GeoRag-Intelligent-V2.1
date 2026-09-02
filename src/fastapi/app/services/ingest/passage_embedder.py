@@ -271,8 +271,9 @@ async def embed_pending_passages(
             "       dp.contextualized_content, dp.text, dp.ordinal, dp.page_first, dp.page_last, "
             # Phase 3 (2026-05-22) — OCR provenance travels with the
             # qdrant point so retrieval can weight low-confidence
-            # passages down without a Postgres join. NULL means the
-            # passage came from the text layer (no OCR involved).
+            # passages down without a Postgres join. NULL confidence means
+            # no engine confidence exists — text layer, or Cohere Parse,
+            # which reports none (ADR-0019); ocr_method discriminates.
             "       dp.ocr_confidence, dp.ocr_method, dp.ocr_status, "
             "       dp.chunk_kind, "
             # Multimodal (2026-08-18) — modality selects the encoder below:

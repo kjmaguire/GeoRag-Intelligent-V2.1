@@ -89,7 +89,29 @@ one rendered page image per request. Azure Document Intelligence is
   confidence bands are skipped for engines that report none; new
   per-engine `floor_tier` (`spot_check` | `mandatory_review`) because no
   threshold value can keep a clean no-confidence page out of auto-accept.
-  Compose ships `by_ocr_method.cohere_parse.floor_tier = spot_check`.
+  Compose, `.env.example` and `.env.production.example` all ship
+  `by_ocr_method.cohere_parse.floor_tier = spot_check`.
+- Routing decision `spot_check` is now distinct from `review_required`
+  (`OcrQualityAssessment.review_queue_routing_decision`): a spot-check page
+  gets a `silver.review_queue` row (queued for a human sample, enum value
+  `review_required`, `payload.ocr_quality_tier = spot_check`) but its
+  passages stay `ocr_status = 'accepted'`. Only `review_required` pages
+  demote. Without this split the floor would have stamped every scanned
+  passage `low_confidence`, prefixed it with the "do not quote numbers"
+  banner, and ranked every scanned assay table below every born-digital
+  paragraph before top-K truncation — a retrieval regression, not a
+  quality gate. **SME decision point**: this also lifts tesseract
+  spot-check pages (0.70–0.85 mean under the shipped bands) out of
+  demotion, which the `.env.example` note already called the inverse of
+  intent.
+- Section-level rule (`pdf_report._assign_ocr_metadata`): `ocr_method` is
+  first-page-wins, `ocr_confidence` is min-over-pages — and a section whose
+  winning method reports no confidence (`cohere_parse`) persists NULL even
+  when a tesseract page in its span carries a number, so `ocr_method`
+  stays the discriminator.
+- `COMMENT ON COLUMN` for `ocr_confidence` and `ocr_method` updated in the
+  same migration; `georag_ocr_pages_total{engine}` is incremented by the
+  tesseract rungs too, so it can answer "did the corpus silently downgrade".
 - Env: `OCR_ENGINE=cohere_parse`, `AZURE_FOUNDRY_PARSE_DEPLOYMENT`,
   `COHERE_PARSE_TIMEOUT_S`, `COHERE_PARSE_MAX_PIXELS`,
   `COHERE_PARSE_OUTPUT_FORMAT`, `COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS`,
@@ -168,7 +190,18 @@ one rendered page image per request. Azure Document Intelligence is
   be re-checked before then.
 - **Shared quota.** Parse's per-page volume shares Foundry TPM with
   embed/rerank/LLM; `OCR_PAGES_PER_BATCH` and `PDF_OCR_PAGE_CONCURRENCY`
-  are the throttles.
+  are the throttles. The Foundry `ClientErrors > 50 / 15m` alert was tuned
+  for the answer path and can fire on a retried-and-recovered 429 storm
+  during a large scanned ingest (recorded in the on-call runbook).
+- **Memory profile.** Each in-flight request holds one page PNG (rendered
+  inside the worker, under a lock); the resident set is bounded by
+  `PDF_OCR_PAGE_CONCURRENCY`, not `OCR_PAGES_PER_BATCH`. A 4 MP lossless
+  PNG is ~5–15 MB, so the default of 4 in flight is well inside the
+  worker's budget (ADR-0018).
+- **The partial index `idx_document_passages_low_ocr_confidence`**
+  (`WHERE ocr_confidence IS NOT NULL AND ocr_confidence < 0.75`) is blind
+  to every Parse page by construction; the Phase 6 OCR Quality Agent must
+  key on `ocr_status` / `ocr_method` instead (follow-up below).
 
 ## Verification (this commit)
 
@@ -181,10 +214,10 @@ one rendered page image per request. Azure Document Intelligence is
   `check_settings_have_readers.py`, `check_fastapi_lock_export.py`,
   `check_silent_exception_handlers.py` all pass; the silent-handler
   baseline was regenerated (it was stale against HEAD).
-- Laravel: `php -l` on the migration, controller and test. PHPUnit could
-  not run in the authoring sandbox (composer cannot reach GitHub dist
-  downloads there) — run `php artisan test --compact --filter=OverviewControllerTest`
-  before merge.
+- Laravel: `php -l` locally; the CI `Laravel (Pint + PHPUnit)` and
+  `Migrations under production privileges` jobs passed on the PR head.
+- Senior-reviewer checkpoint run 2026-09-02 (this PR); its blocking and
+  important findings are folded in above.
 - Live (needs credentials): the probe (step 1 above), then
   `ops/validation/ocr_cpu_smoke.sh` with `OCR_ENGINE=cohere_parse`, then a
   re-ingest of `src/fastapi/tests/fixtures/ocr/PLS-2024-Technical-Report.pdf`
@@ -204,6 +237,12 @@ one rendered page image per request. Azure Document Intelligence is
   warnings material on the corpus.
 - Make `silver.review_queue.confidence_record` nullable — trigger: the
   review UI shows "0.000" for Parse pages and confuses reviewers.
+- Re-key `idx_document_passages_low_ocr_confidence` (or the Phase 6 OCR
+  Quality Agent's query) on `ocr_status`/`ocr_method` — trigger: the
+  agent's first run against a Parse-ingested corpus.
+- Re-run the §04i golden-query and hallucination-failure sets against a
+  corpus whose scanned passages carry `ocr_confidence IS NULL` and
+  `ocr_method = 'cohere_parse'` — trigger: before Status: Accepted.
 - Tighten the `ocr_method` CHECK to drop `document_intelligence` with the
   non-fatal pattern — trigger: no row carries it.
 - Re-check the `Cohere-parse-v5` SKU — trigger: before 2026-12-15.

@@ -49,10 +49,9 @@ def _configured(monkeypatch):
     monkeypatch.delenv("COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS", raising=False)
     monkeypatch.setattr(retry_mod.time, "sleep", lambda _s: None)
     # Rendering is not under test here.
+    monkeypatch.setattr(cpc, "_page_count", lambda _path: 999)
     monkeypatch.setattr(
-        cpc,
-        "_render_pages",
-        lambda _path, pages: {p: b"\x89PNG-fake-" + str(p).encode() for p in pages},
+        cpc, "_render_page", lambda _path, page: b"\x89PNG-fake-" + str(page).encode()
     )
 
 
@@ -297,7 +296,7 @@ class TestFailureModes:
 
     def test_render_failure_fails_soft_without_a_request(self, monkeypatch) -> None:
         calls = _capture_post(monkeypatch, [_Resp(200, {"pages": []})])
-        monkeypatch.setattr(cpc, "_render_pages", lambda _path, pages: {})
+        monkeypatch.setattr(cpc, "_render_page", lambda _path, page: None)
 
         result = cpc.ocr_page_sync("/x.pdf", 1)
 
@@ -370,12 +369,39 @@ class TestPageGroups:
         assert 1 <= state["peak"] <= 2
 
     def test_unopenable_file_yields_an_empty_mapping(self, monkeypatch) -> None:
-        def explode(_path, _pages):
+        def explode(_path):
             raise OSError("no such file")
 
-        monkeypatch.setattr(cpc, "_render_pages", explode)
+        monkeypatch.setattr(cpc, "_page_count", explode)
 
         assert cpc.ocr_page_block_sync("/missing.pdf", [1, 2]) == {}
+
+    def test_a_group_renders_inside_the_worker_not_up_front(self, monkeypatch) -> None:
+        """At most PDF_OCR_PAGE_CONCURRENCY page PNGs are resident, whatever the group size."""
+        import threading
+
+        monkeypatch.setenv("PDF_OCR_PAGE_CONCURRENCY", "2")
+        lock = threading.Lock()
+        state = {"resident": 0, "peak": 0}
+
+        def fake_render(_path, page):
+            with lock:
+                state["resident"] += 1
+                state["peak"] = max(state["peak"], state["resident"])
+            return b"\x89PNG-fake-" + str(page).encode()
+
+        def fake_post(url, headers, body):
+            with lock:
+                state["resident"] -= 1
+            return _Resp(200, {"pages": [{"blocks": []}]})
+
+        monkeypatch.setattr(cpc, "_render_page", fake_render)
+        monkeypatch.setattr(cpc, "_post", fake_post)
+
+        mapping = cpc.ocr_page_block_sync("/x.pdf", list(range(1, 17)))
+
+        assert len(mapping) == 16
+        assert state["peak"] <= 2
 
     def test_empty_selection_is_a_no_op(self, monkeypatch) -> None:
         calls = _capture_post(monkeypatch, [_Resp(200, {"pages": []})])
