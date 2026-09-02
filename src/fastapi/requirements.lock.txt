@@ -564,7 +564,7 @@ requests-toolbelt==1.0.0
     # via langsmith
 rich==15.0.0
     # via typer
-s3transfer==0.14.0
+s3transfer==0.19.2
     # via boto3
 safetensors==0.8.0
     # via transformers
