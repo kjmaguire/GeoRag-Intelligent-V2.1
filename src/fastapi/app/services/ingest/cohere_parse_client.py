@@ -417,7 +417,9 @@ def _table_markdown(grid: list[list[str]]) -> str:
     from .pdf_report import _table_to_markdown  # noqa: PLC0415 — lazy, avoids a cycle
 
     try:
-        return _table_to_markdown(grid)
+        # The renderer accepts Optional cells (pdfplumber yields None); ours
+        # are always str, and list invariance needs the copy to say so.
+        return _table_to_markdown([list(row) for row in grid])
     except Exception:  # noqa: BLE001 — a renderer bug must not lose the page
         return "\n".join(" | ".join(row) for row in grid)
 
