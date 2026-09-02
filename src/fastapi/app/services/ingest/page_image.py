@@ -214,7 +214,7 @@ def text_pages_from_sections(sections: list[dict]) -> set[int]:
     """Page numbers the parser read from a real text layer.
 
     Used only by scope="figures". A page counts as text if ANY section
-    spanning it came from a native extractor — `document_intelligence` and
+    spanning it came from a native extractor — `cohere_parse` and
     `tesseract` deliberately do NOT count, because a page that needed OCR is
     exactly the kind of page (map, plate, scanned insert) whose picture
     carries meaning the text does not.
@@ -297,7 +297,7 @@ def stage_page_images(
         n for n in range(1, total_pages + 1) if should_embed_page(n, text_pages)
     ]
 
-    # Cap mirrors AZURE_DI_MAX_PAGES_PER_DOC's rationale: one pathological
+    # Cap mirrors OCR_MAX_PAGES_PER_DOC's rationale: one pathological
     # document must not be able to issue unbounded renders + embed calls. The
     # drop is logged rather than silent — a truncated manifest that looked
     # like full coverage is how "we indexed everything" becomes false.

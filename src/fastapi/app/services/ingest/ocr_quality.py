@@ -476,7 +476,7 @@ def _is_numeric_token(word: str) -> bool:
     ``NATIVE_TEXT_MAX_GIBBERISH_RATIO = 0.4``. At 0.714 a **born-digital**
     assay or collar page failed that screen, so its perfect embedded text
     was discarded and the page was routed to OCR — substituting a billed
-    Document Intelligence read of a rendered image for text that was already
+    remote OCR read of a rendered image for text that was already
     correct. Verified end to end: the same page now returns
     ``_native_text_screen_reason(...) is None``.
 

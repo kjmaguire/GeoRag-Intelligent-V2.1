@@ -253,7 +253,7 @@ async def normalize(
     # ADR-0005 wraps a TIFF to PDF because a scanned map sheet is a
     # picture of a page with text on it. A DEM, an airborne magnetics
     # grid or a multispectral scene is not: there is no text, so
-    # Document Intelligence bills for reading a continuous-tone
+    # the remote OCR engine bills for reading a continuous-tone
     # surface and whatever character noise comes back is chunked,
     # embedded and indexed as retrievable passages that compete in
     # the recall set of every future query, with a citation attached.

@@ -52,8 +52,11 @@ MODULE_TO_DISTRIBUTION: dict[str, str] = {
     "magic": "python-magic",
     "google": "google-cloud-storage",  # heuristic; rarely needed
     # `azure` is a namespace package spread across several dists (azure-core,
-    # azure-ai-documentintelligence, ...) — azure-core is the one that
+    # azure-storage-blob, azure-identity, ...) — azure-core is the one that
     # actually provides the `azure` top-level namespace, so map to it.
+    # (The fastapi service itself no longer imports `azure.*` since the
+    # Document Intelligence adapter was retired, ADR-0019; the object-storage
+    # package still does.)
     "azure": "azure-core",
     "pkg_resources": "setuptools",
     "_pytest": "pytest",
