@@ -147,3 +147,76 @@ def test_negative_duplicate_count_cannot_create_negative_ratio() -> None:
     )
 
     assert signals.seam_duplicate_ratio == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Engines with no confidence (Cohere Parse, ADR-0019)
+# ---------------------------------------------------------------------------
+
+
+def test_no_confidence_is_recorded_as_neutral_not_as_zero_quality() -> None:
+    signals = calculate_ocr_quality(
+        "Geological report contains mineral resource estimates",
+        None,
+        detected_region_count=0,
+    )
+
+    assert signals.confidence_reported is False
+    assert signals.mean_confidence == 0.0
+    assert signals.median_confidence == 0.0
+    assert signals.low_confidence_word_ratio == 0.0
+    assert signals.output_coverage_ratio == 1.0
+
+
+def test_an_empty_sequence_still_means_confidence_was_reported() -> None:
+    signals = calculate_ocr_quality("x", [], detected_region_count=1)
+
+    assert signals.confidence_reported is True
+    assert signals.low_confidence_word_ratio == 1.0
+
+
+def test_calibrated_clean_text_without_confidence_auto_accepts() -> None:
+    signals = calculate_ocr_quality(
+        "Geological report contains mineral resource estimates",
+        None,
+        detected_region_count=0,
+    )
+
+    assessment = assess_ocr_quality(signals, _thresholds())
+
+    assert assessment.tier is OcrRoutingTier.AutoAccept
+    assert assessment.reasons == ()
+
+
+def test_gibberish_without_confidence_still_routes_to_review() -> None:
+    signals = calculate_ocr_quality(
+        "aaaaaa bbbbbb cccccc dddddd eeeeee ffffff",
+        None,
+        detected_region_count=0,
+    )
+
+    assessment = assess_ocr_quality(signals, _thresholds())
+
+    assert assessment.tier is OcrRoutingTier.MandatoryReview
+    assert "gibberish_word_ratio" in assessment.reasons
+    # The confidence bands were skipped, not tripped.
+    assert "mean_confidence" not in assessment.reasons
+    assert "low_confidence_word_ratio" not in assessment.reasons
+
+
+def test_empty_output_without_confidence_is_still_catastrophic() -> None:
+    signals = calculate_ocr_quality("", None, detected_region_count=0)
+
+    assessment = assess_ocr_quality(signals, _thresholds())
+
+    assert assessment.tier is OcrRoutingTier.CatastrophicFailure
+    assert assessment.reasons == ("empty_output",)
+
+
+def test_uncalibrated_without_confidence_still_fails_closed() -> None:
+    signals = calculate_ocr_quality("Clean prose", None, detected_region_count=0)
+
+    assessment = assess_ocr_quality(signals, None)
+
+    assert assessment.tier is OcrRoutingTier.MandatoryReview
+    assert assessment.reasons == ("routing_thresholds_not_calibrated",)

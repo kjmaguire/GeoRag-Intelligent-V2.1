@@ -189,3 +189,42 @@ def test_non_numeric_page_is_not_allowed_to_break_persistence() -> None:
     )
 
     assert rows == []
+
+
+def test_a_page_with_no_engine_confidence_keeps_a_numeric_record_and_says_so() -> None:
+    """silver.review_queue.confidence_record is NOT NULL; the signals dict carries the truth."""
+    parsed = {
+        "warnings": [
+            {
+                "code": "ocr_quality_assessment",
+                "page": 3,
+                "parser_version": "2.1.0",
+                "ocr_method": "cohere_parse",
+                "extracted_text": "qzxv wkjq pfzt",
+                "tier": "mandatory_review",
+                "routing_decision": "review_required",
+                "reasons": ["gibberish_word_ratio"],
+                "signals": {
+                    "mean_confidence": 0.0,
+                    "median_confidence": 0.0,
+                    "gibberish_word_ratio": 1.0,
+                    "confidence_reported": False,
+                },
+            }
+        ]
+    }
+
+    rows = _build_ocr_review_rows(
+        parsed,
+        report_id="5c896a88-5fd8-48e3-a93f-3805490b39c5",
+        workspace_id="29188735-7bb5-4262-8b3c-6a236ed90bf0",
+        project_id="f96f7413-4f1e-4f84-8baf-c3bd3ea027ee",
+        bronze_uri="s3://bronze/reports/project/scan.pdf",
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["confidence_record"] == 0.0
+    assert row["confidence_per_field"]["confidence_reported"] is False
+    assert row["parser_version"] == "pdf_report:2.1.0:cohere_parse:ocr-quality-v1"
+    assert row["payload"]["ocr_method"] == "cohere_parse"

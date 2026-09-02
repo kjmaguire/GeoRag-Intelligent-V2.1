@@ -3045,7 +3045,7 @@ def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
 
 def _assess_ocr_result(
     text: str,
-    word_confidences: list[float],
+    word_confidences: list[float] | None,
     *,
     detected_region_count: int,
     seam_duplicate_count: int = 0,
@@ -3097,6 +3097,7 @@ def _assess_ocr_result(
             "repeated_character_ratio": signals.repeated_character_ratio,
             "word_count": signals.word_count,
             "detected_region_count": signals.detected_region_count,
+            "confidence_reported": signals.confidence_reported,
         },
     }
     if ocr_method:
