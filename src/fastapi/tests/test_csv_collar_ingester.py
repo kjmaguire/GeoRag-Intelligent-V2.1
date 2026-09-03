@@ -346,7 +346,13 @@ def test_ingest_zip_archive_routes_every_tabular_extension_to_ingest_tabular():
         "through one branch, not just .csv"
     )
     assert "ingest_tabular.aio_run_no_wait" in src
-    assert '"csv": 0' in src, "counts dict must track the csv branch like las/log/xlsx/pdf"
+
+    # The counts dict is built from _COUNT_KEYS (2026-09-02) rather than a
+    # literal, so the bucket is checked there — the source no longer
+    # contains a `"csv": 0`.
+    from app.hatchet_workflows.ingest_zip_archive import _COUNT_KEYS
+
+    assert "csv" in _COUNT_KEYS, "counts dict must track the csv branch like las/log/xlsx/pdf"
 
 
 def test_the_collar_only_ingester_is_no_longer_wired_in():

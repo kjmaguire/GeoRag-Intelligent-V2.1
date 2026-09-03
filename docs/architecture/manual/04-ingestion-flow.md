@@ -102,7 +102,7 @@ Located under [src/fastapi/app/hatchet_workflows/](../../../src/fastapi/app/hatc
 | `embed_pending_passages_wf` | `embed_pending_passages.py` | AI pool; selects rows from `silver.document_passages WHERE embed_status='pending'`, embeds via bge-small, upserts to Qdrant |
 | `outbox_dispatcher` | `outbox_dispatcher.py` | Cron `* * * * *`; polls `outbox.pending_propagations FOR UPDATE SKIP LOCKED` and fans to Qdrant/Neo4j/SeaweedFS |
 | `audit_ledger_verify` | `audit_ledger_verify.py` | Cron `0 2 * * *`; verifies the previous 24 h hash chain |
-| `stale_run_detector` | `stale_run_detector.py` | Cron; closes `bronze.ingest_runs` left stuck `running` past TTL |
+| `stale_run_detector` | `stale_run_detector.py` | Cron `*/15`; closes `silver.ingest_progress` rows with no heartbeat for `STALE_RUN_DETECTOR_MINUTES` (15) — but only after Hatchet confirms the run is no longer QUEUED/RUNNING, so a bulk upload waiting its turn in the queue is not timed out (2026-09-02) |
 | `nightly_ingestion_integrity` | `nightly_ingestion_integrity.py` | Cron; cross-checks bronze vs silver row counts |
 | `reliability_metrics_publisher` | `reliability_metrics_publisher.py` | Cron; publishes SLI gauges |
 | `mv_refresh_silver` | `mv_refresh_silver.py` | Refreshes silver materialised views |
