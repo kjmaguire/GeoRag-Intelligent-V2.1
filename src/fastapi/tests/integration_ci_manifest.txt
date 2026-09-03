@@ -93,3 +93,9 @@ tests/test_usage_events_write_integration.py
 # earlier (an orphan is COUNTED, not raised), and a re-ingest REPLACES
 # stations rather than doubling them.
 tests/test_discover_trace_write_integration.py
+
+# Added 2026-09-03: ingest_spatial's replace-on-re-upload hands a Python
+# regex to regexp_replace so rows written under the old timestamped
+# source_file shape are found. Only the server can prove the two dialects
+# agree; this module evaluates the predicate over literal values, no table.
+tests/test_ingest_spatial_reupload_replaces_pg.py

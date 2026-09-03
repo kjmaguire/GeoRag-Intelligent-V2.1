@@ -1,7 +1,7 @@
 # ADR 0019: Cohere Parse v5 replaces Azure Document Intelligence as the OCR engine
 
 - **Date**: 2026-09-02
-- **Status**: Proposed
+- **Status**: Accepted 2026-09-03 (decision; the live wire-contract probe in "Migration mechanics" step 1 and the §04i re-run listed under "Follow-ups" are still outstanding and gate the cutover, not the decision)
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: the "Azure Document Intelligence" row and dispatch tree in `georag-architecture.html` §04p; the Document Intelligence notes in ADR-0005 (§ "Billing" and the tiling paragraph)
 

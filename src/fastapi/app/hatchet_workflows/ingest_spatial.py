@@ -253,6 +253,26 @@ class IngestSpatialOut(BaseModel):
 #: fourteen placeholders keep their numbers -- a renumber here is a silent
 #: column-shuffle bug waiting to happen, and the tuple built in
 #: _write_features just gains one element on the end.
+#: Rows written before 2026-09-03 carry the storage basename in
+#: ``source_file`` — upload timestamp included — so a re-upload of the same
+#: file has to reach them through the prefix rule, not by equality. Same
+#: regex as the Ingestion Runs display name. PostgreSQL's ARE dialect reads
+#: ``\d``, ``{n}`` and ``(?:...)`` the way Python does, which is what lets one
+#: pattern serve both sides (test_ingest_spatial_reupload_replaces.py pins it).
+_LEGACY_SOURCE_FILE_PREFIX = _progress._GENERATED_PREFIX.pattern
+
+#: $1 project_id, $2 the prefix-stripped source_file, $3 the prefix regex.
+#: regexp_replace without the 'g' flag strips one leading prefix, exactly
+#: as _filename_from_key does; a name already in the new shape is unchanged.
+_REPLACE_SQL = """
+WITH gone AS (
+    DELETE FROM silver.spatial_features
+     WHERE project_id = $1::uuid
+       AND regexp_replace(source_file, $3, '') = $2
+    RETURNING 1
+) SELECT count(*) FROM gone
+"""
+
 _INSERT_SQL = """
 INSERT INTO silver.spatial_features (
     feature_id, workspace_id, project_id,
@@ -724,6 +744,14 @@ async def run_ingest_spatial(
     store = get_storage_client()
     filename = input.minio_key.rsplit("/", 1)[-1]
     suffix = Path(filename).suffix.lower()
+    # The identity the replace-on-re-upload below keys on. `filename` is the
+    # storage basename and carries the timestamp the upload controllers
+    # prepend (`20260902_143012_geology_poly.zip`; the ZIP fan-out adds a
+    # microsecond component), so two uploads of the same shapefile never
+    # shared it — the delete matched nothing and the map drew every polygon
+    # twice (RedStar batch, 2026-09-02). _filename_from_key strips exactly
+    # those prefixes and nothing else: the name the geologist typed.
+    source_file = _progress._filename_from_key(input.minio_key)
 
     if suffix not in SUPPORTED_EXTENSIONS:
         # A routing bug, not user error: the upload controller decides which
@@ -1045,7 +1073,11 @@ async def run_ingest_spatial(
                 #
                 # Scoped to (project_id, source_file) and wrapped with the
                 # inserts in one transaction, so the delete only lands if the
-                # re-insert does.
+                # re-insert does. source_file is the prefix-stripped name;
+                # rows written before 2026-09-03 stored the timestamped
+                # storage basename instead, so the predicate strips that
+                # prefix on the way through rather than comparing raw
+                # strings — one re-upload also collapses the old copies.
                 #
                 # This used to say it mirrored ingest_well_logs, which until
                 # 2026-08-22 deleted EVERY curve on the hole regardless of
@@ -1069,31 +1101,27 @@ async def run_ingest_spatial(
                     # the map. The only thing that can is not writing them.
                     refusal = _crs_refusal(
                         parsed,
-                        filename=filename,
+                        filename=source_file,
                         sidecars_by_layer=sidecars_by_layer,
                     )
                     if refusal:
                         raise ValueError(refusal)
 
                     replaced = int(await conn.fetchval(
-                        "WITH gone AS ("
-                        "  DELETE FROM silver.spatial_features"
-                        "   WHERE project_id = $1::uuid AND source_file = $2"
-                        "  RETURNING 1"
-                        ") SELECT count(*) FROM gone",
-                        input.project_id, filename,
+                        _REPLACE_SQL,
+                        input.project_id, source_file, _LEGACY_SOURCE_FILE_PREFIX,
                     ) or 0)
                     if replaced:
                         log.info(
                             "ingest_spatial: replacing %d existing feature(s) for "
                             "%s in project=%s",
-                            replaced, filename, input.project_id,
+                            replaced, source_file, input.project_id,
                         )
                         warnings.append({
                             "code": "features_replaced",
                             "detail": (
                                 f"{replaced} feature(s) from a previous ingest of "
-                                f"{filename} were replaced."
+                                f"{source_file} were replaced."
                             ),
                         })
 
@@ -1110,7 +1138,7 @@ async def run_ingest_spatial(
                             warnings.append({
                                 "code": "z_dropped",
                                 "detail": (
-                                    f"'{layer_name or filename}' carries 3D "
+                                    f"'{layer_name or source_file}' carries 3D "
                                     "coordinates. The map stores 2D geometry, "
                                     "so the Z values were dropped. If the "
                                     "elevations matter, export them from the "
@@ -1137,7 +1165,7 @@ async def run_ingest_spatial(
                             workspace_id=input.workspace_id,
                             project_id=input.project_id,
                             parse_result=result,
-                            source_file=filename,
+                            source_file=source_file,
                             source_file_sha256=source_sha256,
                             source_label=source_format,
                             layer_override=layer_name,
