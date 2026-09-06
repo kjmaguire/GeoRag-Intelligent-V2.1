@@ -20,7 +20,7 @@
 # Pinned by digest, matching every other image in this repo. Martin 1.11.0 is
 # the version docker-compose.yml already runs locally, so local and Azure
 # serve identical tiles.
-FROM ghcr.io/maplibre/martin:1.11.0@sha256:0650e9025f5fcffdc686358114679421b5e6b0ca37b374ad8a66f14709d59d2b
+FROM ghcr.io/maplibre/martin:1.15.0@sha256:84f406ac96839aad3ea06ddaa68ef7617ed55305c21038c182d59f100e48dd6d
 
 # Root only to place the config; the image drops back to its own user below.
 USER root
