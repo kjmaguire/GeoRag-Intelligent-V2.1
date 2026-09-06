@@ -1,7 +1,7 @@
 # ADR 0001: SeaweedFS replaces MinIO as the S3-compatible object store
 
 - **Date**: 2026-04-19
-- **Status**: Accepted
+- **Status**: Accepted — scope narrowed 2026-09-06 to the compose / on-premise stack; production object storage is Azure Blob per ADR-0020
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: original MinIO selection in `georag-architecture.html` Section 07
 
