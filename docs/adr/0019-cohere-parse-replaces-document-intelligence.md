@@ -1,7 +1,7 @@
 # ADR 0019: Cohere Parse v5 replaces Azure Document Intelligence as the OCR engine
 
 - **Date**: 2026-09-02
-- **Status**: Proposed
+- **Status**: Accepted (2026-09-06) — implemented and merged 2026-09-02 (#210); the Document Intelligence account and its alert rules are retired. Accepted with two items still open: the live wire-shape probe (migration step 1) and the §04i golden re-run (follow-ups below)
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: the "Azure Document Intelligence" row and dispatch tree in `georag-architecture.html` §04p; the Document Intelligence notes in ADR-0005 (§ "Billing" and the tiling paragraph)
 
@@ -242,7 +242,10 @@ one rendered page image per request. Azure Document Intelligence is
   agent's first run against a Parse-ingested corpus.
 - Re-run the §04i golden-query and hallucination-failure sets against a
   corpus whose scanned passages carry `ocr_confidence IS NULL` and
-  `ocr_method = 'cohere_parse'` — trigger: before Status: Accepted.
+  `ocr_method = 'cohere_parse'` — trigger: first live Parse ingest of the
+  corpus (was "before Status: Accepted"; the SME accepted the ADR on
+  2026-09-06 with this still open, so it is now an acceptance condition
+  for the *rollout*, not the record).
 - Tighten the `ocr_method` CHECK to drop `document_intelligence` with the
   non-fatal pattern — trigger: no row carries it.
 - Re-check the `Cohere-parse-v5` SKU — trigger: before 2026-12-15.
