@@ -68,3 +68,39 @@ def test_get_reranker_foundry_returns_none_when_misconfigured(monkeypatch) -> No
     monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
 
     assert reranker.get_reranker_or_none() is None
+
+
+def _reload_with_env_unset(monkeypatch, module, var: str):
+    """Re-evaluate a module's import-time backend constant with ``var`` unset.
+
+    The constants are frozen at import, so the only way to observe the
+    *default* is to reload with the variable absent; the module is reloaded
+    again afterwards so the test leaves the process exactly as it found it.
+    """
+    import importlib
+
+    monkeypatch.delenv(var, raising=False)
+    try:
+        return importlib.reload(module)
+    finally:
+        # monkeypatch restores the env at teardown, but the module attribute
+        # would keep the value computed here; reload once more at teardown
+        # so sibling tests see the real process-boot value.
+        monkeypatch.undo()
+        importlib.reload(module)
+
+
+def test_embedding_backend_defaults_to_foundry_when_unset(monkeypatch) -> None:
+    """2026-09-06: unset EMBEDDING_BACKEND must select Foundry, not a
+    self-hosted model host. Production runs Foundry with no GPU host, so the
+    old "local" default made an unset variable on Azure silently disable
+    retrieval; the compose dev stack sets "local" explicitly instead."""
+    reloaded = _reload_with_env_unset(monkeypatch, embedding, "EMBEDDING_BACKEND")
+    assert reloaded.EMBEDDING_BACKEND == "foundry"
+
+
+def test_reranker_backend_defaults_to_foundry_when_unset(monkeypatch) -> None:
+    """Same contract for the reranker: unset RERANKER_BACKEND means Cohere
+    Rerank v4 via Foundry, never an in-process CrossEncoder load."""
+    reloaded = _reload_with_env_unset(monkeypatch, reranker, "RERANKER_BACKEND")
+    assert reloaded.RERANKER_BACKEND == "foundry"

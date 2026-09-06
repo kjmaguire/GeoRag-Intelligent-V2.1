@@ -35,6 +35,10 @@ class _FakeModel:
 # ---------------------------------------------------------------------------
 
 def test_returns_remote_proxy_when_service_url_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The module default is "foundry" (2026-09-06), which short-circuits
+    # before the sidecar/local routing under test — select the self-hosted
+    # backend explicitly.
+    monkeypatch.setattr(rk, "RERANKER_BACKEND", "cross_encoder")
     monkeypatch.setenv("RERANKER_SERVICE_URL", "http://reranker:8000")
     # Must NOT load a local model in this path.
     monkeypatch.setattr(rk, "_get_reranker", lambda: (_ for _ in ()).throw(AssertionError("loaded locally")))
@@ -44,6 +48,7 @@ def test_returns_remote_proxy_when_service_url_set(monkeypatch: pytest.MonkeyPat
 
 
 def test_returns_local_singleton_when_service_url_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rk, "RERANKER_BACKEND", "cross_encoder")
     monkeypatch.delenv("RERANKER_SERVICE_URL", raising=False)
     sentinel = _FakeModel()
     monkeypatch.setattr(rk, "_get_reranker", lambda: sentinel)
@@ -51,6 +56,7 @@ def test_returns_local_singleton_when_service_url_unset(monkeypatch: pytest.Monk
 
 
 def test_returns_none_when_local_load_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rk, "RERANKER_BACKEND", "cross_encoder")
     monkeypatch.delenv("RERANKER_SERVICE_URL", raising=False)
     monkeypatch.setattr(rk, "_get_reranker", lambda: (_ for _ in ()).throw(OSError("no model")))
     assert rk.get_reranker_or_none() is None

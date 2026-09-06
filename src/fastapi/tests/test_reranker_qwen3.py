@@ -3,7 +3,8 @@
 These do NOT load the real model — they verify the prompt formatting and the
 yes/no-logit scoring math with a fake tokenizer + model, so the scoring
 contract is pinned without a multi-GB download. The backend is opt-in
-(RERANKER_BACKEND=qwen3_causal); bge-reranker-base remains the default.
+(RERANKER_BACKEND=qwen3_causal); the code default is foundry (Cohere Rerank
+v4) since 2026-09-06, and the dev stack selects cross_encoder explicitly.
 """
 
 from __future__ import annotations

@@ -255,8 +255,10 @@ def _model_stack_fingerprint() -> dict[str, str]:
     def _env(name: str, fallback: str = "") -> str:
         return ((os.environ.get(name) or fallback).strip()) or "unset"
 
-    embedding_backend = _env("EMBEDDING_BACKEND", "local")
-    reranker_backend = _env("RERANKER_BACKEND", "cross_encoder")
+    # Fallbacks mirror the module defaults in services/embedding.py and
+    # services/reranker.py (both "foundry" since 2026-09-06).
+    embedding_backend = _env("EMBEDDING_BACKEND", "foundry")
+    reranker_backend = _env("RERANKER_BACKEND", "foundry")
 
     return {
         "llm_backend": settings.LLM_BACKEND or "unset",

@@ -86,12 +86,16 @@ def test_dimension_none_on_http_failure(monkeypatch):
 
 
 def test_get_embedding_model_routes_to_remote_when_url_set(monkeypatch):
+    # The module default is "foundry" (2026-09-06); this test covers the
+    # self-hosted sidecar path, so select it explicitly.
+    monkeypatch.setattr(emb, "EMBEDDING_BACKEND", "local")
     monkeypatch.setattr(emb, "EMBEDDING_SERVICE_URL", "http://enc:8000")
     m = emb.get_embedding_model("Qwen/Qwen3-Embedding-0.6B")
     assert isinstance(m, emb._RemoteEmbedding)
 
 
 def test_get_embedding_model_loads_local_cpu_when_unset(monkeypatch):
+    monkeypatch.setattr(emb, "EMBEDDING_BACKEND", "local")
     monkeypatch.setattr(emb, "EMBEDDING_SERVICE_URL", "")
     called = {}
 

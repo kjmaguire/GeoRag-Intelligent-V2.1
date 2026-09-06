@@ -792,13 +792,15 @@ services:
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
       # RERANKER_BACKEND=foundry (Cohere Rerank v4 on Azure AI Foundry) takes
       # precedence over RERANKER_SERVICE_URL below — no local model, no
-      # sidecar, at all. Unset/"cross_encoder" (default) keeps the existing
-      # self-hosted Qwen3-Reranker-0.6B behavior. Reuses AZURE_FOUNDRY_
+      # sidecar, at all. Both the code default and this compose fallback are
+      # "foundry" (since 2026-09-06). To use the self-hosted Qwen3-Reranker
+      # `reranker` sidecar instead, set RERANKER_BACKEND=cross_encoder in .env
+      # (.env.example does). Reuses AZURE_FOUNDRY_
       # ENDPOINT/API_KEY from the LLM config (same Azure AI Services
       # resource); needs its own deployment name since rerank is deployed
       # separately. Empirically verified 2026-07-30 against a live Cohere
       # Rerank v4 Pro deployment — see app/services/reranker.py.
-      RERANKER_BACKEND: ${RERANKER_BACKEND:-cross_encoder}
+      RERANKER_BACKEND: ${RERANKER_BACKEND:-foundry}
       AZURE_FOUNDRY_RERANK_DEPLOYMENT: ${AZURE_FOUNDRY_RERANK_DEPLOYMENT:-}
       AZURE_FOUNDRY_RERANK_TIMEOUT_S: ${AZURE_FOUNDRY_RERANK_TIMEOUT_S:-8.0}
       # 2026-06-24 — share ONE reranker model via the `reranker` sidecar
@@ -809,14 +811,18 @@ services:
       RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-http://reranker:8000}
       # EMBEDDING_BACKEND=foundry (Cohere Embed v4 on Azure AI Foundry) takes
       # precedence over EMBEDDING_SERVICE_URL below — no local model, no
-      # sidecar. Reuses AZURE_FOUNDRY_ENDPOINT/API_KEY from the LLM config;
+      # sidecar. Both the code default and this compose fallback are
+      # "foundry" (since 2026-09-06). To use the self-hosted `embedding`
+      # sidecar instead, set EMBEDDING_BACKEND=local in .env (.env.example
+      # does) — on BOTH this service and hatchet-worker.
+      # Reuses AZURE_FOUNDRY_ENDPOINT/API_KEY from the LLM config;
       # needs its own deployment name. Requests output_dimension=1024 to
       # match the existing georag_chunks collection exactly — no Qdrant
       # migration needed, though a full re-embed of the corpus still is
       # (different model = different vector space regardless of dims
       # matching). Empirically verified 2026-07-30 against a live Cohere
       # Embed v4 deployment — see app/services/embedding.py.
-      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-local}
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-foundry}
       AZURE_FOUNDRY_EMBED_DEPLOYMENT: ${AZURE_FOUNDRY_EMBED_DEPLOYMENT:-}
       AZURE_FOUNDRY_EMBED_DIMENSION: ${AZURE_FOUNDRY_EMBED_DIMENSION:-1024}
       AZURE_FOUNDRY_EMBED_TIMEOUT_S: ${AZURE_FOUNDRY_EMBED_TIMEOUT_S:-30}
@@ -1828,7 +1834,9 @@ services:
       # directly; must be set here too, not just on fastapi, or ingestion
       # keeps loading the local model regardless of the query-path setting.
       # AZURE_FOUNDRY_ENDPOINT/API_KEY are the same resource as the LLM.
-      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-local}
+      # Code default and compose fallback are both "foundry" (2026-09-06);
+      # whatever .env sets MUST match the fastapi service above.
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-foundry}
       AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
       AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
       AZURE_FOUNDRY_EMBED_DEPLOYMENT: ${AZURE_FOUNDRY_EMBED_DEPLOYMENT:-}

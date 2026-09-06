@@ -511,6 +511,7 @@ class TestSearchDocuments:
         ctx = _MockRunContext(deps=deps)
 
         with patch("app.agent.tools.settings") as mock_settings, \
+             patch("app.agent.tools.RERANKER_BACKEND", "cross_encoder"), \
              patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.TIMEOUT_RERANKER_S = 8.0
@@ -732,6 +733,7 @@ class TestSearchDocuments:
         ctx = _MockRunContext(deps=deps)
 
         with patch("app.agent.tools.settings") as mock_settings, \
+             patch("app.agent.tools.RERANKER_BACKEND", "cross_encoder"), \
              patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.TIMEOUT_RERANKER_S = 8.0
@@ -796,6 +798,7 @@ class TestSearchDocuments:
         ctx = _MockRunContext(deps=deps)
 
         with patch("app.agent.tools.settings") as mock_settings, \
+             patch("app.agent.tools.RERANKER_BACKEND", "cross_encoder"), \
              patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.TIMEOUT_RERANKER_S = 8.0
