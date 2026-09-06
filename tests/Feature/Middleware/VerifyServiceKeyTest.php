@@ -75,4 +75,63 @@ final class VerifyServiceKeyTest extends TestCase
 
         $resp->assertStatus(401);
     }
+
+    // -----------------------------------------------------------------
+    // 2026-09-06 — rotation overlap: the outgoing key is accepted while
+    // services.fastapi.service_key_previous is set, and only then.
+    // -----------------------------------------------------------------
+
+    public function test_previous_key_is_accepted_during_rotation(): void
+    {
+        config(['services.fastapi.service_key_previous' => 'outgoing-key-still-in-use']);
+
+        $resp = $this->withHeaders(['X-Service-Key' => 'outgoing-key-still-in-use'])
+            ->get('/_test/service-key/echo');
+
+        $resp->assertOk();
+        $resp->assertJson(['ok' => true]);
+    }
+
+    public function test_current_key_still_accepted_while_previous_is_set(): void
+    {
+        config(['services.fastapi.service_key_previous' => 'outgoing-key-still-in-use']);
+
+        $resp = $this->withHeaders(['X-Service-Key' => 'correct-horse-battery-staple'])
+            ->get('/_test/service-key/echo');
+
+        $resp->assertOk();
+    }
+
+    public function test_previous_key_is_rejected_outside_rotation(): void
+    {
+        config(['services.fastapi.service_key_previous' => '']);
+
+        $resp = $this->withHeaders(['X-Service-Key' => 'outgoing-key-still-in-use'])
+            ->get('/_test/service-key/echo');
+
+        $resp->assertStatus(401);
+    }
+
+    public function test_wrong_key_is_rejected_during_rotation(): void
+    {
+        config(['services.fastapi.service_key_previous' => 'outgoing-key-still-in-use']);
+
+        $resp = $this->withHeaders(['X-Service-Key' => 'wrong'])
+            ->get('/_test/service-key/echo');
+
+        $resp->assertStatus(401);
+    }
+
+    public function test_previous_key_never_authenticates_when_current_is_empty(): void
+    {
+        // An unset current key is a broken deployment, not a rotation; the
+        // previous slot must not become a back door into it.
+        config(['services.fastapi.service_key' => '']);
+        config(['services.fastapi.service_key_previous' => 'outgoing-key-still-in-use']);
+
+        $resp = $this->withHeaders(['X-Service-Key' => 'outgoing-key-still-in-use'])
+            ->get('/_test/service-key/echo');
+
+        $resp->assertStatus(401);
+    }
 }
