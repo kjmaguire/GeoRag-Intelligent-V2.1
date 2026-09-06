@@ -1,8 +1,11 @@
 # Azure on-call — the five things that actually break
 
-**This is the only current operations runbook.** Everything else under
-`ops/runbooks/` is compose-era and describes infrastructure that no
-longer exists; those files have moved to `ops/runbooks/_archived/`.
+**This is the incident runbook.** Its Azure-era companions are
+`secret-rotation.md` (every credential, where it lives, how to roll it),
+`refusal-rate-spike.md` (answer-quality triage) and `raw-sql-layer.md`.
+Everything else under `ops/runbooks/` is compose-era and describes
+infrastructure that no longer exists; those files have moved to
+`ops/runbooks/_archived/`.
 
 The system runs on **Azure Container Apps** in resource group `georag`,
 region `canadacentral`. There is no Docker host, no PgBouncer, no
@@ -275,5 +278,8 @@ this reason.
   single email receiver (kylejmaguire@gmail.com) and the PagerDuty
   dispatcher has no caller. If you are reading this, someone told you
   directly.
-- **Secret rotation and PII decryption.** Still accurate in
-  `docs/RUNBOOK.md`, which is the other document worth keeping.
+- **Secret rotation.** `secret-rotation.md` (2026-09-06) — per-credential
+  Container Apps procedures; the `APP_KEY` and `FASTAPI_SERVICE_KEY`
+  internals stay in `docs/RUNBOOK.md`, which also owns PII decryption.
+- **Refusal-rate spikes.** `refusal-rate-spike.md` (2026-09-06) — what the
+  `ANSWER_QUALITY_REGRESSION` alert measures and how to find the cause.

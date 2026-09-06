@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # V1.5-03 — kid-based JWT key rotation. The PRIMARY key + kid match what
     # Laravel currently mints. During a rotation window, set PREVIOUS to the
     # outgoing key + its kid; FastAPI accepts both until Laravel cuts over.
-    # See ops/runbooks/_archived/secret-rotation.md § FASTAPI_SERVICE_KEY for the
+    # See ops/runbooks/secret-rotation.md § 3 (FASTAPI_SERVICE_KEY) for the
     # operator playbook.
     FASTAPI_SERVICE_KEY_KID: str = "primary"
     FASTAPI_SERVICE_KEY_PREVIOUS: str = ""

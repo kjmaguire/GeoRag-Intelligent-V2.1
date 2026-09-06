@@ -192,13 +192,13 @@ chapter when they age into doctrine.
 | [qdrant-snapshot.md](../../../ops/runbooks/_archived/qdrant-snapshot.md) | Qdrant snapshot + restore |
 | [redis-3-instance-rollout.md](../../../ops/runbooks/_archived/redis-3-instance-rollout.md) | Future 3-instance Redis topology rollout |
 | [redis-topology.md](../../../ops/runbooks/_archived/redis-topology.md) | Current Redis topology decisions |
-| [refusal-rate-spike.md](../../../ops/runbooks/_archived/refusal-rate-spike.md) | Investigating sudden refusal-rate climbs |
+| [refusal-rate-spike.md](../../../ops/runbooks/refusal-rate-spike.md) | Investigating sudden refusal-rate climbs (Azure-era rewrite 2026-09-06; compose version archived) |
 | [retrieval-cache.md](../../../ops/runbooks/_archived/retrieval-cache.md) | Retrieval cache layer triage |
 | [retrieval-pipeline.md](../../../ops/runbooks/_archived/retrieval-pipeline.md) | Retrieval pipeline triage |
 | [retrieval-tuning.md](../../../ops/runbooks/_archived/retrieval-tuning.md) | Retrieval / reranker tuning loop |
 | [s3-abstraction.md](../../../ops/runbooks/_archived/s3-abstraction.md) | S3 / SeaweedFS abstraction layer |
 | [secret-management.md](../../../ops/runbooks/_archived/secret-management.md) | Secret management overview |
-| [secret-rotation.md](../../../ops/runbooks/_archived/secret-rotation.md) | Per-secret rotation procedure |
+| [secret-rotation.md](../../../ops/runbooks/secret-rotation.md) | Per-secret rotation procedure (Azure-era rewrite 2026-09-06; compose version archived) |
 | [service-outage.md](../../../ops/runbooks/_archived/service-outage.md) | Generic service-outage triage |
 | [validation-corpora.md](../../../ops/runbooks/_archived/validation-corpora.md) | Validation corpus maintenance |
 | [volume-migration.md](../../../ops/runbooks/_archived/volume-migration.md) | Moving a named volume between hosts |

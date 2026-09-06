@@ -125,8 +125,8 @@ jobs:
               `**Run:** ${runUrl}`,
               `**Commit:** ${context.sha}`,
               '',
-              'Triage steps in `ops/runbooks/_archived/refusal-rate-spike.md` and',
-              '`ops/runbooks/_archived/service-outage.md`.',
+              'Triage steps in `ops/runbooks/refusal-rate-spike.md` and',
+              '`ops/runbooks/azure-oncall.md`.',
             ].join('\n');
 
             const existing = await github.rest.issues.listForRepo({
