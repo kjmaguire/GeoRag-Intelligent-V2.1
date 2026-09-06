@@ -39,6 +39,56 @@ logger = logging.getLogger(__name__)
 # requires a valid Bearer JWT.
 _AUTH_OPTIONAL_PATH_PREFIXES: tuple[str, ...] = ("/health", "/ready", "/metrics")
 
+#: Logged once per process the first time a request authenticates with the
+#: PREVIOUS key. During a rotation that is the expected state for an hour;
+#: a week later it means a consumer never got the new value
+#: (ops/runbooks/secret-rotation.md § 3).
+_previous_key_seen = False
+
+
+def service_key_matches(supplied: str | None) -> bool:
+    """Constant-time check of an X-Service-Key value against the accepted keys.
+
+    Accepts the primary FASTAPI_SERVICE_KEY and, while a rotation is in
+    progress, FASTAPI_SERVICE_KEY_PREVIOUS (2026-09-06). Before this the
+    header path compared against the primary alone, so the kid-based JWT
+    overlap bought nothing: every internal call sends both credentials, and
+    from the moment fastapi-cc restarted on the new key until each caller
+    restarted too, every one of them was a 401. With the previous key
+    accepted here as well, the sequence in the runbook is zero-downtime on
+    this side.
+
+    Every candidate is compared, not short-circuited, so the response time
+    does not reveal which key (if any) the caller matched. Returns False for
+    a missing or empty header, and False — never True — when no key is
+    configured; the callers turn that case into a 500 themselves.
+    """
+    global _previous_key_seen
+    from app.config import settings
+
+    if not supplied:
+        return False
+    supplied_bytes = supplied.encode()
+
+    primary = settings.FASTAPI_SERVICE_KEY
+    previous = settings.FASTAPI_SERVICE_KEY_PREVIOUS
+
+    matched_primary = bool(primary) and hmac.compare_digest(
+        supplied_bytes, primary.encode()
+    )
+    matched_previous = bool(previous) and hmac.compare_digest(
+        supplied_bytes, previous.encode()
+    )
+
+    if matched_previous and not matched_primary and not _previous_key_seen:
+        _previous_key_seen = True
+        logger.warning(
+            "X-Service-Key authenticated with FASTAPI_SERVICE_KEY_PREVIOUS — "
+            "a caller is still on the outgoing key. Expected during the "
+            "rotation window; a consumer was missed if this persists."
+        )
+    return matched_primary or matched_previous
+
 
 async def verify_service_key(x_service_key: str = Header(...)) -> None:
     """Validate the X-Service-Key header against the configured shared secret.
@@ -50,6 +100,8 @@ async def verify_service_key(x_service_key: str = Header(...)) -> None:
 
     Uses hmac.compare_digest for constant-time comparison — prevents an
     attacker from inferring the correct key length via response-time analysis.
+    The previous key is accepted during a rotation window — see
+    `service_key_matches`.
     """
     from app.config import settings
 
@@ -70,7 +122,7 @@ async def verify_service_key(x_service_key: str = Header(...)) -> None:
             detail="Service key not configured",
         )
 
-    if not hmac.compare_digest(x_service_key.encode(), expected.encode()):
+    if not service_key_matches(x_service_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid service key",
