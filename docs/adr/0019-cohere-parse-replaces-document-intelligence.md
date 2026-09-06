@@ -218,12 +218,15 @@ one rendered page image per request. Azure Document Intelligence is
   `Migrations under production privileges` jobs passed on the PR head.
 - Senior-reviewer checkpoint run 2026-09-02 (this PR); its blocking and
   important findings are folded in above.
-- Live (needs credentials): the probe (step 1 above), then
-  `ops/validation/ocr_cpu_smoke.sh` with `OCR_ENGINE=cohere_parse`, then a
+- Live (needs credentials): the probe (step 1 above), then a
   re-ingest of `src/fastapi/tests/fixtures/ocr/PLS-2024-Technical-Report.pdf`
   through Hatchet — short pages carry `ocr_method='cohere_parse'` with
   `ocr_confidence IS NULL`; a scanned variant yields
   `parser_used='ocr_cohere_parse'` and `Table (OCR, page N, #k)` sections.
+  (This step originally ran `ops/validation/ocr_cpu_smoke.sh` first; that
+  bench was PaddleOCR-era, targeted the retired
+  `georag-hatchet-worker-ingestion` container and a deleted Dagster
+  fixture path, and was removed on 2026-09-06.)
 
 ## Follow-ups (NOT part of this ADR; tracked separately)
 

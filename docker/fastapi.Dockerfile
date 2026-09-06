@@ -38,9 +38,12 @@
 # Source build is gated to this stage — runtime image only receives
 # the resulting /opt/tesseract binaries + tessdata, NOT the toolchain.
 #
-# To bump: change TESSERACT_VERSION below + rebuild + run
-# ops/validation/ocr_cpu_smoke.py against a golden NI 43-101 crop to
-# confirm no confidence-distribution regression.
+# To bump: change TESSERACT_VERSION below + rebuild + run the Tesseract
+# tests (src/fastapi/tests/test_ocr_*.py), then re-ingest src/fastapi/tests/fixtures/ocr/
+# PLS-2024-Technical-Report.pdf (a scanned variant) and compare the
+# per-page ocr_confidence distribution against the previous build. (The
+# PaddleOCR-era ops/validation/ocr_cpu_smoke.py bench was deleted
+# 2026-09-06; it targeted a container and fixtures that no longer exist.)
 FROM python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a AS tesseract-builder
 
 ARG TESSERACT_VERSION=5.5.2

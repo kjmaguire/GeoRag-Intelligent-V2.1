@@ -30,11 +30,14 @@ the historical record of the 3.x migration and the Phase 2 plan.
   resource, with Tesseract 5.5.2 as the last resort.
 - **What still references PaddleOCR.** `app/models/pdf.py` keeps
   `paddle_ocr` / `paddle_structure` as read-compatible legacy values for
-  rows written before 2026-07. `src/fastapi/scripts/run_docparser_shadow.py` (the Phase
-  2 step-4 runner) and `ops/validation/ocr_cpu_smoke.py` still import
-  PaddleOCR and cannot run against the current image; they are orphans, not
-  evidence that the engine exists. `docs/architecture/manual/18-model-stack-evolution.md`
-  §3.1 carries a historical-record banner for the same reason.
+  rows written before 2026-07. The two orphaned scripts that still
+  imported PaddleOCR — `src/fastapi/scripts/run_docparser_shadow.py` (the
+  Phase 2 step-4 runner) and `ops/validation/ocr_cpu_smoke.py` with its
+  `ocr_cpu_smoke.sh` wrapper and two saved reports — were deleted on
+  2026-09-06; neither could run against the current image. The file
+  references in the body below are therefore historical.
+  `docs/architecture/manual/18-model-stack-evolution.md` §3.1 carries a
+  historical-record banner for the same reason.
 
 ## Context
 
