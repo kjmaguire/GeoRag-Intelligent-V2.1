@@ -792,8 +792,10 @@ services:
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
       # RERANKER_BACKEND=foundry (Cohere Rerank v4 on Azure AI Foundry) takes
       # precedence over RERANKER_SERVICE_URL below — no local model, no
-      # sidecar, at all. Unset/"cross_encoder" (default) keeps the existing
-      # self-hosted Qwen3-Reranker-0.6B behavior. Reuses AZURE_FOUNDRY_
+      # sidecar, at all. The CODE default is "foundry" (since 2026-09-06);
+      # this compose fallback deliberately selects "cross_encoder" so the dev
+      # stack uses the self-hosted Qwen3-Reranker-0.6B `reranker` sidecar
+      # without Foundry credentials. Reuses AZURE_FOUNDRY_
       # ENDPOINT/API_KEY from the LLM config (same Azure AI Services
       # resource); needs its own deployment name since rerank is deployed
       # separately. Empirically verified 2026-07-30 against a live Cohere
@@ -809,7 +811,10 @@ services:
       RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-http://reranker:8000}
       # EMBEDDING_BACKEND=foundry (Cohere Embed v4 on Azure AI Foundry) takes
       # precedence over EMBEDDING_SERVICE_URL below — no local model, no
-      # sidecar. Reuses AZURE_FOUNDRY_ENDPOINT/API_KEY from the LLM config;
+      # sidecar. The CODE default is "foundry" (since 2026-09-06); this
+      # compose fallback deliberately selects "local" so the dev stack uses
+      # the self-hosted `embedding` sidecar without Foundry credentials.
+      # Reuses AZURE_FOUNDRY_ENDPOINT/API_KEY from the LLM config;
       # needs its own deployment name. Requests output_dimension=1024 to
       # match the existing georag_chunks collection exactly — no Qdrant
       # migration needed, though a full re-embed of the corpus still is
@@ -1828,6 +1833,8 @@ services:
       # directly; must be set here too, not just on fastapi, or ingestion
       # keeps loading the local model regardless of the query-path setting.
       # AZURE_FOUNDRY_ENDPOINT/API_KEY are the same resource as the LLM.
+      # Code default is "foundry" (2026-09-06); "local" here is the explicit
+      # dev-stack override, and it MUST match the fastapi service above.
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-local}
       AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
       AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}

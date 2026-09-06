@@ -129,15 +129,22 @@ _ACTIVE_VERSION: str | None = None
 # logits of the "yes"/"no" tokens (relevance = softmax([no, yes])[yes]). That
 # scoring mechanism is NOT expressible via sentence_transformers.CrossEncoder,
 # so it gets its own backend selected by RERANKER_BACKEND=qwen3_causal.
-# Default stays "cross_encoder" — this code path does nothing until
-# explicitly enabled.
+# This code path does nothing until explicitly enabled (the code default
+# is "foundry" since 2026-09-06; the compose dev stack selects
+# "cross_encoder" / "qwen3_causal" explicitly).
 #
 # ⚠️ NOT DEPLOYED: a 0.6B causal LM doing one forward pass per pair is far
 # slower than the cross_encoder default on CPU and will blow
 # RERANKER_TIMEOUT_S. Run on GPU (RERANKER_DEVICE=cuda, needs VRAM headroom)
 # and validate against the golden eval before enabling. See manual Ch18 §2
 # reranker note.
-RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "cross_encoder").strip().lower()
+# Default flipped "cross_encoder" -> "foundry" on 2026-09-06 for the same
+# reason as EMBEDDING_BACKEND in services/embedding.py: production has run
+# Cohere Rerank v4 via Foundry since 2026-07-30 and has no model host, so an
+# unset variable on Azure used to attempt a local CrossEncoder load and fall
+# back to RRF order. Unset now means Foundry; .env.example / docker-compose.yml
+# set the self-hosted value explicitly for the dev stack.
+RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "foundry").strip().lower()
 QWEN3_RERANKER_MODEL = (
     os.environ.get("QWEN3_RERANKER_MODEL") or "Qwen/Qwen3-Reranker-0.6B"
 ).strip()
@@ -217,8 +224,8 @@ def active_reranker_version() -> str:
     """Return the version string to persist to answer_runs.reranker_version.
 
     RERANKER_VERSION is a module-level constant fixed to the Qwen3 cross-
-    encoder identity — accurate for the cross_encoder (default) backend, but
-    wrong for foundry/qwen3_causal/local-path overrides. Checks
+    encoder identity — accurate for the cross_encoder backend, but wrong for
+    foundry (the default since 2026-09-06)/qwen3_causal/local-path overrides. Checks
     _ACTIVE_VERSION first so a caller after the model has actually loaded
     gets the exact loaded identity (e.g. the resolved qwen3_causal model_id)
     rather than a pre-load guess; falls back to guessing from env vars for

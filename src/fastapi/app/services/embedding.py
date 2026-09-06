@@ -48,7 +48,14 @@ _HTTP_TIMEOUT_S = float(os.environ.get("EMBEDDING_SERVICE_TIMEOUT_S", "30") or "
 # Takes precedence over EMBEDDING_SERVICE_URL below. No local model, no
 # sidecar, at all. Reuses the same Azure AI Services resource as the LLM/
 # reranker (AZURE_FOUNDRY_ENDPOINT/API_KEY) with its own deployment name.
-EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "local").strip().lower()
+#
+# Default flipped "local" -> "foundry" on 2026-09-06. Production has run
+# Foundry since 2026-07-30 and has no GPU host, so an UNSET variable on an
+# Azure app used to select a model host that does not exist there and the
+# query path silently ran with no embedding model. Unset now means Foundry;
+# the compose dev stack sets EMBEDDING_BACKEND=local explicitly (see
+# .env.example and docker-compose.yml) to use the self-hosted sidecar.
+EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "foundry").strip().lower()
 AZURE_FOUNDRY_EMBED_DEPLOYMENT = (os.environ.get("AZURE_FOUNDRY_EMBED_DEPLOYMENT") or "").strip()
 # Cohere Embed v4 supports Matryoshka-truncated output at 256/512/1024/1536
 # dims. Request 1024 to match the existing georag_chunks collection schema
