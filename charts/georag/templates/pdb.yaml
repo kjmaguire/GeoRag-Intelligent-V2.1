@@ -1,0 +1,40 @@
+{{- /*
+PodDisruptionBudget — one per horizontally scaled component. Emitted only
+when the component runs at least two replicas (HPA minReplicas when
+autoscaling is on), so scaling a component down to one never leaves a
+PDB that blocks `kubectl drain`. Ported 2026-09-06 from the deleted
+ops/charts skeleton, which covered only laravel-octane and fastapi.
+*/}}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $pdb := .Values.podDisruptionBudget }}
+{{- $targets := list
+  (dict "component" "fastapi" "values" .Values.fastapi)
+  (dict "component" "laravel-octane" "values" .Values.laravelOctane)
+  (dict "component" "laravel-horizon" "values" .Values.laravelHorizon)
+  (dict "component" "pgbouncer" "values" .Values.pgbouncer)
+  (dict "component" "martin" "values" .Values.martin)
+}}
+{{- range $t := $targets }}
+{{- $v := $t.values }}
+{{- $replicas := int (default 1 $v.replicas) }}
+{{- if $v.autoscaling }}
+{{- if $v.autoscaling.enabled }}
+{{- $replicas = int $v.autoscaling.minReplicas }}
+{{- end }}
+{{- end }}
+{{- if and $v.enabled (gt $replicas 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $.Release.Name }}-{{ $t.component }}
+  namespace: {{ $.Values.global.namespace }}
+  labels: {{- include "georag.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $t.component }}
+spec:
+  minAvailable: {{ $pdb.minAvailable }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" $t.component "root" $) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

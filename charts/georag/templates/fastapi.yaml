@@ -6,6 +6,9 @@ metadata:
   name: {{ .Release.Name }}-fastapi
   namespace: {{ .Values.global.namespace }}
   labels: {{- include "georag.labels" . | nindent 4 }}
+    # component label on the Service itself — templates/servicemonitor.yaml
+    # selects Services (not pods) by it.
+    app.kubernetes.io/component: fastapi
 spec:
   type: ClusterIP
   ports:

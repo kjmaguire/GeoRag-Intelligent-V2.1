@@ -289,6 +289,79 @@ jobs:
     schedule: "0 3 * * *"
 
 # ─────────────────────────────────────────────────────────────────────
+# Hardening — NetworkPolicy, PodDisruptionBudget, ServiceMonitor.
+# Ported 2026-09-06 from the deleted ops/charts skeleton and rewritten
+# for this chart's components. All three are additive; none changes a
+# workload.
+# ─────────────────────────────────────────────────────────────────────
+networkPolicy:
+  # Default-deny for every pod in the release plus one allow policy per
+  # component (templates/networkpolicy.yaml has the traffic map). OFF by
+  # default until the chart has been exercised on a live cluster: an
+  # `ingressController` block that does not match the real controller
+  # silently blackholes the web app. K3s enforces NetworkPolicy out of
+  # the box (kube-router); vanilla clusters need a CNI that does
+  # (Calico, Cilium, …) — with a CNI that ignores it, enabling this is a
+  # no-op, not a failure.
+  enabled: false
+  ingressController:
+    # Namespace + pod labels of the controller that serves the Ingress in
+    # templates/ingress.yaml. K3s Traefik lives in kube-system;
+    # ingress-nginx in its own namespace (values-vanilla.yaml overrides).
+    namespace: kube-system
+    podSelector:
+      app.kubernetes.io/name: traefik
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns
+  # Internet on 443 for the components that call Azure AI Foundry, Azure
+  # Blob or an SMTP relay (fastapi, laravel-octane, laravel-horizon, the
+  # hatchet workers). Private ranges are carved out so the rule cannot
+  # reach other in-cluster or on-prem services.
+  externalEgress:
+    enabled: true
+    ports: [443]
+    cidr: 0.0.0.0/0
+    except:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 100.64.0.0/10
+      - 169.254.0.0/16
+  # Extra egress rules (NetworkPolicyEgressRule shape) appended to every
+  # component that gets `externalEgress` — e.g. an external PostgreSQL or
+  # SMTP relay on a private address.
+  extraEgress: []
+
+podDisruptionBudget:
+  # One PDB per horizontally scaled component: fastapi, laravel-octane,
+  # laravel-horizon, pgbouncer, martin. Emitted only when the component
+  # runs ≥2 replicas (HPA minReplicas when autoscaling is on), so scaling
+  # a component down to one never blocks `kubectl drain`.
+  enabled: true
+  minAvailable: 1
+
+serviceMonitor:
+  # Requires the Prometheus Operator CRDs (kube-prometheus-stack). OFF by
+  # default because `helm install` fails on a cluster without them.
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  # kube-prometheus-stack selects ServiceMonitors by release=<its name>.
+  labels:
+    release: prometheus
+  fastapi:
+    enabled: true   # /metrics is unauthenticated inside the cluster
+  laravel:
+    # Laravel's /metrics requires the X-Service-Key header
+    # (app/Http/Middleware/VerifyServiceKey.php) and Prometheus Operator
+    # has no per-endpoint custom-header field. Leave off until a
+    # header-injecting scrape path exists (a sidecar, or Prometheus 3.x
+    # `http_headers` via additionalScrapeConfigs).
+    enabled: false
+
+# ─────────────────────────────────────────────────────────────────────
 # Deferred to §11.6-v3 (not yet templated):
 # ─────────────────────────────────────────────────────────────────────
 #  - observability stack: prometheus / grafana / loki / promtail /

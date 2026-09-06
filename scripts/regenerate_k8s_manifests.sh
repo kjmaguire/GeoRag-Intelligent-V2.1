@@ -12,6 +12,9 @@ set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 HELM_IMAGE="${HELM_IMAGE:-alpine/helm:latest}"
+# Chart.yaml pins kubeVersion >=1.27.0; with no cluster to ask, helm
+# assumes 1.20 and refuses to render unless told otherwise.
+KUBE_VERSION="${KUBE_VERSION:-1.30.0}"
 SETS=(
     --set "secrets.postgresPassword=CHANGEME"
     --set "secrets.pgAppPassword=CHANGEME"
@@ -34,6 +37,7 @@ for flavor in k3s vanilla airgap; do
     out="$REPO_ROOT/kubernetes/manifests/$flavor.yaml"
     echo "→ rendering $out"
     run_helm template georag charts/georag/ \
+        --kube-version "$KUBE_VERSION" \
         -f "charts/georag/values-$flavor.yaml" \
         "${SETS[@]}" > "$out"
     count=$(grep -cE "^kind:" "$out" || true)

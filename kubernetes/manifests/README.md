@@ -6,9 +6,14 @@ These three files are pre-rendered from the Helm chart at
 
 | File           | Source values            | Resources | Use case |
 |----------------|--------------------------|-----------|----------|
-| `k3s.yaml`     | `values-k3s.yaml`        | 30        | Single-node K3s install |
-| `vanilla.yaml` | `values-vanilla.yaml`    | 38        | EKS / GKE / kubeadm / OpenShift (with adjustments) |
-| `airgap.yaml`  | `values-airgap.yaml`     | 39        | Customer-side air-gap install (consumed by `airgap/install.sh`) |
+| `k3s.yaml`     | `values-k3s.yaml`        | 33        | Single-node K3s install |
+| `vanilla.yaml` | `values-vanilla.yaml`    | 35        | EKS / GKE / kubeadm / OpenShift (with adjustments) |
+| `airgap.yaml`  | `values-airgap.yaml`     | 35        | Customer-side air-gap install (consumed by `airgap/install.sh`) |
+
+Counts are with the chart defaults: PodDisruptionBudgets included,
+NetworkPolicy and ServiceMonitor off (both are opt-in values — see
+`charts/georag/values.yaml`, "Hardening"). Enable them through Helm rather
+than by hand-editing these files.
 
 ## CRITICAL — Rotate secrets before applying
 
@@ -37,6 +42,10 @@ helm install georag charts/georag/ \
 # After editing values-*.yaml or any template
 bash scripts/regenerate_k8s_manifests.sh
 ```
+
+The script passes `--kube-version` (default 1.30.0) because `Chart.yaml`
+pins `kubeVersion: >=1.27.0` and an offline `helm template` otherwise
+assumes 1.20 and refuses to render.
 
 The §11-v2 acceptance harness asserts the rendered files match the
 chart output — drift is a hard fail.
