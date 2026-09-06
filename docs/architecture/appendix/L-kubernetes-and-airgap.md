@@ -219,7 +219,6 @@ chapter when they age into doctrine.
 | [ops/reviews/](../../../ops/reviews/) | Dated review writeups |
 | [ops/postgis/](../../../ops/postgis/) | PostGIS-specific operational notes |
 | [ops/neo4j/](../../../ops/neo4j/) | Neo4j-specific operational notes |
-| [ops/charts/](../../../ops/charts/) | Helm chart auxiliary notes (parallel to `charts/georag/`) |
 
 ## 11. `scripts/` — 264 utility scripts
 

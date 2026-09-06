@@ -194,7 +194,7 @@ git commit -m "ci(cd): enforce deploy gates after operator provisioning"
 | V-01 | First arm64 build merge | Merges to `main` push to GHCR with `linux/amd64,linux/arm64` (already wired in `ci.yml`) |
 | V-02 | First nightly perf-baseline | After O-03 (STAGING_URL configured) |
 | V-03 | First e2e run | After self-hosted GH runner labelled `georag-e2e` is provisioned |
-| V-04 | First helm install in real cluster | After client cluster access; chart at `ops/charts/georag/` |
+| V-04 | First helm install in real cluster | After client cluster access; chart at `charts/georag/` (the `ops/charts/georag/` skeleton was deleted 2026-09-06) |
 | V-05 | D2 Drillhole rename execution | Run `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher` per `ops/runbooks/_archived/drillhole-label-rename.md` during next maintenance window |
 
 After O-01..O-07 land, every box above is green or has an explicit
