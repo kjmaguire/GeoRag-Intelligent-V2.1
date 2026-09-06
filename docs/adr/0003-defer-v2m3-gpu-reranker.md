@@ -1,7 +1,7 @@
 # ADR 0003: Defer bge-reranker-v2-m3 + GPU reranker host upgrade
 
 - **Date**: 2026-05-19
-- **Status**: Proposed (Deferred — trigger conditions below)
+- **Status**: Proposed (Deferred — trigger conditions below). Superseded for production by ADR-0021 (Cohere Rerank v4 on Azure AI Foundry, 2026-07-30); the dev workstation runs Qwen3-Reranker-0.6B on the GPU per ADR-0018
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: nothing; first ADR on reranker base architecture
 - **Related**: `src/fastapi/app/services/reranker.py`, `docs/adr/0002-04p-stack-replaces-ragflow.md` (GPU contention precedent)

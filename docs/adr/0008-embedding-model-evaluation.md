@@ -1,7 +1,7 @@
 # ADR 0008: Embedding model evaluation — what to do about `bge-small`
 
 - **Date**: 2026-05-26 (drafted) / 2026-05-27 (accepted)
-- **Status**: **Accepted — Option D (domain-fine-tune `bge-small` in place, 384-dim)**
+- **Status**: **Accepted — Option D (domain-fine-tune `bge-small` in place, 384-dim)**. Overtaken: `bge-small` was replaced by `Qwen/Qwen3-Embedding-0.6B` (1024-dim) on 2026-06-04 and production embeds with Cohere Embed v4 on Azure AI Foundry since 2026-07-30 — superseded by ADR-0021; no fine-tune pipeline was wired
 - **Authors**: Claude Code (overnight autonomous run)
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: nothing on embedding choice
