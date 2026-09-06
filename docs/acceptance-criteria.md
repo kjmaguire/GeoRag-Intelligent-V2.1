@@ -36,7 +36,7 @@ Updated: **2026-04-27** (V1.5 wrap + D2 sign-off).
 | Manual approval gate to prod via GitHub Environments | ✅ | `cd.yml` `environment: production` requires reviewer |
 | `.env.production.example` exists | ✅ | `.env.production.example` (458 lines, 143 keys) |
 | Secret management documented | ✅ | `ops/runbooks/_archived/secret-management.md` (SOPS + age) |
-| Per-credential rotation procedures | ✅ | `ops/runbooks/_archived/secret-rotation.md` (12 credential classes) |
+| Per-credential rotation procedures | ✅ | `ops/runbooks/secret-rotation.md` (Azure-era, 2026-09-06) |
 | `SOPS_AGE_PRIVATE_KEY` GitHub Secret configured | ⏳ | Operator setup; documented in `secret-management.md` |
 | `STAGING_URL` + SSH host secrets configured | ⏳ | Operator setup; `cd.yml` graceful no-op until then |
 
@@ -90,12 +90,12 @@ Updated: **2026-04-27** (V1.5 wrap + D2 sign-off).
 
 | Box | Status | Evidence |
 |-----|--------|----------|
-| `secret-rotation.md` — 12 credential classes | ✅ | 412-line per-credential procedures |
+| `secret-rotation.md` — every production credential | ✅ | Azure-era rewrite 2026-09-06 (`ops/runbooks/secret-rotation.md`); compose version archived |
 | `migration-rollback.md` — Laravel artisan + multi-service coordination | ✅ | Including stuck-rollback recovery |
 | `deploy-rollback.md` — cd.yml-driven SHA rollback | ✅ | Closes cd.yml TODO |
 | `on-call.md` — first-30-min triage tree | ✅ | Branches into all other runbooks |
 | `authz-audit-triage.md` — per-reason_code + LogQL | ✅ | Pairs with georag-authz dashboard |
-| `refusal-rate-spike.md` — reason_code triage | ✅ | Crosses to retrieval-pipeline + citation-pipeline |
+| `refusal-rate-spike.md` — `answer_quality_watch` triage | ✅ | Azure-era rewrite 2026-09-06 (`ops/runbooks/refusal-rate-spike.md`); keys on `silver.answer_runs`, not a Prometheus alert |
 | `llm-model-swap.md` — rolling vs cold | ✅ | Memory'd num_ctx gotcha referenced |
 | `volume-migration.md` — Module 1 C1 + Module 9 9.7 carry-forwards | ✅ | UID migration + cold-start wipe + DR |
 | `service-outage.md` — per-service annexes | ✅ | 6 new sections: Redis, Reverb, Martin, Horizon, FastAPI, Dagster |
