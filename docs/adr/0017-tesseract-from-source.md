@@ -4,10 +4,25 @@
 - **Status**: Accepted
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: prior reliance on Debian trixie's apt-shipped `tesseract-ocr` (5.4.x)
+- **Related**: ADR-0019 (Cohere Parse v5 — defines the OCR ladder Tesseract now sits under); ADR-0016 (PaddleOCR, superseded 2026-07-29)
 
 ## Context
 
-Tesseract is the fallback OCR tier in the §04p PDF stack (Docling primary → PaddleOCR secondary → Tesseract fallback when `DOCLING_OCR_ENABLED=false` or per-page docling failures). Debian trixie's apt-shipped `tesseract-ocr` caps at 5.4.x; the upstream 5.5.x line ships layout-analysis speed wins, better Unicode handling, and bug fixes for specific image preprocessing edge cases.
+> **Corrected 2026-09-06 — tier order.** The paragraph below describes the
+> §04p OCR ladder as it stood on 2026-06-23. That ladder no longer exists:
+> Docling and PaddleOCR were deleted on 2026-07-29 (see the ADR-0016
+> supersession note; `DOCLING_OCR_ENABLED` is no longer read anywhere),
+> Azure Document Intelligence was primary from 2026-07-28 to 2026-09-02, and
+> since 2026-09-02 (ADR-0019) the ladder is **Cohere Parse v5 on Azure AI
+> Foundry primary → Tesseract last resort**. Tesseract runs when Parse is
+> unavailable, unconfigured, over the per-document page budget
+> (`OCR_MAX_PAGES_PER_DOC`), or returns empty output — gated by
+> `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` — and it is the only engine when
+> `OCR_ENGINE=tesseract`. Every call site invokes it with `--psm 3 --oem 3`
+> (`services/ingest/pdf_report.py`). The decision itself (build 5.5.2 from
+> source) is unaffected and still describes the running image.
+
+At the time of this decision, Tesseract was the fallback OCR tier in the §04p PDF stack (Docling primary → PaddleOCR secondary → Tesseract fallback when `DOCLING_OCR_ENABLED=false` or per-page docling failures). Debian trixie's apt-shipped `tesseract-ocr` caps at 5.4.x; the upstream 5.5.x line ships layout-analysis speed wins, better Unicode handling, and bug fixes for specific image preprocessing edge cases.
 
 The 2026-06 audit initially proposed deferring this — Tesseract is a fallback path, the gain is marginal, and the build complexity is real. Decision was reopened during the audit-wrap session: with the wider sweep already touching `docker/fastapi.Dockerfile` (langgraph fix, PaddleOCR 3.x migration, base image SHA pinning), adding the Tesseract from-source build alongside is the natural place to capture the upgrade rather than leaving it as a perpetual TODO.
 
@@ -73,7 +88,7 @@ eng
 - Tesseract 5.5.2 lands in the image with `AVX2`/`AVX` instruction sets detected — layout-analysis speed wins on the fallback OCR path.
 - Bumping the version is one line: change `ARG TESSERACT_VERSION=` and rebuild.
 - `tessdata_fast/eng.traineddata` is pinned to a specific HEAD — model isn't subject to silent upstream drift.
-- The runtime image picks up the explicit `libgomp1` dep, which would also benefit any future component linking against OpenMP (numpy MKL backend, PaddlePaddle GPU kernels, etc.).
+- The runtime image picks up the explicit `libgomp1` dep, which would also benefit any future component linking against OpenMP (numpy MKL backend, PaddlePaddle GPU kernels, etc. — PaddlePaddle itself was removed 2026-07-29).
 
 ### Negative
 
@@ -86,7 +101,7 @@ eng
 
 - License unchanged (Apache 2.0).
 - API to consumers unchanged — `pytesseract` Python wrapper finds `tesseract` via `PATH` exactly as before.
-- The `silver.pdf_ocr_results` schema unchanged. The `source_method` provenance tag distinguishes the engine that produced each row; Tesseract output is tagged the same way regardless of v5.4 vs v5.5.
+- The `silver.pdf_ocr_results` schema unchanged. The `source_method` provenance tag distinguishes the engine that produced each row; Tesseract output is tagged the same way regardless of v5.4 vs v5.5. (Since ADR-0019 the passage-level provenance is `ocr_method = 'tesseract'` on `silver.document_passages`, with `ocr_confidence` carrying the mean word confidence; the version-independence point still holds.)
 
 ## What this ADR does NOT do
 
@@ -97,8 +112,9 @@ eng
 ## References
 
 - `docker/fastapi.Dockerfile` — `tesseract-builder` stage + runtime stage `COPY` + env.
-- ADR-0002 — §04p PDF stack (where Tesseract sits in the OCR tier ordering).
-- ADR-0016 — PaddleOCR 3.x migration (sibling OCR tier upgrade landed in the same sweep).
+- ADR-0002 — §04p PDF stack (the in-process stack Tesseract belongs to).
+- ADR-0019 — Cohere Parse v5 (the current OCR ladder; Tesseract is its floor).
+- ADR-0016 — PaddleOCR 3.x migration (sibling OCR tier upgrade landed in the same sweep; superseded 2026-07-29, PaddleOCR deleted).
 - [Tesseract 5.5.2 release](https://github.com/tesseract-ocr/tesseract/releases/tag/5.5.2)
 - [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast)
 - 2026-06 audit punch-list item 16 (originally deferred, reopened during audit-wrap session).
