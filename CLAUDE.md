@@ -24,6 +24,16 @@ explicit, deliberate update with a reason).
 New to this project? Start with Section 00 (README) inside the architecture
 doc for the reading order.
 
+Since v1.52 (2026-09-06) the doc distinguishes **target state** from **as
+built**: sections describe the intended architecture, and a dated *As built*
+note says exactly what exists where the code has not caught up (feedback UI,
+follow-up chips, evidence inspector, conflict/freshness UX, refusal panels,
+Lakehouse, row-level drill review are all design-only today). A *Corrected*
+note records what a section used to claim. Read the as-built note before
+building on a section. `docs/architecture/manual/` is the file-cited
+companion; `tests/Unit/ArchitectureDocSchemaParityTest.php` fails CI if the
+doc names a `schema.table` no migration creates.
+
 ## Hard rules — never violate
 
 1. **No Streamlit.** Streamlit is permanently rejected. The frontend is React +
@@ -39,13 +49,21 @@ doc for the reading order.
    request data.
 
 4. **Citations are mandatory on every RAG response.** Every claim the LLM
-   makes must include a `source_chunk_id` or be rejected by Pydantic AI's
-   typed output validation. There is no "best-effort" citation mode.
+   makes must include a `source_chunk_id` or be rejected by the typed
+   output validation in the graph's `validate` node
+   (`app/agent/hallucination/layer2_typed_output.py`). Pydantic AI itself is
+   vestigial — the guards live in `orchestrator_validators.py`. There is no
+   "best-effort" citation mode; `citation_mode` is always
+   `posthoc_span_resolution`.
 
-5. **Follow Section 04i hallucination prevention.** All six layers apply to
-   any code touching the RAG pipeline. Retrieval quality gate → typed output
-   validation → numerical claim verification → entity resolution → chunk
-   provenance → geological constraint rules.
+5. **Follow Section 04i hallucination prevention.** The six-layer design is
+   the contract for any code touching the RAG pipeline: retrieval quality
+   gate → typed output validation → numerical claim verification → entity
+   resolution → chunk provenance → geological constraint rules. As built,
+   four guards run in `orchestrator_validators.py` (typed output, numbers,
+   entities, constraints, plus advisory completeness); the retrieval gate is
+   a flat reranker score floor and provenance is enrichment, not a gate.
+   Restoring the missing two is welcome; weakening the four is not.
 
 6. **Schemas in Section 04e are contracts.** Don't invent fields. Don't skip
    constraints. Don't change enumeration values without SME approval.
@@ -62,16 +80,19 @@ doc for the reading order.
 9. **No knowledge graph.** Neo4j was removed on 2026-07-28 and the sync
    workflow deleted with it. The graph half of hallucination Layer 4 is
    permanently fail-open. Don't add a graph store, a driver, or a Cypher
-   query without an ADR that supersedes this.
+   query without an ADR that supersedes this. (`ops/charts/georag/` still
+   provisions Neo4j — it is the stale chart; `charts/georag/` is current.)
 
 ## Technology snapshot
 
-- **Frontend**: React + Inertia.js, shadcn/ui + Tailwind, MapLibre GL, React Flow, Plotly
-- **Application**: Laravel 13 on Octane (Swoole/RoadRunner), Horizon, Reverb, Sanctum, Pulse
-- **Domain Service**: FastAPI 0.135.x on Python 3.13, Pydantic AI, asyncpg, aioredis
-- **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (with PgBouncer edoburu 1.25), Qdrant v1.17, Redis 8.6, SeaweedFS in compose / Azure Blob in production (S3-compatible, replaces MinIO per ADR-0001)
-- **Ingestion**: Hatchet workflows, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, in-process PDF stack (§04p — replaces RAGFlow per ADR-0002; scanned-page OCR is Cohere Parse v5 on Azure AI Foundry since 2026-09-02 per ADR-0019, Tesseract last resort — Azure Document Intelligence is gone). Dagster was retired 2026-07-28 and its tree deleted 2026-08-28.
-- **LLM**: Azure AI Foundry, Cohere Command A+ (`Cohere-command-a-plus-05-2026`, Preview; dev + prod — vLLM cutover complete 2026-07-30; legacy vLLM compose service removed, `LLM_BACKEND=vllm` still supported for operators running their own OpenAI-compatible endpoint). Served via the unified **OpenAI v1 API** (`{endpoint}/openai/v1/chat/completions`) — empirically confirmed 2026-07-30 against a live deployment, including JSON `response_format` support, a separate `reasoning_content` field, and Cohere's `<|START_TEXT|>`/`<|END_TEXT|>` sentinel-token wrapping on JSON output — see `app/config.py` `AZURE_FOUNDRY_*` for the exact wire contract. Anthropic Claude is wired as optional fallback. Embedding/reranker default to self-hosted (Qwen3-Embedding-0.6B / Qwen3-Reranker-0.6B / SPLADE++ on hatchet-worker-ai) but support an Azure AI Foundry backend (`EMBEDDING_BACKEND=foundry` → Cohere Embed v4, `RERANKER_BACKEND=foundry` → Cohere Rerank v4) — both empirically verified 2026-07-30 against live deployments (`{endpoint}/providers/cohere/v2/embed` and `/v2/rerank`, distinct from the LLM's chat-completions surface). SPLADE++ sparse retrieval has no Foundry equivalent and stays self-hosted either way. Cohere Parse v5 (`OCR_ENGINE=cohere_parse`, `AZURE_FOUNDRY_PARSE_DEPLOYMENT`) is expected at `{endpoint}/providers/cohere/v2/parse` — NOT yet empirically verified; run `ops/validation/cohere_parse_probe.sh` before trusting the adapter's wire shape. Embed v4 requests 1024-dim output to match the existing `georag_chunks` schema — no Qdrant migration, but a full re-embed is still mandatory when switching (`scripts/reset_embeddings_for_reencode.py`).
+- **Frontend**: React 19 + Inertia.js v3, shadcn/ui + Tailwind v4, MapLibre GL 5, Plotly (`react-plotly.js`). React Flow (`@xyflow/react`) was removed 2026-08-28; no graph view exists.
+- **Application**: Laravel 13.25 on Octane (Swoole), Horizon (two supervisors: `default` + `llm`), Reverb, Sanctum, Pulse (local-only — no `viewPulse` gate). Three Horizon jobs total; everything else is Hatchet.
+- **Domain Service**: FastAPI 0.141 (floor 0.136) on Python 3.13, LangGraph 1.x, Pydantic AI 2.x (vestigial), asyncpg, redis.asyncio, async Qdrant client. Streaming is SSE (`status/bind/delta/citation/completed/failed`) from `POST /internal/queries`; Laravel re-broadcasts frames as `QueryStreamEvent` on Reverb.
+- **Data Stores**: PostgreSQL 18 + PostGIS 3.6 (`postgis/postgis:18-3.6-alpine`, no patch pin; Azure Flexible Server in production) behind PgBouncer edoburu 1.25.1 (transaction mode), Qdrant v1.17.1 (`georag_chunks`, 1024-dim dense + SPLADE++ sparse), Redis 8.6.4 (8.10 on Azure), SeaweedFS 4.35 in compose / Azure Blob in production (one `STORAGE_BACKEND` switch, `s3_compatible` | `azure_blob`; ADR-0001 covers only the compose half), Martin 1.11.0 for MVT tiles. Gold is plain tables written by `promote_silver_to_gold`; the only materialized view is `silver.mv_collar_summary`. Eight core silver tables (`projects`, `collars`, `surveys`, `lithology_logs`, `samples`, `reports`, `spatial_features`, `well_log_curves`) have no versioned CREATE.
+- **Workflow**: one merged `hatchet-worker` (`WORKER_POOL=all`, 51 registered workflows, inventoried in §07b) on `hatchet-lite` with a Postgres-backed queue. No `hatchet-worker-ingestion` / `hatchet-worker-ai` services exist. Per-store `backup_*` workflows were deleted 2026-08-23; production relies on Azure PITR.
+- **Ingestion**: Hatchet workflows `ingest_pdf` / `ingest_tabular` / `ingest_spatial` / `ingest_well_logs` / `tiff_normalize` / `ingest_zip_archive`, dispatched through `POST /internal/v1/shadow/{workflow}/trigger`. Parsers live in the local `georag_geoparsers` package (Polars, GDAL via pyogrio/GeoPandas/rasterio, pyproj, lasio, openpyxl/xlrd, ezdxf, mdbtools, rapidfuzz — no DuckDB, segyio or obspy). In-process PDF stack (§04p — replaces RAGFlow per ADR-0002; scanned-page OCR is Cohere Parse v5 on Azure AI Foundry since 2026-09-02 per ADR-0019, Tesseract 5.5.2 from source as last resort — Azure Document Intelligence, PaddleOCR, docling and PyMuPDF are gone). Upload cap is 512 MB (`GEORAG_MAX_UPLOAD_BYTES`). Dagster was retired 2026-07-28 and its tree deleted 2026-08-28.
+- **Deployment**: `docker-compose.yml` (16 services behind `dev-data` / `dev-full` profiles) for dev; Azure Container Apps for production (nine apps, no GPU, nightly scale-to-zero jobs, alerts via `georag-alerts-ag` email — §07-azure). Caddy, Kestra, Prometheus, Grafana, Loki and Tempo are defined nowhere in the repo. Helm: `charts/georag/` (current), `ops/charts/georag/` (stale).
+- **LLM**: Azure AI Foundry, Cohere Command A+ (`Cohere-command-a-plus-05-2026`, Preview; dev + prod — vLLM cutover complete 2026-07-30; legacy vLLM compose service removed, `LLM_BACKEND=vllm` still supported for operators running their own OpenAI-compatible endpoint). Served via the unified **OpenAI v1 API** (`{endpoint}/openai/v1/chat/completions`) — empirically confirmed 2026-07-30 against a live deployment, including JSON `response_format` support, a separate `reasoning_content` field, and Cohere's `<|START_TEXT|>`/`<|END_TEXT|>` sentinel-token wrapping on JSON output — see `app/config.py` `AZURE_FOUNDRY_*` for the exact wire contract. `LLM_BACKEND` is `azure` (default) | `vllm` | `anthropic` — there is no `foundry` value for the LLM. Anthropic Claude (`claude-opus-4-8`, prompt caching on) is wired as optional fallback. Embedding/reranker run on the three compose sidecars in dev (`embedding` Qwen3-Embedding-0.6B and `sparse` SPLADE++ on CPU, `reranker` Qwen3-Reranker-0.6B on the one GPU) and on Azure AI Foundry in production (`EMBEDDING_BACKEND=foundry` → Cohere Embed v4, `RERANKER_BACKEND=foundry` → Cohere Rerank v4, set in `.env.production.example`) — both empirically verified 2026-07-30 against live deployments (`{endpoint}/providers/cohere/v2/embed` and `/v2/rerank`, distinct from the LLM's chat-completions surface). SPLADE++ sparse retrieval has no Foundry equivalent and stays self-hosted either way. **Footgun:** the code defaults are `EMBEDDING_BACKEND=local` and `RERANKER_BACKEND=cross_encoder`, which select model hosts that do not exist on Azure — every Azure app that embeds or retrieves must set both to `foundry`, identically on the query and ingest paths. Cohere Parse v5 (`OCR_ENGINE=cohere_parse`, `AZURE_FOUNDRY_PARSE_DEPLOYMENT`) is expected at `{endpoint}/providers/cohere/v2/parse` — NOT yet empirically verified; run `ops/validation/cohere_parse_probe.sh` before trusting the adapter's wire shape. Embed v4 requests 1024-dim output to match the existing `georag_chunks` schema — no Qdrant migration, but a full re-embed is still mandatory when switching (`scripts/reset_embeddings_for_reencode.py`).
 
 ## Agent delegation
 
@@ -105,8 +126,7 @@ Everything else goes to Sonnet agents or Haiku for boilerplate.
 - **Python**: Ruff for linting, Black formatting, type hints everywhere. Pydantic for data models. Use `async def` for anything touching I/O.
 - **PHP**: Laravel Pint for formatting. PSR-12 style. Type declarations on all function signatures.
 - **TypeScript/React**: Prettier formatting, ESLint. Functional components with hooks. No class components.
-- **SQL**: Uppercase keywords, lowercase identifiers, explicit column lists (no `SELECT *` in production code).
-- **Cypher**: Parameterized queries always. Lowercase node variable names (`p`, `h`, `f`).
+- **SQL**: Uppercase keywords, lowercase identifiers, explicit column lists (no `SELECT *` in production code). New tables need `FORCE ROW LEVEL SECURITY` + a `tenant_isolation` policy on `workspace_id` (§06b).
 
 ## Commit convention
 
@@ -124,8 +144,12 @@ part of the spec: `feat(ingestion): implement CRS detection per Section 04b`
 ## Testing requirements
 
 Every PR should have tests. Golden query tests and hallucination failure tests
-are milestone gates — they must pass before a milestone is accepted. See
-`test-engineer` agent for patterns.
+are milestone gates — they must pass before a milestone is accepted. The
+LLM-dependent ones run only in the nightly `eval-gate.yml` (LLM and embeddings
+stubbed), not per PR; the blocking integration set is the allow-list in
+`src/fastapi/tests/integration_ci_manifest.txt`. There is no snapshot-test
+tier. See `test-engineer` agent for patterns and §07e for what each tier
+actually enforces.
 
 ## When you're stuck
 
