@@ -23,6 +23,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _SERVICE_KEY_MIN_BYTES = 32
 
 
+def require_min_service_key_bytes(value: str, name: str) -> str:
+    """Reject a service key shorter than the HS256 floor; return it otherwise."""
+    key_bytes = len(value.encode("utf-8"))
+    if key_bytes < _SERVICE_KEY_MIN_BYTES:
+        raise ValueError(
+            f"{name} is {key_bytes} bytes — must be >= "
+            f"{_SERVICE_KEY_MIN_BYTES} for HS256 JWT signing. "
+            f"Generate a new one with: "
+            f"python3 -c 'import secrets; print(secrets.token_urlsafe(48))'"
+        )
+    return value
+
+
 class Settings(BaseSettings):
     """GeoRAG FastAPI service configuration.
 
@@ -45,8 +58,10 @@ class Settings(BaseSettings):
     # V1.5-03 — kid-based JWT key rotation. The PRIMARY key + kid match what
     # Laravel currently mints. During a rotation window, set PREVIOUS to the
     # outgoing key + its kid; FastAPI accepts both until Laravel cuts over.
-    # See ops/runbooks/secret-rotation.md § 3 (FASTAPI_SERVICE_KEY) for the
-    # operator playbook.
+    # Since 2026-09-06 the X-Service-Key header path accepts PREVIOUS as
+    # well (services/auth.py::service_key_matches), so the overlap covers
+    # both credentials a caller sends. See ops/runbooks/secret-rotation.md
+    # § 3 (FASTAPI_SERVICE_KEY) for the operator playbook.
     FASTAPI_SERVICE_KEY_KID: str = "primary"
     FASTAPI_SERVICE_KEY_PREVIOUS: str = ""
     FASTAPI_SERVICE_KEY_PREVIOUS_KID: str = ""
@@ -64,15 +79,18 @@ class Settings(BaseSettings):
         # The key signs JWTs (HS256) and gates X-Service-Key auth; both paths
         # depend on it being cryptographically strong. 32 bytes matches the
         # SHA-256 output size per RFC 7518 §3.2.
-        key_bytes = len(v.encode("utf-8"))
-        if key_bytes < _SERVICE_KEY_MIN_BYTES:
-            raise ValueError(
-                f"FASTAPI_SERVICE_KEY is {key_bytes} bytes — must be >= "
-                f"{_SERVICE_KEY_MIN_BYTES} for HS256 JWT signing. "
-                f"Generate a new one with: "
-                f"python3 -c 'import secrets; print(secrets.token_urlsafe(48))'"
-            )
-        return v
+        return require_min_service_key_bytes(v, "FASTAPI_SERVICE_KEY")
+
+    @field_validator("FASTAPI_SERVICE_KEY_PREVIOUS")
+    @classmethod
+    def _validate_previous_service_key_length(cls, v: str) -> str:
+        # Empty means "no rotation in progress" and is the steady state. A
+        # non-empty value is accepted by the same header and JWT paths as the
+        # primary, so it gets the same floor — a weak outgoing key would be a
+        # weak key for the whole overlap window.
+        if not v:
+            return v
+        return require_min_service_key_bytes(v, "FASTAPI_SERVICE_KEY_PREVIOUS")
 
     # -------------------------------------------------------------------------
     # FastAPI runtime — DoS surface protection + observability surface

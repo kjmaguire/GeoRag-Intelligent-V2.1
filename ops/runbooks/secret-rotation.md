@@ -90,7 +90,7 @@ the window boots against no database and looks broken. Rotate outside it.
 | Credential | Holder of truth | Read by | Zero-downtime? | Section |
 | --- | --- | --- | --- | --- |
 | `APP_KEY` | laravel-octane-cc secret | laravel-octane-cc, laravel-horizon-cc, laravel-reverb-cc, laravel-migrate-job | No — re-encrypts `query_audit_log` | §2 |
-| `FASTAPI_SERVICE_KEY` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`) | fastapi-cc secret | fastapi-cc (verify), laravel-octane-cc / laravel-horizon-cc (mint), hatchet-worker-cc (X-Service-Key to Laravel) | **No** — see §3 | §3 |
+| `FASTAPI_SERVICE_KEY` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`) | fastapi-cc secret | fastapi-cc (verify), laravel-octane-cc / laravel-horizon-cc (mint), hatchet-worker-cc (X-Service-Key to Laravel) | Laravel → FastAPI yes; calls *into* Laravel no — see §3 | §3 |
 | Postgres admin (`georag_admin`) | Flexible Server | operators, `rotate-martin-credential.sh` | Yes | §4 |
 | Postgres app roles (`georag_app`, `georag`) | Flexible Server role | laravel-*, laravel-migrate-job, fastapi-cc, hatchet-worker-cc, hatchet-cc (its own `hatchet` database) | Brief 28P01 on each consumer until rolled | §4 |
 | `martin_readonly` | Flexible Server role | martin-cc | Yes (scripted) | §4 |
@@ -186,20 +186,21 @@ One value does three jobs (`docs/RUNBOOK.md` § "Key separation note"):
 the `X-Service-Key` header, the HS256 signing key for the 60-second JWTs
 Laravel mints, and the HMAC for `log_safe.query_hash`.
 
-**Read this before starting: the rotation is not zero-downtime.** The JWT
-half supports overlap — FastAPI keeps a `kid → secret` map and accepts
-`FASTAPI_SERVICE_KEY_PREVIOUS` under `FASTAPI_SERVICE_KEY_PREVIOUS_KID`
-(`app/services/auth.py`), and Laravel stamps `kid` from
-`services.fastapi.service_key_kid`. But every internal call also sends the
-`X-Service-Key` header, and `verify_service_key` compares that against the
-single current `FASTAPI_SERVICE_KEY` with no previous-key fallback. From
-the moment fastapi-cc restarts on the new key until every caller restarts
-on it too, every Laravel → FastAPI and Hatchet → Laravel call is a 401.
-Plan for a few minutes of failed queries and do it when nobody is
-querying — inside the last hour before the maintenance window is ideal,
-because Horizon's `llm` queue is quiet then. (Adding previous-key
-acceptance to `verify_service_key` would make this zero-downtime; it is a
-small change and worth doing before the next scheduled rotation.)
+**Read this before starting: which direction is zero-downtime.** On the
+FastAPI side both credentials overlap: the JWT path keeps a `kid → secret`
+map and the `X-Service-Key` path accepts `FASTAPI_SERVICE_KEY_PREVIOUS` as
+well as the primary (`app/services/auth.py::service_key_matches`, since
+2026-09-06 — before that the header path compared against the primary
+alone and this rotation was a 401 storm). So with `PREVIOUS` set on
+fastapi-cc first, every Laravel → FastAPI and Hatchet → FastAPI call keeps
+working while the callers roll. The gap that remains is calls **into**
+Laravel: `app/Http/Middleware/VerifyServiceKey.php` compares the header
+against the single `services.fastapi.service_key`, so hatchet-worker-cc's
+`/internal/v1/*` bridge calls and FastAPI's callbacks 401 from the moment
+the Laravel apps restart on the new key until hatchet-worker-cc and
+fastapi-cc send it. Keep step 2 tight and the gap is seconds, on a path
+that retries; still, do it outside a large ingest. (A `service_key_previous`
+slot in that middleware would close it.)
 
 Generate (≥ 32 bytes is enforced on both sides at startup):
 
@@ -233,7 +234,9 @@ unset NEW
 Replace `primary` in step 1 with whatever kid the *old* key was minted
 under if it was not the default. Rolling laravel-horizon-cc restarts the
 supervisors, which is what you want: a job mid-flight with a JWT under
-the old key is re-queued rather than failing on a 401.
+the old key is re-queued rather than failing on a 401. fastapi-cc logs one
+warning the first time a request authenticates with the previous key;
+seeing it a day later means a consumer was missed.
 
 Verify from inside the cluster — the same probe CD runs after a deploy:
 

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.hatchet_workflows import _progress as ingest_progress
+from app.services.auth import service_key_matches
 from app.services.mv_refresh import refresh_views_with_advisory_lock
 
 log = logging.getLogger("georag.mv_refresh_trigger")
@@ -28,13 +29,17 @@ router = APIRouter(prefix="/internal/v1/mv-refresh", tags=["mv_refresh"])
 
 
 def _check_service_key(x_service_key: str | None = Header(default=None)) -> None:
+    # Same policy as app.services.auth.verify_service_key (constant-time,
+    # previous key accepted during a rotation); kept as a local dependency
+    # only because the header is optional here so a missing one is a 401
+    # rather than FastAPI's 422.
     expected = settings.FASTAPI_SERVICE_KEY
     if not expected:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="FASTAPI_SERVICE_KEY not configured",
         )
-    if x_service_key != expected:
+    if not service_key_matches(x_service_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid X-Service-Key",
