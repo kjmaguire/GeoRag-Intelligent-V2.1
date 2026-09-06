@@ -1,9 +1,40 @@
 # ADR 0016: PaddleOCR 2.10 → 3.7 + PaddleOCR-VL Phase 2 plan
 
 - **Date**: 2026-06-23
-- **Status**: Accepted (Phase 1) · Proposed (Phase 2)
+- **Status**: **Superseded 2026-07-29** (note added 2026-09-06) — was Accepted (Phase 1) · Proposed (Phase 2). PaddleOCR was deleted from the service on 2026-07-29 and scanned-page OCR is Cohere Parse v5 on Azure AI Foundry since 2026-09-02 per ADR-0019; Tesseract 5.5.2 (ADR-0017) is the floor
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: §04p Stage 5 OCR engine wiring (PP-OCRv5 via paddleocr 2.10)
+- **Superseded by**: the 2026-07-29 §04p orphan sweep (no ADR) and ADR-0019 (Cohere Parse v5, 2026-09-02)
+
+## Supersession note (added 2026-09-06)
+
+Neither phase of this ADR survives in the tree. The body below is kept as
+the historical record of the 3.x migration and the Phase 2 plan.
+
+- **Phase 1 is gone.** On 2026-07-29 the §04p orphan sweep deleted
+  `app/ocr/` (`parse_scanned.py`, `parse_docparser_vl.py`,
+  `_paddleocr_gpu.py`), `services/pdf_ocr.py`, `POST /pdf/ocr_region`, and
+  the `paddlepaddle` / `paddleocr[doc-parser]` pins from
+  `src/fastapi/pyproject.toml`. The endpoint and both parsers had zero
+  callers anywhere in Laravel or the frontend — the same orphan pattern as
+  the docling `GET /pdf/find_legends` leg removed the same day. The
+  rationale is recorded in the `pyproject.toml` dependency comments and the
+  `app/models/pdf.py` module docstring.
+- **Phase 2 never reached step 4.** The shadow-eval harness landed but the
+  PaddleOCR-VL model was never served or run over the golden corpus, so no
+  promotion call was ever made. `PDF_DOCPARSER_BACKEND` went with docling.
+- **ADR-0019 considered and rejected the self-hosted path** (its option D,
+  "Self-hosted PaddleOCR 3.x"): GPU residency on the ingest worker was the
+  original OOM driver (ADR-0018), and the corpus does not justify a resident
+  model. Scanned pages now go to Cohere Parse v5 on the shared Foundry
+  resource, with Tesseract 5.5.2 as the last resort.
+- **What still references PaddleOCR.** `app/models/pdf.py` keeps
+  `paddle_ocr` / `paddle_structure` as read-compatible legacy values for
+  rows written before 2026-07. `src/fastapi/scripts/run_docparser_shadow.py` (the Phase
+  2 step-4 runner) and `ops/validation/ocr_cpu_smoke.py` still import
+  PaddleOCR and cannot run against the current image; they are orphans, not
+  evidence that the engine exists. `docs/architecture/manual/18-model-stack-evolution.md`
+  §3.1 carries a historical-record banner for the same reason.
 
 ## Context
 
