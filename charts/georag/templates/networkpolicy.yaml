@@ -1,0 +1,240 @@
+{{- /*
+NetworkPolicy — default-deny for every pod in the release, one allow
+policy per component, plus DNS for all. Ported 2026-09-06 from the
+deleted ops/charts skeleton and rewritten for this chart's components
+(the skeleton knew only laravel-octane and fastapi and still allowed
+Neo4j / Ollama / vLLM ports).
+
+Ports are the *named container ports* from each template (NetworkPolicy
+matches the destination pod's port, not the Service port — pgbouncer
+listens on 5432 named `pgbouncer` behind a 6432 Service).
+
+Traffic map (→ = egress from the row's component):
+  ingress-controller → laravel-octane:http, fastapi:http (/internal),
+                       martin:http (/tiles), laravel-reverb:ws
+  laravel-octane     → fastapi, pgbouncer, redis, laravel-reverb,
+                       seaweedfs:s3, martin, internet:443
+  laravel-horizon    → fastapi, pgbouncer, redis, laravel-reverb,
+                       seaweedfs:s3, internet:443
+  laravel-reverb     → pgbouncer, redis
+  fastapi            → pgbouncer, postgresql (direct), redis, qdrant,
+                       seaweedfs:s3, hatchet, laravel-octane (service-key
+                       callbacks), internet:443
+  hatchet workers    → hatchet, pgbouncer, postgresql (direct), redis,
+                       qdrant, seaweedfs:s3, fastapi, internet:443
+  hatchet-engine     → (embedded queue; DNS only)
+  martin             → postgresql
+  pgbouncer          → postgresql
+  pg-init / audit    → postgresql
+  datastores         → nothing (DNS only)
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $rel := .Release.Name }}
+{{- $ns := .Values.global.namespace }}
+---
+# Default deny — every pod carrying this release's selector labels.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-default-deny
+  namespace: {{ $ns }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ $rel }}
+  policyTypes: [Ingress, Egress]
+---
+# DNS for every pod in the release.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-allow-dns
+  namespace: {{ $ns }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ $rel }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespace }}
+          {{- with $np.dns.podSelector }}
+          podSelector:
+            matchLabels: {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- /*
+Per-component rules. `ingressFrom` lists release components allowed in on
+`ingressPorts`; `fromIngressController` adds the ingress controller as a
+peer; `egress` is a list of {to, ports}; `external` appends the
+internet-on-443 rule and `networkPolicy.extraEgress`.
+*/}}
+{{- $hatchetWorkers := list "hatchet-worker-ai" "hatchet-worker-ingestion" }}
+{{- $appTier := list "fastapi" "laravel-octane" "laravel-horizon" "laravel-reverb" }}
+{{- $components := list
+  (dict "name" "fastapi" "enabled" .Values.fastapi.enabled
+        "ingressFrom" (concat (list "laravel-octane" "laravel-horizon") $hatchetWorkers)
+        "fromIngressController" true "ingressPorts" (list "http")
+        "egress" (list
+          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "postgresql" "ports" (list "postgres"))
+          (dict "to" "redis" "ports" (list "redis"))
+          (dict "to" "qdrant" "ports" (list "http" "grpc"))
+          (dict "to" "seaweedfs" "ports" (list "s3"))
+          (dict "to" "hatchet-engine" "ports" (list "grpc" "api"))
+          (dict "to" "laravel-octane" "ports" (list "http")))
+        "external" true)
+  (dict "name" "laravel-octane" "enabled" .Values.laravelOctane.enabled
+        "ingressFrom" (list "fastapi")
+        "fromIngressController" true "ingressPorts" (list "http")
+        "egress" (list
+          (dict "to" "fastapi" "ports" (list "http"))
+          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "redis" "ports" (list "redis"))
+          (dict "to" "laravel-reverb" "ports" (list "ws"))
+          (dict "to" "seaweedfs" "ports" (list "s3"))
+          (dict "to" "martin" "ports" (list "http")))
+        "external" true)
+  (dict "name" "laravel-horizon" "enabled" .Values.laravelHorizon.enabled
+        "egress" (list
+          (dict "to" "fastapi" "ports" (list "http"))
+          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "redis" "ports" (list "redis"))
+          (dict "to" "laravel-reverb" "ports" (list "ws"))
+          (dict "to" "seaweedfs" "ports" (list "s3")))
+        "external" true)
+  (dict "name" "laravel-reverb" "enabled" .Values.laravelReverb.enabled
+        "ingressFrom" (list "laravel-octane" "laravel-horizon")
+        "fromIngressController" true "ingressPorts" (list "ws")
+        "egress" (list
+          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "redis" "ports" (list "redis"))))
+  (dict "name" "hatchet-engine" "enabled" .Values.hatchet.enabled
+        "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
+        "ingressPorts" (list "grpc" "api"))
+  (dict "name" "hatchet-worker-ai" "enabled" (and .Values.hatchet.enabled .Values.hatchet.workers.ai.enabled)
+        "egress" (list
+          (dict "to" "hatchet-engine" "ports" (list "grpc" "api"))
+          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "postgresql" "ports" (list "postgres"))
+          (dict "to" "redis" "ports" (list "redis"))
+          (dict "to" "qdrant" "ports" (list "http" "grpc"))
+          (dict "to" "seaweedfs" "ports" (list "s3"))
+          (dict "to" "fastapi" "ports" (list "http")))
+        "external" true)
+  (dict "name" "hatchet-worker-ingestion" "enabled" (and .Values.hatchet.enabled .Values.hatchet.workers.ingestion.enabled)
+        "egress" (list
+          (dict "to" "hatchet-engine" "ports" (list "grpc" "api"))
+          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "postgresql" "ports" (list "postgres"))
+          (dict "to" "redis" "ports" (list "redis"))
+          (dict "to" "qdrant" "ports" (list "http" "grpc"))
+          (dict "to" "seaweedfs" "ports" (list "s3"))
+          (dict "to" "fastapi" "ports" (list "http")))
+        "external" true)
+  (dict "name" "martin" "enabled" .Values.martin.enabled
+        "ingressFrom" (list "laravel-octane")
+        "fromIngressController" true "ingressPorts" (list "http")
+        "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
+  (dict "name" "pgbouncer" "enabled" .Values.pgbouncer.enabled
+        "ingressFrom" (concat $appTier $hatchetWorkers)
+        "ingressPorts" (list "pgbouncer")
+        "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
+  (dict "name" "postgresql" "enabled" .Values.postgresql.enabled
+        "ingressFrom" (concat (list "pgbouncer" "fastapi" "martin" "pg-init" "audit-chain-verify") $hatchetWorkers)
+        "ingressPorts" (list "postgres"))
+  (dict "name" "qdrant" "enabled" .Values.qdrant.enabled
+        "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
+        "ingressPorts" (list "http" "grpc"))
+  (dict "name" "redis" "enabled" .Values.redis.enabled
+        "ingressFrom" (concat $appTier $hatchetWorkers)
+        "ingressPorts" (list "redis"))
+  (dict "name" "seaweedfs" "enabled" .Values.seaweedfs.enabled
+        "ingressFrom" (concat (list "fastapi" "laravel-octane" "laravel-horizon") $hatchetWorkers)
+        "ingressPorts" (list "s3"))
+  (dict "name" "pg-init" "enabled" .Values.jobs.pgInit.enabled
+        "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
+  (dict "name" "audit-chain-verify" "enabled" .Values.jobs.auditChainVerify.enabled
+        "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
+}}
+{{- range $c := $components }}
+{{- if $c.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-{{ $c.name }}
+  namespace: {{ $ns }}
+  labels: {{- include "georag.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $c.name }}
+spec:
+  podSelector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" $c.name "root" $) | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  {{- if or $c.ingressFrom $c.fromIngressController }}
+  ingress:
+    - from:
+        {{- range $c.ingressFrom }}
+        - podSelector:
+            matchLabels: {{- include "georag.selectorLabels" (dict "component" . "root" $) | nindent 14 }}
+        {{- end }}
+        {{- if $c.fromIngressController }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.ingressController.namespace }}
+          {{- with $np.ingressController.podSelector }}
+          podSelector:
+            matchLabels: {{- toYaml . | nindent 14 }}
+          {{- end }}
+        {{- end }}
+      ports:
+        {{- range $c.ingressPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+  {{- end }}
+  {{- if or $c.egress $c.external }}
+  egress:
+    {{- range $e := $c.egress }}
+    - to:
+        - podSelector:
+            matchLabels: {{- include "georag.selectorLabels" (dict "component" $e.to "root" $) | nindent 14 }}
+      ports:
+        {{- range $e.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if $c.external }}
+    {{- if $np.externalEgress.enabled }}
+    - to:
+        - ipBlock:
+            cidr: {{ $np.externalEgress.cidr }}
+            {{- with $np.externalEgress.except }}
+            except: {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        {{- range $np.externalEgress.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

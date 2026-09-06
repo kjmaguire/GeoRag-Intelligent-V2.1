@@ -1,0 +1,61 @@
+{{- /*
+ServiceMonitor — Prometheus Operator scrape targets. Requires the
+monitoring.coreos.com CRDs (kube-prometheus-stack), so it is off by
+default: `helm install` fails on a cluster without them. Matches on the
+`app.kubernetes.io/component` label that fastapi.yaml / laravel.yaml put
+on their Services for exactly this purpose. Ported 2026-09-06 from the
+deleted ops/charts skeleton.
+*/}}
+{{- if .Values.serviceMonitor.enabled }}
+{{- $sm := .Values.serviceMonitor }}
+{{- if and .Values.fastapi.enabled $sm.fastapi.enabled }}
+---
+# FastAPI /metrics is unauthenticated inside the cluster
+# (src/fastapi/app/main.py — gate it at the ingress if ever exposed).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}-fastapi
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Values.global.namespace | quote }}]
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "fastapi" "root" .) | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+{{- end }}
+{{- if and .Values.laravelOctane.enabled $sm.laravel.enabled }}
+---
+# Laravel /metrics requires the X-Service-Key header
+# (app/Http/Middleware/VerifyServiceKey.php). Prometheus Operator has no
+# per-endpoint custom-header field, so this target only works once a
+# header-injecting path exists (see values.yaml `serviceMonitor.laravel`).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}-laravel-octane
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Values.global.namespace | quote }}]
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "laravel-octane" "root" .) | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+{{- end }}
+{{- end }}

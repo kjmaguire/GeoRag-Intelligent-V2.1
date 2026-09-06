@@ -5,12 +5,116 @@ kind: Namespace
 metadata:
   name: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
     app.kubernetes.io/managed-by: Helm
-
+---
+# Source: georag/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: georag-fastapi
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: fastapi
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: fastapi
+---
+# Source: georag/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: georag-laravel-octane
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: laravel-octane
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: laravel-octane
+---
+# Source: georag/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: georag-laravel-horizon
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: laravel-horizon
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: laravel-horizon
+---
+# Source: georag/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: georag-pgbouncer
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: pgbouncer
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: pgbouncer
+---
+# Source: georag/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: georag-martin
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: martin
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: martin
 ---
 # Source: georag/templates/secrets.yaml
 apiVersion: v1
@@ -19,7 +123,7 @@ metadata:
   name: georag-secrets
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -33,7 +137,6 @@ stringData:
   FASTAPI_SERVICE_KEY: "CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
   LARAVEL_APP_KEY: "base64:CHANGEME"
   HATCHET_CLIENT_TOKEN: ""
-
 ---
 # Source: georag/templates/fastapi.yaml
 apiVersion: v1
@@ -42,11 +145,14 @@ metadata:
   name: georag-fastapi
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
     app.kubernetes.io/managed-by: Helm
+    # component label on the Service itself — templates/servicemonitor.yaml
+    # selects Services (not pods) by it.
+    app.kubernetes.io/component: fastapi
 spec:
   type: ClusterIP
   ports:
@@ -65,7 +171,7 @@ metadata:
   name: georag-hatchet
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -91,11 +197,14 @@ metadata:
   name: georag-laravel-octane
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
     app.kubernetes.io/managed-by: Helm
+    # component label on the Service itself — templates/servicemonitor.yaml
+    # selects Services (not pods) by it.
+    app.kubernetes.io/component: laravel-octane
 spec:
   type: ClusterIP
   ports:
@@ -114,7 +223,7 @@ metadata:
   name: georag-martin
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -137,7 +246,7 @@ metadata:
   name: georag-pgbouncer
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -160,7 +269,7 @@ metadata:
   name: georag-postgresql
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -183,7 +292,7 @@ metadata:
   name: georag-qdrant
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -209,7 +318,7 @@ metadata:
   name: georag-redis
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -232,7 +341,7 @@ metadata:
   name: georag-seaweedfs
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -261,7 +370,7 @@ metadata:
   name: georag-fastapi
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -361,7 +470,7 @@ metadata:
   name: georag-hatchet-worker-ai
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -419,7 +528,7 @@ metadata:
   name: georag-hatchet-worker-ingestion
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -463,7 +572,6 @@ spec:
             requests:
               cpu: 500m
               memory: 1Gi
-
 ---
 # Source: georag/templates/laravel.yaml
 apiVersion: apps/v1
@@ -472,7 +580,7 @@ metadata:
   name: georag-laravel-octane
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -553,7 +661,7 @@ metadata:
   name: georag-laravel-horizon
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -593,7 +701,6 @@ spec:
             requests:
               cpu: 250m
               memory: 512Mi
-
 ---
 # Source: georag/templates/martin.yaml
 apiVersion: apps/v1
@@ -602,7 +709,7 @@ metadata:
   name: georag-martin
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -650,7 +757,6 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
-
 ---
 # Source: georag/templates/pgbouncer.yaml
 apiVersion: apps/v1
@@ -659,7 +765,7 @@ metadata:
   name: georag-pgbouncer
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -718,7 +824,6 @@ spec:
               port: pgbouncer
             initialDelaySeconds: 5
             periodSeconds: 10
-
 ---
 # Source: georag/templates/fastapi.yaml
 apiVersion: autoscaling/v2
@@ -727,7 +832,7 @@ metadata:
   name: georag-fastapi
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -746,7 +851,6 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
-
 ---
 # Source: georag/templates/laravel.yaml
 apiVersion: autoscaling/v2
@@ -755,7 +859,7 @@ metadata:
   name: georag-laravel-octane
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -782,7 +886,7 @@ metadata:
   name: georag-hatchet
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -839,7 +943,7 @@ metadata:
   name: georag-postgresql
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -919,7 +1023,6 @@ spec:
         resources:
           requests:
             storage: 50Gi
-
 ---
 # Source: georag/templates/qdrant.yaml
 apiVersion: apps/v1
@@ -928,7 +1031,7 @@ metadata:
   name: georag-qdrant
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -989,7 +1092,6 @@ spec:
         resources:
           requests:
             storage: 30Gi
-
 ---
 # Source: georag/templates/redis.yaml
 apiVersion: apps/v1
@@ -998,7 +1100,7 @@ metadata:
   name: georag-redis
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -1076,7 +1178,6 @@ spec:
         resources:
           requests:
             storage: 5Gi
-
 ---
 # Source: georag/templates/seaweedfs.yaml
 apiVersion: apps/v1
@@ -1085,7 +1186,7 @@ metadata:
   name: georag-seaweedfs
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -1151,7 +1252,6 @@ spec:
         resources:
           requests:
             storage: 100Gi
-
 ---
 # Source: georag/templates/jobs.yaml
 # Nightly hash-chain verifier. Reports via audit row; fails the Job
@@ -1162,7 +1262,7 @@ metadata:
   name: georag-audit-chain-verify
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -1196,7 +1296,6 @@ spec:
                     secretKeyRef:
                       name: georag-secrets
                       key: POSTGRES_PASSWORD
-
 ---
 # Source: georag/templates/ingress.yaml
 apiVersion: networking.k8s.io/v1
@@ -1205,7 +1304,7 @@ metadata:
   name: georag-ingress
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
@@ -1252,7 +1351,7 @@ metadata:
   name: georag-pg-init
   namespace: georag
   labels:
-    helm.sh/chart: georag-0.1.0
+    helm.sh/chart: georag-0.2.0
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"

@@ -33,6 +33,7 @@ FAILED=()
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELM_IMAGE="${HELM_IMAGE:-alpine/helm:latest}"
+KUBE_VERSION="${KUBE_VERSION:-1.30.0}"   # Chart.yaml kubeVersion floor; offline helm assumes 1.20
 
 check_file() {
     local f="$1"
@@ -87,7 +88,7 @@ check_file "charts/georag/templates/_helpers.tpl"
 # ----------------------------------------------------------------------------
 echo
 echo "-- §11.6 service templates --"
-for svc in postgresql pgbouncer neo4j qdrant redis seaweedfs fastapi laravel vllm hatchet martin dagster ingress jobs namespace secrets; do
+for svc in postgresql pgbouncer qdrant redis seaweedfs fastapi laravel hatchet martin ingress jobs namespace secrets networkpolicy pdb servicemonitor; do
     check_file "charts/georag/templates/$svc.yaml"
 done
 
@@ -122,6 +123,7 @@ SECRETS_ARGS=(
 for flavor in k3s vanilla airgap; do
     TOTAL=$((TOTAL + 1))
     if helm_run template georag charts/georag/ \
+        --kube-version "$KUBE_VERSION" \
         -f "charts/georag/values-$flavor.yaml" \
         "${SECRETS_ARGS[@]}" >/tmp/helm-tmpl-$flavor.log 2>&1; then
         count=$(grep -cE "^kind:" /tmp/helm-tmpl-$flavor.log || true)
@@ -161,6 +163,7 @@ SECRETS_ARGS_DRIFT=(
 for flavor in k3s vanilla airgap; do
     TOTAL=$((TOTAL + 1))
     fresh=$(helm_run template georag charts/georag/ \
+        --kube-version "$KUBE_VERSION" \
         -f "charts/georag/values-$flavor.yaml" \
         "${SECRETS_ARGS_DRIFT[@]}" 2>/dev/null)
     committed=$(cat "$REPO_ROOT/kubernetes/manifests/$flavor.yaml")

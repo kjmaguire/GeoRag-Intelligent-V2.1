@@ -166,6 +166,22 @@ kubectl -n georag delete pvc --all
 kubectl delete namespace georag
 ```
 
+## Hardening (chart 0.2.0)
+
+| Template | Default | Enable with | Needs |
+|---|---|---|---|
+| PodDisruptionBudget | on | — | nothing; emitted only for components running ≥2 replicas |
+| NetworkPolicy | off | `--set networkPolicy.enabled=true` | a CNI that enforces it (K3s does; vanilla: Calico / Cilium) and the right `networkPolicy.ingressController` block |
+| ServiceMonitor | off | `--set serviceMonitor.enabled=true` | Prometheus Operator CRDs (`kube-prometheus-stack`) |
+
+Enable NetworkPolicy only after a first install works without it: a
+`networkPolicy.ingressController` selector that does not match your
+controller blackholes the web app silently. Verify with
+`kubectl -n georag get networkpolicy` and a curl through the ingress.
+The traffic map is at the top of `charts/georag/templates/networkpolicy.yaml`;
+add private-address destinations (an external PostgreSQL, an SMTP relay)
+under `networkPolicy.extraEgress`.
+
 ## Troubleshooting
 
 See `charts/georag/README.md` § "Troubleshooting" for the common

@@ -19,6 +19,15 @@ ingress:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
 
+# NetworkPolicy peer for the nginx controller (off by default — see
+# values.yaml `networkPolicy.enabled`). Adjust if your controller runs
+# elsewhere or carries different labels.
+networkPolicy:
+  ingressController:
+    namespace: ingress-nginx
+    podSelector:
+      app.kubernetes.io/name: ingress-nginx
+
 # Medium-tier sizing
 postgresql:
   resources:
