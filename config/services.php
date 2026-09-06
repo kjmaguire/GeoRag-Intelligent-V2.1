@@ -164,6 +164,14 @@ return [
         // Default `primary` is the canonical "current" key tag; rotate by
         // setting this env to e.g. `2026-q3` and provisioning the new secret.
         'service_key_kid' => env('FASTAPI_SERVICE_KEY_KID', 'primary'),
+        // 2026-09-06 — the outgoing key during a rotation window. The
+        // VerifyServiceKey middleware (FastAPI / Hatchet → Laravel callbacks)
+        // accepts either this or `service_key`, mirroring FastAPI's
+        // FASTAPI_SERVICE_KEY_PREVIOUS on the reverse path, so neither side
+        // 401s while the other's consumers roll. Empty in steady state.
+        // Minting never uses it: outbound JWTs are always signed with
+        // `service_key`. See ops/runbooks/secret-rotation.md § 3.
+        'service_key_previous' => env('FASTAPI_SERVICE_KEY_PREVIOUS', ''),
         // Guzzle read timeout for the streaming answer response, in seconds.
         //
         // This is the SOURCE of the inner-must-expire-first invariant, not

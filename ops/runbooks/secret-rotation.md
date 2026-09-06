@@ -90,7 +90,7 @@ the window boots against no database and looks broken. Rotate outside it.
 | Credential | Holder of truth | Read by | Zero-downtime? | Section |
 | --- | --- | --- | --- | --- |
 | `APP_KEY` | laravel-octane-cc secret | laravel-octane-cc, laravel-horizon-cc, laravel-reverb-cc, laravel-migrate-job | No — re-encrypts `query_audit_log` | §2 |
-| `FASTAPI_SERVICE_KEY` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`) | fastapi-cc secret | fastapi-cc (verify), laravel-octane-cc / laravel-horizon-cc (mint), hatchet-worker-cc (X-Service-Key to Laravel) | Laravel → FastAPI yes; calls *into* Laravel no — see §3 | §3 |
+| `FASTAPI_SERVICE_KEY` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`) | fastapi-cc secret | fastapi-cc (verify), laravel-octane-cc / laravel-horizon-cc (mint), hatchet-worker-cc (X-Service-Key to Laravel) | Yes, both directions (since 2026-09-06) — see §3 | §3 |
 | Postgres admin (`georag_admin`) | Flexible Server | operators, `rotate-martin-credential.sh` | Yes | §4 |
 | Postgres app roles (`georag_app`, `georag`) | Flexible Server role | laravel-*, laravel-migrate-job, fastapi-cc, hatchet-worker-cc, hatchet-cc (its own `hatchet` database) | Brief 28P01 on each consumer until rolled | §4 |
 | `martin_readonly` | Flexible Server role | martin-cc | Yes (scripted) | §4 |
@@ -186,21 +186,21 @@ One value does three jobs (`docs/RUNBOOK.md` § "Key separation note"):
 the `X-Service-Key` header, the HS256 signing key for the 60-second JWTs
 Laravel mints, and the HMAC for `log_safe.query_hash`.
 
-**Read this before starting: which direction is zero-downtime.** On the
-FastAPI side both credentials overlap: the JWT path keeps a `kid → secret`
-map and the `X-Service-Key` path accepts `FASTAPI_SERVICE_KEY_PREVIOUS` as
-well as the primary (`app/services/auth.py::service_key_matches`, since
-2026-09-06 — before that the header path compared against the primary
-alone and this rotation was a 401 storm). So with `PREVIOUS` set on
-fastapi-cc first, every Laravel → FastAPI and Hatchet → FastAPI call keeps
-working while the callers roll. The gap that remains is calls **into**
-Laravel: `app/Http/Middleware/VerifyServiceKey.php` compares the header
-against the single `services.fastapi.service_key`, so hatchet-worker-cc's
-`/internal/v1/*` bridge calls and FastAPI's callbacks 401 from the moment
-the Laravel apps restart on the new key until hatchet-worker-cc and
-fastapi-cc send it. Keep step 2 tight and the gap is seconds, on a path
-that retries; still, do it outside a large ingest. (A `service_key_previous`
-slot in that middleware would close it.)
+**Zero-downtime in both directions since 2026-09-06.** Every internal
+call carries two credentials and both now overlap. The JWT path keeps a
+`kid → secret` map; the `X-Service-Key` path accepts
+`FASTAPI_SERVICE_KEY_PREVIOUS` as well as the primary on *both* sides —
+`app/services/auth.py::service_key_matches` for calls into FastAPI, and
+`app/Http/Middleware/VerifyServiceKey.php` (`services.fastapi.service_key_previous`)
+for Hatchet's `/internal/v1/*` bridge calls and FastAPI's callbacks into
+Laravel. Before that day the header was compared against the primary alone
+on each side, and this rotation was a 401 storm from the first restart to
+the last. The rule that makes it clean now: **every verifier learns the
+new key with the old one kept as `PREVIOUS`, before any caller starts
+sending the new key.** fastapi-cc and the Laravel apps are both verifiers
+and both callers, so they get the `PREVIOUS` treatment; hatchet-worker-cc
+only calls, so it just gets the new value. The same env var name carries
+the previous key on every app. Laravel never mints with it.
 
 Generate (≥ 32 bytes is enforced on both sides at startup):
 
@@ -214,29 +214,40 @@ Discover the current kid and which secret names hold the key (§0 loop),
 then rotate **verifier first, callers immediately after**:
 
 ```bash
-# 1. fastapi-cc: new key primary, old key kept as PREVIOUS for the JWT overlap.
+# 1. fastapi-cc: new key primary, old key kept as PREVIOUS (JWT kid map and
+#    the X-Service-Key header both honour it).
 OLD="$(az containerapp secret show -g $RG -n fastapi-cc --secret-name fastapi-service-key --query value -o tsv)"
 az containerapp secret set -g $RG -n fastapi-cc --secrets fastapi-service-key="$NEW" fastapi-service-key-previous="$OLD" --output none
 az containerapp update -g $RG -n fastapi-cc \
   --set-env-vars "FASTAPI_SERVICE_KEY_KID=$KID" "FASTAPI_SERVICE_KEY_PREVIOUS=secretref:fastapi-service-key-previous" "FASTAPI_SERVICE_KEY_PREVIOUS_KID=primary" \
   --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-unset OLD
 
-# 2. Every caller, without pausing between them.
-for app in laravel-octane-cc laravel-horizon-cc hatchet-worker-cc; do
-  az containerapp secret set -g $RG -n "$app" --secrets fastapi-service-key="$NEW" --output none
-  az containerapp update -g $RG -n "$app" --set-env-vars "FASTAPI_SERVICE_KEY_KID=$KID" \
+# 2. The Laravel apps: new key primary, old key as PREVIOUS so the calls
+#    hatchet-worker-cc and fastapi-cc still make with the old value keep
+#    authenticating until step 3.
+for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
+  az containerapp secret set -g $RG -n "$app" --secrets fastapi-service-key="$NEW" fastapi-service-key-previous="$OLD" --output none
+  az containerapp update -g $RG -n "$app" \
+    --set-env-vars "FASTAPI_SERVICE_KEY_KID=$KID" "FASTAPI_SERVICE_KEY_PREVIOUS=secretref:fastapi-service-key-previous" \
     --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
 done
-unset NEW
+
+# 3. The pure caller.
+az containerapp secret set -g $RG -n hatchet-worker-cc --secrets fastapi-service-key="$NEW" --output none
+az containerapp update -g $RG -n hatchet-worker-cc --set-env-vars "FASTAPI_SERVICE_KEY_KID=$KID" \
+  --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
+unset NEW OLD
 ```
+
+Include laravel-reverb-cc only if its env carries the key; the §0 loop
+tells you.
 
 Replace `primary` in step 1 with whatever kid the *old* key was minted
 under if it was not the default. Rolling laravel-horizon-cc restarts the
 supervisors, which is what you want: a job mid-flight with a JWT under
-the old key is re-queued rather than failing on a 401. fastapi-cc logs one
-warning the first time a request authenticates with the previous key;
-seeing it a day later means a consumer was missed.
+the old key is re-queued rather than failing on a 401. fastapi-cc and each
+Laravel app log one warning the first time a request authenticates with
+the previous key; seeing it a day later means a consumer was missed.
 
 Verify from inside the cluster — the same probe CD runs after a deploy:
 
@@ -262,6 +273,11 @@ drop the overlap:
 az containerapp update -g $RG -n fastapi-cc --remove-env-vars FASTAPI_SERVICE_KEY_PREVIOUS FASTAPI_SERVICE_KEY_PREVIOUS_KID \
   --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
 az containerapp secret remove -g $RG -n fastapi-cc --secret-names fastapi-service-key-previous --output none
+for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
+  az containerapp update -g $RG -n "$app" --remove-env-vars FASTAPI_SERVICE_KEY_PREVIOUS \
+    --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
+  az containerapp secret remove -g $RG -n "$app" --secret-names fastapi-service-key-previous --output none
+done
 ```
 
 `PROD_SMOKE_PROJECT_ID` on fastapi-cc makes the smoke probe also run a
