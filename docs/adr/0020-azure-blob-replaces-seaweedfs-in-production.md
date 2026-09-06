@@ -136,9 +136,12 @@ keep using SeaweedFS under ADR-0001.
 5. **No per-workspace key prefix.** `services/seaweedfs_keys.py` specifies
    one and only its own test imports it. Tenant isolation for objects rests
    on `workspace_id` in `bronze.ingest_manifest` and RLS, not on key layout.
-6. **`.env.production.example` still reads `STORAGE_BACKEND=s3_compatible`**
-   with the Azure block marked "only fill in when switching". The live apps
-   set `azure_blob` by hand (nothing in `deploy/azure/` templates app env).
+6. **`.env.production.example` read `STORAGE_BACKEND=s3_compatible`** until
+   2026-09-06, with the Azure block marked "only fill in when switching",
+   while the live apps set `azure_blob` by hand (nothing in `deploy/azure/`
+   templates app env). Fixed the same day: the template now sets
+   `azure_blob` with the Azure block primary and the S3 block marked
+   compose / on-premise only.
 
 ## Consequences
 
@@ -172,8 +175,8 @@ keep using SeaweedFS under ADR-0001.
 
 ## Follow-ups (not part of this ADR)
 
-- Flip `.env.production.example` to `STORAGE_BACKEND=azure_blob` and make the
-  Azure block primary, before the next operator onboarding.
+- ~~Flip `.env.production.example` to `STORAGE_BACKEND=azure_blob` and make
+  the Azure block primary~~ — done 2026-09-06.
 - Decide on Blob soft-delete / versioning (or GRS) — before any customer
   data that cannot be re-uploaded lands.
 - Wire or delete `services/seaweedfs_keys.py` (open decision from #194).
