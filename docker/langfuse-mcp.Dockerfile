@@ -29,7 +29,7 @@
 # Pinned base — python:3.13-slim. Bump on security advisories or pyproject change.
 # =============================================================================
 
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 LABEL org.opencontainers.image.title="GeoRAG Langfuse MCP"
 LABEL org.opencontainers.image.description="Langfuse MCP server (avivsinai/langfuse-mcp) packaged for Docker MCP / Claude Code stdio."
