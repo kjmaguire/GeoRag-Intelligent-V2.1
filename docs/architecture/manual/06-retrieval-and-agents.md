@@ -1,13 +1,9 @@
 # Chapter 06 — Retrieval and Agents
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** for the stale-reference pass: the graph tool
+> rows, the cross-store reconciliation leg and the support-cockpit trace
+> sources. §10 was reconciled earlier; the retrieval and guard descriptions
+> were not re-derived here.
 
 Every component on the chat path classified by *what kind of thing it is* —
 LLM agent (multi-call reasoning loop), ML model (one forward pass), or
@@ -149,13 +145,13 @@ typed `EvidenceItem` lists. All workspace-scoped.
 | Tool | Backing store | Classification | File |
 |---|---|---|---|
 | `hybrid_search` | Qdrant + SPLADE + BM25 fusion | ML (embed) + ML (sparse) + rule (RRF/DBSF) | services/fusion.py |
-| `query_collar_details` | Postgres `silver.collars` + Neo4j neighbours | Rule-based SQL | services/dispatchers/structured_query.py |
-| `query_project_summary` | Postgres aggregate query + Neo4j entity rollup | Rule-based | dispatchers (ADR-0007 PR-1) |
+| `query_collar_details` | Postgres `silver.collars` | Rule-based SQL | services/dispatchers/structured_query.py |
+| `query_project_summary` | Postgres aggregate query | Rule-based | dispatchers (ADR-0007 PR-1) |
 | `query_coverage_gap` | Postgres set-difference vs golden-corpus catalogue | Rule-based | dispatchers (ADR-0007 PR-1) |
 | `vector_search` | Qdrant only | ML (Qwen3-Embedding-0.6B encoder, 1024-dim — swapped from bge-small 2026-06-03) | services/fusion.py |
 | `splade_search` | Qdrant sparse vectors | ML (SPLADE++ encoder) | services/fusion.py |
 | `bm25_search` | Postgres tsvector `silver.document_passages` | Rule-based | services/fusion.py |
-| `graph_traversal` | Neo4j Cypher | Rule-based | agent/graph_entities.py |
+| ~~`graph_traversal`~~ | **Gone** — Neo4j was removed 2026-07-28 and the graph half of hallucination Layer 4 is permanently fail-open (CLAUDE.md hard rule 9) | | |
 | `geological_query_expansion` | Geological ontology (`silver.geological_ontology_*`) | Rule-based | agent/geological_query_expansion.py |
 | `figure_extractor` | PostGIS `silver.report_figures` + SeaweedFS PNG fetch | Rule-based | agent/figure_extractor.py |
 | `anomaly_detector` | Postgres aggregate query (z-score, IQR) | ML (statistical) | agent/anomaly_detector.py |
@@ -176,10 +172,10 @@ Hard Rule #5. Every code path that touches RAG output must apply all six.
 
 | Layer | File | Kind |
 |------:|------|------|
-| 1. Retrieval quality gate | [layer1_retrieval.py](../../../src/fastapi/app/agent/hallucination/layer1_retrieval.py) | ML score threshold (default `RETRIEVAL_QUALITY_THRESHOLD=0.6` from [docker-compose.yml:992](../../../docker-compose.yml)) |
+| 1. Retrieval quality gate | [layer1_retrieval.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | ML score threshold (default `RETRIEVAL_QUALITY_THRESHOLD=0.6` from [docker-compose.yml:992](../../../docker-compose.yml)) |
 | 2. Typed output validation | [layer2_typed_output.py](../../../src/fastapi/app/agent/hallucination/layer2_typed_output.py) | Pydantic AI typed-output — refuses unstructured / un-cited claims |
-| 3. Numerical claim verification | [layer3_numerical.py](../../../src/fastapi/app/agent/hallucination/layer3_numerical.py) | Re-runs every numeric claim against the cited evidence row; flags mismatch |
-| 4. Entity resolution | [layer4_entity.py](../../../src/fastapi/app/agent/hallucination/layer4_entity.py) | Resolves named entities (deposits, holes, formations) against `workspace.entities` + ontology |
+| 3. Numerical claim verification | [layer3_numerical.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | Re-runs every numeric claim against the cited evidence row; flags mismatch |
+| 4. Entity resolution | [layer4_entity.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | Resolves named entities (deposits, holes, formations) against `workspace.entities` + ontology |
 | 5. Chunk provenance | [layer5_provenance.py](../../../src/fastapi/app/agent/hallucination/layer5_provenance.py) | Every `[ev:xxxxxxxx]` marker must resolve to a real `silver.evidence_items` row |
 | 6. Geological constraints | [layer6_constraints.py](../../../src/fastapi/app/agent/hallucination/layer6_constraints.py) + [layer6_constraints.json](../../../src/fastapi/app/agent/hallucination/layer6_constraints.json) | Domain rule pack (e.g., "azimuth ∈ [0, 360)", "Au grade < 50 g/t in vein deposits unless flagged") |
 
@@ -199,7 +195,7 @@ OIUR = Observation / Interpretation / Uncertainty / Recommendation.
 - Every observation/interpretation/recommendation MUST carry one or more
   citation markers — rejected by `layer2_typed_output` otherwise.
 - The frontend renders the four sections as discrete cards
-  ([resources/js/Pages/Chat.tsx](../../../resources/js/Pages/Chat.tsx)).
+  ([resources/js/Pages/Chat.tsx](../../../resources/js/Pages/Foundry/Chat.tsx)).
 
 ## 8. The context envelope (Field/Office mode)
 
@@ -218,7 +214,7 @@ recent data; `office` mode opens the full hybrid surface).
 
 Backend pre-processor at
 [src/fastapi/app/agent/agentic_retrieval/preprocessor.py](../../../src/fastapi/app/agent/agentic_retrieval/preprocessor.py).
-React form lives in [resources/js/Pages/Chat.tsx](../../../resources/js/Pages/Chat.tsx).
+React form lives in [resources/js/Pages/Chat.tsx](../../../resources/js/Pages/Foundry/Chat.tsx).
 
 ## 9. Hole-ID extractor (rule-based)
 
@@ -263,7 +259,7 @@ and a Layer 3 claim ledger that never ran.
 ## 11. Cross-store reasoning helpers
 
 - `services/cross_store_consistency.py` — checks the same fact against
-  Postgres + Neo4j + Qdrant; raises on disagreement.
+  Postgres + Qdrant; raises on disagreement. The graph leg is gone.
 - `services/cross_workspace_audit.py` — ensures no row references another
   workspace’s data.
 - `services/fusion.py` — RRF (Reciprocal Rank Fusion) and DBSF (Distribution
@@ -274,8 +270,8 @@ and a Layer 3 claim ledger that never ran.
 
 Real LLM-driven agents live under:
 - [src/fastapi/app/agents/phase0/](../../../src/fastapi/app/agents/phase0/)
-- [src/fastapi/app/agents/phase5/](../../../src/fastapi/app/agents/phase5/)
-- through [phase10/](../../../src/fastapi/app/agents/phase10/)
+- [src/fastapi/app/agents/phase5/](../../../src/fastapi/app/agents/)
+- through [phase10/](../../../src/fastapi/app/agents/)
 
 These are run **only** by Hatchet workflows (e.g., the Index Health Agent,
 Storage Tiering Agent, Support Packet Agent, LLM Incident Diagnosis Agent),
@@ -285,8 +281,8 @@ via `workspace.agent_timeouts`.
 ## 13. LLM Incident Diagnosis (`services/llm_incident_diagnosis/`)
 
 A multi-agent debugging assistant for ops:
-- Reads recent traces from Tempo (via `OTEL_EXPORTER_OTLP_ENDPOINT`).
-- Reads Loki logs (LogQL).
+- Reads `silver.query_traces` and `silver.answer_runs` by `trace_id`. Tempo and Loki never existed on Azure and the OTel exporter has no endpoint set anywhere ([Ch 12 §3](12-observability.md)).
+- The Langfuse deep-link it builds points at a UI that is not deployed in production.
 - Reads `audit.audit_ledger` for the failing trace_id.
 - Composes a remediation packet → posted to `ops.support_replay_runs`.
 - Pydantic AI agent; called from the Support Cockpit.

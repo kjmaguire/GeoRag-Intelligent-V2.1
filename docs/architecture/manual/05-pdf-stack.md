@@ -1,17 +1,17 @@
 # Chapter 05 — PDF Stack §04p
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** against `src/fastapi/app/services/pdf_extract.py`,
+> `services/ingest/`, `src/fastapi/pyproject.toml` and `docker-compose.yml`.
+> The pipeline description was current through ADR-0019; what was stale was
+> the library stack (PyMuPDF was removed on licence grounds), the vision
+> stage (vLLM), the container name and the parser table, which pointed into
+> the deleted `src/dagster/` tree.
 
 In-process replacement for the deleted RAGFlow service ([ADR-0002](../../adr/)).
-Everything runs inside the `hatchet-worker-ingestion` (and occasionally the
-`fastapi`) container — no separate parsing process to deploy or scale.
+Everything runs inside the single `hatchet-worker` container (and
+occasionally `fastapi`) — no separate parsing process to deploy or scale.
+There is no `hatchet-worker-ingestion`; the pools were merged
+([Ch 07 §2.1](07-orchestration.md)).
 
 > All file paths in this chapter are relative to the repo root.
 >
@@ -56,8 +56,8 @@ body_bytes
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Stage 2 — FAST-PATH NATIVE TEXT     pdf_extract.py → PyMuPDF (fitz)     │
-│   per-page get_text("blocks")                                           │
+│ Stage 2 — FAST-PATH NATIVE TEXT   pdf_extract.py → pdfminer.six         │
+│   per-page text blocks with bboxes + font metadata                      │
 │   reading-order recovery via blocks                                     │
 │   PER_PAGE_MIN_CHARS gate: < N chars → mark page "image-only"           │
 └───────────────────────┬─────────────────────────────────────────────────┘
@@ -86,10 +86,12 @@ body_bytes
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Stage 6 — VISUAL-LANGUAGE PASS (opt-in)    pdf_vl.py                    │
-│   Qwen2.5-VL-7B-Instruct on vLLM (separate VLLM_MODEL config)           │
-│   describes figures + extracts numeric values from charts               │
-│   gated on the visual-language feature configuration                    │
+│ Stage 6 — PAGE VERBALIZATION (opt-in, off the critical path)            │
+│   services/ingest/page_vision_client.py → a Foundry vision model        │
+│   the description BECOMES the passage text, so reranker, citations and  │
+│   §04i numeric grounding all work on it like any other passage          │
+│   inert unless IMAGE_VERBALIZATION_ENABLED; runs on an hourly cron      │
+│   (verbalize_page_images), not inline during ingest                     │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -107,12 +109,12 @@ body_bytes
 | Stage | File | Key functions |
 |---|---|---|
 | Preflight | [src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py) | `preflight()` — sha256, magic bytes, pikepdf open, page count, password-protected rejection |
-| Native text | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) | `extract_native_text_pages()` (PyMuPDF primary; pdfminer fallback) |
-| Tables | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) + [pdf_layout.py](../../../src/fastapi/app/services/pdf_layout.py) | `extract_tables_diverse()` — pdfplumber + camelot strategies |
+| Native text | [`services/pdf_extract.py`](../../../src/fastapi/app/services/pdf_extract.py) | text blocks with bboxes and font metadata via **pdfminer.six**, in a `ProcessPoolExecutor` |
+| Tables | [`services/pdf_extract.py`](../../../src/fastapi/app/services/pdf_extract.py) | cell-level bboxes via **pdfplumber** `find_tables()`. There is no `pdf_layout.py` and camelot is not a dependency |
 | OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [cohere_parse_client.py](../../../src/fastapi/app/services/ingest/cohere_parse_client.py) + [html_table.py](../../../src/fastapi/app/services/ingest/html_table.py) | Cohere Parse v5 primary (one page image per request, HTML tables → grids), Tesseract fallback |
 | Coordinates | [src/fastapi/app/services/pdf_coordinates.py](../../../src/fastapi/app/services/pdf_coordinates.py) | Maps OCR text → page-relative bboxes for citation span resolver |
-| Rendering | [src/fastapi/app/services/pdf_render.py](../../../src/fastapi/app/services/pdf_render.py) | `render_page_png()` → uploads to SeaweedFS `bronze-raster` bucket |
-| VL pass | [src/fastapi/app/services/pdf_vl.py](../../../src/fastapi/app/services/pdf_vl.py) | `describe_figure_vl()` — calls Qwen2.5-VL on the vllm endpoint |
+| Rendering | [`services/pdf_render.py`](../../../src/fastapi/app/services/pdf_render.py) | renders page PNGs into the bronze raster prefix — SeaweedFS in dev, Azure Blob in production, behind the one `STORAGE_BACKEND` switch ([Ch 02 §4](02-data-stores.md)) |
+| Page verbalization | [`services/ingest/page_verbalizer.py`](../../../src/fastapi/app/services/ingest/page_verbalizer.py) + [`page_vision_client.py`](../../../src/fastapi/app/services/ingest/page_vision_client.py) | a Foundry vision model describes the page; the description becomes the passage text. `services/pdf_vl.py` still exists and is constructed in the FastAPI lifespan, but its docstring describes an Ollama/vLLM backend that is gone — the live path is the verbalizer |
 | Figure linking | [src/fastapi/app/agent/figure_extractor.py](../../../src/fastapi/app/agent/figure_extractor.py) | Figure → caption nearest-text linking v1 |
 | Hatchet workflow | [src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py) | `parse_pdf_report()` invocation and atomic Silver persistence |
 
@@ -120,7 +122,7 @@ body_bytes
 
 [project_parse_perf_2026_05_22](../notes/INDEX.md#project_parse_perf_2026_05_22):
 
-1. PyMuPDF promoted to primary native-text parser (was pdfminer).
+1. ~~PyMuPDF promoted to primary native-text parser~~ — **reversed.** PyMuPDF was removed in the 2026-05-27 licence audit (AGPL-3.0); pdfminer.six is the native-text parser.
 2. Parallel pdfplumber for tables.
 3. Diverse table-probe (multiple pdfplumber strategies).
 4. OCR-skip probe — skips OCR for pages already covered by native text.
@@ -139,7 +141,7 @@ Result: 3-5× speedup on text-heavy NI 43-101 PDFs.
 - Tables now read all pages, not just the first hit page.
 - `§04p` re-enabled after the Phase 1 freeze.
 - Azure Document Intelligence was the primary scanned-page OCR service (replaced by Cohere Parse v5 on 2026-09-02, ADR-0019).
-- Figure→caption linking v1 with MinIO uploads.
+- Figure→caption linking v1, writing page renders to object storage (the compose service is still named `minio` but runs SeaweedFS, per ADR-0001).
 
 ## 6. PDF coverage overhaul (six gaps closed 2026-05-22)
 
@@ -196,25 +198,33 @@ From [docker-compose.yml:2039-2065](../../../docker-compose.yml):
 | `BRONZE_LOCAL_DIR` | `/tmp/georag/bronze` | Body-bytes cache |
 | `P04P_DUAL_WRITE_ENABLED` | false | Run legacy parser in parallel for A/B |
 
-## 11. Non-PDF parsers (in the same `parsers/` directory)
+## 11. Non-PDF parsers
 
-[src/dagster/georag_dagster/parsers/](../../../src/dagster/georag_dagster/parsers/):
+The parser package outlived Dagster. It now lives at
+[`src/georag_geoparsers/georag_geoparsers/`](../../../src/georag_geoparsers/georag_geoparsers/)
+and is imported by the Hatchet ingest workflows.
 
 | Parser | Format | Used by |
 |---|---|---|
-| `csv_collar.py`, `csv_lithology.py`, `csv_sample.py`, `csv_survey.py`, `csv_geochronology.py` | CSV | Dagster bronze→silver |
-| `xlsx_parser.py` | XLSX (multi-sheet, classifier-routed) | Dagster |
-| `las_parser.py` | LAS well logs | Dagster + `services/las_ingester.py` |
-| `segy_parser.py` | SEG-Y seismic | Dagster |
-| `spatial_parser.py` | GPKG/GeoJSON/shapefile | Dagster |
-| `raster_parser.py` | GeoTIFF | Dagster |
-| `xyz_parser.py` | XYZ point cloud | Dagster |
-| `docx_parser.py` | Word documents | FastAPI/Dagster |
-| `_csv_io.py`, `_encoding.py`, `_hole_id.py`, `_sheet_classifier.py`, `_unit_ambiguity.py`, `_vendor_aliases.py`, `_dip_convention.py`, `_survey_interp.py` | Helpers | All the above |
+| `csv_collar.py`, `csv_lithology.py`, `csv_sample.py`, `csv_survey.py`, `csv_geochronology.py` | CSV | `ingest_tabular` |
+| `xlsx_parser.py` | XLSX (multi-sheet, classifier-routed) | `ingest_tabular` |
+| `las_parser.py` | LAS well logs | `ingest_well_logs` + `services/ingest/las_ingester.py` |
+| `spatial_parser.py`, `qgis_parser.py` | GPKG / GeoJSON / shapefile / QGIS projects | `ingest_spatial` |
+| `raster_parser.py`, `erdas_rrd.py` | GeoTIFF and ERDAS rasters | `ingest_spatial`, `tiff_normalize` |
+| `xyz_parser.py` | XYZ point cloud | `ingest_spatial` |
+| `access_mdb.py`, `dbase_reader.py` | Access MDB, dBASE | `ingest_tabular` (mdbtools) |
+| `surpac_parser.py`, `dcip2d_parser.py`, `dcip2d_survey.py` | Surpac strings, DC/IP 2-D geophysics | `ingest_spatial` |
+| `_csv_io.py`, `_encoding.py`, `_hole_id.py`, `_sheet_classifier.py`, `_unit_ambiguity.py`, `_vendor_aliases.py`, `_dip_convention.py`, `_survey_interp.py`, `_drill_schema.py`, `_header_match.py` | Helpers | all of the above |
 
-The CSV audit and XLSX audit memory notes
+**Gone with the Dagster tree:** `segy_parser.py` (SEG-Y) and
+`docx_parser.py` (Word). Neither has a replacement — `segyio` and `obspy`
+are not dependencies, so seismic ingest is not a path this system has
+today, and Word documents are not an accepted upload type.
+
+The CSV and XLSX audit notes
 ([project_csv_audit_2026_05_23](../notes/INDEX.md#project_csv_audit_2026_05_23),
 [project_xlsx_audit_2026_05_23](../notes/INDEX.md#project_xlsx_audit_2026_05_23))
-document recent fixes: delimiter auto-detect, decimal-comma transform,
-multi-sheet workbook sheet_type='' auto-dispatch, and the shared
-`csv_silver_ingest` Dagster concurrency pool.
+document delimiter auto-detect, the decimal-comma transform and
+multi-sheet `sheet_type=''` auto-dispatch. The concurrency limit they call
+the `csv_silver_ingest` pool is now the `ingest_tabular` workflow's Hatchet
+concurrency key.

@@ -1,13 +1,11 @@
 # Chapter 03 — Schemas and Tables
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** for the stale-reference pass: writer attributions
+> that named Dagster assets, the `backend_used` CHECK, the Kestra loader for
+> public geoscience, the outbox fan-out targets and the Tempo join note.
+> The schema definitions themselves were current and were not re-derived
+> column by column — `tests/Unit/ArchitectureDocSchemaParityTest.php` is
+> what actually gates `schema.table` names against the migration tree.
 
 This is the per-table map of `georag` (the main application logical DB).
 File:line citations point either into `database/migrations/` (Laravel-managed)
@@ -28,7 +26,7 @@ and extended by
 | `public` | (Postgres default) | Laravel-managed tables (users, jobs, sessions, cache, migrations, password_reset_tokens), extension functions (postgis, pgcrypto), and the standalone `public.smdi_deposits` SK occurrences table. |
 | `bronze` | [init-postgis.sql:59](../../../docker/postgresql/init/init-postgis.sql) | Raw, immutable ingest records. CRS can be anything; data is "as observed". Append-only. |
 | `silver` | [init-postgis.sql:65](../../../docker/postgresql/init/init-postgis.sql) | Cleaned, CRS-normalised, FK-enforced domain tables. Primary read layer. ~80 tables. |
-| `gold` | [init-postgis.sql:72](../../../docker/postgresql/init/init-postgis.sql) | Pre-computed aggregations / materialisations refreshed by Dagster. |
+| `gold` | [init-postgis.sql:72](../../../docker/postgresql/init/init-postgis.sql) | Pre-computed aggregations. Plain tables written by `promote_silver_to_gold`; the only materialized view in the system is `silver.mv_collar_summary`. |
 | `index` | [init-postgis.sql:79](../../../docker/postgresql/init/init-postgis.sql) (quoted — `index` is a reserved word elsewhere) | tsvector full-text indexes, entity-resolution lookup tables. Isolated so REINDEX/REFRESH ops don't lock core data. |
 | `audit` | [init-postgis.sql:88](../../../docker/postgresql/init/init-postgis.sql) | Audit + compliance: `audit_ledger` (monthly partitioned, hash-chained), verification runs, fork quarantine, integration_credentials_audit, query_audit_log (moved here from public in [2026_05_07_120000](../../../database/migrations/2026_05_07_120000_move_query_audit_log_to_audit_schema.php)). |
 | `partman` | [10-phase0-extensions-and-schemas.sql:58](../../../docker/postgresql/init/10-phase0-extensions-and-schemas.sql) | `pg_partman` extension's own catalog. |
@@ -91,10 +89,10 @@ Key columns:
 - `fusion_method` — CHECK in `rrf|dbsf` (line 117).
 - `workspace_data_version_at_query` — captured at query time so the answer
   can be replayed against the workspace’s frozen state.
-- `backend_used` — CHECK in `vllm|ollama|anthropic` (line 120).
+- `backend_used` — CHECK in `vllm|anthropic|azure|unknown` ([2026_08_14_010000](../../../database/migrations/2026_08_14_010000_extend_answer_runs_backend_check.php)). The CHECK had been frozen at the vLLM-cutover set, and rows that did not write `backend_used` at all kept the violation latent.
 - `prompt_tokens`, `completion_tokens`, `total_tokens`.
 - `citation_lifecycle_state` (line 123).
-- `trace_id`, `root_span_id` — for joins with Tempo.
+- `trace_id`, `root_span_id` — the W3C trace id, indexed. Tempo is gone; the join is now against `ContainerAppConsoleLogs_CL` in Log Analytics and against `silver.query_traces` ([Ch 12 §3](12-observability.md)).
 
 Indexes: `(workspace_id)`, `(project_id)`, `(created_at DESC)`,
 partial `(trace_id) WHERE trace_id IS NOT NULL`, `(query_class)`.
@@ -306,12 +304,12 @@ Distinct from `bronze.ingest_manifest` — used by the May 25 ingest UI track.
 
 | Table | Defined in | Refreshed by |
 |---|---|---|
-| `gold.assay_composites` | (legacy SQL bootstrap) | `dagster_gold_assay_composites` asset |
-| `gold.h3_density_mineral` | [phase0/104-section6-h3-density-table.sql:23](../../../database/raw/phase0/104-section6-h3-density-table.sql) | Dagster `gold_h3_density` |
+| `gold.assay_composites` | (legacy SQL bootstrap) | `promote_silver_to_gold` |
+| `gold.h3_density_mineral` | [phase0/104-section6-h3-density-table.sql:23](../../../database/raw/phase0/104-section6-h3-density-table.sql) | **no writer** — `gold_h3_density` was a Dagster asset and `promote_silver_to_gold` does not replace it |
 | `gold.cross_section_panels` | [2026_05_13_080001](../../../database/migrations/2026_05_13_080001_create_gold_cross_section_panels.php) (sole DDL source; conflicting per-interval raw SQL archived 2026-07-02 to [\_archive/phase5-20-cross-section-panels.sql](../../../database/raw/_archive/phase5-20-cross-section-panels.sql)) | `gold_cross_section_panels` |
 | `gold.drillhole_intervals_visual` | [2026_05_13_080000](../../../database/migrations/2026_05_13_080000_create_gold_drillhole_intervals_visual.php) (sole DDL source; conflicting Phase-H3 raw SQL with a different shape archived 2026-07-03 to [\_archive/phase5-10-drillhole-intervals-visual.sql](../../../database/raw/_archive/phase5-10-drillhole-intervals-visual.sql)) | `gold_drillhole_intervals_visual` |
 | `gold.structure_measurements_visual` | [2026_05_13_080002](../../../database/migrations/2026_05_13_080002_create_gold_structure_measurements_visual.php) (sole DDL source; conflicting Phase-H4 raw SQL — different shape, also created a phantom `silver.structure_measurements` — archived 2026-07-03 to [\_archive/phase5-30-structure-measurements-visual.sql](../../../database/raw/_archive/phase5-30-structure-measurements-visual.sql)) | `gold_structure_measurements_visual` |
-| `gold.mv_refresh_log` | [2026_05_25_020546_create_gold_mv_refresh_log.php:28](../../../database/migrations/2026_05_25_020546_create_gold_mv_refresh_log.php) | Written by every Dagster MV refresh |
+| `gold.mv_refresh_log` | [2026_05_25_020546_create_gold_mv_refresh_log.php:28](../../../database/migrations/2026_05_25_020546_create_gold_mv_refresh_log.php) | Written by `mv_refresh_silver`; feeds the `georag_mv_refresh_lag_seconds` gauge nothing scrapes |
 
 ---
 
@@ -370,7 +368,7 @@ Every secret rotation / integration-credential change writes a row.
 
 Polled by the `outbox_dispatcher` Hatchet workflow
 ([app/hatchet_workflows/outbox_dispatcher.py](../../../src/fastapi/app/hatchet_workflows/outbox_dispatcher.py))
-using `FOR UPDATE SKIP LOCKED`. One row per (silver write → Qdrant/Neo4j/SeaweedFS
+using `FOR UPDATE SKIP LOCKED`. One row per (silver write → Qdrant/object-storage
 target) pair. Dead-letters after 3 transient failures.
 
 ### outbox.propagation_attempts
@@ -417,7 +415,7 @@ Created by [2026_04_14_*](../../../database/migrations/) batch. Holds:
   views (consumed by Martin).
 - `pg_jurisdictions` — drives MVT `etag_hash` freshness contract.
 
-Loaded by the Kestra flow [kestra/flows/georag/public_geoscience_pull.yaml](../../../kestra/flows/georag/public_geoscience_pull.yaml)
+Loaded by the `public_geoscience_pull` Hatchet workflow (the Kestra flow that used to drive it was deleted with Kestra on 2026-07-28)
 which calls FastAPI endpoints which call the Hatchet `public_geoscience_pull`
 workflow.
 
@@ -462,7 +460,7 @@ BEFORE INSERT on `bronze.provenance`. Function
 - `EXCEPTION WHEN OTHERS RETURN NEW` (line 104) — a missing/changed target
   PK can never block a provenance INSERT.
 
-Covers all 10+ existing provenance writers (6 Dagster assets + 4 FastAPI
+Covered 10+ provenance writers when written (6 Dagster assets + 4 FastAPI
 services) with **zero code changes**.
 
 ### Monotonic data_version triggers

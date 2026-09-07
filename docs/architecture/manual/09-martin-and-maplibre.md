@@ -1,13 +1,8 @@
 # Chapter 09 — Martin and MapLibre
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07**: the Prometheus scrape and alert-rule
+> references are gone. Martin's tile sources and the MapLibre client
+> description were current.
 
 The map you see in the browser is rendered by MapLibre GL JS pulling
 Mapbox Vector Tiles (MVT) from Martin, which generates them on demand by
@@ -30,9 +25,11 @@ calling Postgres functions or wrapping `ST_AsMVT()` around table queries.
 ### Health and metrics
 
 - Healthcheck: `wget /health` ([docker-compose.yml:824-828](../../../docker-compose.yml)).
-- Metrics: `/metrics` (native since Martin 1.7) — scraped by Prometheus.
-  Backs the 4 alert rules in
-  [docker/prometheus/rules/martin-alerts.yml](../../../docker/prometheus/rules/martin-alerts.yml).
+- Metrics: `/metrics` (native since Martin 1.7) — **nothing scrapes it**. Prometheus was removed 2026-07-28 ([Ch 12 §2](12-observability.md)).
+  The four `martin-alerts.yml` rules it used to back went with the
+  `docker/prometheus/` directory. No Azure Monitor rule replaced them, so
+  a tile-server regression surfaces only as the client-side
+  `tileFailureWatchdog` in the browser ([Ch 10 §10](10-frontend.md)).
 - Catalog: `GET /catalog` lists every source.
 
 ## 2. Source taxonomy
@@ -133,7 +130,7 @@ Forwards to Martin and enforces:
 - Authorisation per layer (some are Tier 3-gated).
 - Caching headers.
 
-Controller: [app/Http/Controllers/Tiles/](../../../app/Http/Controllers/Tiles/).
+Controller: [app/Http/Controllers/Tiles/](../../../app/Http/Controllers/PublicGeoscience/).
 Used by every page that talks to `public_geo.*` layers.
 
 For `silver.pg_*_by_project` (workspace-scoped) functions, the URL pattern
@@ -145,18 +142,18 @@ etc. for tools like `significant_intersections_by_project`).
 
 Library: `maplibre-gl` 5.x (peer of `react-map-gl` is **not** in play here —
 this stack uses MapLibre directly). All map components live under
-[resources/js/Components/Map/](../../../resources/js/Components/Map/).
+[resources/js/Components/Map/](../../../resources/js/Components/MapView.tsx).
 
 ### Pages that mount a map
 
 | Page | File | Layers |
 |---|---|---|
-| Lakehouse map | [resources/js/Pages/Lakehouse.tsx](../../../resources/js/Pages/Lakehouse.tsx) | All silver function sources + public_geo overlays |
-| DrillholeDetail | [resources/js/Pages/DrillholeDetail.tsx](../../../resources/js/Pages/DrillholeDetail.tsx) | Collars + drill_traces, plus a focused inset on the active hole |
+| Lakehouse map | [resources/js/Pages/Lakehouse.tsx](../../../resources/js/Pages/Foundry/Workspace.tsx) | All silver function sources + public_geo overlays |
+| DrillholeDetail | [resources/js/Pages/DrillholeDetail.tsx](../../../resources/js/Pages/Foundry/DrillholeDetail.tsx) | Collars + drill_traces, plus a focused inset on the active hole |
 | Foundry Workspace (3D mode) | [resources/js/Pages/Foundry/Workspace.tsx](../../../resources/js/Pages/Foundry/Workspace.tsx) | 9 sub-views (3D expansion landed 2026-05-25) |
-| PublicGeo overlay | [resources/js/Pages/PublicGeoscience/PublicGeoOverlay.tsx](../../../resources/js/Pages/PublicGeoscience/PublicGeoOverlay.tsx) | All public_geo layers |
-| SavedMapViews | [resources/js/Pages/SavedMapViews.tsx](../../../resources/js/Pages/SavedMapViews.tsx) | Persisted view state from `silver.saved_map_views` |
-| Targets / TargetRecommendation | [resources/js/Pages/Foundry/Targets.tsx](../../../resources/js/Pages/Foundry/Targets.tsx) + [Dashboards/TargetRecommendation.tsx](../../../resources/js/Pages/Dashboards/TargetRecommendation.tsx) | Target scores ⋈ collars; significant intersections layer |
+| PublicGeo overlay | [resources/js/Pages/PublicGeoscience/PublicGeoOverlay.tsx](../../../resources/js/Pages/Foundry/PublicGeoscience.tsx) | All public_geo layers |
+| SavedMapViews | [resources/js/Pages/SavedMapViews.tsx](../../../resources/js/Pages/Foundry/Workspace.tsx) | Persisted view state from `silver.saved_map_views` |
+| Targets / TargetRecommendation | [resources/js/Pages/Foundry/Targets.tsx](../../../resources/js/Pages/Foundry/Workspace.tsx) + [Dashboards/TargetRecommendation.tsx](../../../resources/js/Pages/Foundry/Workspace.tsx) | Target scores ⋈ collars; significant intersections layer |
 
 ### Layer composition
 

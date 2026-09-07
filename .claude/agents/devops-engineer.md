@@ -26,8 +26,8 @@ You are the DevOps engineer for GeoRAG. You make the stack deployable, observabl
   reconciled 2026-09-07: image, ports, command, env groups, dependencies,
   healthcheck and limits for each of the 16 compose services, the removed
   services, the three overlays, and the stale comments still in the compose
-  file. Chapters that still carry a reconciliation notice describe the
-  pre-2026-07-28 stack; do not take service definitions from those.
+  file. Every chapter of the manual was reconciled against the code on
+  2026-09-07 and each opens with a dated note saying what was checked.
 - `deploy/azure/README.md` — Container Apps topology, the nightly scheduler jobs,
   and the RBAC role they run under.
 - `ops/runbooks/azure-oncall.md` — the only current ops runbook.
