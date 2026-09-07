@@ -223,12 +223,12 @@ this is the index.
 |---|---|
 | 00 Overview | **Reconciled** (this file). |
 | 01 Services catalog | **Reconciled 2026-09-07** against the 16 compose services, with the removed-service table, the three overlays, and the stale compose comments listed for the next tidy. |
-| 02 Data stores | Pre-July: §2 describes Neo4j as live; SeaweedFS/Qdrant/Martin versions and the backup matrix are stale. Next to be rewritten. |
+| 02 Data stores | **Reconciled 2026-09-07**: dev and Azure side by side for Postgres, Qdrant, Redis, object storage, Martin and Hatchet state; roles, namespaces and the as-built backup posture. |
 | 03 Schemas | Mostly current; a handful of Neo4j/graph mentions. |
 | 04 Ingestion flow | Current for the Hatchet path; drop the Dagster/graph steps when read. |
 | 05 PDF stack | Current through ADR-0019 (2026-09-02); vLLM/Qwen-VL page verbalisation references are stale. |
 | 06 Retrieval + agents | §10 reconciled 2026-09-07; §11 still names Neo4j. |
-| 07 Orchestration | Pre-July: describes four orchestrators (Horizon, Hatchet, Dagster, Kestra). Only the first two exist. Rewrite pending. |
+| 07 Orchestration | Pre-July: describes four orchestrators (Horizon, Hatchet, Dagster, Kestra). Only the first two exist. Next to be rewritten. |
 | 08 LLM + ML | Foundry cutover recorded; some vLLM-era detail remains. |
 | 09–11, 13, 15–17b | Light staleness (an odd Neo4j or Dagster mention); read with Ch 14 alongside. |
 | 12 Observability | Pre-July: describes Prometheus/Grafana/Loki/Tempo, none of which exist. Production observability is Azure Monitor + Log Analytics + Laravel Pulse (local only). Rewrite pending. |
