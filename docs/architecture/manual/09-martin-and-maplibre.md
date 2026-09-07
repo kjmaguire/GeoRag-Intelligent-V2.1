@@ -1,5 +1,14 @@
 # Chapter 09 — Martin and MapLibre
 
+> **Reconciliation notice (2026-09-07).** This chapter was written against the
+> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
+> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
+> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
+> 2026-08-23 — treat any mention of them here as history. See
+> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
+> current and [Ch 14](14-status-matrix.md) for component status. File paths
+> and line numbers may be stale.
+
 The map you see in the browser is rendered by MapLibre GL JS pulling
 Mapbox Vector Tiles (MVT) from Martin, which generates them on demand by
 calling Postgres functions or wrapping `ST_AsMVT()` around table queries.
