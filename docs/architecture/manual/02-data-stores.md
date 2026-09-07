@@ -220,7 +220,7 @@ nothing in the live tree creates it; the boost is therefore held inert and
 
 | Direction | Code | Notes |
 |---|---|---|
-| Write | `passage_embedder` via the `embed_pending_passages` workflow — dispatched by `ingest_pdf` after persist, or by an operator; the workflow deliberately has no cron (its docstring says why) | Dense from the configured backend, sparse from the `sparse` sidecar or in-process SPLADE, then `silver.document_passages.embedding_id` is back-filled |
+| Write | `passage_embedder` via the `embed_pending_passages` workflow — crons `45 5 * * *` and `*/10 * * * *`, plus a dispatch from `ingest_pdf` after persist (the module docstring still says the cron was omitted; the decorator is the truth) | Dense from the configured backend, sparse from the `sparse` sidecar or in-process SPLADE, then `silver.document_passages.embedding_id` is back-filled |
 | Write | `nl_summaries` workflow | One synthetic passage per structured row (ADR-0012); registered, not scheduled |
 | Read | `tools.search_documents` → `app/services/qdrant_service.hybrid_query` | `workspace_id` filter is mandatory on every query — the tenancy contract for this store ([Ch 11](11-tenancy-and-rls.md)) |
 | Audit | `qdrant_payload_audit` (hourly), `store_reconciliation_run` agent | Payload shape and cross-store counts |
