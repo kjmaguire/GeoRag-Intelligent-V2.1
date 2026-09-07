@@ -133,9 +133,17 @@ keep using SeaweedFS under ADR-0001.
 4. **The same account also hosts Qdrant's SMB file share.** Transaction
    spikes on `georagblobcc` are usually Qdrant's optimizer, not Bronze
    traffic; the alert description says so.
-5. **No per-workspace key prefix.** `services/seaweedfs_keys.py` specifies
-   one and only its own test imports it. Tenant isolation for objects rests
+5. **No per-workspace key prefix.** `services/seaweedfs_keys.py` specified
+   one and only its own test imported it. Tenant isolation for objects rests
    on `workspace_id` in `bronze.ingest_manifest` and RLS, not on key layout.
+   *Closed 2026-09-07: deleted.* Every writer lays keys out as
+   `category/project_id/...` (Laravel uploads), `export_id/...` (exports) or
+   `pending|final/<id>/page_N.png` (page images); the Ingestion Runs fallback
+   scan and the zip-archive re-upload depend on the category being the first
+   path component. Adopting the workspace prefix would have meant re-keying
+   every live object in `georagblobcc` and every manifest row, for a second
+   isolation layer the platform never used. Revisit only if one storage
+   account ever has to serve several workspaces with direct listing access.
 6. **`.env.production.example` read `STORAGE_BACKEND=s3_compatible`** until
    2026-09-06, with the Azure block marked "only fill in when switching",
    while the live apps set `azure_blob` by hand (nothing in `deploy/azure/`
@@ -179,7 +187,8 @@ keep using SeaweedFS under ADR-0001.
   the Azure block primary~~ — done 2026-09-06.
 - Decide on Blob soft-delete / versioning (or GRS) — before any customer
   data that cannot be re-uploaded lands.
-- Wire or delete `services/seaweedfs_keys.py` (open decision from #194).
+- ~~Wire or delete `services/seaweedfs_keys.py` (open decision from #194)~~
+  — deleted 2026-09-07; see limitation 5.
 - Revisit `allowSharedKeyAccess` when `azure-storage-blob` gains
   user-delegation SAS.
 - Mark ADR-0001 as compose-scoped (done in this change).
