@@ -16,6 +16,16 @@ not exist until 2026-08-21.
 | `startup-job.yaml` | `startup-scheduler-cc` | `az containerapp job update -g georag -n startup-scheduler-cc --yaml <file>` |
 | `redis.yaml` | `redis-cc` | `bash deploy/azure/containerapps/apply-redis.sh --apply` |
 | `probes.json` | five apps that had none | `bash deploy/azure/containerapps/apply-probes.sh --apply` |
+| `rotate-martin-credential.sh` | `martin-cc` + the `martin_readonly` role | `bash deploy/azure/containerapps/rotate-martin-credential.sh --apply` |
+| `rotate-app-key.sh` (+ `rotate-app-key-inside.sh`) | Laravel `APP_KEY` on every app that reads it | `bash deploy/azure/containerapps/rotate-app-key.sh --apply` — see `ops/runbooks/secret-rotation.md` § 2 |
+
+`rotate-app-key.sh` has a rehearsal harness, `tests/rotate-app-key.test.sh`,
+run by the CI `scheduler-jobs` job against a fake `az` and a fake
+`php artisan`. There is no staging environment to rehearse the rotation on
+for real, so the harness pins what the script does at every failure point
+instead: a dump failure lifts maintenance, a restore failure does not, no
+secret changes before the in-replica half reports success, one app failing
+to roll does not stop the others, and the key never reaches the terminal.
 
 `redis.yaml` is the one file here that must **not** be applied with a
 bare `az containerapp update --yaml`. It has to carry a `secrets:` block

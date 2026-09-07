@@ -547,6 +547,11 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Sweep script behaviour
         run: bash deploy/azure/containerapps/scripts/tests/run.sh
+      # APP_KEY rotation on Container Apps, rehearsed against a fake az and
+      # a fake `php artisan`. There is no staging environment to rehearse it
+      # on for real; this pins the decisions the scripts make instead.
+      - name: APP_KEY rotation rehearsal
+        run: bash deploy/azure/containerapps/tests/rotate-app-key.test.sh
       - name: Inline-args parity and cron/guard agreement
         run: python scripts/check_scheduler_job_parity.py
 
