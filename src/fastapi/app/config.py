@@ -411,13 +411,6 @@ class Settings(BaseSettings):
     ANTHROPIC_USE_PRIORITY_TIER: bool = False
 
     # LLM-based classifier fallback tier (→ A grade).
-    # Kept as a no-op setting: its only consumer, app.agent.llm_classifier,
-    # was deleted 2026-09-07 as dead code. The live keyword classifier's
-    # LLM fallback is app.agent.agentic_retrieval.intent_classifier
-    # ._llm_fallback, which calls llm_calls._call_llm directly and does not
-    # read this flag. Setting it changes nothing; removing it would break
-    # any deployment whose .env still names it.
-    LLM_CLASSIFIER_FALLBACK_ENABLED: bool = True
 
     # P1 #14 — global per-query LLM-call cap. A single user query can
     # invoke the LLM many times: classifier escalation, query rephrasing,
@@ -470,8 +463,6 @@ class Settings(BaseSettings):
     SYSTEM_PROMPT_ROUTING_ENABLED: bool = True
 
 
-    # Model identifiers used by the live classifier and pricing telemetry.
-    MODEL_TIER_FAST: str = "claude-haiku-4-5"
     # R11 — hard-fail when the orchestrator is asked to run on Anthropic but
     # the pooled AsyncAnthropic client wasn't attached at startup. Set to
     # False only during bootstrapping (tests, mid-migration deploys) when

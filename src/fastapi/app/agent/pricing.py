@@ -37,8 +37,11 @@ class Pricing:
 
 
 # 2026-04-17 published rates. Keys are the model names the orchestrator
-# uses (settings.MODEL_TIER_FAST/STANDARD/DEEP + the OpenAI-compatible
-# targets). Fallback for unknown models is STANDARD-tier Sonnet pricing.
+# uses (ANTHROPIC_MODEL and the OpenAI-compatible targets). The
+# MODEL_TIER_FAST/STANDARD/DEEP settings this comment used to name are
+# gone: only FAST was ever a Settings field, and it went on 2026-09-07 with
+# its sole reader. Fallback for unknown models is STANDARD-tier Sonnet
+# pricing.
 #
 # P1 #30 — cache_creation_per_million was NOT being billed prior to this
 # change. The orchestrator counted `cache_write` tokens but passed only
