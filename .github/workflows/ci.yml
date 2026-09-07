@@ -1047,8 +1047,10 @@ jobs:
         # routed to release-rehearsal.yml (Bucket 3, dispatch/tag-push triggered).
         # See .github/workflows/release-rehearsal.yml for the live-stack gate.
         working-directory: src/fastapi
-        # Module 10 Chunk 10.7 — `chaos` excluded from the fast PR suite;
-        # the weekly `chaos.yml` workflow runs that subset on a cron.
+        # `chaos` stays in the deselect list although no test carries the
+        # marker today: chaos.yml and its single test were deleted
+        # 2026-09-07. Keeping the term costs nothing and means a
+        # re-introduced chaos test does not silently join the PR suite.
         run: uv run pytest tests/ -v --tb=short -m "not integration and not golden and not hallucination and not live and not chaos"
 
       # Dagster test steps were removed 2026-08-11 and the src/dagster tree

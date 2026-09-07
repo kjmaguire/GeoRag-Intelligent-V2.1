@@ -2,8 +2,8 @@
 
 Today's state
 -------------
-Inline prompt strings live across `orchestrator.py`, `llm_classifier.py`,
-and other agent files. The Phase 5 Step 3 pre-commit hook
+Inline prompt strings live across `orchestrator.py` and other agent
+files. The Phase 5 Step 3 pre-commit hook
 `system-prompt-version-bump` (configured in `.pre-commit-config.yaml`)
 already watches this directory pattern:
 

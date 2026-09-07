@@ -411,11 +411,12 @@ class Settings(BaseSettings):
     ANTHROPIC_USE_PRIORITY_TIER: bool = False
 
     # LLM-based classifier fallback tier (→ A grade).
-    # When the keyword classifier hits classifier_fallback, ask a FAST-tier
-    # LLM to re-classify BEFORE the deterministic fan-out runs. Recovers
-    # queries the keyword set can't match without escalating all the way
-    # to the rephrasing retry. Off by default only if operators want to
-    # isolate pure keyword routing during an evaluation pass.
+    # Kept as a no-op setting: its only consumer, app.agent.llm_classifier,
+    # was deleted 2026-09-07 as dead code. The live keyword classifier's
+    # LLM fallback is app.agent.agentic_retrieval.intent_classifier
+    # ._llm_fallback, which calls llm_calls._call_llm directly and does not
+    # read this flag. Setting it changes nothing; removing it would break
+    # any deployment whose .env still names it.
     LLM_CLASSIFIER_FALLBACK_ENABLED: bool = True
 
     # P1 #14 — global per-query LLM-call cap. A single user query can
@@ -426,7 +427,7 @@ class Settings(BaseSettings):
     # exceeding the request deadline.
     #
     # Tuned for the deepest-but-still-reasonable path:
-    #   1 keyword classifier escalation (LLM_CLASSIFIER_FALLBACK_ENABLED)
+    #   1 keyword classifier escalation (intent_classifier._llm_fallback)
     # + 1 primary synthesis
     # + 2 typed-output validation retries (MAX_RETRIES)
     # + 1 one-shot failover
