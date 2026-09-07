@@ -13,6 +13,6 @@ See [Ch 03 §8](../manual/03-schemas.md).
 
 ## Writers
 
-- FastAPI `app/services/answer_run_store.py` writes `usage.usage_events` for every chat turn.
+- FastAPI writes `usage.usage_events` for every chat turn from `persist_node` in `app/agent/agentic_retrieval/nodes.py` (and from `app/agents/wrapper.py` for the tool-agent path).
 - Hatchet `cost_burn_watcher` (cron `*/15 * * * *`) re-aggregates daily rollups + alerts.
 - Laravel jobs write export events for download tracking.

@@ -384,8 +384,9 @@ def _classify_query(query: str) -> dict[str, Any]:
     column and cache-key inclusion". Both halves of that were untrue and the
     module was deleted 2026-08-28: nothing in app/ ever called
     classify_query(), and the only writer of answer_runs.query_class was
-    services/answer_run_store.py, which has no production caller either (the
-    live INSERT is inline in agent/agentic_retrieval/nodes.py). This
+    services/answer_run_store.py, which had no production caller either and
+    was deleted 2026-09-07 (the live INSERT is inline in
+    agent/agentic_retrieval/nodes.py). This
     function -- _classify_query, a different function despite the near-
     identical name -- is the only query classifier that runs.
 

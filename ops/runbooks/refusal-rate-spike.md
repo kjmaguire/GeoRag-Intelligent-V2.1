@@ -36,6 +36,14 @@ days before it** on four things:
 | --- | --- | --- |
 | refusal rate | `rejection_reason IS NOT NULL` | +15 percentage points |
 | guard-fire rate | `hallucination_guard_results` non-NULL and not `{}` | +15 pp |
+
+> **As built (2026-09-07):** nothing writes `rejection_reason` or
+> `hallucination_guard_results` — `persist_node` in
+> `agent/agentic_retrieval/nodes.py` has neither column in its INSERT — so
+> the first two signals always read 0% and can never fire. The persisted
+> refusal signal is `citation_lifecycle_state = 'rejected'`; the queries
+> below use it. Until `persist_node` writes both columns, the watch only
+> catches zero-evidence and confidence regressions.
 | zero-evidence rate | no rows in `silver.answer_retrieval_items` | +15 pp |
 | mean confidence | `confidence` | −0.15 |
 
@@ -87,7 +95,7 @@ three days:
 ```sql
 SELECT date_trunc('hour', ar.created_at)                                   AS hour,
        count(*)                                                            AS runs,
-       count(*) FILTER (WHERE ar.rejection_reason IS NOT NULL)             AS refused,
+       count(*) FILTER (WHERE ar.citation_lifecycle_state = 'rejected')    AS refused,
        count(*) FILTER (WHERE ar.hallucination_guard_results IS NOT NULL
                           AND ar.hallucination_guard_results <> '{}'::jsonb) AS guard_fired,
        count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM silver.answer_retrieval_items i
@@ -102,10 +110,14 @@ A sharp edge at one hour is a deploy, a Foundry event or the database
 coming back wrong after the maintenance window. A slow ramp over days is
 data: a new corpus, a re-embed, a collection degrading.
 
-**1b. Which reason?** `rejection_reason` is free text written by the
-pipeline (`services/citation_lifecycle.py` for guard rejections,
-`services/answer_run_store.py::insert_refusal_answer_run` for the two
-early-refusal paths). Group on its opening words:
+**1b. Which reason?** As built there is no per-row reason in SQL:
+`rejection_reason` is never written (see the note above), so this query
+returns nothing until `persist_node` starts writing the `RefusalReasonCode`
+that already rides in the SSE `refusal_payload`. For individual runs read
+the reason from the `refusal_payload` in the Trust Inspector; there is no
+aggregate view (the `georag_hallucination_guard_layer_fires_total` counter
+is declared in `metrics.py` but nothing increments it). Once the column is
+populated, group on its opening words:
 
 ```sql
 SELECT left(regexp_replace(rejection_reason, '[0-9a-f-]{36}|\d+', '#', 'g'), 70) AS reason,
@@ -140,7 +152,7 @@ flat is that project's data, not the platform:
 
 ```sql
 SELECT workspace_id, project_id, count(*) AS runs,
-       count(*) FILTER (WHERE rejection_reason IS NOT NULL) AS refused
+       count(*) FILTER (WHERE citation_lifecycle_state = 'rejected') AS refused
 FROM silver.answer_runs
 WHERE created_at >= now() - interval '1 day'
 GROUP BY 1, 2 ORDER BY refused DESC LIMIT 10;

@@ -1,23 +1,20 @@
-"""Unit tests for the Module 6 Phase B Chunk 1 citation lifecycle state machine.
+"""Unit tests for the answer-run Pydantic models in ``app/models/answer_run.py``.
 
-Tests cover:
-  - transition_lifecycle() correct state writes
-  - Expected transition sequence (draft → generated → validated → committed)
-  - Rejected path (draft → generated → rejected)
-  - Pool=None guard (no exception raised)
-  - AnswerCitationItemCreate model validators
-  - AnswerCitationSpanCreate model validators
-  - EvidenceItemCreate exactly_one_ref validator (SCHEMA-03)
-  - CitationLifecycleState / CitationMode re-export aliases
+These validators used to be covered as a side-effect of
+``tests/test_citation_lifecycle.py`` and
+``tests/test_answer_run_confidence_latency.py``, both deleted 2026-09-07
+together with the unwired ``services/citation_lifecycle.py`` and
+``services/answer_run_store.py`` modules they exercised. The live writer of
+``silver.answer_runs`` is the inline SQL in
+``agent/agentic_retrieval/nodes.py::persist_node``; the models are still
+what that node builds from, so their validators keep their coverage here.
 
-These are unit tests — all DB calls use a mock pool so no live database
-is required.  Integration tests (live DB) run as part of the acceptance
-test suite in test_golden_queries.py.
+Pure model tests — no database.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+import typing
 from uuid import UUID, uuid4
 
 import pytest
@@ -25,122 +22,65 @@ import pytest
 from app.models.answer_run import (
     AnswerCitationItemCreate,
     AnswerCitationSpanCreate,
+    AnswerRunCreate,
     CitationLifecycleState,
     CitationMode,
 )
 from app.models.evidence import EvidenceItemCreate
-from app.services.citation_lifecycle import (
-    transition_lifecycle,
-    transition_to_committed,
-    transition_to_draft,
-    transition_to_generated,
-    transition_to_rejected,
-    transition_to_validated,
-)
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 _WS_ID = UUID("a0000000-0000-0000-0000-000000000001")
 _RUN_ID = uuid4()
 
 
-def _mock_pool() -> MagicMock:
-    """Return an asyncpg pool mock that accepts acquire() context managers."""
-    conn = AsyncMock()
-    conn.execute = AsyncMock(return_value=None)
-
-    pool = MagicMock()
-    pool.acquire = MagicMock()
-    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
-    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    return pool
-
-
 # ---------------------------------------------------------------------------
-# transition_lifecycle tests
+# AnswerRunCreate — confidence / latency_ms / rejection_reason
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_transition_lifecycle_happy_path() -> None:
-    """transition_lifecycle writes expected state to the DB.
+class TestAnswerRunCreateOptionalFields:
+    """confidence + latency_ms + rejection_reason validation."""
 
-    Verifies the full draft → generated → validated → committed sequence.
-    """
-    pool = _mock_pool()
-    conn = pool.acquire.return_value.__aenter__.return_value
+    def _base_kwargs(self) -> dict:
+        return {
+            "workspace_id": _WS_ID,
+            "query_text": "tell me about hole 36-1085",
+            "query_class": "factual",
+            "workspace_data_version_at_query": 1,
+        }
 
-    transitions = ["draft", "generated", "validated", "committed"]
-    for state in transitions:
-        await transition_lifecycle(pool, _RUN_ID, state)  # type: ignore[arg-type]
+    def test_fields_default_to_none(self) -> None:
+        run = AnswerRunCreate(**self._base_kwargs())
+        assert run.confidence is None
+        assert run.latency_ms is None
+        assert run.rejection_reason is None
 
-    assert conn.execute.call_count == 4, "Expected one execute() per transition"
+    def test_confidence_accepts_zero_and_one(self) -> None:
+        AnswerRunCreate(**self._base_kwargs(), confidence=0.0)
+        AnswerRunCreate(**self._base_kwargs(), confidence=1.0)
+        AnswerRunCreate(**self._base_kwargs(), confidence=0.873)
 
-    # Verify the last call wrote 'committed'
-    last_call_args = conn.execute.call_args_list[-1]
-    # args[0] is the SQL, args[1] is $1 (state), args[2] is $2 (answer_run_id)
-    assert last_call_args.args[1] == "committed"
-    assert last_call_args.args[2] == str(_RUN_ID)
+    def test_confidence_rejects_above_one(self) -> None:
+        with pytest.raises(Exception):
+            AnswerRunCreate(**self._base_kwargs(), confidence=1.001)
 
+    def test_confidence_rejects_negative(self) -> None:
+        with pytest.raises(Exception):
+            AnswerRunCreate(**self._base_kwargs(), confidence=-0.0001)
 
-@pytest.mark.asyncio
-async def test_transition_lifecycle_rejected_path() -> None:
-    """transition_lifecycle → 'rejected' writes correctly and logs reason."""
-    pool = _mock_pool()
-    conn = pool.acquire.return_value.__aenter__.return_value
+    def test_latency_ms_accepts_zero_and_positive(self) -> None:
+        AnswerRunCreate(**self._base_kwargs(), latency_ms=0)
+        AnswerRunCreate(**self._base_kwargs(), latency_ms=12345)
 
-    await transition_lifecycle(pool, _RUN_ID, "draft")
-    await transition_lifecycle(pool, _RUN_ID, "generated")
-    await transition_lifecycle(pool, _RUN_ID, "rejected", rejection_reason="L6 constraint violated")
+    def test_latency_ms_rejects_negative(self) -> None:
+        with pytest.raises(Exception):
+            AnswerRunCreate(**self._base_kwargs(), latency_ms=-1)
 
-    assert conn.execute.call_count == 3
-    last_call_args = conn.execute.call_args_list[-1]
-    assert last_call_args.args[1] == "rejected"
-
-
-@pytest.mark.asyncio
-async def test_transition_lifecycle_pool_none_does_not_raise() -> None:
-    """transition_lifecycle with pool=None is a no-op (non-fatal)."""
-    # Should not raise; returns silently.
-    await transition_lifecycle(None, _RUN_ID, "draft")  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_transition_lifecycle_db_error_does_not_raise() -> None:
-    """transition_lifecycle swallows DB errors so observability never fails a query."""
-    pool = MagicMock()
-    conn = AsyncMock()
-    conn.execute = AsyncMock(side_effect=Exception("connection reset"))
-    pool.acquire = MagicMock()
-    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
-    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    # Should not raise.
-    await transition_lifecycle(pool, _RUN_ID, "generated")
-
-
-@pytest.mark.asyncio
-async def test_convenience_wrappers_call_correct_states() -> None:
-    """Convenience wrappers pass the correct state string to transition_lifecycle."""
-    pool = _mock_pool()
-    conn = pool.acquire.return_value.__aenter__.return_value
-
-    await transition_to_draft(pool, _RUN_ID)
-    await transition_to_generated(pool, _RUN_ID)
-    await transition_to_validated(pool, _RUN_ID)
-    await transition_to_committed(pool, _RUN_ID)
-    await transition_to_rejected(pool, _RUN_ID, reason="guard failure")
-
-    states_written = [call.args[1] for call in conn.execute.call_args_list]
-    assert states_written == [
-        "draft",
-        "generated",
-        "validated",
-        "committed",
-        "rejected",
-    ]
+    def test_rejection_reason_accepts_free_text(self) -> None:
+        run = AnswerRunCreate(
+            **self._base_kwargs(),
+            rejection_reason="llm_unavailable",
+        )
+        assert run.rejection_reason == "llm_unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +124,6 @@ def test_answer_citation_item_rejects_both_null() -> None:
 
 def test_answer_citation_item_accepts_both_set() -> None:
     """AnswerCitationItemCreate accepts when both evidence_id and passage_id are set."""
-    # Both non-None is allowed (evidence_id is preferred but passage_id retained for
-    # the Chunk 2 dual-support window).
     item = AnswerCitationItemCreate(
         answer_run_id=_RUN_ID,
         workspace_id=_WS_ID,
@@ -269,15 +207,18 @@ def test_answer_citation_span_rejects_negative_start() -> None:
 
 
 def test_citation_lifecycle_state_alias_is_literal() -> None:
-    """CitationLifecycleState is a Literal type alias for the state values."""
-    import typing
+    """CitationLifecycleState is a Literal type alias for the state values.
+
+    All five values remain valid for the CHECK constraint on
+    ``silver.answer_runs.citation_lifecycle_state``; as built,
+    ``persist_node`` only ever writes ``committed`` or ``rejected``.
+    """
     args = typing.get_args(CitationLifecycleState)
     assert set(args) == {"draft", "generated", "validated", "committed", "rejected"}
 
 
 def test_citation_mode_alias_is_literal() -> None:
     """CitationMode is a Literal type alias for the mode values."""
-    import typing
     args = typing.get_args(CitationMode)
     assert set(args) == {"posthoc_span_resolution", "hybrid_delayed_attachment"}
 
@@ -303,7 +244,11 @@ def test_evidence_item_exactly_one_ref_structured() -> None:
     item = EvidenceItemCreate(
         workspace_id=_WS_ID,
         evidence_type="structured_record",
-        structured_ref={"schema": "silver", "table": "collars", "pk": {"collar_id": "abc"}},
+        structured_ref={
+            "schema": "silver",
+            "table": "collars",
+            "pk": {"collar_id": "abc"},
+        },
         source_uri="s3://bronze/collars.csv",
     )
     assert item.structured_ref is not None
