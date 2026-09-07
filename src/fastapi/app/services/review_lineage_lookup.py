@@ -137,8 +137,11 @@ async def resolve_review_lineage_for_evidence(
 ) -> dict[str, Any] | None:
     """Resolve review_lineage from a citation's evidence_id.
 
-    Called from :func:`app.services.answer_run_store.insert_citation_item`
-    at citation-creation time. Walks the chain:
+    No production caller today: the caller this was written for,
+    ``services/answer_run_store.py::insert_citation_item``, never ran and was
+    deleted 2026-09-07 (the live ``answer_citation_items`` INSERT in
+    ``agent/agentic_retrieval/nodes.py::persist_node`` does not resolve
+    review lineage). Kept as the intended lookup. Walks the chain:
 
         evidence_id
           → silver.evidence_items.structured_ref (JSONB)

@@ -225,13 +225,27 @@ function. **Pure rule-based.** Per memory
 
 ## 10. Citation lifecycle + claim ledger
 
-- `silver.citation_lifecycle_state` on `answer_runs` tracks
-  `pending|resolved|broken|refused`.
-- `services/citation_lifecycle.py` walks the answer’s `[ev:xxxxxxxx]`
-  markers, joins to `silver.answer_citation_items` and
-  `silver.answer_citation_spans`.
-- `services/claim_ledger.py` posts every numeric claim into the in-memory
-  claim ledger so Layer 3 can re-verify.
+*Corrected 2026-09-07.* This section used to describe a lifecycle walker
+and a Layer 3 claim ledger that never ran.
+
+- `silver.answer_runs.citation_lifecycle_state` is CHECK-constrained to
+  `draft | generated | validated | committed | rejected`
+  ([migration](../../../database/migrations/2026_04_21_100000_create_answer_runs.php)).
+  As built only the last two are ever persisted: `persist_node` in
+  [`agent/agentic_retrieval/nodes.py`](../../../src/fastapi/app/agent/agentic_retrieval/nodes.py)
+  writes `committed` when the response carries citations and `rejected`
+  otherwise, once, at INSERT. The first three are client-render states.
+- Answer-run persistence is inline SQL in that same node
+  (`silver.answer_runs` with three retries, `answer_retrieval_items`,
+  `answer_citation_items`, `usage.usage_events`). Nothing writes
+  `answer_citation_spans`. `services/answer_run_store.py` and
+  `services/citation_lifecycle.py` (the `transition_lifecycle()` state
+  machine) had no production caller and were deleted 2026-09-07.
+- `services/claim_ledger.py` is the only writer for `silver.claim_ledger`
+  and nothing imports it, so the table is always empty. Its three readers
+  (the Trust Inspector claim rollup in `routers/answer_runs.py`, the
+  `what_changed_detector` cron, and the report builder's claim-delta
+  section) run over an empty table. Wire-or-delete is an open decision.
 
 ## 11. Cross-store reasoning helpers
 
