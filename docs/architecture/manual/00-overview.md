@@ -228,10 +228,10 @@ this is the index.
 | 04 Ingestion flow | Current for the Hatchet path; drop the Dagster/graph steps when read. |
 | 05 PDF stack | Current through ADR-0019 (2026-09-02); vLLM/Qwen-VL page verbalisation references are stale. |
 | 06 Retrieval + agents | §10 reconciled 2026-09-07; §11 still names Neo4j. |
-| 07 Orchestration | Pre-July: describes four orchestrators (Horizon, Hatchet, Dagster, Kestra). Only the first two exist. Next to be rewritten. |
+| 07 Orchestration | **Reconciled 2026-09-07**: Horizon's three jobs, the 51-workflow Hatchet registry with every cron, the trigger paths, the Azure and GitHub schedulers, and the 2026-08-21 review findings marked open or closed. |
 | 08 LLM + ML | Foundry cutover recorded; some vLLM-era detail remains. |
 | 09–11, 13, 15–17b | Light staleness (an odd Neo4j or Dagster mention); read with Ch 14 alongside. |
-| 12 Observability | Pre-July: describes Prometheus/Grafana/Loki/Tempo, none of which exist. Production observability is Azure Monitor + Log Analytics + Laravel Pulse (local only). Rewrite pending. |
+| 12 Observability | Pre-July: describes Prometheus/Grafana/Loki/Tempo, none of which exist. Production observability is Azure Monitor + Log Analytics + Laravel Pulse (local only). Next to be rewritten. |
 | 14 Status matrix | Maintained through 2026-09-02 but still carries a Dagster-assets section. |
 | 18 Model stack evolution | Cited by ADR-0016 and ADR-0021; current to 2026-09-02. |
 
