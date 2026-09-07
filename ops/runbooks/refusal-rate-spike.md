@@ -35,15 +35,13 @@ days before it** on four things:
 | signal | column | fires when |
 | --- | --- | --- |
 | refusal rate | `rejection_reason IS NOT NULL` | +15 percentage points |
-| guard-fire rate | `hallucination_guard_results` non-NULL and not `{}` | +15 pp |
+| guard-fire rate | `hallucination_guard_results -> 'guards'` non-empty | +15 pp |
 
-> **As built (2026-09-07):** nothing writes `rejection_reason` or
-> `hallucination_guard_results` — `persist_node` in
-> `agent/agentic_retrieval/nodes.py` has neither column in its INSERT — so
-> the first two signals always read 0% and can never fire. The persisted
-> refusal signal is `citation_lifecycle_state = 'rejected'`; the queries
-> below use it. Until `persist_node` writes both columns, the watch only
-> catches zero-evidence and confidence regressions.
+> **As built:** `persist_node` in `agent/agentic_retrieval/nodes.py`
+> writes both columns since 2026-09-07. Before that date nothing wrote
+> them, so rows older than that read as accepted with no guard results,
+> and the first two signals could never fire. Do not compare a window
+> that straddles 2026-09-07 against one that does not.
 | zero-evidence rate | no rows in `silver.answer_retrieval_items` | +15 pp |
 | mean confidence | `confidence` | −0.15 |
 
@@ -110,14 +108,14 @@ A sharp edge at one hour is a deploy, a Foundry event or the database
 coming back wrong after the maintenance window. A slow ramp over days is
 data: a new corpus, a re-embed, a collection degrading.
 
-**1b. Which reason?** As built there is no per-row reason in SQL:
-`rejection_reason` is never written (see the note above), so this query
-returns nothing until `persist_node` starts writing the `RefusalReasonCode`
-that already rides in the SSE `refusal_payload`. For individual runs read
-the reason from the `refusal_payload` in the Trust Inspector; there is no
-aggregate view (the `georag_hallucination_guard_layer_fires_total` counter
-is declared in `metrics.py` but nothing increments it). Once the column is
-populated, group on its opening words:
+**1b. Which reason?** `rejection_reason` is written once at INSERT by
+`persist_node`. Its first token is the code to group on: the terminal
+repair strategy's `reason_code` (`MISSING_ASSAY_UNITS`,
+`AMBIGUOUS_HOLE_ID`, …) when one was stamped on the `refusal_payload`,
+otherwise `insufficient_evidence` for a run with no real citation; the
+other guard codes follow in parentheses, e.g.
+`insufficient_evidence (guards: NO_EVIDENCE_FOUND, CITATION_INCOMPLETE)`.
+Group on the opening word:
 
 ```sql
 SELECT left(regexp_replace(rejection_reason, '[0-9a-f-]{36}|\d+', '#', 'g'), 70) AS reason,

@@ -107,8 +107,11 @@ labelled AS (
             ELSE 'baseline'
         END AS window,
         rejection_reason IS NOT NULL                         AS refused,
-        (hallucination_guard_results IS NOT NULL
-         AND hallucination_guard_results <> '{}'::jsonb)     AS guard_fired,
+        -- persist_node writes the migration 2026_05_20_020000 envelope
+        -- {schema_version, guards, captured_at}; a run fired a guard when
+        -- its `guards` object is non-empty. NULL = chain did not run.
+        (hallucination_guard_results -> 'guards' IS NOT NULL
+         AND hallucination_guard_results -> 'guards' <> '{}'::jsonb) AS guard_fired,
         confidence,
         latency_ms,
         evidence_count = 0                                   AS no_evidence
