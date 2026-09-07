@@ -1,127 +1,83 @@
 # Chapter 10 — Frontend
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** against `resources/js/`, `package.json`,
+> `routes/web.php`, `routes/channels.php` and `app/Events/`. The previous
+> version catalogued roughly eighty pages including a 41-page admin console,
+> six dashboards, a Neo4j Source Graph and React Flow. **Sixteen pages
+> exist.** `resources/js/Pages/Admin/`, `Pages/Dashboards/`,
+> `Pages/Onboarding/` and `Pages/PublicGeoscience/` are not directories in
+> this repository, and `reactflow` is not a dependency. What follows is read
+> from the tree.
 
-React 19 + Inertia.js v3 + Tailwind v4 + shadcn/ui + MapLibre GL + React
-Flow + Plotly. Streams via Laravel Reverb (Pusher protocol). Vite for
-bundling.
+React 19 + Inertia.js v3 + Tailwind v4 + shadcn-style primitives (Radix) +
+MapLibre GL + Plotly, streaming over Laravel Reverb (Pusher protocol),
+bundled by Vite. React Flow (`@xyflow/react`) was removed on 2026-08-28 with
+the graph view; no graph rendering library is installed.
 
 ## 1. Repo layout
 
+79 `.tsx` files in total.
+
 | Path | What lives there |
 |---|---|
-| [resources/js/Pages/](../../../resources/js/Pages/) | Top-level Inertia pages, one component per route |
-| [resources/js/Components/](../../../resources/js/Components/) | Shared UI (cards, panels, charts) |
-| [resources/js/Components/Map/](../../../resources/js/Components/Map/) | MapLibre wrappers + layer helpers |
-| [resources/js/Hooks/](../../../resources/js/Hooks/) | Custom React hooks (e.g., useWorkspaceData, useReverbChannel) |
-| [resources/js/Lib/](../../../resources/js/Lib/) | Utilities (date formatters, citation parser, etc.) |
-| [resources/js/Pages/Foundry/](../../../resources/js/Pages/Foundry/) | The "Foundry" product surface — workspace 3D, targets, hypothesis |
-| [resources/js/Pages/Dashboards/](../../../resources/js/Pages/Dashboards/) | Pre-built dashboards (EvidenceQuality, LlmCost, PublicGeoOverlay, Reporting, TargetRecommendation, VisualReadiness) |
-| [resources/js/Pages/PublicGeoscience/](../../../resources/js/Pages/PublicGeoscience/) | Public geoscience browsing (Index, Workspace, Overlay) |
-| [resources/js/Pages/Onboarding/](../../../resources/js/Pages/Onboarding/) | First-run onboarding |
-| [resources/js/Pages/Admin/](../../../resources/js/Pages/Admin/) | Admin integrations (Hatchet, Kestra, Pulse, Horizon) |
+| [`resources/js/Pages/`](../../../resources/js/Pages/) | `Login`, `ForgotPassword`, `ResetPassword`, `Error` |
+| [`resources/js/Pages/Foundry/`](../../../resources/js/Pages/Foundry/) | the twelve product pages listed in §2 |
+| [`resources/js/Components/`](../../../resources/js/Components/) | shared cards, charts and map wrappers |
+| [`resources/js/Components/Foundry/`](../../../resources/js/Components/Foundry/) | workspace-mode views (3D, section, structure), command palette, toasts |
+| [`resources/js/Components/Analytics/`](../../../resources/js/Components/Analytics/), `HoleAnalysis/`, `PublicGeoscience/` | feature component groups |
+| [`resources/js/Components/ui/`](../../../resources/js/Components/ui/) | the shadcn-style primitive set |
+| [`resources/js/Hooks/`](../../../resources/js/Hooks/) | five hooks: `useEvidenceMapPin`, `useFullscreenToggle`, `useTileInvalidation`, `useWorkspaceActivity`, `useWorkspaceDataUpdated` |
+| [`resources/js/lib/`](../../../resources/js/lib/) | map, tile, citation, upload and formatting helpers — including `echoChannel.ts`, `mvtLayers.ts`, `tileFailureWatchdog.ts` |
+| [`resources/js/Layouts/`](../../../resources/js/Layouts/), `Types/`, `test/` | shell layout, shared TS types, Vitest setup |
 
-## 2. Pages by feature
+There is **no** `Pages/Admin/`, `Pages/Dashboards/`, `Pages/Onboarding/`,
+`Pages/PublicGeoscience/`, `Components/Map/`, `Components/Charts/`,
+`Components/Citation/`, `Hooks/useWorkspaceData` or `Lib/echo.ts`. Earlier
+versions of this chapter linked all of them.
 
-| Page | File | Notes |
+## 2. Pages
+
+Every name below is reachable: `Inertia::render` is called with exactly
+these sixteen strings and no others.
+
+| Page | File | What it renders |
 |---|---|---|
-| Login | [Login.tsx](../../../resources/js/Pages/Login.tsx) | Sanctum SPA login |
-| Forgot Password | [ForgotPassword.tsx](../../../resources/js/Pages/ForgotPassword.tsx) | |
-| Projects (list) | [Foundry/Projects.tsx](../../../resources/js/Pages/Foundry/Projects.tsx) | Per-workspace project list |
-| New Project | [Foundry/NewProject.tsx](../../../resources/js/Pages/Foundry/NewProject.tsx) | Project creation form |
-| Project Overview | [Foundry/Overview.tsx](../../../resources/js/Pages/Foundry/Overview.tsx) | Project home dashboard, includes "Ingest" card derived from silver.reports + bronze MinIO listing |
-| Lakehouse | [Foundry/Lakehouse.tsx](../../../resources/js/Pages/Foundry/Lakehouse.tsx) | Map + table cross-filter view (per-table scope pills from RLS work) |
-| Drill Review | [Foundry/DrillReview.tsx](../../../resources/js/Pages/Foundry/DrillReview.tsx) | Drill-data upload review queue (`silver.review_queue`) |
-| Drillhole Detail | [Foundry/DrillholeDetail.tsx](../../../resources/js/Pages/Foundry/DrillholeDetail.tsx) | Per-hole strip log + inset map |
-| Hole Compare | [Foundry/HoleCompare.tsx](../../../resources/js/Pages/Foundry/HoleCompare.tsx) | Side-by-side hole comparison |
-| Ingest Quality | [Foundry/IngestQuality.tsx](../../../resources/js/Pages/Foundry/IngestQuality.tsx) | Aggregated per-document parser/OCR quality |
-| Ingestion Runs | [Foundry/IngestionRuns.tsx](../../../resources/js/Pages/Foundry/IngestionRuns.tsx) | Per-project run list (Phase A landed; Phase B uses silver.ingest_progress) |
-| Chat | [Foundry/Chat.tsx](../../../resources/js/Pages/Foundry/Chat.tsx) (and [PublicGeoscience/Chat.tsx](../../../resources/js/Pages/PublicGeoscience/Chat.tsx)) | The main RAG chat surface. Renders OIUR cards + inline ADR-0007 chat cards |
-| Investigations | [Foundry/Investigations.tsx](../../../resources/js/Pages/Foundry/Investigations.tsx) | Saved investigations (multi-turn lineage) |
-| Hypothesis | [Foundry/Hypothesis.tsx](../../../resources/js/Pages/Foundry/Hypothesis.tsx) | Hypothesis tracker (`silver.hypotheses`) |
-| Decisions | [Foundry/Decisions.tsx](../../../resources/js/Pages/Foundry/Decisions.tsx) | Decision intelligence schema |
-| Rationale | [Foundry/Rationale.tsx](../../../resources/js/Pages/Foundry/Rationale.tsx) | Target rationales |
-| Reasoning | [Foundry/Reasoning.tsx](../../../resources/js/Pages/Foundry/Reasoning.tsx) | Step-by-step reasoning trace |
-| Targets | [Foundry/Targets.tsx](../../../resources/js/Pages/Foundry/Targets.tsx) | Generated drill targets + ranking |
-| Source Graph | [Foundry/SourceGraph.tsx](../../../resources/js/Pages/Foundry/SourceGraph.tsx) | Neo4j-backed entity-relationship explorer (React Flow) |
-| Sources / Corpus | [Foundry/Sources.tsx](../../../resources/js/Pages/Foundry/Sources.tsx), [Foundry/Corpus.tsx](../../../resources/js/Pages/Foundry/Corpus.tsx) | Corpus inventory |
-| Audit Log | [Foundry/AuditLog.tsx](../../../resources/js/Pages/Foundry/AuditLog.tsx) | `audit.audit_ledger` filtered by workspace |
-| Workspace | [Foundry/Workspace.tsx](../../../resources/js/Pages/Foundry/Workspace.tsx) | 3D workspace view; 9 sub-views as of 2026-05-25 |
-| Portfolio | [Foundry/Portfolio.tsx](../../../resources/js/Pages/Foundry/Portfolio.tsx) | Cross-project portfolio rollup |
-| Project Analytics | [Foundry/ProjectAnalytics.tsx](../../../resources/js/Pages/Foundry/ProjectAnalytics.tsx) | Plotly charts over silver/gold |
-| Retrieval Inspector | [Foundry/RetrievalInspector.tsx](../../../resources/js/Pages/Foundry/RetrievalInspector.tsx) | Debug view: per-query retrieval/fusion/rerank traces |
-| Reporting / Report Builder / Report View | [Reporting.tsx](../../../resources/js/Pages/Dashboards/Reporting.tsx), [Foundry/Report.tsx](../../../resources/js/Pages/Foundry/Report.tsx), [Foundry/ReportView.tsx](../../../resources/js/Pages/Foundry/ReportView.tsx) | NI 43-101-style report assembly + view |
-| Saved Map Views | [Foundry/SavedMapViews.tsx](../../../resources/js/Pages/Foundry/SavedMapViews.tsx) | Persisted MapLibre view state |
-| Support Cockpit | [Foundry/SupportCockpit.tsx](../../../resources/js/Pages/Foundry/SupportCockpit.tsx) | Trace + audit + Langfuse deep-link operator UI |
-| Settings | [Foundry/Settings.tsx](../../../resources/js/Pages/Foundry/Settings.tsx) | Workspace settings, integration keys |
-| Tier 3 Unlock | [Foundry/Tier3Unlock.tsx](../../../resources/js/Pages/Foundry/Tier3Unlock.tsx) | Cost-gated feature unlock flow |
-| What Changed Feed | [Foundry/WhatChangedFeed.tsx](../../../resources/js/Pages/Foundry/WhatChangedFeed.tsx) | Workspace activity feed |
-| Inbox | [Foundry/Inbox.tsx](../../../resources/js/Pages/Foundry/Inbox.tsx) | User notifications |
-| Assessment Summary | [Foundry/AssessmentSummary.tsx](../../../resources/js/Pages/Foundry/AssessmentSummary.tsx) | NI 43-101 assessment summarisation |
-| Charts Gallery | [ChartsGallery.tsx](../../../resources/js/Pages/ChartsGallery.tsx) | Plotly chart catalog |
-| Interpretation Workspace | [InterpretationWorkspace.tsx](../../../resources/js/Pages/InterpretationWorkspace.tsx) | Geologist annotation surface (`interpretation.*` schema) |
-| Search Query | [SearchQuery.tsx](../../../resources/js/Pages/SearchQuery.tsx) | Faceted search |
-| Explorer | [Explorer.tsx](../../../resources/js/Pages/Explorer.tsx) + [Foundry/Explorer.tsx](../../../resources/js/Pages/Foundry/Explorer.tsx) | Generic data explorer |
-| Data Import Wizard | [Foundry/DataImportWizard.tsx](../../../resources/js/Pages/Foundry/DataImportWizard.tsx) | Step-by-step ingest UI |
+| Login | `Pages/Login.tsx` | Sanctum SPA login |
+| ForgotPassword / ResetPassword | `Pages/ForgotPassword.tsx`, `ResetPassword.tsx` | password reset flow |
+| Error | `Pages/Error.tsx` | Inertia v3 error page (not a route) |
+| Projects | `Foundry/Projects.tsx` | per-workspace project list |
+| NewProject | `Foundry/NewProject.tsx` | project creation form |
+| Overview | `Foundry/Overview.tsx` | project home, including the ingest card |
+| Workspace | `Foundry/Workspace.tsx` | the main surface — map plus the mode bar (`WorkspaceModeBar`) that switches between SECTION, 3D, STRUCTURE, LOGS and COMPARE views, each its own component under `Components/Foundry/` |
+| DrillholeDetail | `Foundry/DrillholeDetail.tsx` | per-hole strip log and inset map |
+| Chat | `Foundry/Chat.tsx` | the RAG chat surface |
+| Sources | `Foundry/Sources.tsx` | corpus inventory |
+| Reports | `Foundry/Reports.tsx` | report list and document body view |
+| IngestionRuns | `Foundry/IngestionRuns.tsx` | per-project run list over `silver.ingest_progress` |
+| DataImportWizard | `Foundry/DataImportWizard.tsx` | step-by-step upload |
+| AttributeTables | `Foundry/AttributeTables.tsx` | tabular view of silver data |
+| PublicGeoscience | `Foundry/PublicGeoscience.tsx` | public geoscience overlay browsing |
+| RasterLayers | `Foundry/RasterLayers.tsx` | raster layer management |
 
-### Dashboards
-
-| Dashboard | File |
-|---|---|
-| Evidence Quality | [Dashboards/EvidenceQuality.tsx](../../../resources/js/Pages/Dashboards/EvidenceQuality.tsx) |
-| LLM Cost | [Dashboards/LlmCost.tsx](../../../resources/js/Pages/Dashboards/LlmCost.tsx) |
-| Public Geo Overlay | [Dashboards/PublicGeoOverlay.tsx](../../../resources/js/Pages/Dashboards/PublicGeoOverlay.tsx) |
-| Reporting | [Dashboards/Reporting.tsx](../../../resources/js/Pages/Dashboards/Reporting.tsx) |
-| Target Recommendation | [Dashboards/TargetRecommendation.tsx](../../../resources/js/Pages/Dashboards/TargetRecommendation.tsx) |
-| Visual Readiness | [Dashboards/VisualReadiness.tsx](../../../resources/js/Pages/Dashboards/VisualReadiness.tsx) |
-
-### 2a. Admin / operator surface (`resources/js/Pages/Admin/` — 41 pages)
-
-The operator console — the entire `/admin/*` route family. This is where
-the master-plan §7/§8/§10/§12 deliverables surface for operators. It was
-under-documented before this pass; full catalog:
-
-| Group | Pages | Backs |
-|---|---|---|
-| **Agent config** | `AgentConfig/Pins`, `AgentConfig/Prompts`, `AgentConfig/Timeouts`, `AgentConfig/Workspaces` | `workspace.prompt_versions`, `workspace.agent_timeouts`, prompt registry (Appendix N §5) |
-| **Eval harness (§10)** | `EvalDashboard`, `EvalCompare`, `EvalQuestions`, `EvalQuestionEditor` | `eval.golden_questions`, `eval.eval_runs` — golden-query authoring + regression view |
-| **ML training (§12)** | `MlTrainingRuns`, `SourceTrust` | `train_target_model` / `train_source_trust` workflows ([Appendix M §10](../appendix/M-agents-and-ml-catalog.md)) |
-| **Targeting (§8)** | `TargetRecommendationCockpit`, `TargetRecommendationRuns`, `Recommendations` | TRG LangGraph ([Appendix N §1.2](../appendix/N-agentic-and-retrieval-catalog.md)) |
-| **Shadow / repair (ADR-0009)** | `ShadowRuns/Index`, `ShadowRuns/Show` | `gold.repair_shadow_daily`, `silver.shadow_runs` |
-| **Orchestration ops** | `HatchetWorkers`, `WorkflowRuns`, `Integrations` (Kestra) | `pgsql_hatchet` / `pgsql_kestra` read views ([Ch 07](07-orchestration.md)) |
-| **Support (§10-B)** | `SupportCockpit`, `AlertsInbox`, `Conflicts` | `ops.*` tables, Phase 10 agents |
-| **Audit / observability** | `AuditExplorer`, `AuditFindings`, `CacheTelemetry`, `LoadTest`, `Dashboards` | `audit.audit_ledger`, Pulse, k6 |
-| **Backups / DR (§11)** | `BackupsDashboard` | backup-agent + `restore_workspace` |
-| **Ingest ops** | `IngestionReview`, `ClusterIngest` | `silver.review_queue`, cluster ingest |
-| **Reporting (§7)** | `ReportBuild`, `ReportBuilder`, `ExportGate` | Phase 7 report agents |
-| **Decisions / hypothesis (§9)** | `DecisionHistory`, `DecisionNew`, `HypothesisWorkspace`, `WhatChanged` | decision-intelligence + `what_changed_*` workflows |
-| **Workspace admin** | `WorkspaceMembers`, `WorkspaceSettings`, `QpCredentials`, `PhaseH4Health`, `SavedMaps` | `workspace.memberships`, `silver.qp_credentials` |
-
-All gated by the Laravel admin `Gate::define` checks; routed under
-`routes/web.php` `/admin/*`.
+**Design-only.** The feedback UI, follow-up chips, evidence inspector,
+conflict and freshness UX, refusal panels, Lakehouse, row-level drill
+review, the targeting and hypothesis surfaces, the audit log, the support
+cockpit and every admin console page are described elsewhere in this
+manual and in `georag-architecture.html` but have no page here. Treat
+them as target state.
 
 ## 3. Reverb broadcast channels
 
 Authentication for private channels goes through `routes/channels.php`
-(Sanctum-authed). Echo client: [resources/js/Lib/echo.ts](../../../resources/js/Lib/echo.ts).
+(Sanctum-authed). Echo client: [`resources/js/lib/echoChannel.ts`](../../../resources/js/lib/echoChannel.ts).
 
 | Channel | Event | Producer | Consumer (page) |
 |---|---|---|---|
-| `query.streaming.{run_id}` | `QueryToken` | FastAPI → Laravel `BroadcastQueryToken` event | Chat (assistant message stream) |
-| `query.streaming.{run_id}` | `QueryCitation` | FastAPI → Laravel | Chat (inline citation pill insertion) |
-| `query.streaming.{run_id}` | `QueryComplete` | FastAPI → Laravel | Chat (mark turn done) |
-| `ingestion-progress.{workspace_id}` | `IngestProgress` | Hatchet workers / Dagster commit → Laravel | IngestionRuns, DrillReview |
-| `workspace-data-updated.{workspace_id}` | `WorkspaceDataUpdated` | Hatchet `score_targets`, Dagster `commit_ingestion_run`, Laravel mutation listeners | Overview, Lakehouse, Targets — invalidate React Query caches |
-| `audit-ledger.{workspace_id}` | `AuditEvent` | Trigger-driven via Laravel listener | AuditLog (incremental tail) |
-| `notifications.{user_id}` | `Notification` | Horizon `notifications` queue | Inbox |
-| `support-replay.{run_id}` | `ReplayProgress` | Hatchet `support_replay` workflow | SupportCockpit |
+| `query.{queryId}` | `QueryStreamEvent` | FastAPI SSE frames (`status`/`bind`/`delta`/`citation`/`completed`/`failed`) re-broadcast by the `StreamQueryFromFastApi` job | Chat — one event class carries every frame type, not three |
+| `project.{projectId}.ingestion` | `IngestionProgressBroadcast` | Hatchet ingest workflows → Laravel `/internal` callback | IngestionRuns |
+| `workspace.{workspaceId}.activity` | `WorkspaceActivityBroadcast`, `WorkspaceDataUpdated` | Hatchet workflows and Laravel mutations | Overview, Workspace — `useWorkspaceActivity` / `useWorkspaceDataUpdated` invalidate caches and tiles |
+| `App.Models.User.{id}` | `User\\UserInboxUpdated` | Laravel | no page consumes it |
+| `admin.*` (22 channels) | `Admin\\AdminSurfaceUpdated`, `Admin\\ReportBuildProgress`, `Admin\\IngestionReviewDispositionChanged` | Hatchet workflows and Laravel | **nothing** — `routes/channels.php` still authorises the whole admin family, but no admin page exists to subscribe. The cost-burn and alert broadcasts described in [Ch 12 §7](12-observability.md) land here |
 
 ### Reverb dual-purpose env trap
 
@@ -170,33 +126,62 @@ workspace; with it, the controller calls
 
 ## 8. Chat surface specifics
 
-- OIUR sections render as four distinct cards (Observation, Interpretation,
-  Uncertainty, Recommendation).
-- Inline ADR-0007 chat cards:
-  - `evidence_list` — referenced evidence rows with links
-  - `metric_box` — single-metric callout with trend
-  - `coverage_gap_chart` — what's missing
-  - `project_summary_card` — derived from `query_project_summary` intent
-  - `spatial_quick_map` — inline mini MapLibre with relevant feature
-- Citation pills: `[ev:xxxxxxxx]` markers render as clickable pills that
-  open the evidence drawer
-  ([Components/Citation/](../../../resources/js/Components/Citation/)).
-- Streaming: tokens arrive via the `query.streaming.{run_id}` Reverb channel;
-  the React component appends as they arrive, replacing citation markers
-  with `<CitationPill/>` components in real time.
+Read from [`Foundry/Chat.tsx`](../../../resources/js/Pages/Foundry/Chat.tsx)
+and [`Components/InlineViz.tsx`](../../../resources/js/Components/InlineViz.tsx).
 
-## 9. The "Plotly" surface
+**The stream.** `POST /api/v1/queries` returns `{ query_id, channel }`; the
+page subscribes with `Echo.channel(channel).listen('.QueryStreamEvent')` and
+switches on the frame's type — `status`, `routing`, `delta`, `citation`,
+`completed`, `failed`. One event class carries all six. A watchdog gives up
+after two minutes of silence and tells the reader plainly that the channel
+may have dropped and the text above is unchecked — one of the few
+uncertainty affordances that actually ships.
 
-Charts:
-- [resources/js/Components/Charts/](../../../resources/js/Components/Charts/)
-- Plotly is used for cross-section panels, downhole strip logs, geochem
-  scatter, target-score plots.
-- Export contract: `docs/chart_export_contract_spec.md`.
+**Inline cards.** `_build_chat_card_payloads` in the graph's assemble step
+emits an optional `MapPayload` and `VizPayload`; `InlineViz` dispatches on
+`chart_type`. The variants that exist:
 
-## 10. React Flow
+| `chart_type` | Component | Produced for |
+|---|---|---|
+| `technique_timeline` | `TimelineCard` | `project_summary` intent |
+| `coverage_table` | `CoverageTableCard` (plus a `MapPayload` of collars coloured by whether they have downstream data) | `coverage_gap` intent |
+| `downhole_strip` | `StripLogViewer` | a hole in context |
+| `assay_histogram`, `cross_section` | `GeoPlot` (Plotly) | assay and section queries |
+| `drill_trace_3d` | `DrillTrace3D` (Plotly 3D) | multi-hole geometry |
+| `stereonet` | `StereonetCard` | structural measurements |
 
-The Source Graph page uses `reactflow` to render Neo4j subgraphs returned
-by the FastAPI `/v1/graph/neighbours` endpoint.
+The five ADR-0007 card names this chapter used to list (`evidence_list`,
+`metric_box`, `coverage_gap_chart`, `project_summary_card`,
+`spatial_quick_map`) are not what the code emits.
+
+**Citations.** Citation objects arrive on the `citation` frame and again in
+bulk on `completed`; `CitationPGEODetail` renders public-geoscience
+citations. There is no `Components/Citation/` directory and no
+`CitationPill` component — the evidence drawer and pill rendering described
+elsewhere in this manual are design-only.
+
+**OIUR.** No Observation/Interpretation/Uncertainty/Recommendation card
+rendering exists in `Chat.tsx`. The envelope is produced server-side behind
+`GEO_ANSWER_OIUR_ENABLED` and arrives as text.
+
+## 9. Plotly
+
+`react-plotly.js` + `plotly.js-dist-min`, loaded lazily through
+`InlineViz`. Users: `GeoPlot.tsx` (scatter, histogram, section),
+`DrillTrace3D.tsx` (3D hole paths), `Components/Foundry/Borehole3DView.tsx`
+and the other workspace 3D views, `StripLogViewer.tsx`, `StereonetCard.tsx`.
+Export contract: [`docs/chart_export_contract_spec.md`](../../chart_export_contract_spec.md).
+
+There is no `Components/Charts/` directory.
+
+## 10. Maps
+
+MapLibre GL 5 (never Mapbox GL — licensing, CLAUDE.md hard rule 8).
+`Components/MapView.tsx` plus the `lib/` helpers: `mvtSources.ts`,
+`mvtLayers.ts`, `tileUrl.ts`, `basemap.ts`, `layerVisibilityStorage.ts` and
+`tileFailureWatchdog.ts`, which surfaces a tile-server failure instead of
+leaving the map silently empty. Tiles come from Martin
+([Ch 09](09-martin-and-maplibre.md)).
 
 ## 11. Browser logs / debugging
 

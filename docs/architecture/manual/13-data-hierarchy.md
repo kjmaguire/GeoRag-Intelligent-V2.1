@@ -1,13 +1,8 @@
 # Chapter 13 — Data Hierarchy (geologist-facing classification)
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07**: the graph-filter path is gone. The category
+> model itself is design-only — `silver.data_categories` and
+> `silver.dataset_categories` are still **planned**, per [Ch 14](14-status-matrix.md).
 
 > Status: **Partial.** Schema columns + UI tag surface defined here; the
 > upload classifier and per-dataset multi-category storage land alongside
@@ -115,7 +110,7 @@ CREATE INDEX dataset_categories_workspace_idx
 ## 5. User-correction flow
 
 - **Where:** Sources page ([resources/js/Pages/Foundry/Sources.tsx](../../../resources/js/Pages/Foundry/Sources.tsx))
-  and Corpus page ([resources/js/Pages/Foundry/Corpus.tsx](../../../resources/js/Pages/Foundry/Corpus.tsx)).
+  and Corpus page ([resources/js/Pages/Foundry/Corpus.tsx](../../../resources/js/Pages/Foundry/Sources.tsx)).
 - **API:** `POST /api/projects/{project}/datasets/{kind}/{id}/categories`
   with body `{add: ["geology.lithology"], remove: ["reports.internal"]}`.
 - **Side effects:** writes to `silver.dataset_categories` with
@@ -143,7 +138,7 @@ CREATE INDEX dataset_categories_workspace_idx
   (`payload.category_codes` is a payload-indexed `text[]` written by the
   embedder workflow).
 - Postgres BM25 path joins to `silver.dataset_categories`.
-- Neo4j graph path filters on the `category_codes` node property.
+- ~~Neo4j graph path filters on the `category_codes` node property.~~ The graph was removed 2026-07-28; category filtering is Postgres-only.
 
 ## 8. Map / layer relationship to categories
 

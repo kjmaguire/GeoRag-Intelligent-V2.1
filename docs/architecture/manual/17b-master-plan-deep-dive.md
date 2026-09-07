@@ -1,13 +1,9 @@
 # Chapter 17b — Master Plan Deep Dive (§§5–12)
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** for Dagster, Kestra and Grafana references in
+> the delivery notes and the file map. This chapter records what the master
+> plan asked for; where the plan's target and today's code differ, the code
+> is described in [Ch 14](14-status-matrix.md).
 
 > Per-section deep summary of the eight master-plan scope proposals.
 > [Ch 17](17-strategic-context.md) is the one-paragraph index; this is
@@ -38,7 +34,7 @@ spatial / visualisation chapter of the build.
 1. GeoPandas / Rasterio / Shapely fully integrated into FastAPI ingestion paths.
 2. Minimum-curvature desurvey producing `silver.drill_traces` cleanly.
 3. `gold.drillhole_intervals_visual`, `gold.cross_section_panels`,
-   `gold.structure_measurements_visual` materialised via Dagster.
+   `gold.structure_measurements_visual` — written by `promote_silver_to_gold` since 2026-08-25 (was a Dagster asset).
 4. First three visualisations: **strip logs, cross-sections, stereonets**
    (Plotly interactive + matplotlib static).
 5. Chart export contract enforced (§17.4 — see
@@ -56,13 +52,13 @@ correctly explains when a visualisation is/isn't possible.
 
 **Live ~90 %.** B6/B7 cross-section + interval visual landed
 2026-05-22 ([notes/INDEX.md#project_bsg_buildout_2026_05_22](../notes/INDEX.md#project_bsg_buildout_2026_05_22)).
-The pre-existing `silver_drill_traces` Dagster asset already satisfied
+The pre-existing `silver_drill_traces` Dagster asset satisfied
 deliverable #2. Remaining: B8/B9 outputs deferred (stereonet polish +
 chart export contract last-mile).
 
 ### Where to look in this manual
 
-- [Ch 04 — Ingestion flow](04-ingestion-flow.md) — Dagster gold asset map
+- [Ch 04 — Ingestion flow](04-ingestion-flow.md) — the Hatchet ingest workflows that replaced the Dagster asset map
 - [data_dict/gold.md](../data_dict/gold.md) — every gold drillhole table
 - [Appendix M §3](../appendix/M-agents-and-ml-catalog.md) — Phase 5 agents
 - [Appendix A §4](../appendix/A-medallion-contract.md) — gold materialisation map
@@ -146,7 +142,7 @@ renderers + delivery layer), **§7-B Dashboards** (22 across 3 tiers),
 4. Export Compliance Agent enforcing §29.2 checklist.
 5. All product-tier dashboards (§16.1) — **8 dashboards**.
 6. Workflow-tier dashboards (§16.2) — **5 dashboards**.
-7. Ops-tier dashboards (§16.3) — **9 dashboards** (reuse Grafana).
+7. Ops-tier dashboards (§16.3) — **9 dashboards**, planned against Grafana. Grafana was removed 2026-07-28; none were built.
 
 ### Done test
 
@@ -353,7 +349,7 @@ Support Cockpit: `ops.support_tickets`, `support_ticket_traces`,
 `support_replay_runs` live ([data_dict/ops.md](../data_dict/ops.md)).
 All 5 Phase 10 agents live as shells
 ([Appendix M §8](../appendix/M-agents-and-ml-catalog.md));
-`support_replay` workflow live; Cockpit frontend ([SupportCockpit.tsx](../../../resources/js/Pages/Foundry/SupportCockpit.tsx))
+`support_replay` workflow live; Cockpit frontend ([SupportCockpit.tsx](10-frontend.md))
 live. **LangFuse deep-link from SupportCockpit landed doc-phase 104**
 ([phase104_handoff.md](../../phase104_handoff.md)).
 

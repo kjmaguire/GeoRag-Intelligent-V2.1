@@ -219,25 +219,42 @@ this is the index.
 
 ## 7. Reconciliation status of this manual
 
-| Chapter | Status on 2026-09-07 |
-|---|---|
-| 00 Overview | **Reconciled** (this file). |
-| 01 Services catalog | **Reconciled 2026-09-07** against the 16 compose services, with the removed-service table, the three overlays, and the stale compose comments listed for the next tidy. |
-| 02 Data stores | **Reconciled 2026-09-07**: dev and Azure side by side for Postgres, Qdrant, Redis, object storage, Martin and Hatchet state; roles, namespaces and the as-built backup posture. |
-| 03 Schemas | Mostly current; a handful of Neo4j/graph mentions. |
-| 04 Ingestion flow | Current for the Hatchet path; drop the Dagster/graph steps when read. |
-| 05 PDF stack | Current through ADR-0019 (2026-09-02); vLLM/Qwen-VL page verbalisation references are stale. |
-| 06 Retrieval + agents | §10 reconciled 2026-09-07; §11 still names Neo4j. |
-| 07 Orchestration | **Reconciled 2026-09-07**: Horizon's three jobs, the 51-workflow Hatchet registry with every cron, the trigger paths, the Azure and GitHub schedulers, and the 2026-08-21 review findings marked open or closed. |
-| 08 LLM + ML | Foundry cutover recorded; some vLLM-era detail remains. |
-| 09–11, 13, 15–17b | Light staleness (an odd Neo4j or Dagster mention); read with Ch 14 alongside. |
-| 12 Observability | **Reconciled 2026-09-07**: JSON logs into Log Analytics, the two unscraped metrics endpoints, trace-id propagation without span export, `silver.query_traces`, the Azure Monitor alert inventory and the marker-line rules behind it, dev and Azure health probes, and the Postgres tables that are the durable record. |
-| 14 Status matrix | Maintained through 2026-09-02 but still carries a Dagster-assets section. |
-| 18 Model stack evolution | Cited by ADR-0016 and ADR-0021; current to 2026-09-02. |
+**Every chapter has now been reconciled against the code** (00, 01, 02, 07
+and 12 as full rewrites; the rest in the 2026-09-07 stale-reference pass).
+No chapter carries the old reconciliation notice any more. Each opens with a
+dated *Reconciled* note saying what was checked and, where it matters, what
+was **not** re-derived.
 
-Every chapter except this one opens with a dated reconciliation notice.
-Remove the notice when a chapter is rewritten and add the chapter to the
-"Reconciled" rows above.
+| Chapter | What the pass established |
+|---|---|
+| 00 Overview | this file — profile map, images, production apps, request shape |
+| 01 Services | the 16 compose services, the removed-service table, three overlays, stale compose comments |
+| 02 Data stores | dev and Azure side by side; roles, namespaces, the as-built backup posture |
+| 03 Schemas | writer attributions corrected (`promote_silver_to_gold`, not Dagster assets); `backend_used` CHECK; `gold.h3_density_mineral` has **no writer** |
+| 04 Ingestion flow | six Hatchet ingest workflows, not a Dagster path; the gold tables had no writer for a month; the outbox is not on the ingest path |
+| 05 PDF stack | pdfminer.six + pdfplumber (PyMuPDF removed on licence grounds); parsers moved to `georag_geoparsers`; SEG-Y and Word ingest are gone |
+| 06 Retrieval + agents | graph tools removed; support-cockpit trace sources corrected |
+| 07 Orchestration | Horizon's three jobs, the 51-workflow registry with every cron, the schedulers, the 2026-08-21 review findings |
+| 08 LLM + ML | Azure AI Foundry as the default backend; Embed v4 / Rerank v4; SPLADE++ has no Foundry equivalent |
+| 09 Martin + MapLibre | nothing scrapes Martin's `/metrics`; no alert replaced the deleted rules |
+| 10 Frontend | **sixteen pages exist**, not the eighty this chapter listed; no admin console, no dashboards, no React Flow |
+| 11 Tenancy + RLS | the Kestra and Caddy auth hops are gone; the per-flow JWT machinery has no caller |
+| 12 Observability | JSON logs into Log Analytics, two unscraped metrics endpoints, trace ids without span export, the alert inventory |
+| 13 Data hierarchy | graph filtering removed; the category tables are still planned |
+| 14 Status matrix | services, workflows, agents and pages re-read from the code; the Dagster asset section replaced by what took each family over |
+| 15 Design docs index | per-document verdicts were already maintained; one follow-up closed |
+| 16 Algorithmic spines | file paths out of the deleted `src/dagster/` tree; the Grafana dashboard that was owed will not be built |
+| 17 / 17b Strategic context | hard rules aligned with CLAUDE.md; delivery notes marked where plan and code diverge |
+| 18 Model stack evolution | kept as a historical record; the model table and the re-index hazard corrected because they read as current state |
+
+**What this pass did not do.** Schema definitions in Ch 03 were not
+re-derived column by column —
+`tests/Unit/ArchitectureDocSchemaParityTest.php` is what actually gates
+`schema.table` names against the migration tree. Retrieval, guard and
+algorithm descriptions in Ch 06 and Ch 16 were checked for stale
+infrastructure references, not re-verified behaviourally. Table, page and
+agent rows in Ch 14 outside the service and workflow lists were spot
+checked. Treat a surprising claim in those areas as a question, not a fact.
 
 The compose file's header profile guide was corrected on 2026-09-07 to
 match the `profiles:` keys. Other comments inside the file are still

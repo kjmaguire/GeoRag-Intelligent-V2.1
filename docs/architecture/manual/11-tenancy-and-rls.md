@@ -1,13 +1,8 @@
 # Chapter 11 — Tenancy and Row-Level Security
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** for the service-to-service auth table, which
+> listed Kestra and Caddy hops that no longer exist. The RLS policy model,
+> the `workspace_id` scoping and the role matrix were current.
 
 GeoRAG is multi-tenant at the row level. Every workspace’s data lives in
 the same tables as every other workspace’s — segregation is enforced by
@@ -55,7 +50,7 @@ RLS:
     refuses startup if `georag_app` ever acquires SUPERUSER/BYPASSRLS.
   - Structural fix (proposed): split `georag` into `georag_owner` (table
     owner, `NOSUPERUSER`) + `georag_migrator` (DDL grants only,
-    `NOSUPERUSER`). Tracked in [Ch 02 §1.1](02-data-stores.md#11-known-security-issue--georag-role-is-superuser).
+    `NOSUPERUSER`). Tracked in [Ch 02 §1.1](02-data-stores.md#13-roles).
 
 - `pgbouncer` connects to Postgres as `georag_app` for the application
   connection pool. The owner `georag` is reachable only via the dedicated
@@ -155,18 +150,18 @@ caught up to production
 |---|---|---|
 | Browser → laravel-octane | Sanctum cookie (SPA) OR Sanctum PAT | `config/sanctum.php`, `EnsureFrontendRequestsAreStateful` middleware |
 | laravel-octane → fastapi | `X-Service-Key: ${FASTAPI_SERVICE_KEY}` (HMAC) | All `Http::client()` calls into FastAPI; verified by [src/fastapi/app/services/auth.py](../../../src/fastapi/app/services/auth.py) |
-| laravel-octane → fastapi (per-flow) | `Authorization: Bearer <jwt>` minted by `App\Services\FastApiJwtMinter` | For Kestra flows that hop through Laravel |
+| laravel-octane → fastapi (per-flow) | `Authorization: Bearer <jwt>` minted by `App\Services\FastApiJwtMinter` | Built for Kestra flows hopping through Laravel; **no caller since Kestra was removed** |
 | Hatchet worker → laravel-octane | `X-Service-Key: ${FASTAPI_SERVICE_KEY}` | `services/laravel_bridge.py::post_*` |
-| Kestra → fastapi | Per-flow JWT (`KESTRA_FLOW_JWT_SECRET` + per-flow private key from encrypted `workflow.flow_registry`) | `services/flow_jwt.py` |
-| External webhook senders → kestra | HMAC-SHA256 over canonical JSON; `EXTERNAL_NOTIFICATION_HMAC_SECRET` | Hatchet `external_notification` workflow verifies on the receiving side |
+| ~~Kestra → fastapi~~ | The per-flow JWT machinery (`KESTRA_FLOW_JWT_SECRET`, per-flow private keys in the encrypted `workflow.flow_registry`) is still in `services/flow_jwt.py` and `routers/integrations_trigger.py`, and `flow_jwt_key_reaper` still rotates the keys. **Nothing calls it.** | `services/flow_jwt.py` |
+| External webhook senders | HMAC-SHA256 over canonical JSON; `EXTERNAL_NOTIFICATION_HMAC_SECRET`, verified by the `external_notification` workflow. Kestra was the sender; the verification side survives without one | Hatchet `external_notification` |
 | Hatchet worker → hatchet-lite (engine) | `HATCHET_CLIENT_TOKEN` (JWT) over gRPC | `HATCHET_CLIENT_HOST_PORT=hatchet-lite:7077` |
-| caddy → laravel-octane (forward_auth) | Re-uses Sanctum cookie | `caddy/Caddyfile` |
-| caddy → kestra (after forward_auth) | Basic auth (`KESTRA_BASIC_AUTH_USER` / `_PASSWORD`) | Injected by Caddy on behalf of the user |
-| backup-agent → seaweedfs | S3 credentials | `S3_ACCESS_KEY` / `S3_SECRET_KEY` |
+| ~~caddy → laravel-octane / kestra~~ | Caddy was the edge that gated the Kestra UI. Both were removed 2026-07-28; `routes/web.php` records the sunset. On Azure the only public ingress is `laravel-octane-cc` and there is no reverse proxy in front of it | — |
+| ~~backup-agent → seaweedfs~~ | The backup agent was removed 2026-08-23 | — |
+| app → object storage | S3 credentials in dev (`S3_ACCESS_KEY` / `S3_SECRET_KEY`); **managed identity** on Azure for read/write, with the account key still enabled only because `temporaryUrl()` signs export links with it ([Ch 02 §4](02-data-stores.md)) | `STORAGE_BACKEND` |
 
 ## 8. Per-flow JWT machinery
 
-Kestra → FastAPI uses per-flow JWTs (not a single shared secret) so a leak
+The per-flow JWT design used per-flow keys (not a single shared secret) so a leak
 of one flow's key doesn't compromise the rest.
 
 - Storage: `workflow.flow_registry` (each row holds an encrypted private
@@ -223,7 +218,7 @@ true for every row). Replaced with the canonical pattern by the
   on a pooled connection; never use it in handlers.
 - **PgBouncer transaction mode + GUCs** — `SET` on a transaction-pooled
   connection leaks across users. Only `SET LOCAL` inside an explicit
-  transaction is safe. Hatchet workers + Dagster + the FastAPI per-flow
+  transaction is safe. Hatchet workers + the FastAPI per-flow
   loader all use `POSTGRES_DIRECT_HOST=postgresql` for this reason.
 - **Migrations running as `georag_app`** — they’d be blocked by RLS on
   every UPDATE. Use the `pgsql_migrations` connection.

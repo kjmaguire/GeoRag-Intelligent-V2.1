@@ -1,13 +1,14 @@
 # Chapter 18 — Model Stack Evolution + the 2026-06 Audit Wave
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07 as a historical record.** This chapter documents
+> how the model stack *evolved*, decision by decision, and most of it is
+> deliberately a record of choices that were later superseded. Read it that
+> way. Two things were corrected because they read as current state rather
+> than history: the model table in §2 and the re-index hazard in §2.1, both
+> of which described a stack that predates the 2026-07-30 Foundry cutover.
+> Everything in §3 (PaddleOCR, Docling) was already flagged as superseded.
+> [Ch 08](08-llm-and-ml.md) is the current model stack; where the two
+> disagree, Ch 08 wins.
 
 > Captures the wave of changes between 2026-05-29 and 2026-06-26: the
 > Qwen3 model swaps, the §04p OCR/VL upgrades, ADRs 0011–0017, the new
@@ -37,44 +38,32 @@ defaults.** Always read the model stack in two columns.
 
 | Slot | Production (live, env-driven) | Code/compose default (stale) |
 |---|---|---|
-| Dense embedder | `Qwen/Qwen3-Embedding-0.6B` **1024-dim** ([config.py:899,904](../../../src/fastapi/app/config.py)) | `BAAI/bge-small-en-v1.5` 384-dim ([embedding_service.py:41](../../../src/fastapi/app/embedding_service.py); [docker-compose.yml:959,1298,2694](../../../docker-compose.yml)) |
-| Reranker | **`Qwen/Qwen3-Reranker-0.6B` is LIVE on GPU** (deployed 2026-06-29, `RERANKER_BACKEND=qwen3_causal`) — validated **+13.9% NDCG@10 over bge** (0.7048 vs 0.6188), warm latency ~300 ms/20-cand. Rollback to bge = `RERANKER_BACKEND=cross_encoder`. | `Qwen/Qwen3-Reranker-0.6B` via `_Qwen3CausalReranker` ([reranker.py](../../../src/fastapi/app/services/reranker.py)) |
-| VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` (V2 default; V3=Qwen3-VL-8B gated) ([pdf_vl.py:109,117,118](../../../src/fastapi/app/services/pdf_vl.py)) | same |
-| Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` (**unchanged**) ([.env.example:492,612](../../../.env.example)) | same |
-| Sparse | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | same |
+| Dense embedder | `Qwen/Qwen3-Embedding-0.6B`, 1024-dim | **Superseded.** Production default is Cohere Embed v4 on Foundry at 1024-dim; the Qwen model runs only in the dev `embedding` sidecar |
+| Reranker | `Qwen/Qwen3-Reranker-0.6B` on GPU — validated +13.9 % NDCG@10 over bge (0.7048 vs 0.6188) | **Superseded.** Production default is Cohere Rerank v4 on Foundry; Qwen3-Reranker runs in the dev `reranker` sidecar |
+| VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` on vLLM | **Gone.** The vLLM service was deleted 2026-07-30. Page description now runs through a Foundry vision model, off the ingest critical path and inert unless `IMAGE_VERBALIZATION_ENABLED` |
+| Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` | **Superseded.** Cohere Command A+ on Foundry (`LLM_BACKEND=azure`). The Qwen name survives as `LLM_PRIMARY_MODEL`'s default, which applies only to `LLM_BACKEND=vllm` |
+| Sparse | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | **Unchanged and self-hosted** — the one component with no Foundry equivalent |
 
-> ⚠️ **Reranker swap is a VALIDATED WIN but deployment is VRAM-gated
-> (2026-06-29).** Setting only `RERANKER_MODEL_PATH=Qwen/Qwen3-Reranker-0.6B`
-> still **breaks** the reranker (it loads via `CrossEncoder(path, device="cpu")`
-> but Qwen3-Reranker is a **causal-LM** reranker scored via yes/no logits).
-> The CausalLM inference path **now exists** —
-> `app.services.reranker._Qwen3CausalReranker`, opt-in via
-> `RERANKER_BACKEND=qwen3_causal` (built 2026-06-28). A golden-set eval
-> (2026-06-29, `scripts/eval_reranker_qwen3_vs_bge.py`) shows **Qwen3-Reranker
-> NDCG@10 0.7048 vs bge 0.6188 — +13.9%, a clear win** (stock, not the
-> fine-tuned variant that earned the prior HOLD verdicts). It is NOT yet live:
-> the causal-LM reranker needs ~1.3 GB **GPU** (CPU blows the 8 s timeout) and
-> the A4500 has only ~0.6 GB free with the full stack up. Flipping it requires
-> freeing VRAM first — see [reranker-qwen3-flip runbook](../../runbooks/reranker-qwen3-flip.md)
-> for the 3 VRAM options + exact steps. Until then bge-reranker-base stays live.
+> The VRAM-gating and rollback advice that used to sit here concerned a
+> single A4500 shared with vLLM. Neither the GPU contention nor the vLLM
+> service exists in production any more; both `EMBEDDING_BACKEND` and
+> `RERANKER_BACKEND` default to `foundry`.
 
-### 2.1 The live re-index hazard 🔴
+### 2.1 The re-index hazard (closed by deletion)
 
-The Dagster index assets still declare **384-dim** `VectorParams`
-([index_document_passages.py:67,263](../../../src/dagster/georag_dagster/assets/index_document_passages.py),
-[index_reports.py:64](../../../src/dagster/georag_dagster/assets/index_reports.py),
-[index_public_geoscience.py:82](../../../src/dagster/georag_dagster/assets/index_public_geoscience.py)).
-Production `georag_chunks` is now 1024-dim. **Re-running any of those
-Dagster assets would recreate the collection at 384-dim and silently
-break retrieval.** The 2026-06-04 live re-embed deliberately used a
-standalone script ([scripts/reembed_qdrant.py:47-48](../../../src/fastapi/scripts/reembed_qdrant.py))
-+ a manual `curl PUT /collections/georag_chunks` for the named sparse
-slot, NOT the Dagster path.
+The hazard was that three Dagster index assets still declared 384-dim
+`VectorParams` while production `georag_chunks` was 1024-dim, so re-running
+one would recreate the collection at the wrong width and silently drop
+every vector.
 
-**Action owed:** update the three Dagster index assets to read
-`EMBEDDING_DIMENSION` from settings (1024) before any re-materialise, OR
-fence them behind a guard that refuses to recreate a 1024-dim collection
-at 384. Tracked in [Appendix Z](../appendix/Z-roadmap.md).
+**It can no longer fire.** `src/dagster/` was deleted on 2026-08-28 and the
+assets went with it. The collection is now bootstrapped by
+[`scripts/init_qdrant.py`](../../../src/fastapi/scripts/init_qdrant.py) and
+written only by `embed_pending_passages`. The FastAPI lifespan checks
+dense-dimension parity at startup rather than trusting the writer.
+
+The "action owed" that used to close this section — update the three
+Dagster assets — is void.
 
 ### 2.2 Cutover learnings (from the baseline doc)
 
@@ -126,10 +115,10 @@ Two OOM fixes landed as optional sidecar services:
 - Call-site API migrated to 3.x: `use_textline_orientation` (was
   `use_angle_cls`), `device=` (was `use_gpu=`), `.predict()` (was
   `.ocr()`), attribute-based results (`rec_texts`/`rec_scores`/`rec_boxes`):
-  - Stage-5 regional-crop worker: [pdf_ocr.py:154,224,239](../../../src/fastapi/app/services/pdf_ocr.py).
-  - Scanned-page parser: [parse_scanned.py:152,203,228](../../../src/fastapi/app/ocr/parse_scanned.py).
+  - Stage-5 regional-crop worker: [pdf_ocr.py:154,224,239](../../../src/fastapi/app/services/ingest/ocr_engine.py).
+  - Scanned-page parser: [parse_scanned.py:152,203,228](../../../src/fastapi/app/services/ingest/ocr_engine.py).
 - **Phase 2 (Proposed):** `PaddleOCRVL` 1.6 (96.3 % OmniDocBench v1.6)
-  as a parallel full-page parser ([parse_docparser_vl.py:282](../../../src/fastapi/app/ocr/parse_docparser_vl.py)),
+  as a parallel full-page parser ([parse_docparser_vl.py:282](../../../src/fastapi/app/services/ingest/ocr_engine.py)),
   flag-gated via `PDF_DOCPARSER_BACKEND` (default `docling`). Additive —
   does not replace the per-bbox PP-OCRv5 worker.
 
@@ -168,16 +157,13 @@ structured-query tool returns numbers but **no chunk surfaces in
 closes this by synthesising NL summaries from the structured silver
 tables into `silver.document_passages` with `chunk_kind='structured_summary'`.
 
-New Dagster assets (synthesise + UPSERT keyed by `uuid5('{table}:{row_id}')`):
-- [silver_nl_summaries.py](../../../src/dagster/georag_dagster/assets/silver_nl_summaries.py)
-  — `silver_assays_v2_nl_summary`, `silver_lithology_nl_summary`,
-  `silver_collars_nl_summary`.
-- [silver_samples_nl_summary.py](../../../src/dagster/georag_dagster/assets/silver_samples_nl_summary.py)
-  — `silver_samples_nl_summary`.
+Shipped as two Dagster assets; **now the `nl_summaries` Hatchet workflow**
+([`hatchet_workflows/nl_summaries.py`](../../../src/fastapi/app/hatchet_workflows/nl_summaries.py)),
+which synthesises and UPSERTs keyed by `uuid5('{table}:{row_id}')` and
+writes `chunk_kind='structured_summary'`. The `group_name` drift the
+Dagster version had is moot.
 
-The existing ADR-0010 §A embed cron carries these into `georag_chunks`
-automatically. (Minor drift to fix: the two files use inconsistent
-`group_name` — `silver_nl_summaries` vs `nl_summaries`.)
+`embed_pending_passages` carries these into `georag_chunks` automatically.
 
 ## 5. Contextual retrieval (Anthropic-style context headers)
 
@@ -282,7 +268,7 @@ ADR proposes a `lookup_and_pivot` helper for this shape. See
 | Surface | Pass 4 count | Now (verified 2026-06-26) |
 |---|---|---|
 | Hatchet workflow files (excl. `worker.py` + `_`-helpers) | 45 | **48** (+ `enrich_passage_context`, `score_answer_quality`, `ingest_zip_archive`) |
-| Dagster asset files | 52 | **55** (+ `silver_nl_summaries`, `silver_samples_nl_summary`, `data_dictionary_dump`) |
+| Dagster asset files | 52 | 55 at the time — **all deleted 2026-08-28** |
 | FastAPI routers | 31 | **31** (unchanged) |
 | Inertia pages (Pages/**/*.tsx) | 96 | **98** |
 | Admin pages (Pages/Admin/) | (uncataloged) | **41** — now in [Ch 10 §2a](10-frontend.md) |

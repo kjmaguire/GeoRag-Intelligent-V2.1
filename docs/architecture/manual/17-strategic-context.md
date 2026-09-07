@@ -1,13 +1,7 @@
 # Chapter 17 — Strategic Context (Master Plan + Phase Timeline)
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07**: the hard-rules list and the agent roster now
+> match CLAUDE.md and the code. The strategic framing is unchanged.
 
 > Why what got built, got built. This chapter answers "where does this fit
 > in the long-term plan?" — it's intentionally short on implementation
@@ -56,7 +50,7 @@ worktree. Phase 0 deliverables:
 - `audit.audit_ledger` hash-chain
 - Phase 0 agents wired (Index Health, Storage Tiering, Store
   Reconciliation, Support Packet, Tenant Isolation Auditor, Lineage
-  Reporter, vLLM Security Check, LLM Incident Diagnosis, Model Cost
+  Reporter, LLM Incident Diagnosis, Model Cost
   Summary, Model Upgrade Watch)
 - `bronze.provenance` lineage spine
 - `silver.workspaces` tenancy spine with `data_version`
@@ -131,14 +125,14 @@ A new engineer joining the project should read in this order:
 These are the architectural commitments the rest of the plan is built on:
 
 1. **No Streamlit** — React + Inertia is the frontend; if external examples use Streamlit, translate.
-2. **Async-native FastAPI** — `asyncpg`, `redis.asyncio`, async Qdrant + Neo4j drivers.
+2. **Async-native FastAPI** — `asyncpg`, `redis.asyncio`, async Qdrant client.
 3. **Octane-safe Laravel** — no static state leaks between requests.
 4. **Citations mandatory** — every RAG claim carries `source_chunk_id`; refusal otherwise.
 5. **Hallucination prevention §04i — six layers** apply to every code path touching the RAG pipeline.
 6. **Schemas in §04e are contracts** — don't invent fields.
-7. **No orchestration overlap** — Laravel queues = user-triggered; Hatchet = durable per-document; Dagster = scheduled bulk; Kestra = integration edge.
+7. **No orchestration overlap** — Laravel queues = short user-triggered async work; Hatchet = ingestion, scheduled crons and anything needing durable retries. Dagster and Kestra are gone; there is no Laravel scheduler, so every recurrence is a Hatchet cron, a GitHub Actions cron or an Azure Container Apps Job.
 8. **MapLibre GL, not Mapbox GL** — licensing for on-prem.
-9. **Neo4j Community Edition only** — no Enterprise features (manual warmup + app-level RBAC).
+9. **No knowledge graph** — Neo4j was removed 2026-07-28 and the sync workflow deleted with it. Adding a graph store back needs an ADR that supersedes this.
 
 Per CLAUDE.md, when code disagrees with the architecture doc, **the
 doc is correct and the code needs fixing**. This chapter is part of

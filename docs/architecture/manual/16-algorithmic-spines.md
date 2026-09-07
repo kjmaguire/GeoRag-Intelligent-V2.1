@@ -1,13 +1,8 @@
 # Chapter 16 — Algorithmic Spines + Canonical Corpus Consolidation
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** for file paths into the deleted `src/dagster/`
+> tree and the Grafana and Sentry references. The algorithm descriptions
+> were not re-derived.
 
 Two major architectural moves landed 2026-05-27 → 2026-05-29 that re-shape
 the retrieval surface. Both are flag-gated and rolling out behind the
@@ -61,7 +56,7 @@ strategy + guard code + evidence kind to `silver.query_traces`.
     avoid DB-connection contention).
   - Reads `silver.query_traces` shadow rows; writes per-workspace daily
     rollups to `gold.repair_shadow_daily`.
-  - Pre-aggregates so the Grafana dashboard renders in <100 ms.
+  - Pre-aggregates for a dashboard that was to be Grafana. Grafana is gone and nothing reads `gold.repair_shadow_daily`.
   - Workspace-scoped via `set_config('georag.workspace_id', …)` (note
     the schema-prefixed GUC name).
   - Sizing input for Stage 2 (terminal enable) and Stage 3 (low-cost
@@ -97,10 +92,10 @@ generated training set useless.
 ### The decision
 
 **`silver.document_passages` is the canonical chunked-content corpus.**
-- New Qdrant collection: **`georag_chunks`** ([index_document_passages.py:64](../../../src/dagster/georag_dagster/assets/index_document_passages.py)).
+- New Qdrant collection: **`georag_chunks`** — bootstrapped by [`scripts/init_qdrant.py`](../../../src/fastapi/scripts/init_qdrant.py) and written by `embed_pending_passages` (the Dagster index asset that used to own it is gone).
 - `index_reports` → `georag_reports` stays during the cutover; eventual deprecation.
 - The reranker-label chain re-targets `silver.document_passages`
-  ([test_reranker_uses_document_passages_canonical.py](../../../src/dagster/tests/test_reranker_uses_document_passages_canonical.py) pins the contract).
+  (the Dagster test that pinned this contract went with the tree; the canonical-source rule now rests on `embed_pending_passages` alone).
 
 ### Parent-child chunking
 
@@ -114,7 +109,7 @@ introduces a two-level chunk hierarchy on `silver.document_passages`:
 
 ### Backfill
 
-[src/dagster/scripts/_backfill_document_passages_to_qdrant.py](../../../src/dagster/scripts/_backfill_document_passages_to_qdrant.py)
+`src/dagster/scripts/_backfill_document_passages_to_qdrant.py` (deleted 2026-08-28; [`scripts/reset_embeddings_for_reencode.py`](../../../scripts/reset_embeddings_for_reencode.py) is the surviving re-embed tool)
 is the one-shot used to seed `georag_chunks` from the existing
 `silver.document_passages` rows. Re-runs are idempotent on `passage_id`.
 
@@ -139,7 +134,7 @@ is the one-shot used to seed `georag_chunks` from the existing
 | `silver.document_passages` | `chunk_kind` (extended) | [2026_05_29_180000](../../../database/migrations/2026_05_29_180000_extend_document_passages_chunk_kind_for_parent_child.php) | Parent / child variant tags |
 | `silver.query_traces` | `context_prep_audit`, `multi_turn_resolution` | [2026_05_28_010000](../../../database/migrations/2026_05_28_010000_add_context_prep_audit_and_multi_turn_resolution_to_query_traces.php) | Spine A telemetry |
 
-## 6. New Dagster assets (10+)
+## 6. New Dagster assets (10+) — all deleted 2026-08-28
 
 Added since Pass 3:
 - **Data-quality cluster:** `silver_assay_dq`, `silver_collar_dq`,

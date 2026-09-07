@@ -94,7 +94,7 @@ prints the names without connecting. Crons are UTC.
 | `ingest_pdf` | — | The PDF pipeline ([Ch 04 §3](04-ingestion-flow.md#3-the-ingest_pdf-hatchet-workflow)); `GROUP_ROUND_ROBIN`, `max_runs=2` per workspace; dispatches `embed_pending_passages` after persist |
 | `tiff_normalize` | — | Lossless TIFF → PDF, then routes into `ingest_pdf` (ADR-0005) |
 | `ingest_zip_archive` | — | Extracts and fans out by extension |
-| `ingest_spatial`, `ingest_tabular`, `ingest_well_logs` | — | Vector, drill CSV/XLSX, LAS ingest ([Ch 04 §4](04-ingestion-flow.md#4-other-ingest_-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
+| `ingest_spatial`, `ingest_tabular`, `ingest_well_logs` | — | Vector, drill CSV/XLSX, LAS ingest ([Ch 04 §4](04-ingestion-flow.md#4-the-other-ingest-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
 | `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `started` past 15 min: completes finished-but-unmarked embeds, re-dispatches dead parses in-process, times out the rest |
 | `nightly_ingestion_integrity` | `0 2 * * *`, `0 4 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
 | `reliability_metrics_publisher` | `* * * * *` | Refreshes in-process Prometheus gauges that nothing scrapes in production ([Ch 12](12-observability.md)) |

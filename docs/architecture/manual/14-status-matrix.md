@@ -1,13 +1,14 @@
 # Chapter 14 — Status Matrix
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** against `docker-compose.yml`, the Azure manifests
+> under `deploy/azure/`, `src/fastapi/app/hatchet_workflows/worker.py`,
+> `src/fastapi/app/config.py` and the migration tree. The service table used to
+> list Neo4j, Dagster, Kestra, Caddy, vLLM, Prometheus, Grafana, Loki, Tempo,
+> the exporters, Ofelia and the backup agent as **Live**; all of them were
+> deleted between 2026-07-28 and 2026-08-23. Rows below are what exists today.
+> Table, page and agent rows outside the service and workflow lists were spot
+> checked, not re-verified one by one — treat a surprising one as a question,
+> not a fact.
 
 A single place to look up "is this thing real today?" for every component
 the rest of the manual mentions.
@@ -26,42 +27,42 @@ the rest of the manual mentions.
 
 ## Services
 
-| Service | Status | Notes |
+Sixteen compose services and nine Azure Container Apps. Profiles and images
+are in [Ch 01](01-services.md); this table is the status view.
+
+| Service | Dev (compose) | Azure | Notes |
+|---|---|---|---|
+| `postgresql` | Live | `georag-pg-cc` (Flexible Server) | dev image `georag/postgres:18-ext`; Azure is a managed server, so no PgBouncer |
+| `pgbouncer` | Live | not deployed | transaction pooling; Martin, Hatchet and migrations bypass it |
+| `redis` | Live | `redis-cc` | Azure replica has no volume and AOF off — cache and queues only |
+| `martin` | Live | `martin-cc` | dev connects as `georag_app`; the Azure manifest documents `martin_readonly` as the role to use |
+| `laravel-octane` | Live | `laravel-octane-cc` | the only externally reachable app; 1/1 replicas |
+| `laravel-horizon` | Live | `laravel-horizon-cc` | two supervisors, three jobs ([Ch 07 §1](07-orchestration.md)) |
+| `laravel-reverb` | Live | `laravel-reverb-cc` | 60 s channel-drop bug fixed 2026-05-21 |
+| `fastapi` | Live | `fastapi-cc` | internal ingress only on Azure |
+| `reranker` | Live (dev-only) | not deployed | Qwen3-Reranker-0.6B on the one GPU; Azure uses Foundry Rerank v4 |
+| `embedding` | Live (dev-only) | not deployed | Qwen3-Embedding-0.6B on CPU; Azure uses Foundry Embed v4 |
+| `sparse` | Live (dev-only) | not deployed | SPLADE++; **no Foundry equivalent** — sparse retrieval is self-hosted or absent |
+| `qdrant` | Live | `qdrant-cc` | auth off in dev by design (Ch 02 §2); Azure has no persistent volume |
+| `minio` (SeaweedFS) | Live | not deployed | Azure uses Blob `georagblobcc` via `STORAGE_BACKEND=azure_blob` |
+| `minio-init` | Live | not deployed | one-shot bucket creation |
+| `hatchet-lite` | Live | `hatchet-cc` | dev `v0.86.12`, Azure `v0.89.7` — version drift |
+| `hatchet-worker` | Live | `hatchet-worker-cc` | one merged worker, `WORKER_POOL=all`, 51 workflows |
+| `langfuse-web` / `-worker` / `clickhouse` | Opt-in overlay | not deployed | `docker/compose.langfuse.yml`; not in the default `up` |
+
+### Removed
+
+| Service | Removed | Replaced by |
 |---|---|---|
-| caddy | Live | Edge only for Kestra PAT/WS path |
-| laravel-octane | Live | |
-| laravel-horizon | Live | |
-| laravel-reverb | Live | 60s channel-drop bug fixed 2026-05-21 |
-| fastapi | Live | |
-| hatchet-worker-ingestion | Live | |
-| hatchet-worker-ai | Live | GPU passthrough live 2026-05-22 |
-| hatchet-lite | Live | |
-| kestra | Live | 3 active flows |
-| dagster-daemon / webserver | Live (dev-only) | `dev-ingest` profile |
-| postgresql | Live | |
-| pgbouncer | Live | |
-| redis | Live | |
-| neo4j (+ warmup) | Live | Community Edition only |
-| qdrant | Live | Auth off in dev — see Ch 02 §3 |
-| minio (SeaweedFS) | Live | Replaces MinIO per ADR-0001 |
-| martin | Live | Currently uses `georag_app`; `martin_ro` planned (Ch 02 §1.2) |
-| vllm (+ warmup) | Live (dev-only) | `gpu-llm` profile; prod needs separate hardening |
-| otel-collector | Live | |
-| tempo | Live | |
-| prometheus | Live (dev-only) | `dev-monitor` profile |
-| alertmanager | Live (dev-only) | Webhook receiver not wired |
-| redis_exporter | Live (dev-only) | |
-| postgres_exporter | Live (dev-only) | |
-| neo4j_exporter | Live (dev-only) | Custom JMX bridge |
-| loki | Live (dev-only) | |
-| promtail | Live (dev-only) | |
-| grafana | Live (dev-only) | |
-| ofelia | Live (dev-only) | |
-| backup-agent | Live (dev-only) | |
-| langfuse-web / -worker / clickhouse | Partial | Compose override `docker/compose.langfuse.yml`; not in default up |
-| ollama | Deprecated | Removed 2026-05-17; Modelfiles archived under `docker/_deprecated/ollama/` |
-| activepieces | Deprecated | Sunset Phase 3 Step 7; superseded by Kestra |
-| georag-phase-e-ocr (TIFF bulk OCR) | Deprecated | Superseded by `tiff_normalize` (ADR-0005) |
+| `neo4j` (+ warmup), `neo4j_exporter` | 2026-07-28 | nothing — the graph was dropped |
+| `dagster-daemon` / `dagster-webserver` | 2026-07-28 (tree deleted 2026-08-28) | Hatchet workflows |
+| `kestra`, `caddy` | 2026-07-28 | nothing |
+| `prometheus`, `alertmanager`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `redis_exporter`, `postgres_exporter` | 2026-07-28 | Azure Monitor + Log Analytics ([Ch 12](12-observability.md)) |
+| `vllm` (+ warmup) | 2026-07-30 | Azure AI Foundry, Cohere Command A+. `LLM_BACKEND=vllm` remains a supported value for an operator running their own OpenAI-compatible endpoint |
+| `ofelia`, `backup-agent` | 2026-08-19 / 08-23 | Azure PITR; see the backup gap in [Ch 02 §8](02-data-stores.md) |
+| `ollama` | 2026-05-17 | — |
+| `activepieces` | Phase 3 Step 7 | Kestra, itself since removed |
+| `georag-phase-e-ocr` (TIFF bulk OCR) | ADR-0005 | `tiff_normalize` |
 
 ## Postgres schemas
 
@@ -83,7 +84,7 @@ the rest of the manual mentions.
 | `silver.data_quality_flags` | Live schema; 4 DQ writers live; rule engine partial |
 | `silver.document_versions` | Live (2026-05-26) — closes document_versioning_design |
 | `silver.entity_aliases`, `silver.entity_gaps` | Live (2026-05-26) — backs Spine A entity_resolver |
-| `gold.repair_shadow_daily` | Partial — `repair_shadow_aggregate` workflow writes rows; Grafana dashboard owed |
+| `gold.repair_shadow_daily` | Partial — `repair_shadow_aggregate` writes rows; nothing reads them — the dashboard was to be Grafana, which is gone |
 | `silver.tenant_isolation_audit` | Live (2026-05-30) — Z.9 nightly verifier run log; RLS off (admin-gated); see [Ch 18 §8](18-model-stack-evolution.md) |
 | `silver.archive_ingest_runs` | Live (2026-06-03) — ZIP-archive upload parent row; RLS-scoped; closes `ingest_zip_archive` silent-failure gap |
 | `silver.projects.lifecycle_state` | Live (2026-05-30) — **CC-03 Item 8 LANDED** (was deferred); active/hibernated/archived/past_due; billing still unbuilt; [Ch 18 §7](18-model-stack-evolution.md) |
@@ -101,10 +102,10 @@ the rest of the manual mentions.
 | `bronze.manifest` vs `bronze.ingest_manifest` | Both exist. `bronze.ingest_manifest` is the canonical per-file manifest inside an ingest run (Phase A). `bronze.manifest` is a newer table from [2026_05_25_020540](../../../database/migrations/2026_05_25_020540_create_bronze_manifest.php) used by the May 25 ingest UI track. Rename/consolidate tracked in appendix Z. |
 | `audit.audit_ledger` (+ verification_runs, fork_quarantine, query_audit_log) | Live |
 | `gold.h3_density_mineral`, `gold.cross_section_panels`, `gold.drillhole_intervals_visual`, `gold.structure_measurements_visual`, `gold.mv_refresh_log` | Live |
-| `gold.significant_intersections` | **Live** — persisted table from [2026_05_20_060700](../../../database/migrations/2026_05_20_060700_create_gold_drillhole_tables.php); Dagster `silver_to_gold/significant_intersections` upserts. The Martin function [2026_05_20_061000](../../../database/migrations/2026_05_20_061000_create_martin_significant_intersections_function.php) reads from it. |
-| `gold.drill_summaries`, `gold.zone_statistics`, `gold.qaqc_statistics`, `gold.campaign_summaries`, `gold.element_correlations` | Live — created in the same [2026_05_20_060700](../../../database/migrations/2026_05_20_060700_create_gold_drillhole_tables.php) batch; written by `silver_to_gold/*.py` assets |
+| `gold.significant_intersections` | **Live** — persisted table from [2026_05_20_060700](../../../database/migrations/2026_05_20_060700_create_gold_drillhole_tables.php); `promote_silver_to_gold` upserts it (Dagster's `silver_to_gold/significant_intersections` did until 2026-07-28). The Martin function [2026_05_20_061000](../../../database/migrations/2026_05_20_061000_create_martin_significant_intersections_function.php) reads from it. |
+| `gold.drill_summaries`, `gold.zone_statistics`, `gold.qaqc_statistics`, `gold.campaign_summaries`, `gold.element_correlations` | Live — created in the same [2026_05_20_060700](../../../database/migrations/2026_05_20_060700_create_gold_drillhole_tables.php) batch; written by `promote_silver_to_gold` |
 | `public.smdi_deposits` | Live (6,012 SK deposits) |
-| `public_geo.pg_*` + `v_pg_*_mvt` | Live (Tier 1); Tier 2/3 sources commented out in [martin.yaml](../../../docker/martin/martin.yaml) |
+| `public_geo.pg_*` + `v_pg_*_mvt` | Live (Tier 1); Tier 2/3 sources commented out in [martin.yaml](../../../docker/martin/martin.yaml). The phase-0 verification counts a `public_geoscience` namespace that does not exist, so it always reports 7/8 ([Ch 02 §1.5](02-data-stores.md)) |
 
 ## Hatchet workflows
 
@@ -115,12 +116,12 @@ the rest of the manual mentions.
 | `outbox_dispatcher` | Live |
 | `audit_ledger_verify` | Live |
 | `stale_run_detector`, `nightly_ingestion_integrity`, `reliability_metrics_publisher` | Live |
-| `re_ocr_page` | Live |
-| `ocr_quality_check_wf` | Live |
-| `mv_refresh_silver`, `sync_silver_to_kg` | Live |
+| `re_ocr_page`, `ocr_quality_check_wf` | **Not registered.** Neither name appears in `worker.py`; OCR quality is decided inside `ingest_pdf` ([Ch 05](05-pdf-stack.md)) |
+| `mv_refresh_silver` | Live |
+| `sync_silver_to_kg` | **Deleted** 2026-07-28 with Neo4j — the silver→graph sync has no target |
 | `score_targets` | Live |
-| `external_notification` | Live (Kestra-triggered) |
-| `public_geoscience_pull` | Partial — Kestra flow live, but bc_minfile/nrcan_geo paths superseded by Dagster (see note in [worker.py](../../../src/fastapi/app/hatchet_workflows/worker.py)) |
+| `external_notification` | Live, but **no caller** — Kestra was its only trigger and is gone |
+| `public_geoscience_pull`, `public_geo_sync` | Live as workflows; the Kestra flow that drove the first is gone, so it now runs on its own cron or by hand |
 | `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | **Deleted** — `backup_neo4j` 2026-08-19 (Neo4j dropped in B1), the other four 2026-08-23. All wrote to a SeaweedFS substrate that does not exist on Azure, so every run had failed since the migration. Deliberate: Postgres carries 35-day PITR from Azure's automated backups, Qdrant is rebuildable by re-embedding from `silver.document_passages`, and Redis is cache plus Horizon queues. Blob storage is the one irreplaceable copy and is LRS-only. |
 | `cold_tier_archive_workflow` | Partial — bucket policies live, lifecycle automation tested only on small sets |
 | `workspace_export`, `restore_workspace` | Partial — golden path verified, larger-than-RAM workspaces unproven |
@@ -135,26 +136,34 @@ the rest of the manual mentions.
 | `train_source_trust` | Experimental (writes `silver.source_trust_scores`) |
 | `train_target_model` | Experimental (target-scoring model refresh) |
 | `what_changed_detector`, `what_changed_weekly` | Live (drives the WhatChangedFeed page) |
-| `phase2_smoke`, `phase0_agents`, `shadow_diff`, `support_replay`, `cost_burn_watcher`, `generate_report`, `flow_jwt_key_reaper`, `idempotency_keys_cleanup` | Live |
+| `phase2_smoke`, `phase0_agents`, `support_replay`, `cost_burn_watcher`, `generate_report`, `flow_jwt_key_reaper`, `idempotency_keys_cleanup` | Live |
+| `shadow_diff`, `shadow_diff_scan` | **Removed** — see the note at `worker.py:93` |
+| `answer_quality_watch`, `qdrant_payload_audit`, `retention_sweep`, `pg_partman_maintenance`, `promote_silver_to_gold`, `nl_summaries`, `verbalize_page_images`, `enrich_passage_context` | Live |
+| `promote_silver_to_gold` | Live (2026-08-25) — restores the silver→gold step Dagster used to own; without it every downhole view renders empty |
 
-## Dagster assets
+## Dagster assets — deleted
 
-| Asset group | Status |
+Dagster was retired on 2026-07-28 and `src/dagster/` was deleted on
+2026-08-28. Every asset this section used to list is gone. What replaced
+each family:
+
+| Former asset group | Today |
 |---|---|
-| `bronze.*`, `bronze_xlsx`, `bronze_lithology`, `bronze_samples`, `bronze_surveys`, `bronze_geophysics`, `bronze_seismic`, `bronze_spatial`, `bronze_well_logs`, `bronze_xyz`, `bronze_reports`, `bronze_public_geoscience` | Live |
-| `silver_collars_canonicalize_backfill`, `silver_lithology`, `silver_samples`, `silver_drill_traces`, `silver_geophysics`, `silver_geochronology`, `silver_reports`, `silver_raster`, `silver_cog_rasters`, `silver_entity_ner_backfill`, `silver_public_geoscience` | Live |
-| `gold_h3_density`, `gold_cross_section_panels`, `gold_drillhole_intervals_visual`, `gold_structure_measurements_visual`, `gold_cross_corpus_linker` | Live |
-| `index_neo4j`, `index_public_geoscience`, `index_reports` | Live |
-| `reranker_labels` (+ helpers) | Experimental (synthetic-label pipeline) |
-| `commit_ingestion_run` | Live |
+| `bronze_*` loaders | the four `ingest_*` Hatchet workflows, parsing through `georag_geoparsers` |
+| `silver_*` canonicalisers | the same ingest workflows, writing silver directly |
+| `gold_h3_density`, `gold_cross_section_panels`, `gold_drillhole_intervals_visual`, `gold_structure_measurements_visual` | `promote_silver_to_gold` (added 2026-08-25). Between 2026-07-28 and that date **nothing wrote the gold visual tables**, so every downhole view was empty on a freshly ingested project |
+| `index_neo4j` | nothing — the graph was dropped |
+| `index_document_passages`, `index_reports`, `index_public_geoscience` | `embed_pending_passages` |
+| `reranker_labels` (+ helpers) | nothing — the synthetic-label pipeline went with the tree |
+| `commit_ingestion_run` | the ingest workflows' own commit step |
 
 ## LangGraph nodes / RAG path
 
 | Node | Status |
 |---|---|
-| `classify_node`, `route_node`, `execute_node`, `assemble_node`, `validate_node`, `demote_node` | Live (behind `AGENTIC_RETRIEVAL_V2_ENABLED`) |
+| `resolve_node`, `classify_node`, `route_node`, `execute_node`, `assemble_node`, `validate_node`, `demote_node`, `repair_shadow_node` | Live (behind `AGENTIC_RETRIEVAL_V2_ENABLED`) |
 | `persist_node` | Partial — best-effort today; see [Ch 06 §2.1](06-retrieval-and-agents.md#21-persistence-is-currently-best-effort--fix-required) |
-| Six hallucination layers | Live |
+| Hallucination guards | **Four of six** run in `orchestrator_validators.py` (typed output, numbers, entities, constraints, plus an advisory completeness check). The retrieval-quality gate is a flat reranker-score floor and provenance is enrichment rather than a gate ([Ch 06](06-retrieval-and-agents.md), CLAUDE.md hard rule 5) |
 | OIUR parser | Live (behind `GEO_ANSWER_OIUR_ENABLED`) |
 | Context envelope (Field/Office mode) | Live |
 | Intent classifier (8 intents) | Live; `project_summary`/`coverage_gap` extractors **partial** (ADR-0007 PR-2) |
@@ -162,58 +171,58 @@ the rest of the manual mentions.
 
 ## Frontend pages
 
-| Page | Status |
-|---|---|
-| Login, ForgotPassword, Onboarding | Live |
-| Projects, NewProject, Overview, Portfolio | Live |
-| Lakehouse | Live |
-| DrillReview | Live (CC-01 Item 1 landed 2026-05-24) |
-| DrillholeDetail | Live |
-| HoleCompare | Live |
-| IngestQuality | Live |
-| IngestionRuns | Partial (Phase A live; Phase B uses `silver.ingest_progress` step writes — planned) |
-| Chat | Live (OIUR cards live; ADR-0007 inline cards partial) |
-| Investigations, Hypothesis, Decisions, Rationale, Reasoning | Live |
-| Targets, TargetRecommendation | Live |
-| SourceGraph | Live |
-| Sources, Corpus | Live (data-hierarchy facets **planned**, Ch 13) |
-| AuditLog | Live |
-| Workspace (3D) | Live (9 sub-views as of 2026-05-25) |
-| ProjectAnalytics | Live |
-| RetrievalInspector | Live (dev) |
-| Reporting, Report, ReportView | Partial — report builder UI live; persistent report binding **planned** |
-| SavedMapViews | Live |
-| SupportCockpit | Live |
-| Settings | Live |
-| Tier3Unlock | Live (gates via `usage.workspace_cost_quotas`) |
-| WhatChangedFeed | Live |
-| Inbox | Live |
-| AssessmentSummary | Live |
-| ChartsGallery | Live |
-| InterpretationWorkspace | Partial |
-| SearchQuery, Explorer | Live |
-| DataImportWizard | Live |
-| EvidenceQuality dashboard | Live |
-| LlmCost dashboard | Live |
-| PublicGeoOverlay dashboard | Live |
-| Reporting dashboard | Live |
-| VisualReadiness dashboard | Live |
+**This list was wrong by a wide margin and is now read from the code.**
+`resources/js/Pages/` holds sixteen pages, and `Inertia::render` is called
+with exactly those sixteen names. Pages the previous version listed as Live
+— Lakehouse, DrillReview, HoleCompare, Investigations, Hypothesis,
+Decisions, Targets, SourceGraph, AuditLog, SupportCockpit, Settings,
+WhatChangedFeed, Inbox, RetrievalInspector, the five dashboards and the
+rest — **do not exist as pages**. Some of their functionality lives in
+components under `resources/js/Components/` (79 `.tsx` files in total);
+most is design-only.
 
-## Agents (Pydantic-AI / Phase 0+5+)
+| Page | File | Status |
+|---|---|---|
+| Login, ForgotPassword, ResetPassword | `Pages/*.tsx` | Live |
+| Projects | `Foundry/Projects.tsx` | Live |
+| NewProject | `Foundry/NewProject.tsx` | Live |
+| Overview | `Foundry/Overview.tsx` | Live |
+| Workspace | `Foundry/Workspace.tsx` | Live — the multi-mode 3D/section/log surface |
+| DrillholeDetail | `Foundry/DrillholeDetail.tsx` | Live |
+| Chat | `Foundry/Chat.tsx` | Live |
+| Sources | `Foundry/Sources.tsx` | Live |
+| Reports | `Foundry/Reports.tsx` | Live |
+| IngestionRuns | `Foundry/IngestionRuns.tsx` | Live |
+| DataImportWizard | `Foundry/DataImportWizard.tsx` | Live |
+| AttributeTables | `Foundry/AttributeTables.tsx` | Live |
+| PublicGeoscience | `Foundry/PublicGeoscience.tsx` | Live |
+| RasterLayers | `Foundry/RasterLayers.tsx` | Live |
+| Error | `Pages/Error.tsx` | Live (error boundary, not a route) |
 
-| Agent | Status |
-|---|---|
-| Index Health (`phase0_agents`) | Live |
-| Storage Tiering | Live (dev-only) |
-| Store Reconciliation | Live |
-| Support Packet | Live |
-| LLM Incident Diagnosis | Experimental |
-| Cost Burn Watcher | Live |
-| Anomaly Detector (tool) | Live |
-| Drill Targeting (tool) | Live |
-| Decomposer, Anaphora, Followups | Live |
-| Escalation, Agentic Escalation | Live |
-| Confidence Computer | Live |
+See [Ch 10](10-frontend.md) for what each renders.
+
+## Agents
+
+Phase 0 agents are the modules in
+[`src/fastapi/app/agents/phase0/`](../../../src/fastapi/app/agents/phase0/),
+dispatched by the `phase0_agents` workflow.
+
+| Agent | Module | Status |
+|---|---|---|
+| Index Health | `index_health.py` | Live |
+| Storage Tiering | `storage_tiering.py` | Live |
+| Store Reconciliation | `store_reconciliation.py` | Live — now checks Postgres and Qdrant only; the Neo4j leg is gone |
+| Support Packet | `support_packet.py` | Live |
+| Lineage Reporter | `lineage_reporter.py` | Live |
+| Model Cost Summary | `model_cost_summary.py` | Live |
+| Model Upgrade Watch | `model_upgrade_watch.py` | Live |
+| Tenant Isolation Auditor | `tenant_isolation_auditor.py` | Live (Postgres RLS half) |
+| Graph Tenant Auditor | `graph_tenant_auditor.py` | **Vestigial** — audits a graph store that no longer exists; still on a nightly cron ([Ch 07 §2.2](07-orchestration.md)) |
+| LLM Incident Diagnosis | `llm_incident_diagnosis.py` | Experimental |
+| Cost Burn Watcher | `cost_burn_watcher.py` (workflow, not `phase0/`) | Live |
+
+Pydantic AI itself is vestigial: the guards live in
+`orchestrator_validators.py`, not in an agent framework ([Ch 06](06-retrieval-and-agents.md)).
 
 ## Feature flags currently in play
 
@@ -227,7 +236,8 @@ the rest of the manual mentions.
 | `OCR_ROUTING_THRESHOLDS_JSON` | unset | Calibrated multi-signal routing bands; unset fails closed to review |
 | `P04P_DUAL_WRITE_ENABLED` | false | Run legacy parser in parallel for A/B |
 | `CITATION_SPAN_RESOLVER_ENABLED` | false | Enable inline citation span resolver |
-| `LLM_BACKEND` | `vllm` | `vllm` / `anthropic`; `anthropic` requires explicit profile gate (Appendix C) |
+| `LLM_BACKEND` | `azure` | `azure` (Foundry, Cohere Command A+) / `vllm` (operator's own OpenAI-compatible endpoint) / `anthropic` (Claude, optional fallback). There is no `foundry` value for the LLM |
+| `EMBEDDING_BACKEND` / `RERANKER_BACKEND` | `foundry` | Code and compose both default to `foundry` since 2026-09-06; `.env.example` sets `local` / `cross_encoder` to use the dev sidecars. Set both explicitly in production, identically on the query and ingest paths |
 | `LLM_BACKEND_FALLBACK` | `downshift` | Cross-backend failover policy |
 | `LLM_FALLBACK_ENABLED` | false | Enable cross-backend failover |
 
@@ -237,10 +247,12 @@ See appendix C. Summary:
 
 1. **`georag` Postgres role is SUPERUSER + BYPASSRLS** — operationally
    mitigated, structural fix tracked (Ch 02 §1.1).
-2. **Martin uses `georag_app`** — should be `martin_readonly` (Ch 02 §1.2).
-3. **Qdrant auth off in dev** — must be required in prod (Ch 02 §3).
-4. **Anthropic / external-LLM data egress** — must be profile-gated;
-   currently always available behind env (Ch 06).
+2. **Martin uses `georag_app` in dev** — `martin_readonly` exists and the Azure manifest says to use it (Ch 02 §1.3).
+3. **Qdrant auth off in dev** — deliberate (an empty `QDRANT__SERVICE__API_KEY` enables auth and breaks every client); must be set in prod (Ch 02 §2).
+4. **External-LLM data egress** — the default backend is now Azure AI
+   Foundry, so every query leaves the container either way; the
+   `georag_external_llm_egress_blocked_total` counter is the only signal
+   and nothing scrapes it (Ch 12 §2.1).
 5. **`persist_node` is best-effort** — answers can complete without an
    audit row (Ch 06 §2.1).
 6. **`init-roles.sql` is outside the auto-init dir** — fresh clusters

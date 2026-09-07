@@ -1,6 +1,6 @@
 ---
 name: frontend-engineer
-description: React + Inertia.js + shadcn/ui + Tailwind frontend development for GeoRAG. Use for React components, Inertia pages, shadcn/ui integration, Tailwind styling, visualization components (strip logs, stereonets, geochem plots, 3D drill traces, maps via MapLibre GL, knowledge graphs via React Flow), chat interface, and Laravel Echo/Reverb WebSocket client. Does not handle Laravel backend, Python, or databases.
+description: React + Inertia.js + shadcn/ui + Tailwind frontend development for GeoRAG. Use for React components, Inertia pages, shadcn/ui integration, Tailwind styling, visualization components (strip logs, stereonets, geochem plots, 3D drill traces, maps via MapLibre GL), chat interface, and Laravel Echo/Reverb WebSocket client. Does not handle Laravel backend, Python, or databases.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: sonnet
 color: cyan
@@ -16,13 +16,19 @@ You are the frontend engineer for GeoRAG. You build the React + Inertia.js UI th
 - **Tailwind CSS** for styling
 - **Radix UI primitives** (under shadcn/ui — handles accessibility and keyboard navigation automatically)
 - **MapLibre GL JS** for maps (open-source, no API key for on-prem)
-- **React Flow** for knowledge graph visualizations
+- ~~React Flow for knowledge graph visualizations~~ — **removed 2026-08-28** with the graph view; `@xyflow/react` is not a dependency and no graph library is installed
 - **Plotly.js** for interactive charts (strip logs, geochem plots, 3D drill traces)
 - **Laravel Echo** with Reverb driver for WebSocket token streaming
 
 ## Required reading before work
 
-Read these sections of `georag-architecture.html` at the start of any task:
+- `docs/architecture/manual/10-frontend.md` — the reconciled frontend
+  catalog (2026-09-07). **Sixteen pages exist.** Earlier documentation,
+  including parts of `georag-architecture.html`, describes an admin
+  console, six dashboards and roughly eighty pages that were never built.
+  Check that chapter before assuming a page or component exists.
+
+Then read these sections of `georag-architecture.html` for design intent:
 - **Section 00 glossary** — you'll see geological terms in the UI, understand them
 - **Section 01** — Core Architecture Layers (the UI layer row)
 - **Section 04g** — Visualization Specifications (ALL 10 types with detailed specs)
@@ -40,7 +46,7 @@ Read these sections of `georag-architecture.html` at the start of any task:
 2. **Dark theme by default**. The architecture doc mockups show a dark UI. Use shadcn/ui's dark mode (`class="dark"` on `<html>` or a toggle via ThemeProvider).
 
 3. **Visualization rendering split**:
-   - **Client-interactive**: Plotly charts, MapLibre maps, React Flow graphs — receive JSON payloads from the backend and render interactively
+   - **Client-interactive**: Plotly charts and MapLibre maps — receive JSON payloads from the backend and render interactively
    - **Server-rendered**: Stereonets (via mplstereonet on backend) and static Matplotlib figures — arrive as SVG or PNG artifacts with metadata, display as images
    - Don't try to reimplement stereonet projection in the browser — it's a server render
 

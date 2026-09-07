@@ -1,184 +1,149 @@
 # Chapter 08 — LLM and ML Models
 
-> **Reconciliation notice (2026-09-07).** This chapter was written against the
-> pre-2026-07-28 stack and has not yet been reconciled with the code. Neo4j,
-> Dagster, Kestra, Caddy, the self-hosted vLLM server, Prometheus / Grafana /
-> Loki / Tempo and the backup agent were all removed between 2026-07-28 and
-> 2026-08-23 — treat any mention of them here as history. See
-> [Ch 00 §7](00-overview.md#7-reconciliation-status-of-this-manual) for what is
-> current and [Ch 14](14-status-matrix.md) for component status. File paths
-> and line numbers may be stale.
+> **Reconciled 2026-09-07** against `src/fastapi/app/config.py`,
+> `app/agent/llm_calls.py`, `app/services/embedding.py`,
+> `app/services/reranker.py`, `app/services/sparse_encoder.py`,
+> `docker-compose.yml` and `.env.production.example`. The previous version
+> opened with a self-hosted vLLM server as the LLM tier; that service was
+> deleted on 2026-07-30 and the default backend is Azure AI Foundry.
+> Sections 7 and 8 pointed into `src/dagster/`, deleted 2026-08-28.
 
-Every model the system runs, classified by **kind** and **where it executes**.
+Every model the system runs, by **kind** and **where it executes**.
 
-## 1. vLLM — the LLM tier
+| Role | Dev (compose) | Production (Azure) |
+|---|---|---|
+| LLM | Azure AI Foundry, Cohere Command A+ | same |
+| Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | Foundry, Cohere Embed v4 |
+| Reranker | `reranker` sidecar, Qwen3-Reranker-0.6B (GPU) | Foundry, Cohere Rerank v4 |
+| Sparse | `sparse` sidecar, SPLADE++ (CPU) | **self-hosted or absent — no Foundry equivalent** |
+| Scanned-page OCR | Cohere Parse v5 on Foundry, Tesseract fallback | same |
 
-[docker-compose.yml:1476](../../../docker-compose.yml).
+## 1. The LLM tier — Azure AI Foundry
+
+`LLM_BACKEND` selects the backend: **`azure`** (default) | `vllm` |
+`anthropic`. There is no `foundry` value for the LLM — that word is only
+used by `EMBEDDING_BACKEND` and `RERANKER_BACKEND`.
+
+### 1.1 Azure (the default)
 
 | Field | Value |
 |---|---|
-| Image | `vllm/vllm-openai:v0.21.0` |
-| Default model | `Qwen/Qwen3-14B-AWQ` (INT4 quantised, ~17 GB on disk) |
-| Quantisation | `awq_marlin` |
-| Max model len | 16384 |
-| KV cache dtype | FP8 (storage; FP16 compute on Ampere) |
-| Max num seqs | 12 |
-| GPU mem util | 0.93 (capped at 0.80 when sharing with hatchet-worker-ai per [project_gpu_acceleration_2026_05_22](../notes/INDEX.md#project_gpu_acceleration_2026_05_22)) |
-| Tensor parallel | 1 (single A4500) |
-| Speculative decoding | n-gram, `num_speculative_tokens=2` |
-| Prefix caching | enabled |
-| Chunked prefill | enabled |
-| Cuda-graph capture sizes | `[1,2,4,8,12]` (trimmed from default to free ~1-3 GiB) |
-| OpenAI-compatible endpoint | `http://vllm:8000/v1` |
+| Deployment | `Cohere-command-a-plus-05-2026` (Preview), dev and prod |
+| Wire API | the unified **OpenAI v1** surface: `{AZURE_FOUNDRY_ENDPOINT}/openai/v1/chat/completions` |
+| Model field | `AZURE_FOUNDRY_DEPLOYMENT`, sent as the OpenAI `model` |
+| Streaming | SSE, forwarded by FastAPI as `status`/`bind`/`delta`/`citation`/`completed`/`failed` frames |
 
-Why this exact configuration is in
-[docker-compose.yml:1518-1577](../../../docker-compose.yml) with multi-paragraph
-inline comments justifying every flag.
+The wire contract was confirmed empirically against a live deployment on
+2026-07-30, including three things a reader would not assume:
 
-### How FastAPI calls it
+- JSON `response_format` is supported.
+- Reasoning arrives in a **separate `reasoning_content` field**, not inside
+  the message content.
+- Cohere wraps JSON output in `<|START_TEXT|>` / `<|END_TEXT|>` sentinel
+  tokens, which the client strips.
 
-`LLM_BACKEND=vllm` (default). The OpenAI-compatible client points at
-`LLM_PRIMARY_URL=http://vllm:8000/v1` with `LLM_PRIMARY_MODEL=Qwen/Qwen3-14B-AWQ`.
-Cross-backend failover (`LLM_BACKEND_FALLBACK=downshift`) re-routes to
-the configured fallback when the primary 429s.
+`app/config.py`'s `AZURE_FOUNDRY_*` block is the authority; `effective_llm_url`
+resolves the base URL per backend and raises for `anthropic`, which does not
+use an OpenAI-shaped URL.
 
-LLM client implementation:
-[src/fastapi/app/agent/llm_calls.py](../../../src/fastapi/app/agent/llm_calls.py).
-Streams tokens via SSE; FastAPI forwards chunks to Laravel which broadcasts
-on the Reverb `query.streaming.{run_id}` channel.
+### 1.2 vLLM (still supported, no longer shipped)
 
-### Warmup
+The compose service is gone. `LLM_BACKEND=vllm` remains valid for an
+operator pointing at their own OpenAI-compatible endpoint, and a startup
+validator fails the service when `VLLM_URL` is empty rather than silently
+falling back. `LLM_PRIMARY_MODEL` still defaults to `Qwen/Qwen3-14B-AWQ`,
+which is the historical default and not a model this deployment runs.
 
-The `vllm-warmup` sidecar ([docker-compose.yml:1629](../../../docker-compose.yml))
-fires 5 throwaway 16-token completions once vLLM is healthy — burns the
-FlashInfer JIT compilation tax (~28 → 154 tok/s, A4500 + Qwen3-14B-AWQ).
+### 1.3 Anthropic (optional fallback)
 
-### Anthropic fallback
+`LLM_BACKEND=anthropic` uses the native Anthropic API with a pooled
+client; `REQUIRE_POOLED_ANTHROPIC_CLIENT` defaults true so a missing pool
+fails loudly instead of constructing a client per call.
 
-`LLM_BACKEND=anthropic` + `LLM_BACKEND_FALLBACK=vllm` flips the order:
-Anthropic primary, vLLM as backup on 429.
-Env vars [docker-compose.yml:975-985](../../../docker-compose.yml):
-- `ANTHROPIC_API_KEY`
-- `ANTHROPIC_MODEL=claude-opus-4-8`
-- `ANTHROPIC_MAX_OUTPUT_TOKENS=4096`
-- `ANTHROPIC_ENABLE_PROMPT_CACHING=true`
-- `ANTHROPIC_USE_PRIORITY_TIER=false`
-- `MODEL_TIER_FAST=claude-haiku-4-5`
-- `MODEL_TIER_STANDARD=claude-sonnet-4-6`
-- `MODEL_TIER_DEEP=claude-opus-4-8`
+| Setting | Default |
+|---|---|
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` |
+| `ANTHROPIC_MAX_OUTPUT_TOKENS` | 4096 |
+| `ANTHROPIC_ENABLE_PROMPT_CACHING` | true |
+| `ANTHROPIC_USE_PRIORITY_TIER` | false |
+| `MODEL_TIER_FAST` | `claude-haiku-4-5` |
 
-### Qwen2.5-VL (figures)
+`MODEL_TIER_STANDARD` and `MODEL_TIER_DEEP` are referenced by the routing
+and pricing telemetry; only `MODEL_TIER_FAST` carries a default in
+`config.py`.
 
-`VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct` is supported as a §04p Stage-6
-config. The optional VL pass goes through
-`pdf_vl.py::describe_figure_vl()`; automated figure-region production is
-currently disabled.
+Client: [`app/agent/llm_calls.py`](../../../src/fastapi/app/agent/llm_calls.py).
 
----
+### 1.4 Vision / figures
 
-> ## ⚠️ MODEL STACK SWAPPED 2026-06-03 — config/runtime split
->
-> The embedding + reranker models were swapped to the Qwen3 line on
-> **2026-06-03** (the "Qwen ecosystem swap"), but the swap reached
-> production via **`.env` override only** — the code defaults, the
-> Dagster re-index assets, and the compose defaults still name the old
-> bge models. **Read the two-column table below as the source of truth.**
->
-> | Slot | Production (live, env-driven) | Code default (stale) |
-> |---|---|---|
-> | Dense embedder | `Qwen/Qwen3-Embedding-0.6B`, **1024-dim** ([config.py:899,904](../../../src/fastapi/app/config.py)) | `BAAI/bge-small-en-v1.5`, 384-dim ([embedding_service.py:41](../../../src/fastapi/app/embedding_service.py), [docker-compose.yml:959](../../../docker-compose.yml)) |
-> | Cross-encoder reranker | `Qwen/Qwen3-Reranker-0.6B` (via `RERANKER_MODEL_PATH` override) ([config.py:929](../../../src/fastapi/app/config.py)) | `BAAI/bge-reranker-base@2cfc18c9` ([services/reranker.py:77,81](../../../src/fastapi/app/services/reranker.py)) |
->
-> **🔴 Live re-index hazard.** The Dagster index assets still declare
-> 384-dim `VectorParams` ([index_document_passages.py:67,263](../../../src/dagster/georag_dagster/assets/index_document_passages.py),
-> [index_reports.py:64](../../../src/dagster/georag_dagster/assets/index_reports.py),
-> [index_public_geoscience.py:82](../../../src/dagster/georag_dagster/assets/index_public_geoscience.py)).
-> Production `georag_chunks` is 1024-dim — **re-running a Dagster index
-> asset would recreate the collection at 384-dim and break retrieval.**
-> Tracked as a Z-roadmap item; the live re-embed used a standalone
-> script ([scripts/reembed_qdrant.py:47-48](../../../src/fastapi/scripts/reembed_qdrant.py),
-> `_embed_silver_pending_cutover.py`), not the Dagster asset.
->
-> **ADR history (now partly superseded):**
-> - **ADR-0008** ([0008](../../adr/0008-embedding-model-evaluation.md)) Accepted Option D (domain-FT bge-small 384-dim) — **superseded** by the 2026-06-03 Qwen3 swap, which discards the bge-small domain FT.
-> - **ADR-0011** ([0011](../../adr/0011-reranker-domain-adaptation.md)) Proposed reranker domain adaptation (vocab → MLM → full FT on bge-reranker-base) — **dormant**: it predates the Qwen3-Reranker swap and is framed entirely around bge.
-> - **ADR-0003** ([0003](../../adr/0003-defer-v2m3-gpu-reranker.md)) Proposed/Deferred bge-reranker-v2-m3.
->
-> Full audit-wave detail: [Ch 18 — Model Stack Evolution](18-model-stack-evolution.md).
+`VLLM_MODEL` (default `Qwen/Qwen3-14B-AWQ`) is the model name for the
+vLLM backend, not a separate VL deployment. Page-image description runs
+through `services/ingest/page_verbalizer.py` and the
+`verbalize_page_images` workflow, which is **inert unless
+`IMAGE_VERBALIZATION_ENABLED` is set** — the hourly cron returns
+immediately otherwise. See [Ch 05](05-pdf-stack.md).
 
-## 2. Dense embedder — Qwen3-Embedding-0.6B (was bge-small)
+## 2. Embeddings
 
-**Classification:** ML model (single forward pass per chunk).
+**Classification:** ML model (one forward pass per chunk). 1024-dim, cosine,
+matching the `georag_chunks` collection ([Ch 02 §2.2](02-data-stores.md)).
 
-- **Production**: `Qwen/Qwen3-Embedding-0.6B`, **1024-dim, cosine**
-  ([config.py:899-911](../../../src/fastapi/app/config.py)). Optional
-  Qwen3 instruction-prefix support via `EMBEDDING_QUERY_PROMPT_NAME`
-  (default off).
-- **Code default still bge-small 384-dim** — see the hazard box above.
-- Loaded via `sentence-transformers` in the `fastapi` lifespan
-  ([main.py:564-584](../../../src/fastapi/app/main.py)), or proxied to the
-  **embedding sidecar** ([embedding_service.py](../../../src/fastapi/app/embedding_service.py))
-  when `EMBEDDING_SERVICE_URL` is set (the 2026-06-24 one-copy fix).
-- Invocation: [embed_pending_passages.py](../../../src/fastapi/app/hatchet_workflows/embed_pending_passages.py)
-  + `services/passage_embedder.py`.
-- Target collection: Qdrant **`georag_chunks`** (canonical, ADR-0010),
-  plus `georag_reports` (legacy) + `public_geoscience`.
-- Cutover: production cutover initiated 2026-06-04 — 9,099 silver
-  passages re-embedded into the 1024-dim collection at ~113 passages/min
-  on A4500; post-swap eval baseline uncommitted/pending
-  ([ops/baselines/qwen3-embedding-cutover-2026-06-04.md](../../../ops/baselines/qwen3-embedding-cutover-2026-06-04.md)).
+`EMBEDDING_BACKEND` is **`foundry` by default in code and in compose** since
+2026-09-06, so an unset value on an Azure app selects Cohere Embed v4 rather
+than a model host that does not exist there. `.env.example` sets `local`
+explicitly to use the dev sidecar.
 
----
+| Backend | Path |
+|---|---|
+| `foundry` | `POST {endpoint}/providers/cohere/v2/embed`, Embed v4 asked for 1024-dim output — verified live 2026-07-30 ([`services/embedding.py`](../../../src/fastapi/app/services/embedding.py)) |
+| `local` | the `embedding` sidecar, `Qwen/Qwen3-Embedding-0.6B` pinned at revision `97b0c614`, reached over `EMBEDDING_SERVICE_URL` |
 
-## 3. Cross-encoder reranker — Qwen3-Reranker-0.6B (was bge-reranker-base)
+The sidecar exists because six uvicorn workers each loaded their own
+~2.4 GiB copy and OOM-killed the container mid-stream (2026-06-24). Never
+fold it back into the FastAPI image.
+
+Invocation: [`embed_pending_passages`](../../../src/fastapi/app/hatchet_workflows/embed_pending_passages.py)
+plus `services/passage_embedder.py`.
+
+**Switching backends requires a full re-embed** — dimensions match, but the
+vector spaces do not. `scripts/reset_embeddings_for_reencode.py` is the tool.
+
+## 3. Reranker
 
 **Classification:** ML model.
 
-- **Production**: `Qwen/Qwen3-Reranker-0.6B` — a CausalLM that returns a
-  yes/no token-logit ratio, wrapped by a `sentence-transformers`
-  `CrossEncoder`-style interface, loaded via the `RERANKER_MODEL_PATH`
-  env override ([services/reranker.py:181-211](../../../src/fastapi/app/services/reranker.py)).
-- **Code default still `BAAI/bge-reranker-base@2cfc18c9`** ([reranker.py:77-82](../../../src/fastapi/app/services/reranker.py)) — see hazard box.
-- Where: **CPU** in the `fastapi` container (no GPU contention with vLLM
-  during chat), or the **reranker sidecar** ([reranker_service.py](../../../src/fastapi/app/reranker_service.py))
-  when `RERANKER_SERVICE_URL` is set — the 2026-06-24 fix for the
-  "6 uvicorn workers each load a reranker copy → OOM" problem
-  ([fastapi resource fixes 2026-06-24](../notes/INDEX.md)).
-- Thread bound: `OMP_NUM_THREADS=10`, `TOKENIZERS_PARALLELISM=false`.
-- Timeout split (from [project_latency_fix_2026_05_20](../notes/INDEX.md#project_latency_fix_2026_05_20)):
-  Qdrant `wait_for` 2 s, reranker `wait_for` 8 s, pre-truncate to 2000
-  chars, halve candidates 20→10.
-- Invocation: inside the agentic LangGraph `execute_node`, fed by
-  `services/fusion.py`.
+`RERANKER_BACKEND` also defaults to `foundry`.
 
-### Reranker fine-tune pipeline (`reranker_labels` asset group)
+| Backend | Path |
+|---|---|
+| `foundry` | `POST {endpoint}/providers/cohere/v2/rerank`, Rerank v4, scores all N documents in one call — verified live 2026-07-30 ([`services/reranker.py`](../../../src/fastapi/app/services/reranker.py)) |
+| `cross_encoder` / `qwen3_causal` | the `reranker` sidecar, `Qwen/Qwen3-Reranker-0.6B` — a CausalLM returning a yes/no token-logit ratio behind a CrossEncoder-shaped interface |
 
-[project_reranker_v1](../notes/INDEX.md#project_reranker_v1) — Path C: fine-tune in place via LoRA.
+A degraded reranker is not silent: `georag_rerank_degraded_total` counts
+calls that returned RRF-ordered results because the reranker timed out or
+raised. Answers on that path carry raw fusion scores an order of magnitude
+below a Cohere score, which drags down citation relevance for evidence that
+was fine. Nothing scrapes that counter ([Ch 12 §2.1](12-observability.md)).
 
-- Synthetic-label asset:
-  [src/dagster/georag_dagster/assets/reranker_labels.py](../../../src/dagster/georag_dagster/assets/reranker_labels.py)
-  + [reranker_labels_helpers.py](../../../src/dagster/georag_dagster/assets/reranker_labels_helpers.py).
-- Writes `eval.reranker_training_pairs`.
-- Eval harness: [src/fastapi/scripts/eval_reranker_*.py](../../../src/fastapi/scripts/).
-- LoRA trainer: `src/fastapi/scripts/train_reranker_lora.py` —
-  runs inside the `fastapi` container with GPU passthrough
-  ([docker-compose.yml:1086-1094](../../../docker-compose.yml)). Stop vLLM
-  before training (or accept slower throughput) — they share the A4500.
-- Eval log artefacts under [docs/](../../) (`eval_rerun_120.log`,
-  `lithology_derive_rerun.log`, etc.).
-
----
+The `reranker_labels` LoRA fine-tune pipeline was a Dagster asset group and
+went with the tree on 2026-08-28. `eval.reranker_training_pairs` still
+exists; nothing writes it.
 
 ## 4. SPLADE++ — sparse retriever
 
 **Classification:** ML model.
 
 - Path: `naver/splade-cocondenser-ensembledistil`.
-- Where: GPU on `hatchet-worker-ai` (~440 MiB resident).
-- Encodes both ingest passages (sparse vectors in Qdrant `splade_*`
-  collection) and queries at chat time.
-- Used by `services/fusion.py` as one of the three retrieval legs
-  (vector + sparse + BM25 → fused via RRF or DBSF).
+- Where: the **`sparse` sidecar** on CPU, reached over `SPARSE_SERVICE_URL`
+  ([`services/sparse_encoder.py`](../../../src/fastapi/app/services/sparse_encoder.py)).
+  There is no `hatchet-worker-ai`; one merged worker runs everything.
+- Encodes ingest passages and chat-time queries into the **named `text`
+  sparse vector on `georag_chunks`** — not a separate collection
+  ([Ch 02 §2.2](02-data-stores.md)).
+- One of the retrieval legs fused in `services/fusion.py` (RRF or DBSF).
+- **Sparse has no Foundry equivalent.** Whichever backend the dense side
+  uses, SPLADE++ is self-hosted or the sparse leg is simply absent — the
+  single most important asymmetry in the production model stack.
 
 ---
 
@@ -209,20 +174,22 @@ currently disabled.
 
 ## 7. Sheet-type classifier (XLSX)
 
-[src/dagster/georag_dagster/parsers/_sheet_classifier.py](../../../src/dagster/georag_dagster/parsers/_sheet_classifier.py).
+[`src/georag_geoparsers/georag_geoparsers/_sheet_classifier.py`](../../../src/georag_geoparsers/georag_geoparsers/_sheet_classifier.py)
+— the parser package survived Dagster's deletion and is now imported by the
+Hatchet ingest workflows.
 
 **Classification:** Rule-based.
 
 - Routes XLSX sheets to the right canonical bronze table based on
-  header signatures + vendor aliases ([_vendor_aliases.py](../../../src/dagster/georag_dagster/parsers/_vendor_aliases.py)).
+  header signatures + vendor aliases ([`_vendor_aliases.py`](../../../src/georag_geoparsers/georag_geoparsers/_vendor_aliases.py)).
 - Multi-sheet workbook fix (2026-05-23) — empty `sheet_type=''` now
   auto-dispatches via the classifier; aliases shared with CSV inference
   ([project_xlsx_audit_2026_05_23](../notes/INDEX.md#project_xlsx_audit_2026_05_23)).
 
 ## 8. CSV delimiter / decimal auto-detect
 
-[src/dagster/georag_dagster/parsers/_csv_io.py](../../../src/dagster/georag_dagster/parsers/_csv_io.py)
-+ [_encoding.py](../../../src/dagster/georag_dagster/parsers/_encoding.py).
+[`_csv_io.py`](../../../src/georag_geoparsers/georag_geoparsers/_csv_io.py)
++ [`_encoding.py`](../../../src/georag_geoparsers/georag_geoparsers/_encoding.py).
 
 **Classification:** Rule-based.
 
@@ -230,7 +197,7 @@ Three real CSV gaps closed in 2026-05-23
 ([project_csv_audit_2026_05_23](../notes/INDEX.md#project_csv_audit_2026_05_23)):
 - Delimiter auto-detect.
 - Decimal-comma transform.
-- Dagster `csv_silver_ingest` concurrency pool.
+- A concurrency pool on the CSV ingest path (was Dagster's `csv_silver_ingest`; the limit now lives in the `ingest_tabular` workflow's Hatchet concurrency key).
 
 ## 9. Hole-ID extractor
 
@@ -263,33 +230,43 @@ See [Ch 06 §9](06-retrieval-and-agents.md#9-hole-id-extractor-rule-based).
 ## 12. Lithology derive (rule-based + LLM hybrid)
 
 `docs/lithology_derive_*.log` are eval artefacts. The actual code:
-[src/fastapi/app/services/derive_intervals.py](../../../src/fastapi/app/services/derive_intervals.py).
+[src/fastapi/app/services/derive_intervals.py](../../../src/fastapi/app/services/ingest/derive_intervals.py).
 
 - First pass: rule-based interval derivation from lithology logs.
 - Second pass: LLM-assisted disambiguation for rock-code conflicts.
 - v2 added confidence flag → drives `silver.lithology.rock_code_confidence`.
 
-## 13. Phase 0 + Phase 5 agent registry (Pydantic AI)
+## 13. Phase 0 agent registry
 
-[src/fastapi/app/agents/phase0/](../../../src/fastapi/app/agents/phase0/) etc.
-Each Pydantic AI agent has a tool budget + timeout from `workspace.agent_timeouts`.
+[`src/fastapi/app/agents/phase0/`](../../../src/fastapi/app/agents/phase0/) —
+eleven modules, dispatched by the `phase0_agents` workflow, each with a tool
+budget and timeout from `workspace.agent_timeouts`. **Pydantic AI is
+vestigial**: the framework is installed and the agents are shaped for it,
+but the guards that matter run in `orchestrator_validators.py`
+([Ch 06](06-retrieval-and-agents.md)). Full list in
+[Ch 14](14-status-matrix.md#agents).
 
 Agents in use:
 - **Index Health** — `hypopg`-driven hypothetical index evaluation.
 - **Storage Tiering** — moves bronze objects between hot/warm/cold tiers.
-- **Store Reconciliation** — checks consistency across PG/Neo4j/Qdrant.
+- **Store Reconciliation** — checks consistency across Postgres and Qdrant. The Neo4j leg went with the graph.
 - **Support Packet** — bundles trace + audit + repro envelope for support.
 - **LLM Incident Diagnosis** — multi-agent debugging.
 - **Cost Burn Watcher** — Tier 3 unlock gating.
 
 ## 14. Models on disk (where + how much)
 
-| Model | Container | Cache path | Approx size |
+Only the three sidecars hold weights, and only in dev. Production runs no
+model locally except Tesseract.
+
+| Model | Where | Cache path | Approx size |
 |---|---|---|---|
-| Qwen3-14B-AWQ | `vllm` | `/root/.cache/huggingface` (vllm_hf_cache) | ~17 GB |
-| Qwen2.5-VL-7B (optional) | `vllm` | same | ~14 GB |
-| bge-small-en | `hatchet-worker-ai` | `/tmp/hf_cache` (fastapi_hf_cache shared) | ~135 MB |
-| bge-reranker-base | `fastapi` | `/tmp/hf_cache` (fastapi_hf_cache) | ~280 MB |
-| SPLADE++ | `hatchet-worker-ai` | `/tmp/hf_cache` | ~440 MB |
-| Tesseract | both workers | system path | ~30 MB lang data |
-| Cohere Parse v5 (OCR) | Azure AI Foundry, external managed service | n/a | n/a |
+| `Qwen/Qwen3-Embedding-0.6B` | `embedding` sidecar (CPU) | `/tmp/hf_cache` | ~1.2 GB |
+| `Qwen/Qwen3-Reranker-0.6B` | `reranker` sidecar (GPU) | `/tmp/hf_cache` | ~1.2 GB |
+| SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | `sparse` sidecar (CPU) | `/tmp/hf_cache` | ~440 MB |
+| Tesseract 5.5.2 | `fastapi` and `hatchet-worker` images, built from source | system path | ~30 MB lang data |
+| Cohere Command A+, Embed v4, Rerank v4, Parse v5 | Azure AI Foundry (external managed service) | n/a | n/a |
+
+The `vllm_hf_cache` volume and the Qwen3-14B / Qwen2.5-VL weights went with
+the vLLM service on 2026-07-30. `bge-small-en` and `bge-reranker-base` were
+the pre-2026-06 defaults and are no longer downloaded.
