@@ -135,10 +135,15 @@ Every service needs a healthcheck. Applications expose `/up` (Laravel) and
 
 ## Monitoring
 
-Azure Monitor and Log Analytics: 15 metric alerts and 4 scheduled queries,
-routed to a single email receiver. **There are no latency alerts and no paging.**
-There is no Prometheus or Grafana configuration anywhere in the repository —
-do not write scrape configs or dashboards.
+Azure Monitor and Log Analytics, routed to a single email receiver. The
+2026-08-21 baseline was 15 metric alerts and 4 scheduled-query rules;
+`deploy/azure/alerts/create-alerts.sh` adds twelve more (log rules keyed on
+marker lines such as `ANSWER_QUALITY_REGRESSION`). **There are no latency
+alerts and no paging.** `docs/architecture/manual/12-observability.md`
+(reconciled 2026-09-07) is the inventory: logs, the two unscraped `/metrics`
+endpoints, trace-id propagation, probes and the alert rules. There is no
+Prometheus or Grafana configuration anywhere in the repository — do not write
+scrape configs or dashboards.
 
 ## Backups — a known gap, state it plainly
 

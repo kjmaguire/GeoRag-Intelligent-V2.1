@@ -77,7 +77,7 @@ Two things to know about this list:
 | `pgbouncer:6432`, transaction pooling | `georag_app` | `laravel-octane`, `laravel-horizon`, `laravel-reverb`, `fastapi` runtime | Short-lived queries; the only path safe for asyncpg under pooling |
 | `postgresql:5432` direct | `georag` (owner) | Laravel `pgsql_migrations` (`MIGRATE_DB_*`), `hatchet-worker` (`POSTGRES_USER`) | DDL needs session state; the worker needs transactions and RLS GUCs |
 | `postgresql:5432` direct | `georag_app` | `fastapi` via `POSTGRES_DIRECT_HOST` (per-flow key loader's `set_config`), `martin` in dev | Transaction-local settings; Martin's persistent connections |
-| `postgresql:5432/hatchet` | `hatchet` | `hatchet-lite`; Laravel `pgsql_hatchet` for the Worker Dashboard | Engine state. Laravel's use is read-only by convention — the `hatchet` role owns the DB |
+| `postgresql:5432/hatchet` | `hatchet` | `hatchet-lite`; Laravel still defines `pgsql_hatchet`, but the Worker Dashboard that used it is gone | Engine state |
 
 `max_connections=200` in dev; PgBouncer multiplexes up to 1000 client
 connections onto a pool of 50 ([Ch 01 §2](01-services.md#2-always-on-substrate)).
@@ -370,9 +370,10 @@ proxy; the facts that belong here:
 ## 6. Hatchet engine state
 
 `hatchet-lite` keeps workflow runs, steps and its message queue in the
-`hatchet` logical DB (§1.4). App code never queries it except Laravel's
-`pgsql_hatchet` connection, which the Hatchet Worker Dashboard uses to
-read `"Worker"` and `"WorkflowRun"`. Application-side mirrors of runs live
+`hatchet` logical DB (§1.4). App code never queries it. Laravel still
+defines a `pgsql_hatchet` connection for the Hatchet Worker Dashboard, but
+that controller and route no longer exist, so the connection has no
+consumer. Application-side mirrors of runs live
 in the `workflow` schema of the `georag` DB and are written by the
 workflows themselves ([Ch 07](07-orchestration.md)).
 

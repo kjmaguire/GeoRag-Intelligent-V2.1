@@ -179,8 +179,9 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
   `georag_app`; `MIGRATE_DB_*` → `postgresql:5432` as the `georag` owner
   role for the `pgsql_migrations` connection (DDL on phase-0-owned tables
   without granting `georag` to the runtime role); `HATCHET_PG_*` →
-  `postgresql:5432/hatchet` as `hatchet`, read-only, for the Hatchet Worker
-  Dashboard.
+  `postgresql:5432/hatchet` as `hatchet`, wired for a Hatchet Worker
+  Dashboard (`HatchetWorkersController`) that no longer exists in `app/`;
+  the `pgsql_hatchet` connection in `config/database.php` has no consumer.
 - **Other targets** `FASTAPI_HOST=fastapi:8000` with
   `FASTAPI_SERVICE_KEY`; `REVERB_HOST=laravel-reverb`, `REVERB_PORT=8080`
   (the *publisher* target inside the network — the browser uses
