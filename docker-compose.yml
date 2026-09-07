@@ -19,18 +19,18 @@
 # and record the digests in a .image-digests lockfile.
 #
 # Infrastructure (always starts, no profile needed):
-#   PostgreSQL 17 + PostGIS 3.6, PgBouncer, Redis 8
+#   PostgreSQL 18 + PostGIS 3.6, PgBouncer, Redis 8, Martin
 #
-# Profile guide (use these to avoid melting the workstation):
+# Profile guide (use these to avoid melting the workstation). The `profiles:`
+# key on each service is the truth; this list was corrected 2026-09-07 to
+# match it (it used to name PostgreSQL 17, a `dev-ingest` Dagster profile
+# that no longer exists, and put FastAPI under dev-light):
 #
-#   dev-light    Laravel (octane/horizon/reverb) + FastAPI
-#                The always-on application layer for development.
+#   dev-light    Laravel (octane/horizon/reverb) only.
 #
-#   dev-data     Qdrant, MinIO
-#                Start when working on vector or object storage features.
-#
-#   dev-ingest   Dagster daemon + webserver
-#                Start only during ingestion pipeline development.
+#   dev-data     FastAPI + the reranker/embedding/sparse sidecars, Qdrant,
+#                SeaweedFS (service `minio`) + minio-init, hatchet-lite +
+#                hatchet-worker. A working day is dev-light + dev-data.
 #
 #   dev-full     Everything. Use only for end-to-end integration testing.
 #
