@@ -95,8 +95,9 @@ inside it record when and why each went.
 ## 2. Dev topology — profiles and how the stack starts
 
 One `docker-compose.yml`, 16 services, profile-driven. What actually
-carries a `profiles:` key today (the header comment at the top of the file
-still describes an older split — see §7):
+carries a `profiles:` key today (the header comment's profile guide was
+corrected to match on 2026-09-07; [Ch 01](01-services.md) has every
+service in detail):
 
 | Profile | Services |
 |---|---|
@@ -221,8 +222,8 @@ this is the index.
 | Chapter | Status on 2026-09-07 |
 |---|---|
 | 00 Overview | **Reconciled** (this file). |
-| 01 Services catalog | Pre-July snapshot: catalogues ~30 containers, 17 of which no longer exist, and omits the three model sidecars. Next to be rewritten. |
-| 02 Data stores | Pre-July: §2 describes Neo4j as live; SeaweedFS/Qdrant/Martin versions and the backup matrix are stale. Rewrite pending. |
+| 01 Services catalog | **Reconciled 2026-09-07** against the 16 compose services, with the removed-service table, the three overlays, and the stale compose comments listed for the next tidy. |
+| 02 Data stores | Pre-July: §2 describes Neo4j as live; SeaweedFS/Qdrant/Martin versions and the backup matrix are stale. Next to be rewritten. |
 | 03 Schemas | Mostly current; a handful of Neo4j/graph mentions. |
 | 04 Ingestion flow | Current for the Hatchet path; drop the Dagster/graph steps when read. |
 | 05 PDF stack | Current through ADR-0019 (2026-09-02); vLLM/Qwen-VL page verbalisation references are stale. |
@@ -238,10 +239,10 @@ Every chapter except this one opens with a dated reconciliation notice.
 Remove the notice when a chapter is rewritten and add the chapter to the
 "Reconciled" rows above.
 
-Known mismatch in the compose file itself: the header comment's profile
-guide (lines ~21–35) predates the removals — it names PostgreSQL 17, a
-`dev-ingest` Dagster profile, and puts FastAPI under `dev-light`. The
-`profiles:` keys on the services are the truth and are what §2 lists.
+The compose file's header profile guide was corrected on 2026-09-07 to
+match the `profiles:` keys. Other comments inside the file are still
+stale; [Ch 01 §8](01-services.md#8-stale-comments-inside-docker-composeyml)
+lists them.
 
 ## 8. Reading order for this manual
 

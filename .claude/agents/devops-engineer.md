@@ -21,10 +21,13 @@ You are the DevOps engineer for GeoRAG. You make the stack deployable, observabl
 - `docker-compose.yml` — the authoritative service list. It is heavily commented,
   including tombstones for every removed service and why it went.
 - `docs/architecture/manual/00-overview.md` — the reconciled overview: profile
-  map, images, production apps, request shape. Chapter 01 (the per-service
-  catalog) still describes the pre-2026-07-28 stack and carries a notice
-  saying so; do not take service definitions from it until that notice is
-  gone.
+  map, images, production apps, request shape.
+- `docs/architecture/manual/01-services.md` — the per-service catalog,
+  reconciled 2026-09-07: image, ports, command, env groups, dependencies,
+  healthcheck and limits for each of the 16 compose services, the removed
+  services, the three overlays, and the stale comments still in the compose
+  file. Chapters that still carry a reconciliation notice describe the
+  pre-2026-07-28 stack; do not take service definitions from those.
 - `deploy/azure/README.md` — Container Apps topology, the nightly scheduler jobs,
   and the RBAC role they run under.
 - `ops/runbooks/azure-oncall.md` — the only current ops runbook.
