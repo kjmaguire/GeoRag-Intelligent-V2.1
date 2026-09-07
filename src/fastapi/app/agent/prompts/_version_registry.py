@@ -32,17 +32,6 @@ PROMPT_REGISTRY: dict[str, PromptEntry] = {
             "canonical pattern. Not used by any agent today."
         ),
     },
-    "classifier_system": {
-        "module": "app.agent.prompts.classifier_system",
-        "version": "0.1.0",
-        "description": (
-            "Phase 13 Step 1 migration. Query-routing classifier "
-            "system prompt consumed by app.agent.llm_classifier. "
-            "Output contract: strict JSON with seven boolean keys "
-            "(spatial / documents / graph / assay / downhole / "
-            "targeting / public_geo)."
-        ),
-    },
     "structured_answer_format": {
         "module": "app.agent.prompts.structured_answer_format",
         "version": "0.1.0",

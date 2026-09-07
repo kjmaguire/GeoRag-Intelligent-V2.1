@@ -66,11 +66,13 @@ fails loudly instead of constructing a client per call.
 | `ANTHROPIC_MAX_OUTPUT_TOKENS` | 4096 |
 | `ANTHROPIC_ENABLE_PROMPT_CACHING` | true |
 | `ANTHROPIC_USE_PRIORITY_TIER` | false |
-| `MODEL_TIER_FAST` | `claude-haiku-4-5` |
 
-`MODEL_TIER_STANDARD` and `MODEL_TIER_DEEP` are referenced by the routing
-and pricing telemetry; only `MODEL_TIER_FAST` carries a default in
-`config.py`.
+`MODEL_TIER_FAST` was a Settings field until 2026-09-07, when it went with
+its only reader, `app/agent/llm_classifier.py`. `MODEL_TIER_STANDARD` and
+`MODEL_TIER_DEEP` were never Settings fields at all — the tier names survive
+only in `agent/pricing.py`'s rate table keys. `scripts/check_settings_have_readers.py`
+gates this in CI: a field with no reader fails the build, because a setting
+nothing reads is a control that looks like it works.
 
 Client: [`app/agent/llm_calls.py`](../../../src/fastapi/app/agent/llm_calls.py).
 

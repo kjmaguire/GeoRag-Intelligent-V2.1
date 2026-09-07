@@ -15,7 +15,7 @@ outside the application.
 |---|---|---|
 | **Laravel Horizon** (Redis queues) | Three short, user-triggered jobs: query streaming, export generation, a debounced view refresh | `dispatch()` from three controllers |
 | **Hatchet** (`hatchet-lite` + one worker) | Everything durable: ingestion, embedding, every cron, the outbox, the Phase 0 agents, reports and training skeletons | FastAPI trigger endpoints, in-process `aio_run_no_wait`, 29 cron expressions |
-| GitHub Actions `schedule:` | Nightly eval gate, weekly chaos / coverage / CodeQL | cron on the runner |
+| GitHub Actions `schedule:` | Nightly eval gate, weekly coverage and CodeQL | cron on the runner |
 | Azure Container Apps Jobs | Nightly shutdown and morning startup of the production tier | cron, DST-guarded |
 
 There is **no Laravel scheduler**: `routes/console.php` registers only the
@@ -198,10 +198,16 @@ its three attempts before dead-lettering.
 | Workflow | Cron (UTC) | Purpose |
 |---|---|---|
 | `eval-gate.yml` | `17 5 * * *` | Nightly golden-query and hallucination gate with LLM and embeddings stubbed ([Ch 14](14-status-matrix.md)) |
-| `chaos.yml` | `0 6 * * 1` | Weekly chaos run |
 | `coverage.yml` | `40 6 * * 0` | Weekly coverage; runner-only |
 | `codeql.yml` | `16 23 * * 1` | Weekly CodeQL (also on PRs) |
 | `perf-baseline.yml` | *(disabled)* | Its schedule is commented out; it had produced months of green runs against no target |
+
+`chaos.yml` (`0 6 * * 1`) was deleted on 2026-09-07 with the one test it
+ran. Its header already recorded that `-m chaos` selected 1 of 2227
+collected items and that nothing in it covered a Qdrant, reranker or
+LLM-backend outage — those contracts remain unwritten. The workflow failed
+the job when the marker selected zero tests, so it could only have gone red
+weekly once that test was gone.
 
 ### 3.2 Azure Container Apps Jobs
 
@@ -251,7 +257,6 @@ What the window does to orchestration:
 | 05:00 | `model_upgrade_watch_run` |
 | 05:17 | GitHub Actions `eval-gate` |
 | 05:45 | `embed_pending_passages` (daily) |
-| 06:00 Mon | GitHub Actions `chaos` |
 | 06:00 / 07:00 | Azure shutdown job (one fires) |
 | 06:40 Sun | GitHub Actions `coverage` |
 | 13:00 / 14:00 | Azure startup job (one fires) |

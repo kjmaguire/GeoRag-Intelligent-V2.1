@@ -14,7 +14,7 @@ new contributors should read first.
 | `golden`        | Golden RAG query — uses the corpus + LLM, gate-blocking            | no               |
 | `hallucination` | Adversarial query that must be refused                             | no               |
 | `live`          | Needs a loaded vLLM/Ollama model (superset of integration)         | no               |
-| `chaos`         | Chaos / resilience tests — weekly CI cron, not per-PR              | no               |
+| `chaos`         | Chaos / resilience tests — **no test carries this today** (chaos.yml deleted 2026-09-07); registered so a new one is not silently pulled into the PR suite | no               |
 
 The default `pytest tests/` invocation runs unmarked tests only.
 
@@ -89,7 +89,7 @@ docker compose exec fastapi python -m pytest -q -m integration \
 
 Per-PR CI runs unmarked + (eventually) `integration` against a service
 container. `golden` and `hallucination` run pre-milestone-gate.
-`chaos` runs on a weekly cron. `live` is local-only until self-hosted
+`chaos` has no tests and no workflow since 2026-09-07. `live` is local-only until self-hosted
 runners come online (see Module 10 Chunk 10.2 in the architecture doc).
 
 ## Phase H4 integration suite — current inventory

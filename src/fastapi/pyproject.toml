@@ -452,7 +452,9 @@ markers = [
     # even with the full Docker stack running (15+ GB model download).
     # Chunk 10.2 will wire a self-hosted runner or staging URL for these.
     "live: requires Ollama/vLLM running with a loaded model — not run in CI",
-    # Module 10 Chunk 10.7 — chaos / resilience tests run on a weekly CI cron
+    # chaos / resilience marker. No test carries it since 2026-09-07, when
+    # chaos.yml and its one test were deleted; the marker stays registered so
+    # --strict-markers does not reject a re-introduced chaos test.
     # rather than per-PR (they intentionally inject failures and are slow).
     "chaos: chaos / resilience tests — scheduled-only, NOT run on PRs",
     # Registered 2026-08-21. Used by tests/test_qwen3_citation_compliance.py
@@ -613,7 +615,6 @@ module = [
     "app.services.answer_run_store",
     "app.services.assessment_summarizer",
     "app.services.bronze_store",
-    "app.services.claim_ledger",
     "app.services.decision_intelligence.recorder",
     "app.services.embedding",
     "app.services.eval.benchmark_compare",

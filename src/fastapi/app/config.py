@@ -411,12 +411,6 @@ class Settings(BaseSettings):
     ANTHROPIC_USE_PRIORITY_TIER: bool = False
 
     # LLM-based classifier fallback tier (→ A grade).
-    # When the keyword classifier hits classifier_fallback, ask a FAST-tier
-    # LLM to re-classify BEFORE the deterministic fan-out runs. Recovers
-    # queries the keyword set can't match without escalating all the way
-    # to the rephrasing retry. Off by default only if operators want to
-    # isolate pure keyword routing during an evaluation pass.
-    LLM_CLASSIFIER_FALLBACK_ENABLED: bool = True
 
     # P1 #14 — global per-query LLM-call cap. A single user query can
     # invoke the LLM many times: classifier escalation, query rephrasing,
@@ -426,7 +420,7 @@ class Settings(BaseSettings):
     # exceeding the request deadline.
     #
     # Tuned for the deepest-but-still-reasonable path:
-    #   1 keyword classifier escalation (LLM_CLASSIFIER_FALLBACK_ENABLED)
+    #   1 keyword classifier escalation (intent_classifier._llm_fallback)
     # + 1 primary synthesis
     # + 2 typed-output validation retries (MAX_RETRIES)
     # + 1 one-shot failover
@@ -469,8 +463,6 @@ class Settings(BaseSettings):
     SYSTEM_PROMPT_ROUTING_ENABLED: bool = True
 
 
-    # Model identifiers used by the live classifier and pricing telemetry.
-    MODEL_TIER_FAST: str = "claude-haiku-4-5"
     # R11 — hard-fail when the orchestrator is asked to run on Anthropic but
     # the pooled AsyncAnthropic client wasn't attached at startup. Set to
     # False only during bootstrapping (tests, mid-migration deploys) when
