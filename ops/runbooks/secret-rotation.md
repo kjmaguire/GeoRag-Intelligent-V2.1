@@ -89,7 +89,7 @@ the window boots against no database and looks broken. Rotate outside it.
 
 | Credential | Holder of truth | Read by | Zero-downtime? | Section |
 | --- | --- | --- | --- | --- |
-| `APP_KEY` | laravel-octane-cc secret | laravel-octane-cc, laravel-horizon-cc, laravel-reverb-cc, laravel-migrate-job | No — re-encrypts `query_audit_log` | §2 |
+| `APP_KEY` | laravel-octane-cc secret | laravel-octane-cc, laravel-horizon-cc, laravel-reverb-cc, laravel-migrate-job | No — maintenance mode while `query_audit_log` is re-encrypted; scripted (`rotate-app-key.sh`) | §2 |
 | `FASTAPI_SERVICE_KEY` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`) | fastapi-cc secret | fastapi-cc (verify), laravel-octane-cc / laravel-horizon-cc (mint), hatchet-worker-cc (X-Service-Key to Laravel) | Yes, both directions (since 2026-09-06) — see §3 | §3 |
 | Postgres admin (`georag_admin`) | Flexible Server | operators, `rotate-martin-credential.sh` | Yes | §4 |
 | Postgres app roles (`georag_app`, `georag`) | Flexible Server role | laravel-*, laravel-migrate-job, fastapi-cc, hatchet-worker-cc, hatchet-cc (its own `hatchet` database) | Brief 28P01 on each consumer until rolled | §4 |
@@ -120,63 +120,78 @@ suspected exposure immediately.
 `APP_KEY` encrypts `query_audit_log` PII columns and keys
 `query_text_hash`; rotating it without the data step makes every
 encrypted row unreadable. The procedure and its recovery paths are in
-`docs/RUNBOOK.md` § "APP_KEY rotation checklist". Two things change on
-Container Apps:
-
-- **The container filesystem is ephemeral and lost on a revision roll**, so
-  the plaintext dump must be produced *and* consumed inside one running
-  replica. Do not roll a revision between the dump and the restore.
-- **The one-shot `audit:rotate-key` mints its key in-process** and cannot
-  write it back into the app's secret store. Use the manual sequence with a
-  key you mint first, so the value you set as the secret is the value the
-  data was re-encrypted under.
+`docs/RUNBOOK.md` § "APP_KEY rotation checklist". On Container Apps, run
+it through the script, which does the preflight, the in-replica half and
+the roll in one go:
 
 ```bash
-set +x
-NEWKEY="$(az containerapp exec -g $RG -n laravel-octane-cc --command 'php artisan key:generate --show' 2>/dev/null | tr -d '\r' | grep -o 'base64:[A-Za-z0-9+/=]*')"
-[ -n "$NEWKEY" ] || { echo "no key minted"; exit 1; }
-
-# Inside the SAME replica, in one exec session: dump under the old key,
-# restore under the new one via a per-command env override, shred.
-az containerapp exec -g $RG -n laravel-octane-cc --command "sh -lc '
-  set -e
-  php artisan down
-  mkdir -m 700 -p /tmp/secure
-  php artisan audit:dump-pii --output /tmp/secure/audit-pii.jsonl
-  APP_KEY=$NEWKEY php artisan audit:restore-pii --input /tmp/secure/audit-pii.jsonl
-  shred -u /tmp/secure/audit-pii.jsonl
-'"
+bash deploy/azure/containerapps/rotate-app-key.sh            # dry run: preflight + plan
+bash deploy/azure/containerapps/rotate-app-key.sh --apply    # do it
 ```
 
-Then set the new key everywhere Laravel runs and roll — Octane first,
-because it is the replica that just re-encrypted the data and it is still
-in maintenance mode:
+What it does, in order: refuses unless Postgres is `Ready` and
+laravel-octane-cc has exactly one replica; discovers which secret each
+Laravel app reads `APP_KEY` from (and refuses an app holding it as a
+literal); inside the replica — maintenance mode, dump under the old key,
+mint, restore under the new key, shred the dump; writes the new key 0600
+to `~/.config/georag/app-key-rotation-<stamp>.txt`; sets the secret on
+every app and the migrate job; rolls each app and waits for `Healthy`;
+reads an audit row back through the new revision. If it stops after the
+restore but before every app has the new secret, `--finish` completes
+the secret-and-roll half from the copy the replica kept (or from
+`ROTATE_NEWKEY` exported from the key file if the replica is gone).
 
-```bash
-for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
-  az containerapp secret set -g $RG -n "$app" --secrets app-key="$NEWKEY" --output none
-  az containerapp update -g $RG -n "$app" --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-done
-az containerapp job secret set -g $RG -n laravel-migrate-job --secrets app-key="$NEWKEY" --output none
-unset NEWKEY
-```
+**Rehearsed 2026-09-06 against a fake `az` and a fake `php artisan`, not
+against Azure** — there is no staging environment; the only resource
+group is production. `deploy/azure/containerapps/tests/rotate-app-key.test.sh`
+(CI `scheduler-jobs`) pins the eighteen decisions below. Treat the first
+production run as the live rehearsal: do it right after the maintenance
+window opens the database and before users arrive, with the dry run
+first. The findings that shaped the script, each of which would have
+broken a by-hand run of the RUNBOOK's sequence on Container Apps:
 
-The secret is called `app-key` above; confirm the real name with the
-discovery loop in §0 first, and confirm the env var on each app reads
-`APP_KEY` from it. The new Octane revision boots out of maintenance mode.
+1. **`php artisan audit:rotate-key` cannot work here.** Its step 3 is
+   `key:generate --force`, which writes the new key into `.env`, and the
+   image ships no `.env` (`.dockerignore` excludes it; `APP_KEY` arrives
+   as an env var). It fails after the dump and before the restore. The
+   script mints with `--show` and hands the key to the restore through
+   that one process's environment — the same in-process rebind the
+   orchestrator does, without the file write.
+2. **`php artisan down` would get the replica killed mid-rotation.**
+   laravel-octane-cc has an HTTP liveness probe on `/up`; the default
+   maintenance response is a 503 on every path, and enough failed probes
+   restart the container with the plaintext dump on its disk. The
+   in-replica script uses `down --status=200`: the probe stays green and
+   real requests still get the maintenance page, so no audit row is
+   written under the old key between the dump and the roll.
+3. **The dump and the restore must happen in one exec session.** The
+   filesystem is ephemeral; a revision roll between them loses the dump.
+4. **`az containerapp exec` needs a TTY and its exit code means nothing.**
+   Without one it dies with `termios.error: (25, ...)`, and it exits 0 for
+   a successful connection whatever the command did — the same two
+   things CD's smoke step learned on 2026-08-23. Every exec is wrapped in
+   `script -qec` and judged on a `ROTATE_OK` / `ROTATE_FAILED` line.
+5. **Horizon does not need pausing.** Only the Octane query controller
+   writes `query_audit_log`; Horizon only reads. It still gets the new
+   secret, because it decrypts what it reads.
+6. **The new key is written to a 0600 file before any secret changes**,
+   unlike `rotate-martin-credential.sh`, which never records what it
+   mints. Once the restore has run, this key is the only thing that can
+   read the audit rows; a script holding the sole copy in a variable turns
+   a dropped SSH session into lost data. Move it to the password manager
+   and shred the file when the rotation is verified.
+7. **A failed dump lifts maintenance; a failed restore does not.** After a
+   restore failure the rows may be half-rotated, so the replica stays in
+   maintenance with the dump and the key on its disk, and the script says
+   not to roll. Fix the restore in that replica, then `--finish`.
+8. **Never put the old key back after the roll.** The data is under the
+   new key from the restore onward; the recovery for a bad roll is to get
+   the new key onto the app (`--finish`), not to revert the secret.
 
-Verify — a fresh revision can read old rows:
-
-```bash
-az containerapp exec -g $RG -n laravel-octane-cc --command "php artisan tinker --execute 'echo App\\Models\\QueryAuditLog::latest()->first()?->query_text ? \"decrypt ok\" : \"no rows\";'"
-```
-
-`DecryptException` here means the restore ran under a different key than
-the one you set. Recovery is in `docs/RUNBOOK.md`: put the old key back
-as the secret, roll, and redo the sequence. **Not yet exercised on Container
-Apps** — the sequence is the RUNBOOK's manual path with the two ACA
-constraints applied; rehearse it against a staging revision before the
-first production run.
+By hand, if the script cannot be used, the sequence it runs inside the
+replica is `rotate-app-key-inside.sh` — read it rather than retyping it;
+the four artisan calls are the RUNBOOK's manual path with `down
+--status=200` and `APP_KEY=<new> php artisan audit:restore-pii`.
 
 ---
 
