@@ -233,8 +233,12 @@ and a Layer 3 claim ledger that never ran.
   ([migration](../../../database/migrations/2026_04_21_100000_create_answer_runs.php)).
   As built only the last two are ever persisted: `persist_node` in
   [`agent/agentic_retrieval/nodes.py`](../../../src/fastapi/app/agent/agentic_retrieval/nodes.py)
-  writes `committed` when the response carries citations and `rejected`
-  otherwise, once, at INSERT. The first three are client-render states.
+  writes `committed` when a real citation survived and `rejected` when
+  only the assembler's `no-tool-call` placeholder remains, once, at
+  INSERT. The first three are client-render states. The same INSERT
+  writes `rejection_reason` and the `hallucination_guard_results`
+  envelope from one pre-INSERT `classify_guards` run (since 2026-09-07;
+  older rows are NULL).
 - Answer-run persistence is inline SQL in that same node
   (`silver.answer_runs` with three retries, `answer_retrieval_items`,
   `answer_citation_items`, `usage.usage_events`). Nothing writes

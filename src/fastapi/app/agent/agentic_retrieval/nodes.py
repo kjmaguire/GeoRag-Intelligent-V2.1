@@ -2620,6 +2620,122 @@ def _build_terminal_refusal_payload(
 
 
 # ---------------------------------------------------------------------------
+# persist — §04i guard outcomes + refusal reason on the answer_runs row
+# ---------------------------------------------------------------------------
+#
+# Added 2026-09-07. `rejection_reason` and `hallucination_guard_results`
+# had been in the schema since 2026-04-22 / 2026-05-20 and nothing wrote
+# them, so the `answer_quality_watch` refusal-rate and guard-fire signals,
+# the Trust Inspector accepted/rejected split and the refusal-rate runbook
+# all read zero. persist_node now classifies the guards once, before the
+# INSERT, and writes both columns; the trace block reuses the same codes.
+
+
+def _classify_persist_guards(
+    state: AgenticRetrievalState, citation_state: str,
+) -> list[Any]:
+    """Run the §4b typed guard classifier for the persist step.
+
+    Never raises: a classifier failure yields an empty list so the
+    answer_runs row is still written.
+    """
+    try:
+        from app.agent.guards import classify_guards  # noqa: PLC0415
+        from app.agent.hallucination.citation_markers import (  # noqa: PLC0415
+            CITATION_MARKER_RE as _CITATION_MARKER_RE,
+        )
+
+        _conflicting = bool(
+            state.response is not None
+            and getattr(state.response, "conflicting_evidence", None)
+        )
+        return list(
+            classify_guards(
+                validation_warnings=list(state.validation_warnings),
+                demotion_reasons=list(state.demotion_reasons),
+                tool_results=list(state.tool_results),
+                response_citations=(
+                    list(state.response.citations) if state.response is not None else []
+                ),
+                citation_lifecycle_state=citation_state,
+                conflicting_evidence_present=_conflicting,
+                # Does the answer actually cite anything, or does it just
+                # come with citations attached? The assembler used to
+                # guarantee the two matched by stapling every marker onto
+                # the last sentence, which made the difference invisible.
+                text_has_markers=(
+                    bool(_CITATION_MARKER_RE.search(state.response.text))
+                    if state.response is not None
+                    else None
+                ),
+            )
+        )
+    except Exception:  # noqa: BLE001 — persistence must not depend on the classifier
+        logger.warning(
+            "agentic_retrieval.persist: guard classification failed — "
+            "writing an empty guard envelope",
+            exc_info=True,
+        )
+        return []
+
+
+def _build_guard_results(guard_failure_codes: list[str]) -> dict[str, Any]:
+    """Envelope for ``silver.answer_runs.hallucination_guard_results``.
+
+    Shape per migration 2026_05_20_020000: ``schema_version`` / ``guards``
+    / ``captured_at``. ``guards`` is keyed by :class:`GuardErrorCode`
+    value; an empty object means the chain ran and nothing fired. NULL
+    (never written here) means the chain did not run.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    guards: dict[str, dict[str, str]] = {}
+    for code in guard_failure_codes:
+        guards[code] = {"status": "notice" if code == "CONFLICTING_SOURCES" else "fail"}
+    return {
+        "schema_version": 1,
+        "guards": guards,
+        "captured_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _build_rejection_reason(
+    state: AgenticRetrievalState,
+    citation_state: str,
+    guard_failure_codes: list[str],
+) -> str | None:
+    """Structured reason for ``silver.answer_runs.rejection_reason``.
+
+    NULL unless the run is a refusal — ``citation_lifecycle_state =
+    'rejected'`` (no real citations survived) or a terminal repair
+    strategy stamped a ``refusal_payload`` on the response, which is what
+    the client renders as *rejected*. The leading token is the code the
+    runbook groups on: the payload's ``reason_code`` when there is one,
+    ``insufficient_evidence`` (RefusalReasonCode) for a citation-less
+    run, else the first guard code. The remaining guard codes follow in
+    parentheses so nothing the classifier found is lost.
+    """
+    payload = getattr(state.response, "refusal_payload", None) if state.response else None
+    payload = payload if isinstance(payload, dict) else None
+    if citation_state != "rejected" and not payload:
+        return None
+
+    primary: str | None = None
+    if payload:
+        raw = payload.get("reason_code")
+        primary = str(raw) if raw else None
+    if not primary and citation_state == "rejected":
+        primary = "insufficient_evidence"
+    if not primary:
+        primary = guard_failure_codes[0] if guard_failure_codes else "UNKNOWN_GUARD"
+
+    others = [c for c in guard_failure_codes if c != primary]
+    if not others:
+        return primary
+    return f"{primary} (guards: {', '.join(others)})"
+
+
+# ---------------------------------------------------------------------------
 # persist (Phase 4 follow-up — closes the lineage gap the smoke test exposed)
 # ---------------------------------------------------------------------------
 
@@ -2806,12 +2922,20 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     import json as _json
 
+    from app.agent.guards import _drop_sentinel_citations  # noqa: PLC0415
     from app.config import settings as _settings  # noqa: PLC0415
     from app.models.answer_run import (  # noqa: PLC0415
         normalize_backend as _normalize_backend,
     )
 
-    citation_state = "rejected" if not state.response.citations else "committed"
+    # `rejected` means no *real* citation survived. The assembler always
+    # appends a `no-tool-call` placeholder so GeoRAGResponse's min_length=1
+    # holds, which used to make this branch unreachable in production and
+    # left every citation-less run persisted as `committed`. Same sentinel
+    # filter the guard classifier uses (2026-09-07).
+    citation_state = (
+        "rejected" if not _drop_sentinel_citations(state.response.citations) else "committed"
+    )
 
     # answer_runs.query_class has a CHECK constraint pinned to the spec
     # query-class literal (factual/spatial/document/computation/viz/unknown).
@@ -2891,6 +3015,15 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     _backend_label = _normalize_backend(getattr(_settings, "LLM_BACKEND", None))
     _answer_run_id: str | None = None
 
+    # §04i guard outcomes + refusal reason (2026-09-07 — see the helpers
+    # above). Computed once here; the trace block below reuses the codes.
+    _guard_codes: list[Any] = _classify_persist_guards(state, citation_state)
+    _guard_failure_codes: list[str] = [c.value for c in _guard_codes]
+    _guard_results_json = _json.dumps(_build_guard_results(_guard_failure_codes))
+    _rejection_reason = _build_rejection_reason(
+        state, citation_state, _guard_failure_codes,
+    )
+
     try:
         row = await _insert_answer_run_with_retry(
             pg_pool,
@@ -2912,10 +3045,13 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 confidence,
                 latency_ms,
                 input_tokens,
-                output_tokens
+                output_tokens,
+                rejection_reason,
+                hallucination_guard_results
             ) VALUES (
                 $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
-                $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16
+                $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
+                $17, $18::jsonb
             )
             RETURNING answer_run_id
             """,
@@ -2953,6 +3089,8 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             # and neither token column was among them.
             _input_tokens,
             _output_tokens,
+            _rejection_reason,
+            _guard_results_json,
         )
 
         if row is not None:
@@ -3058,42 +3196,12 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 if state.evidence_packet is not None:
                     _remaining_context_budget = state.evidence_packet.remaining_budget
 
-                # Plan §4b foundation — typed guard error codes. Replaces
-                # the prior string-prefix heuristic with the centralised
-                # classifier in app.agent.guards. The trace stores the
-                # enum values (".value" strings) for forward-compat with
-                # the §4b repair-strategy dispatcher.
-                from app.agent.guards import (  # noqa: PLC0415
-                    GuardErrorCode,
-                    classify_guards,
-                )
-                from app.agent.hallucination.citation_markers import (  # noqa: PLC0415
-                    CITATION_MARKER_RE as _CITATION_MARKER_RE,
-                )
-                _conflicting = bool(
-                    state.response is not None
-                    and getattr(state.response, "conflicting_evidence", None)
-                )
-                _guard_codes: list[GuardErrorCode] = classify_guards(
-                    validation_warnings=list(state.validation_warnings),
-                    demotion_reasons=list(state.demotion_reasons),
-                    tool_results=list(state.tool_results),
-                    response_citations=(
-                        list(state.response.citations) if state.response is not None else []
-                    ),
-                    citation_lifecycle_state=citation_state,
-                    conflicting_evidence_present=_conflicting,
-                    # Does the answer actually cite anything, or does it just
-                    # come with citations attached? The assembler used to
-                    # guarantee the two matched by stapling every marker onto
-                    # the last sentence, which made the difference invisible.
-                    text_has_markers=(
-                        bool(_CITATION_MARKER_RE.search(state.response.text))
-                        if state.response is not None
-                        else None
-                    ),
-                )
-                _guard_failure_codes = [c.value for c in _guard_codes]
+                # Plan §4b foundation — typed guard error codes. Classified
+                # once before the answer_runs INSERT (`_guard_codes` /
+                # `_guard_failure_codes`, see `_classify_persist_guards`);
+                # the trace stores the enum values (".value" strings) for
+                # forward-compat with the §4b repair-strategy dispatcher.
+                from app.agent.guards import GuardErrorCode  # noqa: PLC0415
 
                 # Plan §4b — also stamp the typed codes onto the response
                 # so the Laravel / React side has the data for the user-
