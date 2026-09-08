@@ -452,6 +452,75 @@ def probe_latency(samples: int) -> dict[str, Any]:
     }
 
 
+# The sections that have to report a real observation for this run to count as
+# evidence. `availability` is deliberately excluded: it can legitimately come
+# back empty in a region that offers nothing, and that IS the finding.
+_EVIDENCE_SECTIONS = ("chat", "chat_stream", "embed", "rerank", "parse", "latency")
+
+
+def verdict(report: dict) -> dict:
+    """Say plainly whether this run verified anything.
+
+    THE POINT. Every section of this probe degrades instead of raising, so one
+    run can fail completely — expired credentials, wrong region, no IAM
+    permission — and still produce a well-formed JSON file. Without this the
+    script printed "COMMIT THIS REPORT" and exited 0 over a report whose every
+    section was a 403, which would put a file on disk that ADR-0022 treats as
+    the gate on trusting the adapters while it contains no evidence at all.
+    That is the same shape as the defects this migration kept turning up: not
+    an error, just a thing quietly not carrying the information it claims to.
+    """
+    failed, skipped, missing, ok = [], [], [], []
+    for name in _EVIDENCE_SECTIONS:
+        # A section ABSENT from the report is not a pass. It reads as one if
+        # you only test for "error"/"skipped" — the same absence-as-success
+        # shape this function exists to stop — and it is how adding a section
+        # to _EVIDENCE_SECTIONS without wiring it up would quietly inflate
+        # the verified count.
+        if name not in report:
+            missing.append(name)
+            continue
+        section = report[name] or {}
+        if "error" in section:
+            failed.append(name)
+        elif "skipped" in section:
+            skipped.append(name)
+        else:
+            ok.append(name)
+
+    auth_codes = {"UnrecognizedClientException", "InvalidClientTokenId",
+                  "AccessDeniedException", "ExpiredTokenException"}
+    saw_auth_failure = any(
+        (report.get(n) or {}).get("error", {}).get("code") in auth_codes
+        for n in _EVIDENCE_SECTIONS
+    ) or (report.get("availability", {})
+          .get("cohere_serverless_error", {})
+          .get("code") in auth_codes)
+
+    if saw_auth_failure and not ok:
+        summary = ("could not authenticate to Bedrock; nothing was observed. "
+                   "Check credentials, region and IAM permissions.")
+    elif not ok:
+        summary = "no section produced an observation."
+    else:
+        summary = (f"verified {len(ok)}/{len(_EVIDENCE_SECTIONS)} sections "
+                   f"(ok={','.join(ok) or '-'}; "
+                   f"failed={','.join(failed) or '-'}; "
+                   f"skipped={','.join(skipped) or '-'}"
+                   + (f"; MISSING={','.join(missing)}" if missing else "")
+                   + ").")
+
+    return {
+        "verified_anything": bool(ok),
+        "sections_ok": ok,
+        "sections_failed": failed,
+        "sections_skipped": skipped,
+        "sections_missing": missing,
+        "authentication_failed": saw_auth_failure,
+        "summary": summary,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pdf", type=Path, default=None)
@@ -475,6 +544,8 @@ def main() -> int:
         "latency": probe_latency(args.latency_samples),
     }
 
+    report["verdict"] = verdict(report)
+
     args.out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = args.out / f"bedrock_probe_{stamp}.json"
@@ -482,6 +553,21 @@ def main() -> int:
 
     print(json.dumps(report, indent=2, default=str))
     print(f"\nreport written to {path}", file=sys.stderr)
+
+    v = report["verdict"]
+    if not v["verified_anything"]:
+        print(
+            f"\nPROBE FAILED — {v['summary']}\n"
+            "DO NOT commit this report as evidence: it verifies nothing, and a\n"
+            "report on file is exactly what ADR-0022 treats as the gate on\n"
+            "trusting the adapters. Fix the access problem and re-run.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if v["sections_failed"] or v["sections_skipped"]:
+        print(f"\nPARTIAL — {v['summary']}", file=sys.stderr)
+
     print(
         "\nCOMMIT THIS REPORT. The adapters say [UNVERIFIED] at the top until "
         "one exists, and the three Foundry behaviours it re-asks (JSON mode, "
