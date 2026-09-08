@@ -158,8 +158,9 @@ reasoning may arrive as a `reasoningContent` content block rather than a
 sibling field, and the sentinel wrapping is a property of the model's JSON mode
 that may or may not be pre-stripped by the Bedrock runtime. **None of the three
 carries over by assumption.** A probe runs first and its report is committed
-before the adapter is trusted, exactly as `ops/validation/cohere_parse_probe.sh`
-was built to do. That is also the moment to close the Parse 5 gap: its wire
+before the adapter is trusted. `ops/validation/bedrock_probe.py` does this
+for all four models, replacing `cohere_parse_probe.py`, which covered only
+the one capability that was unverified on Foundry. That is also the moment to close the Parse 5 gap: its wire
 shape was **never** empirically verified even on Foundry.
 
 ### 2.4 Backend naming — deliberate and loud
@@ -337,8 +338,11 @@ Consequences to handle rather than leave:
 - `rotate-app-key.sh` + `tests/rotate-app-key.test.sh` pin what happens at each
   failure point of an APP_KEY rotation (a dump failure lifts maintenance, a
   restore failure does not, no secret changes before the in-replica half
-  succeeds, the key never reaches the terminal). Same contract, Secrets Manager
-  and ECS instead of `az`.
+  succeeds, the key never reaches the terminal). **NOT YET PORTED** — the
+  scripts went with `deploy/azure/` and nothing replaced them, so rotation is
+  a by-hand run of the RUNBOOK sequence until one is written. The contract is
+  preserved in `ops/runbooks/secret-rotation.md` §2, flagged as outstanding
+  rather than dropped.
 
 ---
 

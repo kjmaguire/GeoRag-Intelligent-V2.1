@@ -65,7 +65,7 @@ log = logging.getLogger("georag.hatchet.answer_quality_watch")
 
 #: Distinctive prefix for the one line an alert rule should match. Log
 #: Analytics has no metric to threshold on, so the log line IS the signal
-#: -- see deploy/azure/alerts/create-alerts.sh.
+#: -- see the metric filter in deploy/aws/terraform/alerts.tf.
 ALERT_MARKER = "ANSWER_QUALITY_REGRESSION"
 
 #: Below this many runs in EITHER window, no comparison is made. Chosen

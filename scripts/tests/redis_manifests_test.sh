@@ -13,11 +13,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHECKER="${REPO_ROOT}/scripts/check_redis_manifests.py"
 PYTHON="${PYTHON:-python}"
 
-AZURE="deploy/azure/containerapps/redis.yaml"
+# The production deployment moved from a Container Apps YAML to Terraform
+# on 2026-09-08 (ADR-0022). The cases below moved with it: they are the
+# same shapes, expressed in HCL, and they still name the live defect each
+# one stands for.
+TF="deploy/aws/terraform/services.tf"
+TF_SIZING="deploy/aws/terraform/main.tf"
 K8S="kubernetes/manifests/k3s.yaml"
 HELM_TPL="charts/georag/templates/redis.yaml"
 HELM_VALS="charts/georag/values.yaml"
-FILES=("$AZURE" "$K8S" "kubernetes/manifests/vanilla.yaml"
+FILES=("$TF" "$TF_SIZING" "$K8S" "kubernetes/manifests/vanilla.yaml"
        "kubernetes/manifests/airgap.yaml" "$HELM_TPL" "$HELM_VALS")
 
 PASS=0
@@ -84,25 +89,34 @@ assert "unmodified tree passes" ok "All Redis manifests satisfy" "$d"
 
 # --- rule 1, the defect that shipped to production --------------------
 # deploy/azure/containerapps/redis.yaml carried --appendonly yes with no
-# volume from the day of the Azure lift until 2026-08-22.
+# volume from the day of the Azure lift until 2026-08-22, and the AWS
+# deployment fixes it. Losing the mount must therefore break the check —
+# otherwise nothing stands between the fix and a silent regression to it.
 d="$(fixture)"
-mutate "$d" "${AZURE}" 's/--appendonly no/--appendonly yes/'
-assert "azure: appendonly yes with no volume is rejected" fail \
+mutate "$d" "${TF}" 's|: "/data"|: "/var/lib/nothing"|'
+assert "terraform: appendonly yes with no /data mount is rejected" fail \
   "cost without durability" "$d"
 
-# The same rule has to catch RDB, not just AOF -- `--save ""` was the
-# other half of the flag that got dropped in the port.
+# The volume must be ATTACHED as well as mounted. Dropping redis from the
+# dynamic block leaves a mountPoint pointing at nothing.
 d="$(fixture)"
-mutate "$d" "${AZURE}" 's/--save ""/--save 3600 1/'
-assert "azure: an active save policy with no volume is rejected" fail \
+mutate "$d" "${TF}" 's/for_each = contains(\["qdrant", "redis"\], each.key)/for_each = contains(["qdrant"], each.key)/'
+assert "terraform: a mount with no attached volume is rejected" fail \
   "cost without durability" "$d"
 
-# Dropping --save entirely is not neutral: Redis's built-in save points
-# stay on. Silence must not read as "off".
+# The same rule has to catch RDB, not just AOF.
 d="$(fixture)"
-mutate "$d" "${AZURE}" '/--save ""/d'
-assert "azure: omitting --save entirely is rejected" fail \
-  "default RDB save points are silently active" "$d"
+mutate "$d" "${TF}" 's|"--save", "",|"--save", "3600 1",|' 's|: "/data"|: "/var/lib/nothing"|'
+assert "terraform: an active save policy with no volume is rejected" fail \
+  "cost without durability" "$d"
+
+# Dropping persistence entirely is not neutral, and it is exactly what
+# Azure ran: AOF off and no volume, so every restart and every nightly
+# scale-to-zero dropped all sessions and any queued Horizon job.
+d="$(fixture)"
+mutate "$d" "${TF}" 's/"--appendonly", "yes",/"--appendonly", "no",/' 's|"--save", "",|"--databases", "4",|'
+assert "terraform: turning persistence back off is rejected" fail \
+  "persistence is OFF" "$d"
 
 # Rule 1 must also fire the other way round: persistence is legitimate
 # where a volume exists, so removing the volume has to break it.
@@ -115,17 +129,17 @@ assert "k8s: appendonly yes after losing the volume is rejected" fail \
 # The live drift: maxmemory equal to the container limit. Redis's guard
 # is unreachable because the platform kills the container first.
 d="$(fixture)"
-mutate "$d" "${AZURE}" 's/--maxmemory 384mb/--maxmemory 512mb/'
-assert "azure: maxmemory == container limit is rejected" fail \
+mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "1024mb",/'
+assert "terraform: maxmemory == task memory is rejected" fail \
   "is unreachable" "$d"
 
-# 512mb in a 0.5Gi container is the case that must fail even though the
-# two numbers LOOK different. Redis reads mb as binary, so both are
-# 536870912 bytes -- a decimal reading would let this pass.
+# The case that must fail even though the two numbers LOOK different.
+# Redis reads mb as binary, so 1024mb and a 1024 MiB task are the same
+# 1073741824 bytes -- a decimal reading would let this pass.
 d="$(fixture)"
-mutate "$d" "${AZURE}" 's/--maxmemory 384mb/--maxmemory 512mb/'
-assert "azure: redis 'mb' is parsed as binary, not decimal" fail \
-  "at least 640 MiB" "$d"
+mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "1024mb",/'
+assert "terraform: redis 'mb' is parsed as binary, not decimal" fail \
+  "at least 1280 MiB" "$d"
 
 # The pre-2026-08-22 k8s state: a 2Gi limit and no cap at all.
 d="$(fixture)"
@@ -136,13 +150,15 @@ assert "k8s: no maxmemory under a memory limit is rejected" fail \
 
 # Just inside the boundary must pass, just outside must not: 409mb * 1.25
 # = 511 MiB (fits 512), 410mb * 1.25 = 512.5 MiB (does not).
+# Just inside the boundary must pass, just outside must not: 819mb * 1.25
+# = 1023 MiB (fits 1024), 820mb * 1.25 = 1025 MiB (does not).
 d="$(fixture)"
-mutate "$d" "${AZURE}" 's/--maxmemory 384mb/--maxmemory 409mb/'
-assert "azure: 409mb is inside the headroom boundary" ok "" "$d"
+mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "819mb",/'
+assert "terraform: 819mb is inside the headroom boundary" ok "" "$d"
 
 d="$(fixture)"
-mutate "$d" "${AZURE}" 's/--maxmemory 384mb/--maxmemory 410mb/'
-assert "azure: 410mb is outside the headroom boundary" fail \
+mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "820mb",/'
+assert "terraform: 820mb is outside the headroom boundary" fail \
   "is unreachable" "$d"
 
 # --- the checker must not silently stop reading -----------------------
@@ -150,8 +166,15 @@ assert "azure: 410mb is outside the headroom boundary" fail \
 # failure, not a pass. This is the failure mode the first draft of this
 # checker actually had: it matched some other container's limits.
 d="$(fixture)"
-mutate "$d" "${AZURE}" 's/^\( *\)resources:/\1resourceBudget:/'
-assert "azure: an unreadable limit fails rather than passing" fail \
+mutate "$d" "${TF_SIZING}" 's/redis          = { cpu = 512, memory = 1024/redis          = { cpu = 512, ram = 1024/'
+assert "terraform: an unreadable task memory fails rather than passing" fail \
+  "no longer reading it" "$d"
+
+# And the same for the command itself: a restructured task definition must
+# fail loudly rather than reporting OK against a list it never found.
+d="$(fixture)"
+mutate "$d" "${TF}" 's/^    redis = \[/    redis_server = [/'
+assert "terraform: an unreadable command fails rather than passing" fail \
   "no longer reading it" "$d"
 
 d="$(fixture)"

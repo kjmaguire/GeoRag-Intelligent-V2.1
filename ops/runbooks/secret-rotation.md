@@ -1,4 +1,30 @@
-# Secret rotation — Azure Container Apps
+# Secret rotation — production (AWS since 2026-09-08)
+
+> **⚠️ 2026-09-08 — production moved to AWS
+> ([ADR-0022](../../docs/adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every `az containerapp secret set` procedure below is HISTORY. Secrets
+> now live in AWS Secrets Manager and are injected into ECS tasks by ARN by
+> the execution role; a rotation is a `put-secret-value` plus a
+> `force-new-deployment`, not a per-app secret update.
+>
+> Three credentials in this document NO LONGER EXIST, and that is the
+> single biggest change:
+>
+> - the **Foundry API key** — Bedrock authenticates with the task role;
+> - the **storage account key** — S3 does too, and presigned URLs are
+>   native to it, which is why Azure's `allowSharedKeyAccess` (enabled
+>   only because `temporaryUrl()` had no alternative) has no successor;
+> - the **Azure Files account key** — Qdrant's storage was mounted with
+>   it, so rotating it broke the mount on the next restart. EFS is
+>   IAM-authorised and has no such hazard.
+>
+> What still rotates: `APP_KEY`, `FASTAPI_SERVICE_KEY` (with
+> previous-key acceptance on both sides, which is what makes it
+> zero-downtime), `QDRANT_API_KEY`, the Hatchet client token, the Redis
+> password, and the `martin_readonly` database password. Their
+> APPLICATION-side contracts — the order of operations, what accepts the
+> previous value, what fails closed — are unchanged and are the reason
+> this file is kept rather than deleted.
 
 **Scope.** Every credential the production deployment holds, where it
 lives, which apps read it, and the exact sequence that rotates it without
@@ -50,7 +76,7 @@ The three traps, each of which has already bitten this deployment:
    `az containerapp update --revision-suffix <unique>`. Do **not** use
    `revision restart`: with more than one revision marked active it
    restarts the wrong one, and a revision in `ActivationFailed` does not
-   come back (measured 2026-08-25, `deploy/azure/containerapps/rotate-martin-credential.sh`).
+   come back (measured 2026-08-25 on Container Apps; the script that measured it went with `deploy/azure/`).
 2. **Never `--yaml` an app with a `secrets:` block in the file.** Sending
    `redis.yaml` verbatim sets the live `redis-password` to the literal
    `REPLACE_AT_DEPLOY_TIME` and every client fails auth. Use
@@ -79,7 +105,7 @@ new revision could not start on the new value — read
 secret before anything else.
 
 **Maintenance window.** Postgres is stopped roughly 06:00–14:00 UTC by the
-nightly saver (`azure-oncall.md` §0). Nothing in this runbook that touches
+nightly saver (`aws-oncall.md` §0). Nothing in this runbook that touches
 a database role works while it is `Stopped`, and a revision rolled during
 the window boots against no database and looks broken. Rotate outside it.
 
@@ -120,16 +146,38 @@ suspected exposure immediately.
 `APP_KEY` encrypts `query_audit_log` PII columns and keys
 `query_text_hash`; rotating it without the data step makes every
 encrypted row unreadable. The procedure and its recovery paths are in
-`docs/RUNBOOK.md` § "APP_KEY rotation checklist". On Container Apps, run
-it through the script, which does the preflight, the in-replica half and
-the roll in one go:
+`docs/RUNBOOK.md` § "APP_KEY rotation checklist".
 
-```bash
-bash deploy/azure/containerapps/rotate-app-key.sh            # dry run: preflight + plan
-bash deploy/azure/containerapps/rotate-app-key.sh --apply    # do it
-```
-
-What it does, in order: refuses unless Postgres is `Ready` and
+> ### ⚠️ THE SCRIPT IS GONE, AND THIS IS A REAL CAPABILITY LOSS
+>
+> `rotate-app-key.sh` and its rehearsal harness were Container Apps
+> automation and were deleted with `deploy/azure/` on 2026-09-08
+> (ADR-0022). **Nothing has replaced them yet.** Until something does,
+> APP_KEY rotation on AWS is a BY-HAND run of `docs/RUNBOOK.md`'s
+> sequence, and the eighteen findings recorded below are the checklist —
+> every one of them is a way a by-hand run goes wrong, which is precisely
+> why the script existed.
+>
+> This is recorded rather than quietly dropped because the migration's own
+> rule was not to lose capability silently. Porting it is outstanding
+> work, and the port is not a translation: `az containerapp secret set`
+> per app becomes one Secrets Manager `put-secret-value` plus a
+> `force-new-deployment`, which is simpler, but the ORDER OF OPERATIONS
+> below is the part that matters and does not simplify.
+>
+> The contract the script enforced, which any replacement must keep:
+>
+> - **a dump failure lifts maintenance mode; a restore failure does
+>   not** — a half-re-encrypted `query_audit_log` must not serve traffic;
+> - **no secret changes anywhere before the in-replica half reports
+>   success** — otherwise the apps hold a key the data was never
+>   re-encrypted to;
+> - **one app failing to roll does not stop the others**, for the same
+>   reason the nightly sweeps are not `set -e`;
+> - **the key never reaches the terminal** — it is written 0600 to a file,
+>   because a key in scrollback is a key in a shell history and a CI log.
+>
+> What the script did, in order — read as the manual checklist: refuses unless Postgres is `Ready` and
 laravel-octane-cc has exactly one replica; discovers which secret each
 Laravel app reads `APP_KEY` from (and refuses an app holding it as a
 literal); inside the replica — maintenance mode, dump under the old key,
@@ -141,14 +189,17 @@ restore but before every app has the new secret, `--finish` completes
 the secret-and-roll half from the copy the replica kept (or from
 `ROTATE_NEWKEY` exported from the key file if the replica is gone).
 
-**Rehearsed 2026-09-06 against a fake `az` and a fake `php artisan`, not
-against Azure** — there is no staging environment; the only resource
-group is production. `deploy/azure/containerapps/tests/rotate-app-key.test.sh`
-(CI `scheduler-jobs`) pins the eighteen decisions below. Treat the first
-production run as the live rehearsal: do it right after the maintenance
-window opens the database and before users arrive, with the dry run
-first. The findings that shaped the script, each of which would have
-broken a by-hand run of the RUNBOOK's sequence on Container Apps:
+**It was rehearsed 2026-09-06 against a fake `az` and a fake `php
+artisan`, never against a real cloud** — there was no staging environment
+then and there is none now; the only account is production. That harness
+went with the script, so the eighteen decisions below are no longer
+pinned by anything. Treat the first AWS run as the live rehearsal: do it
+right after the maintenance window opens the database and before users
+arrive.
+
+The findings that shaped the script, each of which would break a by-hand
+run of the RUNBOOK's sequence — and each of which still applies, because
+they are about Laravel and the audit ledger rather than about the cloud:
 
 1. **`php artisan audit:rotate-key` cannot work here.** Its step 3 is
    `key:generate --force`, which writes the new key into `.env`, and the
@@ -358,8 +409,11 @@ ContainerAppConsoleLogs_CL
 without a human ever seeing it:
 
 ```bash
-bash deploy/azure/containerapps/rotate-martin-credential.sh          # dry run
-bash deploy/azure/containerapps/rotate-martin-credential.sh --apply
+# NOT YET PORTED — the script went with deploy/azure/ on 2026-09-08.
+# By hand: ALTER ROLE martin_readonly PASSWORD, put-secret-value on
+# MARTIN_DATABASE_URL, then force-new-deployment on the martin service.
+# The ORDER matters: Martin holds persistent connections, so the old
+# password keeps working until the task is replaced.
 ```
 
 ---
@@ -448,7 +502,7 @@ az cognitiveservices account keys regenerate -g $RG -n georag-foundry-cc --key-n
 
 Next time, swap the roles of key1 and key2. This key fronts the LLM,
 Embed v4, Rerank v4 **and** Cohere Parse v5, so a wrong value shows up as
-Foundry `ClientErrors` on every path at once (`azure-oncall.md` §4) and as
+Foundry `ClientErrors` on every path at once (`aws-oncall.md` §4) and as
 `ocr_method='tesseract'` on newly ingested scanned pages.
 
 ---
@@ -457,7 +511,7 @@ Foundry `ClientErrors` on every path at once (`azure-oncall.md` §4) and as
 
 `georagblobcc` keeps shared-key access on because Laravel's
 `temporaryUrl()` signs export and figure download URLs with the account
-key (`deploy/azure/README.md`). FastAPI and the Hatchet worker use the
+key (historical; see ADR-0022). FastAPI and the Hatchet worker use the
 key only if their env carries `AZURE_STORAGE_CONNECTION_STRING` rather than
 `AZURE_STORAGE_ACCOUNT_URL` (managed identity via `DefaultAzureCredential`,
 `src/georag_object_storage/.../azure_config.py`) — check with the §0 loop.
@@ -514,7 +568,7 @@ path are the compose-era values (`docker-compose.yml` § hatchet-worker,
 Appendix K); confirm them against the running hatchet-cc image the first
 time. Revoke the old token from the Hatchet dashboard (Settings → API
 tokens) once the worker logs show `finished step run:` lines again
-(`azure-oncall.md` §3 query). A worker on a bad token does not crash — it
+(`aws-oncall.md` §3 query). A worker on a bad token does not crash — it
 sits Running and consumes nothing, which is exactly that section's symptom.
 
 Hatchet's own server secrets (cookie and encryption keys in hatchet-cc)

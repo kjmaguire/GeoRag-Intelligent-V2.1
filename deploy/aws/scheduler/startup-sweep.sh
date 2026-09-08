@@ -51,7 +51,7 @@ SERVICE_COUNT=$(( ${#TIER1[@]} + ${#TIER2[@]} + ${#TIER3[@]} ))
 # Octane runs two tasks; everything else runs one. The floor matters and
 # the ceiling does not: at desired 1 every deploy and task replacement is
 # a user-visible outage on the only public service. See ADR-0022 §3 and
-# the cost reasoning preserved in deploy/azure/README.md.
+# ADR-0022, which carries the cost reasoning deploy/azure/README.md held.
 declare -A DESIRED=( [laravel-octane]=2 )
 
 # "name=endpoint-config-name" pairs. Empty means the deployment is on the

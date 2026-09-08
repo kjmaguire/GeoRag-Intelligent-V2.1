@@ -6,6 +6,21 @@
 > image and port facts were read from the service blocks, not from the
 > header comment (which is only partly corrected — see §8). Verify the
 > service list any time with `docker compose config --services`.
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> Everything this chapter says about the **dev stack** and about
+> **application behaviour** is unaffected and still accurate; only the
+> question of where production runs has changed. The chapter is left as
+> written rather than half-edited, on the same principle §7 of Ch 00
+> states: a dated notice is honest, and a partial rewrite is the drift
+> this manual exists to prevent.
+
 
 Companion chapters: [Ch 00](00-overview.md) for the profile map and the
 production topology, [Ch 02](02-data-stores.md) for what lives inside

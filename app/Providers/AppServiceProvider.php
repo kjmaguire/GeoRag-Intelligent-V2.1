@@ -6,11 +6,8 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Policies\DashboardPolicy;
-use App\Services\Azure\AzureBlobDiskLifetime;
-use App\Services\Azure\ManagedIdentityTokenProvider;
 use App\Support\Http\PooledHttpClient;
 use Illuminate\Cache\RateLimiting\Limit;
-use Illuminate\Filesystem\FilesystemAdapter as LaravelFilesystemAdapter;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Request;
 use Illuminate\Log\Events\MessageLogged;
@@ -20,13 +17,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\ServiceProvider;
-use League\Flysystem\AzureBlobStorage\AzureBlobStorageAdapter;
-use League\Flysystem\Filesystem as Flysystem;
-use MicrosoftAzure\Storage\Blob\BlobRestProxy;
-use MicrosoftAzure\Storage\Blob\BlobSharedAccessSignatureHelper;
-use MicrosoftAzure\Storage\Blob\Internal\BlobResources;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -50,108 +41,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // Azure Blob disk driver — mirrors STORAGE_BACKEND=azure_blob on the
-        // Python side (georag_object_storage/factory.py). Registered
-        // unconditionally; it's only instantiated when a disk config actually
-        // resolves 'driver' => 'azure' (see config/filesystems.php).
-        Storage::extend('azure', function ($app, $config) {
-            // Managed-identity mode — no AccountKey ever touches this process.
-            // The blob client authenticates with an Azure AD token fetched
-            // from the Container App's system-assigned identity via IMDS
-            // (see ManagedIdentityTokenProvider). Opt-in via
-            // AZURE_STORAGE_AUTH_MODE=managed_identity; default stays
-            // 'connection_string' (today's account-key behavior, unchanged)
-            // so existing deployments are unaffected.
-            //
-            // SDK limitation: microsoft/azure-storage-blob ^1.1 has no
-            // user-delegation-key SAS support (the AAD-token equivalent of
-            // account-key SAS), so temporaryUrl() below still needs
-            // AccountKey to sign presigned export/figure download URLs even
-            // in managed-identity mode. That key is used ONLY for local SAS
-            // signing — it never authenticates the actual blob read/write
-            // traffic, which is 100% managed-identity in this mode. If
-            // AZURE_STORAGE_CONNECTION_STRING isn't also set alongside
-            // AZURE_STORAGE_AUTH_MODE=managed_identity, the buildTemporaryUrlsUsing
-            // callback below never gets registered and temporaryUrl() throws
-            // Flysystem's own UnableToGenerateTemporaryUrl — loud failure,
-            // not a silently broken URL.
-            if (($config['auth_mode'] ?? 'connection_string') === 'managed_identity') {
-                // The token is COPIED into the client below and cannot be
-                // changed afterwards — the SDK takes a bearer string, with
-                // no setter and no callback. Laravel then caches this disk
-                // on the FilesystemManager singleton, which under Octane
-                // lives as long as the worker, so this closure runs once
-                // and the token it captured is used until the worker dies.
-                //
-                // Record when that token expires so the RequestReceived
-                // listener can drop the disk at that moment and force a
-                // rebuild. Without it the worker serves 401s on every blob
-                // operation from expiry until it happens to recycle —
-                // OCTANE_MAX_REQUESTS=500 on an app this quiet means days.
-                [$token, $expiresAt] = $app
-                    ->make(ManagedIdentityTokenProvider::class)
-                    ->getTokenWithExpiry();
-                AzureBlobDiskLifetime::remember($expiresAt);
-                $client = BlobRestProxy::createBlobServiceWithTokenCredential(
-                    $token,
-                    // DefaultEndpointsProtocol is required here even though it's
-                    // always https — omitting it leaves the SDK's internal
-                    // $scheme empty, producing a malformed "http://://..."
-                    // endpoint URI (caught by AzureBlobDiskTest's managed-identity
-                    // coverage).
-                    'DefaultEndpointsProtocol=https;AccountName='.$config['account_name'],
-                );
-            } else {
-                $client = BlobRestProxy::createBlobService($config['connection_string']);
-            }
-            $adapter = new AzureBlobStorageAdapter($client, $config['container']);
-
-            $disk = new LaravelFilesystemAdapter(new Flysystem($adapter), $adapter, $config);
-
-            // AzureBlobStorageAdapter implements neither getTemporaryUrl() nor
-            // League's TemporaryUrlGenerator interface, so temporaryUrl() would
-            // otherwise throw "This driver does not support creating temporary
-            // URLs" — breaking every presigned-download call site (report/
-            // figure exports, GenerateExportJob, FigureResolver). Register a
-            // SAS-token callback so it behaves the same as the s3 disks it
-            // replaces under STORAGE_BACKEND=azure_blob.
-            if (str_contains((string) $config['connection_string'], 'AccountName=')) {
-                preg_match('/AccountName=([^;]+)/', (string) $config['connection_string'], $nameMatch);
-                preg_match('/AccountKey=([^;]+)/', (string) $config['connection_string'], $keyMatch);
-                $accountName = $nameMatch[1] ?? null;
-                $accountKey = $keyMatch[1] ?? null;
-
-                if ($accountName && $accountKey) {
-                    $sasHelper = new BlobSharedAccessSignatureHelper($accountName, $accountKey);
-                    $container = $config['container'];
-
-                    $disk->buildTemporaryUrlsUsing(
-                        function (string $path, \DateTimeInterface $expiration, array $options = []) use (
-                            $sasHelper, $accountName, $container
-                        ): string {
-                            // The SDK types $signedExpiry as DateTime|string,
-                            // not DateTimeInterface, and Laravel hands the
-                            // callback a DateTimeInterface -- in practice a
-                            // Carbon, which is a DateTimeImmutable and so is
-                            // NOT a DateTime. Passing it through happened to
-                            // work because the SDK only formats the value,
-                            // but it does not satisfy the signature.
-                            $token = $sasHelper->generateBlobServiceSharedAccessSignatureToken(
-                                BlobResources::RESOURCE_TYPE_BLOB,
-                                "{$container}/{$path}",
-                                'r',
-                                \DateTime::createFromInterface($expiration),
-                            );
-
-                            return "https://{$accountName}.blob.core.windows.net/{$container}/{$path}?{$token}";
-                        },
-                    );
-                }
-            }
-
-            return $disk;
-        });
-
         Gate::define('viewPortfolio', [DashboardPolicy::class, 'viewPortfolio']);
         Gate::define('viewProject', [DashboardPolicy::class, 'viewProject']);
 

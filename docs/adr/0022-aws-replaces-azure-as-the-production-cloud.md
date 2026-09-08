@@ -284,7 +284,9 @@ worker — the pattern that OOM-killed the container on 2026-06-24 with the
 
 - A committed wire-contract probe report for chat and parse before either
   adapter is trusted. Parse's wire shape was **never** empirically verified even
-  on Foundry; `ops/validation/cohere_parse_probe.sh` was built for exactly this.
+  on Foundry. `ops/validation/bedrock_probe.py` covers all four models and
+  replaces `cohere_parse_probe.py`, which covered only Parse — on Bedrock,
+  every one of them is unverified, not just that one.
 - `RERANKER_SCORE_THRESHOLD_FOUNDRY` re-measured against Rerank 3.5 on the
   golden set before traffic is flipped.
 - Backend-selection tests extended to pin the new defaults and the loud

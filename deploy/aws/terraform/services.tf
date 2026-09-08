@@ -169,6 +169,13 @@ locals {
       "redis-server",
       "--appendonly", "yes",
       "--appendfsync", "everysec",
+      # Explicit, not omitted. Silence is NOT "off": Redis's built-in save
+      # points stay active, so an AOF-only intent quietly runs RDB
+      # snapshots as well. Dropping this line is precisely half of what
+      # the Azure lift got wrong — it inherited `--appendonly yes` from
+      # compose, did not inherit the volume, and did not inherit this
+      # either. scripts/check_redis_manifests.py enforces both halves.
+      "--save", "",
       "--maxmemory", "384mb",
       "--maxmemory-policy", "volatile-lru",
       "--databases", "4",

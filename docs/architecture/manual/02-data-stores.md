@@ -7,6 +7,21 @@
 > `deploy/azure/` and `ops/runbooks/`. Where dev and production differ, both
 > are stated. Anything the repo does not record (Flexible Server SKU, the
 > live Azure env values) is said to be unrecorded rather than guessed.
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> Everything this chapter says about the **dev stack** and about
+> **application behaviour** is unaffected and still accurate; only the
+> question of where production runs has changed. The chapter is left as
+> written rather than half-edited, on the same principle §7 of Ch 00
+> states: a dated notice is honest, and a partial rewrite is the drift
+> this manual exists to prevent.
+
 
 Four durable stores (PostgreSQL, Qdrant, Redis, object storage), one tile
 generator (Martin) and one engine database (Hatchet). This chapter covers

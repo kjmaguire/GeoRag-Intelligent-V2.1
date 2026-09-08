@@ -7,16 +7,51 @@
 > opened with a self-hosted vLLM server as the LLM tier; that service was
 > deleted on 2026-07-30 and the default backend is Azure AI Foundry.
 > Sections 7 and 8 pointed into `src/dagster/`, deleted 2026-08-28.
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> Everything this chapter says about the **dev stack** and about
+> **application behaviour** is unaffected and still accurate; only the
+> question of where production runs has changed. The chapter is left as
+> written rather than half-edited, on the same principle §7 of Ch 00
+> states: a dated notice is honest, and a partial rewrite is the drift
+> this manual exists to prevent.
+
 
 Every model the system runs, by **kind** and **where it executes**.
 
-| Role | Dev (compose) | Production (Azure) |
+**This table is the one part of the chapter ADR-0022 updated in place**,
+because a model VERSION changed and that is a behaviour change rather than
+a hosting detail. Everything below it still describes the Foundry-era
+wiring; read it for the mechanism, not for the host.
+
+| Role | Dev (compose) | Production (AWS, since 2026-09-08) |
 |---|---|---|
-| LLM | Azure AI Foundry, Cohere Command A+ | same |
-| Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | Foundry, Cohere Embed v4 |
-| Reranker | `reranker` sidecar, Qwen3-Reranker-0.6B (GPU) | Foundry, Cohere Rerank v4 |
-| Sparse | `sparse` sidecar, SPLADE++ (CPU) | **self-hosted or absent — no Foundry equivalent** |
-| Scanned-page OCR | Cohere Parse v5 on Foundry, Tesseract fallback | same |
+| LLM | Amazon Bedrock, Cohere Command A+ | same — but a Bedrock **Marketplace** endpoint, not serverless: Bedrock's serverless Cohere generative catalogue is Command R/R+ (legacy) |
+| Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | Bedrock, Cohere Embed v4 (1024-dim) |
+| Reranker | `reranker` sidecar, Qwen3-Reranker-0.6B (GPU) | Bedrock, Cohere **Rerank 3.5** — NOT v4, which Bedrock does not serve |
+| Sparse | `sparse` sidecar, SPLADE++ (CPU) | **the `sparse` service — no hosted equivalent anywhere, on Bedrock or Cohere's own API** |
+| Scanned-page OCR | Cohere Parse 5 on Bedrock, Tesseract fallback | same — also a Marketplace endpoint; Bedrock's serverless catalogue has no Parse model at all |
+
+⚠️ **The reranker dropped a major version, and it matters.**
+`RERANKER_SCORE_THRESHOLD_HOSTED` (0.2, renamed from `_FOUNDRY`) was
+measured against Rerank **v4** on 2026-08-15 and is the only
+retrieval-quality gate in the system (hard rule 5, as built). It is carried
+over to 3.5 **unvalidated** and must be re-measured on the golden set: too
+low and it stops filtering, too high and the refusal rate climbs, and
+neither shows up in any metric anything scrapes.
+
+⚠️ **Page-image verbalization has no replacement.** `gpt-5-mini` was an
+Azure OpenAI model on the Foundry resource, and unlike everything else in
+this table it was never a Cohere model — so "keep the model, change the
+host" does not apply. `page_vision_client` reports itself unconfigured
+until a Bedrock vision model is chosen. The feature is gated behind
+`IMAGE_VERBALIZATION_ENABLED` and has never run in production (§1.4).
 
 ## 1. The LLM tier — Azure AI Foundry
 
