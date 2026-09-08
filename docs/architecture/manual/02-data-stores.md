@@ -17,10 +17,14 @@
 > [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
 > Everything this chapter says about the **dev stack** and about
 > **application behaviour** is unaffected and still accurate; only the
-> question of where production runs has changed. The chapter is left as
-> written rather than half-edited, on the same principle §7 of Ch 00
-> states: a dated notice is honest, and a partial rewrite is the drift
-> this manual exists to prevent.
+> question of where production runs has changed.
+>
+> **§1's production notes and §8's recovery table were rewritten on
+> 2026-09-08.** Two of those rows changed in substance rather than in
+> hosting: Redis now has AOF on a real volume (it had `--appendonly yes`
+> and no volume on Azure), and object storage now has versioning and
+> retention where it previously had no backup posture at all. Leaving
+> either under a dated notice would have understated the deployment.
 
 
 Four durable stores (PostgreSQL, Qdrant, Redis, object storage), one tile

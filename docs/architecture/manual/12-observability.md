@@ -22,10 +22,15 @@
 > [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
 > Everything this chapter says about the **dev stack** and about
 > **application behaviour** is unaffected and still accurate; only the
-> question of where production runs has changed. The chapter is left as
-> written rather than half-edited, on the same principle §7 of Ch 00
-> states: a dated notice is honest, and a partial rewrite is the drift
-> this manual exists to prevent.
+> question of where production runs has changed.
+>
+> **§1.2, §1.3, §2.3, §4, §5, §6 and §9 were rewritten on 2026-09-08**
+> rather than left under this notice. Observability was a rewrite, not a
+> port — Azure Monitor's KQL rules and CloudWatch's metric filters are
+> different enough that every query and threshold had to be re-expressed —
+> and these are the sections an on-call reader consults for a single fact.
+> `ops/runbooks/aws-oncall.md` was already correct, so leaving them would
+> have made the manual contradict the runbook it points at.
 
 
 There is no metrics server, no log aggregator and no trace backend in
