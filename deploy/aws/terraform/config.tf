@@ -164,6 +164,22 @@ locals {
           # big worker off for longer.
           WORKER_POOL          = "all"
           FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # The SDK's own health server, and the reason the worker's
+          # container health check can detect a HANG rather than only a
+          # crash. It answers only while the event loop is turning, so a
+          # worker wedged holding queue leases — busy-looking, finishing
+          # nothing — fails the probe and gets replaced. compose greps
+          # /proc/1/cmdline instead, which proves the process exists and
+          # nothing more.
+          #
+          # The threshold is set EXPLICITLY. The SDK default is 5 seconds,
+          # which a large embed batch can exceed without anything being
+          # wrong — that would flap. 30 s is what Azure's probes.json used
+          # and what the Ch 12 §6 entry describes.
+          HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED                            = "true"
+          HATCHET_CLIENT_WORKER_HEALTHCHECK_PORT                               = "8001"
+          HATCHET_CLIENT_WORKER_HEALTHCHECK_EVENT_LOOP_BLOCK_THRESHOLD_SECONDS = "30"
         }
         sparse = {
           # The sidecar serves the model; it must not also try to reach

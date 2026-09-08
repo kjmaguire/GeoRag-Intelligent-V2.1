@@ -194,6 +194,60 @@ locals {
   }
 }
 
+# ---------------------------------------------------------------------------
+# Container health checks
+# ---------------------------------------------------------------------------
+# The ALB health-checks the two services behind it. Everything else — nine
+# containers, including every store and both Hatchet halves — had NO liveness
+# signal at all in the first draft of this deployment. Azure did better: it
+# carried per-app probes in `probes.json`, and that file went with the Azure
+# tree.
+#
+# What that costs is not theoretical. ECS only replaces a task whose PROCESS
+# has exited; a process that is running and wedged is a healthy task forever.
+# The Hatchet worker is the case that matters most, and Ch 12 §6 already named
+# it: the SDK health server is "the probe that catches a hung worker holding
+# its queue lease". A wedged worker holds leases, finishes nothing, and looks
+# entirely fine — the exact symptom the on-call runbook's "ingestion has
+# stopped moving" section sends you hunting for in the logs.
+#
+# These are the compose commands, unchanged, because they are already proven
+# against these exact images. Two are worth reading twice:
+#
+#   qdrant  — speaks /readyz over bash's /dev/tcp because the image has no
+#             curl and no wget. Do not "simplify" it to curl.
+#   worker  — compose greps /proc/1/cmdline, which proves only that the
+#             process exists. Production asks the SDK's health server
+#             instead, which answers only while the event loop is turning
+#             (config.tf enables it). That is the whole difference between
+#             detecting a crash and detecting a hang.
+locals {
+  service_healthcheck = {
+    redis           = ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+    qdrant          = ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && printf 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200 OK' <&3"]
+    martin          = ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
+    hatchet         = ["CMD-SHELL", "wget -q -O - http://localhost:8888/api/ready >/dev/null 2>&1 || exit 1"]
+    hatchet-worker  = ["CMD-SHELL", "wget -q -O - http://localhost:8001/health >/dev/null 2>&1 || exit 1"]
+    fastapi         = ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    sparse          = ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    laravel-octane  = ["CMD", "curl", "-f", "http://localhost:80/up"]
+    laravel-horizon = ["CMD-SHELL", "php artisan horizon:status | grep -qE 'running|paused' || exit 1"]
+    laravel-reverb  = ["CMD", "curl", "-f", "http://localhost:8080/up"]
+  }
+
+  # startPeriod is the grace before failures count. Hatchet runs its own
+  # schema migration on boot (Azure allowed 45 s); the Laravel and FastAPI
+  # images boot slower than the stores.
+  healthcheck_start_period = {
+    hatchet         = 90
+    hatchet-worker  = 60
+    fastapi         = 60
+    laravel-octane  = 60
+    laravel-horizon = 60
+    laravel-reverb  = 60
+  }
+}
+
 resource "aws_ecs_task_definition" "this" {
   for_each = local.services
 
@@ -258,6 +312,15 @@ resource "aws_ecs_task_definition" "this" {
           containerPath = each.key == "qdrant" ? "/qdrant/storage" : "/data"
           readOnly      = false
         }]
+      } : {},
+      lookup(local.service_healthcheck, each.key, null) != null ? {
+        healthCheck = {
+          command     = local.service_healthcheck[each.key]
+          interval    = 30
+          timeout     = 5
+          retries     = 3
+          startPeriod = lookup(local.healthcheck_start_period, each.key, 30)
+        }
       } : {},
     )
   ])

@@ -2,7 +2,8 @@
 
 > **Reconciled 2026-09-07** against `deploy/azure/alerts/create-alerts.sh`,
 > `deploy/azure/README.md`, `deploy/azure/containerapps/probes.json`,
-> `ops/runbooks/azure-oncall.md`, `src/fastapi/app/logging_config.py`,
+> the then-current `ops/runbooks/azure-oncall.md`,
+> `src/fastapi/app/logging_config.py`,
 > `src/fastapi/app/metrics.py`, `src/fastapi/app/middleware.py`,
 > `src/fastapi/app/observability/otel.py`, `src/fastapi/app/main.py`,
 > `src/fastapi/app/hatchet_workflows/worker.py`, `config/logging.php`,
@@ -31,12 +32,12 @@ There is no metrics server, no log aggregator and no trace backend in
 this repository, in either environment. What the platform has instead is
 four things:
 
-| Surface | Dev (compose) | Azure (production) |
+| Surface | Dev (compose) | Production (AWS) |
 |---|---|---|
-| **Logs** | container stdout/stderr, read with `docker compose logs`; Laravel also writes files under `storage/logs/` | container stdout/stderr → Log Analytics workspace `workspace-georag4ad7`, table `ContainerAppConsoleLogs_CL`; Postgres server logs via the `georag-pg-audit` diagnostic setting |
-| **Metrics** | two unscraped Prometheus-format endpoints (FastAPI `/metrics`, Laravel `/metrics`) | the same two endpoints, still unscraped, plus Azure platform metrics (Container Apps, Flexible Server, Foundry, Storage) which are what the alerts actually use |
-| **Traces** | a W3C `traceparent` id carried through headers, log lines and database rows; no span export | identical; the id is a join key across `ContainerAppConsoleLogs_CL` and Postgres rows |
-| **Alerting** | none | Azure Monitor metric alerts and scheduled-query (log) rules routed to action group `georag-alerts-ag`, whose only receiver is one email address; no paging |
+| **Logs** | container stdout/stderr, read with `docker compose logs`; Laravel also writes files under `storage/logs/` | container stdout/stderr → CloudWatch log group `/ecs/georag` (30-day retention). The two nightly sweeps write to `/ecs/georag/scheduler` (90 days) — a separate group on purpose, see §1.3 |
+| **Metrics** | two unscraped Prometheus-format endpoints (FastAPI `/metrics`, Laravel `/metrics`) | the same two endpoints, still unscraped, plus free platform metrics (ALB, RDS, Bedrock) which are what the alarms actually use |
+| **Traces** | a W3C `traceparent` id carried through headers, log lines and database rows; no span export | identical; the id is a join key across CloudWatch Logs Insights and Postgres rows |
+| **Alerting** | none | CloudWatch alarms and log metric filters → one SNS topic with a single email subscriber; no paging |
 
 The durable record lives in Postgres: `silver.answer_runs`,
 `silver.query_traces`, `audit.audit_ledger` and the few operational
@@ -85,18 +86,20 @@ so in compose the application log is the file
 routed to it is Monolog's default text line, not JSON. The dedicated
 `authz_audit` channel is a stack of `authz_audit_file` (daily rotation,
 30-day retention, `AUTHZ_AUDIT_RETENTION_DAYS`) plus `stderr`; the
-`stderr` member was added 2026-08-21 because on Container Apps only
-stdout/stderr reach Log Analytics and the file inside a replaced
-container was being generated and thrown away. Every 403 the IDOR gates
+`stderr` member was added 2026-08-21 because only stdout/stderr reach the
+platform's log store and the file inside a replaced container was being
+generated and thrown away. That reasoning is unchanged on ECS: the
+`awslogs` driver reads the two streams and nothing else. Every 403 the IDOR gates
 emit goes through
 [`AuthorizationAuditLogger`](../../../app/Support/AuthorizationAuditLogger.php)
 as an `event=authz.deny` document on that channel.
 
-Container-app environment variables are hand-managed on Azure (Ch 00 §5),
-so which `LOG_STACK` the production Laravel apps run is not recorded in
-the repository. If it is still the `single` default, the application log
-on Azure is a file nobody can read; `.env.production.example` sets only
-`LOG_LEVEL=info`.
+Which `LOG_STACK` the production Laravel apps run is now answerable from
+the repository — `deploy/aws/terraform/config.tf` is the task environment,
+where Azure had ~55 hand-set variables per app that drifted freely (Ch 00
+§5). It should be set explicitly: on the `single` default the application
+log is a file inside a container nobody can read, which is what the
+`stderr` member above exists to avoid.
 
 ### 1.2 Where they go
 
@@ -108,46 +111,47 @@ Grafana service in `docker-compose.yml`, and the `docker/loki`,
 `docker/alertmanager`, `docker/tempo` and `docker/otel-collector`
 directories this chapter used to link do not exist.
 
-**Azure.** Every Container App and Container App Job writes to
-`ContainerAppConsoleLogs_CL` in `workspace-georag4ad7` (resource group
-`georag`, region `canadacentral`). Two properties of that table decide
-whether a query works at all:
+**Production.** Every ECS task writes to the `/ecs/georag` CloudWatch log
+group through the `awslogs` driver, one stream prefix per service, with
+30-day retention. The two nightly sweeps write to `/ecs/georag/scheduler`
+instead, at 90 days.
 
-- Container Apps populate `ContainerAppName_s`; Container App **Jobs**
-  leave it empty and put the name in `ContainerJobName_s`. A rule written
-  against `ContainerAppName_s == 'shutdown-scheduler-cc'` parses, runs,
-  costs money and matches nothing. Every query in `create-alerts.sh` was
-  executed against the live workspace before being written down.
-- The payload is the raw line in `Log_s`. JSON lines can be parsed with
-  `parse_json(Log_s)`; the worker's pre-2026-08-21 lines cannot.
+**That split is deliberate, and it is the fix for a trap worth recording.**
+On Azure everything landed in one table, and Container Apps populated
+`ContainerAppName_s` while Container App **Jobs** left it empty and put
+the name in `ContainerJobName_s`. A rule written the obvious way — against
+`ContainerAppName_s == 'shutdown-scheduler-cc'` — parsed, ran, cost money
+and matched nothing, silently, forever. Every KQL query was therefore
+executed against the live workspace before being written down. A separate
+log group removes the class: the sweeps' filters cannot accidentally scope
+to the wrong field, because there is no field to get wrong.
 
-A third trap from the on-call runbook: stdout inside these containers is
-block-buffered until the process exits, so stdout timestamps cluster at
-the moment a container died. stderr is real-time, which is why the
-scheduler sweep scripts write all progress to stderr.
+One trap that DID survive, because it is a property of the container
+runtime rather than of any cloud: **stdout is block-buffered until the
+process exits; stderr is real-time.** stdout timestamps cluster at the
+moment a container died, which is how a truncated sweep once printed
+"shutdown sweep complete" — the line was already in the buffer and the
+flush on teardown made a killed run look finished. The sweep scripts write
+all progress to stderr for exactly this reason.
 
-The workspace has `dailyQuotaGb = 2`, applied by hand
-([`deploy/azure/README.md`](../../../deploy/azure/README.md) "Environment
-settings applied by hand"): the 30-day peak was 0.185 GB/day and the mean
-0.086, so the cap bounds a runaway at roughly $166/month. Retention is
-the workspace default and is not recorded in the repository.
+Retention is the only cost control, in place of Azure's hand-applied
+`dailyQuotaGb = 2`. The measured 30-day peak was 0.185 GB/day, mean 0.086,
+so volume was never the problem the cap was solving — an unbounded runaway
+was. Retention bounds the stored total instead of refusing ingestion, which
+is the better trade for a signal that alerts read.
 
-Postgres server logs reach the same workspace through the
-`georag-pg-audit` diagnostic setting (categories `PostgreSQLLogs` and
-`PostgreSQLFlexSessions`). `create-alerts.sh` step 6 used to try to
-create a second setting named `pg-to-law` and failed every time, because
-Azure refuses two settings sending the same category to the same sink;
-the script now detects the existing setting and prints what it ships.
-Widening it to `AllMetrics` and `PostgreSQLFlexQueryStoreRuntime` is
-left as a deliberate cost decision, and `log_min_duration_statement` on
-the Flexible Server is not set, so `PostgreSQLLogs` carries startup and
-checkpoint chatter and no slow queries.
+RDS logs are NOT shipped to CloudWatch. Enabling the `postgresql` log
+export is one Terraform argument and a deliberate cost decision, left
+where Azure left it; `log_min_duration_statement` is unset either way, so
+today there would be startup and checkpoint chatter and no slow queries.
 
 ### 1.3 Marker lines that are alert signals
 
-Because nothing ships application metrics to Azure Monitor, the
-production alerting design uses distinctive log lines as the signal. The
-markers a rule can match on:
+Because nothing scrapes the two `/metrics` endpoints, the production
+alerting design uses distinctive log lines as the signal — CloudWatch log
+metric filters now, Azure Monitor scheduled queries before. **Renaming a
+marker silently disables its alarm**, in either cloud. The markers a rule
+can match on:
 
 | Marker | Emitted by | Meaning | Rule in `create-alerts.sh` |
 |---|---|---|---|
@@ -185,9 +189,9 @@ gauges and 11 histograms, all prefixed `georag_`. Families:
 `GET /metrics` in [`app/main.py`](../../../src/fastapi/app/main.py)
 serves that registry with no authentication; its docstring argues this
 is fine because "Prometheus lives on the same internal network", which
-was true until 2026-07-28. On Azure only `laravel-octane-cc` has
-external ingress, so the endpoint is reachable from inside the
-environment and from nothing else. **Nothing scrapes it in either
+was true until 2026-07-28. Only `laravel-octane` is reachable through the
+ALB, so the endpoint is reachable from inside the VPC and from nothing
+else. **Nothing scrapes it in either
 environment.** The counters
 increment, the process restarts, the counts vanish. Two consequences
 follow from that:
@@ -203,10 +207,11 @@ follow from that:
   latency histogram in the FastAPI registry. Same registry, same fate.
 
 `answer_quality_watch` was written in explicit response to this: rather
-than shipping the four quality counters to Azure Monitor custom metrics
-(the audit's recommendation, "blocked on an Azure change nobody has
-made"), it reads the same facts from `silver.answer_runs`, which has
-history. That is the pattern to follow for any new production signal:
+than shipping the four quality counters to the platform as custom metrics
+(the audit's recommendation, at the time "blocked on an Azure change
+nobody has made" — CloudWatch's `PutMetricData` makes it possible now, and
+it is still not done), it reads the same facts from `silver.answer_runs`,
+which has history. That is the pattern to follow for any new production signal:
 persist it, then match a log line.
 
 ### 2.2 The Laravel exposition endpoint
@@ -229,17 +234,32 @@ and its tree deleted 2026-08-28, so the last series reads a table that
 exists only where `georag_dagster` was provisioned (Ch 02 §1.4) and
 should be removed. Like the FastAPI endpoint, nothing scrapes this one.
 
-### 2.3 Azure platform metrics
+### 2.3 Free platform metrics
 
 These are the metrics production alerting is built on, because they are
 collected at no cost and without any application change:
 
-| Resource | Metrics used | Rules |
+| Source | Metrics used | Alarms |
 |---|---|---|
-| each Container App | `Restarts`; `Requests` split by `statusCodeCategory` (only on `laravel-octane-cc`, the sole external ingress) | 8 per-app restart-count alerts (baseline), `laravel-octane-cc-5xx`, `laravel-octane-cc-dead-air` |
-| `georag-pg-cc` Flexible Server | CPU, storage, connections | 3 baseline alerts, including `georag-pg-cc-down`, which fires by design every night and is suppressed by the `georag-pg-shutdown-window` processing rule |
-| `georag-foundry-cc` (Cognitive Services) | `TotalTokens`, `ClientErrors`, `ServerErrors` | `georag-foundry-cc-client-errors` (>50 / 15 min), `georag-foundry-cc-server-errors` (>5 / 15 min). Foundry blocked 1,421 of 2,524 calls on 2026-08-17 and nothing noticed |
-| `georagblobcc` storage account | `Transactions` | `georagblobcc-transaction-storm` (>500,000 / 6 h): the 2026-08-17..20 Qdrant optimizer loop on a full `qdrant-storage` share generated 10.8 M transactions in a day; after the quota fix, 45,357 |
+| ALB (`AWS/ApplicationELB`) | `HTTPCode_Target_5XX_Count`, `HealthyHostCount` | `georag-octane-5xx` (>10 / 5 min), `georag-octane-dead-air` (healthy hosts < 1 for 2×5 min). Azure had **no** error-rate or availability rule on its equivalent at all |
+| RDS (`AWS/RDS`) | `CPUUtilization`, `FreeStorageSpace` | `georag-pg-cpu` (>85% for 3×5 min), `georag-pg-storage` (<10 GiB) |
+| Bedrock (`AWS/Bedrock`) | `InvocationClientErrors`, `InvocationServerErrors`, `InvocationThrottles` | `georag-bedrock-client-errors` (>50 / 15 min), `-server-errors` (>5 / 15 min), `-throttles` (>100 for 2×15 min) |
+
+The two Bedrock error thresholds are the Foundry ones, carried across with
+their **measured** values rather than reinvented: Foundry blocked 1,421 of
+2,524 calls on 2026-08-17 and nothing noticed, which is what earned the
+rule its existence. Bedrock publishes the direct equivalents, so the
+numbers port. (Reaching Cohere's API directly would have meant rebuilding
+both application-side, which is one of the things that decided the route —
+ADR-0022 §11.)
+
+**Two Azure alarm classes have no successor, deliberately.** The per-app
+`Restarts` counters are replaced by `HealthyHostCount`, which can tell
+"crash-looped and served nothing" from "restarted once and recovered" —
+the restart counter could not. And `georagblobcc-transaction-storm` is
+gone with the failure it watched: it existed because a fixed-quota Azure
+Files share stalled Qdrant's optimizer into 10.8 M storage transactions in
+a day, and EFS has no quota to exhaust (Ch 02).
 
 ## 3. Traces
 
@@ -341,52 +361,58 @@ the reason the compose comment gives (no lifespan hook to swap it).
 | Dashboard | Where | Access | State |
 |---|---|---|---|
 | Horizon | `/horizon` on `laravel-octane` | `viewHorizon` gate from `HORIZON_ADMIN_EMAILS`; empty list means nobody (fail closed) | job lists and failed-job detail work; the metrics graphs are blank because `horizon:snapshot` needs a scheduler and there is none (Ch 07 §1) |
-| Laravel Pulse | `/pulse` on `laravel-octane` | Pulse's `Authorize` middleware with **no** `viewPulse` gate defined, so only `APP_ENV=local` may view | recorders run everywhere (`PULSE_ENABLED` defaults true, nothing sets it), writing `pulse_*` tables created by `2026_04_09_173734_create_pulse_tables.php` on the default connection, trimmed at 7 days. On Azure (`APP_ENV=production`) Pulse records and nobody can look. The `Servers` recorder needs `php artisan pulse:check`, which no service runs, so the server panel is empty in every environment. There are no custom recorders; `app/Pulse/` does not exist |
-| Hatchet | dev: `http://localhost:8889` on `hatchet-lite`; Azure: `hatchet-cc` exposes TCP ingress on 7077 only, so the UI is unreachable | Hatchet's own login | workflow runs, step logs, cron schedules |
-| Azure portal | Log Analytics, the alert rules, per-resource metric charts | Azure RBAC | the only production dashboard |
+| Laravel Pulse | `/pulse` on `laravel-octane` | Pulse's `Authorize` middleware with **no** `viewPulse` gate defined, so only `APP_ENV=local` may view | recorders run everywhere (`PULSE_ENABLED` defaults true, nothing sets it), writing `pulse_*` tables created by `2026_04_09_173734_create_pulse_tables.php` on the default connection, trimmed at 7 days. In production (`APP_ENV=production`) Pulse records and nobody can look. The `Servers` recorder needs `php artisan pulse:check`, which no service runs, so the server panel is empty in every environment. There are no custom recorders; `app/Pulse/` does not exist |
+| Hatchet | dev: `http://localhost:8889` on `hatchet-lite`; production: the `hatchet` service is reachable only over Cloud Map inside the VPC and is not behind the ALB, so the UI is unreachable | Hatchet's own login | workflow runs, step logs, cron schedules |
+| CloudWatch console | Logs Insights over `/ecs/georag`, the alarms, ALB/RDS/Bedrock metric charts | AWS IAM | the only production dashboard |
 
-## 5. Alerting (Azure Monitor)
+## 5. Alerting (CloudWatch)
 
-Everything routes to action group `georag-alerts-ag`. Its only receiver
-is one email address. There is no on-call rotation, no PagerDuty account
-(`PAGERDUTY_INTEGRATION_KEY` was always empty and the dispatcher module
-is gone), no Slack webhook (`LOG_SLACK_WEBHOOK_URL` unset) and no latency
-alert of any kind.
+Everything routes to one SNS topic with a single email subscriber. There
+is no on-call rotation, no PagerDuty account (`PAGERDUTY_INTEGRATION_KEY`
+was always empty and the dispatcher module is gone), no Slack webhook
+(`LOG_SLACK_WEBHOOK_URL` unset) and no latency alert of any kind.
 
-**Baseline measured 2026-08-21** (the header of
-[`create-alerts.sh`](../../../deploy/azure/alerts/create-alerts.sh)):
-15 metric alerts (8 per-app restart counters, 3 on `georag-pg-cc`, 2
-each on `fastapi-cc` and `hatchet-worker-cc`), 4 scheduled-query rules
-(`qdrant-cc-optimizer-stuck`, `georag-ingest-failed`,
-`georag-fastapi-critical`, `georag-worker-exception-spike`), one
-processing rule (`georag-pg-shutdown-window`) and zero activity-log
-alerts.
+**This is a rewrite, not a port.** Azure Monitor's KQL scheduled-query
+rules and CloudWatch's metric-filter-plus-alarm model are different enough
+that every query and threshold had to be re-expressed; what carried over
+is the *reasoning* and the measured numbers, not the definitions. It is
+also, unlike its predecessor, **applied by Terraform** — the Azure rules
+came from a script that printed commands by default and whose last
+application date the repository does not record.
 
-**What the script adds.** It is idempotent (`create` upserts by name),
-prints commands by default and mutates only with `--apply`. Whether and
-when it was last applied is not recorded in the repository.
+Everything below is in
+[`deploy/aws/terraform/alerts.tf`](../../../deploy/aws/terraform/alerts.tf).
 
-| Rule | Kind | Sev | Signal |
+| Alarm | Kind | Sev | Signal |
 |---|---|---|---|
-| `scheduler-sweep-failed` | log, hourly / 1 h | 1 | §1.3 sweep failure lines |
-| `scheduler-sweep-missing` | log, hourly / 1 d | 1 | no `sweep complete` from either job in 25 h |
-| `laravel-octane-cc-5xx` | metric, 5 m / 15 m | 2 | >5 5xx responses (the 48 h baseline had ten, all in one hour) |
-| `laravel-octane-cc-dead-air` | metric, 5 m / 30 m | 1 | zero requests |
-| `suppress-during-maintenance` | processing rule | | strips actions from dead-air during the nightly window |
-| `georag-pg-shutdown-window` | processing rule | | re-created with the same derived window for `georag-pg-cc-down`; the 2026-08-20 original hard-coded 00:00–10:15 UTC, wrong in both directions after the crons moved on 2026-08-21 |
-| `georag-foundry-cc-client-errors` | metric, 5 m / 15 m | 2 | `ClientErrors` > 50 |
-| `georag-foundry-cc-server-errors` | metric, 5 m / 15 m | 2 | `ServerErrors` > 5 |
-| `georagblobcc-transaction-storm` | metric, 1 h / 6 h | 3 | `Transactions` > 500,000 |
-| `answer-quality-regression` | log, hourly / 1 d | 2 | `ANSWER_QUALITY_REGRESSION` |
-| `cost-burn-threshold-exceeded` | log, 15 m / 1 h | 1 | `COST_BURN_THRESHOLD_EXCEEDED` |
-| `qdrant-partial-loss` | log, hourly / 6 h | 2 | `QDRANT_PARTIAL_LOSS` |
+| `georag-scheduler-sweep-failed` | log filter, 1 h | 1 | a sweep reported a failed action (§1.3) |
+| `georag-scheduler-sweep-missing` | log filter, 1 d | 1 | no `sweep complete` from either sweep in 25 h |
+| `georag-bedrock-endpoint-not-inservice` | log filter | 1 | **new on AWS.** A Marketplace endpoint failed to come back after the nightly delete: no chat and no OCR, invisible to every invocation metric because there are no invocations to fail |
+| `georag-octane-5xx` | metric, 5 m | 2 | >10 `HTTPCode_Target_5XX_Count` |
+| `georag-octane-dead-air` | metric, 2×5 m | 1 | `HealthyHostCount` < 1 |
+| `georag-octane-dead-air-alerting` | composite | 1 | the alarm that actually pages: dead-air AND not inside the maintenance window |
+| `georag-maintenance-window` | log filter | — | not an alert. It goes ALARM when the shutdown sweep completes, and is the suppressor input to the composite above |
+| `georag-bedrock-client-errors` | metric, 15 m | 2 | `InvocationClientErrors` > 50 |
+| `georag-bedrock-server-errors` | metric, 15 m | 2 | `InvocationServerErrors` > 5 |
+| `georag-bedrock-throttles` | metric, 2×15 m | 2 | `InvocationThrottles` > 100 |
+| `georag-pg-cpu` | metric, 3×5 m | 2 | `CPUUtilization` > 85% |
+| `georag-pg-storage` | metric, 5 m | 2 | `FreeStorageSpace` < 10 GiB |
+| `georag-answer-quality-regression` | log filter, 1 d | 2 | `ANSWER_QUALITY_REGRESSION` |
+| `georag-cost-burn-threshold-exceeded` | log filter, 1 h | 1 | `COST_BURN_THRESHOLD_EXCEEDED` |
+| `georag-qdrant-partial-loss` | log filter, 6 h | 2 | `QDRANT_PARTIAL_LOSS` |
 
-The suppression window is derived from the scheduler crons in
-`deploy/azure/containerapps/*-job.yaml` at run time (currently
-06:00–14:30 UTC), so a cron change carries both processing rules with
-it. The three `georag-document-intel-cc-*` rules became dead on
-2026-09-02 (ADR-0019) and must be deleted by hand; the script lists the
-commands and does not run them.
+**Suppression is still derived, not written out again.** Azure needed two
+alert-processing rules keyed on a window spelled out separately from the
+crons; here the composite alarm's suppressor is an alarm driven by the
+shutdown sweep's own completion marker, and `local.maintenance_window_hours`
+is computed from the two cron expressions. A schedule change carries the
+suppression with it, which is the point — the 2026-08-20 Azure rule
+hard-coded 00:00–10:15 UTC and was wrong in both directions once the crons
+moved a day later.
+
+The log-filter alarms match **marker log lines**, so renaming a marker
+silently disables its alarm. Nothing enforces that link; it is the
+sharpest edge in this chapter.
 
 **Known holes**, all already stated in the repository:
 
@@ -401,29 +427,42 @@ commands and does not run them.
 
 ## 6. Health probes
 
-| Service | Dev compose healthcheck | Azure probe (`probes.json`, applied by `apply-probes.sh`) |
+Production probes are ECS container health checks in
+[`deploy/aws/terraform/services.tf`](../../../deploy/aws/terraform/services.tf)
+(`local.service_healthcheck`), applied by Terraform rather than by a
+hand-run script against a JSON file. They are the compose commands, which
+are already proven against these exact images.
+
+| Service | Dev compose healthcheck | Production (ECS container check) |
 |---|---|---|
-| `postgresql` | `pg_isready -U georag -d georag` | managed (Flexible Server) |
+| `postgresql` | `pg_isready -U georag -d georag` | managed (RDS) |
 | `pgbouncer` | `psql -p 6432 -d pgbouncer -c 'SHOW POOLS'` | not deployed |
-| `redis` | `redis-cli ping` | `redis-cc`: TCP 6379, liveness 30 s × 3, readiness 10 s × 3 |
-| `laravel-octane` | `curl -f http://localhost:80/up` | `laravel-octane-cc`: configured before `probes.json` existed; not recorded in the repo |
-| `laravel-horizon` | `php artisan horizon:status` reports `running` or `paused` | `laravel-horizon-cc`: HTTP `/up` (liveness 30 s × 4) and `/ready` (readiness 15 s × 3) on 8080, served by `docker/horizon-health.php` (Ch 07 §1) |
-| `laravel-reverb` | `curl -f http://localhost:8080/up` | `laravel-reverb-cc`: HTTP `/up` on 8080, 30 s × 3 / 10 s × 3 |
-| `fastapi` | `curl -f http://localhost:8000/health` | `fastapi-cc`: configured before `probes.json`; not recorded |
-| `reranker`, `embedding`, `sparse` | `curl -f http://localhost:8000/health` | not deployed (Foundry) |
-| `qdrant` | `/readyz` over `/dev/tcp` (the image has no curl) | `qdrant-cc`: configured before `probes.json`; not recorded |
-| `minio` (SeaweedFS) | `wget http://127.0.0.1:9333/cluster/status` | not deployed (Blob) |
-| `hatchet-lite` | `wget http://localhost:8888/api/ready`, 90 s start period | `hatchet-cc`: TCP 7077 only, because Container Apps probes cannot speak gRPC; 45 s initial delay for the engine's own schema migration |
-| `hatchet-worker` | `grep app.hatchet_workflows.worker /proc/1/cmdline`, which proves the process exists and nothing else | `hatchet-worker-cc`: the SDK health server on 8001 (`HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED=true`, event-loop block threshold 30 s) answering `/health`; liveness 30 s × 5, readiness 15 s × 3. This is the probe that catches a hung worker holding its queue lease |
-| `martin` | `wget --spider http://127.0.0.1:3000/health` | `martin-cc`: not in `probes.json` (the file predates the app) |
+| `redis` | `redis-cli ping` | same |
+| `laravel-octane` | `curl -f http://localhost:80/up` | same, plus the ALB target-group check on `/up` |
+| `laravel-horizon` | `php artisan horizon:status` reports `running` or `paused` | same |
+| `laravel-reverb` | `curl -f http://localhost:8080/up` | same, plus the ALB target-group check |
+| `fastapi` | `curl -f http://localhost:8000/health` | same |
+| `reranker`, `embedding` | `curl -f http://localhost:8000/health` | not deployed (Bedrock) |
+| `sparse` | `curl -f http://localhost:8000/health` | same — SPLADE++ has no managed equivalent, so this one IS deployed |
+| `qdrant` | `/readyz` over `/dev/tcp` (the image has no curl) | same. Do not "simplify" it to curl |
+| `minio` (SeaweedFS) | `wget http://127.0.0.1:9333/cluster/status` | not deployed (S3) |
+| `hatchet-lite` | `wget http://localhost:8888/api/ready`, 90 s start period | same, 90 s start period for the engine's own schema migration. Azure could only do TCP 7077, because Container Apps probes cannot speak gRPC and the app exposed nothing else |
+| `hatchet-worker` | `grep app.hatchet_workflows.worker /proc/1/cmdline`, which proves the process exists and nothing else | the SDK health server on 8001 (`HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED`, block threshold set explicitly to 30 s because the SDK default of 5 s would flap on a large embed batch). **This is the probe that catches a hung worker holding its queue lease** — a wedged worker finishes nothing and looks entirely fine to a process check |
+| `martin` | `wget --spider http://127.0.0.1:3000/health` | same. Azure had no probe for it at all; `probes.json` predated the app |
+
+The distinction the worker row draws is the reason these exist. ECS only
+replaces a task whose **process** has exited, so a running-but-wedged
+container is a healthy task forever — which is exactly the state the
+on-call runbook's "ingestion has stopped moving" section sends you hunting
+through logs for.
 
 FastAPI's `/health` returns 200 whenever the process is up. `/ready`
 round-trips Postgres (`SELECT 1`), Qdrant (`get_collections`) and Redis
 (`PING`) and returns 503 with the per-store result if any fails; the
 Neo4j check was removed 2026-07-28 and the docstring still lists it.
-Compose uses `/health` for every FastAPI-image service. The
-`HATCHET_CLIENT_WORKER_HEALTHCHECK_*` variables exist only in the Azure
-probe file, so the dev worker has no equivalent signal.
+Compose uses `/health` for every FastAPI-image service, and the dev worker
+still has only the `/proc/1/cmdline` grep — the SDK health server is
+enabled in production and not in compose.
 
 ## 7. The durable record in Postgres
 
@@ -449,10 +488,10 @@ production schema, because CD runs `laravel-migrate-job` and never
 `db:apply-raw` (Ch 00 §5). The migration adds the missing columns,
 widens the status check and installs `audit.recompute_hash`,
 `verify_hash_chain` and `run_verification` verbatim from the raw SQL.
-Before it, the ledger's hash chain had never actually been verified on
-Azure. Nothing alerts on `verification_runs.status = 'failed'` today;
-the Grafana panel and Alertmanager rule this chapter used to cite never
-existed on Azure.
+Before it, the ledger's hash chain had never actually been verified in
+production. Nothing alerts on `verification_runs.status = 'failed'`
+today; the Grafana panel and Alertmanager rule this chapter used to cite
+never existed in any deployment. Unchanged by the cloud move.
 
 ## 8. Broadcast events
 
@@ -463,7 +502,7 @@ Eight events implement `ShouldBroadcastNow` and go straight to Reverb
 `User\UserInboxUpdated` and `Workspace\WorkspaceActivityBroadcast`. They
 are a UX channel. The only one that doubles as an operator signal is
 `AdminSurfaceUpdated`, which carries the cost-burn and other admin inbox
-alerts, and §7 explains why a Log Analytics rule backs it. Ingestion
+alerts, and §7 explains why a log-based alarm backs it. Ingestion
 progress is both broadcast and persisted: `IngestionProgressBroadcast`
 carries the frame and `silver.ingest_progress` (migration
 `2026_05_24_230000_create_silver_ingest_progress.php`, status vocabulary
@@ -472,11 +511,15 @@ without the socket. There is no `audit-ledger.{workspace_id}` channel.
 
 ## 9. Runbooks
 
-Current, Azure-era, under `ops/runbooks/`:
+Current, under `ops/runbooks/`:
 
-- [`azure-oncall.md`](../../../ops/runbooks/azure-oncall.md): the
-  incident runbook. Maintenance window first, then the five failure
-  modes, with the Kusto queries for each and the job-log column trap.
+- [`aws-oncall.md`](../../../ops/runbooks/aws-oncall.md): the incident
+  runbook. Maintenance window first, then the failure modes, with the CLI
+  and Logs Insights queries for each. It keeps the Azure-era traps that
+  are properties of the runtime rather than of the cloud (stdout
+  buffering, judging results by state rather than exit code) and says
+  plainly which failure classes are GONE and why — knowing an incident
+  cannot happen any more is worth as much as knowing one can.
 - [`refusal-rate-spike.md`](../../../ops/runbooks/refusal-rate-spike.md):
   what `ANSWER_QUALITY_REGRESSION` measures and how to find the cause,
   keyed on `silver.answer_runs`.

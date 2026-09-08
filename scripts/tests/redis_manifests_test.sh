@@ -177,6 +177,19 @@ mutate "$d" "${TF}" 's/^    redis = \[/    redis_server = [/'
 assert "terraform: an unreadable command fails rather than passing" fail \
   "no longer reading it" "$d"
 
+# services.tf holds MORE THAN ONE `redis = [ ... ]` — service_command and
+# service_healthcheck both key on the service name. A search that is not
+# anchored inside service_command finds whichever comes first, so adding the
+# healthcheck map in 2026-09-08 briefly made the case above read the probe
+# command and report nonsense instead of the shape error.
+#
+# Renaming ONLY the healthcheck entry must change nothing: the check does not
+# read it, and must not start.
+d="$(fixture)"
+mutate "$d" "${TF}" 's/^    redis           = \["CMD-SHELL"/    redis_probe     = ["CMD-SHELL"/'
+assert "terraform: the healthcheck map is not mistaken for the command" ok \
+  "All Redis manifests satisfy" "$d"
+
 d="$(fixture)"
 mutate "$d" "${HELM_VALS}" 's/^  maxmemory: "1536mb"/  maxmemoryCap: "1536mb"/'
 assert "helm: a template with no matching values key is rejected" fail \

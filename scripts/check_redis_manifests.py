@@ -232,11 +232,18 @@ def check_terraform(problems: list) -> None:
     services = (REPO / TERRAFORM_SERVICES).read_text(encoding="utf-8")
     sizing = (REPO / TERRAFORM_SIZING).read_text(encoding="utf-8")
 
-    block = re.search(r"redis\s*=\s*\[(.*?)\n\s*\]", services, re.S)
+    # Anchored INSIDE `service_command`, not on any `redis = [` in the file.
+    # There is more than one: `service_healthcheck` also keys on service name,
+    # so a bare search finds whichever comes first and silently reads the
+    # wrong list if the file is reordered. This is the same failure the
+    # `attaches` pattern below was tightened for — two different facts that a
+    # loose pattern conflates.
+    commands = re.search(r"service_command\s*=\s*\{(.*?)\n  \}", services, re.S)
+    block = re.search(r"redis\s*=\s*\[(.*?)\n\s*\]", commands.group(1), re.S) if commands else None
     if not block:
         problems.append(
-            f"{TERRAFORM_SERVICES}: no `redis = [ ... ]` command list -- the "
-            "task definition changed shape and this check is no longer "
+            f"{TERRAFORM_SERVICES}: no `redis = [ ... ]` inside `service_command` "
+            "-- the task definition changed shape and this check is no longer "
             "reading it")
         return
 
