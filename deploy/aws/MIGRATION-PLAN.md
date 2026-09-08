@@ -1,7 +1,9 @@
 # Azure → AWS migration plan
 
-**Status:** proposed, 2026-09-07. Four decisions at the end are Kyle's, not
-this document's. Nothing under `deploy/aws/` is built until they are answered.
+**Status:** accepted, 2026-09-08. The four open decisions were answered by Kyle
+on 2026-09-08 and are recorded in §11; the recommendations that were not taken
+are kept as written so the trade is legible later. ADR-0022 is the decision
+record.
 
 **Constraint that shapes everything:** no data migration. Postgres, Qdrant,
 Redis and Blob start empty on AWS. That means the embedding vector space can
@@ -52,7 +54,8 @@ the persistence bug to fix in the move.
 | Martin | `martin-cc` | ECS Fargate service, internal only | |
 | PostgreSQL | Flexible Server `georag-pg-cc` | **RDS for PostgreSQL 18** | **Decision 2**; see §3 |
 | Object storage | Blob `georagblobcc` | **S3** + IAM task roles | §4 |
-| LLM / embed / rerank / OCR | Azure AI Foundry | **Cohere API direct** | **Decision 1**; see §2 |
+| Embeddings / reranking | Azure AI Foundry | **Bedrock serverless** (Embed v4, Rerank 3.5) | **Decision 1**; see §2 |
+| LLM / OCR | Azure AI Foundry | **Bedrock Marketplace** endpoints (Command A+, Parse 5) | **Decision 1a**; see §2.3 |
 | Registry | ACR `georagacrcc` | **ECR** | |
 | Secrets | Container Apps secrets | **Secrets Manager**, ECS `secrets.valueFrom` | |
 | Identity | managed identity | **IAM task roles** | |
@@ -95,29 +98,50 @@ is built on.
 | Auth | API key | IAM / SigV4 | IAM / SigV4 |
 | Adapter work | base URL + header + model id ×4 | full rewrite ×3, and two capabilities have no model | full rewrite ×4 + endpoint ops |
 
-Bedrock cannot serve two of the four capabilities at the versions this
-deployment uses. It is not a candidate for a complete migration; at best it
-serves embed and rerank while chat and parse go elsewhere, which means running
-two vendors' wire protocols for one vendor's models.
+Bedrock's **serverless** catalogue cannot serve two of the four capabilities at
+the versions this deployment uses.
 
-**Recommendation: (a) Cohere API direct.** It is the only route with full
-version parity on all four capabilities, it is the smallest diff, and it is
-cloud-agnostic — which is worth something given that this migration exists
-because a cloud's credits ran out.
+**Recommendation was (a) Cohere API direct** — the only route with full version
+parity in one hop, the smallest diff, and cloud-agnostic, which is worth
+something given that this migration exists because a cloud's credits ran out.
 
-### 2.3 The chat path specifically
+**Decision: (b) Amazon Bedrock**, with the chat and OCR gap closed by Bedrock
+Marketplace rather than by a second vendor endpoint (§2.3). The trade Kyle
+accepted: IAM/SigV4 auth everywhere, one credential model, AWS-consolidated
+billing, and no third-party egress dependency — paid for with adapter rewrites,
+a rerank version drop, and always-on endpoint cost.
 
-The chat adapter is the exception the brief flags, and it stays the exception.
-Two sub-options under route (a):
+### 2.3 How each capability is reached under the decision
 
-- **Compatibility API** (`/compatibility/v1/chat/completions`) — OpenAI-shaped,
-  documented to support function calling and structured outputs. Keeps
-  `_call_openai_compatible_llm` and the whole streaming path intact.
-- **Native `/v2/chat`** — a new adapter, a new streaming event shape, and a new
-  branch in `effective_llm_url`.
+| Capability | Bedrock surface | Model | Auth |
+|---|---|---|---|
+| Embeddings | serverless `InvokeModel` | Embed v4 | SigV4 |
+| Reranking | serverless `Rerank` API | **Rerank 3.5** | SigV4 |
+| Chat | **Marketplace endpoint**, `Converse` / `InvokeModel` | Command A+ (`command-a-plus-05-2026`) | SigV4 |
+| OCR / parse | **Marketplace endpoint**, `InvokeModel` | Parse 5 | SigV4 |
 
-Recommend the Compatibility API, falling back to a native adapter only if the
-probe below fails.
+Bedrock Marketplace subscribes a model and deploys it to a **SageMaker-managed
+endpoint**, which is then invoked through Bedrock's own APIs — so all four
+capabilities keep one auth model and one SDK, and Command A+ and Parse 5 stay
+at the versions running today. **[unverified in-region]** that both are
+subscribable in the target region; this is the first thing to confirm, before
+any adapter is written, because the whole route depends on it.
+
+Three consequences that are not free and are not deferred:
+
+1. **Reranking drops from v4 to 3.5.** Score distributions differ, and
+   `RERANK_SCORE_FLOOR` is the retrieval quality gate's only threshold
+   (hard rule 5, as built). The floor must be re-measured against 3.5 on the
+   golden set, not carried over. Carrying it over silently would move the
+   refusal rate in either direction with no signal.
+2. **Marketplace endpoints do not scale to zero.** They bill for SageMaker
+   compute for as long as they exist. The nightly shutdown sweep therefore has
+   to **delete** the chat and parse endpoints and the morning sweep **recreate**
+   them, which is a slower and more failure-prone operation than stopping a
+   container app — and a failed recreate means no chat at all, not a degraded
+   path. §6 carries this into the sweep scripts and their tests.
+3. **The `reasoning_content` / sentinel-token handling may or may not survive.**
+   See below.
 
 **Three behaviours must be re-verified, not assumed.** They were confirmed
 empirically against Foundry on 2026-07-30 and are documented in `app/config.py`'s
@@ -128,10 +152,15 @@ empirically against Foundry on 2026-07-30 and are documented in `app/config.py`'
 3. Cohere wraps JSON output in `<|START_TEXT|>` / `<|END_TEXT|>` sentinels that
    the client strips.
 
-Whichever sub-option is chosen, a probe like `ops/validation/cohere_parse_probe.sh`
-runs first and its report is committed. That is also the moment to close the
-Parse v5 gap: its wire shape was **never** empirically verified even on Foundry,
-and the probe exists for exactly that.
+These were properties of *Foundry's* OpenAI-compatible surface in front of
+Cohere. Bedrock's `Converse` and `InvokeModel` have their own response shape —
+reasoning may arrive as a `reasoningContent` content block rather than a
+sibling field, and the sentinel wrapping is a property of the model's JSON mode
+that may or may not be pre-stripped by the Bedrock runtime. **None of the three
+carries over by assumption.** A probe runs first and its report is committed
+before the adapter is trusted, exactly as `ops/validation/cohere_parse_probe.sh`
+was built to do. That is also the moment to close the Parse 5 gap: its wire
+shape was **never** empirically verified even on Foundry.
 
 ### 2.4 Backend naming — deliberate and loud
 
@@ -141,11 +170,12 @@ and the probe exists for exactly that.
 therefore selects a host that does not exist there and fails at first call, not
 at startup.
 
-Plan: add `cohere` as an explicit value to all three, keep `foundry`/`azure`
-recognised for exactly one release as a **hard startup error** naming the
-replacement (the `ocr_engine.py` retired-value pattern, extended — not a silent
-new path), then delete them. `scripts/check_settings_have_readers.py` keeps this
-honest.
+Plan: add `bedrock` as an explicit value to all three (and to `OCR_ENGINE`),
+keep `foundry`/`azure` recognised for exactly one release as a **hard startup
+error** naming the replacement — the `ocr_engine.py` retired-value pattern,
+extended, not a silent new path — then delete them. The defaults change to
+`bedrock` in the same commit, so an unset value on an AWS task selects the
+thing that exists. `scripts/check_settings_have_readers.py` keeps this honest.
 
 ### 2.5 SPLADE++ — the one capability with no managed equivalent anywhere
 
@@ -297,6 +327,13 @@ Consequences to handle rather than leave:
 - `deploy/azure/containerapps/scripts/tests/run.sh` pins sweep behaviour at
   every failure point. That test is the reasoning; it gets ported, not deleted.
 - The alert suppression window must stay **derived** from the schedule.
+- **New under Decision 1a:** the sweeps gain a step the Azure ones never had.
+  Bedrock Marketplace endpoints bill while they exist, so shutdown deletes the
+  chat and parse endpoints and startup recreates them and waits for `InService`.
+  Recreation takes minutes and can fail, so the startup sweep's verdict line is
+  only `sweep complete` once both report `InService`; anything else is
+  `BEDROCK_ENDPOINT_NOT_INSERVICE` and a Sev 1. This is the sharpest edge the
+  Bedrock route adds, and it is entirely in the scheduler.
 - `rotate-app-key.sh` + `tests/rotate-app-key.test.sh` pin what happens at each
   failure point of an APP_KEY rotation (a dump failure lifts maintenance, a
   restore failure does not, no secret changes before the in-replica half
@@ -343,15 +380,25 @@ with no per-query cost (the Azure rules were scheduled queries), and the
   sweep scripts write all progress to **stderr**. That property is the runtime's,
   not Azure's, and survives the move.
 
-**One capability that does not survive, stated plainly.** The
-`georag-foundry-cc-client-errors` and `-server-errors` alerts exist because
-Foundry blocked 1,421 of 2,524 calls on 2026-08-17 and nothing noticed. Those
-rules read **Azure platform metrics on the Foundry resource**. Calling
-`api.cohere.com` directly, there is no cloud-side metric for that — AWS cannot
-see a third-party API. The signal has to be re-created application-side: a
-counter and a marker log line on non-2xx responses from every Cohere adapter,
-then a metric filter and alarm. This is new code, and without it the migration
-silently drops the one alert that caught a real, expensive, invisible outage.
+**The Foundry error alerts survive the move — because of Decision 1.** The
+`georag-foundry-cc-client-errors` and `-server-errors` rules exist because
+Foundry blocked 1,421 of 2,524 calls on 2026-08-17 and nothing noticed. They
+read Azure platform metrics on the Foundry resource. Bedrock publishes the
+direct equivalents in the `AWS/Bedrock` namespace — `InvocationClientErrors`,
+`InvocationServerErrors`, `InvocationThrottles`, `Invocations` — dimensioned by
+model id, so both rules port as alarms with their measured thresholds intact
+(>50 client errors / 15 min, >5 server errors / 15 min). This is the one place
+where the Bedrock route is strictly better than calling a vendor API directly,
+and it is worth naming: had this migration gone to `api.cohere.com`, that alert
+would have had to be rebuilt application-side or silently lost.
+
+**Marketplace endpoints need their own watch.** A SageMaker-managed endpoint
+that fails to recreate after the nightly sweep leaves chat and OCR dead with no
+Bedrock invocation metric to alarm on — there are no invocations to fail. The
+signal is the endpoint's own `InService` state, so the morning sweep asserts it
+and emits a marker line (`BEDROCK_ENDPOINT_NOT_INSERVICE`) that a metric filter
+alarms on, alongside a SageMaker `Invocation5XXErrors` alarm per endpoint.
+Without that, a failed recreate is invisible until a user asks a question.
 
 Also carried forward, unchanged and still true: nothing in production measures
 answer quality except `answer_quality_watch` reading `silver.answer_runs`; the
@@ -423,9 +470,13 @@ double-fire trap, the measured alert thresholds, the `ContainerJobName_s` trap,
 the rotation harness's failure-point contract — into the AWS equivalents or the
 ADR rather than discarding it.
 
+0. **Confirm in-region** that Command A+ and Parse 5 are subscribable in Bedrock
+   Marketplace, and that Embed v4 and Rerank 3.5 are enabled serverless. Step 0
+   because Decision 1a rests on it entirely.
 1. **ADR-0022** — the cloud move, superseding 0019/0020/0021.
-2. **Cohere adapters.** Probe first (chat + parse), commit the report, then
-   `cohere` backend values with loud rejection of `foundry`/`azure`, then tests.
+2. **Bedrock adapters.** Probe first (chat + parse), commit the report, then
+   `bedrock` backend values with loud rejection of `foundry`/`azure`, then
+   tests. Re-measure `RERANK_SCORE_FLOOR` against Rerank 3.5 on the golden set.
 3. **Storage.** IAM-chain credentials + endpoint resolution in
    `georag_object_storage`, Laravel `s3` disk, S3 versioning and replication.
 4. **Infrastructure as code** for VPC / ALB / ECS / RDS / EFS / ECR / Secrets
@@ -434,9 +485,10 @@ ADR rather than discarding it.
    from `.env.production.example` — this is written down from day one.
 5. **CD workflow** rewrite, including `db:apply-raw`.
 6. **Scheduler** on EventBridge; port the sweep tests; retire the parity checker
-   in its Azure form.
-7. **Observability**: log groups, metric filters, alarms, SNS — plus the new
-   application-side Cohere error signal from §7.
+   in its Azure form; add Marketplace endpoint delete/recreate.
+7. **Observability**: log groups, metric filters, alarms, SNS — Bedrock
+   invocation-error alarms carrying the measured Foundry thresholds, plus the
+   endpoint `InService` watch from §7.
 8. **Docs**: `.env.production.example`, Ch 00/01/02/07/08/12, runbooks, CLAUDE.md
    technology snapshot.
 9. **Delete `deploy/azure/`** and the Azure code paths.
@@ -447,20 +499,39 @@ Mapbox, no knowledge graph.
 
 ---
 
-## 11. Open decisions
+## 11. Decisions (Kyle, 2026-09-08)
 
-| # | Decision | Recommendation |
-|---|---|---|
-| 1 | Cohere route: (a) direct API, (b) Bedrock, (c) SageMaker | **(a)** — the only route with parity on all four capabilities; Bedrock carries neither Command A+ nor Parse |
-| 2 | Postgres: RDS managed vs self-managed on EC2 | **RDS PG 18** — both extensions RDS lacks have zero call sites |
-| 3 | Compute: ECS Fargate vs App Runner vs EKS | **ECS Fargate** — App Runner cannot host the non-HTTP workers |
-| 4 | SPLADE++: sidecar, in-process, or drop the sparse leg | **Sidecar on Fargate** — `SPARSE_SERVICE_URL` is the supported path and in-process is the pattern that OOMed once |
+| # | Decision | Recommended | **Chosen** |
+|---|---|---|---|
+| 1 | Cohere route | (a) direct API | **(b) Amazon Bedrock** |
+| 1a | Chat + OCR, which Bedrock serverless does not carry | — | **Bedrock Marketplace endpoints** (SageMaker-managed, invoked through Bedrock APIs) |
+| 2 | Postgres | RDS PG 18 | **RDS PG 18** |
+| 3 | Compute | ECS Fargate | **ECS Fargate** |
+| 4 | SPLADE++ | Fargate sidecar | **Fargate sidecar** |
+
+Decision 1 was taken against the recommendation. What it buys: one auth model
+(IAM/SigV4) across all four capabilities, AWS-consolidated billing, no
+third-party egress, and — as §7 records — the Foundry error alerts port to
+Bedrock CloudWatch metrics instead of having to be rebuilt application-side.
+What it costs, all of it tracked in this plan rather than discovered later:
+
+- Full adapter rewrites for all four capabilities instead of a base-URL swap.
+- **Rerank v4 → 3.5**, which invalidates the measured `RERANK_SCORE_FLOOR` (§2.3).
+- Marketplace endpoints that **do not scale to zero**, so the nightly sweeps
+  gain endpoint delete/recreate — a slower, more failure-prone operation than
+  stopping a container, with a new failure mode that needs its own alarm (§7).
+- A hard dependency on Command A+ and Parse 5 being subscribable in the target
+  region, which is **[unverified in-region]** and is the first thing to confirm.
+
+If that last item fails, the fallback is the recommendation: chat and parse on
+`api.cohere.com` with embed and rerank left on Bedrock. That is the hybrid
+option Kyle declined, and it stays the escape hatch rather than a redesign.
 
 ---
 
 ## Sources for the [unverified in-region] claims
 
-- [Cohere on AWS](https://docs.cohere.com/docs/cohere-on-aws) · [Cohere models on Amazon Bedrock](https://docs.cohere.com/docs/amazon-bedrock)
+- [Cohere on AWS](https://docs.cohere.com/docs/cohere-on-aws) · [Cohere models on Amazon Bedrock](https://docs.cohere.com/docs/amazon-bedrock) · [Amazon Bedrock Marketplace](https://docs.aws.amazon.com/bedrock/latest/userguide/amazon-bedrock-marketplace.html) · [Use SageMaker JumpStart models in Bedrock](https://docs.aws.amazon.com/sagemaker/latest/dg/jumpstart-foundation-models-use-studio-updated-register-bedrock.html)
 - [Introducing Parse](https://cohere.com/blog/parse) · [Cohere Parse 5 — InfoQ](https://www.infoq.com/news/2026/09/cohere-multimodal-parse/)
 - [Announcing Command A+](https://docs.cohere.com/changelog/command-a-plus-05-2026) · [Compatibility API](https://docs.cohere.com/docs/compatibility-api)
 - [RDS for PostgreSQL supported extensions](https://docs.aws.amazon.com/AmazonRDS/latest/PostgreSQLReleaseNotes/postgresql-extensions.html) · [RDS h3-pg support](https://aws.amazon.com/about-aws/whats-new/2023/09/amazon-rds-postgresql-h3-pg-geospatial-indexing/) · [Aurora HypoPG support](https://aws.amazon.com/about-aws/whats-new/2023/12/amazon-aurora-postgresql-hypopg-extension) · [RDS PostgreSQL 18](https://aws.amazon.com/about-aws/whats-new/2025/11/amazon-rds-postgresql-major-version-18/)
