@@ -1378,9 +1378,13 @@ jobs:
     #                                   through artisan.
     #    9  missingType.iterableValue —  broadcastWith() array shapes
     #    6  class.notFound            — MicrosoftAzure\Storage\Blob\
-    #                                   BlobRestProxy; the package is not
-    #                                   installed. Same root cause as the 5
-    #                                   AzureBlobDiskTest errors.
+    #                                   BlobRestProxy; the package was never
+    #                                   installed. GONE 2026-09-08 with the
+    #                                   Azure storage code and its tests
+    #                                   (ADR-0022). The census above predates
+    #                                   that and is not re-measured here;
+    #                                   read it as history, not a current
+    #                                   count.
     #    5  missingType.parameter, 4 return.type, 4 argument.templateType,
     #    and a 25-error tail across 9 more rules.
 

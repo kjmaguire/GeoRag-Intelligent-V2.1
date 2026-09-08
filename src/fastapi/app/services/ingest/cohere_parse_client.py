@@ -70,7 +70,7 @@ import re
 import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, cast
 
 from . import ocr_engine
 from .html_table import find_table_fragments, html_table_to_grid
@@ -393,7 +393,9 @@ def _invoke(model_id: str, body: dict[str, Any]) -> bytes:
         accept="application/json",
         contentType="application/json",
     )
-    return resp["body"].read()
+    # botocore's StreamingBody is untyped, so the read() is Any; the cast
+    # keeps the declared return honest rather than widening it.
+    return cast("bytes", resp["body"].read())
 
 
 def _request_body(png_bytes: bytes) -> dict[str, Any]:

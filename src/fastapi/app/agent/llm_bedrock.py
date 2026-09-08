@@ -100,7 +100,16 @@ def _error_code(exc: BaseException) -> str | None:
     response = getattr(exc, "response", None)
     if not isinstance(response, dict):
         return None
-    return response.get("Error", {}).get("Code")
+    error = response.get("Error")
+    if not isinstance(error, dict):
+        return None
+    code = error.get("Code")
+    # Narrowed rather than cast: a ClientError's response is an untyped dict
+    # and nothing guarantees Error.Code is a string. _is_transient compares
+    # this against a set of names, and a non-string there would silently
+    # read as "not transient" — i.e. a retryable throttle raised on the
+    # first attempt.
+    return code if isinstance(code, str) else None
 
 
 def _is_transient(exc: BaseException) -> bool:
@@ -383,7 +392,11 @@ def _record_metrics(
 
     Kept separate so a metrics import failure cannot take out an answer that
     has already been generated — the same posture the OpenAI path takes with
-    its ``except ImportError: pass``.
+    its ``except ImportError: pass``. It logs at debug rather than swallowing
+    silently: an answer is worth more than its bookkeeping, but a run whose
+    cost was never recorded should still leave a trace, because
+    `cost_burn_watcher` reads those counters and would otherwise just see a
+    quiet workspace (Ch 12 §1.3).
     """
     if input_tokens <= 0:
         return
@@ -415,7 +428,11 @@ def _record_metrics(
             if cost_usd > 0:
                 LLM_COST_USD.labels(model=model, user_bucket=user_bucket(user_id)).inc(cost_usd)
     except ImportError:
-        pass
+        logger.debug(
+            "bedrock: token/cost accounting skipped — metrics or pricing "
+            "module unavailable (model=%s, input_tokens=%d)",
+            model, input_tokens, exc_info=True,
+        )
 
 
 __all__ = ["BedrockPreStreamError", "call_bedrock_llm"]
