@@ -130,8 +130,8 @@ any adapter is written, because the whole route depends on it.
 Three consequences that are not free and are not deferred:
 
 1. **Reranking drops from v4 to 3.5.** Score distributions differ, and
-   `RERANK_SCORE_FLOOR` is the retrieval quality gate's only threshold
-   (hard rule 5, as built). The floor must be re-measured against 3.5 on the
+   `RERANKER_SCORE_THRESHOLD_FOUNDRY` (0.2) is the retrieval quality gate’s only threshold
+   (hard rule 5, as built). That threshold must be re-measured against 3.5 on the
    golden set, not carried over. Carrying it over silently would move the
    refusal rate in either direction with no signal.
 2. **Marketplace endpoints do not scale to zero.** They bill for SageMaker
@@ -476,7 +476,7 @@ ADR rather than discarding it.
 1. **ADR-0022** — the cloud move, superseding 0019/0020/0021.
 2. **Bedrock adapters.** Probe first (chat + parse), commit the report, then
    `bedrock` backend values with loud rejection of `foundry`/`azure`, then
-   tests. Re-measure `RERANK_SCORE_FLOOR` against Rerank 3.5 on the golden set.
+   tests. Re-measure `RERANKER_SCORE_THRESHOLD_FOUNDRY` against Rerank 3.5 on the golden set.
 3. **Storage.** IAM-chain credentials + endpoint resolution in
    `georag_object_storage`, Laravel `s3` disk, S3 versioning and replication.
 4. **Infrastructure as code** for VPC / ALB / ECS / RDS / EFS / ECR / Secrets
@@ -516,7 +516,7 @@ Bedrock CloudWatch metrics instead of having to be rebuilt application-side.
 What it costs, all of it tracked in this plan rather than discovered later:
 
 - Full adapter rewrites for all four capabilities instead of a base-URL swap.
-- **Rerank v4 → 3.5**, which invalidates the measured `RERANK_SCORE_FLOOR` (§2.3).
+- **Rerank v4 → 3.5**, which invalidates the measured `RERANKER_SCORE_THRESHOLD_FOUNDRY` (§2.3).
 - Marketplace endpoints that **do not scale to zero**, so the nightly sweeps
   gain endpoint delete/recreate — a slower, more failure-prone operation than
   stopping a container, with a new failure mode that needs its own alarm (§7).

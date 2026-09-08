@@ -151,9 +151,16 @@ class TestTheLadderHasTwoRungs:
         from app.services.ingest import pdf_report
 
         monkeypatch.setenv("OCR_ENGINE", "cohere_parse")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://foundry.example.invalid")
-        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
-        monkeypatch.setenv("AZURE_FOUNDRY_PARSE_DEPLOYMENT", "Cohere-parse-v5")
+        monkeypatch.setenv(
+            "BEDROCK_PARSE_MODEL_ID",
+            "arn:aws:sagemaker:us-east-1:123456789012:endpoint/cohere-parse-v5",
+        )
+        for name in (
+            "AZURE_FOUNDRY_ENDPOINT",
+            "AZURE_FOUNDRY_API_KEY",
+            "AZURE_FOUNDRY_PARSE_DEPLOYMENT",
+        ):
+            monkeypatch.delenv(name, raising=False)
 
         with patch.object(pdf_report, "_engine_single_page_request") as single, \
              patch.object(pdf_report, "_ocr_budget_take") as budget, \

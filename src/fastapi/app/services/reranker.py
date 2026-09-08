@@ -130,7 +130,7 @@ _ACTIVE_VERSION: str | None = None
 # scoring mechanism is NOT expressible via sentence_transformers.CrossEncoder,
 # so it gets its own backend selected by RERANKER_BACKEND=qwen3_causal.
 # This code path does nothing until explicitly enabled (the code default
-# is "foundry" since 2026-09-06; .env.example selects "cross_encoder" and
+# is "bedrock" since 2026-09-08; .env.example selects "cross_encoder" and
 # the `reranker` sidecar service selects "qwen3_causal" explicitly).
 #
 # ⚠️ NOT DEPLOYED: a 0.6B causal LM doing one forward pass per pair is far
@@ -138,14 +138,14 @@ _ACTIVE_VERSION: str | None = None
 # RERANKER_TIMEOUT_S. Run on GPU (RERANKER_DEVICE=cuda, needs VRAM headroom)
 # and validate against the golden eval before enabling. See manual Ch18 §2
 # reranker note.
-# Default flipped "cross_encoder" -> "foundry" on 2026-09-06 for the same
-# reason as EMBEDDING_BACKEND in services/embedding.py: production has run
-# Cohere Rerank v4 via Foundry since 2026-07-30 and has no model host, so an
-# unset variable on Azure used to attempt a local CrossEncoder load and fall
-# back to RRF order. Unset now means Foundry in code and in
-# docker-compose.yml alike; .env.example sets the self-hosted value
-# explicitly for the dev stack.
-RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "foundry").strip().lower()
+# Default was "cross_encoder" until 2026-09-06, "foundry" until the AWS move
+# on 2026-09-08, and is "bedrock" now — for the same reason as
+# EMBEDDING_BACKEND in services/embedding.py: production has run a hosted
+# Cohere reranker since 2026-07-30 and has no model host, so an unset
+# variable used to attempt a local CrossEncoder load and fall back to RRF
+# order. Unset means Bedrock in code and in docker-compose.yml alike;
+# .env.example sets the self-hosted value explicitly for the dev stack.
+RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "bedrock").strip().lower()
 QWEN3_RERANKER_MODEL = (
     os.environ.get("QWEN3_RERANKER_MODEL") or "Qwen/Qwen3-Reranker-0.6B"
 ).strip()
@@ -158,33 +158,40 @@ QWEN3_RERANKER_MAX_LEN = int(os.environ.get("QWEN3_RERANKER_MAX_LEN", "2048"))
 QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
 
 # ---------------------------------------------------------------------------
-# Azure AI Foundry (Cohere Rerank v4) backend — RERANKER_BACKEND=foundry
+# Amazon Bedrock (Cohere Rerank 3.5) backend — RERANKER_BACKEND=bedrock
 # ---------------------------------------------------------------------------
 # Selected alongside the existing cross_encoder/qwen3_causal values. Unlike
 # those two, this path never loads a local model at all — no torch, no
-# sentence_transformers, no CPU thread tuning. Reuses the same Azure AI
-# Services resource as the LLM (AZURE_FOUNDRY_ENDPOINT/API_KEY), with its own
-# deployment name since rerank is deployed as a separate model on that
-# resource. Read via os.environ (not app.config.settings) to match this
-# module's existing convention of reading env vars directly.
-AZURE_FOUNDRY_RERANK_DEPLOYMENT = (
-    os.environ.get("AZURE_FOUNDRY_RERANK_DEPLOYMENT") or ""
+# sentence_transformers, no CPU thread tuning. Credentials come from the ECS
+# task role via SigV4 (app.services._bedrock); there is no endpoint and no
+# key. Read via os.environ (not app.config.settings) to match this module's
+# existing convention of reading env vars directly.
+#
+# ⚠️ VERSION REGRESSION (ADR-0022). Foundry served Cohere Rerank **v4**;
+# Bedrock's catalogue is Rerank **3.5**. Score distributions differ between
+# major versions, and RERANKER_SCORE_THRESHOLD_HOSTED = 0.2 — the system's
+# only retrieval-quality floor (hard rule 5, as built) — was measured against
+# v4's calibrated output on 2026-08-15. It MUST be re-measured on the golden
+# set against 3.5 rather than carried over: too low and the floor stops
+# filtering, too high and the refusal rate climbs, and neither shows up in
+# any metric anything scrapes.
+BEDROCK_RERANK_MODEL_ID = (
+    os.environ.get("BEDROCK_RERANK_MODEL_ID") or "cohere.rerank-v3-5:0"
 ).strip()
-AZURE_FOUNDRY_RERANK_TIMEOUT_S = float(
-    os.environ.get("AZURE_FOUNDRY_RERANK_TIMEOUT_S", "8.0")
+BEDROCK_RERANK_TIMEOUT_S = float(
+    os.environ.get("BEDROCK_RERANK_TIMEOUT_S", "8.0")
 )
 
-# 2026-08-20 — retry profile for the *interactive* rerank call, deliberately
-# tighter than `_foundry_retry`'s ingestion defaults (4 retries, 30s cap =
-# up to 70s). A geologist waiting on a chat answer would rather have
-# slightly-worse ordering in 2 seconds than perfect ordering in 40. Two
-# retries at 2s/4s covers the transient 429 blip that shared-TPM quota
-# actually produces.
-AZURE_FOUNDRY_RERANK_RETRIES = int(
-    os.environ.get("AZURE_FOUNDRY_RERANK_RETRIES", "2")
-)
-AZURE_FOUNDRY_RERANK_MAX_BACKOFF_S = float(
-    os.environ.get("AZURE_FOUNDRY_RERANK_MAX_BACKOFF_S", "4.0")
+# 2026-08-20, carried across from the Foundry path — the retry profile for
+# the *interactive* rerank call, deliberately tighter than the ingestion
+# default. A geologist waiting on a chat answer would rather have
+# slightly-worse ordering in 2 seconds than perfect ordering in 40. Under
+# botocore this is an attempt count rather than an explicit backoff
+# schedule; adaptive mode supplies the delays and honours the service's own
+# throttling signals, which is strictly better than the hand-rolled 2s/4s
+# ladder it replaces.
+BEDROCK_RERANK_MAX_ATTEMPTS = int(
+    os.environ.get("BEDROCK_RERANK_MAX_ATTEMPTS", "3")
 )
 
 # The reranker's total wall-clock budget must stay strictly UNDER the
@@ -226,15 +233,19 @@ def active_reranker_version() -> str:
 
     RERANKER_VERSION is a module-level constant fixed to the Qwen3 cross-
     encoder identity — accurate for the cross_encoder backend, but wrong for
-    foundry (the default since 2026-09-06)/qwen3_causal/local-path overrides. Checks
+    bedrock (the default since 2026-09-08)/qwen3_causal/local-path overrides. Checks
     _ACTIVE_VERSION first so a caller after the model has actually loaded
     gets the exact loaded identity (e.g. the resolved qwen3_causal model_id)
     rather than a pre-load guess; falls back to guessing from env vars for
-    callers before load (or when foundry, which never sets _ACTIVE_VERSION
+    callers before load (or when bedrock, which never sets _ACTIVE_VERSION
     since it loads no local model).
     """
-    if RERANKER_BACKEND == "foundry":
-        return f"cohere-foundry:{AZURE_FOUNDRY_RERANK_DEPLOYMENT or 'unset'}"
+    if RERANKER_BACKEND == "bedrock":
+        # Persisted to answer_runs.reranker_version. The model id carries the
+        # version, which matters more than usual right now: this is where a
+        # v4-scored run and a 3.5-scored run become distinguishable after the
+        # fact, and the threshold re-measurement (ADR-0022) needs that.
+        return f"cohere-bedrock:{BEDROCK_RERANK_MODEL_ID or 'unset'}"
     if _ACTIVE_VERSION is not None:
         return _ACTIVE_VERSION
     model_path = (os.environ.get("RERANKER_MODEL_PATH") or "").strip()
@@ -311,95 +322,131 @@ class _RemoteReranker:
         return [float(s) for s in resp.json()["scores"]]
 
 
-class _FoundryReranker:
-    """Cohere Rerank v4 (Azure AI Foundry) behind the CrossEncoder ``.predict()`` API.
+class _BedrockReranker:
+    """Cohere Rerank 3.5 on Bedrock, behind the CrossEncoder ``.predict()`` API.
 
     Mirrors ``CrossEncoder.predict(list[(query, passage)]) -> list[float]`` so
     it is a drop-in for ``get_reranker_or_none()`` consumers, same contract as
-    ``_RemoteReranker``/``_Qwen3CausalReranker`` above.
+    ``_RemoteReranker``/``_Qwen3CausalReranker``.
 
-    Wire shape empirically verified 2026-07-30 against a live deployment
-    (Cohere's own custom rerank API, proxied through Azure — NOT the unified
-    chat-completions/Model-Inference-API surface):
-        POST {endpoint}/providers/cohere/v2/rerank
-        api-key: <key>
-        body: {"model": "<deployment>", "query": str,
-               "documents": [str, ...], "top_n": int}
-        -> {"results": [{"index": int, "relevance_score": float}, ...]}
+    Wire shape (ADR-0022) — Bedrock's own Rerank API on the
+    ``bedrock-agent-runtime`` client, NOT ``InvokeModel`` and NOT Cohere's
+    ``/v2/rerank`` body::
 
-    Cohere's rerank API takes ONE query + N documents per call — a real
-    shape difference from the pairwise CrossEncoder contract callers use.
-    ``predict`` groups the incoming pairs by their shared query (in practice
-    every call site passes pairs sharing a single query, but this groups
-    defensively rather than assume), issues one rerank call per group with
-    ``top_n`` set to the full document count so every candidate gets scored
-    back (not just Cohere's own top-N), and remaps scores to the caller's
-    original pair order via the returned ``index`` field.
+        bedrock-agent-runtime.rerank(
+            queries=[{"type": "TEXT", "textQuery": {"text": query}}],
+            sources=[{"type": "INLINE",
+                      "inlineDocumentSource": {"type": "TEXT",
+                                               "textDocument": {"text": doc}}}, ...],
+            rerankingConfiguration={
+                "type": "BEDROCK_RERANKING_MODEL",
+                "bedrockRerankingConfiguration": {
+                    "modelConfiguration": {"modelArn": <arn>},
+                    "numberOfResults": len(docs)}})
+        -> {"results": [{"index": int, "relevanceScore": float}, ...]}
+
+    This is the one adapter whose request shape genuinely changed rather than
+    just moving hosts: Cohere's rerank body did not survive the move, and the
+    response field is ``relevanceScore``, not ``relevance_score``.
+
+    **[UNVERIFIED]** — the Foundry contract was confirmed empirically against
+    a live deployment on 2026-07-30. This one has not been; run
+    ``ops/validation/bedrock_probe.py`` and commit its report before trusting
+    it in production (ADR-0022 "Verification").
+
+    Bedrock's rerank API takes ONE query + N documents per call — the same
+    shape difference from the pairwise CrossEncoder contract that the Foundry
+    path had. ``predict`` groups the incoming pairs by their shared query (in
+    practice every call site passes pairs sharing a single query, but this
+    groups defensively rather than assume), issues one rerank call per group
+    with ``numberOfResults`` set to the full document count so every candidate
+    gets scored back (not just the model's own top-N), and remaps scores to
+    the caller's original pair order via the returned ``index`` field.
     """
 
     def __init__(
         self,
-        endpoint: str,
-        api_key: str,
-        deployment: str,
+        model_id: str,
         timeout_s: float,
         total_budget_s: float | None = None,
     ) -> None:
-        self._url = endpoint.rstrip("/") + "/providers/cohere/v2/rerank"
-        self._api_key = api_key
-        self._deployment = deployment
+        self._model_id = model_id
         self._timeout_s = timeout_s
         # None keeps the pre-2026-08-20 unbounded-retry behavior, for
         # non-interactive callers (eval harness, scripts) that have no
         # wait_for above them.
         self._total_budget_s = total_budget_s
 
+    def _model_arn(self) -> str:
+        """Return the ``modelArn`` the Rerank API wants.
+
+        Accepts either a bare model id (``cohere.rerank-v3-5:0``) or a full
+        ARN, because a Bedrock Marketplace deployment is addressed by
+        endpoint ARN while a serverless model is addressed by id. Building
+        the ARN here rather than making operators paste one keeps
+        BEDROCK_RERANK_MODEL_ID the same shape as its embed and chat
+        siblings.
+        """
+        if self._model_id.startswith("arn:"):
+            return self._model_id
+        from app.services._bedrock import bedrock_region  # noqa: PLC0415
+
+        return f"arn:aws:bedrock:{bedrock_region()}::foundation-model/{self._model_id}"
+
     def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
-        import time  # noqa: PLC0415
-
-        import httpx  # noqa: PLC0415
-
-        from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
+        from app.services._bedrock import (  # noqa: PLC0415
+            attempts_within_budget,
+            get_client,
+        )
 
         groups: dict[str, list[int]] = {}
         for i, (query, _passage) in enumerate(pairs):
             groups.setdefault(str(query), []).append(i)
 
-        # One deadline for the whole predict, not one per group: the caller's
-        # wait_for wraps this entire method, so N groups must share the budget
-        # rather than each claiming it.
-        deadline = (
-            time.monotonic() + self._total_budget_s
+        # One attempt budget for the whole predict, not one per group: the
+        # caller's wait_for wraps this entire method, so N groups share the
+        # budget rather than each claiming it. botocore has no wall-clock
+        # deadline, only an attempt count, so the budget is spent by dividing
+        # it across the groups before it is translated.
+        per_group_budget = (
+            self._total_budget_s / max(1, len(groups))
             if self._total_budget_s is not None
             else None
         )
+        client = get_client(
+            "bedrock-agent-runtime",
+            max_attempts=attempts_within_budget(
+                per_group_budget, ceiling=BEDROCK_RERANK_MAX_ATTEMPTS
+            ),
+            read_timeout_s=self._timeout_s,
+        )
+        model_arn = self._model_arn()
 
         scores: list[float] = [0.0] * len(pairs)
-        with httpx.Client(timeout=self._timeout_s) as client:
-            for query, indices in groups.items():
-                documents = [str(pairs[i][1]) for i in indices]
-
-                def _do(query: str = query, documents: list[str] = documents) -> httpx.Response:
-                    return client.post(
-                        self._url,
-                        headers={"api-key": self._api_key},
-                        json={
-                            "model": self._deployment,
-                            "query": query,
-                            "documents": documents,
-                            "top_n": len(documents),
+        for query, indices in groups.items():
+            documents = [str(pairs[i][1]) for i in indices]
+            resp = client.rerank(
+                queries=[{"type": "TEXT", "textQuery": {"text": query}}],
+                sources=[
+                    {
+                        "type": "INLINE",
+                        "inlineDocumentSource": {
+                            "type": "TEXT",
+                            "textDocument": {"text": doc},
                         },
-                    )
-
-                resp = with_foundry_retry(
-                    _do,
-                    label="foundry_rerank",
-                    max_retries=AZURE_FOUNDRY_RERANK_RETRIES,
-                    max_backoff_s=AZURE_FOUNDRY_RERANK_MAX_BACKOFF_S,
-                    deadline=deadline,
-                )
-                for result in resp.json()["results"]:
-                    scores[indices[result["index"]]] = float(result["relevance_score"])
+                    }
+                    for doc in documents
+                ],
+                rerankingConfiguration={
+                    "type": "BEDROCK_RERANKING_MODEL",
+                    "bedrockRerankingConfiguration": {
+                        "modelConfiguration": {"modelArn": model_arn},
+                        "numberOfResults": len(documents),
+                    },
+                },
+            )
+            for result in resp["results"]:
+                scores[indices[result["index"]]] = float(result["relevanceScore"])
         return scores
 
 
@@ -596,39 +643,51 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
 
 
 def get_reranker_or_none() -> (
-    CrossEncoder | _RemoteReranker | _Qwen3CausalReranker | _FoundryReranker | None
+    CrossEncoder | _RemoteReranker | _Qwen3CausalReranker | _BedrockReranker | None
 ):
-    """Return the reranker (Foundry client, local singleton, remote proxy, or None).
+    """Return the reranker (Bedrock client, local singleton, remote proxy, or None).
 
-    Precedence: RERANKER_BACKEND=foundry short-circuits before anything else
+    Precedence: RERANKER_BACKEND=bedrock short-circuits before anything else
     — no torch, no sentence_transformers, no local model load at all. Then
     RERANKER_SERVICE_URL (HTTP proxy to the shared `reranker` sidecar).
     Otherwise loads the in-process CrossEncoder singleton. All exceptions are
     caught so callers can handle the absent-reranker path (RRF order
     fallback) without try/except boilerplate. Env is read fresh each call so
     it stays monkeypatchable in tests.
+
+    One exception to "all exceptions are caught": a retired backend value
+    raises rather than returning None. Degrading silently to RRF order is the
+    right answer for a reranker that is misconfigured by accident, and the
+    wrong one for a deployment that was never repointed off Foundry — that
+    should stop, not quietly serve worse answers (ADR-0022 gotcha 3).
     """
+    from app.services._bedrock import reject_retired_backend  # noqa: PLC0415
+
+    reject_retired_backend(RERANKER_BACKEND, setting="RERANKER_BACKEND")
+
     caller_budget_s = _caller_budget_s()
-    if RERANKER_BACKEND == "foundry":
-        endpoint = (os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
-        api_key = (os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
-        if not (endpoint and api_key and AZURE_FOUNDRY_RERANK_DEPLOYMENT):
+    if RERANKER_BACKEND == "bedrock":
+        from app.services._bedrock import (  # noqa: PLC0415
+            assert_no_retired_foundry_env,
+        )
+
+        assert_no_retired_foundry_env(context="RERANKER_BACKEND=bedrock")
+        if not BEDROCK_RERANK_MODEL_ID:
             logger.error(
-                "reranker: RERANKER_BACKEND=foundry but AZURE_FOUNDRY_ENDPOINT/"
-                "API_KEY/AZURE_FOUNDRY_RERANK_DEPLOYMENT not fully set -- "
-                "rerank step will be skipped"
+                "reranker: RERANKER_BACKEND=bedrock but BEDROCK_RERANK_MODEL_ID "
+                "is empty -- rerank step will be skipped"
             )
             return None
-        return _FoundryReranker(
-            endpoint, api_key, AZURE_FOUNDRY_RERANK_DEPLOYMENT,
-            # A single HTTP call must never be allowed to eat the whole
-            # budget, or there is by definition no room for the retry.
-            min(AZURE_FOUNDRY_RERANK_TIMEOUT_S, caller_budget_s / 2.0),
+        return _BedrockReranker(
+            BEDROCK_RERANK_MODEL_ID,
+            # A single call must never be allowed to eat the whole budget, or
+            # there is by definition no room for the retry.
+            min(BEDROCK_RERANK_TIMEOUT_S, caller_budget_s / 2.0),
             total_budget_s=caller_budget_s,
         )
     service_url = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
     if service_url:
-        # Same drift as the foundry path had: the sidecar's default 10s
+        # Same drift as the hosted path had: the sidecar's default 10s
         # timeout sat above an 8s wait_for, so a slow sidecar was always
         # cancelled rather than allowed to answer late.
         timeout_s = min(

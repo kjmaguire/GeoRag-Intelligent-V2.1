@@ -66,12 +66,28 @@ class TestVllmUrlValidator:
         s = _settings(LLM_BACKEND="vllm", VLLM_URL="http://inference.internal:8000/v1")
         assert s.effective_llm_url == "http://inference.internal:8000/v1"
 
-    def test_the_default_azure_backend_needs_no_vllm_url(self):
+    def test_the_default_bedrock_backend_needs_no_vllm_url(self):
         """The regression that matters most: the validator must not make the
         default backend harder to configure."""
-        s = _settings(AZURE_FOUNDRY_ENDPOINT="https://example.services.ai.azure.com")
-        assert s.LLM_BACKEND == "azure"
+        s = _settings(BEDROCK_CHAT_MODEL_ID="command-a-plus-endpoint")
+        assert s.LLM_BACKEND == "bedrock"
         assert s.VLLM_URL == ""
+
+    def test_the_retired_azure_backend_is_a_startup_error(self):
+        """ADR-0022. A deployment that was never repointed carries
+        well-formed settings addressing a resource that no longer exists, so
+        without this it starts cleanly and fails at first query with a
+        connection error — the shape of silent misconfiguration that
+        ocr_engine.py was written to prevent."""
+        with pytest.raises(pydantic.ValidationError, match="LLM_BACKEND=azure"):
+            _settings(LLM_BACKEND="azure")
+
+    def test_leftover_foundry_variables_are_a_startup_error(self, monkeypatch):
+        """The shape a half-finished migration actually takes: the backend
+        selector gets updated and the credentials are left behind."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "leftover")
+        with pytest.raises(pydantic.ValidationError, match="AZURE_FOUNDRY_API_KEY"):
+            _settings()
 
 
 def test_no_default_points_at_the_deleted_vllm_service():

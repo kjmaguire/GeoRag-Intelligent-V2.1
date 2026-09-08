@@ -17,22 +17,41 @@ the catalog 2026-08-18 (150 models): Cohere offers exactly six there —
 command-a, command-a-plus, embed-v3-multilingual, embed-v-4-0, and two
 rerankers — and none of them accept an image.
 
-Going direct to Cohere's own API would have meant a second vendor, a second
-credential, and page images of tenant geology egressing out of Azure. The
-verbalization job doesn't care which model does it, so it uses a Foundry
-vision model instead: same endpoint, same key, same network boundary as every
-other model in the stack. Kyle's call 2026-08-18: `gpt-5-mini`.
+Going direct to a second vendor's API would have meant a second credential
+and page images of tenant geology egressing outside the cloud boundary. The
+verbalization job doesn't care which model does it, so it uses whatever
+vision model the platform's own model service offers: same credentials, same
+network boundary as every other model in the stack. Kyle's call 2026-08-18
+was Foundry's `gpt-5-mini`.
+
+⚠️ NO DIRECT EQUIVALENT ON AWS (ADR-0022). `gpt-5-mini` was an Azure OpenAI
+model on the Foundry resource; Bedrock does not serve it, and unlike chat,
+embeddings, reranking and OCR this capability was never a Cohere model, so
+"keep the model, change the host" does not apply. A Bedrock vision model has
+to be CHOSEN — it is a model decision, not a migration mechanic, and picking
+one silently would change what every image passage says with no eval behind
+it.
+
+This module therefore reports itself unconfigured on AWS until
+`BEDROCK_VISION_MODEL_ID` is set. That is not a regression in practice:
+`IMAGE_VERBALIZATION_ENABLED` is unset in every environment, the hourly
+`verbalize_page_images` cron returns before touching Postgres, and the
+feature has never run in production.
 
 Wire contract
 -------------
-Reuses the unified OpenAI v1 surface this repo already confirmed against a
-live Foundry deployment 2026-07-30 (see config.py AZURE_FOUNDRY_*):
+Bedrock Converse, which is multimodal and takes image bytes directly rather
+than as a data URI::
 
-    POST {endpoint}/openai/v1/chat/completions
+    bedrock-runtime.converse(
+        modelId=<BEDROCK_VISION_MODEL_ID>,
+        messages=[{"role": "user", "content": [
+            {"text": <prompt>},
+            {"image": {"format": "png", "source": {"bytes": <raw bytes>}}}]}],
+        inferenceConfig={"maxTokens": ...})
 
-with OpenAI-style multimodal content parts. This is the same path
-`_call_openai_compatible_llm` uses for chat, so endpoint/auth behaviour is
-already proven — only the image content part is new.
+[UNVERIFIED] — no live call has confirmed this, and it cannot be confirmed
+until a model is chosen.
 
 Fail-soft contract
 ------------------
@@ -56,7 +75,6 @@ come from the OCR path, where it is a citable passage with provenance.
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -66,11 +84,10 @@ logger = logging.getLogger("georag.ingest.page_vision")
 ENABLED_ENV = "IMAGE_VERBALIZATION_ENABLED"
 MODEL_ENV = "IMAGE_VERBALIZATION_MODEL"
 
-# Reuses the LLM's Foundry credentials deliberately — one endpoint, one key.
-ENDPOINT_ENV = "AZURE_FOUNDRY_ENDPOINT"
-KEY_ENV = "AZURE_FOUNDRY_API_KEY"
-
-_DEFAULT_MODEL = "gpt-5-mini"
+# Bedrock model id for the vision model. NO DEFAULT, deliberately: there is
+# no Bedrock equivalent of the retired `gpt-5-mini` and guessing one would
+# silently change what every image passage says. See the module docstring.
+MODEL_ID_ENV = "BEDROCK_VISION_MODEL_ID"
 
 # A page description is a paragraph, not an essay. Capping output keeps the
 # passage inside the reranker's window and stops the model padding a sparse
@@ -123,7 +140,14 @@ _LOW_DETAIL_ASKS = (
 
 
 def image_detail() -> str:
-    """The detail level the vision request is sent at."""
+    """How cautious the prompt should be about reading text off the page.
+
+    Named for the Foundry-era `detail` request knob it used to set, which
+    Bedrock Converse has no equivalent of. Since 2026-09-08 it selects the
+    prompt only — the model always receives the full image — so this is now
+    a statement about how much the prompt may ask for, not about what the
+    model is sent. See verbalize_page.
+    """
     value = (os.environ.get("IMAGE_VERBALIZATION_DETAIL", "low") or "low").strip()
     return value.lower() or "low"
 
@@ -182,13 +206,19 @@ def is_enabled() -> bool:
 
 
 def is_configured() -> bool:
-    return bool((os.environ.get(ENDPOINT_ENV) or "").strip()) and bool(
-        (os.environ.get(KEY_ENV) or "").strip()
-    )
+    return bool(_model())
 
 
 def _model() -> str:
-    return (os.environ.get(MODEL_ENV) or _DEFAULT_MODEL).strip()
+    """The Bedrock model id, or "" when none has been chosen.
+
+    MODEL_ENV (IMAGE_VERBALIZATION_MODEL) is still read first so an existing
+    deployment's override keeps working, but it now carries a Bedrock model
+    id rather than a Foundry deployment name.
+    """
+    return (
+        (os.environ.get(MODEL_ENV) or os.environ.get(MODEL_ID_ENV) or "").strip()
+    )
 
 
 def verbalize_page(png_bytes: bytes, *, mime: str = "image/png") -> VerbalizationResult:
@@ -196,69 +226,59 @@ def verbalize_page(png_bytes: bytes, *, mime: str = "image/png") -> Verbalizatio
     if not is_enabled():
         return VerbalizationResult("", ok=False, error="disabled")
 
-    endpoint = (os.environ.get(ENDPOINT_ENV) or "").strip()
-    api_key = (os.environ.get(KEY_ENV) or "").strip()
-    if not (endpoint and api_key):
+    model_id = _model()
+    if not model_id:
         return VerbalizationResult(
             "", ok=False,
-            error=f"{ENABLED_ENV} is on but {ENDPOINT_ENV}/{KEY_ENV} are not set",
+            error=(
+                f"{ENABLED_ENV} is on but no vision model is configured. Set "
+                f"{MODEL_ID_ENV} to a Bedrock model id — there is no default, "
+                "because Bedrock has no equivalent of the retired gpt-5-mini "
+                "and guessing one would change every image description "
+                "(ADR-0022)."
+            ),
         )
-
-    import httpx  # noqa: PLC0415
-
-    url = f"{endpoint.rstrip('/')}/openai/v1/chat/completions"
-    data_uri = f"data:{mime};base64,{base64.b64encode(png_bytes).decode('ascii')}"
 
     # Resolved once, then used for BOTH the prompt and the image detail.
     # Reading the environment twice would let the two halves of a request
     # describe different resolutions.
     _detail = image_detail()
 
+    # Converse takes raw bytes, not a data URI — one less base64 round trip
+    # than the OpenAI-shaped path, and no `detail` knob.
+    #
+    # ⚠️ That knob did two jobs and only one survives. `detail: low` bounded
+    # per-page token cost (at IMAGE_EMBED_PAGE_SCOPE=all, across every page
+    # of every document) AND told build_prompt how cautious to be about
+    # asking the model to read text. Bedrock has no equivalent, so
+    # image_detail() now selects the PROMPT ONLY: the model always sees the
+    # full image. That makes "low" the conservative prompt rather than a
+    # cheaper request, and it means cost control here is _MAX_TOKENS and the
+    # prompt alone. Watch the per-page cost if this is ever switched on.
+    _format = "png" if mime.endswith("png") else mime.rsplit("/", 1)[-1]
+
     try:
-        resp = httpx.post(
-            url,
-            headers={"api-key": api_key, "Content-Type": "application/json"},
-            timeout=_TIMEOUT_S,
-            json={
-                "model": _model(),
-                "max_completion_tokens": _MAX_TOKENS,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": build_prompt(_detail)},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": data_uri,
-                                    # "low" is deliberate: we want the gist of
-                                    # a figure, not a pixel-accurate read, and
-                                    # detail="high" tiles the image into many
-                                    # more tokens per page. At scope=all that
-                                    # multiplies across every page of every
-                                    # document.
-                                    #
-                                    # The PROMPT is derived from this value
-                                    # (see build_prompt). It used to ask for
-                                    # captions "quoted exactly" and for
-                                    # drill-hole IDs regardless, which at low
-                                    # detail asks the model to read text it
-                                    # was not sent.
-                                    "detail": _detail,
-                                },
-                            },
-                        ],
-                    }
-                ],
-            },
+        from app.services._bedrock import get_client  # noqa: PLC0415
+
+        resp = get_client("bedrock-runtime", read_timeout_s=_TIMEOUT_S).converse(
+            modelId=model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": build_prompt(_detail)},
+                        {"image": {"format": _format, "source": {"bytes": png_bytes}}},
+                    ],
+                }
+            ],
+            inferenceConfig={"maxTokens": _MAX_TOKENS},
         )
-        resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract
         logger.warning("page_vision: request failed: %s", exc)
         return VerbalizationResult("", ok=False, error=f"{type(exc).__name__}: {exc}")
 
     try:
-        text = _extract_text(resp.json())
+        text = _extract_text(resp)
     except Exception as exc:  # noqa: BLE001
         logger.warning("page_vision: could not parse response: %s", exc)
         return VerbalizationResult("", ok=False, error=f"unparseable_response: {exc}")
@@ -272,22 +292,17 @@ def verbalize_page(png_bytes: bytes, *, mime: str = "image/png") -> Verbalizatio
 
 
 def _extract_text(payload: dict) -> str:
-    """Pull the assistant text out of an OpenAI-shaped chat completion.
+    """Pull the assistant text out of a Bedrock Converse response.
 
-    Tolerant of `content` arriving as a bare string (the usual shape) or as a
-    list of typed parts, which some Foundry-hosted models emit.
+    Converse always returns content as a list of typed blocks, so unlike the
+    OpenAI-shaped predecessor there is no bare-string case to tolerate. Any
+    non-text block (a reasoning trace, say) is skipped rather than
+    stringified into the page description.
     """
-    choices = payload.get("choices") or []
-    if not choices:
-        raise ValueError("response contained no choices")
-
-    content = (choices[0].get("message") or {}).get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") in (None, "text")
-        )
-    raise ValueError(f"unexpected content type: {type(content).__name__}")
+    message = (payload.get("output") or {}).get("message") or {}
+    content = message.get("content")
+    if not isinstance(content, list):
+        raise ValueError(f"unexpected content type: {type(content).__name__}")
+    return "\n".join(
+        block["text"] for block in content if isinstance(block, dict) and "text" in block
+    )

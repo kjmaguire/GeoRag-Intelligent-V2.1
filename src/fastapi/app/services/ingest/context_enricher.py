@@ -117,15 +117,29 @@ async def _call_llm_for_context(
     model: str,
     headers: dict[str, str] | None = None,
 ) -> str:
-    """One header generation against whichever OpenAI-compatible backend is live.
+    """One header generation against whichever backend is live.
 
     This used to hardcode settings.VLLM_URL. The local vllm service was
     removed on 2026-07-30 and its default hostname stopped resolving, so
     every call raised into the per-passage handler below. The caller now
-    resolves the endpoint through settings.effective_llm_url the same way
-    llm_calls does, which means this follows the backend instead of
-    pinning itself to one that was decommissioned.
+    resolves the target through the same settings llm_calls uses, which
+    means this follows the backend instead of pinning itself to one that was
+    decommissioned — a property worth keeping, since the backend has now
+    changed twice more (Foundry 2026-07-30, Bedrock 2026-09-08).
+
+    Bedrock is not OpenAI-compatible, so it short-circuits to the Converse
+    adapter instead of building a URL. Everything else keeps the httpx path.
     """
+    from app.config import settings  # noqa: PLC0415
+
+    if settings.LLM_BACKEND == "bedrock":
+        from app.agent.llm_bedrock import call_bedrock_llm  # noqa: PLC0415
+
+        # No token_callback: this is a batch cron, nobody is watching a
+        # stream, and a non-streaming Converse call is one round trip
+        # instead of an event loop per passage.
+        return (await call_bedrock_llm(prompt, 0.3)).strip()
+
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -145,22 +159,24 @@ async def _call_llm_for_context(
 
 
 def _resolve_llm_target() -> tuple[str, str, dict[str, str]]:
-    """(base_url, model, headers) for the active backend.
+    """(base_url, model, headers) for the active OpenAI-compatible backend.
 
     Mirrors _call_openai_compatible_llm's backend branch rather than
     importing it: that function is the agent's streaming synthesis path
     and pulling it into an ingest module would drag the whole agent
-    dependency tree behind it. What must stay in step is the auth shape,
-    which is one header.
+    dependency tree behind it.
+
+    Returns empty strings under LLM_BACKEND=bedrock, where there is no URL
+    to resolve — settings.effective_llm_url raises for that backend by
+    design, and _call_llm_for_context short-circuits before it would use
+    any of these. Resolving eagerly here and discarding the result is the
+    price of keeping the per-passage loop free of a second branch.
     """
     from app.config import settings
 
-    base_url = settings.effective_llm_url
-    model = settings.effective_llm_model
-    headers: dict[str, str] = {}
-    if settings.LLM_BACKEND == "azure":
-        headers["api-key"] = settings.AZURE_FOUNDRY_API_KEY
-    return base_url, model, headers
+    if settings.LLM_BACKEND == "bedrock":
+        return "", settings.effective_llm_model, {}
+    return settings.effective_llm_url, settings.effective_llm_model, {}
 
 
 def _combine_enriched(context_header: str, original_text: str) -> str:

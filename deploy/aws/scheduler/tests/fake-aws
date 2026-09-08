@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI, used by run.sh. Every invocation is appended to
+# $FAKE_AWS_LOG so a test can assert what the sweep actually attempted —
+# the point of several cases is that a failure early in the sweep must not
+# stop the later actions from being tried.
+#
+# Ported from deploy/azure/containerapps/scripts/tests/fake-az on
+# 2026-09-08 (ADR-0022), same design and for the same reason: behaviour is
+# driven entirely by environment variables so a case reads as one line of
+# setup.
+#
+#   FAKE_AWS_FAIL_SERVICES   services whose `ecs update-service` fails  ("")
+#   FAKE_AWS_DB_STOP_RC      exit code for `rds stop-db-instance`       (0)
+#   FAKE_AWS_DB_START_RC     exit code for `rds start-db-instance`      (0)
+#   FAKE_AWS_DB_STATE        overrides the reported instance state; unset,
+#                            the instance transitions on stop/start like a
+#                            real one does                       (unset)
+#   FAKE_AWS_UNSTABLE        services `ecs wait services-stable` fails  ("")
+#   FAKE_AWS_EP_STATES       "name:STATE[,name:STATE]" for SageMaker    ("")
+#                            endpoints; a name absent from the list does
+#                            not exist. "name:MISSING" is explicit absence.
+#   FAKE_AWS_EP_CREATE_RC    exit code for `sagemaker create-endpoint`  (0)
+#   FAKE_AWS_EP_DELETE_RC    exit code for `sagemaker delete-endpoint`  (0)
+#   FAKE_AWS_EP_DELETE_TAKES_EFFECT  delete succeeded despite a non-zero
+#                            exit code — the "exit code lies" case         (0)
+#   FAKE_AWS_EP_AFTER_CREATE state an endpoint reports once created     (InService)
+set -uo pipefail
+
+printf '%s\n' "$*" >> "${FAKE_AWS_LOG:?FAKE_AWS_LOG must be set}"
+
+arg_after() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+  return 1
+}
+
+in_list() {
+  local needle="$1" item
+  shift
+  for item in $*; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+# Endpoint state lookup. The state file lets create-endpoint change what a
+# later describe reports, which is what makes the "creates then waits"
+# case testable without sleeping for real.
+ep_state() {
+  local name="$1" pair
+  # Deletion wins over everything: it is the end state the shutdown sweep
+  # is checking for, and it has to survive into the next invocation of this
+  # script, which is a separate process. Hence the marker files rather than
+  # an exported variable.
+  if [ -f "${FAKE_AWS_LOG}.deleted" ] && grep -qxF "$name" "${FAKE_AWS_LOG}.deleted"; then
+    return 1
+  fi
+  if [ -f "${FAKE_AWS_LOG}.created" ] && grep -qxF "$name" "${FAKE_AWS_LOG}.created"; then
+    printf '%s' "${FAKE_AWS_EP_AFTER_CREATE:-InService}"
+    return 0
+  fi
+  for pair in ${FAKE_AWS_EP_STATES:-}; do
+    if [ "${pair%%:*}" = "$name" ]; then
+      [ "${pair#*:}" = "MISSING" ] && return 1
+      printf '%s' "${pair#*:}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+case "$1 ${2:-}" in
+  "ecs update-service")
+    svc=$(arg_after --service "$@") || svc=""
+    if in_list "$svc" "${FAKE_AWS_FAIL_SERVICES:-}"; then
+      echo "An error occurred (ServiceNotActiveException) on update-service" >&2
+      exit 254
+    fi
+    printf '%s\n' "$svc"
+    ;;
+
+  "ecs wait")
+    svc=$(arg_after --services "$@") || svc=""
+    if in_list "$svc" "${FAKE_AWS_UNSTABLE:-}"; then
+      echo "Waiter ServicesStable failed" >&2
+      exit 255
+    fi
+    ;;
+
+  "rds stop-db-instance")
+    # The instance actually transitions, so a happy-path sweep sees the
+    # state it expects without every case having to spell it out. An
+    # explicit FAKE_AWS_DB_STATE overrides this, which is what the two
+    # "the exit code lies" cases use.
+    printf 'stopped\n' > "${FAKE_AWS_LOG}.dbstate"
+    exit "${FAKE_AWS_DB_STOP_RC:-0}"
+    ;;
+
+  "rds start-db-instance")
+    printf 'available\n' > "${FAKE_AWS_LOG}.dbstate"
+    exit "${FAKE_AWS_DB_START_RC:-0}"
+    ;;
+
+  "rds describe-db-instances")
+    if [ -n "${FAKE_AWS_DB_STATE:-}" ]; then
+      state="${FAKE_AWS_DB_STATE}"
+    elif [ -f "${FAKE_AWS_LOG}.dbstate" ]; then
+      state=$(cat "${FAKE_AWS_LOG}.dbstate")
+    else
+      state="available"
+    fi
+    [ "$state" = "GONE" ] && exit 254
+    printf '%s\n' "$state"
+    ;;
+
+  "rds wait")
+    ;;
+
+  "sagemaker describe-endpoint")
+    name=$(arg_after --endpoint-name "$@") || name=""
+    if state=$(ep_state "$name"); then
+      printf '%s\n' "$state"
+    else
+      echo "An error occurred (ValidationException): Could not find endpoint" >&2
+      exit 254
+    fi
+    ;;
+
+  "sagemaker create-endpoint")
+    name=$(arg_after --endpoint-name "$@") || name=""
+    rc="${FAKE_AWS_EP_CREATE_RC:-0}"
+    if [ "$rc" -ne 0 ]; then
+      echo "An error occurred (ValidationException) on create-endpoint" >&2
+      exit "$rc"
+    fi
+    printf '%s\n' "$name" >> "${FAKE_AWS_LOG}.created"
+    printf 'arn:aws:sagemaker:us-east-1:000000000000:endpoint/%s\n' "$name"
+    ;;
+
+  "sagemaker delete-endpoint")
+    name=$(arg_after --endpoint-name "$@") || name=""
+    rc="${FAKE_AWS_EP_DELETE_RC:-0}"
+    # Record the deletion even when the command "fails", so a case can
+    # exercise the sweep's own reasoning: an exit code that lies in either
+    # direction is settled by reading the state, never by the code.
+    if [ "$rc" -eq 0 ] || [ "${FAKE_AWS_EP_DELETE_TAKES_EFFECT:-0}" = "1" ]; then
+      printf '%s\n' "$name" >> "${FAKE_AWS_LOG}.deleted"
+    fi
+    exit "$rc"
+    ;;
+
+  *)
+    echo "fake-aws: unhandled command: $*" >&2
+    exit 127
+    ;;
+esac
