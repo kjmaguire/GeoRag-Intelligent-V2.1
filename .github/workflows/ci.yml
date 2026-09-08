@@ -896,11 +896,22 @@ jobs:
       HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
       # Route both ingest-time and query-time dense embeddings, plus the
       # LLM synthesis call, at the stub backend started below.
-      EMBEDDING_BACKEND: foundry
-      AZURE_FOUNDRY_ENDPOINT: http://localhost:8899
-      AZURE_FOUNDRY_API_KEY: stub-key
-      AZURE_FOUNDRY_EMBED_DEPLOYMENT: stub-embed
-      AZURE_FOUNDRY_EMBED_DIMENSION: "1024"
+      #
+      # 2026-09-08 (ADR-0022): this used to select EMBEDDING_BACKEND=foundry
+      # and redirect AZURE_FOUNDRY_ENDPOINT at the stub. Bedrock, the
+      # production backend now, is reached with boto3/SigV4 and has no
+      # configurable base URL, so there is nothing to redirect — and
+      # `foundry` is a startup ERROR rather than an ignored value, so
+      # leaving it would have failed this job outright. The stub serves the
+      # embedding SIDECAR contract instead and the job selects that branch,
+      # which keeps the runner free of AWS credentials. What the retrieval
+      # assertions depend on — the marker-phrase encoder — is unchanged.
+      #
+      # EMBEDDING_BACKEND is `local` rather than unset because the code
+      # default is `bedrock`, which short-circuits before
+      # EMBEDDING_SERVICE_URL is consulted.
+      EMBEDDING_BACKEND: local
+      EMBEDDING_SERVICE_URL: http://localhost:8899
       LLM_BACKEND: vllm
       VLLM_URL: http://localhost:8899/v1
       # 2026-08-15: the query leg was hitting TIMEOUT_GATHER_S (default 8.0s,

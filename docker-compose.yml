@@ -790,48 +790,56 @@ services:
       # instead. Used for A/B benches comparing fine-tuned candidates
       # against the stock baseline without rebuilding the image.
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
-      # RERANKER_BACKEND=foundry (Cohere Rerank v4 on Azure AI Foundry) takes
+      # RERANKER_BACKEND=bedrock (Cohere Rerank on Amazon Bedrock) takes
       # precedence over RERANKER_SERVICE_URL below — no local model, no
       # sidecar, at all. Both the code default and this compose fallback are
-      # "foundry" (since 2026-09-06). To use the self-hosted Qwen3-Reranker
-      # `reranker` sidecar instead, set RERANKER_BACKEND=cross_encoder in .env
-      # (.env.example does). Reuses AZURE_FOUNDRY_
-      # ENDPOINT/API_KEY from the LLM config (same Azure AI Services
-      # resource); needs its own deployment name since rerank is deployed
-      # separately. Empirically verified 2026-07-30 against a live Cohere
-      # Rerank v4 Pro deployment — see app/services/reranker.py.
-      RERANKER_BACKEND: ${RERANKER_BACKEND:-foundry}
-      AZURE_FOUNDRY_RERANK_DEPLOYMENT: ${AZURE_FOUNDRY_RERANK_DEPLOYMENT:-}
-      AZURE_FOUNDRY_RERANK_TIMEOUT_S: ${AZURE_FOUNDRY_RERANK_TIMEOUT_S:-8.0}
+      # "bedrock" (since 2026-09-08, ADR-0022; "foundry" from 2026-09-06
+      # until then, and that value is now a startup ERROR rather than a
+      # silent fall-through to the sidecar branch). To use the self-hosted
+      # Qwen3-Reranker `reranker` sidecar instead, set
+      # RERANKER_BACKEND=cross_encoder in .env (.env.example does).
+      #
+      # Bedrock authenticates from boto3's credential chain — no endpoint,
+      # no key here. Note the model: Foundry served Rerank v4, Bedrock
+      # serves 3.5, and RERANKER_SCORE_THRESHOLD_HOSTED was measured
+      # against v4. See app/services/reranker.py.
+      RERANKER_BACKEND: ${RERANKER_BACKEND:-bedrock}
+      BEDROCK_RERANK_MODEL_ID: ${BEDROCK_RERANK_MODEL_ID:-cohere.rerank-v3-5:0}
+      BEDROCK_RERANK_TIMEOUT_S: ${BEDROCK_RERANK_TIMEOUT_S:-8.0}
+      BEDROCK_RERANK_MAX_ATTEMPTS: ${BEDROCK_RERANK_MAX_ATTEMPTS:-3}
       # 2026-06-24 — share ONE reranker model via the `reranker` sidecar
       # instead of each of the 6 uvicorn workers loading its own CrossEncoder
       # copy (that was the OOM driver). app/services/reranker.py returns an
       # HTTP proxy when this is set. Unset to fall back to per-worker load.
-      # Ignored entirely when RERANKER_BACKEND=foundry above.
+      # Ignored entirely when RERANKER_BACKEND=bedrock above.
       RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-http://reranker:8000}
-      # EMBEDDING_BACKEND=foundry (Cohere Embed v4 on Azure AI Foundry) takes
+      # EMBEDDING_BACKEND=bedrock (Cohere Embed v4 on Amazon Bedrock) takes
       # precedence over EMBEDDING_SERVICE_URL below — no local model, no
       # sidecar. Both the code default and this compose fallback are
-      # "foundry" (since 2026-09-06). To use the self-hosted `embedding`
-      # sidecar instead, set EMBEDDING_BACKEND=local in .env (.env.example
-      # does) — on BOTH this service and hatchet-worker.
-      # Reuses AZURE_FOUNDRY_ENDPOINT/API_KEY from the LLM config;
-      # needs its own deployment name. Requests output_dimension=1024 to
-      # match the existing georag_chunks collection exactly — no Qdrant
-      # migration needed, though a full re-embed of the corpus still is
-      # (different model = different vector space regardless of dims
-      # matching). Empirically verified 2026-07-30 against a live Cohere
-      # Embed v4 deployment — see app/services/embedding.py.
-      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-foundry}
-      AZURE_FOUNDRY_EMBED_DEPLOYMENT: ${AZURE_FOUNDRY_EMBED_DEPLOYMENT:-}
-      AZURE_FOUNDRY_EMBED_DIMENSION: ${AZURE_FOUNDRY_EMBED_DIMENSION:-1024}
-      AZURE_FOUNDRY_EMBED_TIMEOUT_S: ${AZURE_FOUNDRY_EMBED_TIMEOUT_S:-30}
+      # "bedrock" (since 2026-09-08, ADR-0022; "foundry" from 2026-09-06
+      # until then, and that value now RAISES rather than falling through
+      # to the sidecar branch — on a host with no sidecar that fall-through
+      # meant a query path retrieving nothing while reporting success).
+      # To use the self-hosted `embedding` sidecar instead, set
+      # EMBEDDING_BACKEND=local in .env (.env.example does) — on BOTH this
+      # service and hatchet-worker, or the query and ingest paths write
+      # vectors from different models into the same collection.
+      #
+      # Requests output_dimension=1024 to match the georag_chunks
+      # collection exactly — no Qdrant migration needed, though a full
+      # re-embed still is when switching (different model = different
+      # vector space regardless of dims matching). See
+      # app/services/embedding.py.
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-bedrock}
+      BEDROCK_EMBED_MODEL_ID: ${BEDROCK_EMBED_MODEL_ID:-cohere.embed-v4:0}
+      BEDROCK_EMBED_DIMENSION: ${BEDROCK_EMBED_DIMENSION:-1024}
+      BEDROCK_EMBED_TIMEOUT_S: ${BEDROCK_EMBED_TIMEOUT_S:-30}
       # 2026-06-24 — share ONE embedding model via the `embedding` sidecar
       # instead of one ~2.4 GiB Qwen3-Embedding copy per uvicorn worker (a PSS
       # measurement showed it duplicated per worker — the dominant host-RAM
       # term). app/services/embedding.get_embedding_model() returns an HTTP
       # proxy when this is set; empty → each worker loads its own (legacy).
-      # Ignored entirely when EMBEDDING_BACKEND=foundry above.
+      # Ignored entirely when EMBEDDING_BACKEND=bedrock above.
       EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-http://embedding:8000}
       # 2026-06-24 — share ONE SPLADE++ model via the `sparse` sidecar. SPLADE
       # was the last GPU user in the workers; routing it to a CPU sidecar lets
@@ -902,24 +910,32 @@ services:
       AWS_DEFAULT_REGION: us-east-1
       S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
       # LLM — backend selection + primary target.
-      # Azure AI Foundry is the default primary backend post Phase-C
-      # cutover (2026-07-30), replacing self-hosted vLLM.
-      LLM_BACKEND: ${LLM_BACKEND:-azure}
+      # Amazon Bedrock is the default primary backend since 2026-09-08
+      # (ADR-0022); Azure AI Foundry held that role from 2026-07-30, and
+      # LLM_BACKEND=azure is now a startup ERROR naming its replacement.
+      LLM_BACKEND: ${LLM_BACKEND:-bedrock}
       LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-}
       LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
       LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
       LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
-      # Azure AI Foundry (Cohere Command A+) — used when LLM_BACKEND=azure.
-      # Set these three in .env; there is no sensible default
-      # endpoint/deployment. Endpoint is the Foundry/AI Services hostname
-      # (https://<resource>.services.ai.azure.com), NOT .openai.azure.com.
-      # Served via the unified OpenAI v1 API (/openai/v1/chat/completions),
-      # empirically confirmed 2026-07-30 — see app/config.py for the full
-      # wire contract (reasoning_content field, sentinel-token stripping).
-      AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
-      AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
-      AZURE_FOUNDRY_DEPLOYMENT: ${AZURE_FOUNDRY_DEPLOYMENT:-}
-      AZURE_FOUNDRY_MAX_MODEL_LEN: ${AZURE_FOUNDRY_MAX_MODEL_LEN:-128000}
+      # Amazon Bedrock (Cohere Command A+) — used when LLM_BACKEND=bedrock.
+      # No endpoint and no key: boto3's credential chain signs every call,
+      # so in dev this uses whatever AWS profile or SSO session the host
+      # already has. BEDROCK_CHAT_MODEL_ID has no default because Command
+      # A+ is not in Bedrock's serverless catalogue — it is a Marketplace
+      # endpoint that bills while it exists, and defaulting a name here
+      # would be guessing at a resource that costs money.
+      #
+      # The three Foundry chat behaviours confirmed live on 2026-07-30
+      # (JSON response_format, a separate reasoning_content field, and
+      # <|START_TEXT|>/<|END_TEXT|> sentinel wrapping) were NOT re-verified
+      # on Bedrock. app/agent/llm_bedrock.py tolerates either shape; run
+      # ops/validation/bedrock_probe.py to replace tolerance with fact.
+      BEDROCK_REGION: ${BEDROCK_REGION:-us-east-1}
+      BEDROCK_CHAT_MODEL_ID: ${BEDROCK_CHAT_MODEL_ID:-}
+      BEDROCK_CHAT_MAX_MODEL_LEN: ${BEDROCK_CHAT_MAX_MODEL_LEN:-128000}
+      BEDROCK_CHAT_MAX_TOKENS: ${BEDROCK_CHAT_MAX_TOKENS:-4096}
+      BEDROCK_CHAT_COLD_START_TIMEOUT_S: ${BEDROCK_CHAT_COLD_START_TIMEOUT_S:-120}
       # vLLM — retained only for operators who point LLM_BACKEND=vllm at an
       # external OpenAI-compatible endpoint; the local `vllm` compose
       # service was removed 2026-07-30 along with its GPU reservation.
@@ -1514,9 +1530,9 @@ services:
 
   # ---------------------------------------------------------------------------
   # vLLM — REMOVED 2026-07-30 (Phase C, Azure AI Foundry cutover). The LLM
-  # inference runtime moved off self-hosted vLLM to Azure AI Foundry
-  # (LLM_BACKEND=azure by default — see src/fastapi/app/config.py
-  # AZURE_FOUNDRY_* settings). This also removes the only consumer of the
+  # inference runtime moved off self-hosted vLLM to Azure AI Foundry, and
+  # from there to Amazon Bedrock on 2026-09-08 (LLM_BACKEND=bedrock by
+  # default — see src/fastapi/app/config.py BEDROCK_* settings). This also removes the only consumer of the
   # ingestion worker's GPU reservation from the LLM side (docling/§04p paddle
   # were already off — see the trim plan). LLM_BACKEND=vllm remains supported
   # in code for operators who want to point at an external OpenAI-compatible
@@ -1749,14 +1765,16 @@ services:
       HOME: /tmp
       # Ingest parser and OCR configuration.
       PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
-      # OCR engine parity with the live Azure Container Apps env — Cohere
-      # Parse v5 on Azure AI Foundry is the primary engine (ADR-0019);
-      # tesseract stays the in-container fallback. The deployment name
-      # defaults empty so the adapter raises its NotConfigured error
-      # loudly (CRITICAL) instead of the engine silently no-oping. The
-      # Foundry endpoint/key are injected below with the embed block.
+      # OCR engine parity with the production task env — Cohere Parse is
+      # the primary engine (ADR-0019; on Bedrock since ADR-0022) and
+      # tesseract stays the in-container fallback. The model id defaults
+      # empty so the adapter raises its NotConfigured error loudly
+      # (CRITICAL) instead of the engine silently no-oping — an unset value
+      # means EVERY page runs tesseract, with no table structure and no
+      # error. Bedrock needs no endpoint or key; boto3 signs the call.
       OCR_ENGINE: ${OCR_ENGINE:-cohere_parse}
-      AZURE_FOUNDRY_PARSE_DEPLOYMENT: ${AZURE_FOUNDRY_PARSE_DEPLOYMENT:-}
+      BEDROCK_REGION: ${BEDROCK_REGION:-us-east-1}
+      BEDROCK_PARSE_MODEL_ID: ${BEDROCK_PARSE_MODEL_ID:-}
       COHERE_PARSE_TIMEOUT_S: ${COHERE_PARSE_TIMEOUT_S:-120}
       COHERE_PARSE_MAX_PIXELS: ${COHERE_PARSE_MAX_PIXELS:-4000000}
       COHERE_PARSE_OUTPUT_FORMAT: ${COHERE_PARSE_OUTPUT_FORMAT:-blocks}
@@ -1828,19 +1846,17 @@ services:
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
       EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
-      # EMBEDDING_BACKEND=foundry (Cohere Embed v4) — passage_embedder.py
+      # EMBEDDING_BACKEND=bedrock (Cohere Embed v4) — passage_embedder.py
       # (the ingestion embedder that runs in THIS service) checks this
       # directly; must be set here too, not just on fastapi, or ingestion
       # keeps loading the local model regardless of the query-path setting.
-      # AZURE_FOUNDRY_ENDPOINT/API_KEY are the same resource as the LLM.
-      # Code default and compose fallback are both "foundry" (2026-09-06);
-      # whatever .env sets MUST match the fastapi service above.
-      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-foundry}
-      AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
-      AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
-      AZURE_FOUNDRY_EMBED_DEPLOYMENT: ${AZURE_FOUNDRY_EMBED_DEPLOYMENT:-}
-      AZURE_FOUNDRY_EMBED_DIMENSION: ${AZURE_FOUNDRY_EMBED_DIMENSION:-1024}
-      AZURE_FOUNDRY_EMBED_TIMEOUT_S: ${AZURE_FOUNDRY_EMBED_TIMEOUT_S:-30}
+      # Code default and compose fallback are both "bedrock" (2026-09-08);
+      # whatever .env sets MUST match the fastapi service above, or the two
+      # paths write vectors from different models into one collection.
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-bedrock}
+      BEDROCK_EMBED_MODEL_ID: ${BEDROCK_EMBED_MODEL_ID:-cohere.embed-v4:0}
+      BEDROCK_EMBED_DIMENSION: ${BEDROCK_EMBED_DIMENSION:-1024}
+      BEDROCK_EMBED_TIMEOUT_S: ${BEDROCK_EMBED_TIMEOUT_S:-30}
       # CPU thread budget for PyTorch ops that fall back to CPU (reranker,
       # SPLADE++). OMP/MKL defaults to all host threads which causes
       # oversubscription when vLLM also runs CPU work. 6 threads matches

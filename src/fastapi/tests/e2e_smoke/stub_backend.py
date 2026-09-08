@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""Stand-in Azure AI Foundry backend for the CI money-path smoke test.
+"""Stand-in model backend for the CI money-path smoke test.
 
 The real money path (upload -> parse -> embed -> query -> cited answer)
-talks to three network services GeoRAG normally gets from Azure AI Foundry
-or a self-hosted sidecar:
+talks to two network services GeoRAG normally gets from a managed model
+provider or a self-hosted sidecar:
 
-  1. POST /providers/cohere/v2/embed   -- Cohere Embed v4 (dense vectors)
-  2. POST /v1/chat/completions          -- the LLM (OpenAI-compatible, used
-                                            when LLM_BACKEND=vllm)
+  1. POST /embed              -- dense vectors, the embedding sidecar's
+                                 contract (EMBEDDING_SERVICE_URL)
+  2. POST /v1/chat/completions -- the LLM (OpenAI-compatible, used when
+                                 LLM_BACKEND=vllm)
+
+Rewritten 2026-09-08 (ADR-0022). The embed leg used to stand in for Azure
+AI Foundry's own HTTP surface, pointed at by AZURE_FOUNDRY_ENDPOINT. The
+production backend is Amazon Bedrock now, which boto3 reaches with SigV4
+and no configurable base URL, so there is no endpoint to redirect at a
+stub. The job selects the sidecar branch instead and this serves that
+contract. The LLM leg is unchanged: it was already the vllm path, chosen
+because it is OpenAI-compatible and therefore stubbable.
 
 None of those are available in a GitHub-hosted CI runner without real
 credentials (see the eval-gate.yml workflow's comment block for the same
@@ -112,7 +121,7 @@ _SSE_ANSWER = (
 
 
 class StubHandler(BaseHTTPRequestHandler):
-    server_version = "GeoRAGStubFoundry/1.0"
+    server_version = "GeoRAGStubBackend/2.0"
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 — stdlib override
         # Quiet by default; flip to print() if debugging the smoke job.
@@ -141,11 +150,20 @@ class StubHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib method name
-        if self.path == "/providers/cohere/v2/embed":
+        # The embedding sidecar's contract (app.services.embedding
+        # ._RemoteEmbedding): {"sentences": [...]} -> {"vectors": [[...]]}.
+        #
+        # This replaced the Foundry route this stub used to serve. Bedrock
+        # is reached with boto3/SigV4, not an HTTP base URL, so there is no
+        # endpoint to point at a stub any more — the smoke job now selects
+        # the sidecar branch and this stands in for the sidecar. The marker-
+        # phrase encoder below is unchanged, so what the retrieval assertions
+        # actually depend on is exactly what it was.
+        if self.path == "/embed":
             body = self._body_json()
-            texts = body.get("texts") or []
-            vectors = [_embed_one(t) for t in texts]
-            self._send_json({"embeddings": {"float": vectors}})
+            sentences = body.get("sentences") or []
+            vectors = [_embed_one(t) for t in sentences]
+            self._send_json({"vectors": vectors})
             return
 
         if self.path.startswith("/v1/chat/completions"):

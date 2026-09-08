@@ -2,7 +2,14 @@
 
 > **Reconciled 2026-09-07** against `docker-compose.yml`, the Azure manifests
 > under `deploy/azure/`, `src/fastapi/app/hatchet_workflows/worker.py`,
-> `src/fastapi/app/config.py` and the migration tree. The service table used to
+> `src/fastapi/app/config.py` and the migration tree.
+>
+> **Production column re-reconciled 2026-09-08** against
+> `deploy/aws/terraform/` and `src/fastapi/app/config.py` after the move to
+> AWS ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).
+> Unlike the narrative chapters, this one is a lookup table — someone reads
+> a single row and acts on it — so the production column and the flag
+> defaults were rewritten rather than left under a dated notice. The service table used to
 > list Neo4j, Dagster, Kestra, Caddy, vLLM, Prometheus, Grafana, Loki, Tempo,
 > the exporters, Ofelia and the backup agent as **Live**; all of them were
 > deleted between 2026-07-28 and 2026-08-23. Rows below are what exists today.
@@ -27,28 +34,34 @@ the rest of the manual mentions.
 
 ## Services
 
-Sixteen compose services and nine Azure Container Apps. Profiles and images
-are in [Ch 01](01-services.md); this table is the status view.
+Sixteen compose services and ten ECS services. Profiles and images are in
+[Ch 01](01-services.md); this table is the status view. Production is
+[`deploy/aws/terraform/services.tf`](../../../deploy/aws/terraform/services.tf)
+— if a thing is not there, it does not exist in production.
 
-| Service | Dev (compose) | Azure | Notes |
+| Service | Dev (compose) | Production (ECS) | Notes |
 |---|---|---|---|
-| `postgresql` | Live | `georag-pg-cc` (Flexible Server) | dev image `georag/postgres:18-ext`; Azure is a managed server, so no PgBouncer |
+| `postgresql` | Live | RDS `georag-pg` (PG18, Single-AZ) | dev image `georag/postgres:18-ext`; RDS is managed, so no PgBouncer. Extensions need `deploy/aws/bootstrap.sql` applied once by hand |
 | `pgbouncer` | Live | not deployed | transaction pooling; Martin, Hatchet and migrations bypass it |
-| `redis` | Live | `redis-cc` | Azure replica has no volume and AOF off — cache and queues only |
-| `martin` | Live | `martin-cc` | dev connects as `georag_app`; the Azure manifest documents `martin_readonly` as the role to use |
-| `laravel-octane` | Live | `laravel-octane-cc` | the only externally reachable app; 1/1 replicas |
-| `laravel-horizon` | Live | `laravel-horizon-cc` | two supervisors, three jobs ([Ch 07 §1](07-orchestration.md)) |
-| `laravel-reverb` | Live | `laravel-reverb-cc` | 60 s channel-drop bug fixed 2026-05-21 |
-| `fastapi` | Live | `fastapi-cc` | internal ingress only on Azure |
-| `reranker` | Live (dev-only) | not deployed | Qwen3-Reranker-0.6B on the one GPU; Azure uses Foundry Rerank v4 |
-| `embedding` | Live (dev-only) | not deployed | Qwen3-Embedding-0.6B on CPU; Azure uses Foundry Embed v4 |
-| `sparse` | Live (dev-only) | not deployed | SPLADE++; **no Foundry equivalent** — sparse retrieval is self-hosted or absent |
-| `qdrant` | Live | `qdrant-cc` | auth off in dev by design (Ch 02 §2); Azure has no persistent volume |
-| `minio` (SeaweedFS) | Live | not deployed | Azure uses Blob `georagblobcc` via `STORAGE_BACKEND=azure_blob` |
+| `redis` | Live | `redis` (task, EFS at `/data`) | AOF on with `--save ""`, `volatile-lru`. The Azure app had AOF on with **no volume**; ADR-0022 fixed it |
+| `martin` | Live | `martin` | dev connects as `georag_app`; `martin_readonly` is still the role to use and still not used |
+| `laravel-octane` | Live | `laravel-octane` (2 tasks) | the ALB's default target. Two tasks so a deploy is not an outage — it ran at 1 on Azure |
+| `laravel-horizon` | Live | `laravel-horizon` | two supervisors, three jobs ([Ch 07 §1](07-orchestration.md)) |
+| `laravel-reverb` | Live | `laravel-reverb` | 60 s channel-drop bug fixed 2026-05-21. The **second** ALB-reachable service — a listener rule routes to it — with target-group stickiness on, because a WebSocket lives on one task for its whole life |
+| `fastapi` | Live | `fastapi` | internal only; reached over Cloud Map service discovery, never the ALB |
+| `reranker` | Live (dev-only) | not deployed | Qwen3-Reranker-0.6B on the one GPU; production uses Cohere Rerank **3.5** on Bedrock (v4 is not offered — see §"Known" below) |
+| `embedding` | Live (dev-only) | not deployed | Qwen3-Embedding-0.6B on CPU; production uses Cohere Embed v4 on Bedrock at 1024-dim |
+| `sparse` | Live (dev-only) | **`sparse` (task)** | SPLADE++; **no managed equivalent on any cloud**, so it is self-hosted on Fargate or the sparse leg of hybrid retrieval does not exist. ADR-0022 chose self-hosted |
+| `qdrant` | Live | `qdrant` (task, EFS) | auth off in dev by design (Ch 02 §2). Azure had an Azure Files share with a fixed quota and a key-based mount; EFS is elastic and IAM-authorised |
+| `minio` (SeaweedFS) | Live | not deployed | production uses S3 via `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset, so boto3 resolves the region endpoint and the task role |
 | `minio-init` | Live | not deployed | one-shot bucket creation |
-| `hatchet-lite` | Live | `hatchet-cc` | dev `v0.86.12`, Azure `v0.89.7` — version drift |
-| `hatchet-worker` | Live | `hatchet-worker-cc` | one merged worker, `WORKER_POOL=all`, 51 workflows |
+| `hatchet-lite` | Live | `hatchet` | dev `v0.86.12` — check the deployed tag in `config.tf` rather than assuming parity |
+| `hatchet-worker` | Live | `hatchet-worker` | one merged worker, `WORKER_POOL=all`, 51 workflows. Unlike Azure it genuinely stops overnight (`desired-count 0`) |
 | `langfuse-web` / `-worker` / `clickhouse` | Opt-in overlay | not deployed | `docker/compose.langfuse.yml`; not in the default `up` |
+
+Two more exist in production only, as EventBridge-scheduled RunTasks rather
+than services: `georag-shutdown-sweep` and `georag-startup-sweep`
+([Ch 07 §3](07-orchestration.md)).
 
 ### Removed
 
@@ -57,9 +70,9 @@ are in [Ch 01](01-services.md); this table is the status view.
 | `neo4j` (+ warmup), `neo4j_exporter` | 2026-07-28 | nothing — the graph was dropped |
 | `dagster-daemon` / `dagster-webserver` | 2026-07-28 (tree deleted 2026-08-28) | Hatchet workflows |
 | `kestra`, `caddy` | 2026-07-28 | nothing |
-| `prometheus`, `alertmanager`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `redis_exporter`, `postgres_exporter` | 2026-07-28 | Azure Monitor + Log Analytics ([Ch 12](12-observability.md)) |
-| `vllm` (+ warmup) | 2026-07-30 | Azure AI Foundry, Cohere Command A+. `LLM_BACKEND=vllm` remains a supported value for an operator running their own OpenAI-compatible endpoint |
-| `ofelia`, `backup-agent` | 2026-08-19 / 08-23 | Azure PITR; see the backup gap in [Ch 02 §8](02-data-stores.md) |
+| `prometheus`, `alertmanager`, `grafana`, `loki`, `promtail`, `tempo`, `otel-collector`, `redis_exporter`, `postgres_exporter` | 2026-07-28 | Azure Monitor, then CloudWatch ([Ch 12](12-observability.md)) |
+| `vllm` (+ warmup) | 2026-07-30 | Azure AI Foundry, then Amazon Bedrock (ADR-0022) — Cohere Command A+ either way. `LLM_BACKEND=vllm` remains a supported value for an operator running their own OpenAI-compatible endpoint |
+| `ofelia`, `backup-agent` | 2026-08-19 / 08-23 | RDS automated backups (35-day PITR); see the backup gap in [Ch 02 §8](02-data-stores.md) |
 | `ollama` | 2026-05-17 | — |
 | `activepieces` | Phase 3 Step 7 | Kestra, itself since removed |
 | `georag-phase-e-ocr` (TIFF bulk OCR) | ADR-0005 | `tiff_normalize` |
@@ -122,7 +135,7 @@ are in [Ch 01](01-services.md); this table is the status view.
 | `score_targets` | Live |
 | `external_notification` | Live, but **no caller** — Kestra was its only trigger and is gone |
 | `public_geoscience_pull`, `public_geo_sync` | Live as workflows; the Kestra flow that drove the first is gone, so it now runs on its own cron or by hand |
-| `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | **Deleted** — `backup_neo4j` 2026-08-19 (Neo4j dropped in B1), the other four 2026-08-23. All wrote to a SeaweedFS substrate that does not exist on Azure, so every run had failed since the migration. Deliberate: Postgres carries 35-day PITR from Azure's automated backups, Qdrant is rebuildable by re-embedding from `silver.document_passages`, and Redis is cache plus Horizon queues. Blob storage is the one irreplaceable copy and is LRS-only. |
+| `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | **Deleted** — `backup_neo4j` 2026-08-19 (Neo4j dropped in B1), the other four 2026-08-23. All wrote to a SeaweedFS substrate that does not exist on Azure, so every run had failed since the migration. Deliberate: Postgres carries 35-day PITR from the managed provider's automated backups, Qdrant is rebuildable by re-embedding from `silver.document_passages`, and Redis is cache plus Horizon queues. Object storage was the one irreplaceable copy with no backup at all on Azure; on S3 it has versioning and 90-day non-current retention (ADR-0022). Nothing has been restore-tested. |
 | `cold_tier_archive_workflow` | Partial — bucket policies live, lifecycle automation tested only on small sets |
 | `workspace_export`, `restore_workspace` | Partial — golden path verified, larger-than-RAM workspaces unproven |
 | `evaluate_workspace`, `eval_real_rag_nightly` | Removed (09d1d35, 2026-07-27). The scheduled RAG evaluation no longer exists; the only surviving entry point is the operator CLI `src/fastapi/scripts/run_golden_benchmark.py`, plus the `eval-gate.yml` nightly harness self-check (stubbed LLM — it proves the harness imports, not that answers are good). |
@@ -230,14 +243,14 @@ Pydantic AI itself is vestigial: the guards live in
 |---|---|---|
 | `AGENTIC_RETRIEVAL_V2_ENABLED` | false (dev: true) | Use §04j LangGraph instead of legacy linear RAG |
 | `GEO_ANSWER_OIUR_ENABLED` | false (dev: true) | Wrap answers in OIUR envelope |
-| `OCR_ENGINE` | tesseract (compose: cohere_parse) | Selects Cohere Parse v5 on Azure AI Foundry as primary scanned-page OCR (ADR-0019) |
-| `AZURE_FOUNDRY_PARSE_DEPLOYMENT` | unset | Foundry deployment name for Parse; endpoint/key are the shared `AZURE_FOUNDRY_*` |
+| `OCR_ENGINE` | tesseract (compose: cohere_parse) | Selects Cohere Parse as primary scanned-page OCR (ADR-0019; on Bedrock since ADR-0022). Retired values fail loudly rather than downgrading silently |
+| `BEDROCK_PARSE_MODEL_ID` | unset | The Bedrock Marketplace endpoint serving Parse. **Unset means every page runs Tesseract** after one CRITICAL log line — no table structure, no error. Replaces `AZURE_FOUNDRY_PARSE_DEPLOYMENT` |
 | `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Parse is unavailable or empty |
 | `OCR_ROUTING_THRESHOLDS_JSON` | unset | Calibrated multi-signal routing bands; unset fails closed to review |
 | `P04P_DUAL_WRITE_ENABLED` | false | Run legacy parser in parallel for A/B |
 | `CITATION_SPAN_RESOLVER_ENABLED` | false | Enable inline citation span resolver |
-| `LLM_BACKEND` | `azure` | `azure` (Foundry, Cohere Command A+) / `vllm` (operator's own OpenAI-compatible endpoint) / `anthropic` (Claude, optional fallback). There is no `foundry` value for the LLM |
-| `EMBEDDING_BACKEND` / `RERANKER_BACKEND` | `foundry` | Code and compose both default to `foundry` since 2026-09-06; `.env.example` sets `local` / `cross_encoder` to use the dev sidecars. Set both explicitly in production, identically on the query and ingest paths |
+| `LLM_BACKEND` | `bedrock` | `bedrock` (Cohere Command A+ on a Bedrock Marketplace endpoint) / `vllm` (operator's own OpenAI-compatible endpoint) / `anthropic` (Claude, optional fallback). `azure` is REJECTED at startup, not ignored (ADR-0022) |
+| `EMBEDDING_BACKEND` / `RERANKER_BACKEND` | `bedrock` | Code and compose both default to `bedrock` since 2026-09-08 — an unset value on a production task therefore selects Bedrock, not a model host that is not there. `.env.example` sets `local` / `cross_encoder` to use the dev sidecars. Set both explicitly in production, identically on the query and ingest paths |
 | `LLM_BACKEND_FALLBACK` | `downshift` | Cross-backend failover policy |
 | `LLM_FALLBACK_ENABLED` | false | Enable cross-backend failover |
 
@@ -247,10 +260,11 @@ See appendix C. Summary:
 
 1. **`georag` Postgres role is SUPERUSER + BYPASSRLS** — operationally
    mitigated, structural fix tracked (Ch 02 §1.1).
-2. **Martin uses `georag_app` in dev** — `martin_readonly` exists and the Azure manifest says to use it (Ch 02 §1.3).
+2. **Martin uses `georag_app` in dev** — `martin_readonly` exists, is documented as the role to use, and is still not the role used (Ch 02 §1.3).
 3. **Qdrant auth off in dev** — deliberate (an empty `QDRANT__SERVICE__API_KEY` enables auth and breaks every client); must be set in prod (Ch 02 §2).
-4. **External-LLM data egress** — the default backend is now Azure AI
-   Foundry, so every query leaves the container either way; the
+4. **External-LLM data egress** — the default backend is a managed model
+   service (Bedrock since ADR-0022, Foundry before it), so every query
+   leaves the container either way; the
    `georag_external_llm_egress_blocked_total` counter is the only signal
    and nothing scrapes it (Ch 12 §2.1).
 5. **`persist_node` is best-effort** — answers can complete without an

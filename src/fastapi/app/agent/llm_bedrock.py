@@ -121,6 +121,35 @@ def _clean(content: str) -> str:
     return content
 
 
+# Pessimistic chars-per-token for the GeoRAG prompt mix, and the margin on
+# top. Production samples ran 2.39-2.77 chars/token (system prompt is dense
+# English, JSON-ish context blocks tokenise short, PLSS Township-Range syntax
+# finer still), so 2.2 over-estimates input cleanly on the finest content.
+# Same constants as `_call_openai_compatible_llm`, deliberately.
+_CHARS_PER_TOKEN = 2.2
+_SAFETY_MARGIN_TOKENS = 512
+_MIN_OUTPUT_TOKENS = 64
+
+
+def cap_output_tokens(*, max_output: int, max_model_len: int, prompt_chars: int) -> int:
+    """Shrink the output request so it cannot overflow the context window.
+
+    Without this, a long retrieval context plus a full-size output request
+    pushes ``prompt_tokens + max_tokens`` past the model's window and the
+    provider answers 400 instead of truncating — so the run fails AFTER
+    paying to build the prompt. The guard has been load-bearing on the
+    OpenAI-compatible path since the vLLM era; it did not survive the first
+    draft of the Bedrock port, which is why it is a named, tested function
+    here rather than four lines inline.
+
+    Never returns 0: an over-long prompt still asks for
+    ``_MIN_OUTPUT_TOKENS`` so the failure surfaces as a clean provider error
+    on the orchestrator's failover ladder.
+    """
+    room = max_model_len - int(prompt_chars / _CHARS_PER_TOKEN) - _SAFETY_MARGIN_TOKENS
+    return min(max_output, max(_MIN_OUTPUT_TOKENS, room))
+
+
 def _build_request(
     *,
     user_message: str,
@@ -218,7 +247,23 @@ async def call_bedrock_llm(
     system_content = "\n\n".join(
         part for part in (system_prompt, project_preamble, project_facts) if part
     )
-    max_output = settings.BEDROCK_CHAT_MAX_TOKENS
+    # See cap_output_tokens() — this is what makes BEDROCK_CHAT_MAX_MODEL_LEN
+    # a real control rather than a setting that only looks like one.
+    _requested_output = settings.BEDROCK_CHAT_MAX_TOKENS
+    _prompt_chars = len(system_content) + len(user_message)
+    max_output = cap_output_tokens(
+        max_output=_requested_output,
+        max_model_len=settings.BEDROCK_CHAT_MAX_MODEL_LEN,
+        prompt_chars=_prompt_chars,
+    )
+    if max_output < _requested_output:
+        logger.info(
+            "call_bedrock_llm: capping max_tokens %d -> %d "
+            "(prompt_chars=%d max_model_len=%d)",
+            _requested_output, max_output,
+            _prompt_chars, settings.BEDROCK_CHAT_MAX_MODEL_LEN,
+        )
+
     request = _build_request(
         user_message=user_message,
         system_content=system_content,

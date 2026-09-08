@@ -39,26 +39,32 @@ locals {
   name           = var.name_prefix
   bedrock_region = var.bedrock_region != "" ? var.bedrock_region : var.region
 
-  # Every service, and whether it is reachable from outside the VPC.
-  # laravel-octane is the ONLY public one, exactly as on Azure — where it
-  # was also the only app with external ingress.
+  # Every service and its size. Ten of them; all run on Fargate in the
+  # private subnets and all get a Cloud Map DNS name.
+  #
+  # There is deliberately no `public` flag here. An earlier draft had one
+  # and nothing read it — worse, it said laravel-reverb was not public
+  # while the listener rule in services.tf routes /app/* straight to it.
+  # What is reachable from outside is decided by ONE thing, the ALB target
+  # group attachments in services.tf, and a second declaration of the same
+  # fact is a place for the two to disagree.
   services = {
-    laravel-octane  = { cpu = 1024, memory = 2048, desired = 2, public = true }
-    laravel-horizon = { cpu = 1024, memory = 2048, desired = 1, public = false }
-    laravel-reverb  = { cpu = 512, memory = 1024, desired = 1, public = false }
-    fastapi         = { cpu = 2048, memory = 4096, desired = 1, public = false }
-    hatchet         = { cpu = 1024, memory = 2048, desired = 1, public = false }
+    laravel-octane  = { cpu = 1024, memory = 2048, desired = 2 }
+    laravel-horizon = { cpu = 1024, memory = 2048, desired = 1 }
+    laravel-reverb  = { cpu = 512, memory = 1024, desired = 1 }
+    fastapi         = { cpu = 2048, memory = 4096, desired = 1 }
+    hatchet         = { cpu = 1024, memory = 2048, desired = 1 }
     # 4 vCPU / 8 GiB, desired 1. Several workflows are max_runs=1
     # singletons and Ch 07 records maxReplicas 1 as a still-open finding,
     # not a free knob. Do not raise this without reading it.
-    hatchet-worker = { cpu = 4096, memory = 8192, desired = 1, public = false }
-    qdrant         = { cpu = 1024, memory = 4096, desired = 1, public = false }
-    redis          = { cpu = 512, memory = 1024, desired = 1, public = false }
-    martin         = { cpu = 512, memory = 1024, desired = 1, public = false }
+    hatchet-worker = { cpu = 4096, memory = 8192, desired = 1 }
+    qdrant         = { cpu = 1024, memory = 4096, desired = 1 }
+    redis          = { cpu = 512, memory = 1024, desired = 1 }
+    martin         = { cpu = 512, memory = 1024, desired = 1 }
     # SPLADE++ — the one model with no managed equivalent anywhere,
     # including on Cohere (ADR-0022 decision 4). ~440 MB, CPU only. Without
     # it the sparse leg of hybrid retrieval does not exist.
-    sparse = { cpu = 512, memory = 2048, desired = 1, public = false }
+    sparse = { cpu = 512, memory = 2048, desired = 1 }
   }
 }
 

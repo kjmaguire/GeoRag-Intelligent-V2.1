@@ -203,3 +203,52 @@ def test_reranker_version_string_names_the_model_not_the_host() -> None:
 
     assert version == "cohere-bedrock:cohere.rerank-v3-5:0"
     assert "v3-5" in version
+
+
+# ---------------------------------------------------------------------------
+# The client actually talks to BEDROCK_REGION
+# ---------------------------------------------------------------------------
+# BEDROCK_REGION exists because the Bedrock model catalogue varies by region,
+# so the models can live somewhere the rest of the stack does not. That only
+# means anything if the CLIENT honours it, and the code that makes it do so
+# is one line in _botocore_config() rather than an argument to
+# boto3.client() — which is easy to read past, and where a reviewer's eye
+# goes looking is the client call.
+#
+# Delete that line and both failure shapes are silent. With the ambient AWS
+# vars set, calls go to the wrong region while the reranker keeps building
+# its model ARN from bedrock_region(), so endpoint and ARN name different
+# regions. With them unset, boto3 raises NoRegionError while _bedrock's own
+# log line names a region confidently. These two tests pin the behaviour to
+# the observable property — the client's region — rather than to where in
+# the module it currently happens to be set.
+
+
+def test_client_is_built_in_the_bedrock_region_not_the_ambient_one(monkeypatch) -> None:
+    from app.services import _bedrock
+
+    monkeypatch.setenv("BEDROCK_REGION", "eu-central-1")
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+    monkeypatch.setattr(_bedrock, "_clients", {})
+
+    client = _bedrock.get_client("bedrock-runtime")
+
+    assert client.meta.region_name == "eu-central-1", (
+        "the client resolved the ambient AWS region instead of BEDROCK_REGION "
+        "— model ARNs and the endpoint would then name different regions"
+    )
+
+
+def test_client_builds_with_no_ambient_aws_region_at_all(monkeypatch) -> None:
+    """BEDROCK_REGION alone must be enough. It is what production sets."""
+    from app.services import _bedrock
+
+    monkeypatch.setenv("BEDROCK_REGION", "eu-central-1")
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.setattr(_bedrock, "_clients", {})
+
+    client = _bedrock.get_client("bedrock-runtime")
+
+    assert client.meta.region_name == "eu-central-1"
