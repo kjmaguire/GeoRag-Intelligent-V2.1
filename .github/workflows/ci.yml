@@ -521,24 +521,27 @@ jobs:
         run: python scripts/check_qwen_config_drift.py
 
   # ─── Nightly scheduler jobs ─────────────────────────────────────────
-  # shutdown-scheduler-cc and startup-scheduler-cc carry their bash as an
-  # inline `args` string on the Azure job resource, so the deployed body
-  # is a copy of a copy and neither this CI nor cd.yml applies it. Two
-  # things are therefore worth gating even though the apply is manual:
-  # that the reviewed .sh and the YAML copy have not diverged, and that
-  # the cron's UTC hours still resolve to the guard's target local hour.
+  # The two sweeps carry their bash as an inline command on the ECS task
+  # definition, so the deployed body is a copy of a copy and CD does not
+  # apply it. What is worth gating: that the sweeps still make the right
+  # decision at every failure point.
   #
-  # The second one is not theoretical. When the maintenance window moved
-  # from US-Eastern to US-Pacific on 2026-08-21, changing the guard
-  # without the cron would have left both jobs permanently skipping --
-  # and a skip exits 0 and looks exactly like a correct off-hour skip, so
-  # nothing downstream would have noticed the shutdown had stopped
-  # running. The tests below also pin the behaviour that makes a failed
-  # sweep visible at all (see the scripts' headers).
+  # The cron/guard agreement half of the old Azure check is GONE, and
+  # deliberately (ADR-0022). Container Apps Jobs schedule in UTC only, so
+  # each sweep fired at two candidate hours with an in-script DST guard
+  # exiting 0 on the wrong one, and this job verified the two still
+  # agreed — because changing the guard without the cron would have left
+  # both jobs permanently skipping, and a skip exits 0 and looks exactly
+  # like a correct off-hour skip. EventBridge Scheduler is timezone-aware:
+  # one schedule, one fire, no guard, nothing to disagree.
+  #
+  # The behavioural half is not gone and matters more than ever, because
+  # the sweeps now also cycle the Bedrock Marketplace endpoints and a
+  # failed recreate means no chat and no OCR at all.
   scheduler-jobs:
     name: Nightly scheduler jobs
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - name: Setup Python
@@ -546,14 +549,33 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Sweep script behaviour
-        run: bash deploy/azure/containerapps/scripts/tests/run.sh
-      # APP_KEY rotation on Container Apps, rehearsed against a fake az and
-      # a fake `php artisan`. There is no staging environment to rehearse it
-      # on for real; this pins the decisions the scripts make instead.
-      - name: APP_KEY rotation rehearsal
-        run: bash deploy/azure/containerapps/tests/rotate-app-key.test.sh
-      - name: Inline-args parity and cron/guard agreement
-        run: python scripts/check_scheduler_job_parity.py
+        run: bash deploy/aws/scheduler/tests/run.sh
+
+  # ─── Infrastructure as code ──────────────────────────────────────────
+  # New with the AWS move. There was no Bicep, Terraform or ARM template
+  # for the Azure container apps at all, so ~55 environment variables per
+  # app were set by hand and drifted freely from .env.production.example —
+  # `deploy/azure/README.md` records that as a known gap. Nothing running
+  # could be diffed against anything in the repository.
+  #
+  # `terraform validate` needs the provider schema, which needs the
+  # registry, which is why this runs here rather than being something a
+  # developer is trusted to have done.
+  terraform:
+    name: Terraform (fmt + validate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.3
+      - name: Formatting
+        run: terraform -chdir=deploy/aws/terraform fmt -check -diff
+      - name: Initialise without a backend
+        run: terraform -chdir=deploy/aws/terraform init -backend=false
+      - name: Validate against the provider schema
+        run: terraform -chdir=deploy/aws/terraform validate
 
   # ─── Deployment manifest invariants ───────────────────────────────────
   # Redis is deployed five different ways (Container Apps, Helm, and three
