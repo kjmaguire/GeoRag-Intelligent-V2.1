@@ -14,7 +14,7 @@ step here has a file:line anchor.
 ```
 Browser ── multipart upload ──▶ laravel-octane
                                      │
-                                     ├─ write bytes to object storage (SeaweedFS dev / Azure Blob prod)
+                                     ├─ write bytes to object storage (SeaweedFS dev / S3 prod)
                                      ├─ insert bronze.ingest_runs (status=running)
                                      ├─ HatchetDispatchThrottle gate
                                      └─ POST /internal/v1/shadow/{workflow}/trigger  ──▶ fastapi
@@ -133,7 +133,7 @@ Downstream of the parse:
 `sync_silver_to_kg`, `shadow_diff`, `evaluate_workspace`,
 `eval_real_rag_nightly`, `score_answer_quality`, and the five `backup_*`
 workflows. OCR quality is decided inside `ingest_pdf`; the backup workflows
-were deleted 2026-08-23 in favour of Azure PITR ([Ch 02 §8](02-data-stores.md)).
+were deleted 2026-08-23 in favour of the managed provider's PITR ([Ch 02 §8](02-data-stores.md)).
 
 ## 5. Non-PDF ingestion
 
@@ -149,7 +149,7 @@ Two consequences worth stating plainly:
 - **The gold visual tables had no writer for a month.** `silver_drill_traces`,
   `gold_cross_section_panels`, `gold_drillhole_intervals_visual` and
   `gold_structure_measurements_visual` were Dagster assets. Measured against
-  the live Azure database on 2026-08-25, every one of those tables held zero
+  the then-live production database on 2026-08-25, every one of those tables held zero
   rows beside cleanly ingested collars and surveys. `promote_silver_to_gold`
   (2026-08-25) restored the step. A project ingested between those dates
   needs that workflow run against it.

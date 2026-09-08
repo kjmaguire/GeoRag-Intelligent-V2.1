@@ -1,41 +1,46 @@
-"""Cohere Parse v5 OCR adapter (ADR-0019, 2026-09-02).
+"""Cohere Parse 5 OCR adapter (ADR-0019; moved to Bedrock by ADR-0022).
 
 Selected through ``OCR_ENGINE=cohere_parse``; Tesseract remains the
-last-resort fallback in ``pdf_report.py``. Replaces the Azure Document
+last-resort fallback in ``pdf_report.py``. Replaced the Azure Document
 Intelligence adapter with the same public surface, so the parser's fallback
 ladder, sparse-page batching and per-document page budget did not have to
-change shape — only the engine behind them did.
+change shape — only the engine behind them did. The 2026-09-08 move from
+Azure AI Foundry to Amazon Bedrock changed the transport under that same
+surface and nothing else: ``OCR_ENGINE=cohere_parse`` still selects Cohere
+Parse, because the model did not change, only the host.
 
 What Parse is
 -------------
-A 2.3B vision-language document parser served from the SAME Azure AI
-Foundry resource and credentials as Command A+, Embed v4 and Rerank v4
-(``AZURE_FOUNDRY_ENDPOINT`` / ``AZURE_FOUNDRY_API_KEY``), deployed as
-``AZURE_FOUNDRY_PARSE_DEPLOYMENT`` (catalog id ``Cohere-parse-v5``,
-**Preview** — Foundry lists a 2026-12-15 retirement for the preview SKU;
-re-check the deployment name before then). Input is ONE page image as a
+A 2.3B vision-language document parser. On Bedrock it is reached through a
+**Bedrock Marketplace** endpoint (``BEDROCK_PARSE_MODEL_ID``) rather than
+the serverless catalogue, which carries no Parse model — the same reason
+Command A+ is a Marketplace deployment. Input is ONE page image as a
 base64 data URI; output is reading-order text with tables as HTML and
 image descriptions.
 
 Wire shape
 ----------
-Mirrors the embed/rerank paths that were verified live on 2026-07-30::
+::
 
-    POST {endpoint}/providers/cohere/v2/parse
-    api-key: <key>
-    body: {"model": "<deployment>",
-           "document": {"type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,..."}},
-           "output_format": "blocks" | "markdown"}
+    bedrock-runtime.invoke_model(
+        modelId=<BEDROCK_PARSE_MODEL_ID>,
+        body={"document": {"type": "image_url",
+                           "image_url": {"url": "data:image/png;base64,..."}},
+              "output_format": "blocks" | "markdown"})
     -> {"pages": [{"blocks": [{"type": "text"|"table"|"image", ...}]}]}
        or {"pages": [{"markdown": "..." | {"content": "...", "images": [...]}}]}
 
-NOT YET EMPIRICALLY VERIFIED against a live deployment — run
-``ops/validation/cohere_parse_probe.py`` with real credentials and update
-this docstring, ``_PARSE_PATH`` and ``_page_from_payload`` from its report.
-Until then the response adapter is tolerant about field names (``text`` /
-``content`` / ``markdown`` for text, ``html`` / ``content`` for tables,
-``description`` / ``caption`` for images).
+The body is Cohere's own request minus ``model``, which moves to ``modelId``
+— the same relationship the embed adapter has to its Foundry predecessor.
+
+STILL NOT EMPIRICALLY VERIFIED. This was true on Foundry and remains true on
+Bedrock: no live call has ever confirmed this contract, on either host. Run
+``ops/validation/bedrock_probe.py --parse`` with real credentials and update
+this docstring and ``_page_from_payload`` from its report. Until then the
+response adapter stays tolerant about field names (``text`` / ``content`` /
+``markdown`` for text, ``html`` / ``content`` for tables, ``description`` /
+``caption`` for images), which is the right posture for an unverified
+contract and the reason a wrong guess degrades rather than crashes.
 
 What Parse does NOT return
 --------------------------
@@ -49,7 +54,8 @@ and a warning is logged when that costs resolution.
 
 Gated by ``OCR_ENGINE`` (default ``"tesseract"``), reading ``os.environ``
 at call time like the adapter it replaces, so importing this module never
-requires credentials.
+requires credentials — and on Bedrock there are none to require: the ECS
+task role supplies them through boto3's default chain.
 """
 
 from __future__ import annotations
@@ -64,9 +70,7 @@ import re
 import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
-
-from app.services._foundry_retry import with_foundry_retry
+from typing import Any, cast
 
 from . import ocr_engine
 from .html_table import find_table_fragments, html_table_to_grid
@@ -75,12 +79,11 @@ from .ocr_types import OcrWord, PageOcrResult
 logger = logging.getLogger("georag.ingest.cohere_parse")
 
 ENGINE_VALUE = ocr_engine.COHERE_PARSE
-ENDPOINT_ENV = "AZURE_FOUNDRY_ENDPOINT"
-KEY_ENV = "AZURE_FOUNDRY_API_KEY"
-DEPLOYMENT_ENV = "AZURE_FOUNDRY_PARSE_DEPLOYMENT"
+#: Bedrock ``modelId``. For Parse this is the ARN of the SageMaker-managed
+#: endpoint the Marketplace subscription created, because Bedrock's
+#: serverless catalogue has no Parse model at all (ADR-0022).
+MODEL_ID_ENV = "BEDROCK_PARSE_MODEL_ID"
 OCR_METHOD = "cohere_parse"
-
-_PARSE_PATH = "/providers/cohere/v2/parse"
 
 _TIMEOUT_ENV = "COHERE_PARSE_TIMEOUT_S"
 _DEFAULT_TIMEOUT_S = 120.0
@@ -121,7 +124,7 @@ _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\([^)]*\)")
 
 
 class CohereParseNotConfigured(RuntimeError):
-    """OCR_ENGINE=cohere_parse but the Foundry endpoint/key/deployment are absent.
+    """OCR_ENGINE=cohere_parse but BEDROCK_PARSE_MODEL_ID is absent.
 
     Raised at call time (not import time) so importing this module never
     requires credentials — only actually invoking ``ocr_page_sync`` does.
@@ -139,22 +142,37 @@ def is_engine_selected() -> bool:
 
 
 def is_configured() -> bool:
-    """True when endpoint, key and deployment are all present."""
-    return all(
-        bool(os.environ.get(name)) for name in (ENDPOINT_ENV, KEY_ENV, DEPLOYMENT_ENV)
-    )
+    """True when the Bedrock model id is present.
+
+    Credentials are deliberately not part of this check: the task role
+    supplies them and there is nothing to read from the environment. A
+    missing role surfaces as an auth error on the first call, which the
+    fail-soft path in ``_parse_png`` turns into a Tesseract fallback plus a
+    logged error — the same treatment a 403 got on Foundry.
+    """
+    return bool(os.environ.get(MODEL_ID_ENV))
 
 
-def _require_config() -> tuple[str, str, str]:
-    endpoint = os.environ.get(ENDPOINT_ENV, "")
-    key = os.environ.get(KEY_ENV, "")
-    deployment = os.environ.get(DEPLOYMENT_ENV, "")
-    if not endpoint or not key or not deployment:
+def _require_config() -> str:
+    """Return the Bedrock model id, or explain what is missing.
+
+    Also rejects leftover Foundry configuration outright. A deployment that
+    still names ``AZURE_FOUNDRY_PARSE_DEPLOYMENT`` would otherwise fall
+    straight through to Tesseract on every scanned page and extract no
+    tables — silently, which is precisely the 2026-08-21 failure
+    ``ocr_engine.py`` was written to make loud.
+    """
+    from app.services._bedrock import assert_no_retired_foundry_env  # noqa: PLC0415
+
+    assert_no_retired_foundry_env(context=f"{ENGINE_VALUE} OCR engine")
+    model_id = os.environ.get(MODEL_ID_ENV, "")
+    if not model_id:
         raise CohereParseNotConfigured(
-            f"{ENDPOINT_ENV}, {KEY_ENV} and {DEPLOYMENT_ENV} must all be set to use the "
-            f"{ENGINE_VALUE} OCR engine."
+            f"{MODEL_ID_ENV} must be set to use the {ENGINE_VALUE} OCR engine. "
+            "It is the Bedrock Marketplace endpoint ARN serving Cohere Parse 5 "
+            "— Bedrock's serverless catalogue has no Parse model (ADR-0022)."
         )
-    return endpoint, key, deployment
+    return model_id
 
 
 def _env_float(name: str, default: float) -> float:
@@ -329,72 +347,112 @@ _CLIENT_LOCK = threading.Lock()
 _CLIENT: Any = None
 _CLIENT_TIMEOUT: float | None = None
 
+#: Bedrock error codes that mean the request was rejected rather than the
+#: service being unavailable. Split out because they get different log
+#: levels: a denied call is an operator problem worth an ERROR, a throttle
+#: is weather. botocore has already exhausted its own retries by the time
+#: either reaches here.
+_DENIED_CODES = frozenset(
+    {"AccessDeniedException", "ResourceNotFoundException", "ValidationException"}
+)
 
-def _http_client():
-    """One pooled ``httpx.Client`` per process (parsing runs in a subprocess)."""
+
+def _bedrock_client():
+    """One cached ``bedrock-runtime`` client per (process, timeout).
+
+    Parsing runs in a subprocess, so this is per-subprocess. Rebuilt when
+    ``timeout_seconds()`` changes, mirroring the pooled httpx client this
+    replaced — page timeouts are configurable at runtime and a stale client
+    would silently keep the old one.
+    """
     global _CLIENT, _CLIENT_TIMEOUT
-    import httpx  # noqa: PLC0415
+    from app.services._bedrock import get_client  # noqa: PLC0415
 
     timeout = timeout_seconds()
     with _CLIENT_LOCK:
         if _CLIENT is None or timeout != _CLIENT_TIMEOUT:
-            _CLIENT = httpx.Client(timeout=timeout)
+            _CLIENT = get_client("bedrock-runtime", read_timeout_s=timeout)
             _CLIENT_TIMEOUT = timeout
         return _CLIENT
 
 
-def _post(url: str, headers: dict[str, str], body: dict[str, Any]):
-    """The single network seam; tests replace this."""
-    return _http_client().post(url, headers=headers, json=body)
+def _invoke(model_id: str, body: dict[str, Any]) -> bytes:
+    """The single network seam; tests replace this.
+
+    Returns the raw response body rather than a parsed dict so that a
+    transport failure and an undecodable payload stay distinguishable in
+    ``_parse_png`` — the Foundry version had that split and it is worth
+    keeping: "Bedrock refused the call" and "Bedrock answered with something
+    that is not JSON" want different operator responses.
+    """
+    import json  # noqa: PLC0415
+
+    resp = _bedrock_client().invoke_model(
+        modelId=model_id,
+        body=json.dumps(body),
+        accept="application/json",
+        contentType="application/json",
+    )
+    # botocore's StreamingBody is untyped, so the read() is Any; the cast
+    # keeps the declared return honest rather than widening it.
+    return cast("bytes", resp["body"].read())
 
 
-def _request_body(deployment: str, png_bytes: bytes) -> dict[str, Any]:
+def _request_body(png_bytes: bytes) -> dict[str, Any]:
+    """Cohere's own parse body, minus ``model`` — that moves to ``modelId``."""
     data_uri = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
     return {
-        "model": deployment,
         "document": {"type": "image_url", "image_url": {"url": data_uri}},
         "output_format": output_format(),
     }
 
 
 def _parse_png(png_bytes: bytes, *, log_page: int | None) -> PageOcrResult:
-    """POST one rendered page; fail soft on any error except NotConfigured."""
-    endpoint, key, deployment = _require_config()
-    url = endpoint.rstrip("/") + _PARSE_PATH
-    headers = {"api-key": key}
-    body = _request_body(deployment, png_bytes)
+    """Parse one rendered page; fail soft on any error except NotConfigured."""
+    model_id = _require_config()
+    body = _request_body(png_bytes)
     where = f" on page {log_page}" if log_page is not None else ""
 
-    def _do():
-        return _post(url, headers, body)
-
     try:
-        resp = with_foundry_retry(_do, label="foundry_parse")
-    except Exception as exc:  # noqa: BLE001
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        text = ""
+        raw = _invoke(model_id, body)
+    except Exception as exc:  # noqa: BLE001 — every failure falls back to tesseract
+        code = None
+        message = ""
         with contextlib.suppress(Exception):
-            text = (getattr(exc.response, "text", "") or "")[:200]  # type: ignore[attr-defined]
-        if status == 403:
+            error = getattr(exc, "response", {}).get("Error", {})  # type: ignore[union-attr]
+            code = error.get("Code")
+            message = (error.get("Message") or "")[:200]
+        if code in _DENIED_CODES:
+            # The Foundry equivalent of this branch was an HTTP 403, and it
+            # earned its ERROR level: Foundry blocked 1,421 of 2,524 calls on
+            # 2026-08-17 and nothing noticed. On Bedrock the same condition
+            # also shows up in the AWS/Bedrock InvocationClientErrors metric,
+            # which is alarmed — but the log line stays, because it is the
+            # only place the *page* and the *model id* appear together.
             logger.error(
-                "cohere_parse: HTTP 403%s — Foundry quota or key rejected for %s. "
-                "Falling back to tesseract. Error: %s",
+                "cohere_parse: %s%s — Bedrock rejected the call for %s. "
+                "Falling back to tesseract, which extracts no tables. Error: %s",
+                code,
                 where,
-                deployment,
-                text or exc,
+                model_id,
+                message or exc,
             )
         else:
-            logger.warning("cohere_parse: request failed%s: %s %s", where, exc, text)
+            logger.warning(
+                "cohere_parse: request failed%s: %s %s", where, exc, message
+            )
         return PageOcrResult(
             "",
             0.0,
             request_succeeded=False,
-            error=f"{status}: {text}" if status is not None else str(exc),
+            error=f"{code}: {message}" if code is not None else str(exc),
             confidence_reported=False,
         )
 
     try:
-        payload = resp.json()
+        import json  # noqa: PLC0415
+
+        payload = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
         logger.warning("cohere_parse: non-JSON response%s: %s", where, exc)
         return PageOcrResult(
@@ -605,10 +663,8 @@ def ocr_page_block_sync(
 
 
 __all__ = [
-    "DEPLOYMENT_ENV",
-    "ENDPOINT_ENV",
     "ENGINE_VALUE",
-    "KEY_ENV",
+    "MODEL_ID_ENV",
     "OCR_METHOD",
     "CohereParseNotConfigured",
     "OcrWord",

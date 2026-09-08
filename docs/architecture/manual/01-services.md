@@ -6,6 +6,26 @@
 > image and port facts were read from the service blocks, not from the
 > header comment (which is only partly corrected — see §8). Verify the
 > service list any time with `docker compose config --services`.
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> Everything this chapter says about the **dev stack** and about
+> **application behaviour** is unaffected and still accurate; only the
+> question of where production runs has changed.
+>
+> **The tables were rewritten on 2026-09-08**, not left under this notice:
+> §1's production column and the compose environment listings are what a
+> reader consults for a single fact, and several of them describe values
+> this change actually altered (`LLM_BACKEND`, `EMBEDDING_BACKEND`,
+> `RERANKER_BACKEND`, `STORAGE_BACKEND`, the OCR and embed variable
+> names). A stale default in a table is not a dated inaccuracy, it is a
+> wrong answer. The prose around them keeps its history.
+
 
 Companion chapters: [Ch 00](00-overview.md) for the profile map and the
 production topology, [Ch 02](02-data-stores.md) for what lives inside
@@ -16,24 +36,24 @@ each store, [Ch 07](07-orchestration.md) for the two orchestrators,
 
 ## 1. Tier overview
 
-| Tier | Service | Profile | Image | Host port | Azure Container App |
+| Tier | Service | Profile | Image | Host port | Production (ECS service) |
 |---|---|---|---|---|---|
-| Data (always on) | `postgresql` | *(none)* | `georag/postgres:18-ext` (local build) | none | `georag-pg-cc` (Azure Database for PostgreSQL Flexible Server, not a container) |
-| Data (always on) | `pgbouncer` | *(none)* | `edoburu/pgbouncer:v1.25.1-p0` | `6432` | none — apps connect to Flexible Server directly |
-| Data (always on) | `redis` | *(none)* | `redis:8.6.4-alpine` | `6379` | `redis-cc` |
-| Tiles (always on) | `martin` | *(none)* | `ghcr.io/maplibre/martin:1.11.0` | `3002` → 3000 | `martin-cc` |
-| Application | `laravel-octane` | `dev-light`, `dev-full` | `georag/laravel:latest` (local build) | `${APP_PORT:-80}` → 80 | `laravel-octane-cc` |
-| Application | `laravel-horizon` | `dev-light`, `dev-full` | `georag/laravel:latest` | none | `laravel-horizon-cc` |
-| Application | `laravel-reverb` | `dev-light`, `dev-full` | `georag/laravel:latest` | `8085` → 8080 | `laravel-reverb-cc` |
-| Domain service | `fastapi` | `dev-data`, `dev-full` | `georag/fastapi:latest` (local build) | `8000` | `fastapi-cc` |
-| Model sidecars | `reranker` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Rerank v4 on `georag-foundry-cc` |
-| Model sidecars | `embedding` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Embed v4 on `georag-foundry-cc` |
-| Model sidecars | `sparse` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — no sidecar app exists; SPLADE++ stays self-hosted in-process |
-| Data (profile) | `qdrant` | `dev-data`, `dev-full` | `qdrant/qdrant:v1.17.1` | `6333`, `6334` | `qdrant-cc` |
-| Data (profile) | `minio` (SeaweedFS) | `dev-data`, `dev-full` | `chrislusf/seaweedfs:4.35` | `8333` (S3), `8888` (filer) | none — Azure Blob `georagblobcc` (ADR-0020) |
+| Data (always on) | `postgresql` | *(none)* | `georag/postgres:18-ext` (local build) | none | RDS `georag-pg` (PostgreSQL 18, managed — not a container) |
+| Data (always on) | `pgbouncer` | *(none)* | `edoburu/pgbouncer:v1.25.1-p0` | `6432` | none — tasks connect to RDS directly |
+| Data (always on) | `redis` | *(none)* | `redis:8.6.4-alpine` | `6379` | `redis` (EFS at `/data`, AOF on) |
+| Tiles (always on) | `martin` | *(none)* | `ghcr.io/maplibre/martin:1.11.0` | `3002` → 3000 | `martin` |
+| Application | `laravel-octane` | `dev-light`, `dev-full` | `georag/laravel:latest` (local build) | `${APP_PORT:-80}` → 80 | `laravel-octane` — 2 tasks, the ALB's default target |
+| Application | `laravel-horizon` | `dev-light`, `dev-full` | `georag/laravel:latest` | none | `laravel-horizon` |
+| Application | `laravel-reverb` | `dev-light`, `dev-full` | `georag/laravel:latest` | `8085` → 8080 | `laravel-reverb` — behind an ALB listener rule with target-group stickiness |
+| Domain service | `fastapi` | `dev-data`, `dev-full` | `georag/fastapi:latest` (local build) | `8000` | `fastapi` — Cloud Map only, never the ALB |
+| Model sidecars | `reranker` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Rerank on Bedrock (**3.5**, not the v4 Foundry served) |
+| Model sidecars | `embedding` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Embed v4 on Bedrock |
+| Model sidecars | `sparse` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | **`sparse`** — SPLADE++ has no managed equivalent on any cloud, so it is a Fargate task (ADR-0022 decision 4) |
+| Data (profile) | `qdrant` | `dev-data`, `dev-full` | `qdrant/qdrant:v1.17.1` | `6333`, `6334` | `qdrant` (EFS — elastic and IAM-authorised, unlike the fixed-quota key-mounted Azure Files share) |
+| Data (profile) | `minio` (SeaweedFS) | `dev-data`, `dev-full` | `chrislusf/seaweedfs:4.35` | `8333` (S3), `8888` (filer) | none — S3, `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset so boto3 resolves the region and the task role (ADR-0022) |
 | Data (profile) | `minio-init` | `dev-data`, `dev-full` | `minio/mc:RELEASE.2025-08-13T08-35-41Z` | none | none |
-| Orchestration | `hatchet-lite` | `dev-data`, `dev-full` | `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12` | `8889` → 8888, `7077` | `hatchet-cc` |
-| Orchestration | `hatchet-worker` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none | `hatchet-worker-cc` |
+| Orchestration | `hatchet-lite` | `dev-data`, `dev-full` | `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12` | `8889` → 8888, `7077` | `hatchet` |
+| Orchestration | `hatchet-worker` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none | `hatchet-worker` — stops overnight at `desired-count 0`, which `--min-replicas 0` never did |
 
 Every third-party image except `hatchet-lite` carries an `@sha256` digest
 pin (captured 2026-04-19, refreshed in the 2026-06-23 sweep). The three
@@ -89,7 +109,7 @@ These four services have no `profiles:` key and start on a bare
 - **No WAL archive volume.** The base compose has no `archive_mode` and no
   `pg_wal_archive` volume; those live only in the
   `docker/compose.wal-archiving.yml` overlay (§6). Production relies on
-  Azure PITR (35 days).
+  the managed provider's PITR (35 days).
 - **Healthcheck** `pg_isready -U georag -d georag`, 10 s interval, 30 s
   start period. **Stop grace** 30 s. **Limits** 6 CPU / 16 GiB
   (reservation 10 GiB), `shm_size: 1gb`.
@@ -145,8 +165,9 @@ These four services have no `profiles:` key and start on a bare
   read-only from [docker/martin/martin.yaml](../../../docker/martin/martin.yaml).
 - **Database** `DATABASE_URL` points at `postgresql:5432` directly as
   `georag_app` (Martin holds persistent connections; transaction pooling
-  would break it). On Azure the app uses the `martin_readonly` credential
-  rotated by `deploy/azure/containerapps/rotate-martin-credential.sh`.
+  would break it). `martin_readonly` exists and is documented as the role
+  to use; the rotation script went with the Azure tree and has no successor
+  — see `ops/runbooks/secret-rotation.md`.
 - **Port** `${MARTIN_PORT:-3002}:3000`. Laravel proxies `/tiles/…`, so
   production needs no ingress on `martin-cc`.
 - **Depends on** `postgresql` healthy. **Healthcheck**
@@ -198,7 +219,7 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
   starts the `docker/horizon-health.php` listener on
   `HORIZON_HEALTH_PORT` (8080) and then `exec`s `php artisan horizon`, so
   Horizon is PID 1 and drains on SIGTERM. Compose could probe with
-  `horizon:status`, but Azure Container Apps only speaks HTTP/TCP, and dev
+  `horizon:status`, but the platform probe only speaks HTTP/TCP, and dev
   runs the same code path production does.
 - **Supervisors** from `config/horizon.php`: `supervisor-1` on queue
   `default` (3 processes in `local`, 10 in `production`) and
@@ -252,20 +273,26 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
   loader; `redis:6379`; `qdrant:6333`; object storage at
   `S3_ENDPOINT=http://minio:8333` with `S3_*`, `MINIO_*` and `AWS_*`
   aliases all set to the same values (`STORAGE_BACKEND` selects
-  `s3_compatible` here, `azure_blob` in production).
+  `s3_compatible` in both, differing only in whether an endpoint and credentials are set).
 - **Models and LLM**
-  - `LLM_BACKEND=${LLM_BACKEND:-azure}` with `AZURE_FOUNDRY_ENDPOINT` /
-    `API_KEY` / `DEPLOYMENT` (no defaults) and
-    `AZURE_FOUNDRY_MAX_MODEL_LEN=128000`. `VLLM_URL` has no default: the
-    old `http://vllm:8000/v1` named a deleted service. `ANTHROPIC_*` is
-    wired as the optional fallback (`claude-opus-4-8`, prompt caching on).
-  - `EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-foundry}` and
-    `RERANKER_BACKEND=${RERANKER_BACKEND:-foundry}`. `.env.example` sets
+  - `LLM_BACKEND=${LLM_BACKEND:-bedrock}` with `BEDROCK_REGION` and
+    `BEDROCK_CHAT_MODEL_ID` (no default — Command A+ is a Marketplace
+    endpoint that bills while it exists, so naming one here would be
+    guessing at a paid resource). There is no endpoint or key: boto3's
+    credential chain signs every call. `VLLM_URL` has no default either:
+    the old `http://vllm:8000/v1` named a deleted service. `ANTHROPIC_*`
+    is wired as the optional fallback (`claude-opus-4-8`, prompt caching
+    on). `LLM_BACKEND=azure` is a **startup error** naming its
+    replacement, not an ignored value.
+  - `EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-bedrock}` and
+    `RERANKER_BACKEND=${RERANKER_BACKEND:-bedrock}`. `.env.example` sets
     `local` / `cross_encoder`, which route to the sidecars through
     `EMBEDDING_SERVICE_URL=http://embedding:8000` and
-    `RERANKER_SERVICE_URL=http://reranker:8000`. `SPARSE_SERVICE_URL=
-    http://sparse:8000` always applies — SPLADE++ has no Foundry
-    equivalent.
+    `RERANKER_SERVICE_URL=http://reranker:8000`. `foundry` is rejected on
+    both, loudly, because falling through to the sidecar branch on a host
+    with no sidecar means a query path that retrieves nothing while
+    reporting success. `SPARSE_SERVICE_URL=http://sparse:8000` always
+    applies — SPLADE++ has no hosted equivalent anywhere.
   - `EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B` at a pinned revision,
     `EMBEDDING_DIMENSION=1024`; must match `embedding` and
     `hatchet-worker` exactly. Cohere Embed v4 is asked for 1024 dims so the
@@ -292,7 +319,7 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
 - **Depends on** `pgbouncer`, `redis`, `qdrant`, `minio`, `embedding`,
   `sparse` — all `service_healthy`. Not `reranker`: the orchestrator
   degrades to RRF order when it is absent. Note the sidecar dependencies
-  apply even when both backends are `foundry`, so a `dev-data` boot always
+  apply even when both backends are `bedrock`, so a `dev-data` boot always
   waits for the Qwen3 embedding and SPLADE models to load.
 - **Healthcheck** `curl -f http://localhost:8000/health`. **Stop grace**
   30 s. **Limits** 5 CPU / 16 GiB (reservation 5 GiB) plus a reserved
@@ -324,7 +351,7 @@ share the pattern:
 
 One gotcha: the sidecar reads the **same** `RERANKER_BACKEND` variable
 as the caller (`app/services/reranker.py`, module scope). With nothing in
-`.env`, compose gives the sidecar `qwen3_causal` and the caller `foundry`.
+`.env`, compose gives the sidecar `qwen3_causal` and the caller `bedrock`.
 With `.env.example`'s `cross_encoder`, both get `cross_encoder`: the
 caller proxies to the sidecar and the sidecar hosts `bge-reranker-base`
 instead of Qwen3. `RERANKER_MODEL_PATH` (a local LoRA candidate) is
@@ -351,8 +378,11 @@ honoured by both for A/B parity.
 
 - **Image** `chrislusf/seaweedfs:4.35` (digest-pinned). The service and
   container are still named `minio` so every `http://minio:…` reference
-  keeps resolving (ADR-0001). Production uses Azure Blob instead
-  (`STORAGE_BACKEND=azure_blob`, ADR-0020); no SeaweedFS runs on Azure.
+  keeps resolving (ADR-0001). Production uses S3 instead — the SAME
+  `STORAGE_BACKEND=s3_compatible` value, with endpoint and credentials
+  left unset so boto3 resolves the region endpoint and the ECS task role
+  (ADR-0022, superseding ADR-0020's `azure_blob`). No SeaweedFS runs in
+  production.
 - **Entrypoint** `sh /usr/local/bin/entrypoint.sh`, bind-mounted from
   [docker/seaweedfs/entrypoint.sh](../../../docker/seaweedfs/entrypoint.sh).
 - **Ports** `${S3_API_PORT:-8333}:8333` S3 API (was 9000 under MinIO),
@@ -423,9 +453,10 @@ honoured by both for A/B parity.
   sets `SEAWEEDFS_S3_ENDPOINT` defaulting to `http://minio:9000` — the old
   MinIO port — but nothing under `app/` reads that variable, so it is
   dead config rather than a bug.
-- **OCR / parsing** `OCR_ENGINE=cohere_parse` with
-  `AZURE_FOUNDRY_PARSE_DEPLOYMENT` (empty default raises the adapter's
-  NotConfigured error loudly), `COHERE_PARSE_TIMEOUT_S=120`,
+- **OCR / parsing** `OCR_ENGINE=cohere_parse` with `BEDROCK_REGION` and
+  `BEDROCK_PARSE_MODEL_ID` (empty default raises the adapter's
+  NotConfigured error loudly — unset means every page runs Tesseract with
+  no table structure and no error), `COHERE_PARSE_TIMEOUT_S=120`,
   `COHERE_PARSE_MAX_PIXELS=4000000`, `COHERE_PARSE_OUTPUT_FORMAT=blocks`,
   `PDF_PARSER_TESSERACT_FALLBACK_ENABLED=true`, `OCR_PAGES_PER_BATCH=8`,
   `OCR_MAX_PAGES_PER_DOC=300`, `PDF_PARSE_PAGE_WORKERS=4`,
@@ -434,13 +465,14 @@ honoured by both for A/B parity.
   `OCR_ROUTING_THRESHOLDS_JSON` carries hand-chosen bands with a
   `floor_tier: spot_check` for Cohere Parse pages; they are **not
   calibrated** (see the `.env.example` note).
-- **Embedding on the ingest path** `EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-foundry}`
-  with the `AZURE_FOUNDRY_EMBED_*` block, and the same
-  `EMBEDDING_MODEL_NAME` / revision / dimension as fastapi. The worker has
-  **no** `EMBEDDING_SERVICE_URL` or `SPARSE_SERVICE_URL`, so under
-  `local` it loads its own model copies in-process (hence the GPU
-  reservation); under `foundry` it calls Azure. Whatever `.env` sets must
-  match the fastapi service.
+- **Embedding on the ingest path** `EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-bedrock}`
+  with the `BEDROCK_EMBED_*` block, and the same `EMBEDDING_MODEL_NAME` /
+  revision / dimension as fastapi. The worker has **no**
+  `EMBEDDING_SERVICE_URL` or `SPARSE_SERVICE_URL`, so under `local` it
+  loads its own model copies in-process (hence the GPU reservation);
+  under `bedrock` it calls the API. Whatever `.env` sets must match the
+  fastapi service — a mismatch writes one vector space and queries
+  another.
 - **Required secrets** `HATCHET_CLIENT_TOKEN`,
   `EXTERNAL_NOTIFICATION_HMAC_SECRET`, `AUDIT_ENCRYPTION_KEY`,
   `FASTAPI_SERVICE_KEY`, `KESTRA_FLOW_JWT_SECRET` (same stale requirement
@@ -466,15 +498,15 @@ mention these. None is defined anywhere in the repo.
 
 | Service(s) | Removed | Replacement / why |
 |---|---|---|
-| `ollama` | 2026-05-17 | vLLM, then Azure AI Foundry |
+| `ollama` | 2026-05-17 | vLLM, then Azure AI Foundry, then Amazon Bedrock |
 | `neo4j`, `neo4j-warmup`, `neo4j_exporter` | 2026-07-28 | No knowledge graph (hard rule 9); Layer 4 graph half is fail-open |
 | `dagster-daemon`, `dagster-webserver` (`dev-ingest` profile) | 2026-07-28 (tree deleted 2026-08-28) | Hatchet `ingest_*` workflows + `promote_silver_to_gold` |
 | `kestra`, `caddy` | 2026-07-28 | Never live; Caddy existed only to front Kestra |
 | `activepieces` | Phase 3 | Sunset before Kestra |
-| `vllm`, `vllm-warmup` | 2026-07-30 | Azure AI Foundry (Cohere Command A+); `LLM_BACKEND=vllm` still accepted for an external endpoint |
+| `vllm`, `vllm-warmup` | 2026-07-30 | Azure AI Foundry, then Amazon Bedrock (Cohere Command A+ throughout); `LLM_BACKEND=vllm` still accepted for an external endpoint |
 | `hatchet-worker-ingestion`, `hatchet-worker-ai` | merged | One `hatchet-worker` with `WORKER_POOL=all` |
-| `otel-collector`, `tempo`, `prometheus`, `alertmanager`, `redis_exporter`, `postgres_exporter`, `loki`, `promtail`, `grafana` | by 2026-08-25 | Azure Monitor + Log Analytics in production; Laravel Pulse locally ([Ch 12](12-observability.md)) |
-| `ofelia`, `backup-agent` and the `backup_*` Hatchet workflows | 2026-08-23 | Azure PITR for Postgres; Qdrant is rebuildable; Blob is the one irreplaceable copy |
+| `otel-collector`, `tempo`, `prometheus`, `alertmanager`, `redis_exporter`, `postgres_exporter`, `loki`, `promtail`, `grafana` | by 2026-08-25 | Azure Monitor, then CloudWatch in production; Laravel Pulse locally ([Ch 12](12-observability.md)) |
+| `ofelia`, `backup-agent` and the `backup_*` Hatchet workflows | 2026-08-23 | RDS automated backups for Postgres; Qdrant is rebuildable; object storage now has S3 versioning, where on Azure it was the one irreplaceable copy |
 | `martin` | removed with the demo services, **restored 2026-08-25** | still here — listed in §2 |
 
 ---

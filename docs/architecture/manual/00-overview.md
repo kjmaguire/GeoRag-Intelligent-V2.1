@@ -5,7 +5,12 @@
 > code and the manual disagree, the code wins — open an issue and fix the
 > manual.
 >
-> **Reconciled 2026-09-07 against `main`.** This chapter describes the stack
+> **Reconciled 2026-09-07 against `main`; §3 rewritten 2026-09-08 for the
+> AWS move ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Chapters 01, 02, 07, 08 and 12 still describe Azure Container Apps in
+> their production columns and carry their own dated notice; they are
+> accurate about the dev stack and about every application-level fact, and
+> historical about where production runs. This chapter describes the stack
 > as it exists today. The manual was first written against the pre-July-2026
 > stack, and several chapters still describe services that were removed
 > between 2026-07-28 and 2026-08-23 (Neo4j, Dagster, Kestra, Caddy, the
@@ -18,8 +23,8 @@
 > [CLAUDE.md](../../../CLAUDE.md) (the hard rules and the technology
 > snapshot, read on every agent turn), `docs/adr/*` (decision records),
 > `docs/RUNBOOK.md` (operator procedures that touch encrypted data or shared
-> secrets), `ops/runbooks/azure-oncall.md` (production on-call) and
-> `deploy/azure/README.md` (Container Apps topology). `docs/SERVICE_INVENTORY.md`
+> secrets), `ops/runbooks/aws-oncall.md` (production on-call) and
+> `deploy/aws/README.md` (ECS topology). `docs/SERVICE_INVENTORY.md`
 > was last refreshed 2026-05-14 and still lists 24 containers; treat it as
 > history until it is redone.
 
@@ -49,9 +54,12 @@ The repo is a single monorepo containing:
 - Three **model sidecars** built from the same FastAPI image
   ([docker-compose.yml](../../../docker-compose.yml) `reranker`, `embedding`,
   `sparse`): Qwen3-Reranker-0.6B on the one GPU, Qwen3-Embedding-0.6B and
-  SPLADE++ on CPU. In production the dense embedder and reranker are Azure
-  AI Foundry (Cohere Embed v4 / Rerank v4, [ADR-0021](../../adr/0021-foundry-embed-rerank-replace-self-hosted-models.md));
-  SPLADE++ has no Foundry equivalent and stays self-hosted either way.
+  SPLADE++ on CPU. In production the dense embedder and reranker are
+  Amazon Bedrock (Cohere Embed v4 / **Rerank 3.5** — Bedrock does not serve
+  v4, [ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md),
+  superseding [ADR-0021](../../adr/0021-foundry-embed-rerank-replace-self-hosted-models.md));
+  SPLADE++ has no hosted equivalent anywhere and runs as its own `sparse`
+  service in production.
 - A **Hatchet** workflow engine (`hatchet-lite`) with one merged Python
   worker (`hatchet-worker`, `WORKER_POOL=all`,
   [worker.py](../../../src/fastapi/app/hatchet_workflows/worker.py)) for
@@ -70,15 +78,18 @@ The repo is a single monorepo containing:
 - A row of **data stores**: PostgreSQL 18 + PostGIS 3.6 behind PgBouncer
   (transaction mode), Qdrant 1.17 for dense + sparse vector retrieval, Redis
   8 for sessions / queues / caches / rate limits, and an S3-compatible
-  object store for bronze files — SeaweedFS in compose, Azure Blob in
-  production, one `STORAGE_BACKEND` switch
-  ([ADR-0001](../../adr/), [ADR-0020](../../adr/0020-azure-blob-replaces-seaweedfs-in-production.md)).
-- **Azure AI Foundry** for the LLM (Cohere Command A+ via the OpenAI v1
-  chat-completions surface; Anthropic Claude wired as optional fallback) and
-  for scanned-page OCR (Cohere Parse v5,
-  [ADR-0019](../../adr/)). There is no LLM container in the stack;
-  `LLM_BACKEND=vllm` remains a supported value for operators pointing at
-  their own OpenAI-compatible endpoint.
+  object store for bronze files — SeaweedFS in compose, AWS S3 in
+  production, both through the one `STORAGE_BACKEND` value that remains
+  ([ADR-0001](../../adr/); [ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)
+  supersedes [ADR-0020](../../adr/0020-azure-blob-replaces-seaweedfs-in-production.md)).
+  Production credentials come from the ECS task role, not from a key.
+- **Amazon Bedrock** for the LLM (Cohere Command A+ through the Converse
+  API on a Marketplace endpoint; Anthropic Claude wired as optional
+  fallback) and for scanned-page OCR (Cohere Parse 5, also a Marketplace
+  endpoint — [ADR-0019](../../adr/) chose the model, ADR-0022 moved the
+  host). There is no LLM container in the stack; `LLM_BACKEND=vllm` remains
+  a supported value for operators pointing at their own OpenAI-compatible
+  endpoint, and `LLM_BACKEND=azure` is now a startup error.
 - A **Martin 1.11** tile server ([docker/martin/martin.yaml](../../../docker/martin/martin.yaml))
   that serves PostGIS function/table sources as Mapbox Vector Tiles to
   MapLibre.
@@ -120,28 +131,52 @@ compatibility — see ADR-0001), `minio/mc` for bucket provisioning,
 and `georag/fastapi` ([docker/laravel.Dockerfile](../../../docker/laravel.Dockerfile),
 [docker/fastapi.Dockerfile](../../../docker/fastapi.Dockerfile)).
 
-## 3. Production topology — Azure Container Apps
+## 3. Production topology — Amazon ECS Fargate
 
-Production is Azure Container Apps in resource group `georag`, no GPU
-(architecture doc §07-azure, [deploy/azure/README.md](../../../deploy/azure/README.md)):
+**Moved from Azure Container Apps to AWS on 2026-09-08
+([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)),
+because the Azure credits ran out. No data came across — Postgres, Qdrant,
+Redis and object storage all started empty — which is why the embedding
+vector space and the `georag_chunks` collection could be recreated for
+free.** The full plan, including what each decision cost, is
+[deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
 
-- Nine apps: `laravel-octane-cc`, `laravel-horizon-cc`, `laravel-reverb-cc`,
-  `fastapi-cc`, `hatchet-cc`, `hatchet-worker-cc`, `qdrant-cc`, `redis-cc`,
-  `martin-cc`.
-- Azure Database for PostgreSQL Flexible Server `georag-pg-cc` (PgBouncer is
-  compose-only), Azure Blob storage account `georagblobcc`, Azure AI Foundry
-  `georag-foundry-cc` for LLM, embeddings, reranking and OCR.
-- Two Container Apps Jobs, `shutdown-scheduler-cc` / `startup-scheduler-cc`,
-  stop and start the stack nightly; their inline bodies are generated from
-  [deploy/azure/containerapps/scripts/](../../../deploy/azure/containerapps/scripts/)
-  and checked by `scripts/check_scheduler_job_parity.py`.
+Production is ECS Fargate, cluster `georag`, no GPU
+([deploy/aws/README.md](../../../deploy/aws/README.md)):
+
+- Ten services: `laravel-octane` (the only public one, behind an ALB, and
+  the only one at desired 2), `laravel-horizon`, `laravel-reverb`,
+  `fastapi`, `hatchet`, `hatchet-worker` (4 vCPU / 8 GiB, desired 1),
+  `qdrant`, `redis`, `martin`, and `sparse` — the SPLADE++ sidecar, which
+  is new to production because the sparse leg of hybrid retrieval has no
+  managed equivalent anywhere.
+- RDS for PostgreSQL 18 `georag-pg` (PgBouncer is still compose-only), EFS
+  for Qdrant and Redis, four S3 buckets, and **Amazon Bedrock** for LLM,
+  embeddings, reranking and OCR. Chat (Cohere Command A+) and OCR (Cohere
+  Parse 5) are Bedrock **Marketplace** endpoints rather than serverless
+  models, because Bedrock's serverless Cohere catalogue carries neither.
+- Two EventBridge schedules stop and start the stack nightly at 23:00 and
+  06:00 US-Pacific, running the sweeps in
+  [deploy/aws/scheduler/](../../../deploy/aws/scheduler/). EventBridge is
+  timezone-aware, so the Azure-era double-fire plus in-script DST guard is
+  gone — one schedule, one fire, no guard.
 - CD ([.github/workflows/cd.yml](../../../.github/workflows/cd.yml)) builds
-  the two images and runs `laravel-migrate-job`, nothing else. Everything
-  under `deploy/azure/` is applied by hand.
-- Monitoring is Azure Monitor + Log Analytics with a single email receiver
-  (`georag-alerts-ag`). There are no latency alerts and no paging.
+  the three images, runs migrations **and `db:apply-raw`**, and rolls each
+  service. Everything else is Terraform in
+  [deploy/aws/terraform/](../../../deploy/aws/terraform/) — unlike Azure,
+  where there was no IaC at all and ~55 environment variables per app were
+  set by hand.
+- Monitoring is CloudWatch Logs, metric filters over the marker lines, and
+  alarms to an SNS topic with a single email receiver. There are still no
+  latency alerts and no paging.
 
-The on-prem / air-gapped target is the Helm chart at
+Three things the move fixed rather than reproduced: Redis has persistence
+for the first time (AOF on, EFS volume — `redis-cc` had neither), Qdrant no
+longer sits behind an account-key mount with a fixed quota, and bronze has
+versioning and retention where it previously had no backup and no restore
+procedure at all.
+
+The on-prem / air-gapped target is still the Helm chart at
 [charts/georag/](../../../charts/georag/).
 
 ## 4. Request shape, end‑to‑end (dev ports)
@@ -161,7 +196,7 @@ The on-prem / air-gapped target is the Helm chart at
                                 │ fastapi :8000             │ ← LangGraph agentic retrieval,
                                 │ (uvicorn, 3 workers)      │   §04i guards, persist_node
                                 └─┬────┬────┬────┬────┬─────┘
-        ┌─────────────┬───────────┘    │    │    │    └──────────── Azure AI Foundry (LLM, OCR;
+        ┌─────────────┬───────────┘    │    │    │    └──────────── Amazon Bedrock (LLM, OCR;
         ▼             ▼                ▼    ▼    ▼                    embed + rerank in prod)
   ┌──────────┐  ┌──────────┐  ┌───────┐ ┌───────┐ ┌────────────────────┐
   │pgbouncer │  │ qdrant   │  │ redis │ │ minio │ │ reranker/embedding/│ (dev only, each :8000)
@@ -199,7 +234,7 @@ previous key during rotation (`ops/runbooks/secret-rotation.md`).
 | **Hatchet pools** | `WORKER_POOL` selects the workflow set the single `hatchet-worker` registers: `ingestion`, `ai`, or `all` (default, and what both compose and production run). There is no separate ingestion or AI worker service. |
 | **Reverb channels** | Laravel WebSocket channels ([routes/channels.php](../../../routes/channels.php)): `query.{queryId}` (answer streaming), `workspace.{workspaceId}.activity`, `project.{projectId}.ingestion`, and the `admin.*` channels. |
 | **FASTAPI_SERVICE_KEY** | Shared secret on the `X-Service-Key` header between Laravel ↔ FastAPI and the Hatchet worker ↔ Laravel. Previous-key acceptance on both sides makes rotation zero-downtime. |
-| **martin_readonly** | The read‑only Postgres role Martin uses in production (`deploy/azure/containerapps/rotate-martin-credential.sh`). In compose Martin connects as `georag_app` directly on 5432. |
+| **martin_readonly** | The read‑only Postgres role Martin uses in production; created by migration `2026_04_22_130000_create_silver_mvt_functions.php`, with EXECUTE on the `silver.pg_*` tile functions and nothing else. In compose Martin connects as `georag_app` directly on 5432. |
 
 ## 6. The nine hard rules (from CLAUDE.md)
 
@@ -229,17 +264,17 @@ was **not** re-derived.
 |---|---|
 | 00 Overview | this file — profile map, images, production apps, request shape |
 | 01 Services | the 16 compose services, the removed-service table, three overlays, stale compose comments |
-| 02 Data stores | dev and Azure side by side; roles, namespaces, the as-built backup posture |
+| 02 Data stores | dev and production side by side; roles, namespaces, the as-built backup posture *(production column predates ADR-0022)* |
 | 03 Schemas | writer attributions corrected (`promote_silver_to_gold`, not Dagster assets); `backend_used` CHECK; `gold.h3_density_mineral` has **no writer** |
 | 04 Ingestion flow | six Hatchet ingest workflows, not a Dagster path; the gold tables had no writer for a month; the outbox is not on the ingest path |
 | 05 PDF stack | pdfminer.six + pdfplumber (PyMuPDF removed on licence grounds); parsers moved to `georag_geoparsers`; SEG-Y and Word ingest are gone |
 | 06 Retrieval + agents | graph tools removed; support-cockpit trace sources corrected |
 | 07 Orchestration | Horizon's three jobs, the 51-workflow registry with every cron, the schedulers, the 2026-08-21 review findings |
-| 08 LLM + ML | Azure AI Foundry as the default backend; Embed v4 / Rerank v4; SPLADE++ has no Foundry equivalent |
+| 08 LLM + ML | the hosted backend as default; Embed v4 / Rerank; SPLADE++ has no hosted equivalent *(host predates ADR-0022)* |
 | 09 Martin + MapLibre | nothing scrapes Martin's `/metrics`; no alert replaced the deleted rules |
 | 10 Frontend | **sixteen pages exist**, not the eighty this chapter listed; no admin console, no dashboards, no React Flow |
 | 11 Tenancy + RLS | the Kestra and Caddy auth hops are gone; the per-flow JWT machinery has no caller |
-| 12 Observability | JSON logs into Log Analytics, two unscraped metrics endpoints, trace ids without span export, the alert inventory |
+| 12 Observability | JSON logs, two unscraped metrics endpoints, trace ids without span export, the alert inventory *(log backend predates ADR-0022)* |
 | 13 Data hierarchy | graph filtering removed; the category tables are still planned |
 | 14 Status matrix | services, workflows, agents and pages re-read from the code; the Dagster asset section replaced by what took each family over |
 | 15 Design docs index | per-document verdicts were already maintained; one follow-up closed |
@@ -270,11 +305,11 @@ lists them.
 5. [Ch 05 — PDF stack §04p](05-pdf-stack.md) — the in-process parser stack.
 6. [Ch 06 — Retrieval + agents](06-retrieval-and-agents.md) — LangGraph, OIUR, intents, tools, persistence.
 7. [Ch 07 — Orchestration](07-orchestration.md) — Horizon vs Hatchet *(pending rewrite)*.
-8. [Ch 08 — LLM + ML models](08-llm-and-ml.md) — Foundry, embedder, reranker, SPLADE++.
+8. [Ch 08 — LLM + ML models](08-llm-and-ml.md) — the hosted backend, embedder, reranker, SPLADE++.
 9. [Ch 09 — Martin + MapLibre](09-martin-and-maplibre.md) — tiles, MVT functions.
 10. [Ch 10 — Frontend](10-frontend.md) — pages, components, broadcast channels.
 11. [Ch 11 — Tenancy + RLS](11-tenancy-and-rls.md) — workspaces, GUC, JWTs.
-12. [Ch 12 — Observability](12-observability.md) — Azure Monitor, Pulse *(pending rewrite)*.
+12. [Ch 12 — Observability](12-observability.md) — logs, markers, alarms, Pulse *(production surfaces pending rewrite)*.
 13. [Ch 13 — Data hierarchy](13-data-hierarchy.md) — geologist-facing classification.
 14. [Ch 14 — Status matrix](14-status-matrix.md) — "is this thing real today?"
 15. [Ch 15 — Design docs index](15-design-docs-index.md) — plan intent vs shipped.

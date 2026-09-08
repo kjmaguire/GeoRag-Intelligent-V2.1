@@ -1761,14 +1761,17 @@ async def search_documents(
 
     Stage 2 — Cross-encoder reranking (when reranker is available):
       Each (query, chunk.text) pair is scored by the configured reranker
-      backend (RERANKER_BACKEND — live default "foundry", Cohere Rerank v4;
+      backend (RERANKER_BACKEND — live default "bedrock", Cohere Rerank 3.5;
       "cross_encoder"/"qwen3_causal" for the self-hosted fallback).
       Candidates are sorted by score descending; only the top RERANKER_TOP_K
       (12) survive.  The score threshold is backend-aware:
       RERANKER_SCORE_THRESHOLD (0.0, sign check) for cross_encoder/
-      qwen3_causal's unbounded logits, or RERANKER_SCORE_THRESHOLD_FOUNDRY
-      (0.2) for foundry's calibrated [0,1] Cohere relevance_score — the two
-      scales are not comparable, so a single threshold cannot gate both.
+      qwen3_causal's unbounded logits, or RERANKER_SCORE_THRESHOLD_HOSTED
+      (0.2) for the hosted backend's calibrated [0,1] Cohere relevance score —
+      the two scales are not comparable, so a single threshold cannot gate
+      both. That 0.2 was measured against Rerank **v4** on Foundry and is
+      carried over unvalidated to Rerank **3.5** on Bedrock; re-measure it on
+      the golden set (ADR-0022).
       The reranker score replaces the raw Qdrant cosine in the returned
       relevance_score field.
 
@@ -1777,7 +1780,8 @@ async def search_documents(
     NOT apply RETRIEVAL_QUALITY_THRESHOLD: that is a calibrated [0,1] gate
     and these are rank-derived fusion scores. Until 2026-08-21 it did, which
     meant that the moment the reranker was unavailable — an unset
-    AZURE_FOUNDRY_API_KEY is enough — every document query in the system
+    a Bedrock model id the region does not serve is enough — every
+    document query in the system
     returned zero chunks and the agent answered "insufficient information"
     about a corpus that plainly contained the answer.
 
@@ -2037,11 +2041,11 @@ async def search_documents(
         # Latency-fix follow-up — pre-truncate body text so the reranker's
         # tokeniser doesn't walk a 5 kB chunk just to discard everything
         # past the model's 512-token max. ~2000 chars (~500 tokens) is the
-        # safe budget under bge-reranker-base. Foundry (Cohere Rerank v4)
+        # safe budget under bge-reranker-base. The hosted Cohere reranker
         # accepts ~4096-token documents, so it gets a wider 8000-char
         # budget instead of the bge-era default.
         _budget = (
-            8000 if RERANKER_BACKEND == "foundry"
+            8000 if RERANKER_BACKEND == "bedrock"
             else settings.RERANKER_INPUT_CHAR_BUDGET
         )
         pairs = [(query_text, (c.text or "")[:_budget]) for c in chunks]
@@ -2090,10 +2094,10 @@ async def search_documents(
             # Cross-encoder/qwen3_causal backends output raw logits
             # (unbounded real numbers) and need a sigmoid transform to land
             # in the [0, 1] range Citation.relevance_score requires. The
-            # foundry backend (_FoundryReranker, Cohere Rerank v4) instead
-            # returns Cohere's own relevance_score, which is ALREADY a
+            # bedrock backend (_BedrockReranker, Cohere Rerank 3.5) instead
+            # returns Cohere's own relevance score, which is ALREADY a
             # calibrated [0, 1] probability — sigmoiding an already-[0,1]
-            # value a second time compresses every foundry score into
+            # value a second time compresses every hosted score into
             # roughly [0.5, 0.73], silently corrupting every downstream
             # min_relevance gate (the §04i Layer-1 retrieval-quality check)
             # since those thresholds (0.5-0.6) assume a real [0,1]
@@ -2108,22 +2112,23 @@ async def search_documents(
             import math
 
             raw_scores: list[float] = [float(s) for s in scores]
-            needs_sigmoid = RERANKER_BACKEND != "foundry"
+            needs_sigmoid = RERANKER_BACKEND != "bedrock"
 
             # Pair chunks with raw scores, threshold, sort, top-K.
             #
             # The threshold must be backend-aware (2026-08-15 audit fix):
             # cross_encoder/qwen3_causal emit unbounded real-valued logits
             # (~[-15,+15]) where RERANKER_SCORE_THRESHOLD's 0.0 default is a
-            # meaningful sign check ("any positive logit passes"). foundry's
-            # raw_scores are ALREADY Cohere's calibrated [0,1]
-            # relevance_score (never negative — see needs_sigmoid above), so
+            # meaningful sign check ("any positive logit passes"). The
+            # hosted backend's raw_scores are ALREADY Cohere's calibrated
+            # [0,1] relevance score (never negative — see needs_sigmoid
+            # above), so
             # gating those against the same 0.0 default was a no-op that let
             # every candidate through regardless of actual relevance.
             pre_threshold_count = len(chunks)
             min_score = (
-                settings.RERANKER_SCORE_THRESHOLD_FOUNDRY
-                if RERANKER_BACKEND == "foundry"
+                settings.RERANKER_SCORE_THRESHOLD_HOSTED
+                if RERANKER_BACKEND == "bedrock"
                 else settings.RERANKER_SCORE_THRESHOLD
             )
             paired = [
@@ -2204,8 +2209,9 @@ async def search_documents(
         )
 
     # No reranker at all — get_reranker_or_none() returned None. That is not
-    # an exotic state: RERANKER_BACKEND=foundry with an unset or unresolved
-    # AZURE_FOUNDRY_API_KEY lands here, as does any local model load failure.
+    # an exotic state: RERANKER_BACKEND=bedrock with an empty
+    # BEDROCK_RERANK_MODEL_ID lands here, as does any local model load
+    # failure.
     #
     # This used to call filter_by_quality(chunks, RETRIEVAL_QUALITY_THRESHOLD).
     # `chunk.relevance_score` on this path is `float(point.score)` straight

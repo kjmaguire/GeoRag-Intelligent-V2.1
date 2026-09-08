@@ -5,35 +5,88 @@
 > `app/services/reranker.py`, `app/services/sparse_encoder.py`,
 > `docker-compose.yml` and `.env.production.example`. The previous version
 > opened with a self-hosted vLLM server as the LLM tier; that service was
-> deleted on 2026-07-30 and the default backend is Azure AI Foundry.
+> deleted on 2026-07-30, and the default backend became Azure AI Foundry
+> (then Amazon Bedrock on 2026-09-08).
 > Sections 7 and 8 pointed into `src/dagster/`, deleted 2026-08-28.
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> **§1, §2 and §3 were rewritten on 2026-09-08.** Ch 18 names this
+> chapter as the authority on the current model stack — "where the two
+> disagree, Ch 08 wins" — and the model tier is precisely what the cloud
+> move changed. A dated notice on a chapter other chapters defer to is not
+> enough. What is deliberately KEPT is the Foundry wire contract, marked
+> as history, because three of its behaviours were confirmed empirically
+> and their Bedrock counterparts have not been: knowing what was verified
+> where is the point.
+
 
 Every model the system runs, by **kind** and **where it executes**.
 
-| Role | Dev (compose) | Production (Azure) |
+A model VERSION changed at the move, not just a host, so read the reranker
+row carefully.
+
+| Role | Dev (compose) | Production (AWS, since 2026-09-08) |
 |---|---|---|
-| LLM | Azure AI Foundry, Cohere Command A+ | same |
-| Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | Foundry, Cohere Embed v4 |
-| Reranker | `reranker` sidecar, Qwen3-Reranker-0.6B (GPU) | Foundry, Cohere Rerank v4 |
-| Sparse | `sparse` sidecar, SPLADE++ (CPU) | **self-hosted or absent — no Foundry equivalent** |
-| Scanned-page OCR | Cohere Parse v5 on Foundry, Tesseract fallback | same |
+| LLM | Amazon Bedrock, Cohere Command A+ | same — but a Bedrock **Marketplace** endpoint, not serverless: Bedrock's serverless Cohere generative catalogue is Command R/R+ (legacy) |
+| Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | Bedrock, Cohere Embed v4 (1024-dim) |
+| Reranker | `reranker` sidecar, Qwen3-Reranker-0.6B (GPU) | Bedrock, Cohere **Rerank 3.5** — NOT v4, which Bedrock does not serve |
+| Sparse | `sparse` sidecar, SPLADE++ (CPU) | **the `sparse` service — no hosted equivalent anywhere, on Bedrock or Cohere's own API** |
+| Scanned-page OCR | Cohere Parse 5 on Bedrock, Tesseract fallback | same — also a Marketplace endpoint; Bedrock's serverless catalogue has no Parse model at all |
 
-## 1. The LLM tier — Azure AI Foundry
+⚠️ **The reranker dropped a major version, and it matters.**
+`RERANKER_SCORE_THRESHOLD_HOSTED` (0.2, renamed from `_FOUNDRY`) was
+measured against Rerank **v4** on 2026-08-15 and is the only
+retrieval-quality gate in the system (hard rule 5, as built). It is carried
+over to 3.5 **unvalidated** and must be re-measured on the golden set: too
+low and it stops filtering, too high and the refusal rate climbs, and
+neither shows up in any metric anything scrapes.
 
-`LLM_BACKEND` selects the backend: **`azure`** (default) | `vllm` |
-`anthropic`. There is no `foundry` value for the LLM — that word is only
-used by `EMBEDDING_BACKEND` and `RERANKER_BACKEND`.
+⚠️ **Page-image verbalization has no replacement.** `gpt-5-mini` was an
+Azure OpenAI model on the Foundry resource, and unlike everything else in
+this table it was never a Cohere model — so "keep the model, change the
+host" does not apply. `page_vision_client` reports itself unconfigured
+until a Bedrock vision model is chosen. The feature is gated behind
+`IMAGE_VERBALIZATION_ENABLED` and has never run in production (§1.4).
 
-### 1.1 Azure (the default)
+## 1. The LLM tier — Amazon Bedrock
+
+`LLM_BACKEND` selects the backend: **`bedrock`** (default) | `vllm` |
+`anthropic`. `azure` is a **startup error** naming its replacement, not an
+ignored value, and so is any leftover `AZURE_FOUNDRY_*` variable: a
+deployment that was never repointed carries well-formed settings addressing
+a resource that no longer exists, which would otherwise start cleanly and
+die at the first query.
+
+### 1.1 Bedrock (the default)
 
 | Field | Value |
 |---|---|
-| Deployment | `Cohere-command-a-plus-05-2026` (Preview), dev and prod |
-| Wire API | the unified **OpenAI v1** surface: `{AZURE_FOUNDRY_ENDPOINT}/openai/v1/chat/completions` |
-| Model field | `AZURE_FOUNDRY_DEPLOYMENT`, sent as the OpenAI `model` |
-| Streaming | SSE, forwarded by FastAPI as `status`/`bind`/`delta`/`citation`/`completed`/`failed` frames |
+| Model | Cohere Command A+, on a Bedrock **Marketplace** endpoint — Bedrock's serverless Cohere generative catalogue is Command R/R+ (legacy), not this model |
+| Wire API | `bedrock-runtime` **Converse** / **ConverseStream**, signed with SigV4. No base URL and no API key; boto3 resolves the endpoint from `BEDROCK_REGION` and the credentials from the ECS task role |
+| Model field | `BEDROCK_CHAT_MODEL_ID`, the endpoint ARN. **No default** — naming one would be guessing at a resource that bills while it exists |
+| Streaming | ConverseStream, forwarded by FastAPI as `status`/`bind`/`delta`/`citation`/`completed`/`failed` frames — unchanged |
 
-The wire contract was confirmed empirically against a live deployment on
+Two shapes differ from every OpenAI-compatible backend and are easy to get
+wrong silently: `system` is a **top-level parameter** in Converse, not a
+message with `role: "system"` (a system message sent as a user turn still
+produces plausible output), and the request is capped so
+`prompt_tokens + max_tokens` cannot exceed `BEDROCK_CHAT_MAX_MODEL_LEN` —
+Bedrock answers 400 rather than truncating, so an over-long request fails
+after paying to build the prompt.
+
+`app/config.py`'s `BEDROCK_*` block is the authority. `effective_llm_url`
+raises for `bedrock` as well as `anthropic`, and for the same reason:
+neither has an OpenAI-shaped base URL to resolve.
+
+#### What was verified on Foundry, and is NOT verified here
+
+The Foundry contract was confirmed empirically against a live deployment on
 2026-07-30, including three things a reader would not assume:
 
 - JSON `response_format` is supported.
@@ -42,9 +95,12 @@ The wire contract was confirmed empirically against a live deployment on
 - Cohere wraps JSON output in `<|START_TEXT|>` / `<|END_TEXT|>` sentinel
   tokens, which the client strips.
 
-`app/config.py`'s `AZURE_FOUNDRY_*` block is the authority; `effective_llm_url`
-resolves the base URL per backend and raises for `anthropic`, which does not
-use an OpenAI-shaped URL.
+**None of the three was re-verified on Bedrock.** `app/agent/llm_bedrock.py`
+is written to tolerate either shape — it strips the sentinels
+unconditionally and handles both Converse's `reasoningContent` blocks and
+the Foundry-era sibling field — but tolerance is not knowledge.
+`ops/validation/bedrock_probe.py` exists to close this, and ADR-0022 makes
+its committed report the gate on trusting any of these adapters.
 
 ### 1.2 vLLM (still supported, no longer shipped)
 
@@ -90,14 +146,17 @@ immediately otherwise. See [Ch 05](05-pdf-stack.md).
 **Classification:** ML model (one forward pass per chunk). 1024-dim, cosine,
 matching the `georag_chunks` collection ([Ch 02 §2.2](02-data-stores.md)).
 
-`EMBEDDING_BACKEND` is **`foundry` by default in code and in compose** since
-2026-09-06, so an unset value on an Azure app selects Cohere Embed v4 rather
-than a model host that does not exist there. `.env.example` sets `local`
-explicitly to use the dev sidecar.
+`EMBEDDING_BACKEND` is **`bedrock` by default in code and in compose** since
+2026-09-08, so an unset value on a production task selects Cohere Embed v4
+rather than a model host that does not exist there. `.env.example` sets
+`local` explicitly to use the dev sidecar. `foundry` — the default between
+2026-09-06 and 2026-09-08 — now RAISES rather than falling through to the
+sidecar branch, because on a host with no sidecar that fall-through means a
+query path that retrieves nothing while reporting success.
 
 | Backend | Path |
 |---|---|
-| `foundry` | `POST {endpoint}/providers/cohere/v2/embed`, Embed v4 asked for 1024-dim output — verified live 2026-07-30 ([`services/embedding.py`](../../../src/fastapi/app/services/embedding.py)) |
+| `bedrock` | `bedrock-runtime.invoke_model`, Cohere Embed v4 asked for 1024-dim output ([`services/embedding.py`](../../../src/fastapi/app/services/embedding.py)). **Wire shape unverified** — the Foundry path was confirmed live on 2026-07-30, this one has not been; run `ops/validation/bedrock_probe.py` |
 | `local` | the `embedding` sidecar, `Qwen/Qwen3-Embedding-0.6B` pinned at revision `97b0c614`, reached over `EMBEDDING_SERVICE_URL` |
 
 The sidecar exists because six uvicorn workers each loaded their own
@@ -114,12 +173,17 @@ vector spaces do not. `scripts/reset_embeddings_for_reencode.py` is the tool.
 
 **Classification:** ML model.
 
-`RERANKER_BACKEND` also defaults to `foundry`.
+`RERANKER_BACKEND` also defaults to `bedrock`, and `foundry` is likewise
+rejected at startup.
 
 | Backend | Path |
 |---|---|
-| `foundry` | `POST {endpoint}/providers/cohere/v2/rerank`, Rerank v4, scores all N documents in one call — verified live 2026-07-30 ([`services/reranker.py`](../../../src/fastapi/app/services/reranker.py)) |
+| `bedrock` | the **`bedrock-agent-runtime` Rerank API** — not `InvokeModel`, and not Cohere's own `/v2/rerank` surface. Scores come back as `relevanceScore`, not `relevance_score`. Cohere **Rerank 3.5**, scoring all N documents in one call ([`services/reranker.py`](../../../src/fastapi/app/services/reranker.py)). **Wire shape unverified** |
 | `cross_encoder` / `qwen3_causal` | the `reranker` sidecar, `Qwen/Qwen3-Reranker-0.6B` — a CausalLM returning a yes/no token-logit ratio behind a CrossEncoder-shaped interface |
+
+⚠️ Foundry served Rerank **v4**; Bedrock serves **3.5**. See the version
+warning at the top of this chapter — `RERANKER_SCORE_THRESHOLD_HOSTED` was
+measured against v4 and is the only retrieval-quality gate in the system.
 
 A degraded reranker is not silent: `georag_rerank_degraded_total` counts
 calls that returned RRF-ordered results because the reranker timed out or
@@ -143,9 +207,12 @@ exists; nothing writes it.
   sparse vector on `georag_chunks`** — not a separate collection
   ([Ch 02 §2.2](02-data-stores.md)).
 - One of the retrieval legs fused in `services/fusion.py` (RRF or DBSF).
-- **Sparse has no Foundry equivalent.** Whichever backend the dense side
-  uses, SPLADE++ is self-hosted or the sparse leg is simply absent — the
-  single most important asymmetry in the production model stack.
+- **Sparse has no hosted equivalent anywhere** — not on Foundry, not on
+  Bedrock, not on Cohere's own API. Whichever backend the dense side uses,
+  SPLADE++ is self-hosted or the sparse leg is simply absent. ADR-0022
+  decision 4 chose self-hosted, which is why `sparse` is the one model
+  sidecar that exists as a production ECS service. The single most
+  important asymmetry in the production model stack.
 
 ---
 
@@ -267,7 +334,7 @@ model locally except Tesseract.
 | `Qwen/Qwen3-Reranker-0.6B` | `reranker` sidecar (GPU) | `/tmp/hf_cache` | ~1.2 GB |
 | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | `sparse` sidecar (CPU) | `/tmp/hf_cache` | ~440 MB |
 | Tesseract 5.5.2 | `fastapi` and `hatchet-worker` images, built from source | system path | ~30 MB lang data |
-| Cohere Command A+, Embed v4, Rerank v4, Parse v5 | Azure AI Foundry (external managed service) | n/a | n/a |
+| Cohere Command A+, Embed v4, Rerank 3.5, Parse | Amazon Bedrock (external managed service; Command A+ and Parse on Marketplace endpoints) | n/a | n/a |
 
 The `vllm_hf_cache` volume and the Qwen3-14B / Qwen2.5-VL weights went with
 the vLLM service on 2026-07-30. `bge-small-en` and `bge-reranker-base` were

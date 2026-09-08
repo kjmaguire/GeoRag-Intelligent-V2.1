@@ -611,7 +611,7 @@ def _pages_for_range(
 # and paying for it three times over:
 #
 #   - a 1500-char window is ~375 tokens, so the retrieved evidence reaching
-#     the model was ~1,900 tokens against a MAX_CONTEXT_TOKENS_AZURE budget
+#     the model was ~1,900 tokens against a MAX_CONTEXT_TOKENS_BEDROCK budget
 #     of 100,000 (MAX_CONTEXT_DOC_CHUNKS is 5). The model was starved by two
 #     orders of magnitude;
 #   - a geological argument — a drill result, its QA/QC caveat, and the
@@ -2483,8 +2483,9 @@ def _warn_engine_not_configured_once(detail: str) -> None:
     _ENGINE_NOT_CONFIGURED_WARNED = True
     logger.critical(
         "pdf_report: %s. EVERY page from now on falls back to tesseract, "
-        "which extracts no tables. Check the AZURE_FOUNDRY_PARSE_DEPLOYMENT / "
-        "foundry-key secret references on the worker.",
+        "which extracts no tables. Check the BEDROCK_PARSE_MODEL_ID "
+        "environment variable and the task role's bedrock:InvokeModel "
+        "permission on the worker.",
         detail,
     )
 
@@ -2621,15 +2622,14 @@ def _ocr_single_page(
 
     engine_selected = _engine.is_engine_selected()
     if engine_selected and not _engine.is_configured():
-        # A configuration error, not a page that would not OCR: a rotated
-        # Foundry key or a missing deployment name must not silently
-        # downgrade the ENTIRE corpus to the fallback engine, losing every
-        # table. CRITICAL because CRITICAL pages (georag-fastapi-critical,
-        # 2026-08-21) — once per process, not once per page, and before the
-        # budget is charged for a request that will never be sent.
+        # A configuration error, not a page that would not OCR: a missing
+        # model id must not silently downgrade the ENTIRE corpus to the
+        # fallback engine, losing every table. CRITICAL because CRITICAL
+        # pages (georag-fastapi-critical, 2026-08-21) — once per process, not
+        # once per page, and before the budget is charged for a request that
+        # will never be sent.
         _warn_engine_not_configured_once(
-            "OCR_ENGINE selects Cohere Parse but AZURE_FOUNDRY_ENDPOINT / "
-            "AZURE_FOUNDRY_API_KEY / AZURE_FOUNDRY_PARSE_DEPLOYMENT are not all set"
+            "OCR_ENGINE selects Cohere Parse but BEDROCK_PARSE_MODEL_ID is not set"
         )
         engine_selected = False
     # 2026-08-14 — per-document remote-OCR page budget (OCR_MAX_PAGES_PER_DOC,

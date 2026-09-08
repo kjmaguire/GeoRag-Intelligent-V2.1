@@ -15,9 +15,13 @@ There is no `hatchet-worker-ingestion`; the pools were merged
 
 > All file paths in this chapter are relative to the repo root.
 >
-> **OCR stack updated 2026-09-02 (ADR-0019).** Cohere Parse v5 on Azure AI
-> Foundry is the primary scanned-page OCR engine, with Tesseract retained as
-> the last-resort fallback. Azure Document Intelligence (2026-07-29 →
+> **OCR stack updated 2026-09-02 (ADR-0019), rehosted 2026-09-08
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Cohere Parse is the primary scanned-page OCR engine — on Amazon Bedrock
+> now, on Azure AI Foundry before — with Tesseract retained as the
+> last-resort fallback. The MODEL did not change, only the host, and its
+> wire contract has **never** been empirically verified on either.
+> Azure Document Intelligence (2026-07-29 →
 > 2026-09-02) is gone, and with it the lossless tiling / polygon
 > reconstruction of oversized pages — Parse returns no word polygons, so
 > oversized pages are downscaled to a pixel cap instead. Parse also returns
@@ -73,7 +77,7 @@ body_bytes
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Stage 4 — OCR    services/ingest/pdf_report.py                          │
 │   image-only pages, OR low-content fitz pages                           │
-│   Cohere Parse v5 (Foundry) primary; Tesseract last-resort fallback     │
+│   Cohere Parse (Bedrock) primary; Tesseract last-resort fallback       │
 │   pages rendered under COHERE_PARSE_MAX_PIXELS (downscaled, not tiled)  │
 │   multi-signal quality routing → silver.review_queue                    │
 └───────────────────────┬─────────────────────────────────────────────────┘
@@ -87,7 +91,7 @@ body_bytes
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Stage 6 — PAGE VERBALIZATION (opt-in, off the critical path)            │
-│   services/ingest/page_vision_client.py → a Foundry vision model        │
+│   services/ingest/page_vision_client.py → a Bedrock vision model        │
 │   the description BECOMES the passage text, so reranker, citations and  │
 │   §04i numeric grounding all work on it like any other passage          │
 │   inert unless IMAGE_VERBALIZATION_ENABLED; runs on an hourly cron      │
@@ -113,8 +117,8 @@ body_bytes
 | Tables | [`services/pdf_extract.py`](../../../src/fastapi/app/services/pdf_extract.py) | cell-level bboxes via **pdfplumber** `find_tables()`. There is no `pdf_layout.py` and camelot is not a dependency |
 | OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [cohere_parse_client.py](../../../src/fastapi/app/services/ingest/cohere_parse_client.py) + [html_table.py](../../../src/fastapi/app/services/ingest/html_table.py) | Cohere Parse v5 primary (one page image per request, HTML tables → grids), Tesseract fallback |
 | Coordinates | [src/fastapi/app/services/pdf_coordinates.py](../../../src/fastapi/app/services/pdf_coordinates.py) | Maps OCR text → page-relative bboxes for citation span resolver |
-| Rendering | [`services/pdf_render.py`](../../../src/fastapi/app/services/pdf_render.py) | renders page PNGs into the bronze raster prefix — SeaweedFS in dev, Azure Blob in production, behind the one `STORAGE_BACKEND` switch ([Ch 02 §4](02-data-stores.md)) |
-| Page verbalization | [`services/ingest/page_verbalizer.py`](../../../src/fastapi/app/services/ingest/page_verbalizer.py) + [`page_vision_client.py`](../../../src/fastapi/app/services/ingest/page_vision_client.py) | a Foundry vision model describes the page; the description becomes the passage text. `services/pdf_vl.py` still exists and is constructed in the FastAPI lifespan, but its docstring describes an Ollama/vLLM backend that is gone — the live path is the verbalizer |
+| Rendering | [`services/pdf_render.py`](../../../src/fastapi/app/services/pdf_render.py) | renders page PNGs into the bronze raster prefix — SeaweedFS in dev, S3 in production, behind the one `STORAGE_BACKEND` switch ([Ch 02 §4](02-data-stores.md)) |
+| Page verbalization | [`services/ingest/page_verbalizer.py`](../../../src/fastapi/app/services/ingest/page_verbalizer.py) + [`page_vision_client.py`](../../../src/fastapi/app/services/ingest/page_vision_client.py) | a vision model describes the page; the description becomes the passage text. **`BEDROCK_VISION_MODEL_ID` has no default and the feature refuses to run without one** — Bedrock has no equivalent of the retired `gpt-5-mini`, and guessing a substitute would silently change what every image passage says (ADR-0022). `services/pdf_vl.py` still exists and is constructed in the FastAPI lifespan, but its docstring describes an Ollama/vLLM backend that is gone — the live path is the verbalizer |
 | Figure linking | [src/fastapi/app/agent/figure_extractor.py](../../../src/fastapi/app/agent/figure_extractor.py) | Figure → caption nearest-text linking v1 |
 | Hatchet workflow | [src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py) | `parse_pdf_report()` invocation and atomic Silver persistence |
 
@@ -185,8 +189,8 @@ From [docker-compose.yml:2039-2065](../../../docker-compose.yml):
 
 | Env var | Default | Effect |
 |---|---|---|
-| `OCR_ENGINE` | tesseract (compose: `cohere_parse`) | Selects the remote OCR engine. The retired `azure_document_intelligence` value logs CRITICAL and runs Tesseract. |
-| `AZURE_FOUNDRY_PARSE_DEPLOYMENT` | unset | Foundry deployment name for Cohere Parse v5 (`Cohere-parse-v5`); endpoint and key are the shared `AZURE_FOUNDRY_ENDPOINT` / `AZURE_FOUNDRY_API_KEY` |
+| `OCR_ENGINE` | tesseract (compose: `cohere_parse`) | Selects the remote OCR engine. Retired values (`azure_document_intelligence`) log CRITICAL and run Tesseract — the engine never silently selects something else. |
+| `BEDROCK_PARSE_MODEL_ID` | unset | The Bedrock Marketplace endpoint serving Cohere Parse. **Unset means every page runs Tesseract** after one CRITICAL line — no table structure, no error. There is no endpoint or key: boto3 signs the call |
 | `COHERE_PARSE_MAX_PIXELS` | 4000000 | Pixel cap for the rendered page image; oversized sheets are downscaled (no tiling) |
 | `COHERE_PARSE_TIMEOUT_S` / `_OUTPUT_FORMAT` / `_INCLUDE_IMAGE_DESCRIPTIONS` | 120 / blocks / 0 | Per-request timeout, response shape, and whether Parse's figure descriptions enter the retrievable text |
 | `OCR_PAGES_PER_BATCH` | 8 | Pages rendered together and posted concurrently as one group (in-flight requests capped by `PDF_OCR_PAGE_CONCURRENCY`) |

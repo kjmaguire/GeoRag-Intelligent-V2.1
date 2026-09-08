@@ -11,7 +11,7 @@ nothing dispatched.
 What survives here is the part that was never about PagerDuty: the tests
 pinning the escalation route that DOES reach a human. A detector logs a
 distinctive marker, a Log Analytics scheduled query rule matches it, and
-`georag-alerts-ag` emails a real address. These pin the cost-burn detector
+the SNS topic emails a real address. These pin the cost-burn detector
 onto it, because until 2026-08-22 its "high" severity alert -- the one that
 precedes suspending a workspace's LLM activity -- terminated in a database
 row that reached nobody.
@@ -67,7 +67,7 @@ class TestTheEscalationPathThatExists:
     def test_an_alert_rule_matches_the_marker(self) -> None:
         """The marker and the rule are in different repos-worth of file
         and drift silently: the log line keeps being written and nothing
-        is listening."""
+        is listening. Repointed to CloudWatch 2026-09-08 (ADR-0022)."""
         from pathlib import Path
 
         from app.hatchet_workflows.cost_burn_watcher import (
@@ -75,13 +75,13 @@ class TestTheEscalationPathThatExists:
         )
 
         repo = Path(__file__).resolve().parents[3]
-        script = (repo / "deploy" / "azure" / "alerts" / "create-alerts.sh").read_text(
+        alerts = (repo / "deploy" / "aws" / "terraform" / "alerts.tf").read_text(
             encoding="utf-8"
         )
 
-        assert COST_BURN_ALERT_MARKER in script, (
-            "no scheduled query rule matches the cost-burn marker, so the "
-            "log line goes nowhere"
+        assert COST_BURN_ALERT_MARKER in alerts, (
+            "no CloudWatch metric filter matches the cost-burn marker, so "
+            "the log line goes nowhere"
         )
 
     def test_the_alert_does_not_carry_query_text(self) -> None:

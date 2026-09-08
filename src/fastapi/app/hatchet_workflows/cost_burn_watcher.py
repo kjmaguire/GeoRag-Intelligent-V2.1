@@ -65,7 +65,7 @@ _HOURS_PER_BUDGETED_MONTH = 720
 #: The detector's ledger row and admin broadcast both require someone to
 #: be watching a screen. This string is what a Log Analytics scheduled
 #: query rule matches to send email through `georag-alerts-ag` (rule 5d
-#: in deploy/azure/alerts/create-alerts.sh).
+#: in deploy/aws/terraform/alerts.tf).
 #:
 #: Distinctive on purpose — upper case, underscored, long enough that it
 #: cannot appear in ordinary prose or in a stack trace.

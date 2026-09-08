@@ -7,6 +7,25 @@
 > `deploy/azure/` and `ops/runbooks/`. Where dev and production differ, both
 > are stated. Anything the repo does not record (Flexible Server SKU, the
 > live Azure env values) is said to be unrecorded rather than guessed.
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> Everything this chapter says about the **dev stack** and about
+> **application behaviour** is unaffected and still accurate; only the
+> question of where production runs has changed.
+>
+> **§1's production notes and §8's recovery table were rewritten on
+> 2026-09-08.** Two of those rows changed in substance rather than in
+> hosting: Redis now has AOF on a real volume (it had `--appendonly yes`
+> and no volume on Azure), and object storage now has versioning and
+> retention where it previously had no backup posture at all. Leaving
+> either under a dated notice would have understated the deployment.
+
 
 Four durable stores (PostgreSQL, Qdrant, Redis, object storage), one tile
 generator (Martin) and one engine database (Hatchet). This chapter covers
@@ -82,12 +101,12 @@ Two things to know about this list:
 `max_connections=200` in dev; PgBouncer multiplexes up to 1000 client
 connections onto a pool of 50 ([Ch 01 §2](01-services.md#2-always-on-substrate)).
 
-**Production has no PgBouncer.** Every Container App connects to
-`georag-pg-cc` directly. The Flexible Server's SKU and connection limit are
-not recorded in the repo; `ops/runbooks/azure-oncall.md` shows the
-`az postgres flexible-server` commands used to inspect it. None of the
-compose-side tuning (`shared_buffers`, `work_mem`, `io_method`…) reaches
-Azure. Note also that `.env.production.example` sets `DB_USERNAME=georag`
+**Production has no PgBouncer.** Every task connects to RDS directly. The
+instance class is `deploy/aws/terraform/`'s to state — unlike the Azure
+Flexible Server, whose SKU and connection limit were not recorded in the
+repository at all. None of the compose-side tuning (`shared_buffers`,
+`work_mem`, `io_method`…) reaches the managed server; RDS applies its own
+parameter group. Note also that `.env.production.example` sets `DB_USERNAME=georag`
 (line 143) directly under a comment saying Laravel connects as
 `georag_app`; compose ignores that key because the services set
 `DB_USERNAME` from `GEORAG_APP_USER`, but the example is wrong as a
@@ -401,13 +420,14 @@ agent went with them. What remains:
 
 | Store | Recovery story | Evidence |
 |---|---|---|
-| PostgreSQL | Azure automated backups, 35-day PITR. No repo-side dump or WAL upload runs. | [Ch 14](14-status-matrix.md); `docker/postgresql/backup.sh` and `wal-upload.sh` have no caller |
+| PostgreSQL | RDS automated backups, 35-day PITR. No repo-side dump or WAL upload runs. | [Ch 14](14-status-matrix.md); `docker/postgresql/backup.sh` and `wal-upload.sh` have no caller |
 | Qdrant | Derived data: reset `embedding_id` and let `embed_pending_passages` rebuild from `silver.document_passages` | `scripts/reset_embeddings_for_reencode.py` |
-| Redis | None. Cache plus short-lived queue jobs; Azure instance is ephemeral by configuration | `deploy/azure/containerapps/redis.yaml` |
-| Blob | LRS only; no versioning or second copy recorded | `deploy/azure/README.md` |
+| Redis | AOF on an EFS volume since 2026-09-08. The Azure app had `--appendonly yes` with **no volume**, so every nightly restart dropped sessions and any queued Horizon job | `deploy/aws/terraform/services.tf`; `scripts/check_redis_manifests.py` |
+| Object storage | S3 versioning with 90-day non-current retention since 2026-09-08. On Azure it was the one irreplaceable copy: LRS only, no backup workflow, no restore procedure | `deploy/aws/terraform/`; ADR-0022 |
 | `backups.snapshot_runs` | Table exists and the admin router lists it; no workflow writes to it | `app/routers/admin_tier234.py` |
 
-`ops/runbooks/azure-oncall.md` states plainly that no restore has ever
-been rehearsed and there is no working restore procedure to document.
-That is the current posture, accepted deliberately; treat a Postgres PITR
-drill as the highest-value gap in this chapter.
+`ops/runbooks/aws-oncall.md` states plainly that **nothing here has been
+restore-tested**. The two rows above are more mechanism than Azure ever
+had, and a mechanism that should work is not a restore procedure. That is
+the current posture, accepted deliberately; treat a Postgres PITR drill as
+the highest-value gap in this chapter.

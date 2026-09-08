@@ -131,32 +131,43 @@ def load_embedding_model():
 
     Extracted from ``embed_pending_passages`` so the Hatchet cron can build
     the model ONCE per sweep and pass it into every per-project call —
-    previously the model (SentenceTransformer weights or the Foundry client)
+    previously the model (SentenceTransformer weights or the hosted client)
     was re-constructed for every project on every 10-minute tick.
+
+    This deliberately does NOT delegate to ``embedding.get_embedding_model``:
+    the ingest path prefers CUDA for the local backend where the query path
+    pins CPU, and it ignores ``EMBEDDING_SERVICE_URL``. What both paths MUST
+    agree on is the hosted backend, because a mismatch writes one vector
+    space and queries another (ADR-0021 migration step 2).
     """
+    from app.services._bedrock import reject_retired_backend
     from app.services.embedding import EMBEDDING_BACKEND
 
-    if EMBEDDING_BACKEND == "foundry":
-        # No local model load at all — Cohere Embed v4 via Azure AI
-        # Foundry. .encode(texts, normalize_embeddings=True,
-        # show_progress_bar=False) is a drop-in call (input_type
-        # defaults to "search_document", correct for ingestion).
-        from app.services.embedding import (
-            AZURE_FOUNDRY_EMBED_DEPLOYMENT,
-            _FoundryEmbedding,
+    reject_retired_backend(EMBEDDING_BACKEND, setting="EMBEDDING_BACKEND")
+
+    if EMBEDDING_BACKEND == "bedrock":
+        # No local model load at all — Cohere Embed v4 on Amazon Bedrock.
+        # .encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        # is a drop-in call (input_type defaults to "search_document",
+        # correct for ingestion).
+        from app.services._bedrock import (
+            assert_no_retired_foundry_env,
+            bedrock_region,
         )
-        endpoint = (os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
-        api_key = (os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
-        if not (endpoint and api_key and AZURE_FOUNDRY_EMBED_DEPLOYMENT):
+        from app.services.embedding import (
+            BEDROCK_EMBED_MODEL_ID,
+            _BedrockEmbedding,
+        )
+        assert_no_retired_foundry_env(context="EMBEDDING_BACKEND=bedrock")
+        if not BEDROCK_EMBED_MODEL_ID:
             raise RuntimeError(
-                "EMBEDDING_BACKEND=foundry but AZURE_FOUNDRY_ENDPOINT/"
-                "API_KEY/AZURE_FOUNDRY_EMBED_DEPLOYMENT not fully set"
+                "EMBEDDING_BACKEND=bedrock but BEDROCK_EMBED_MODEL_ID is empty"
             )
         log.info(
-            "embed_pending.loading_embedding_model backend=foundry deployment=%s",
-            AZURE_FOUNDRY_EMBED_DEPLOYMENT,
+            "embed_pending.loading_embedding_model backend=bedrock model=%s region=%s",
+            BEDROCK_EMBED_MODEL_ID, bedrock_region(),
         )
-        return _FoundryEmbedding(endpoint, api_key, AZURE_FOUNDRY_EMBED_DEPLOYMENT)
+        return _BedrockEmbedding(BEDROCK_EMBED_MODEL_ID)
 
     import torch
     from sentence_transformers import SentenceTransformer

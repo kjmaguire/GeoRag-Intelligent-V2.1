@@ -365,7 +365,7 @@ def _default_system_prompt() -> str:
 # call (Azure AI Foundry / Cohere Command A+ in production; also covers any
 # other OpenAI-compatible endpoint reachable via this path).
 #
-# `app.services._foundry_retry.with_foundry_retry` already gives the
+# `app.services._bedrock`'s botocore retry config already gives the
 # embedding/reranker Foundry calls real 429/5xx backoff, but it backs off
 # with a blocking `time.sleep()` — safe there ONLY because both of its
 # callers invoke it via `loop.run_in_executor(...)`. The chat-completions
@@ -423,7 +423,7 @@ async def _retry_pre_stream_call(
 ) -> dict:
     """Retry `do_call()` on a pre-stream transient failure, async-native.
 
-    Backoff cadence mirrors `_foundry_retry.with_foundry_retry`'s 2s/4s/8s
+    Backoff cadence mirrors the retired `_foundry_retry`'s 2s/4s/8s
     pattern but sleeps via `asyncio.sleep()` so it never blocks the event
     loop for other concurrent requests.
 
@@ -542,25 +542,21 @@ async def _call_openai_compatible_llm(
 ) -> str:
     """Call the OpenAI-compatible chat-completions endpoint.
 
-    Two backends share this function, selected by ``settings.LLM_BACKEND``:
-    ``"azure"`` (Azure AI Foundry, Cohere Command A+ via the unified OpenAI
-    v1 API — the default primary backend post Phase-C cutover) and
-    ``"vllm"`` (a self-hosted or external OpenAI-compatible endpoint,
-    retained for operators who keep running their own). Azure gets
-    `api-key` header auth, no `?api-version=` query param, and loose
-    `response_format: json_object` (confirmed working against a live
-    Command A+ deployment 2026-07-30 — response arrives wrapped in Cohere
-    sentinel tokens, stripped below); vLLM gets its Qwen3 sampling
-    extensions (top_p/top_k/min_p/presence_penalty) and schema-constrained
-    `guided_json`, which Azure doesn't support (silently ignored there,
-    same as the Anthropic path). See the `backend_kind` branch below for
-    the exact payload differences.
+    One backend uses this function now: ``LLM_BACKEND=vllm``, meaning a
+    self-hosted or external OpenAI-compatible endpoint the operator runs.
+    It gets the Qwen3 sampling extensions (top_p/top_k/min_p/
+    presence_penalty) and schema-constrained ``guided_json``.
 
-    Historical note: this helper also drove an Ollama backend prior to the
-    2026-05-17 vLLM cutover, and vLLM prior to the 2026-07-30 Azure
-    cutover. The OpenAI-compatible wire shape is preserved so any other
-    compatible endpoint (LiteLLM proxy, etc.) can be substituted at the
-    URL layer without code changes.
+    Historical note, because the shape of this function is otherwise
+    puzzling: it drove Ollama until the 2026-05-17 vLLM cutover, vLLM until
+    the 2026-07-30 Azure cutover, and Azure AI Foundry until the AWS move on
+    2026-09-08 (ADR-0022). Foundry was the last backend that shared this
+    code path with vLLM; Bedrock speaks Converse and lives in
+    ``app/agent/llm_bedrock.py``, and ``LLM_BACKEND=azure`` is now a startup
+    error. The OpenAI-compatible wire shape is preserved so any other
+    compatible endpoint (LiteLLM proxy, etc.) can be substituted at the URL
+    layer without code changes — which is exactly what kept this function
+    useful across three backend changes.
 
     Prompt structure (R15):
       - `system` role: static system prompt + per-project preamble. This is
@@ -613,12 +609,14 @@ async def _call_openai_compatible_llm(
     effective_model = model or settings.effective_llm_model
     stream_enabled = token_callback is not None
 
-    # Phase C — Azure AI Foundry replaced vLLM as the default primary
-    # backend. "azure" gets Azure OpenAI wire-shape handling (api-key
-    # header, api-version query param, response_format json_schema);
-    # everything else (including a retained external vLLM) uses the
-    # original vLLM/Qwen3 wire shape below.
-    backend_kind = "azure" if settings.LLM_BACKEND == "azure" else "vllm"
+    # Since ADR-0022 this function serves exactly one backend. It used to
+    # branch on "azure" for Azure AI Foundry's OpenAI-compatible surface;
+    # Foundry was retired 2026-09-08 and LLM_BACKEND=azure is now a startup
+    # error (config._reject_retired_azure_config), while Bedrock speaks
+    # Converse and lives in app/agent/llm_bedrock.py. What reaches here is
+    # an operator-run OpenAI-compatible endpoint: vLLM, or anything wearing
+    # its shape.
+    backend_kind = "vllm"
 
     # Ollama review #5 — cap output tokens. Match the Anthropic ceiling
     # so the budget is consistent across backends. When thinking is on,
@@ -647,13 +645,7 @@ async def _call_openai_compatible_llm(
     # prompt itself fills the window we cap output at 64 so vLLM still
     # has SOME room (the 400-BadRequest path then surfaces cleanly to
     # the orchestrator's failover ladder).
-    _max_model_len = int(
-        getattr(
-            settings,
-            "AZURE_FOUNDRY_MAX_MODEL_LEN" if backend_kind == "azure" else "VLLM_MAX_MODEL_LEN",
-            128_000 if backend_kind == "azure" else 8192,
-        )
-    )
+    _max_model_len = int(getattr(settings, "VLLM_MAX_MODEL_LEN", 8192))
     _prompt_chars = len(system_content) + len(user_message)
     _prompt_tokens_est = int(_prompt_chars / 2.2)
     _safety_margin = 512
@@ -702,65 +694,48 @@ async def _call_openai_compatible_llm(
     # ── Backend-specific payload shape ──────────────────────────────────
     request_headers: dict[str, str] = {}
     url_query_suffix = ""
-    if backend_kind == "azure":
-        # Azure OpenAI v1 API (Cohere Command A+ on Foundry): auth via
-        # `api-key` header, no `?api-version=` query param needed on this
-        # surface (empirically confirmed 2026-07-30 — see effective_llm_url
-        # docstring). `response_format: json_object` IS supported (Cohere's
-        # own docs list Command A+ under Structured Outputs; confirmed
-        # working against the live endpoint) — unlike the vLLM branch's
-        # `guided_json` schema-constrained mode, this is loose JSON-object
-        # mode only. `guided_json` is silently ignored here (same
-        # "forwarded for symmetry, backend doesn't support schema-
-        # constrained decoding" contract as the Anthropic path). No
-        # Qwen3-specific sampling knobs (top_p/top_k/min_p/presence_penalty)
-        # or chat_template_kwargs — those are vLLM/Qwen extensions this API
-        # doesn't recognize.
-        request_headers["api-key"] = settings.AZURE_FOUNDRY_API_KEY
-        if structured_output:
-            request_payload["response_format"] = {"type": "json_object"}
-    else:
-        # vLLM extends the OpenAI-compatible API with top-level `top_p` /
-        # `top_k` / `min_p` / `presence_penalty` fields. Sampling defaults
-        # come from the QWEN3_* settings.
-        request_payload["top_p"] = qwen3_top_p
-        request_payload["top_k"] = qwen3_top_k
-        request_payload["min_p"] = qwen3_min_p
-        if structured_output:
-            request_payload["presence_penalty"] = qwen3_structured_presence
-        elif not enable_thinking:
-            request_payload["presence_penalty"] = qwen3_no_think_presence
+    # vLLM extends the OpenAI-compatible API with top-level `top_p` /
+    # `top_k` / `min_p` / `presence_penalty` fields. Sampling defaults
+    # come from the QWEN3_* settings.
+    request_payload["top_p"] = qwen3_top_p
+    request_payload["top_k"] = qwen3_top_k
+    request_payload["min_p"] = qwen3_min_p
+    if structured_output:
+        request_payload["presence_penalty"] = qwen3_structured_presence
+    elif not enable_thinking:
+        request_payload["presence_penalty"] = qwen3_no_think_presence
 
-        # vLLM JSON mode uses the OpenAI-compat-standard `response_format`
-        # field for "any valid JSON" decoding. For schema-CONSTRAINED
-        # decoding the caller passes a `guided_json` dict (see kwarg
-        # docstring); we forward it as a top-level field per vLLM's
-        # OpenAI-compat extension.
-        if structured_output:
-            request_payload["response_format"] = {"type": "json_object"}
-        if guided_json is not None:
-            request_payload["guided_json"] = guided_json
+    # vLLM JSON mode uses the OpenAI-compat-standard `response_format`
+    # field for "any valid JSON" decoding. For schema-CONSTRAINED
+    # decoding the caller passes a `guided_json` dict (see kwarg
+    # docstring); we forward it as a top-level field per vLLM's
+    # OpenAI-compat extension.
+    if structured_output:
+        request_payload["response_format"] = {"type": "json_object"}
+    if guided_json is not None:
+        request_payload["guided_json"] = guided_json
 
-        # Qwen3 chat-template thinking control (Phase 5 follow-up,
-        # 2026-05-19). Prior comment claimed vLLM "produces normal output
-        # without an explicit reasoning phase" — that assumption broke on
-        # vLLM v0.21 + Qwen3-14B-AWQ: the model emits <think>...</think>
-        # blocks inline in `content`, which trips the §04i guards
-        # (entity/completeness/numeric) on every answer.
-        #
-        # vLLM v0.21+ forwards `chat_template_kwargs` to the tokenizer's
-        # `apply_chat_template()`; Qwen3's chat template reads
-        # `enable_thinking` from there. Passing False here suppresses the
-        # reasoning emission at the model boundary, which is the
-        # load-bearing fix. The defensive strip on the return path (below)
-        # handles any residual <think> leakage from future Qwen3
-        # fine-tunes that ignore the flag.
-        if not enable_thinking:
-            request_payload["chat_template_kwargs"] = {"enable_thinking": False}
+    # Qwen3 chat-template thinking control (Phase 5 follow-up,
+    # 2026-05-19). Prior comment claimed vLLM "produces normal output
+    # without an explicit reasoning phase" — that assumption broke on
+    # vLLM v0.21 + Qwen3-14B-AWQ: the model emits <think>...</think>
+    # blocks inline in `content`, which trips the §04i guards
+    # (entity/completeness/numeric) on every answer.
+    #
+    # vLLM v0.21+ forwards `chat_template_kwargs` to the tokenizer's
+    # `apply_chat_template()`; Qwen3's chat template reads
+    # `enable_thinking` from there. Passing False here suppresses the
+    # reasoning emission at the model boundary, which is the
+    # load-bearing fix. The defensive strip on the return path (below)
+    # handles any residual <think> leakage from future Qwen3
+    # fine-tunes that ignore the flag.
+    if not enable_thinking:
+        request_payload["chat_template_kwargs"] = {"enable_thinking": False}
 
-    # Backend label for metrics. Same detection as backend_kind above —
-    # kept as a separate name so existing log lines / metric labels keep
-    # their wire shape ("azure" / "vllm" strings).
+    # Backend label for metrics and log lines. Kept as a separate name from
+    # backend_kind so existing dashboards keep their wire shape; "azure" was
+    # the other possible value until 2026-09-08 (ADR-0022), and the Bedrock
+    # path labels itself "bedrock" from app/agent/llm_bedrock.py.
     backend_label = backend_kind
 
     async def _do_blocking_call(client: httpx.AsyncClient) -> dict:
@@ -963,7 +938,8 @@ async def _call_openai_compatible_llm(
                 PROMPT_CACHE_TOKENS.labels(backend=backend_label).inc(cached_tokens)
 
             # Cost accounting existed only on the Anthropic branch,
-            # which is dead in production (LLM_BACKEND=azure). This is
+            # which is dead in production (the primary backend is
+            # Bedrock, handled in llm_bedrock.py). This is
             # the same bookkeeping for the branch that actually runs.
             if completion_tokens > 0:
                 LLM_TOKENS_OUTPUT.labels(model=effective_model).inc(completion_tokens)
@@ -1017,7 +993,7 @@ async def _call_openai_compatible_llm(
             )
             content = stripped or content  # never empty the answer
 
-    # Cohere Command A+ (azure backend) wraps JSON-mode output in sentinel
+    # Cohere Command A+ wraps JSON-mode output in sentinel
     # tokens: `<|START_TEXT|>{"...":...}<|END_TEXT|>`. Empirically confirmed
     # 2026-07-30 against a live deployment. Strip before returning so the
     # caller's json.loads() (or any plain-text consumer) sees a clean
@@ -1025,7 +1001,9 @@ async def _call_openai_compatible_llm(
     # 2026-08-10: gate widened from backend_kind == "azure" — the sentinel
     # is a property of the Cohere model, not the transport, and a wrapped
     # answer reached the UI verbatim through a path that reported a
-    # different backend_kind. Harmless no-op for models that never emit it.
+    # different backend_kind. Harmless no-op for models that never emit it,
+    # and the reason llm_bedrock.py strips it unconditionally too: the same
+    # widening argument applies across a change of cloud.
     if "<|START_TEXT|>" in content:
         stripped = re.sub(
             r"<\|START_TEXT\|>|<\|END_TEXT\|>",
@@ -1112,14 +1090,18 @@ async def _call_openai_compatible_llm(
 def _resolve_local_llm_fallback_target() -> tuple[str, str] | None:
     """R12 — resolve the (base_url, model) for the OpenAI-compat failover.
 
-    Prefers Azure Foundry (the default primary backend post Phase-C) when
-    configured; falls back to a retained external VLLM_URL, then
-    LLM_PRIMARY_URL/MODEL. Returns None if nothing is configured, which
-    makes the orchestrator surface the "LLM error" without trying a
-    cross-backend retry.
+    Returns a retained external VLLM_URL, then LLM_PRIMARY_URL/MODEL, or
+    None if neither is configured — which makes the orchestrator surface the
+    "LLM error" without trying a cross-backend retry.
+
+    The primary backend is deliberately NOT a candidate any more. Until
+    2026-09-08 this preferred Azure Foundry, which was reachable over an
+    OpenAI-compatible URL and so could serve as its own failover target.
+    Bedrock is not: it has no base URL, and boto3 resolves the endpoint from
+    the region (`settings.effective_llm_url` raises for this backend by
+    design). A cross-backend retry against Bedrock therefore has to go
+    through `llm_bedrock.call_bedrock_llm`, not through this resolver.
     """
-    if settings.AZURE_FOUNDRY_ENDPOINT and settings.AZURE_FOUNDRY_DEPLOYMENT:
-        return settings.effective_llm_url, settings.AZURE_FOUNDRY_DEPLOYMENT
     if settings.VLLM_URL:
         return settings.VLLM_URL, settings.VLLM_MODEL
     if settings.LLM_PRIMARY_URL:
@@ -1562,6 +1544,32 @@ async def _call_llm(
     # Sanitize user query — strip any prompt injection attempts.
     sanitized_query = _sanitize_query(query)
     user_message = _build_user_message(context, sanitized_query)
+
+    if settings.LLM_BACKEND == "bedrock":
+        # Bedrock Converse — its own wire shape, not an OpenAI-compatible
+        # one, so it dispatches here rather than into
+        # `_call_openai_compatible_llm` (ADR-0022). Same seam Anthropic uses.
+        from app.agent.llm_bedrock import call_bedrock_llm  # noqa: PLC0415
+
+        # The multi-turn cache trick the Anthropic path uses does not apply,
+        # so CORRECTION is spliced inline exactly as the vLLM path does it
+        # below — the retry still has to convey validation feedback.
+        if correction_hint:
+            user_message = (
+                f"{user_message}\n\n"
+                f"CORRECTION: Your previous answer had issues: {correction_hint}. "
+                f"Please fix these in your response."
+            )
+        return await call_bedrock_llm(
+            user_message,
+            temperature,
+            system_prompt=system_prompt,
+            project_preamble=project_preamble,
+            project_facts=project_facts,
+            user_id=user_id,
+            token_callback=token_callback,
+            response_format=response_format,
+        )
 
     if settings.LLM_BACKEND == "anthropic":
         return await _call_anthropic_llm(

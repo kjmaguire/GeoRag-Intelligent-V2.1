@@ -155,9 +155,9 @@ caught up to production
 | ~~Kestra → fastapi~~ | The per-flow JWT machinery (`KESTRA_FLOW_JWT_SECRET`, per-flow private keys in the encrypted `workflow.flow_registry`) is still in `services/flow_jwt.py` and `routers/integrations_trigger.py`, and `flow_jwt_key_reaper` still rotates the keys. **Nothing calls it.** | `services/flow_jwt.py` |
 | External webhook senders | HMAC-SHA256 over canonical JSON; `EXTERNAL_NOTIFICATION_HMAC_SECRET`, verified by the `external_notification` workflow. Kestra was the sender; the verification side survives without one | Hatchet `external_notification` |
 | Hatchet worker → hatchet-lite (engine) | `HATCHET_CLIENT_TOKEN` (JWT) over gRPC | `HATCHET_CLIENT_HOST_PORT=hatchet-lite:7077` |
-| ~~caddy → laravel-octane / kestra~~ | Caddy was the edge that gated the Kestra UI. Both were removed 2026-07-28; `routes/web.php` records the sunset. On Azure the only public ingress is `laravel-octane-cc` and there is no reverse proxy in front of it | — |
+| ~~caddy → laravel-octane / kestra~~ | Caddy was the edge that gated the Kestra UI. Both were removed 2026-07-28; `routes/web.php` records the sunset. In production the only ALB-routed services are `laravel-octane` and `laravel-reverb`, and there is no reverse proxy in front of them | — |
 | ~~backup-agent → seaweedfs~~ | The backup agent was removed 2026-08-23 | — |
-| app → object storage | S3 credentials in dev (`S3_ACCESS_KEY` / `S3_SECRET_KEY`); **managed identity** on Azure for read/write, with the account key still enabled only because `temporaryUrl()` signs export links with it ([Ch 02 §4](02-data-stores.md)) | `STORAGE_BACKEND` |
+| app → object storage | S3 credentials in dev (`S3_ACCESS_KEY` / `S3_SECRET_KEY`); the **ECS task role** in production for read/write, with no long-lived credential anywhere — S3 presigned URLs are native to the role, so Azure's `allowSharedKeyAccess` wart (enabled only because `temporaryUrl()` signed export links with the account key) has no successor ([Ch 02 §4](02-data-stores.md), ADR-0022) | `STORAGE_BACKEND` |
 
 ## 8. Per-flow JWT machinery
 

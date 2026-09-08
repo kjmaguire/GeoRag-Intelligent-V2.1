@@ -32,14 +32,35 @@ def build_boto3_client(config: StorageConfig):
     with dynamic, non-``Bucket``-enum bucket names) can share the exact
     same construction logic instead of re-declaring it.
     """
-    return boto3.client(
-        "s3",
-        endpoint_url=config.endpoint_url,
-        aws_access_key_id=config.access_key,
-        aws_secret_access_key=config.secret_key,
-        region_name=config.region,
-        config=Config(signature_version="s3v4"),
-    )
+    return boto3.client("s3", **_client_kwargs(config))
+
+
+def _client_kwargs(config: StorageConfig) -> dict:
+    """Kwargs shared by the sync and async client builders.
+
+    Unset values are OMITTED rather than passed as ``None`` (ADR-0022).
+    That distinction is load-bearing on both fields:
+
+    - ``endpoint_url=None`` happens to work — botocore treats it as absent —
+      but relying on that is a coin flip against a future botocore, and the
+      intent is clearer stated once here.
+    - ``aws_access_key_id=None`` does NOT reliably mean "use the credential
+      chain". Passing explicit ``None`` credentials alongside a session can
+      short-circuit resolution, so an ECS task role would go unused and the
+      call would fail with NoCredentialsError while a perfectly good role
+      sat there. Omitting the keys is the documented way to ask for chain
+      resolution.
+    """
+    kwargs: dict = {
+        "region_name": config.region,
+        "config": Config(signature_version="s3v4"),
+    }
+    if config.endpoint_url:
+        kwargs["endpoint_url"] = config.endpoint_url
+    if config.access_key and config.secret_key:
+        kwargs["aws_access_key_id"] = config.access_key
+        kwargs["aws_secret_access_key"] = config.secret_key
+    return kwargs
 
 
 class S3CompatibleStorage:

@@ -1,4 +1,4 @@
-"""Metadata keys are checked against the rule both backends can honour.
+"""Metadata keys are checked against a rule stricter than S3 needs.
 
 The bug this pins: ``tiff_normalize`` tagged its derived PDF with
 ``x-georag-derived-from-tiff-sha256``. S3 and MinIO accepted it, so every
@@ -7,18 +7,22 @@ valid C# identifiers and answered HTTP 400 ``InvalidMetadata``, so on
 Azure *every* TIFF upload failed after a successful wrap - the work was
 done and then thrown away.
 
-The check therefore has to run on the S3 path too. A rule enforced only
-where it is already violated is a rule nobody finds until production.
+Azure went on 2026-09-08 (ADR-0022) and the rule stays. It is deliberately
+stricter than the only backend now in use: S3 accepts a superset, so
+enforcing the tighter rule costs nothing and keeps every key portable to
+whatever the next backend turns out to be. Relaxing it would be a
+behaviour change made for no reason other than that the constraint's
+original author is gone.
+
+The check runs on the S3 path for the same reason it always did. A rule
+enforced only where it is already violated is a rule nobody finds until
+production.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
-from georag_object_storage.azure_config import AzureBlobConfig
-from georag_object_storage.azure_sync_client import AzureBlobStorage
 from georag_object_storage.buckets import Bucket
 from georag_object_storage.exceptions import ObjectStorageError
 from georag_object_storage.metadata import (
@@ -92,63 +96,6 @@ class TestKeyRule:
     def test_valid_metadata_passes_through_unchanged(self):
         meta = {"report_id": "7", "page": "3"}
         assert validate_metadata(meta) is meta
-
-
-@pytest.fixture
-def azure_config():
-    return AzureBlobConfig(
-        connection_string=(
-            "DefaultEndpointsProtocol=https;AccountName=x;AccountKey=eA==;"
-            "EndpointSuffix=core.windows.net"
-        ),
-        account_url=None,
-        container_names={Bucket.BRONZE: "bronze", Bucket.EXPORTS: "exports"},
-    )
-
-
-@pytest.fixture
-def azure_service():
-    with patch("georag_object_storage.azure_sync_client.BlobServiceClient") as mock_cls:
-        service = MagicMock()
-        mock_cls.from_connection_string.return_value = service
-        yield service
-
-
-class TestAzureClientEnforcement:
-    def test_put_bytes_refuses_a_hyphenated_key_without_calling_the_sdk(
-        self, azure_config, azure_service
-    ):
-        store = AzureBlobStorage(azure_config)
-        with pytest.raises(InvalidMetadataKeyError):
-            store.put_bytes(
-                Bucket.BRONZE,
-                "reports/x.pdf",
-                b"%PDF-",
-                metadata={"x-georag-tiff-frames": "1"},
-            )
-        # The point of failing before the upload: no bytes go over the wire
-        # only to be rejected, and no partial blob is left behind.
-        blob = azure_service.get_container_client.return_value.get_blob_client
-        blob.return_value.upload_blob.assert_not_called()
-
-    def test_error_type_survives_the_generic_exception_wrapper(
-        self, azure_config, azure_service
-    ):
-        """The client re-wraps everything as ObjectStorageError; ours must not
-        be flattened into one, or the offending key is lost."""
-        store = AzureBlobStorage(azure_config)
-        with pytest.raises(InvalidMetadataKeyError):
-            store.put_bytes(
-                Bucket.BRONZE, "k", b"x", metadata={"bad-key": "v"}
-            )
-
-    def test_identifier_keys_reach_the_sdk(self, azure_config, azure_service):
-        store = AzureBlobStorage(azure_config)
-        meta = {"derived_from_tiff_sha256": "abc", "tiff_frames": "2"}
-        store.put_bytes(Bucket.BRONZE, "reports/x.pdf", b"%PDF-", metadata=meta)
-        blob = azure_service.get_container_client.return_value.get_blob_client
-        kwargs = blob.return_value.upload_blob.call_args.kwargs
-        assert kwargs["metadata"] == meta
 
 
 class TestS3ClientEnforcement:

@@ -1,6 +1,6 @@
-"""Unit tests for Foundry page-image verbalization (2026-08-18).
+"""Unit tests for page-image verbalization (2026-08-18; Bedrock 2026-09-08).
 
-Fully offline — no Foundry call, no object storage. What's pinned here is the
+Fully offline — no model call, no object storage. What's pinned here is the
 behaviour that costs money or corrupts data when it regresses:
 
   - Strict opt-in, and no request at all while disabled.
@@ -8,48 +8,64 @@ behaviour that costs money or corrupts data when it regresses:
     placeholder text, never raise into the sweep.
   - The anti-transcription prompt, which is the only guard between a VLM and
     an invented ore grade.
-  - `detail: low`, which at scope=all is the difference between a sane bill
-    and a large one.
+
+Rewritten for ADR-0022. One pinned behaviour did not survive the move and is
+called out where it used to be asserted: Foundry's `detail: low` request knob
+bounded per-page token cost, and Bedrock Converse has no equivalent, so
+`image_detail()` now selects the prompt only.
+
+The other change worth knowing: there is no default model any more. Foundry's
+`gpt-5-mini` has no Bedrock counterpart, and this capability was never a
+Cohere model, so "keep the model, change the host" does not apply. The module
+reports itself unconfigured until one is chosen.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from app.services import _bedrock
 from app.services.ingest import page_vision_client as vision
+
+MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in (
-        vision.ENABLED_ENV, vision.MODEL_ENV,
-        vision.ENDPOINT_ENV, vision.KEY_ENV,
+        vision.ENABLED_ENV, vision.MODEL_ENV, vision.MODEL_ID_ENV,
         "IMAGE_VERBALIZATION_DETAIL",
     ):
         monkeypatch.delenv(var, raising=False)
+    _bedrock.reset_client_cache()
 
 
 def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(vision.ENABLED_ENV, "true")
-    monkeypatch.setenv(vision.ENDPOINT_ENV, "https://foundry.invalid")
-    monkeypatch.setenv(vision.KEY_ENV, "test-key")
+    monkeypatch.setenv(vision.MODEL_ID_ENV, MODEL_ID)
 
 
-class _FakeResponse:
-    def __init__(self, payload: dict, status: int = 200) -> None:
-        self._payload = payload
-        self.status_code = status
+def _install(monkeypatch: pytest.MonkeyPatch, handler) -> dict:
+    """Replace the Bedrock client with a fake; return the captured call."""
+    seen: dict = {}
 
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+    class _Client:
+        @staticmethod
+        def converse(**kwargs):
+            seen.update(kwargs)
+            return handler(**kwargs)
 
-    def json(self) -> dict:
-        return self._payload
+    monkeypatch.setattr(
+        _bedrock, "get_client", lambda service, **_kw: _Client()
+    )
+    return seen
 
 
-def _ok(text: str = "A geological cross-section.") -> _FakeResponse:
-    return _FakeResponse({"choices": [{"message": {"content": text}}]})
+def _ok(text: str = "A geological cross-section."):
+    def handler(**_kwargs):
+        return {"output": {"message": {"content": [{"text": text}]}}}
+
+    return handler
 
 
 class TestOptIn:
@@ -76,18 +92,24 @@ class TestOptIn:
         def explode(*_a, **_kw):  # pragma: no cover - must not run
             raise AssertionError("made a request while disabled")
 
-        monkeypatch.setattr("httpx.post", explode)
+        monkeypatch.setattr(_bedrock, "get_client", explode)
         out = vision.verbalize_page(b"\x89PNG")
         assert out.ok is False
         assert out.error == "disabled"
 
-    def test_enabled_without_credentials_fails_softly(
+    def test_enabled_without_a_model_fails_softly(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """There is deliberately no default model — see the module docstring.
+
+        Guessing a Bedrock vision model would change what every image
+        passage says with no eval behind it, so an unset value has to be an
+        error rather than a fallback.
+        """
         monkeypatch.setenv(vision.ENABLED_ENV, "true")
         out = vision.verbalize_page(b"\x89PNG")
         assert out.ok is False
-        assert vision.ENDPOINT_ENV in (out.error or "")
+        assert vision.MODEL_ID_ENV in (out.error or "")
 
 
 class TestPrompt:
@@ -135,103 +157,102 @@ class TestRequestShape:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable(monkeypatch)
-        seen: dict = {}
-
-        def capture(url, **kw):
-            seen["url"] = url
-            seen["headers"] = kw.get("headers")
-            seen["json"] = kw.get("json")
-            return _ok()
-
-        monkeypatch.setattr("httpx.post", capture)
+        seen = _install(monkeypatch, _ok())
         vision.verbalize_page(b"\x89PNG")
 
-        assert seen["url"] == "https://foundry.invalid/openai/v1/chat/completions"
-        # Foundry authenticates with api-key, not a bearer token.
-        assert seen["headers"]["api-key"] == "test-key"
+        assert seen["modelId"] == MODEL_ID
+        # No endpoint and no key: the task role signs the request.
 
-    def test_sends_the_image_as_a_data_uri_alongside_the_prompt(
+    def test_sends_the_image_as_bytes_alongside_the_prompt(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable(monkeypatch)
-        seen: dict = {}
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda url, **kw: (seen.update(kw.get("json") or {}), _ok())[1],
-        )
+        seen = _install(monkeypatch, _ok())
         vision.verbalize_page(b"\x89PNG")
 
         content = seen["messages"][0]["content"]
-        kinds = [part["type"] for part in content]
-        assert "text" in kinds and "image_url" in kinds
+        assert any("text" in part for part in content)
 
-        image = next(p for p in content if p["type"] == "image_url")
-        assert image["image_url"]["url"].startswith("data:image/png;base64,")
+        image = next(p for p in content if "image" in p)["image"]
+        assert image["format"] == "png"
+        # Converse takes raw bytes — no base64 data URI round trip.
+        assert image["source"]["bytes"] == b"\x89PNG"
 
-    def test_detail_defaults_to_low_to_bound_token_cost(
+    def test_output_tokens_are_capped(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """detail=high tiles each page into many more tokens.
-
-        At IMAGE_EMBED_PAGE_SCOPE=all that multiplies across every page of
-        every document, so the default matters more than it looks.
-        """
+        """Bedrock has no `detail` knob, so maxTokens is the whole of what
+        bounds per-page cost now. At IMAGE_EMBED_PAGE_SCOPE=all that
+        multiplies across every page of every document, which is why the
+        Foundry version pinned `detail: low` here."""
         _enable(monkeypatch)
-        seen: dict = {}
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda url, **kw: (seen.update(kw.get("json") or {}), _ok())[1],
-        )
+        seen = _install(monkeypatch, _ok())
         vision.verbalize_page(b"\x89PNG")
 
-        image = next(
-            p for p in seen["messages"][0]["content"] if p["type"] == "image_url"
-        )
-        assert image["image_url"]["detail"] == "low"
+        assert seen["inferenceConfig"]["maxTokens"] == vision._MAX_TOKENS
 
-    def test_model_defaults_to_the_chosen_one_and_is_overridable(
+    def test_the_model_is_overridable(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """MODEL_ENV keeps working so an existing override survives the move,
+        but it now carries a Bedrock model id."""
         _enable(monkeypatch)
-        seen: dict = {}
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda url, **kw: (seen.update(kw.get("json") or {}), _ok())[1],
-        )
+        seen = _install(monkeypatch, _ok())
 
         vision.verbalize_page(b"\x89PNG")
-        assert seen["model"] == "gpt-5-mini"
+        assert seen["modelId"] == MODEL_ID
 
-        monkeypatch.setenv(vision.MODEL_ENV, "gpt-4o")
+        monkeypatch.setenv(vision.MODEL_ENV, "amazon.nova-lite-v1:0")
         vision.verbalize_page(b"\x89PNG")
-        assert seen["model"] == "gpt-4o"
+        assert seen["modelId"] == "amazon.nova-lite-v1:0"
 
 
 class TestResponseParsing:
-    def test_parses_a_plain_string_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_parses_a_single_text_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable(monkeypatch)
-        monkeypatch.setattr("httpx.post", lambda *a, **kw: _ok("A plan view."))
+        _install(monkeypatch, _ok("A plan view."))
         out = vision.verbalize_page(b"\x89PNG")
         assert out.ok is True
         assert out.text == "A plan view."
 
-    def test_parses_typed_content_parts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_joins_multiple_text_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _enable(monkeypatch)
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda *a, **kw: _FakeResponse({
-                "choices": [
-                    {"message": {"content": [{"type": "text", "text": "Long section."}]}}
-                ]
-            }),
+        _install(
+            monkeypatch,
+            lambda **_kw: {
+                "output": {
+                    "message": {
+                        "content": [{"text": "Long section."}, {"text": "Scale 1:500."}]
+                    }
+                }
+            },
         )
-        assert vision.verbalize_page(b"\x89PNG").text == "Long section."
+        assert vision.verbalize_page(b"\x89PNG").text == "Long section.\nScale 1:500."
 
-    def test_no_choices_degrades_instead_of_raising(
+    def test_non_text_blocks_are_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A reasoning block is not the page description and must not be
+        stringified into one."""
+        _enable(monkeypatch)
+        _install(
+            monkeypatch,
+            lambda **_kw: {
+                "output": {
+                    "message": {
+                        "content": [
+                            {"reasoningContent": {"text": "thinking..."}},
+                            {"text": "A cross-section."},
+                        ]
+                    }
+                }
+            },
+        )
+        assert vision.verbalize_page(b"\x89PNG").text == "A cross-section."
+
+    def test_a_malformed_response_degrades_instead_of_raising(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable(monkeypatch)
-        monkeypatch.setattr("httpx.post", lambda *a, **kw: _FakeResponse({"choices": []}))
+        _install(monkeypatch, lambda **_kw: {"output": {}})
         out = vision.verbalize_page(b"\x89PNG")
         assert out.ok is False
         assert "unparseable_response" in (out.error or "")
@@ -241,7 +262,7 @@ class TestResponseParsing:
     ) -> None:
         """An empty description would overwrite the placeholder with nothing."""
         _enable(monkeypatch)
-        monkeypatch.setattr("httpx.post", lambda *a, **kw: _ok("   "))
+        _install(monkeypatch, _ok("   "))
         out = vision.verbalize_page(b"\x89PNG")
         assert out.ok is False
         assert out.error == "empty_description"
@@ -253,18 +274,44 @@ class TestFailSoft:
     ) -> None:
         _enable(monkeypatch)
 
-        def boom(*_a, **_kw):
-            raise ConnectionError("foundry unreachable")
+        def boom(**_kw):
+            raise ConnectionError("bedrock unreachable")
 
-        monkeypatch.setattr("httpx.post", boom)
+        _install(monkeypatch, boom)
         out = vision.verbalize_page(b"\x89PNG")
         assert out.ok is False
         assert "ConnectionError" in (out.error or "")
 
-    def test_http_error_never_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_service_error_never_propagates(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from botocore.exceptions import ClientError
+
         _enable(monkeypatch)
-        monkeypatch.setattr("httpx.post", lambda *a, **kw: _FakeResponse({}, status=500))
+
+        def denied(**_kw):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}},
+                "Converse",
+            )
+
+        _install(monkeypatch, denied)
         assert vision.verbalize_page(b"\x89PNG").ok is False
+
+    def test_client_construction_failure_never_propagates(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Building the client is inside the try for a reason: a bad region
+        or missing credentials raises there, not at call time."""
+        _enable(monkeypatch)
+
+        def boom(*_a, **_kw):
+            raise RuntimeError("no credentials")
+
+        monkeypatch.setattr(_bedrock, "get_client", boom)
+        out = vision.verbalize_page(b"\x89PNG")
+        assert out.ok is False
+        assert "no credentials" in (out.error or "")
 
 class TestThePromptMatchesTheResolution:
     """The prompt asked for exact quotes from an image sent at low detail.
@@ -344,9 +391,17 @@ class TestThePromptMatchesTheResolution:
         assert image_detail() == "high"
         assert "quoted exactly" in build_prompt()
 
-    def test_the_request_builds_both_from_one_resolved_value(self) -> None:
-        """Reading the environment twice would let the prompt and the
-        image describe different resolutions within one request."""
+    def test_the_prompt_is_built_from_one_resolved_value(self) -> None:
+        """Reading the environment twice let the prompt and the image
+        describe different resolutions within one request.
+
+        Half of that hazard is gone: Bedrock Converse has no `detail` knob,
+        so the model always gets the full image and image_detail() selects
+        the prompt only (ADR-0022). The single-read discipline stays because
+        build_prompt still branches on it, and a prompt that asks for exact
+        quotes is the difference between a description and an invented
+        transcription.
+        """
         import inspect
 
         from app.services.ingest import page_vision_client
@@ -355,4 +410,4 @@ class TestThePromptMatchesTheResolution:
 
         assert "_detail = image_detail()" in source
         assert "build_prompt(_detail)" in source
-        assert '"detail": _detail,' in source
+        assert source.count("= image_detail()") == 1, "resolve it once, use it twice"

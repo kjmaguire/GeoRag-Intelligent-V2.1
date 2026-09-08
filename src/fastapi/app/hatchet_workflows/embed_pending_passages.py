@@ -183,7 +183,8 @@ embed_pending_passages_wf = hatchet.workflow(
 #: notices — retrieval just returns fewer hits, and the passage is
 #: unreachable while every record says it is fine.
 #:
-#: Matched by alert rule 5e in deploy/azure/alerts/create-alerts.sh. There
+#: Matched by the qdrant-partial-loss metric filter in
+#: deploy/aws/terraform/alerts.tf. There
 #: is no metric to threshold: the Prometheus registry on this worker is
 #: unscraped, so the log line IS the signal.
 QDRANT_PARTIAL_LOSS_MARKER = "QDRANT_PARTIAL_LOSS"
