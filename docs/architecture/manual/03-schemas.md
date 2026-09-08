@@ -89,7 +89,7 @@ Key columns:
 - `fusion_method` — CHECK in `rrf|dbsf` (line 117).
 - `workspace_data_version_at_query` — captured at query time so the answer
   can be replayed against the workspace’s frozen state.
-- `backend_used` — CHECK in `vllm|anthropic|azure|unknown` ([2026_08_14_010000](../../../database/migrations/2026_08_14_010000_extend_answer_runs_backend_check.php)). The CHECK had been frozen at the vLLM-cutover set, and rows that did not write `backend_used` at all kept the violation latent.
+- `backend_used` — CHECK in `vllm|anthropic|azure|bedrock|unknown` ([2026_09_08_010000](../../../database/migrations/2026_09_08_010000_extend_answer_runs_backend_check_for_bedrock.php), superseding [2026_08_14_010000](../../../database/migrations/2026_08_14_010000_extend_answer_runs_backend_check.php)). The CHECK had been frozen at the vLLM-cutover set, and rows that did not write `backend_used` at all kept the violation latent. It froze again at `azure` when ADR-0022 made `bedrock` the default — with no violation this time, because `normalize_backend()` maps an unrecognised backend to `unknown`, so the column simply stopped carrying information. `azure` is kept as a legal stored value; `Settings` rejects it as a *selectable* one.
 - `prompt_tokens`, `completion_tokens`, `total_tokens`.
 - `citation_lifecycle_state` (line 123).
 - `trace_id`, `root_span_id` — the W3C trace id, indexed. Tempo is gone; the join is now against `ContainerAppConsoleLogs_CL` in Log Analytics and against `silver.query_traces` ([Ch 12 §3](12-observability.md)).
