@@ -8,12 +8,14 @@ RULE 1 -- persistence requires a durable path.
     `--appendonly yes` (or an active RDB save policy) with no volume
     mounted at the data directory is not persistence. It is fsyncs and
     rewrite forks writing to a disk that is discarded on restart. This
-    is exactly what shipped to Azure: deploy/azure/containerapps/redis.yaml
+    is exactly what shipped to Azure: the container app's manifest
     inherited `--appendonly yes` from docker-compose.yml and did not
     inherit `volumes: redis_data:/data`, so the queue durability the flag
     exists to provide never existed there -- while the scheduler restarted
     the app twice a day. `--save ""` was dropped in the same port,
-    silently leaving Redis's default RDB snapshots running too.
+    silently leaving Redis's default RDB snapshots running too. (That
+    manifest was deleted with the rest of deploy/azure/ on 2026-09-08; it
+    is `deploy/azure/containerapps/redis.yaml` in git history.)
 
     That defect is FIXED as of 2026-09-08 (ADR-0022): the AWS deployment
     mounts EFS at /data with AOF on. The rule stays, and now guards the

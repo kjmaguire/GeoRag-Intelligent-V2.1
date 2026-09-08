@@ -12,12 +12,17 @@
 # compared against midnight UTC rather than the real transition instant.
 #
 # EventBridge Scheduler takes an IANA timezone. One schedule each, one
-# fire, no guard, no parity check for the cron half. What the parity check
-# still earns its keep for is the OTHER half — that the deployed script
-# matches the reviewed file — and that survives as
-# scripts/check_sweep_task_parity.py, because an ECS RunTask override
-# carries the same script twice for the same reason a Container Apps Job
-# did.
+# fire, no guard — so the cron half of the parity check has nothing left
+# to check.
+#
+# The OTHER half the parity check earned its keep for — that the DEPLOYED
+# script is the REVIEWED script — is gone too, and by construction rather
+# than by a second checker. The Azure job YAML held a pasted copy of the
+# script in its `args`, so a reviewed file and a shipped file could
+# disagree; `command = [file(...)]` below reads the reviewed file itself
+# at plan time. There is one copy. Keep it that way: if you are ever
+# tempted to inline a sweep body here, you are reintroducing the exact
+# drift the deleted script existed to police.
 
 resource "aws_ecs_task_definition" "shutdown_sweep" {
   family                   = "${local.name}-shutdown-sweep"

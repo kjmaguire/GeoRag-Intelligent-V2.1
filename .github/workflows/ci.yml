@@ -555,8 +555,8 @@ jobs:
   # New with the AWS move. There was no Bicep, Terraform or ARM template
   # for the Azure container apps at all, so ~55 environment variables per
   # app were set by hand and drifted freely from .env.production.example —
-  # `deploy/azure/README.md` records that as a known gap. Nothing running
-  # could be diffed against anything in the repository.
+  # a known gap that was recorded and never closed (ADR-0022). Nothing
+  # running could be diffed against anything in the repository.
   #
   # `terraform validate` needs the provider schema, which needs the
   # registry, which is why this runs here rather than being something a

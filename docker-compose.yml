@@ -344,7 +344,7 @@ services:
   #
   # volatile-lru, not allkeys-lru: one instance holds queue jobs (no TTL)
   # alongside cache and sessions (TTL'd), so allkeys-lru can evict a
-  # queued job. See deploy/azure/containerapps/redis.yaml for the full
+  # queued job. See deploy/aws/terraform/services.tf for the full
   # argument, and scripts/check_redis_manifests.py for the invariants
   # every Redis manifest in this repo has to satisfy.
   # ---------------------------------------------------------------------------

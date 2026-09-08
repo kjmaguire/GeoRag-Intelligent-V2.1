@@ -88,9 +88,9 @@ d="$(fixture)"
 assert "unmodified tree passes" ok "All Redis manifests satisfy" "$d"
 
 # --- rule 1, the defect that shipped to production --------------------
-# deploy/azure/containerapps/redis.yaml carried --appendonly yes with no
-# volume from the day of the Azure lift until 2026-08-22, and the AWS
-# deployment fixes it. Losing the mount must therefore break the check —
+# The Azure container app carried --appendonly yes with no volume from the
+# day of the lift until 2026-08-22 (deploy/azure/containerapps/redis.yaml,
+# deleted 2026-09-08 — see git history), and the AWS deployment fixes it. Losing the mount must therefore break the check —
 # otherwise nothing stands between the fix and a silent regression to it.
 d="$(fixture)"
 mutate "$d" "${TF}" 's|: "/data"|: "/var/lib/nothing"|'

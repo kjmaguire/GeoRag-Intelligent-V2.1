@@ -1,6 +1,9 @@
 # Azure → AWS migration plan
 
-**Status:** accepted, 2026-09-08. The four open decisions were answered by Kyle
+**Status:** accepted, 2026-09-08. Written while `deploy/azure/` still
+existed, so its "today" and its `deploy/azure/...` citations describe the
+state at that moment; the tree was deleted in the last commit of the same
+change and those paths now resolve only in git history. The four open decisions were answered by Kyle
 on 2026-09-08 and are recorded in §11; the recommendations that were not taken
 are kept as written so the trade is legible later. ADR-0022 is the decision
 record.

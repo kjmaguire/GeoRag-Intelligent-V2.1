@@ -4,7 +4,7 @@ Production infrastructure for GeoRAG on AWS (ADR-0022, 2026-09-08).
 
 The difference from `deploy/azure/` that matters most: **this deploys
 itself.** The Azure tree was hand-applied resource definitions — its README
-opens by saying nothing in it is touched by CI or CD — and there was no
+opened by saying nothing in it was touched by CI or CD — and there was no
 Bicep, Terraform or ARM template for the container apps at all, so ~55
 environment variables per app were set in the portal and drifted freely
 from `.env.production.example`. Nothing running could be diffed against

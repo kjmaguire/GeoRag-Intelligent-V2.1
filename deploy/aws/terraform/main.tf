@@ -1,11 +1,12 @@
 # GeoRAG on AWS — network, cluster, registry (ADR-0022).
 #
-# Unlike the Azure deployment, this is written down. There is no Bicep,
-# Terraform or ARM template for the Container Apps: ~55 environment
+# Unlike the Azure deployment, this is written down. There was no Bicep,
+# Terraform or ARM template for the Container Apps at all: ~55 environment
 # variables per app were set by hand and drifted freely from
-# `.env.production.example`, which `deploy/azure/README.md` records as a
-# known gap. Starting from a blank cloud is the one chance to not repeat
-# that, so every resource below exists in code or does not exist.
+# `.env.production.example`, and the Azure README recorded that as a known
+# gap without ever closing it (ADR-0022, Consequences). Starting from a
+# blank cloud is the one chance to not repeat that, so every resource
+# below exists in code or does not exist.
 #
 # WHAT THIS IS NOT. Two tasks behind an ALB across two AZs is not high
 # availability. Every service except laravel-octane runs a single task,

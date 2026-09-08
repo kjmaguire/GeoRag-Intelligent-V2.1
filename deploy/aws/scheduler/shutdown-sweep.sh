@@ -16,9 +16,10 @@
 #    existed partly to keep the cron and the guard agreeing. EventBridge
 #    Scheduler takes a timezone, so there is one schedule, one fire, and
 #    no guard. If you are tempted to reintroduce a double fire for any
-#    reason, read the Azure file first: the guard was subtly wrong for two
-#    days a year until 2026-08-21 because it compared against midnight UTC
-#    rather than the real transition instant.
+#    reason: that guard was subtly wrong for two days a year until
+#    2026-08-21, because it compared against midnight UTC rather than the
+#    real transition instant. A double fire needs a guard, and a guard is
+#    a second place for the schedule to be wrong.
 #
 # 2. SCALING TO ZERO ACTUALLY WORKS. On Container Apps `--min-replicas 0`
 #    is a floor, not an off switch: an app with only the implicit HTTP

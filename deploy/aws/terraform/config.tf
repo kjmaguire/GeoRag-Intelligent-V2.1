@@ -1,10 +1,11 @@
 # Application configuration (ADR-0022).
 #
-# This file is the answer to the gap `deploy/azure/README.md` records under
-# "What is NOT here": there was no Bicep, Terraform or ARM template for the
-# container apps, so ~55 environment variables per app were set by hand and
-# drifted freely from `.env.production.example`. Nothing in the running
-# system could be diffed against anything in the repository.
+# This file is the answer to the gap the Azure README recorded under "What
+# is NOT here" and never closed (ADR-0022, Consequences): there was no
+# Bicep, Terraform or ARM template for the container apps, so ~55
+# environment variables per app were set by hand and drifted freely from
+# `.env.production.example`. Nothing in the running system could be diffed
+# against anything in the repository.
 #
 # So: every non-secret value is here, in code. Every secret is a Secrets
 # Manager reference injected by the execution role — its value never passes

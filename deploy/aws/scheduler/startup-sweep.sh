@@ -50,8 +50,11 @@ SERVICE_COUNT=$(( ${#TIER1[@]} + ${#TIER2[@]} + ${#TIER3[@]} ))
 
 # Octane runs two tasks; everything else runs one. The floor matters and
 # the ceiling does not: at desired 1 every deploy and task replacement is
-# a user-visible outage on the only public service. See ADR-0022 §3 and
-# ADR-0022, which carries the cost reasoning deploy/azure/README.md held.
+# a user-visible outage on the only public service. ADR-0022 §3 carries
+# the cost reasoning, and the evidence that answered the Azure-era
+# objection to it: max_connections 429 against a 24h peak of 99, Octane
+# opening PDO connections lazily per worker, and session, cache and queue
+# all on Redis.
 declare -A DESIRED=( [laravel-octane]=2 )
 
 # "name=endpoint-config-name" pairs. Empty means the deployment is on the
