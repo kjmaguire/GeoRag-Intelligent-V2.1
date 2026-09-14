@@ -49,6 +49,44 @@ from app.agent.hallucination.orchestrator_validators import (
     verify_numbers,
 )
 
+
+# --------------------------------------------------------------------------
+# A stand-in for the asyncpg pool Layer 4's hole-ID check needs.
+# --------------------------------------------------------------------------
+# These fixtures used to pass pg_pool=None, which meant the drill-hole
+# existence check never ran here at all — and after 2026-09-15 it cannot be
+# None-and-silent any more: a check that cannot run now fails CLOSED and says
+# the answer is unverified, rather than returning as though every hole
+# resolved. Passing a pool that knows which holes exist is both closer to
+# production (deps.pg_pool is typed asyncpg.Pool, never optional) and
+# strictly more coverage than None ever gave.
+class _FakePool:
+    """Returns exactly the hole IDs it was told exist."""
+
+    def __init__(self, known: set[str]) -> None:
+        self._known = known
+
+    def acquire(self):  # noqa: ANN202 — mimics asyncpg's async context manager
+        known = self._known
+
+        class _Conn:
+            async def fetch(self, _sql: str, hole_ids: list[str], *_args: object):
+                return [{"hole_id": h} for h in hole_ids if h in known]
+
+        class _Acquire:
+            async def __aenter__(self):
+                return _Conn()
+
+            async def __aexit__(self, *_exc: object) -> bool:
+                return False
+
+        return _Acquire()
+
+
+#: The holes the COLLARS fixture actually contains.
+REAL_HOLES = {"PLS-22-08", "PLS-22-09", "PLS-22-10"}
+
+
 # --------------------------------------------------------------------------
 # Evidence — the shapes the tools really return, not one-key stand-ins.
 # --------------------------------------------------------------------------
@@ -137,8 +175,11 @@ class TestAGroundedAnswerIsLeftAlone:
 
     @pytest.mark.asyncio
     async def test_layer_4_reports_nothing(self) -> None:
+        """Now runs the hole-ID check for real, against a pool that knows the
+        fixture's holes — where it previously passed pg_pool=None and skipped
+        it entirely."""
         warnings = await verify_entities(
-            GROUNDED, "proj", None, None, [COLLARS, ASSAYS],
+            GROUNDED, "proj", _FakePool(REAL_HOLES), None, [COLLARS, ASSAYS],
         )
 
         assert warnings == []
@@ -314,23 +355,86 @@ class TestKnownGaps:
             "The interval 145.2-148.0 m assayed 2.31 g/t."
         )
 
-    def test_layer_4_cannot_check_hole_ids_without_a_pool(self) -> None:
-        """Every fixture here passes pg_pool=None, so Layer 4's drill-hole
-        existence check does not run. A fabricated DDH-9999 is NOT caught by
-        this file — that path needs the live-database suite. Stated so the
-        green tick above is not read as more coverage than it is."""
-        import inspect
-
-        source = inspect.getsource(verify_entities)
-
-        assert "pg_pool" in source
-
     @pytest.mark.asyncio
-    async def test_a_fabricated_hole_id_passes_here(self) -> None:
+    async def test_a_fabricated_hole_id_is_now_caught_here(self) -> None:
+        """This used to be `test_a_fabricated_hole_id_passes_here`, asserting
+        the gap rather than the guard: every fixture passed pg_pool=None, so
+        Layer 4's drill-hole existence check never ran and DDH-9999 sailed
+        through with an empty warning list.
+
+        A pool costs one small class (`_FakePool`), so the gap was avoidable
+        rather than inherent. It closed on 2026-09-15 alongside the
+        fail-closed fix in verify_entities.
+        """
         warnings = await verify_entities(
             "PLS-22-08 reached 510 m [DATA-1]. DDH-9999 reached 372.5 m "
             "[DATA-1].",
-            "proj", None, None, [COLLARS],
+            "proj", _FakePool(REAL_HOLES), None, [COLLARS],
         )
 
+        assert any("DDH-9999" in w for w in warnings), (
+            "a hole absent from both silver.collars and the retrieved "
+            "evidence must be reported"
+        )
+        assert not any("PLS-22-08" in w for w in warnings), (
+            "a real hole must not be reported"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_pool_that_is_down_does_not_read_as_clean(self) -> None:
+        """The other half of the same fix. A check that could not run must
+        not return an empty warning list — that is indistinguishable from
+        'checked and fine', and it is what shipped before."""
+        class _DeadPool:
+            def acquire(self):  # noqa: ANN202
+                raise ConnectionError("pool exhausted")
+
+        warnings = await verify_entities(
+            "PLS-22-08 reached 510 m [DATA-1]. DDH-9999 reached 372.5 m "
+            "[DATA-1].",
+            "proj", _DeadPool(), None, [COLLARS],
+        )
+
+        assert any("UNVERIFIED" in w for w in warnings)
+
+
+class TestHoleIdSubstringFalsePositive:
+    """The numeric tail of a real hole ID is not a second hole.
+
+    `\\b` sits between the "-" and the "22" of "PLS-22-08", so the bare-numeric
+    pattern pulls "22-08" out of it. That phantom is absent from
+    silver.collars, and the warning it produced carries the one prefix the
+    severity classifier treats as critical on its own — so an ordinary correct
+    answer naming a real hole had its confidence floored and should_retry set.
+
+    It survived because every fixture in this file passed pg_pool=None, which
+    meant the lookup never ran and the file asserted the silence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_real_hole_does_not_produce_a_phantom(self) -> None:
+        warnings = await verify_entities(
+            "Three holes were drilled. PLS-22-08 reached 510 m [DATA-1].",
+            "proj", _FakePool(REAL_HOLES), None, [COLLARS],
+        )
+
+        assert not any("22-08'" in w for w in warnings), (
+            f"the numeric tail of PLS-22-08 was reported as its own hole: "
+            f"{warnings}"
+        )
         assert warnings == []
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_bare_numeric_hole_is_still_checked(self) -> None:
+        """The Cameco Shirley Basin shape the bare-numeric pattern exists for.
+
+        Nothing alphanumeric contains it, so the filter must leave it alone.
+        """
+        warnings = await verify_entities(
+            "Hole 36-1085 reached 210 m [DATA-1].",
+            "proj", _FakePool(REAL_HOLES), None, [COLLARS],
+        )
+
+        assert any("36-1085" in w for w in warnings), (
+            "a fabricated bare-numeric hole must still be caught"
+        )

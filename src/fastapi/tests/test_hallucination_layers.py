@@ -914,3 +914,97 @@ class TestProactiveInsightsGuardsCatchInjectedContent:
             )
 
         assert any("750000" in w for w in warnings)
+
+
+class TestLayer4HoleIdFailsClosed:
+    """The hole-ID check must not pass an answer it could not check.
+
+    This is the ONE Layer 4 warning `run_post_assembly_validation` treats as
+    critical on its own — every other Layer 4 warning needs three of them to
+    escalate. Until 2026-09-15 the PostGIS lookup behind it caught every
+    exception, logged at DEBUG, and returned as though every hole ID had
+    resolved.
+
+    That quietly undid the 2026-08-15 fail-closed fix: `validate_node` wraps
+    `run_post_assembly_validation` in a handler that floors confidence and
+    attaches an UNVERIFIED banner, but this except sat BELOW that call, so
+    nothing ever reached it. A fabricated hole ID arriving during a PgBouncer
+    blip or a PostGIS timeout shipped at whatever confidence retrieval
+    produced, with no banner and no retry.
+    """
+
+    #: The literal `run_post_assembly_validation` buckets as critical. Spelled
+    #: out here on purpose: if the classifier's prefix ever changes, this
+    #: test's failure is the reminder that the escalation went with it.
+    CRITICAL_PREFIX = "Layer 4: Drill-hole ID"
+
+    @staticmethod
+    def _exploding_pool():
+        class _Pool:
+            def acquire(self):  # noqa: ANN202 — mimics asyncpg's context manager
+                raise ConnectionError("pool exhausted")
+
+        return _Pool()
+
+    @pytest.mark.asyncio
+    async def test_a_check_that_could_not_run_escalates_as_critical(self) -> None:
+        from app.agent.hallucination.orchestrator_validators import verify_entities
+
+        warnings = await verify_entities(
+            "Hole ABC-123 intersected 4.2 m at 8.1 g/t. [DATA:1]",
+            "00000000-0000-0000-0000-000000000000",
+            self._exploding_pool(),
+            None,
+            tool_results=[],
+        )
+
+        escalating = [w for w in warnings if w.startswith(self.CRITICAL_PREFIX)]
+        assert escalating, (
+            "the hole-ID lookup failed and produced no warning the severity "
+            "classifier can see — the answer would ship as cleanly validated"
+        )
+
+    @pytest.mark.asyncio
+    async def test_it_says_unverified_not_fabricated(self) -> None:
+        """The answer may be perfectly sound; only the check is missing.
+
+        Claiming a specific hole was 'not found in silver.collars' when the
+        query never ran would be a fabricated finding of a fabrication.
+        """
+        from app.agent.hallucination.orchestrator_validators import verify_entities
+
+        warnings = await verify_entities(
+            "Hole ABC-123 intersected 4.2 m at 8.1 g/t. [DATA:1]",
+            "00000000-0000-0000-0000-000000000000",
+            self._exploding_pool(),
+            None,
+            tool_results=[],
+        )
+
+        joined = " ".join(warnings)
+        assert "UNVERIFIED" in joined
+        assert "not found in silver.collars" not in joined
+
+    @pytest.mark.asyncio
+    async def test_the_other_layer4_checks_still_run(self) -> None:
+        """Why the handler stays inside the try rather than re-raising.
+
+        A PostGIS failure invalidates the hole-ID check and nothing else.
+        Handing the whole response to the outer fail-closed handler would
+        lose the commodity and formation checks for an error that says
+        nothing about them.
+        """
+        from app.agent.hallucination.orchestrator_validators import verify_entities
+
+        warnings = await verify_entities(
+            "Hole ABC-123 returned 8.1 g/t Au over 4.2 m. [DATA:1]",
+            "00000000-0000-0000-0000-000000000000",
+            self._exploding_pool(),
+            None,
+            tool_results=[("retrieve", "no mention of that commodity here")],
+        )
+
+        assert any("Au" in w for w in warnings), (
+            "the ungrounded-commodity check did not run after the hole-ID "
+            "lookup raised"
+        )
