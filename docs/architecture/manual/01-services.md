@@ -315,9 +315,10 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
   2026-09-14, ADR-0022), which compose marks `:?` required. It is not a
   dead variable — `services/flow_jwt.py` signs and verifies with it — but
   nothing calls the bridge, and `app/config.py` declares it with an empty
-  default, so the compose requirement is the only thing that forces it to
-  be set anywhere. Production does not set it at all: it is absent from
-  the AWS secret list in `deploy/aws/terraform/config.tf`.
+  default. Added to the AWS secret list on 2026-09-14
+  (`deploy/aws/terraform/config.tf`, `_extra_secret_ref`) — injected into
+  fastapi and hatchet-worker only, not into every task, because it is a
+  signing key. Before that, production ran without it entirely.
 - **Volumes** `./src/fastapi:/app:cached`, `fastapi_hf_cache:/tmp/hf_cache`
   (shared with the sidecars), `georag-phase-b-extract:/data`.
 - **Depends on** `pgbouncer`, `redis`, `qdrant`, `minio`, `embedding`,
@@ -577,6 +578,7 @@ the next compose tidy can clear them without re-deriving the facts.
 - The fastapi `OMP_NUM_THREADS` and hatchet-worker GPU comments still talk
   about "contending with vLLM".
 - The `FLOW_JWT_SECRET` requirement on fastapi and hatchet-worker
-  outlived Kestra (§4). The variable was renamed off the Kestra prefix on
-  2026-09-14 (ADR-0022); the compose-required / production-unset
-  asymmetry is unchanged and still worth closing.
+  outlived Kestra (§4). Both halves were closed on 2026-09-14 (ADR-0022):
+  the variable was renamed off the Kestra prefix, and it was added to the
+  AWS secret list, so compose and production now agree that the two
+  Python services need it.

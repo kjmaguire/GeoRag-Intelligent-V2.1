@@ -126,7 +126,7 @@ hit, or move embeddings off-line.
 | `MINIO_ROOT_PASSWORD` / `S3_SECRET_KEY` | minio + clients | ✅ | random 32-byte |
 | `QDRANT_API_KEY` | qdrant + clients (prod) | ✅ | random 32-byte |
 | `FASTAPI_SERVICE_KEY` | laravel + fastapi + hatchet + dagster | ✅ | random 64-byte |
-| `FLOW_JWT_SECRET` | fastapi + hatchet-worker-ai | ✅ compose only — absent from the AWS secret list | random 64-byte |
+| `FLOW_JWT_SECRET` | fastapi + hatchet-worker | ✅ compose + AWS (`_extra_secret_ref`, these two services only) | random 64-byte |
 | `EXTERNAL_NOTIFICATION_HMAC_SECRET` | hatchet-worker-ai + senders | ✅ | random 64-byte |
 | `AUDIT_ENCRYPTION_KEY` | fastapi + hatchet-worker-ai | ✅ | random 32-byte (rotation is hard — see [Appendix C §9](C-security-posture.md#9-secret-rotation)) |
 | `HATCHET_CLIENT_TOKEN` | hatchet-lite + workers + fastapi | ✅ | from `hatchet-admin token create` |

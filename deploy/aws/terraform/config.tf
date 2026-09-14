@@ -36,15 +36,18 @@ resource "aws_secretsmanager_secret" "app" {
 #   MARTIN_DATABASE_URL      connects as martin_readonly, which has EXECUTE
 #                            on the silver.pg_* tile functions and nothing
 #                            else
+#   FLOW_JWT_SECRET          signs and verifies the per-flow integration
+#                            JWTs (services/flow_jwt.py), for callers with
+#                            no per-flow key in workflow.flow_registry.
+#                            Renamed from KESTRA_FLOW_JWT_SECRET (ADR-0022)
 #
-# NOT here, and knowingly: FLOW_JWT_SECRET (renamed from
-# KESTRA_FLOW_JWT_SECRET, ADR-0022). docker-compose.yml marks it
-# `${VAR:?}` required on fastapi and hatchet-worker; production does not
-# set it at all. app/config.py defaults it to "" so FastAPI starts either
-# way, and services/flow_jwt.py raises 500 on the first verify that falls
-# back to it. That is inert today only because nothing calls the
-# integrations bridge — Kestra, the edge it was built for, was removed
-# 2026-07-28. Add it to both lists below before anything does.
+# FLOW_JWT_SECRET was absent from this file until 2026-09-14, while
+# docker-compose.yml marked it `${VAR:?}` required — so dev could not start
+# without it and production ran without it entirely. app/config.py defaults
+# it to "", so FastAPI started either way and flow_jwt.py would have raised
+# 500 on the first verify that fell back to it. Inert only because nothing
+# calls the integrations bridge; a latent 500 rather than a visible
+# misconfiguration is exactly the shape this file exists to prevent.
 #
 # There is no Foundry key here and no storage account key. Both are gone:
 # Bedrock and S3 authenticate with the task role.
@@ -69,9 +72,23 @@ locals {
     ] : key => "${aws_secretsmanager_secret.app.arn}:${key}::"
   }
 
-  # Application services get the whole set. The third-party containers get
-  # only what they themselves read, under the names THEY expect — qdrant
-  # reads QDRANT__SERVICE__API_KEY, not QDRANT_API_KEY, and giving it the
+  # Secrets only SOME application services read, so they are not in the
+  # common set above. FLOW_JWT_SECRET is an HS256 signing key: the two
+  # Python services import services/flow_jwt.py, and nothing else has any
+  # use for it. Handing it to laravel-*, the hatchet engine or the sparse
+  # model server would widen a signing secret's blast radius for nothing.
+  #
+  # Add to this map rather than to _secret_ref whenever a new secret has a
+  # named reader instead of a general one.
+  _extra_secret_ref = {
+    fastapi        = ["FLOW_JWT_SECRET"]
+    hatchet-worker = ["FLOW_JWT_SECRET"]
+  }
+
+  # Application services get the whole common set, plus anything named for
+  # them above. The third-party containers get only what they themselves
+  # read, under the names THEY expect — qdrant reads
+  # QDRANT__SERVICE__API_KEY, not QDRANT_API_KEY, and giving it the
   # client-side name would leave auth off while looking configured.
   service_secrets = {
     for name, _cfg in local.services : name => lookup({
@@ -79,7 +96,13 @@ locals {
       redis  = []
       martin = []
       }, name,
-      [for key, ref in local._secret_ref : { name = key, valueFrom = ref }]
+      concat(
+        [for key, ref in local._secret_ref : { name = key, valueFrom = ref }],
+        [for key in lookup(local._extra_secret_ref, name, []) : {
+          name      = key
+          valueFrom = "${aws_secretsmanager_secret.app.arn}:${key}::"
+        }],
+      )
     )
   }
 

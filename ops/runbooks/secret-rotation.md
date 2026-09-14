@@ -665,11 +665,16 @@ or with §5 (a Redis roll, which ends everyone's).
   delete it, do not keep both. And `scripts/check_settings_have_readers.py`
   guards the other direction: the field cannot be removed while
   `flow_jwt.py` reads it.
-  It is **not** in the AWS Secrets Manager key list
-  (`deploy/aws/terraform/config.tf`), while compose marks it `${VAR:?}`
-  required. Production therefore runs with it unset — the field defaults
-  to `""` so FastAPI starts, and the bridge raises 500 on first use. Wire
-  it into the secret list before anything calls the bridge.
+  It **is** in the AWS Secrets Manager key list as of 2026-09-14
+  (`deploy/aws/terraform/config.tf`, `_extra_secret_ref`), injected into
+  `fastapi` and `hatchet-worker` only — the two services that import
+  `services/flow_jwt.py`. It is deliberately NOT in the common
+  `_secret_ref` set every task receives: it is an HS256 signing key, and
+  laravel-*, the hatchet engine and the sparse model server have no use
+  for it. Until that date it was absent entirely while compose marked it
+  `${VAR:?}` required, so dev could not start without it and production
+  ran without it — the field defaults to `""`, so FastAPI started anyway
+  and the bridge would have raised 500 on first use.
 - `AZURE_DOCUMENT_INTELLIGENCE_*` / the `docintel-*` secret refs on
   hatchet-worker-cc are dead since ADR-0019; remove them, they are not
   rotated.
