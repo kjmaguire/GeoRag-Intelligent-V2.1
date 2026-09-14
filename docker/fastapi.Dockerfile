@@ -421,8 +421,35 @@ LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Py
 #   for as long as the logs go back. libpq5 alone gives the client LIBRARY
 #   that psycopg and asyncpg link against; it does not give the binaries.
 #   Pinned to 17 to stay in step with the server major.
+#
+# `apt-get upgrade` is deliberate, and it means the digest pin on the FROM
+# above no longer fully determines this image's contents. Read both together.
+#
+# 2026-09-14: Trivy's CRITICAL gate failed this image on thirteen findings,
+# all Debian OS packages and all fixed upstream — CVE-2026-13221,
+# CVE-2026-42496 and CVE-2026-8376 against perl / perl-base /
+# perl-modules-5.40 / libperl5.40 at 5.40.1-6 (fixed 5.40.1-6+deb13u1), plus
+# CVE-2026-58016 against libglib2.0-0t64 at 2.84.4-3~deb13u3 (fixed
+# ~deb13u4). Every python-pkg target in the same scan was clean, so none of
+# it came from this project's dependencies. `apt-get install` does not
+# upgrade a package that is already present, which is why the block below
+# left all of them at the base image's versions.
+#
+# The trade-off, stated plainly: the digest pin now fixes the STARTING layer,
+# not the final package set, so two builds of the same commit on different
+# days can differ and a package regression can arrive without a diff. That is
+# the intended behaviour — a security patch should land on the next rebuild
+# without a commit — but "the digest reproduces the image" is no longer true.
+# docker/laravel.Dockerfile carries the same change for the same reason.
+#
+# Only the runtime stage gets this. The builder and tesseract-builder stages
+# contribute compiled artifacts, not their package sets, so upgrading there
+# would cost build time on an already slow image and change nothing that
+# ships or gets scanned.
+#
+# hadolint ignore=DL3005
 # ---------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libpq5 \
     postgresql-client-17 \
     gdal-bin \
