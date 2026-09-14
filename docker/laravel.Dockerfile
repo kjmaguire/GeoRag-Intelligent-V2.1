@@ -36,13 +36,20 @@
 #               5.40.1-6, fixed in 5.40.1-6+deb13u1. Re-pinned to the
 #               digest `php:8.5-cli` resolved to that day.
 #
-# The 2026-09-14 digest was resolved from the Docker Hub registry API
-# rather than `docker pull` — the session that made the change had no
-# Docker daemon, so it could not run `trivy image php:8.5-cli` first and
-# the CI gate is what verifies the perl fix actually landed. Prefer
-# pulling and scanning locally when you re-pin: a digest that does not
-# clear the finding costs a full CI cycle to discover, and a base bump
-# also moves the PHP patch version under the application.
+# The 2026-09-14 re-pin did NOT clear the perl CVEs: the digest it moved
+# to is built on a Debian 13.6 snapshot that predates the
+# 5.40.1-6+deb13u1 security upload, so there was no fixed base to reach.
+# The runtime stage's `apt-get upgrade` is what actually fixes them —
+# see the long note above that apt block, which also explains what this
+# pin does and does not guarantee any more. The re-pin is kept because
+# it is still the newer base, not because it solved anything.
+#
+# Lesson for the next re-pin: pull and scan locally first. The digest was
+# resolved from the Docker Hub registry API because that session had no
+# Docker daemon, so `trivy image php:8.5-cli` could not be run against it,
+# and a digest that does not clear the finding costs a full CI cycle to
+# discover. A base bump also moves the PHP patch version under the
+# application.
 FROM php:8.5-cli@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS builder
 
 # Build-time system dependencies.
@@ -183,7 +190,33 @@ LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"
 
 # Runtime system dependencies (same set as builder, minus build-only tools).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# `apt-get upgrade` is deliberate, and it is the reason the digest pin above
+# no longer fully determines this image's contents. Read both together.
+#
+# 2026-09-14: Trivy's CRITICAL gate failed on CVE-2026-13221, CVE-2026-42496
+# and CVE-2026-8376 against Debian's perl 5.40.1-6 (fixed 5.40.1-6+deb13u1).
+# Re-pinning php:8.5-cli to its then-current digest did NOT clear them — that
+# digest is built on a Debian 13.6 snapshot predating the security upload, so
+# there was no newer base to move to. `apt-get install` does not upgrade a
+# package that is already present, which is why the existing block left the
+# base's perl untouched. This line is what pulls the patched one.
+#
+# The trade-off, stated plainly: the digest pin now fixes the STARTING layer,
+# not the final package set, so two builds of the same commit on different
+# days can differ. That is the intended behaviour — a security patch should
+# land on the next rebuild without a commit — but it means "the digest
+# reproduces the image" is no longer true, and a package regression can
+# arrive without a diff. Chosen over a targeted `--only-upgrade` of the four
+# perl packages, which hardcodes the perl minor version in
+# `perl-modules-5.40` and breaks silently when the base moves to 5.42.
+#
+# Only the runtime stage needs this. The builder's packages never reach the
+# final image — only /app is copied from it — so upgrading there would cost
+# build time and change nothing that ships or gets scanned.
+#
+# hadolint ignore=DL3005
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libpq-dev \
     libzip-dev \
     libpng-dev \
