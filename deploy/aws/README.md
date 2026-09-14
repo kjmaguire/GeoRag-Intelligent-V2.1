@@ -26,8 +26,30 @@ terraform plan -var-file=production.tfvars
 ```
 
 `production.tfvars` is not in the repository. The variables with no default
-are the ones a deployment must decide: `acm_certificate_arn`,
-`alert_email`, and the two Bedrock Marketplace endpoint names.
+are the ones a deployment must decide: `acm_certificate_arn`, `app_domain`,
+`reverb_app_key`, `alert_email`, and the two Bedrock Marketplace endpoint
+names.
+
+`app_domain` is the bare public hostname — no scheme, no path — and must be
+a name on `acm_certificate_arn`. It drives `APP_URL`, and through it
+Sanctum's stateful-domain list, and it is the Reverb WebSocket origin
+allowlist.
+
+`reverb_app_key` needs saying once, because it is one value that has to be
+set identically in two unrelated places:
+
+| Where | How it gets there |
+| --- | --- |
+| The Reverb server and the two publishers | `reverb_app_key` in this tfvars |
+| The browser bundle | the `VITE_REVERB_APP_KEY` **repository variable**, baked in by CD |
+
+Its secret half, `REVERB_APP_SECRET`, goes into Secrets Manager out of band
+with the other application secrets. The key is public by design
+(`config/reverb.php`) — the browser receives it — so it is a repository
+variable rather than a secret; the secret is the half that authorises
+publishing. If the bundle's key and the server's key disagree the chat
+stream simply never connects, so CD fails the build when the variable is
+unset rather than shipping a bundle with `key: undefined`.
 
 ## Step 0, before anything else
 

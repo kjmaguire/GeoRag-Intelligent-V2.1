@@ -40,6 +40,12 @@ resource "aws_secretsmanager_secret" "app" {
 #                            JWTs (services/flow_jwt.py), for callers with
 #                            no per-flow key in workflow.flow_registry.
 #                            Renamed from KESTRA_FLOW_JWT_SECRET (ADR-0022)
+#   REVERB_APP_SECRET        signs requests to the Pusher events API.
+#                            laravel-octane and laravel-horizon sign with
+#                            it; laravel-reverb verifies. The paired
+#                            REVERB_APP_KEY is public by design
+#                            (config/reverb.php) and is a variable below,
+#                            not a secret — the browser receives it.
 #
 # FLOW_JWT_SECRET was absent from this file until 2026-09-14, while
 # docker-compose.yml marked it `${VAR:?}` required — so dev could not start
@@ -83,6 +89,13 @@ locals {
   _extra_secret_ref = {
     fastapi        = ["FLOW_JWT_SECRET"]
     hatchet-worker = ["FLOW_JWT_SECRET"]
+
+    # Only the three PHP services broadcast or serve WebSocket frames.
+    # fastapi streams SSE to Laravel, which re-broadcasts; it never signs
+    # a Pusher request itself.
+    laravel-octane  = ["REVERB_APP_SECRET"]
+    laravel-horizon = ["REVERB_APP_SECRET"]
+    laravel-reverb  = ["REVERB_APP_SECRET"]
   }
 
   # Application services get the whole common set, plus anything named for
@@ -118,6 +131,19 @@ locals {
 
     APP_ENV   = "production"
     APP_DEBUG = "false"
+
+    # The public origin, and the thing a whole family of settings derives
+    # from. Unset, config/app.php:54 falls back to `http://localhost` and
+    # every absolute URL, signed URL and password-reset link points at the
+    # container. Sanctum's stateful list also ends with
+    # currentApplicationUrlWithPort() (config/sanctum.php:20), so this is
+    # what puts the real domain in it.
+    #
+    # CORS_ALLOWED_ORIGINS is deliberately NOT set: the Inertia app is
+    # same-origin and config/cors.php:39 already resolves an unset value to
+    # an empty allowlist in production, which is the safe reading of
+    # "nobody said". Add it only when a genuine cross-origin caller exists.
+    APP_URL = "https://${var.app_domain}"
 
     POSTGRES_HOST        = local.db_host
     POSTGRES_DIRECT_HOST = local.db_host
@@ -180,6 +206,71 @@ locals {
     SPARSE_SERVICE_URL = "http://sparse.${aws_service_discovery_private_dns_namespace.this.name}:8000"
   }
 
+  # ── Reverb ──────────────────────────────────────────────────────────
+  # None of this may go in common_environment. config/broadcasting.php:23
+  # resolves the driver to `reverb` exactly when REVERB_APP_KEY is set, and
+  # its comment records why the blanket default was reverted: a bare
+  # `reverb` default fatals env-less artisan contexts, because
+  # Pusher::__construct(null) throws at boot. Handing REVERB_* to fastapi,
+  # the hatchet worker or the sparse server buys nothing and widens that.
+  #
+  # REVERB_APP_KEY is a variable rather than a secret on purpose. It is
+  # public by design — config/reverb.php:85 says so, the browser receives
+  # it, and it is baked into the JS bundle at build time. REVERB_APP_SECRET
+  # is the half that authorises publishing, and that one is in Secrets
+  # Manager (see _extra_secret_ref above).
+
+  # What laravel-octane and laravel-horizon need to PUBLISH an event.
+  reverb_client_environment = {
+    # Stated rather than inherited from the ternary in
+    # config/broadcasting.php:23. A deploy that dropped this once produced
+    # green health checks and a chat UI that hung on every query with no
+    # error anywhere (2026-08-11).
+    BROADCAST_CONNECTION = "reverb"
+
+    REVERB_APP_ID  = var.reverb_app_id
+    REVERB_APP_KEY = var.reverb_app_key
+
+    # Cloud Map, not the public domain. The publish is a server-to-server
+    # HTTP call inside the VPC; sending it to the ALB would hairpin out
+    # through the NAT and back in to reach a task two subnets away.
+    REVERB_HOST   = "laravel-reverb.${aws_service_discovery_private_dns_namespace.this.name}"
+    REVERB_PORT   = 8080
+    REVERB_SCHEME = "http"
+  }
+
+  # What laravel-reverb needs to SERVE the app.
+  reverb_server_environment = {
+    REVERB_SERVER_HOST = "0.0.0.0"
+    REVERB_SERVER_PORT = 8080
+
+    REVERB_APP_ID  = var.reverb_app_id
+    REVERB_APP_KEY = var.reverb_app_key
+
+    # The WebSocket origin allowlist. config/reverb.php:95 defaults to a
+    # localhost/georag.local list for dev and its comment says to set this
+    # explicitly in production — nothing did, so every upgrade from the
+    # real domain would have been rejected and no query would have
+    # streamed. Bare host, no scheme and no port: Reverb matches against
+    # the HOST parsed out of the Origin header.
+    REVERB_ALLOWED_ORIGINS = var.app_domain
+
+    # REVERB_HOST is deliberately absent here. On the server it lands in
+    # config/reverb.php:34 as `hostname`, which is not the same knob as the
+    # client-side host above, and the browser arrives through the ALB with
+    # the public Host header. Left null so the server does not filter on a
+    # name it is not reached by.
+
+    # REQUIRED, and the reason is specific. Both default to 10000 bytes,
+    # far below a completed LLM answer frame, and Reverb silently rejects
+    # an oversized payload — so the `completed` frame carrying the answer
+    # text and its citations never arrives and the stream appears to stall
+    # on the last token. .env.example has carried both at 1000000 since the
+    # day that was diagnosed.
+    REVERB_MAX_REQUEST_SIZE     = 1000000
+    REVERB_APP_MAX_MESSAGE_SIZE = 1000000
+  }
+
   # Per-service additions. Everything not listed gets only the common set.
   service_environment = {
     for name, _cfg in local.services : name => merge(
@@ -218,7 +309,7 @@ locals {
           # itself over SPARSE_SERVICE_URL.
           SPARSE_SERVICE_URL = ""
         }
-        laravel-octane = {
+        laravel-octane = merge(local.reverb_client_environment, {
           FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
           # LOG_STACK=stderr, NOT the `single` default. On Azure the
           # default routed the application log to a file inside a
@@ -227,15 +318,16 @@ locals {
           # stdout/stderr reach CloudWatch, so this is stated.
           LOG_STACK     = "stderr"
           OCTANE_SERVER = "swoole"
-        }
-        laravel-horizon = {
+        })
+        # Horizon broadcasts too: the queued jobs behind a query dispatch
+        # QueryStreamEvent, so it needs the publish credentials as much as
+        # Octane does.
+        laravel-horizon = merge(local.reverb_client_environment, {
           LOG_STACK = "stderr"
-        }
-        laravel-reverb = {
-          LOG_STACK          = "stderr"
-          REVERB_SERVER_HOST = "0.0.0.0"
-          REVERB_SERVER_PORT = 8080
-        }
+        })
+        laravel-reverb = merge(local.reverb_server_environment, {
+          LOG_STACK = "stderr"
+        })
         qdrant = {
           # The API key arrives through `secrets`, under the name qdrant
           # itself reads. Setting it here too would put it in the task
@@ -247,7 +339,45 @@ locals {
   }
 }
 
+# Declared here rather than in variables.tf because this file is what
+# consumes them, and because the certificate and the name it certifies are
+# one fact stated twice if they live apart.
+
 variable "acm_certificate_arn" {
   description = "ACM certificate for the public HTTPS listener."
+  type        = string
+}
+
+variable "app_domain" {
+  description = <<-EOT
+    Public hostname the ALB serves, without scheme — e.g. georag.example.com.
+    Must match a name on acm_certificate_arn. Drives APP_URL and the Reverb
+    WebSocket origin allowlist, and through APP_URL, Sanctum's stateful
+    domain list.
+  EOT
+  type        = string
+
+  validation {
+    # A scheme here would produce `https://https://…` in APP_URL and an
+    # origin entry that matches nothing, both of which fail at request time
+    # rather than at apply time.
+    condition     = !can(regex("://", var.app_domain)) && !can(regex("/", var.app_domain))
+    error_message = "app_domain must be a bare hostname: no scheme, no path."
+  }
+}
+
+variable "reverb_app_id" {
+  description = "Reverb application id. An identifier, not a credential."
+  type        = string
+  default     = "georag-app"
+}
+
+variable "reverb_app_key" {
+  description = <<-EOT
+    Reverb application key. Public by design (config/reverb.php): the
+    browser receives it and CD bakes it into the JS bundle as
+    VITE_REVERB_APP_KEY, which must carry the SAME value. The secret half
+    is REVERB_APP_SECRET in Secrets Manager.
+  EOT
   type        = string
 }

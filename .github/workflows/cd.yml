@@ -148,6 +148,24 @@ jobs:
           - image: laravel
             dockerfile: docker/laravel.Dockerfile
             context: .
+            # Vite INLINES import.meta.env at build time, so these cannot
+            # be injected by the task definition the way every other
+            # setting is. The key is public by design (config/reverb.php)
+            # and must equal the reverb_app_key Terraform hands the
+            # server, or the browser presents a key the cluster does not
+            # know. Scheme is stated because resources/js/bootstrap.ts
+            # sets forceTLS from `scheme === 'https'` — the string 'wss'
+            # yields ws:// on an https page and the browser blocks it as
+            # mixed content.
+            #
+            # Host and port are deliberately NOT passed. Reverb is served
+            # on the same domain as the app through the ALB's /app/*
+            # listener rule, so bootstrap.ts's fallbacks —
+            # window.location.hostname and 443 — are already correct, and
+            # a wrong explicit value here is silent.
+            build_args: |
+              VITE_REVERB_APP_KEY=${{ vars.VITE_REVERB_APP_KEY }}
+              VITE_REVERB_SCHEME=https
           - image: martin
             dockerfile: docker/martin.Dockerfile
             context: .
@@ -168,11 +186,30 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # An unset variable would build a bundle with `key: undefined` and
+      # ship it. Echo then fails to authenticate against Reverb and the
+      # chat stream hangs with nothing in any log — the exact failure mode
+      # config/broadcasting.php's comment records from 2026-08-11. Fail
+      # here instead, where the cause is named.
+      - name: Require the public Reverb key
+        if: matrix.image == 'laravel'
+        env:
+          VITE_REVERB_APP_KEY: ${{ vars.VITE_REVERB_APP_KEY }}
+        run: |
+          if [ -z "$VITE_REVERB_APP_KEY" ]; then
+            echo "::error::Repository variable VITE_REVERB_APP_KEY is not set."
+            echo "It must equal the reverb_app_key given to Terraform"
+            echo "(deploy/aws/terraform/config.tf). It is public by design"
+            echo "— a repository VARIABLE, not a secret."
+            exit 1
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build_args }}
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/georag/${{ matrix.image }}:${{ needs.check-ci.outputs.short_sha }}
           # The whole reason this is not `az acr build`. Layer cache turns
