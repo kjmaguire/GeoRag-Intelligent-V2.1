@@ -551,6 +551,19 @@ jobs:
       - name: Sweep script behaviour
         run: bash deploy/aws/scheduler/tests/run.sh
 
+      # The APP_KEY rotation harness runs in the same job because it is the
+      # same kind of thing: a procedure that touches production, has no
+      # staging environment to rehearse against, and whose failure modes are
+      # silent. This one is sharper than the sweeps — a rotation that gets
+      # the key order backwards re-encrypts every audit row to the key it
+      # already had, exits 0, and looks exactly like success.
+      #
+      # ops/runbooks/secret-rotation.md §2 recorded the loss of the Azure
+      # harness as leaving those decisions "no longer pinned by anything".
+      # This is what pins them.
+      - name: APP_KEY rotation behaviour
+        run: bash deploy/aws/rotation/tests/run.sh
+
   # ─── Infrastructure as code ──────────────────────────────────────────
   # New with the AWS move. There was no Bicep, Terraform or ARM template
   # for the Azure container apps at all, so ~55 environment variables per

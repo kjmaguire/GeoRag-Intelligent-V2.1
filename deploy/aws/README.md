@@ -18,6 +18,8 @@ not to repeat that.
 | `terraform/` | Everything: VPC, ALB, ECS, RDS, EFS, S3, ECR, IAM, Secrets Manager, EventBridge Scheduler, CloudWatch |
 | `scheduler/` | The two nightly sweep scripts, embedded into task definitions by `terraform/scheduler.tf` |
 | `scheduler/tests/` | Behavioural tests for the sweeps, run against a fake `aws` CLI |
+| `rotation/` | The `APP_KEY` rotation, and the script it runs inside a one-off task (`terraform/rotation.tf`) |
+| `rotation/tests/` | Behavioural tests for the rotation, against a fake `aws` CLI and a fake `php artisan` |
 
 ```bash
 cd deploy/aws/terraform
@@ -225,13 +227,36 @@ floor can be picked from the observed score distribution against refusal
 outcomes. Until then, treat 0.2 as unverified and watch the refusal rate —
 `ops/runbooks/refusal-rate-spike.md` names this as the first thing to check.
 
-## Testing the sweeps
+## Testing the sweeps and the rotation
 
 ```bash
 bash deploy/aws/scheduler/tests/run.sh
+bash deploy/aws/rotation/tests/run.sh
 ```
 
 No credentials, no network, no mutation — a fake `aws` CLI driven by
-environment variables. There is still no staging environment to rehearse a
-sweep on, so this harness remains the only thing between a scheduler edit
-and finding out at 06:00.
+environment variables, plus a fake `php artisan` for the rotation. There is
+still no staging environment to rehearse either on, so these harnesses
+remain the only thing between a scheduler edit and finding out at 06:00, or
+between a rotation edit and finding out that the audit ledger is
+unreadable. Both run in CI.
+
+## Rotating APP_KEY
+
+```bash
+export ROTATE_SUBNETS="$(terraform -chdir=terraform output -raw private_subnet_ids)"
+export ROTATE_SECURITY_GROUP="$(terraform -chdir=terraform output -raw task_security_group_id)"
+
+bash rotation/rotate-app-key.sh            # preflight + plan, mutates nothing
+bash rotation/rotate-app-key.sh --apply    # do it
+```
+
+`ops/runbooks/secret-rotation.md` §2 is the procedure and the reasoning.
+Two things to know before running it:
+
+- **It takes the platform down.** `laravel-octane` and `laravel-horizon`
+  are scaled to zero while `query_audit_log` is re-encrypted, because both
+  write `encrypted` columns and `APP_MAINTENANCE_DRIVER` is `file` — a
+  maintenance page cannot be made to cover two Octane tasks.
+- **It must run inside the maintenance window**, after `startup-sweep.sh`
+  has brought RDS up. It refuses to start against a stopped database.

@@ -408,13 +408,33 @@ Consequences to handle rather than leave:
   `BEDROCK_ENDPOINT_NOT_INSERVICE` and a Sev 1. This is the sharpest edge the
   Bedrock route adds, and it is entirely in the scheduler.
 - `rotate-app-key.sh` + `tests/rotate-app-key.test.sh` pin what happens at each
-  failure point of an APP_KEY rotation (a dump failure lifts maintenance, a
-  restore failure does not, no secret changes before the in-replica half
-  succeeds, the key never reaches the terminal). **NOT YET PORTED** — the
-  scripts went with `deploy/azure/` and nothing replaced them, so rotation is
-  a by-hand run of the RUNBOOK sequence until one is written. The contract is
-  preserved in `ops/runbooks/secret-rotation.md` §2, flagged as outstanding
-  rather than dropped.
+  failure point of an APP_KEY rotation (a dump failure is reversible and is
+  reversed, a restore failure is not, no secret changes before the in-container
+  half succeeds, the key never reaches the terminal). **Ported 2026-09-14** as
+  `deploy/aws/rotation/`, with `terraform/rotation.tf` for the one-off task the
+  re-encryption runs in, and 32 cases in `deploy/aws/rotation/tests/run.sh`
+  wired into CI.
+
+  Three of the Azure contract's eight findings did not survive the port, and
+  each is gone because the constraint that produced it is gone: the dump no
+  longer runs inside a serving container, so there is no TTY to fake, no
+  liveness probe to keep green with `down --status=200`, and no need for the
+  dump and the restore to share an exec session. What *replaced* maintenance
+  mode is scaling the writers to zero — `config/app.php:121` leaves
+  `APP_MAINTENANCE_DRIVER` at `file`, so maintenance state lives on one
+  container's filesystem and `laravel-octane` runs two tasks.
+
+  One of the eight was **wrong on Azure too** and is corrected rather than
+  carried: finding 5 said Horizon never writes `query_audit_log`.
+  `app/Jobs/StreamQueryFromFastApi.php` writes `response_text` — an
+  `encrypted` column — on its completion, error and failed paths. Horizon is
+  quiesced as well.
+
+  What the port adds: an RDS snapshot taken before anything changes. The Azure
+  design's recovery asset was the dump surviving on the replica's disk; a
+  Fargate task's disk does not survive, and a half-re-encrypted table cannot be
+  re-dumped (`DumpAuditPii.php:186` fails the whole dump on the first row it
+  cannot decrypt). Heavier to use, and unlike the old one it always works.
 
 ---
 

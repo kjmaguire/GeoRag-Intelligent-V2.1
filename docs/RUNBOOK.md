@@ -123,7 +123,31 @@ isolation is required on a shared DB.
 - Policy-driven rotation (compliance requirement, e.g. annual).
 - Migrating to a new deployment environment.
 
-### Rotation procedure (preferred: one-shot)
+### ⚠️ On the production deployment, use the script, not this page
+
+```bash
+bash deploy/aws/rotation/rotate-app-key.sh            # preflight + plan
+bash deploy/aws/rotation/rotate-app-key.sh --apply    # do it
+```
+
+`ops/runbooks/secret-rotation.md` §2 has the full procedure and the
+findings behind it. This page is the Laravel-level mechanics, which the
+script executes; it is still the right page for a dev or on-prem install,
+and for understanding what the script is doing.
+
+**Neither of the two procedures below works on ECS as written.**
+`audit:rotate-key` runs `key:generate --force`, which writes to `.env` —
+and the production image ships none (`.dockerignore` excludes it; `APP_KEY`
+arrives as an env var), so it fails *after* the dump and *before* the
+restore. And `php artisan down` puts one container into maintenance, while
+`laravel-octane` runs two tasks and neither of them is where a rotation
+would run; the script scales the writers to zero instead. Running either
+one against production by hand is how you get a half-rotated audit ledger.
+
+### Rotation procedure (preferred: one-shot — dev and on-prem only)
+
+Requires a writable `.env`, so it is unusable on the production image; see
+the warning above.
 
 ```bash
 php artisan audit:rotate-key --dump-dir=/secure
@@ -141,7 +165,12 @@ path. NEVER shreds the dump on failure — it's the only recovery asset.
 
 ### Rotation procedure (manual, for partial recovery)
 
-If the orchestrator fails mid-run you run the same four commands by hand:
+If the orchestrator fails mid-run you run the same four commands by hand.
+On the production deployment the equivalent is
+`deploy/aws/rotation/rotate-app-key-inside.sh`, which runs steps 2, 4 and 5
+inside a one-off task — read that rather than retyping these, and note that
+it replaces step 3 with a key minted outside the container and step 1 and 6
+with scaling the writers to zero and back:
 
 ```bash
 # 1. Maintenance mode — pauses writes.
@@ -177,7 +206,11 @@ flat memory. Use `--dry-run` on either to preview without touching data.
 If the rotation happens without steps 2 and 4, you have two recovery options:
 
 - **Restore old `APP_KEY` from backup.** Every encrypted column becomes
-  readable again. This is almost always the right answer.
+  readable again. This is almost always the right answer. It is NOT the
+  answer for a ledger that is *half* rotated, where some rows are under
+  each key: no key reads that, and `audit:dump-pii` cannot even re-dump it
+  (it fails the whole dump on the first row it cannot decrypt). That case
+  is why the production script takes an RDS snapshot before it starts.
 - **Accept the loss.** For audit data you're happy to forget (dev-only
   install, retention policy expired), `TRUNCATE query_audit_log` and
   move on.
@@ -188,7 +221,8 @@ If the rotation happens without steps 2 and 4, you have two recovery options:
   separate KMS. Losing the DB without the key is the same as deleting the
   data.
 - Never rotate `APP_KEY` out-of-band (e.g., via `php artisan key:generate`
-  on a whim). Always run the rotation procedure above.
+  on a whim). Always run the rotation procedure above — and on production,
+  the script.
 - Add `APP_KEY` to whatever secret-rotation calendar your org uses so
   it's a scheduled operation, not a reactive one.
 

@@ -300,8 +300,15 @@ worker — the pattern that OOM-killed the container on 2026-06-24 with the
   on Foundry. `ops/validation/bedrock_probe.py` covers all four models and
   replaces `cohere_parse_probe.py`, which covered only Parse — on Bedrock,
   every one of them is unverified, not just that one.
-- `RERANKER_SCORE_THRESHOLD_FOUNDRY` re-measured against Rerank 3.5 on the
-  golden set before traffic is flipped.
+- `RERANKER_SCORE_THRESHOLD_FOUNDRY` re-measured against Rerank 3.5 before
+  traffic is flipped.
+
+  *Corrected 2026-09-14:* this said "on the golden set", which it cannot be —
+  `tests/golden_questions/seed_template.yaml` is a 38-entry skeleton with no
+  chunk-level relevance labels, so the re-measurement is blocked on SME
+  labelling as well as on a corpus and credentials. Same correction as
+  consequence 4; `app/services/reranker.py` records the route that needs no
+  labels.
 - Backend-selection tests extended to pin the new defaults and the loud
   rejection of `foundry` / `azure`, in the shape of
   `src/fastapi/tests/test_backend_selection.py`.
@@ -310,6 +317,16 @@ worker — the pattern that OOM-killed the container on 2026-06-24 with the
 - The sweep behaviour tests (`deploy/azure/containerapps/scripts/tests/run.sh`)
   and the APP_KEY rotation harness ported, not deleted: they pin what happens at
   every failure point, and there is still no staging environment to rehearse on.
+
+  *Done:* the sweeps as `deploy/aws/scheduler/tests/run.sh` (2026-09-08), the
+  rotation as `deploy/aws/rotation/` with `terraform/rotation.tf` and 32 cases
+  (2026-09-14). The port is not a translation — the re-encryption moved out of
+  a live serving container into a one-off task, which retires three of the
+  Azure procedure's findings, replaces maintenance mode with scaling the
+  writers to zero, and makes an RDS snapshot the recovery asset. It also
+  corrected one finding that was wrong on Azure too: Horizon *does* write
+  `query_audit_log`'s encrypted columns. See `ops/runbooks/secret-rotation.md`
+  §2.
 
 ## Follow-ups (not part of this ADR)
 

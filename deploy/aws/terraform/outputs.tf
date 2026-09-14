@@ -49,3 +49,12 @@ output "task_security_group_id" {
   description = "For the CD workflow's AWS_TASK_SECURITY_GROUP_ID secret."
   value       = aws_security_group.tasks.id
 }
+
+output "app_key_rotation_task_family" {
+  description = <<-EOT
+    The task definition deploy/aws/rotation/rotate-app-key.sh runs the
+    re-encryption in. Not startable outside a rotation: it references an
+    APP_KEY_NEXT secret key that only exists while one is in flight.
+  EOT
+  value       = aws_ecs_task_definition.app_key_rotation.family
+}
