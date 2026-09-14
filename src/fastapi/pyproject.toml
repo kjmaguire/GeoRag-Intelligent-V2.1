@@ -240,12 +240,15 @@ dependencies = [
     # missed this leg.
     #
     # azure-ai-documentintelligence + azure-core (the #28 Azure Document
-    # Intelligence OCR adapter, 2026-07-28) removed 2026-09-02 per ADR-0019:
-    # the OCR engine is Cohere Parse v5 on Azure AI Foundry, called with the
-    # httpx client already used for Embed/Rerank — no vendor SDK. azure-core
-    # still arrives transitively through georag-object-storage's
-    # azure-storage-blob for the Blob backend; nothing in this service
-    # imports it directly any more.
+    # Intelligence OCR adapter, 2026-07-28) removed 2026-09-02 per ADR-0019.
+    # The OCR engine is now Cohere Parse 5 on a Bedrock Marketplace endpoint
+    # (ADR-0022 moved it off Foundry), called with the httpx client already
+    # used for Embed/Rerank — no vendor SDK.
+    #
+    # azure-core used to arrive here anyway, transitively, through
+    # georag-object-storage's azure-storage-blob. That dependency was
+    # dropped on 2026-09-14 once ADR-0022 made STORAGE_BACKEND=azure_blob a
+    # hard error, so no Azure package reaches this service by any route now.
     # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
     # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
     # listed above) are sufficient to call the Ollama / vLLM backend via the
