@@ -192,7 +192,20 @@ worker — the pattern that OOM-killed the container on 2026-06-24 with the
 4. **Rerank drops a major version.** Bedrock serves Rerank 3.5, not v4.
    `RERANKER_SCORE_THRESHOLD_FOUNDRY = 0.2` was measured against v4's calibrated
    scores and is the system's only retrieval-quality floor (hard rule 5, as
-   built). It is re-measured on the golden set, not carried over.
+   built). It **is** carried over, unvalidated, and that is an accepted risk of
+   this decision rather than something the migration closes.
+
+   *Corrected 2026-09-14:* this consequence originally read "It is re-measured
+   on the golden set, not carried over." Both halves were wrong. The value is
+   carried over, and the golden set cannot re-measure it — calibrating a
+   relevance floor needs (query, chunk, relevant?) triples and
+   `tests/golden_questions/seed_template.yaml` is a 38-entry skeleton whose
+   `expected_citations` and `expected_numeric_values` are all empty and marked
+   "SME fills". The re-measurement is therefore blocked on SME labelling that
+   has not started, in addition to a corpus and in-region credentials.
+   `app/services/reranker.py` records the alternative that needs no labels:
+   once there is traffic, pick the floor from `answer_runs`, whose
+   `reranker_version` distinguishes 3.5-scored runs from v4-scored ones.
 5. **Marketplace endpoints do not scale to zero.** They bill for SageMaker
    compute for as long as they exist, so the nightly sweeps have to delete and
    recreate them — slower and more failure-prone than stopping a container, and

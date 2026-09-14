@@ -30,11 +30,14 @@ What it records:
   4. **Embeddings.** That the request body really is Cohere's own v2 schema
      minus `model`, and that `output_dimension: 1024` is honoured. A silently
      ignored dimension writes 1536-dim vectors into a 1024-dim collection.
-  5. **Rerank.** The `bedrock-agent-runtime.rerank` response shape, and — the
-     point of the exercise — the SCORE DISTRIBUTION of Rerank 3.5 against
-     the same inputs v4 was calibrated on. `RERANKER_SCORE_THRESHOLD_HOSTED`
-     is 0.2, measured against v4, and it is the only retrieval-quality gate
-     in the system.
+  5. **Rerank.** The `bedrock-agent-runtime.rerank` response shape, and a
+     SANITY CHECK on Rerank 3.5's scores: does an obviously-relevant document
+     clear `RERANKER_SCORE_THRESHOLD_HOSTED` (0.2, measured against v4) and
+     do obviously-irrelevant ones fall under it. That is four hand-written
+     documents, NOT a calibration — it can catch a floor that is grossly
+     wrong for 3.5 and cannot tell you the right value. Re-measuring the
+     threshold properly needs chunk-level relevance labels that do not exist
+     yet; see app/services/reranker.py for what that would take.
   6. **Parse.** The full key shape of `pages[0]` in `blocks` and `markdown`
      mode, and the pixel ladder for `COHERE_PARSE_MAX_PIXELS`. This contract
      has NEVER been verified, on Foundry or on Bedrock.

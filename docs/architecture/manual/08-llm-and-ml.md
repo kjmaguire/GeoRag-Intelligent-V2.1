@@ -43,9 +43,19 @@ row carefully.
 `RERANKER_SCORE_THRESHOLD_HOSTED` (0.2, renamed from `_FOUNDRY`) was
 measured against Rerank **v4** on 2026-08-15 and is the only
 retrieval-quality gate in the system (hard rule 5, as built). It is carried
-over to 3.5 **unvalidated** and must be re-measured on the golden set: too
-low and it stops filtering, too high and the refusal rate climbs, and
-neither shows up in any metric anything scrapes.
+over to 3.5 **unvalidated**: too low and it stops filtering, too high and
+the refusal rate climbs, and neither shows up in any metric anything
+scrapes.
+
+*Corrected 2026-09-14:* this said "must be re-measured on the golden set".
+It cannot be. Calibrating a relevance floor needs (query, chunk, relevant?)
+triples, and `tests/golden_questions/seed_template.yaml` is a 38-entry
+skeleton — its own header says so — with every `expected_citations` and
+`expected_numeric_values` empty and marked "SME fills". Nothing else in the
+repository carries chunk-level relevance labels. The route that needs none
+is in `app/services/reranker.py`: once there is traffic, pick the floor from
+the `answer_runs` score distribution, which `reranker_version` keeps
+separable by model version.
 
 ⚠️ **Page-image verbalization has no replacement.** `gpt-5-mini` was an
 Azure OpenAI model on the Foundry resource, and unlike everything else in

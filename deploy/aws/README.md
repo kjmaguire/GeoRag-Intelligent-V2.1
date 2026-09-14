@@ -207,8 +207,23 @@ Laravel Pulse collects data nobody can view in production. See Ch 12.
 
 Also unchanged: `RERANKER_SCORE_THRESHOLD_HOSTED` is 0.2, measured against
 Cohere Rerank **v4**, and Bedrock serves **3.5**. It is the only
-retrieval-quality gate in the system. Re-measure it on the golden set
-before this deployment carries real traffic.
+retrieval-quality gate in the system, and it is carried over unvalidated.
+
+This document used to say "re-measure it on the golden set". That was wrong
+and is worth correcting rather than deleting: calibrating a relevance floor
+needs (query, chunk, relevant?) triples, and
+`tests/golden_questions/seed_template.yaml` has none — its own header reads
+"Status: SKELETON", and all 38 entries carry empty `expected_citations` and
+`expected_numeric_values` marked "SME fills". So the re-measurement is
+blocked on SME labelling that has not started, on top of needing a corpus
+and in-region credentials.
+
+Once the deployment carries traffic there is a route that needs no labels:
+`answer_runs.reranker_version` records `cohere-bedrock:cohere.rerank-v3-5:0`,
+so 3.5-scored runs are separable from v4-scored ones after the fact and the
+floor can be picked from the observed score distribution against refusal
+outcomes. Until then, treat 0.2 as unverified and watch the refusal rate —
+`ops/runbooks/refusal-rate-spike.md` names this as the first thing to check.
 
 ## Testing the sweeps
 

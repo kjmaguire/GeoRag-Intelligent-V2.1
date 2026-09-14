@@ -171,10 +171,28 @@ QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
 # Bedrock's catalogue is Rerank **3.5**. Score distributions differ between
 # major versions, and RERANKER_SCORE_THRESHOLD_HOSTED = 0.2 — the system's
 # only retrieval-quality floor (hard rule 5, as built) — was measured against
-# v4's calibrated output on 2026-08-15. It MUST be re-measured on the golden
-# set against 3.5 rather than carried over: too low and the floor stops
-# filtering, too high and the refusal rate climbs, and neither shows up in
-# any metric anything scrapes.
+# v4's calibrated output on 2026-08-15. Carrying it over to 3.5 unvalidated
+# is a known risk, not a decision: too low and the floor stops filtering, too
+# high and the refusal rate climbs, and neither shows up in any metric
+# anything scrapes.
+#
+# HOW IT GETS RE-MEASURED, because "on the golden set" was the wrong answer
+# and was written in several places before anyone checked (2026-09-14).
+# Calibrating a relevance floor needs (query, chunk, relevant?) triples.
+# tests/golden_questions/seed_template.yaml cannot supply them: its own
+# header says "Status: SKELETON", all 38 entries carry
+# `expected_citations: []` and `expected_numeric_values: []`, and every one
+# is marked "SME fills". Nothing else in the repository carries chunk-level
+# relevance labels either. So this is blocked on SME labelling work that has
+# not started, not merely on credentials and a corpus — though it is blocked
+# on those too.
+#
+# The cheaper route, once the deployment carries traffic, needs no labels at
+# all: harvest answer_runs, whose reranker_version records
+# `cohere-bedrock:cohere.rerank-v3-5:0` precisely so v4-scored and
+# 3.5-scored runs stay separable after the fact (see
+# tests/test_backend_selection.py), and pick the floor from the observed 3.5
+# score distribution against refusal outcomes.
 BEDROCK_RERANK_MODEL_ID = (
     os.environ.get("BEDROCK_RERANK_MODEL_ID") or "cohere.rerank-v3-5:0"
 ).strip()
