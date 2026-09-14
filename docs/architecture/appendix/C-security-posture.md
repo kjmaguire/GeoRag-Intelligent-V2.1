@@ -34,7 +34,7 @@ hatchet-worker-{ingestion,ai}
   └── hatchet-lite (HATCHET_CLIENT_TOKEN over gRPC; insecure in dev)
 
 kestra ←── HMAC-signed inbound webhooks (EXTERNAL_NOTIFICATION_HMAC_SECRET)
-  └── fastapi (per-flow JWT; KESTRA_FLOW_JWT_SECRET + encrypted per-flow key)
+  └── fastapi (per-flow JWT; FLOW_JWT_SECRET + encrypted per-flow key)
 ```
 
 ## 2. Tenant isolation
@@ -100,7 +100,7 @@ kestra ←── HMAC-signed inbound webhooks (EXTERNAL_NOTIFICATION_HMAC_SECRET
 |---|---|---|
 | `APP_KEY` | `php artisan key:generate` + RUNBOOK § "APP_KEY rotation" | Annual |
 | `FASTAPI_SERVICE_KEY` | Manual; restart all dependent containers | Quarterly |
-| `KESTRA_FLOW_JWT_SECRET` | `scripts/phase3_jwt_rotate.sh` + Kestra KV write | Quarterly |
+| `FLOW_JWT_SECRET` | `scripts/phase3_jwt_rotate.sh mint` (its Kestra KV write is dead) | Quarterly |
 | Per-flow JWT private keys | `flow_jwt_key_reaper` Hatchet workflow (weekly cron) | Weekly automatic |
 | `EXTERNAL_NOTIFICATION_HMAC_SECRET` | Manual + sender re-issue | On compromise |
 | `AUDIT_ENCRYPTION_KEY` | Manual + pgcrypto re-encrypt | On compromise only — rotation requires re-encrypting `workflow.flow_registry` |

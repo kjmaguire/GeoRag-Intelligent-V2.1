@@ -858,10 +858,11 @@ services:
       # Pinned explicitly rather than left to the app.config default so the
       # dimension is visible next to the model that produces it.
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
-      # Phase 3 Step 3 — per-flow JWT signing secret for Kestra → FastAPI
-      # integrations bridge (Authorization: Bearer <jwt>). Distinct from
+      # Phase 3 Step 3 — shared fallback signing secret for the per-flow
+      # JWT bridge (Authorization: Bearer <jwt>). Distinct from
       # FASTAPI_SERVICE_KEY so rotation of one doesn't disturb the other.
-      KESTRA_FLOW_JWT_SECRET: ${KESTRA_FLOW_JWT_SECRET:?KESTRA_FLOW_JWT_SECRET must be set in .env}
+      # Renamed from KESTRA_FLOW_JWT_SECRET 2026-09-14 (ADR-0022).
+      FLOW_JWT_SECRET: ${FLOW_JWT_SECRET:?FLOW_JWT_SECRET must be set in .env}
       # Phase 5 Step 2 — per-flow JWT signing keys live encrypted in
       # workflow.flow_registry. flow_jwt._load_per_flow_key_sync() needs
       # the pgcrypto key to decrypt; same value as the Hatchet worker
@@ -1819,9 +1820,9 @@ services:
       LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
       # Phase 6 Step 1 (R-P5-4 fold-in) — flow_jwt._load_per_flow_key_sync
       # is unused on the AI worker today, but the import surface exists.
-      # KESTRA_FLOW_JWT_SECRET enables verify; pgcrypto key enables future
+      # FLOW_JWT_SECRET enables verify; pgcrypto key enables future
       # per-flow loader on this worker if the contract ever moves here.
-      KESTRA_FLOW_JWT_SECRET: ${KESTRA_FLOW_JWT_SECRET:?KESTRA_FLOW_JWT_SECRET must be set in .env}
+      FLOW_JWT_SECRET: ${FLOW_JWT_SECRET:?FLOW_JWT_SECRET must be set in .env}
       # Langfuse observability — Phase 5 follow-up, 2026-05-19. Until now
       # the AI worker had no Langfuse env, so agent-path LLM calls
       # (llm_incident_diagnosis, support_packet, etc.) emitted no traces.
@@ -1915,7 +1916,8 @@ services:
   #
   # Kestra was never live: KESTRA_URL was set in no .env.example, no compose
   # service env, and not in the live .env (only KESTRA_BASIC_AUTH_*,
-  # KESTRA_PORT, KESTRA_FLOW_JWT_SECRET). Its three flows were never deployed
+  # KESTRA_PORT, and the secret since renamed FLOW_JWT_SECRET). Its three
+  # flows were never deployed
   # (flow-source-loader.enabled: false, no CI push step) — see the deleted
   # kestra/flows/georag/*.yaml in git history. Two Phase 0 escalation paths
   # silently no-op'd for months as a result (repointed onto the outbox

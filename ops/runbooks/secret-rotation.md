@@ -132,7 +132,7 @@ the window boots against no database and looks broken. Rotate outside it.
 | Sanctum tokens / sessions | Postgres / Redis | users | per-user | §13 |
 | GitHub: `AZURE_CLIENT_ID` etc. | Entra federated credential | cd.yml (OIDC) | n/a — identifiers, not secrets | §14 |
 | GitHub: `SOPS_AGE_PRIVATE_KEY`, operator age key | age keys | the `.env.production.enc` record | Yes | §14 |
-| `KESTRA_FLOW_JWT_SECRET` | — | **nothing** (Kestra removed 2026-07-28) | — | §15 |
+| `FLOW_JWT_SECRET` | fastapi-cc, hatchet-worker-ai | `services/flow_jwt.py` (no caller reaches it today) | Yes | §15 |
 
 Cadence (Appendix C §9, unchanged): `APP_KEY` annual; `FASTAPI_SERVICE_KEY`,
 Foundry key quarterly; Postgres, Redis, Qdrant, storage keys annual;
@@ -652,10 +652,24 @@ or with §5 (a Redis roll, which ends everyone's).
 
 ## 15. Dead and pending
 
-- `KESTRA_FLOW_JWT_SECRET` has no consumer: Kestra was removed 2026-07-28.
-  It is still a `Settings` field, so **do not delete it from an app's env
-  before removing the field** — pydantic runs with `extra="forbid"` and
-  `scripts/check_settings_have_readers.py` guards the other direction.
+- `FLOW_JWT_SECRET` (renamed from `KESTRA_FLOW_JWT_SECRET` on 2026-09-14,
+  ADR-0022) has a reader but no caller. `services/flow_jwt.py` signs and
+  verifies with it; nothing invokes the bridge, because Kestra — the
+  integration edge it was built for — was removed 2026-07-28.
+  **Corrected:** the previous entry here said it "has no consumer", which
+  was wrong in a way that mattered — a consumer with no caller is not a
+  dead variable, and deleting it would have broken the bridge the moment
+  anything called it.
+  Two things follow. Pydantic runs with `extra="forbid"`, so the OLD name
+  left in a deployed `.env` is now a startup crash naming the new one —
+  delete it, do not keep both. And `scripts/check_settings_have_readers.py`
+  guards the other direction: the field cannot be removed while
+  `flow_jwt.py` reads it.
+  It is **not** in the AWS Secrets Manager key list
+  (`deploy/aws/terraform/config.tf`), while compose marks it `${VAR:?}`
+  required. Production therefore runs with it unset — the field defaults
+  to `""` so FastAPI starts, and the bridge raises 500 on first use. Wire
+  it into the secret list before anything calls the bridge.
 - `AZURE_DOCUMENT_INTELLIGENCE_*` / the `docintel-*` secret refs on
   hatchet-worker-cc are dead since ADR-0019; remove them, they are not
   rotated.

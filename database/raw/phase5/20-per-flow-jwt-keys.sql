@@ -3,7 +3,7 @@
 --
 -- Adds optional per-flow JWT signing secrets to `workflow.flow_registry`.
 -- Each flow can have its own HS256 key + key-id; if absent, the workflow
--- falls back to the shared `KESTRA_FLOW_JWT_SECRET` env var (Phase 3
+-- falls back to the shared `FLOW_JWT_SECRET` env var (Phase 3
 -- Step 3 behavior, unchanged).
 --
 -- Storage: encrypted-at-rest via pgcrypto's `pgp_sym_encrypt`, using the

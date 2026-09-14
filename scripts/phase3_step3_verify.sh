@@ -5,7 +5,7 @@
 # Phase 3 Step 3 done-definition — generic flow trigger + per-flow JWT.
 #
 #   1. flow_jwt module imports cleanly inside fastapi
-#   2. KESTRA_FLOW_JWT_SECRET is configured
+#   2. FLOW_JWT_SECRET is configured
 #   3. POST without any auth                          → 401
 #   4. POST with X-Service-Key (legacy)               → 202   (co-existence)
 #   5. POST with right-flow JWT                       → 202   (Phase 3 happy path)
@@ -60,9 +60,9 @@ print('OK' if (ISSUER == 'georag-kestra' and AUDIENCE == 'georag-fastapi-flows')
 secret_ok=$(docker exec georag-fastapi python3 -c "
 import sys; sys.path.insert(0, '/app')
 from app.config import settings
-print('OK' if (getattr(settings, 'KESTRA_FLOW_JWT_SECRET', '') and len(settings.KESTRA_FLOW_JWT_SECRET) >= 32) else 'BAD')
+print('OK' if (getattr(settings, 'FLOW_JWT_SECRET', '') and len(settings.FLOW_JWT_SECRET) >= 32) else 'BAD')
 " 2>&1 | tail -1)
-[ "$secret_ok" = "OK" ] && check "KESTRA_FLOW_JWT_SECRET configured (>=32 bytes)" ok \
+[ "$secret_ok" = "OK" ] && check "FLOW_JWT_SECRET configured (>=32 bytes)" ok \
     || check "secret config" fail "$secret_ok"
 
 # Mint test JWTs

@@ -37,6 +37,15 @@ resource "aws_secretsmanager_secret" "app" {
 #                            on the silver.pg_* tile functions and nothing
 #                            else
 #
+# NOT here, and knowingly: FLOW_JWT_SECRET (renamed from
+# KESTRA_FLOW_JWT_SECRET, ADR-0022). docker-compose.yml marks it
+# `${VAR:?}` required on fastapi and hatchet-worker; production does not
+# set it at all. app/config.py defaults it to "" so FastAPI starts either
+# way, and services/flow_jwt.py raises 500 on the first verify that falls
+# back to it. That is inert today only because nothing calls the
+# integrations bridge — Kestra, the edge it was built for, was removed
+# 2026-07-28. Add it to both lists below before anything does.
+#
 # There is no Foundry key here and no storage account key. Both are gone:
 # Bedrock and S3 authenticate with the task role.
 resource "aws_secretsmanager_secret_version" "app_placeholder" {

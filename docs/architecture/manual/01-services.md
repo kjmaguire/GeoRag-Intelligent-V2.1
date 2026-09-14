@@ -311,9 +311,13 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
   `POST /internal/v1/shadow/{workflow}/trigger`.
 - **Required secrets** `FASTAPI_SERVICE_KEY`, `AUDIT_ENCRYPTION_KEY`,
   `HATCHET_CLIENT_TOKEN`, `GEORAG_APP_PASSWORD`, an S3 secret — and
-  `KESTRA_FLOW_JWT_SECRET`, which compose still marks `:?` required
-  although Kestra is gone; `app/config.py` declares it with an empty
-  default, so the compose requirement is the only thing keeping it alive.
+  `FLOW_JWT_SECRET` (renamed from `KESTRA_FLOW_JWT_SECRET` on
+  2026-09-14, ADR-0022), which compose marks `:?` required. It is not a
+  dead variable — `services/flow_jwt.py` signs and verifies with it — but
+  nothing calls the bridge, and `app/config.py` declares it with an empty
+  default, so the compose requirement is the only thing that forces it to
+  be set anywhere. Production does not set it at all: it is absent from
+  the AWS secret list in `deploy/aws/terraform/config.tf`.
 - **Volumes** `./src/fastapi:/app:cached`, `fastapi_hf_cache:/tmp/hf_cache`
   (shared with the sidecars), `georag-phase-b-extract:/data`.
 - **Depends on** `pgbouncer`, `redis`, `qdrant`, `minio`, `embedding`,
@@ -475,8 +479,8 @@ honoured by both for A/B parity.
   another.
 - **Required secrets** `HATCHET_CLIENT_TOKEN`,
   `EXTERNAL_NOTIFICATION_HMAC_SECRET`, `AUDIT_ENCRYPTION_KEY`,
-  `FASTAPI_SERVICE_KEY`, `KESTRA_FLOW_JWT_SECRET` (same stale requirement
-  as fastapi), `POSTGRES_PASSWORD`, an S3 secret.
+  `FASTAPI_SERVICE_KEY`, `FLOW_JWT_SECRET` (same compose-only
+  requirement as fastapi), `POSTGRES_PASSWORD`, an S3 secret.
 - **Bridges** `LARAVEL_INTERNAL_URL=http://laravel-octane` for the Reverb
   broadcast bridge; `redis:6379` for the per-sender rate-limit bucket;
   `LANGFUSE_BASE_URL` pinned in-network because the worker has no lifespan
@@ -572,5 +576,7 @@ the next compose tidy can clear them without re-deriving the facts.
   "Qwen-VL on vLLM" as the OCR / VL stack; both are gone (ADR-0019).
 - The fastapi `OMP_NUM_THREADS` and hatchet-worker GPU comments still talk
   about "contending with vLLM".
-- The `KESTRA_FLOW_JWT_SECRET` requirement on fastapi and hatchet-worker
-  outlived Kestra (§4).
+- The `FLOW_JWT_SECRET` requirement on fastapi and hatchet-worker
+  outlived Kestra (§4). The variable was renamed off the Kestra prefix on
+  2026-09-14 (ADR-0022); the compose-required / production-unset
+  asymmetry is unchanged and still worth closing.

@@ -67,10 +67,20 @@ class Settings(BaseSettings):
     FASTAPI_SERVICE_KEY_PREVIOUS: str = ""
     FASTAPI_SERVICE_KEY_PREVIOUS_KID: str = ""
 
-    # Phase 3 Step 3 — per-flow JWT signing secret for Kestra → FastAPI
-    # integrations bridge. Distinct from FASTAPI_SERVICE_KEY so rotation
-    # of one doesn't disturb the other. 32-byte minimum per HS256.
-    KESTRA_FLOW_JWT_SECRET: str = ""
+    # Phase 3 Step 3 — shared fallback signing secret for the per-flow
+    # JWT bridge (services/flow_jwt.py). Distinct from FASTAPI_SERVICE_KEY
+    # so rotation of one doesn't disturb the other. 32-byte minimum per
+    # HS256.
+    #
+    # Renamed from KESTRA_FLOW_JWT_SECRET 2026-09-14 (ADR-0022). The
+    # orchestrator it was named for was retired 2026-07-28 without ever
+    # being deployed; the bridge it signs for is still here. Because
+    # Settings runs with extra="forbid", the OLD name left in a .env is
+    # now a startup crash naming the new one — which is the intended
+    # behaviour, not an accident: a stale key silently ignored would
+    # leave the secret unset and every verify failing at request time
+    # instead.
+    FLOW_JWT_SECRET: str = ""
 
     @field_validator("FASTAPI_SERVICE_KEY")
     @classmethod

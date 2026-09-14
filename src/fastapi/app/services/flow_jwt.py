@@ -1,20 +1,27 @@
 """Phase 3 Step 3 / Phase 5 Step 2 — per-flow JWT mint + verify.
 
-The Kestra → FastAPI integrations bridge uses per-flow JWTs. Each
-Kestra flow holds its own JWT in Kestra's secret store; rotation is
+The external-integration → FastAPI bridge uses per-flow JWTs. Each
+calling flow holds its own JWT in its own secret store; rotation is
 per-flow rather than global, so a leak compromises one flow rather
 than every integration.
+
+The wire values below were named for Kestra, the orchestrator this
+bridge was built against. It was retired 2026-07-28 without a single
+flow ever deployed, so no token bearing the old issuer has ever been
+minted in production. They were renamed 2026-09-14 (ADR-0022) on that
+basis — a rename here is normally a breaking change, and is only safe
+because there is nothing in flight to break.
 
 Auth shape:
   - Header: ``Authorization: Bearer <jwt>``
   - Algorithm: HS256
-  - Issuer: ``georag-kestra``
+  - Issuer: ``georag-flows``
   - Audience: ``georag-fastapi-flows``
   - Required claims: ``exp``, ``iat``, ``scope``
   - Scope: exactly ``flow:<flow_name>``
   - Optional ``kid`` claim: when present, selects a per-flow signing
     secret from ``workflow.flow_registry`` (Phase 5 Step 2). When
-    absent, the shared ``settings.KESTRA_FLOW_JWT_SECRET`` env var is
+    absent, the shared ``settings.FLOW_JWT_SECRET`` env var is
     the signing/verify key (Phase 3 behavior).
 
 Per-flow key resolution (Phase 5):
@@ -46,12 +53,19 @@ from app.db.dsn import build_dsn
 
 logger = logging.getLogger(__name__)
 
-ISSUER = "georag-kestra"
+ISSUER = "georag-flows"
 AUDIENCE = "georag-fastapi-flows"
 ALGORITHM = "HS256"
 
-# 24h default — Kestra holds these in its secret store; rotation is
-# operator-driven via scripts/phase3_jwt_rotate.sh, not per-request.
+# Claimed subject. Not verified — it is neither in the `require` list
+# nor passed to jwt.decode as `subject=` — so it is descriptive only.
+# Kept as a constant rather than a literal at the mint site so the whole
+# wire contract is reviewable in one place.
+SUBJECT = "external-integration"
+
+# 24h default — the calling flow holds these in its own secret store;
+# rotation is operator-driven via scripts/phase3_jwt_rotate.sh, not
+# per-request.
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
 
 # Small clock-skew tolerance, matches services/auth.py.
@@ -252,11 +266,11 @@ def _resolve_signing_key(flow_name: str) -> tuple[str, str | None]:
     kid, secret = _get_per_flow_key(flow_name)
     if secret:
         return secret, kid
-    env_secret = getattr(settings, "KESTRA_FLOW_JWT_SECRET", "") or ""
+    env_secret = getattr(settings, "FLOW_JWT_SECRET", "") or ""
     if not env_secret:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="no per-flow key and KESTRA_FLOW_JWT_SECRET not configured",
+            detail="no per-flow key and FLOW_JWT_SECRET not configured",
         )
     return env_secret, None
 
@@ -273,7 +287,7 @@ def mint_flow_jwt(flow_name: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str
         {
             "iss": ISSUER,
             "aud": AUDIENCE,
-            "sub": "kestra",
+            "sub": SUBJECT,
             "scope": f"flow:{flow_name}",
             "iat": now,
             "exp": now + ttl_seconds,
@@ -364,11 +378,11 @@ def _verify_with_keys(
         # No kid → env-var fallback. The flow may or may not have a
         # per-flow key; the env-var still verifies tokens minted
         # before the per-flow key was provisioned.
-        env_secret = getattr(settings, "KESTRA_FLOW_JWT_SECRET", "") or ""
+        env_secret = getattr(settings, "FLOW_JWT_SECRET", "") or ""
         if not env_secret:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="KESTRA_FLOW_JWT_SECRET not configured",
+                detail="FLOW_JWT_SECRET not configured",
             )
         verify_key = env_secret
 
@@ -429,6 +443,7 @@ __all__ = [
     "averify_flow_jwt_token",
     "verify_flow_jwt_token",
     "ISSUER",
+    "SUBJECT",
     "AUDIENCE",
     "ALGORITHM",
     "DEFAULT_TTL_SECONDS",

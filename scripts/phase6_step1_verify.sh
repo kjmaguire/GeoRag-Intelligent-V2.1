@@ -79,9 +79,9 @@ fi
 
 # 5) AI worker mount + R-P5-4 env
 ai_mount=$(docker exec "$AI" test -d /app/georag_dagster/parsers && echo y || echo n)
-ai_jwt=$(docker exec "$AI" printenv KESTRA_FLOW_JWT_SECRET 2>/dev/null | head -c 8)
+ai_jwt=$(docker exec "$AI" printenv FLOW_JWT_SECRET 2>/dev/null | head -c 8)
 if [ "$ai_mount" = "y" ] && [ -n "$ai_jwt" ]; then
-    check "AI worker has dagster mount + KESTRA_FLOW_JWT_SECRET (R-P5-4)" ok
+    check "AI worker has dagster mount + FLOW_JWT_SECRET (R-P5-4)" ok
 else
     check "AI worker env" fail "mount=$ai_mount jwt=${ai_jwt:0:4}"
 fi
