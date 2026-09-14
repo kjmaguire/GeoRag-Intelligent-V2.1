@@ -204,15 +204,18 @@ RUN uv pip install --system --no-cache /georag_geoparsers
 # `torch` on PyPI is the CUDA build. torch 2.13.0's linux metadata pulls
 # cuda-bindings + cuda-toolkit[cublas,cudart,cufft,...] and triton, measured at
 # 3.4 GB inside the running container (nvidia/ 2,724 MB + triton/ 690 MB of a
-# 5,899 MB site-packages), and it reports itself as `2.13.0+cu130`. Nothing in
-# the Azure deployment has a GPU: the whole inference path is Azure AI Foundry
-# (Cohere Embed v4 / Rerank v4 / Command A+), and pyproject's own torch entry
-# already says "CPU-only build sufficient -- FastAPI container has no GPU
-# passthrough". Nothing enforced it until now.
+# 5,899 MB site-packages), and it reports itself as `2.13.0+cu130`. No task in
+# the deployment has a GPU — deploy/aws/terraform/main.tf runs ten Fargate
+# services and none of them request one — because the inference path is
+# Amazon Bedrock (Cohere Embed v4 / Rerank 3.5 / Command A+ since ADR-0022;
+# it was Azure AI Foundry, and Rerank v4, when this was written). pyproject's
+# own torch entry already said "CPU-only build sufficient -- FastAPI container
+# has no GPU passthrough". Nothing enforced it until now.
 #
 # torch cannot simply be dropped. app/services/sparse_encoder.py loads SPLADE++
-# via transformers' AutoModelForMaskedLM, and per CLAUDE.md "SPLADE++ sparse
-# retrieval has no Foundry equivalent and stays self-hosted either way".
+# via transformers' AutoModelForMaskedLM, and per CLAUDE.md "SPLADE++ has no
+# hosted equivalent anywhere — not on Bedrock, not on Cohere's own API". The
+# host changed; the reason this stays self-hosted did not.
 #
 # Installing the +cpu wheel first leaves torch already satisfied for anything
 # downstream that depends on it. Belt and braces since 2026-08-22: torch is
@@ -331,20 +334,25 @@ RUN python3 scripts/assert_cpu_only_torch.py
 # ---------------------------------------------------------------------------
 # Bake the SPLADE++ sparse-encoder weights into the image (2026-08-04).
 #
-# app/services/sparse_encoder.py has no Foundry equivalent — CLAUDE.md:
-# "SPLADE++ sparse retrieval has no Foundry equivalent and stays self-hosted
-# either way" — so every deployment topology loads this model locally via
-# AutoModelForMaskedLM.from_pretrained(), with no cache_dir override, reading
-# whatever HF_HOME/TRANSFORMERS_CACHE point at.
+# app/services/sparse_encoder.py has no hosted equivalent — CLAUDE.md:
+# "SPLADE++ has no hosted equivalent anywhere — not on Bedrock, not on
+# Cohere's own API" — so every deployment topology loads this model locally
+# via AutoModelForMaskedLM.from_pretrained(), with no cache_dir override,
+# reading whatever HF_HOME/TRANSFORMERS_CACHE point at. On AWS that is true
+# of two tasks, not one: services.tf runs `sparse` and `fastapi` from this
+# same image.
 #
-# On Azure Container Apps that env var points at /tmp/hf_cache, which is
-# NOT baked into the image and has no persistent volume behind it — every
-# fresh replica (a manual redeploy, a scale-out event, or the nightly
-# shutdown-scheduler's restart) starts with an empty cache and must
-# re-download the ~440 MB model from HuggingFace Hub before it can serve a
-# single real query. With UVICORN_WORKERS processes each racing to do this
-# independently, and Azure egress bandwidth to contend with, this was
-# observed live taking anywhere from ~2s (occasionally already warm) to
+# THE INCIDENT THIS EXISTS FOR, kept because it is the whole argument for
+# baking and the Azure specifics are what make it concrete. On Azure
+# Container Apps the app's own env vars set that variable to /tmp/hf_cache,
+# OVERRIDING the image's ENV — and /tmp/hf_cache is not baked into the image
+# and had no persistent volume behind it. So every fresh replica (a manual
+# redeploy, a scale-out event, or the nightly shutdown-scheduler's restart)
+# started with an empty cache and had to re-download the ~440 MB model from
+# HuggingFace Hub before it could serve a single real query. With
+# UVICORN_WORKERS processes each racing to do this independently, and Azure
+# egress bandwidth to contend with, this was observed live taking anywhere
+# from ~2s (occasionally already warm) to
 # >2 minutes (a `python -c "from app.services.sparse_encoder import
 # encode_sparse; encode_sparse('x')"` call inside the running container hung
 # past a 2-minute cap) — well past any query-level timeout budget, and the
@@ -353,12 +361,30 @@ RUN python3 scripts/assert_cpu_only_torch.py
 #
 # Baking to /opt (not /tmp/hf_cache) mirrors this file's own Tesseract
 # convention above and sidesteps relying on /tmp surviving into the runtime
-# container. The deployed Container Apps env vars must point HF_HOME /
-# TRANSFORMERS_CACHE at this same path for the bake to actually be read.
+# container.
 #
-# A standalone script rather than an inline `python -c` — ACR's dependency
-# scanner chokes on a multi-line backslash-continued python -c inside a RUN
-# instruction ("unable to understand line ...: exit status 1").
+# WHAT MAKES THE BAKE ACTUALLY GET READ, and it is no longer an operator
+# instruction. This used to say the deployed Container Apps env vars must be
+# pointed at this path by hand. On ECS nothing overrides the image: the
+# `ENV HF_HOME=` block near the end of this file sets HF_HOME, HF_HUB_CACHE and
+# TRANSFORMERS_CACHE to /opt/hf_cache, and deploy/aws/terraform/config.tf
+# sets none of the three on any service, so the image's values stand. If a
+# task definition ever sets one of them, it reintroduces the incident above —
+# that is the thing to check, not a step to perform.
+#
+# Note that docker-compose.yml DOES still point them at /tmp/hf_cache, so in
+# dev the bake is bypassed and the model downloads on first use. Stated as
+# an observation, not an endorsement: it is the same override that caused
+# the incident, and it is survivable there only because a laptop keeps the
+# download between restarts and never scales out.
+#
+# A standalone script rather than an inline `python -c`. The original reason
+# was Azure Container Registry's dependency scanner choking on a multi-line
+# backslash-continued python -c inside a RUN instruction ("unable to
+# understand line ...: exit status 1"). ACR is gone as of ADR-0022 and the
+# buildx/ECR path has no such limitation, so this is now a style choice
+# rather than a workaround. Left alone: changing the shape of a working
+# build step to undo a constraint that no longer applies buys nothing.
 RUN python3 scripts/bake_splade_cache.py
 
 
