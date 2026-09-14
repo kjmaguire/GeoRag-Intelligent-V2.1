@@ -47,7 +47,11 @@ None of those is assumed to carry over. What this module does instead:
     through a path reporting a different backend.
 
 Run ``ops/validation/bedrock_probe.py`` and commit its report before trusting
-this module in production (ADR-0022 "Verification").
+this module in production (ADR-0022 "Verification"). All three behaviours
+above are declared ``Status.CARRIED`` in ``app/services/bedrock_wire.py``,
+which is what lets the probe check each by name rather than by reading this
+paragraph; the conformance tests beside it fail if the request this module
+builds stops matching that declaration.
 
 The one behaviour that IS assumed to carry over is the failure mode: an empty
 answer with a partial reasoning trace and ``stopReason: "max_tokens"`` is the

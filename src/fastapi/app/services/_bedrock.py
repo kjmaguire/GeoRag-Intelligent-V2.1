@@ -28,6 +28,13 @@ assumed. Nothing here has had that treatment yet — Bedrock could not be
 reached from the session that wrote it. ``ops/validation/bedrock_probe.py``
 exists to close that gap, and its committed report is the gate on trusting
 any of these adapters. See ADR-0022 "Verification".
+
+``app/services/bedrock_wire.py`` states those same claims as DATA — every
+field each adapter sends and reads, and how much is actually known about each
+one — so a probe report can be diffed against them field by field instead of
+read against five module docstrings. It verifies nothing on its own. What it
+buys is that the first credentialed run is a diff rather than a discovery,
+and that a drift between an adapter and its own description fails CI.
 """
 
 from __future__ import annotations

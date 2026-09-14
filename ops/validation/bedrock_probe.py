@@ -70,6 +70,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# The wire contract lives with the adapters it describes, because it is a
+# claim ABOUT them and tests/test_bedrock_wire_contract.py holds the two
+# together. Importing it here is what turns this probe's output from a
+# transcript into a diff.
+#
+# Guarded, and degrading to a skip rather than an exception, for the same
+# reason every section below degrades: this script has to stay runnable from
+# an operator's laptop against a checkout that may not have the FastAPI
+# package importable. Losing the diff must not cost the observations.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "fastapi"))
+try:
+    from app.services.bedrock_wire import diff_report as _diff_report
+except Exception as _exc:  # noqa: BLE001 — any import failure, not just ImportError
+    _DIFF_IMPORT_ERROR: str | None = f"{type(_exc).__name__}: {_exc}"
+
+    def _diff_report(report: dict) -> dict:  # type: ignore[misc]
+        return {"skipped": f"app.services.bedrock_wire unavailable ({_DIFF_IMPORT_ERROR})"}
+else:
+    _DIFF_IMPORT_ERROR = None
+
 PIXEL_LADDER = (1_900_000, 4_000_000, 8_000_000, 12_000_000, 20_000_000)
 
 #: Sentinel tokens Cohere wraps JSON-mode output in. Whether the Bedrock
@@ -548,6 +568,11 @@ def main() -> int:
     }
 
     report["verdict"] = verdict(report)
+    # Field-by-field against app/services/bedrock_wire.py. The verdict above
+    # answers "did this run observe anything"; this answers "does what it
+    # observed match what the adapters believe", which is a different
+    # question and the one that names the file to edit.
+    report["contract_diff"] = _diff_report(report)
 
     args.out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -570,6 +595,54 @@ def main() -> int:
 
     if v["sections_failed"] or v["sections_skipped"]:
         print(f"\nPARTIAL — {v['summary']}", file=sys.stderr)
+
+    diff = report["contract_diff"]
+    broken = diff.get("required_fields_missing") or {}
+    undeclared = diff.get("undeclared_fields") or {}
+
+    if undeclared:
+        # Not a failure: a field arriving that no adapter reads costs nothing
+        # today. It is reported because it is the only way anyone finds out a
+        # shape exists that nobody wrote down.
+        print(
+            "\nUNDECLARED FIELDS observed — nothing reads these, and "
+            "app/services/bedrock_wire.py does not declare them:",
+            file=sys.stderr,
+        )
+        for call, keys in sorted(undeclared.items()):
+            print(f"  {call}: {', '.join(keys)}", file=sys.stderr)
+
+    if broken:
+        # This IS a failure, and a different one from "nothing was observed".
+        # A required field the probe looked for and did not find means an
+        # adapter reads something Bedrock does not send: the path is broken,
+        # not merely unverified, and the report should not read as a pass.
+        print(
+            "\nCONTRACT VIOLATED — the probe observed these calls and a "
+            "REQUIRED field was absent from each:",
+            file=sys.stderr,
+        )
+        for call, keys in sorted(broken.items()):
+            print(f"  {call}: missing {', '.join(keys)}", file=sys.stderr)
+        print(
+            "\nEach line names an adapter that reads a field Bedrock did not "
+            "send. Correct the adapter AND app/services/bedrock_wire.py "
+            "together — its conformance tests fail if you move only one — "
+            "then re-run. Commit this report either way: a contradiction is "
+            "evidence, and it is the evidence hardest to reconstruct later.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if diff.get("skipped"):
+        print(f"\nCONTRACT DIFF SKIPPED — {diff['skipped']}", file=sys.stderr)
+    elif diff.get("calls_observed"):
+        print(
+            "\nCONTRACT HOLDS for the calls this run reached: "
+            f"{', '.join(diff['calls_observed'])}. Not observed: "
+            f"{', '.join(diff['calls_not_observed']) or 'none'}.",
+            file=sys.stderr,
+        )
 
     print(
         "\nCOMMIT THIS REPORT. The adapters say [UNVERIFIED] at the top until "
