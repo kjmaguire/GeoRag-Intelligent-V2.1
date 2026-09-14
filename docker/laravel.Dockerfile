@@ -22,14 +22,28 @@
 # Nothing from this stage reaches the final image except /app, and
 # node_modules is deleted before then — see the note above `rm -rf` below.
 # -----------------------------------------------------------------------------
-# 2026-07-30 re-pin: the 2026-06-03 digest (Debian 13.5) carried a
-# CRITICAL CVE (CVE-2026-53215, linux-libc-dev) that Trivy's CI gate
-# started failing the build on. Re-captured via `docker pull
-# php:8.5-cli` (Debian 13.6, same PHP 8.5 build). Re-pin the same way
-# after a future PHP 8.5.x patch. Both builder + runtime stages MUST
-# use the same digest so the PECL extensions compiled in builder match
-# the runtime PHP ABI byte-for-byte.
-FROM php:8.5-cli@sha256:54d82ff9be6bd198145e90c917fc9b2e24230b42e52def8deb3554baf61c451a AS builder
+# Both builder + runtime stages MUST use the same digest so the PECL
+# extensions compiled in builder match the runtime PHP ABI byte-for-byte.
+#
+# Pin history — each entry is a CVE the CI Trivy gate failed on:
+#
+#   2026-07-30  the 2026-06-03 digest (Debian 13.5) carried CVE-2026-53215
+#               (CRITICAL, linux-libc-dev). Re-captured via
+#               `docker pull php:8.5-cli` → Debian 13.6.
+#   2026-09-14  that Debian 13.6 digest carried CVE-2026-13221,
+#               CVE-2026-42496 and CVE-2026-8376 (all CRITICAL) against
+#               perl / perl-base / perl-modules-5.40 / libperl5.40 at
+#               5.40.1-6, fixed in 5.40.1-6+deb13u1. Re-pinned to the
+#               digest `php:8.5-cli` resolved to that day.
+#
+# The 2026-09-14 digest was resolved from the Docker Hub registry API
+# rather than `docker pull` — the session that made the change had no
+# Docker daemon, so it could not run `trivy image php:8.5-cli` first and
+# the CI gate is what verifies the perl fix actually landed. Prefer
+# pulling and scanning locally when you re-pin: a digest that does not
+# clear the finding costs a full CI cycle to discover, and a base bump
+# also moves the PHP patch version under the application.
+FROM php:8.5-cli@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS builder
 
 # Build-time system dependencies.
 # libpq-dev      → pdo_pgsql / pgsql extensions
@@ -163,7 +177,7 @@ RUN rm -rf node_modules
 # We re-install system packages and PHP extensions from scratch rather than
 # copying from builder; this keeps the runtime image clean and auditable.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli@sha256:54d82ff9be6bd198145e90c917fc9b2e24230b42e52def8deb3554baf61c451a AS runtime
+FROM php:8.5-cli@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"
