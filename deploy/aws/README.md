@@ -151,18 +151,34 @@ Two further things the move buys:
   floor, not an off switch, and the worker's 29 crons meant it was never
   idle — so the largest single line item, 4 vCPU / 8 GiB, ran 24/7 through
   every "shutdown". ECS `desired-count 0` stops it.
-- **Octane runs two tasks.** At one, every deploy and task replacement is a
-  user-visible outage on the only public service. The Azure cost objection
-  was already answered on evidence (`max_connections` 429 against a 24h
-  peak of 99; Octane opens PDO connections lazily per worker; session,
-  cache and queue are all Redis) — that reasoning is in ADR-0022 §3.
+- **Both ALB-reachable services run two tasks.** At one, every deploy and
+  task replacement is a user-visible outage. For Octane the Azure cost
+  objection was already answered on evidence (`max_connections` 429
+  against a 24h peak of 99; Octane opens PDO connections lazily per
+  worker; session, cache and queue are all Redis) — that reasoning is in
+  ADR-0022 §3. For Reverb the outage is every open WebSocket, which on
+  this platform is every in-flight answer stream.
+
+  Reverb's second task is only correct because `REVERB_SCALING_ENABLED`
+  is on. Each instance holds only the subscribers connected to it, and
+  Cloud Map hands a publisher one task at random, so without the Redis
+  pub/sub backplane roughly half of every query's frames would be
+  published to a task with none of that query's subscribers and dropped
+  silently. **The desired count and that flag move together.** The count
+  also lives in two places — `local.services` in
+  `terraform/main.tf` and the `DESIRED` table in
+  `scheduler/startup-sweep.sh`, which overwrites Terraform's value every
+  morning — so changing one alone reverts overnight. The sweep test
+  harness asserts both services come back at 2.
 
 ## What this is NOT
 
-Two AZs and an ALB is not high availability. Every service except
-`laravel-octane` runs a single task, RDS is Single-AZ, Qdrant and Redis are
+Two AZs and an ALB is not high availability. Only the two ALB-reachable
+services run more than one task, RDS is Single-AZ, Qdrant and Redis are
 single tasks holding EFS mounts, and the platform is stopped nightly on
-purpose. The second AZ exists because an ALB requires two subnets. Making
+purpose. Reverb's second task also makes Redis a dependency of WebSocket
+fan-out where before it was a dependency of nothing — Redis being a single
+task on EFS is unchanged, but it now has one more thing resting on it. The second AZ exists because an ALB requires two subnets. Making
 RDS Multi-AZ also means giving up the nightly stop, which is the largest
 cost lever this deployment has.
 

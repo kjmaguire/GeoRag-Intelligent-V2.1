@@ -242,6 +242,16 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
 - **Depends on** `redis` healthy; `laravel-octane` started.
   **Healthcheck** `curl -f http://localhost:8080/up`. **Stop grace** 30 s.
   **Limits** 0.5 CPU / 512 MiB.
+- **In production it runs TWO tasks**
+  ([main.tf](../../../deploy/aws/terraform/main.tf)), unlike compose's
+  one, so that a deploy does not drop every in-flight answer stream. That
+  is only correct because `REVERB_SCALING_ENABLED=true` gives the tasks a
+  Redis pub/sub backplane: each instance holds only its own subscribers,
+  and the Cloud Map record hands a publisher one task at random. The count
+  and the flag move together, and the count is also duplicated in
+  `scheduler/startup-sweep.sh`'s `DESIRED` table, which reasserts it every
+  morning. Compose stays at one instance and leaves scaling off — with a
+  single instance there is nothing to fan out to.
 
 ---
 

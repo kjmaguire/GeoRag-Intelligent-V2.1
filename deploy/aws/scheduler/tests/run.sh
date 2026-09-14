@@ -175,12 +175,18 @@ assert_rc 0
 assert_says "startup sweep complete"
 assert_aws_calls "ecs update-service" 10
 
-run startup_octane_gets_two_tasks "$STARTUP"
+run startup_alb_services_get_two_tasks "$STARTUP"
 assert_rc 0
 # ADR-0022 §3: at desired 1 every deploy and task replacement is a
-# user-visible outage on the only public service.
+# user-visible outage on a public service.
 grep -qE "ecs update-service.*--service laravel-octane --desired-count 2" "${WORK}/aws.log" \
   || fail_case "laravel-octane must come back at desired-count 2"
+# Reverb is the other two-task service. It is asserted separately rather
+# than as a loop over the table because the failure it guards against is
+# the table and Terraform's local.services drifting apart, and a loop over
+# the table could not see that.
+grep -qE "ecs update-service.*--service laravel-reverb --desired-count 2" "${WORK}/aws.log" \
+  || fail_case "laravel-reverb must come back at desired-count 2"
 grep -qE "ecs update-service.*--service fastapi --desired-count 1" "${WORK}/aws.log" \
   || fail_case "everything else comes back at 1"
 

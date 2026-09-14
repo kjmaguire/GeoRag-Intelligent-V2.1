@@ -269,6 +269,25 @@ locals {
     # day that was diagnosed.
     REVERB_MAX_REQUEST_SIZE     = 1000000
     REVERB_APP_MAX_MESSAGE_SIZE = 1000000
+
+    # The Redis pub/sub backplane, and what makes desired = 2 correct in
+    # main.tf rather than quietly broken. Each task holds only the
+    # subscribers connected to IT, and Cloud Map's MULTIVALUE record hands
+    # a publisher one task at random — so with two tasks and no backplane
+    # roughly half of every query's frames would be published to a task
+    # with none of that query's subscribers and be dropped silently.
+    # Enabled and desired count move together; changing one alone is the
+    # bug.
+    #
+    # config/reverb.php:43-51 reads REDIS_HOST, REDIS_PORT and
+    # REDIS_PASSWORD directly rather than going through
+    # config/database.php, and all three are already on this task — the
+    # first two from common_environment, the password from _secret_ref.
+    # REDIS_DB is left at its default 0, shared with the queue and session
+    # connections: pub/sub channels are not part of the keyspace, so there
+    # is nothing to collide with.
+    REVERB_SCALING_ENABLED = "true"
+    REVERB_SCALING_CHANNEL = "reverb"
   }
 
   # Per-service additions. Everything not listed gets only the common set.

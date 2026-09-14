@@ -74,10 +74,15 @@ resource "aws_lb_target_group" "reverb" {
     matcher             = "200,404"
   }
 
-  # A WebSocket lives on ONE task for its whole life. Without stickiness a
-  # reconnect can land on a different task than the one holding the
-  # subscription, and the client silently stops receiving query stream
-  # frames — the answer streams to nobody.
+  # A WebSocket lives on ONE task for its whole life, and there are two of
+  # them now (main.tf). What makes a reconnect onto the other task safe is
+  # REVERB_SCALING_ENABLED, not this: the Redis backplane means either task
+  # can serve any subscriber. Stickiness is kept because it keeps a
+  # returning client on the task that already holds its subscriptions and
+  # saves the fan-out hop — a preference, not a correctness guarantee.
+  #
+  # It was load-bearing before the backplane existed, and the comment here
+  # used to say so.
   stickiness {
     type            = "lb_cookie"
     enabled         = true

@@ -144,8 +144,9 @@ free.** The full plan, including what each decision cost, is
 Production is ECS Fargate, cluster `georag`, no GPU
 ([deploy/aws/README.md](../../../deploy/aws/README.md)):
 
-- Ten services: `laravel-octane` (the only public one, behind an ALB, and
-  the only one at desired 2), `laravel-horizon`, `laravel-reverb`,
+- Ten services: `laravel-octane` and `laravel-reverb` — the two the ALB
+  routes to (`/app/*` and `/apps/*` go to Reverb) and the two at desired
+  2 — then `laravel-horizon`,
   `fastapi`, `hatchet`, `hatchet-worker` (4 vCPU / 8 GiB, desired 1),
   `qdrant`, `redis`, `martin`, and `sparse` — the SPLADE++ sidecar, which
   is new to production because the sparse leg of hybrid retrieval has no

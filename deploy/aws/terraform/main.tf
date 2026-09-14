@@ -9,11 +9,11 @@
 # below exists in code or does not exist.
 #
 # WHAT THIS IS NOT. Two tasks behind an ALB across two AZs is not high
-# availability. Every service except laravel-octane runs a single task,
-# RDS is Single-AZ, Qdrant and Redis are single tasks holding EFS mounts,
-# and the whole platform is stopped nightly on purpose. The second AZ is
-# here because an ALB requires two subnets, not because anything fails
-# over into it. Read that before sizing anything up.
+# availability. Only the two ALB-reachable services run more than one
+# task, RDS is Single-AZ, Qdrant and Redis are single tasks holding EFS
+# mounts, and the whole platform is stopped nightly on purpose. The second
+# AZ is here because an ALB requires two subnets, not because anything
+# fails over into it. Read that before sizing anything up.
 
 terraform {
   required_version = ">= 1.9"
@@ -51,9 +51,21 @@ locals {
   services = {
     laravel-octane  = { cpu = 1024, memory = 2048, desired = 2 }
     laravel-horizon = { cpu = 1024, memory = 2048, desired = 1 }
-    laravel-reverb  = { cpu = 512, memory = 1024, desired = 1 }
-    fastapi         = { cpu = 2048, memory = 4096, desired = 1 }
-    hatchet         = { cpu = 1024, memory = 2048, desired = 1 }
+    # Two tasks, and it is REVERB_SCALING_ENABLED that makes that legal
+    # rather than the other way round. Cloud Map hands a publisher one
+    # task at random out of a MULTIVALUE record, so without the Redis
+    # pub/sub backplane roughly half of every query's frames would be
+    # published to a task holding none of that query's subscribers and
+    # would simply vanish. See reverb_server_environment in config.tf.
+    #
+    # The second task exists for the same reason Octane's does: at desired
+    # 1 every deploy and every task replacement drops every open
+    # WebSocket, which on this platform means every in-flight answer
+    # stream. Note the dependency it adds — Reverb now needs Redis to fan
+    # out, where before it needed nothing.
+    laravel-reverb = { cpu = 512, memory = 1024, desired = 2 }
+    fastapi        = { cpu = 2048, memory = 4096, desired = 1 }
+    hatchet        = { cpu = 1024, memory = 2048, desired = 1 }
     # 4 vCPU / 8 GiB, desired 1. Several workflows are max_runs=1
     # singletons and Ch 07 records maxReplicas 1 as a still-open finding,
     # not a free knob. Do not raise this without reading it.

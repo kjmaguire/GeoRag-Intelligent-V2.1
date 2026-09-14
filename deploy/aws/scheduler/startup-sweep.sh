@@ -48,14 +48,24 @@ TIER2=(hatchet-worker fastapi martin)
 TIER3=(laravel-octane laravel-horizon laravel-reverb)
 SERVICE_COUNT=$(( ${#TIER1[@]} + ${#TIER2[@]} + ${#TIER3[@]} ))
 
-# Octane runs two tasks; everything else runs one. The floor matters and
-# the ceiling does not: at desired 1 every deploy and task replacement is
-# a user-visible outage on the only public service. ADR-0022 §3 carries
-# the cost reasoning, and the evidence that answered the Azure-era
-# objection to it: max_connections 429 against a 24h peak of 99, Octane
-# opening PDO connections lazily per worker, and session, cache and queue
-# all on Redis.
-declare -A DESIRED=( [laravel-octane]=2 )
+# The two ALB-reachable services run two tasks; everything else runs one.
+# The floor matters and the ceiling does not: at desired 1 every deploy and
+# task replacement is a user-visible outage on a public service. ADR-0022
+# §3 carries the cost reasoning for Octane, and the evidence that answered
+# the Azure-era objection to it: max_connections 429 against a 24h peak of
+# 99, Octane opening PDO connections lazily per worker, and session, cache
+# and queue all on Redis. For Reverb the outage is every open WebSocket,
+# which on this platform is every in-flight answer stream.
+#
+# THIS TABLE IS A SECOND PLACE THE COUNT LIVES. Terraform's local.services
+# in deploy/aws/terraform/main.tf is the other, and the sweep overwrites
+# Terraform's value every morning — so a count changed in one place and
+# not the other silently reverts overnight. Change both.
+#
+# laravel-reverb at 2 is only correct while REVERB_SCALING_ENABLED is
+# true (config.tf, reverb_server_environment). Without the Redis pub/sub
+# backplane a second task drops roughly half of every query's frames.
+declare -A DESIRED=( [laravel-octane]=2 [laravel-reverb]=2 )
 
 # "name=endpoint-config-name" pairs. Empty means the deployment is on the
 # hybrid Cohere-direct fallback and has no endpoints to manage.
