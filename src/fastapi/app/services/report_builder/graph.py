@@ -18,7 +18,7 @@ Pipeline:
           → compliance_check
           → geologist_approval
           → export_package
-          → activepieces_delivery (now Kestra per ADR-0001)
+          → delivery_dispatch
           → END
 
 Several nodes ship with minimal-viable bodies that defer heavy
@@ -29,7 +29,7 @@ implementations:
   MapLibre static rendering deferred to §17.4.
 * `export_package` — emits a self-contained markdown bundle as a
   data: URI; PDF/DOCX/XLSX renderers deferred.
-* `activepieces_delivery` — log-only; Kestra dispatch deferred to §7.11.
+* `delivery_dispatch` — log-only; real dispatch deferred to §7.11.
 
 Caller pattern:
 
@@ -43,10 +43,10 @@ import logging
 from langgraph.graph import END, START, StateGraph
 
 from app.services.report_builder.nodes import (
-    activepieces_delivery,
     attach_citations,
     build_appendix,
     compliance_check,
+    delivery_dispatch,
     export_package,
     gather_evidence,
     generate_maps_charts,
@@ -77,7 +77,7 @@ _PIPELINE: list[tuple[str, object]] = [
     ("compliance_check", compliance_check),
     ("geologist_approval", geologist_approval),
     ("export_package", export_package),
-    ("activepieces_delivery", activepieces_delivery),
+    ("delivery_dispatch", delivery_dispatch),
 ]
 
 

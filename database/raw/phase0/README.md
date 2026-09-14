@@ -164,7 +164,7 @@ across every layer.
 |---|---|---|
 | `10-layer-a-workspace-foundation.sql` | `workspace`, `audit`, `usage` schemas; `workspace.workspaces` registry; pgcrypto + uuid-ossp extensions | Foundational — must run first |
 | `20-layer-b-audit-ledger.sql` | `audit.audit_ledger` hash-chain table | Append-only ledger; tamper-evident |
-| `30-layer-c-workflow-runs.sql` | `audit.workflow_runs` for Hatchet + Kestra tracing | trace_id ↔ Tempo cross-link |
+| `30-layer-c-workflow-runs.sql` | `workflow.workflow_runs` for cross-orchestrator tracing | trace_id ↔ Tempo cross-link |
 | `40-layer-d-outbox.sql` | `outbox.events` for at-least-once dispatch | Polled by external_notification |
 | `50-layer-e-operational-contract.sql` | `ops.runtime_contract` for healthcheck state | Reflects multi-tenant enforcement |
 | `60-layer-f-usage-cost.sql` | `usage.*` cost-accounting tables | Per-tenant cost rollup |

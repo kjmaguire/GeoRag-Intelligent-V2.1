@@ -85,7 +85,7 @@ def _synthetic_classifier(description: str) -> tuple[str, str]:
         → 'failed_ingestion'
       - 'report', 'export', 'pdf gen', 'docx', 'xlsx'
         → 'failed_report'
-      - 'integration', 'activepieces', 'webhook', 'api'
+      - 'integration', 'webhook', 'api'
         → 'integration_issue'
       - 'slow', 'timeout', 'lag'
         → 'performance'
@@ -112,7 +112,7 @@ def _synthetic_classifier(description: str) -> tuple[str, str]:
         category = "failed_report"
     elif any(k in d for k in ["pdf upload", "upload", "ingest", "parse", "ocr"]):
         category = "failed_ingestion"
-    elif any(k in d for k in ["integration", "activepieces", "webhook", "api error"]):
+    elif any(k in d for k in ["integration", "webhook", "api error"]):
         category = "integration_issue"
     elif any(k in d for k in ["slow", "timeout", "lag"]):
         category = "performance"

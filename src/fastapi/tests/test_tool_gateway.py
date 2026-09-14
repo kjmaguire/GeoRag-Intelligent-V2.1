@@ -1,7 +1,7 @@
 """§4 Tool Gateway — integration tests.
 
 Covers:
-  - 19 tools registered in workspace.agent_risk_tiers
+  - 18 tools registered in workspace.agent_risk_tiers
   - Unknown tool → blocked
   - R0 tool with no impl → blocked with explicit reason
   - R0 tool with impl + allowed workspace → executes
@@ -56,11 +56,14 @@ async def pg_conn():
 
 # ─── Registry sanity ────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_19_tools_registered_in_db(pg_conn: asyncpg.Connection):
+async def test_18_tools_registered_in_db(pg_conn: asyncpg.Connection):
+    """§4.2 listed 19. `trigger_activepieces_flow` was retired by migration
+    2026_09_14_090000 — it had no impl bound, so its tier row registered a
+    governed capability `invoke_tool()` could not dispatch."""
     n = await pg_conn.fetchval(
         "SELECT count(*) FROM workspace.agent_risk_tiers",
     )
-    assert n == 19, f"expected 19 tools, got {n}"
+    assert n == 18, f"expected 18 tools, got {n}"
 
 
 @pytest.mark.asyncio

@@ -124,7 +124,7 @@ echo
 n_prov=$(docker exec georag-postgresql psql -U georag -d georag -tAc "
     SELECT count(*) FROM bronze.provenance
      WHERE source_file = 's3://bronze/${MINIO_KEY}'
-       AND parser_name = 'activepieces_public_geoscience_pull';" | tr -d ' ')
+       AND parser_name = 'public_geoscience_pull';" | tr -d ' ')
 n_audit=$(docker exec georag-postgresql psql -U georag -d georag -tAc "
     SELECT count(*) FROM audit.audit_ledger
      WHERE action_type = 'public_geoscience.pull.complete'

@@ -1,4 +1,4 @@
-"""§4 Tool Gateway — bind real implementations to the 19 registered tools.
+"""§4 Tool Gateway — bind real implementations to the registered tools.
 
 Each tool name in workspace.agent_risk_tiers needs a Python impl bound
 via register_tool() so existing call sites can migrate to invoke_tool().

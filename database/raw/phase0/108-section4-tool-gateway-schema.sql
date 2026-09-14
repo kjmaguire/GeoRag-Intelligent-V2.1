@@ -2,11 +2,11 @@
 -- §4 Tool Gateway — schema (doc-phase 183)
 --
 -- Closes the master-plan-audit-flagged foundational gap: the central
--- governance layer for the 19 approved agent tools (registry + risk tiers +
+-- governance layer for the approved agent tools (registry + risk tiers +
 -- workspace permissions + approval requirements + dry-run capture).
 --
 -- Tables created:
---   workspace.agent_risk_tiers       19 registered tools + their R0-R5 tier
+--   workspace.agent_risk_tiers       registered tools + their R0-R5 tier
 --   workspace.agent_permissions      per-workspace × tool allow/deny matrix
 --   workspace.approval_requirements  per-workspace × tool required reviewer + threshold
 --   workspace.tool_invocations       audit ring of every tool call (R0+ for now)
@@ -84,7 +84,15 @@ CREATE INDEX IF NOT EXISTS idx_tool_inv_parent
     ON workspace.tool_invocations (parent_run_id) WHERE parent_run_id IS NOT NULL;
 
 -- =============================================================================
--- Seed the 19 approved tools per §4.2 + risk tiers per §4.3
+-- Seed the approved tools per §4.2 + risk tiers per §4.3
+--
+-- §4.2 listed 19. `trigger_activepieces_flow` is not among them any more:
+-- Activepieces was sunset at Phase 3 Step 7, its Kestra replacement was
+-- retired 2026-07-28, and no impl was ever bound in
+-- services/tool_gateway/impls.py, so the row registered a tier for a tool
+-- `invoke_tool()` could not dispatch. Migration
+-- 2026_09_14_090000_drop_trigger_activepieces_flow_tool deletes it from
+-- clusters that already have it.
 -- =============================================================================
 INSERT INTO workspace.agent_risk_tiers (tool_name, risk_tier, description, requires_dry_run) VALUES
     ('start_ingestion',                'R2', 'Kick off a Hatchet ingestion run for a workspace.',                 FALSE),
@@ -93,7 +101,6 @@ INSERT INTO workspace.agent_risk_tiers (tool_name, risk_tier, description, requi
     ('query_postgis_readonly',         'R0', 'Read-only PostGIS query against silver/gold/public_geo.',     FALSE),
     ('query_neo4j_readonly',           'R0', 'Read-only Cypher against the workspace graph.',                      FALSE),
     ('retrieve_qdrant',                'R0', 'Vector search against workspace + public Qdrant collections.',       FALSE),
-    ('trigger_activepieces_flow',      'R3', 'Fire an external integration flow (Kestra in this build).',          TRUE),
     ('dispatch_hatchet_workflow',      'R2', 'Dispatch a registered Hatchet workflow.',                            FALSE),
     ('trigger_dagster_asset',          'R2', 'Materialise a Dagster asset on demand.',                             FALSE),
     ('generate_report',                'R2', 'Run the report builder graph for a project + template.',             FALSE),

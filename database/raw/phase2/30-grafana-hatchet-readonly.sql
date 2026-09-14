@@ -8,7 +8,7 @@
 -- dedicated role for the hatchet side.
 --
 -- NOSUPERUSER, NOBYPASSRLS, NOCREATEDB, NOCREATEROLE — same posture as
--- georag_app and activepieces. Read-only via SELECT-only grants; no
+-- georag_app and hatchet. Read-only via SELECT-only grants; no
 -- INSERT/UPDATE/DELETE anywhere.
 --
 -- Apply against the `hatchet` DB (the role itself is cluster-wide; the

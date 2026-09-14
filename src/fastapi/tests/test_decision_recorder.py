@@ -291,7 +291,7 @@ async def test_record_decision_option_missing_label_raises(
             conn,
             workspace_id=synthetic_workspace,
             decision_type="workflow_enablement",
-            recommendation="Enable Activepieces flow",
+            recommendation="Enable integration flow",
             human_decision="accepted",
             decided_by_user_id=synthetic_user,
             options_considered=[{"description": "missing label here"}],

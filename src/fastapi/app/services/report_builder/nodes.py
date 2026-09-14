@@ -20,7 +20,7 @@ The 12-node pipeline:
    10. compliance_check
    11. geologist_approval
    12. export_package
-   13. activepieces_delivery
+   13. delivery_dispatch
 
 The graduated nodes share the `synthetic_stub` evaluator pattern
 established in doc-phase 132 / 134 / 136 — orchestration is fully
@@ -939,18 +939,21 @@ async def export_package(state: ReportBuilderState) -> ReportBuilderState:
     return state
 
 
-async def activepieces_delivery(state: ReportBuilderState) -> ReportBuilderState:
+async def delivery_dispatch(state: ReportBuilderState) -> ReportBuilderState:
     """Delivery dispatch — Phase G.3 log-only stub.
 
-    The flow has been ported to Kestra per ADR-0001 (Kestra
-    sunset). Real dispatch enqueues a Kestra flow that fans out to
-    email / Teams / SharePoint / Slack per `delivery_targets`. For
-    now we just record that we *would* dispatch + the targets, then
-    set `delivery_dispatched=True` so the orchestrator marks success.
+    Named `activepieces_delivery` until the AWS migration (ADR-0022)
+    removed the last Activepieces naming; the orchestrator it was named
+    for was sunset at Phase 3 Step 7, and the Kestra replacement it was
+    then re-pointed at was retired on 2026-07-28 without ever running.
+    Real dispatch fans out to email / Teams / SharePoint / Slack per
+    `delivery_targets` and has no owner today (§7.11). For now we record
+    that we *would* dispatch, then set `delivery_dispatched=True` so the
+    orchestrator marks success.
     """
     if state.failure_reason:
         return state
 
-    # Log-only — real Kestra dispatch lives in §7.11 follow-up phase.
+    # Log-only — real dispatch lives in the §7.11 follow-up phase.
     state.delivery_dispatched = True
     return state

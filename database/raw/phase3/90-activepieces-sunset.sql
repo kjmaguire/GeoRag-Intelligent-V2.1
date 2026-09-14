@@ -1,32 +1,40 @@
 -- =============================================================================
--- Phase 3 Step 7 — Activepieces sunset.
+-- Activepieces sunset — Phase 3 Step 7, retained as the cleanup path.
 --
--- Removes the Activepieces logical DB + role from the Postgres cluster
--- after the migration to Kestra is fully cut over (Steps 4 + 5 verified
--- end-to-end on Kestra; both flows running with per-flow JWT + HMAC).
+-- Activepieces was the Phase 2 integration orchestrator. It was sunset
+-- wholesale at Phase 3 Step 7 and replaced by Kestra, which was itself
+-- retired on 2026-07-28 without ever having been deployed. Neither exists
+-- in this repository any more.
 --
--- Pre-flight (operator before applying this migration):
---   1. The activepieces docker container must be stopped:
---        docker compose --profile dev-data stop activepieces
---   2. A final logical pg_dump of the activepieces DB must exist in the
---      backup bucket (90-day retention). The cluster-level pg_basebackup
---      keeps a copy for at least the standard backup window even after
---      the DB is dropped.
---   3. /admin/integrations dashboard's "Activepieces flows" section
---      shows zero rows (no in-flight executions).
+-- WHY THIS FILE STILL EXISTS AFTER THE CREATORS ARE GONE
 --
--- After this migration:
---   - The activepieces logical DB is dropped (DROP DATABASE … WITH FORCE
---     to terminate any lingering connections — safe because the
---     container is stopped).
+-- `phase2/10-activepieces-role-and-db.sql` created a LOGIN role with a
+-- hardcoded password plus a logical database, and `phase2/20-activepieces-
+-- flow-flags.sql` seeded `activepieces.*.enabled` flags that no code has
+-- read since the flag namespace moved to `flows.*`. Both were deleted
+-- during the AWS migration (ADR-0022) rather than left in the tree for an
+-- operator to apply by hand: a fresh RDS instance must never grow a login
+-- role for a service that does not exist.
+--
+-- Deleting the creators does not clean a cluster where they were already
+-- applied — a dev laptop, or any long-lived Postgres from the Phase 2 era.
+-- This file is what does that, and it is the only remaining Activepieces
+-- artifact in the repository. It is a no-op on a cluster that never had
+-- them, which is every AWS cluster.
+--
+-- After this file:
+--   - The activepieces logical DB is dropped (DROP DATABASE … WITH FORCE;
+--     stop any container still holding a connection first).
 --   - The activepieces role is dropped (no objects own it post-DROP).
 --   - All `activepieces.*.enabled` feature flags are removed.
 --   - feature_flag_history rows for the dropped flags are PRESERVED
 --     (audit trail integrity).
 --
 -- Apply via psql against any DB on the cluster (the DROP commands run
--- outside any transaction). NOT idempotent on the DROP DATABASE step —
--- safe to re-run only after the DB is already gone.
+-- outside any transaction, and `\gexec` is not something `db:apply-raw`
+-- can run — which is why this file is not in database/raw/manifest.json).
+-- The verification block at the end RAISES unless the role, the database
+-- and the flags are all gone, so a partial run is reported, not assumed.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------

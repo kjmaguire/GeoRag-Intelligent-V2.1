@@ -91,10 +91,6 @@ _WORKSPACE_ID_EXEMPT: set[tuple[str, str]] = {
     # per §29.6; the registry is cross-workspace by design. Access is
     # gated at the Laravel admin Gate, not RLS.
     ("silver", "qp_credentials"),
-    # Activepieces webhook channel registry — workflow.* is platform-
-    # level outbox dispatcher infra. Access is gated at the Laravel
-    # admin Gate, not RLS.
-    ("workflow", "activepieces_channels"),
     # §6.6 EXEMPT (2026-05-16, kickoff-locked):
     # h3 density aggregation of public-geoscience mineral data —
     # cross-tenant by design. Public geoscience is shared
@@ -120,7 +116,6 @@ _RLS_EXEMPT: set[tuple[str, str]] = {
     ("targeting", "target_model_versions"),
     # Phase H4 — cross-workspace registries, admin-gated:
     ("silver", "qp_credentials"),
-    ("workflow", "activepieces_channels"),
     # §6.6 — h3 density choropleth, cross-tenant shared aggregation:
     ("gold", "h3_density_mineral"),
 }

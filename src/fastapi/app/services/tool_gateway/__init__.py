@@ -1,4 +1,4 @@
-"""§4 Tool Gateway — central enforcement layer for the 19 approved agent tools.
+"""§4 Tool Gateway — central enforcement layer for the approved agent tools.
 
 Per master plan §4: agents never call internals directly; every action
 goes through `invoke_tool()` which:

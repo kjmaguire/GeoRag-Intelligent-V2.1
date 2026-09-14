@@ -131,7 +131,7 @@ def test_classifier_failed_report():
 
 def test_classifier_integration_issue():
     sev, cat = _synthetic_classifier(
-        "Activepieces webhook keeps returning a 502 — integration is broken."
+        "The outbound webhook keeps returning a 502 — integration is broken."
     )
     assert sev == "critical"
     assert cat == "integration_issue"

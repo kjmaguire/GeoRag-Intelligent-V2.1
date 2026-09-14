@@ -26,7 +26,7 @@ Payload shapes per target store:
 * ``seaweedfs`` — ``{"bucket": "...", "key": "...", "body": "<bytes-or-str>"}``
 * ``external_webhook`` — ``{"webhook_url": "<override-url>", ...arbitrary body}``
                      target_collection routes to per-channel webhook URL via
-                     ``ACTIVEPIECES_WEBHOOK_URL_<COLLECTION>`` env var; request
+                     ``EXTERNAL_WEBHOOK_URL_<COLLECTION>`` env var; request
                      is signed with HMAC-SHA256 over canonical JSON.
 """
 
@@ -193,8 +193,8 @@ async def _dispatch_seaweedfs(row: asyncpg.Record) -> tuple[str, str | None]:
 
 
 async def _dispatch_external_webhook(row: asyncpg.Record) -> tuple[str, str | None]:
-    """POST the outbox payload to an external integration webhook (Kestra
-    flow, downstream SaaS endpoint, etc.).
+    """POST the outbox payload to an external integration webhook
+    (downstream SaaS endpoint, customer-side receiver, etc.).
 
     Phase H4 §7 wiring. The webhook URL is resolved in this order:
       1. ``payload.webhook_url`` (per-event override)
@@ -214,8 +214,14 @@ async def _dispatch_external_webhook(row: asyncpg.Record) -> tuple[str, str | No
     routes to dead-letter.
 
     Renamed from ``_dispatch_activepieces`` 2026-05-17 after the
-    Activepieces sunset; the same HMAC-signed POST pattern serves Kestra
-    and any other downstream webhook target.
+    Activepieces sunset; the same HMAC-signed POST pattern serves any
+    downstream webhook target.
+
+    The ``ACTIVEPIECES_*`` env aliases this used to accept alongside the
+    ``EXTERNAL_WEBHOOK_*`` names were dropped in the AWS migration
+    (ADR-0022). They existed to carry a cluster through one release with
+    an unmigrated ``.env``; AWS starts from empty stores and a generated
+    environment, so there is nothing left to be compatible with.
     """
     import httpx
 
@@ -225,9 +231,6 @@ async def _dispatch_external_webhook(row: asyncpg.Record) -> tuple[str, str | No
         payload.get("webhook_url")
         or os.environ.get(f"EXTERNAL_WEBHOOK_URL_{channel}")
         or os.environ.get("EXTERNAL_WEBHOOK_URL_DEFAULT")
-        # Back-compat alias — accept the legacy env names for one release.
-        or os.environ.get(f"ACTIVEPIECES_WEBHOOK_URL_{channel}")
-        or os.environ.get("ACTIVEPIECES_WEBHOOK_URL_DEFAULT")
     )
     if not webhook_url:
         return "permanent_failure", (
@@ -245,10 +248,7 @@ async def _dispatch_external_webhook(row: asyncpg.Record) -> tuple[str, str | No
     }
     body_bytes = json.dumps(body, sort_keys=True, default=str).encode("utf-8")
 
-    secret = (
-        os.environ.get("EXTERNAL_WEBHOOK_HMAC_SECRET")
-        or os.environ.get("ACTIVEPIECES_HMAC_SECRET", "")  # back-compat
-    ).encode("utf-8")
+    secret = os.environ.get("EXTERNAL_WEBHOOK_HMAC_SECRET", "").encode("utf-8")
     sig = (
         "sha256=" + hmac.new(secret, body_bytes, hashlib.sha256).hexdigest()
         if secret else ""
@@ -262,10 +262,7 @@ async def _dispatch_external_webhook(row: asyncpg.Record) -> tuple[str, str | No
     if sig:
         headers["X-GeoRAG-Signature"] = sig
 
-    timeout_s = float(
-        os.environ.get("EXTERNAL_WEBHOOK_HTTP_TIMEOUT_S")
-        or os.environ.get("ACTIVEPIECES_HTTP_TIMEOUT_S", "10"),
-    )
+    timeout_s = float(os.environ.get("EXTERNAL_WEBHOOK_HTTP_TIMEOUT_S", "10"))
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
             resp = await client.post(webhook_url, content=body_bytes, headers=headers)
@@ -289,11 +286,11 @@ _DISPATCHERS = {
     "neo4j": _dispatch_neo4j,
     "seaweedfs": _dispatch_seaweedfs,
     "external_webhook": _dispatch_external_webhook,
-    # Back-compat alias so unmigrated outbox rows still route. Drop after
-    # one release once `target_store='activepieces'` is no longer in the
-    # pending_propagations table.
-    "activepieces": _dispatch_external_webhook,
-    "kestra": _dispatch_external_webhook,
+    # The `activepieces` and `kestra` aliases that used to sit here were
+    # dropped in the AWS migration (ADR-0022). They were already
+    # unreachable: outbox.pending_propagations.target_store carries
+    # CHECK (target_store IN ('qdrant','neo4j','seaweedfs','redis',
+    # 'external_webhook')), so no row could ever name either of them.
 }
 
 

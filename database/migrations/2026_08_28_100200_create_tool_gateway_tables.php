@@ -27,12 +27,20 @@ use Illuminate\Support\Facades\DB;
  *
  * That verbatim port includes three entries for systems since removed —
  * `query_neo4j_readonly`, `trigger_dagster_asset` and
- * `trigger_activepieces_flow`. Dropping them here would be a behaviour change,
- * not a cleanup: `impls.py::register_all_impls` still registers
- * `query_neo4j_readonly` (as a stub) and callers still reach it through
+ * `trigger_activepieces_flow`. Dropping `query_neo4j_readonly` here would be
+ * a behaviour change, not a cleanup: `impls.py::register_all_impls` still
+ * registers it (as a stub) and callers still reach it through
  * `invoke_tool()`, so removing its tier row turns a stub response into a hard
- * rejection. Retiring those three is a follow-up that has to change the
- * registry and the impl together.
+ * rejection. Retiring it is a follow-up that has to change the registry and
+ * the impl together.
+ *
+ * CORRECTED 2026-09-14: that argument was applied to all three, and it only
+ * ever held for `query_neo4j_readonly`. The other two have no impl bound and
+ * never had one, so their rows register a governed tier for something
+ * `invoke_tool()` cannot dispatch at all.
+ * `2026_09_14_090000_drop_trigger_activepieces_flow_tool` removes
+ * `trigger_activepieces_flow` on that basis; `trigger_dagster_asset` is the
+ * same shape and is left for a Dagster-specific cleanup.
  *
  * ## RLS
  *
