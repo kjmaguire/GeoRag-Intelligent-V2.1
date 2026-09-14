@@ -19,7 +19,8 @@
 # -----------------------------------------------------------------------------
 # Stage 1 — builder
 # Installs all build-time dependencies, Composer packages, and Node assets.
-# Nothing from this stage bloats the final image except the outputs we COPY.
+# Nothing from this stage reaches the final image except /app, and
+# node_modules is deleted before then — see the note above `rm -rf` below.
 # -----------------------------------------------------------------------------
 # 2026-07-30 re-pin: the 2026-06-03 digest (Debian 13.5) carried a
 # CRITICAL CVE (CVE-2026-53215, linux-libc-dev) that Trivy's CI gate
@@ -134,6 +135,28 @@ ENV VITE_REVERB_APP_KEY=$VITE_REVERB_APP_KEY \
     VITE_REVERB_SCHEME=$VITE_REVERB_SCHEME
 RUN npm run build
 
+# Drop node_modules before the runtime stage copies /app wholesale.
+#
+# `COPY --from=builder /app /app` below takes the whole directory, so until
+# 2026-09-14 the production image shipped the entire JS dependency tree —
+# roughly 1,900 packages that cannot execute there, because the runtime
+# stage installs no Node (see its apt block; nodejs is builder-only) and
+# the Dockerfile runs `npm run build`, not `build:ssr`, so there is no SSR
+# bundle to serve. The browser only ever loads `public/build/`, which Vite
+# has already written by this line.
+#
+# It was not merely dead weight. Trivy failed the CI gate on 2026-09-14
+# with CVE-2026-85061 (CRITICAL, XSS sanitizer bypass in MapLibre GL JS
+# `DOM.sanitize()`) against `node_modules/plotly.js/node_modules/
+# maplibre-gl` at 4.7.1 — a nested copy pulled by plotly.js's own
+# `^4.7.1` range, entirely separate from the `^5.23.0` this app imports,
+# and not present in any bundle Vite emits. Shipping build-time
+# dependencies into a runtime image turns every advisory against them
+# into a production finding. Deleting them removes the finding rather
+# than suppressing it, and the stage-1 header's claim that nothing here
+# bloats the final image becomes true.
+RUN rm -rf node_modules
+
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime
 # Lean image that contains only what is needed to run the application.
@@ -198,6 +221,8 @@ RUN echo "memory_limit=512M" > /usr/local/etc/php/conf.d/memory.ini
 WORKDIR /app
 
 # Copy application (vendor, built assets, and source) from builder.
+# This takes /app wholesale, which is why the builder deletes node_modules
+# first — nothing filters what lands here.
 COPY --from=builder /app /app
 
 # Create required runtime directories with correct ownership.
