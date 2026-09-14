@@ -285,6 +285,75 @@ configuration, so this plan takes it: **versioning on, a lifecycle policy, and
 Cross-Region or same-region replication on the `bronze` bucket**, decided
 explicitly rather than inherited.
 
+### 4.1 Cloudflare R2 for Bronze — costed and declined (2026-09-14)
+
+Asked because R2 bills no egress, and Bronze is both the largest data flow in
+the system and the only one that reaches a browser. The answer is that in *this*
+network R2 does not remove egress cost, it creates it.
+
+`deploy/aws/terraform/main.tf:157` puts S3 behind a **gateway** VPC endpoint on
+the private route table. Every byte the tasks read or write to S3 therefore
+leaves the NAT gateway untouched and costs nothing. An R2 bucket is a public
+internet endpoint, so the same bytes would cross the NAT at $0.045/GB **and**
+AWS internet egress at $0.09/GB on the way out.
+
+| Flow | S3 | R2 |
+|---|---|---|
+| Write from a Fargate task | $0 (gateway endpoint) | $0.045 NAT + $0.09 AWS egress = **$0.135/GB** |
+| Internal read to a Fargate task | $0 (gateway endpoint) | $0.045/GB NAT |
+| Browser read (presigned) | $0.09/GB after 100 GB/mo free | **$0** |
+| Storage | $0.023/GB-mo | $0.015/GB-mo |
+
+R2 wins one row of four. Bronze *is* browser-facing — `FigureResolver:121`
+presigns figure PNGs off the `s3-bronze` disk, and `ReportController::source`
+(`ReportController.php:800`) presigns the original document a report was parsed
+from — but that traffic is figure images and occasional downloads, against every
+uploaded PDF and every page render on the two rows where R2 costs money and S3
+does not.
+
+With `S` GB resident, `W` GB written per month, `Ri` GB read internally per
+month and `Rb` GB served to browsers per month:
+
+```
+S3 = 0.023·S + 0.09·max(0, Rb − 100)
+R2 = 0.015·S + 0.135·W + 0.045·Ri
+```
+
+Class A/B operation charges are omitted: at any request rate this deployment
+will see, R2's free tier (1M Class A, 10M Class B per month) covers them.
+
+No corpus exists yet, so there is no measured volume to put in. At a plausible
+first-customer shape — S=50, W=5, Ri=20, Rb=2 — S3 is **~$1.15/mo** and R2 is
+**~$2.33/mo**. Solving for `Rb` puts break-even at **~113 GB/month of
+browser-facing Bronze egress**, roughly 57× the modelled figure traffic. That is
+a public data portal, not a private per-tenant platform. For scale, the NAT
+gateway's own fixed charge is ~$33/mo, so the entire question is a few percent
+of one line item this deployment already pays.
+
+**Two non-cost reasons it stays declined even if the volumes invert.**
+
+1. **R2 authenticates with a static Access Key ID and Secret.** There is no IAM
+   role equivalent. ADR-0022's stated win was the ECS task role replacing every
+   static credential Azure carried — the storage account key, the Foundry key,
+   and the Azure Files key whose rotation broke Qdrant's mount. Putting Bronze
+   on R2 puts one of those back, on the one irreplaceable bucket, and adds a
+   rotation item to `ops/runbooks/secret-rotation.md`.
+2. **The backup posture is S3 configuration.** Versioning plus the 90-day
+   `noncurrent_version_expiration` in `deploy/aws/terraform/data.tf:244` *is*
+   the answer to "Bronze had no backup". On R2 it would have to be
+   re-implemented and re-verified, and `storage_tiering_run`'s tier prefixes
+   and the `STANDARD_IA` transition have no direct counterpart.
+
+If a bucket does move to R2 later, the candidate is **`exports`**, not Bronze:
+written once, downloaded once, browser-facing by design, and regenerable by
+re-running the export rather than irreplaceable. The volumes do not justify it today either. Re-run the formula
+above against real numbers before revisiting.
+
+Pricing: [R2](https://developers.cloudflare.com/r2/pricing/) ·
+[R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/) ·
+[S3](https://aws.amazon.com/s3/pricing/) ·
+[VPC / NAT gateway](https://aws.amazon.com/vpc/pricing/)
+
 ---
 
 ## 5. Compute notes
