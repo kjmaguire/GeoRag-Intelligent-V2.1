@@ -159,6 +159,52 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The fastapi leg ran the runner out of disk on 2026-09-15 —
+      # "write /usr/lib/x86_64-linux-gnu/libicudata.so.76.1: no space left on
+      # device" — while the laravel leg built fine on the same runner type
+      # minutes earlier. Nothing in that push touched a Dockerfile.
+      #
+      # It is the PR path that is tight, and `load: true` below is why: it
+      # exports the finished image into the local Docker daemon so Trivy can
+      # scan it, so at peak the fastapi layers exist TWICE — once in the
+      # buildkit cache, once in the daemon. That image carries torch,
+      # transformers, GDAL/rasterio and a from-source Tesseract, against a
+      # hosted runner that starts with roughly 14 GB free on /. The margin
+      # was always thin; it has now been crossed, and it will be crossed
+      # again as the image grows.
+      #
+      # Everything removed is a preinstalled toolchain for a language this
+      # repository never builds on the host — both images are built inside
+      # Docker, so the host needs docker and nothing else. Android alone is
+      # most of the ~25 GB this frees. CodeQL's toolcache goes too: it is
+      # used by codeql.yml, which is a different workflow on a different
+      # runner.
+      #
+      # Inline rather than a third-party "free disk space" action, on
+      # purpose. The Trivy step below was moved off a floating `@master` ref
+      # in the 2026-06-24 re-audit; taking a new supply-chain dependency to
+      # solve a disk problem would hand that back for no reason.
+      #
+      # Applied to both matrix legs rather than just fastapi. It costs the
+      # laravel leg a few seconds, and laravel's own margin shrinks with
+      # every base-image update — a guard that only covers the image that
+      # has already failed is a guard that gets added twice.
+      #
+      # `df -h` either side so the next failure is diagnosable from the log
+      # rather than guessed at. `|| true` so a path that disappears from a
+      # future runner image cannot fail the build.
+      - name: Free runner disk space
+        run: |
+          echo "--- disk before cleanup ---"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          echo "--- disk after cleanup ---"
+          df -h /
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
