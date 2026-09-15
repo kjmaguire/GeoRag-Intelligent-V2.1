@@ -6,7 +6,8 @@ POST /internal/outlier-assist
 currently has no caller. It is left mounted rather than deleted because it is
 self-contained and the structured-ingest path it serves is expected back — but
 do not read its presence as evidence that LLM-assisted outlier flagging is
-running. See src/dagster/DORMANT.md.
+running. (The `src/dagster` tree and its DORMANT.md were deleted 2026-08-28;
+there is no longer any caller to restore, only a path to rebuild.)
 
 Called by the Dagster outlier detector
 (``georag_dagster.assets._outlier_llm.call_llm_assist``) when rule-based
