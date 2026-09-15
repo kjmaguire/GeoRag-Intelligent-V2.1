@@ -18,7 +18,6 @@ KUBE_VERSION="${KUBE_VERSION:-1.30.0}"
 SETS=(
     --set "secrets.postgresPassword=CHANGEME"
     --set "secrets.pgAppPassword=CHANGEME"
-    --set "secrets.neo4jPassword=neo4j/CHANGEME"
     --set "secrets.redisPassword=CHANGEME"
     --set "secrets.fastapiServiceKey=CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
     --set "secrets.laravelAppKey=base64:CHANGEME"

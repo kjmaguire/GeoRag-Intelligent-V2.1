@@ -115,7 +115,6 @@ echo "-- §11.6 helm template (all 3 values files) --"
 SECRETS_ARGS=(
     --set "secrets.postgresPassword=x"
     --set "secrets.pgAppPassword=x"
-    --set "secrets.neo4jPassword=neo4j/x"
     --set "secrets.redisPassword=x"
     --set "secrets.fastapiServiceKey=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
     --set "secrets.laravelAppKey=base64:x"
@@ -155,7 +154,6 @@ DRIFT_FOUND=0
 SECRETS_ARGS_DRIFT=(
     --set "secrets.postgresPassword=CHANGEME"
     --set "secrets.pgAppPassword=CHANGEME"
-    --set "secrets.neo4jPassword=neo4j/CHANGEME"
     --set "secrets.redisPassword=CHANGEME"
     --set "secrets.fastapiServiceKey=CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
     --set "secrets.laravelAppKey=base64:CHANGEME"

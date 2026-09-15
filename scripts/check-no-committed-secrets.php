@@ -96,6 +96,18 @@ $patterns = [
     '/(?:PASSWORD|PASSWD|SECRET|TOKEN)[A-Z_]*\s*[:=>]+\s*[\'"]?([^\'"\s,;)]+)/i',
     // postgres://user:password@host, redis://…, amqp://…
     '#[a-z][a-z0-9+.-]*://[^:/@\s]+:([^@/\s]+)@#i',
+    // ${NEO4J_PASSWORD:-24kNKWLbX20bgHEXAuMSGjCp228LIfUE} — a shell default.
+    //
+    // This needs its own pattern because the first one ALMOST matches and
+    // that is worse than not matching at all. `[:=>]+` consumes the `:` of
+    // `:-`, so the capture begins at the dash: `-24kNKWLb…}`. looksGenerated()
+    // then sees a leading separator, concludes "placeholder", and passes it.
+    // Two real credentials — a Neo4j password and a Redis password — sat in
+    // tracked files under scripts/ behind exactly that near-miss, in a public
+    // repo, while this check reported clean. Capture the value itself.
+    // Digits belong in the name class: the first credential this caught
+    // was NEO4J_PASSWORD, and `[A-Z_]*` cannot match the 4 in NEO4J.
+    '/\$\{[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN)[A-Z0-9_]*:[-=]([^}\s]+)\}/i',
 ];
 
 $hits = [];

@@ -594,27 +594,18 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Phase C — Neo4j knowledge graph populated for Cameco
-TOTAL=$((TOTAL + 1))
-NEO4J_CAMECO_NODES=$(docker exec georag-neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD:-24kNKWLbX20bgHEXAuMSGjCp228LIfUE}" "MATCH (n) WHERE n.project_id = '762b147e-af53-4593-b569-04ee46f31d97' RETURN count(n) AS c;" 2>/dev/null | grep -E '^[0-9]+$' | head -1)
-if [ -z "$NEO4J_CAMECO_NODES" ]; then NEO4J_CAMECO_NODES=0; fi
-if [ "$NEO4J_CAMECO_NODES" -ge "60" ]; then
-    note "[kg:cameco-nodes] PASS — $NEO4J_CAMECO_NODES Cameco nodes in Neo4j (>=60)"
-else
-    note "[kg:cameco-nodes] FAIL — only $NEO4J_CAMECO_NODES Cameco nodes in Neo4j (expected >=60)"
-    FAIL=$((FAIL + 1))
-fi
-
-# Phase C — Specific named entities Layer 4 looks for
-TOTAL=$((TOTAL + 1))
-NEO4J_CAMECO_ENTITY=$(docker exec georag-neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD:-24kNKWLbX20bgHEXAuMSGjCp228LIfUE}" "MATCH (n) WHERE n.name = 'CAMECO RESOURCES' RETURN count(n) AS c;" 2>/dev/null | grep -E '^[0-9]+$' | head -1)
-if [ -z "$NEO4J_CAMECO_ENTITY" ]; then NEO4J_CAMECO_ENTITY=0; fi
-if [ "$NEO4J_CAMECO_ENTITY" -ge "1" ]; then
-    note "[kg:cameco-resources-entity] PASS — 'CAMECO RESOURCES' resolvable in Neo4j"
-else
-    note "[kg:cameco-resources-entity] FAIL — Layer 4 entity 'CAMECO RESOURCES' missing from Neo4j"
-    FAIL=$((FAIL + 1))
-fi
+# Phase C — REMOVED. These were two checks against `georag-neo4j`: Cameco
+# node count, and the 'CAMECO RESOURCES' entity that hallucination Layer 4
+# resolved against. Neo4j was removed from the stack on 2026-07-28 (CLAUDE.md
+# hard rule 9) and the graph half of Layer 4 is permanently fail-open, so the
+# container they exec'd into has not existed for months: both could only
+# report FAIL, and a verifier that always fails on a store the platform does
+# not have teaches its reader to ignore its FAIL count.
+#
+# Deleting them also removed a live credential. Each carried the dev cluster's
+# Neo4j password as a `${NEO4J_PASSWORD:-…}` default, in a public repo, which
+# check-no-committed-secrets.php did not catch until its third pattern was
+# added alongside this change. Rotate that value if it was ever reused.
 
 # Phase D — Qdrant embeddings landed
 TOTAL=$((TOTAL + 1))
