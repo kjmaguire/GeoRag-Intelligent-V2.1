@@ -177,6 +177,15 @@ which is what you want for the first ever apply, when no snapshot exists.
 `scripts/check-aws-power-flag.py` runs in CI and fails if a new hourly-billed
 resource is added without the gate, or if a stateful one is added with it.
 
+> **Already made a budget in the console?** `terraform/budget.tf` creates one
+> named `georag-monthly`, and AWS budget names are unique per account. If yours
+> has that name the first apply fails on a duplicate; adopt it instead:
+> `terraform import aws_budgets_budget.monthly <account-id>:georag-monthly`.
+> If it has a different name you get two budgets and duplicate emails -- not
+> billed (two are free) but duplicate alerts get muted, and a muted spend alert
+> is the thing that file exists to prevent. Deleting the console one before the
+> first apply is equally fine: nothing bills until `power=on`.
+
 ## Layout
 
 | Path | What it is |

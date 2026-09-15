@@ -26,6 +26,26 @@
 # `terraform apply -var power=off`, and that is a human step. If the alerts
 # below ever fire, treat the numbers as already spent.
 
+# IF A BUDGET ALREADY EXISTS IN THE CONSOLE, deal with it before the first
+# apply. Kyle created one by hand on 2026-09-15, which is the right thing to
+# have done — it protected the account days before any Terraform ran — but
+# budget names are unique per account, so the two can collide:
+#
+#   * Named `georag-monthly` (the name below): `terraform apply` FAILS with
+#     a duplicate-name error. Adopt it instead of recreating it:
+#
+#       terraform import aws_budgets_budget.monthly <account-id>:georag-monthly
+#
+#     Then `terraform plan` shows the drift between the console settings and
+#     the thresholds below, and the next apply reconciles it.
+#   * Named anything else: both budgets exist and both email. Not an error
+#     and not billed — AWS gives two budgets free — but duplicate alerts get
+#     muted, and a muted spend alert is the failure this file exists to
+#     prevent. Delete the console one, or import it under its own name.
+#
+# Deleting the console budget before the first apply is also fine. Nothing
+# bills until `power=on`, so the window where neither exists is a window
+# where there is nothing to overspend.
 resource "aws_budgets_budget" "monthly" {
   name         = "${local.name}-monthly"
   budget_type  = "COST"
