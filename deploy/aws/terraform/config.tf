@@ -98,19 +98,63 @@ locals {
     laravel-reverb  = ["REVERB_APP_SECRET"]
   }
 
-  # Application services get the whole common set, plus anything named for
-  # them above. The third-party containers get only what they themselves
-  # read, under the names THEY expect — qdrant reads
-  # QDRANT__SERVICE__API_KEY, not QDRANT_API_KEY, and giving it the
-  # client-side name would leave auth off while looking configured.
+  # The database password, under the two names the two language stacks read
+  # it by. One secret, because it is one role.
+  #
+  # The application connects as georag_app, NOT as georag. georag is the RDS
+  # master and owns every table, and `ENABLE ROW LEVEL SECURITY` does not
+  # apply to a table's owner — only FORCE does. Connecting the app as the
+  # owner would leave every tenancy guarantee resting on FORCE having been
+  # applied to every table without exception, which is precisely the thing
+  # scripts/check-rls-force-parity.php exists because we cannot assume.
+  # georag_app is created NOSUPERUSER NOBYPASSRLS by
+  # database/raw/phase1/10-georag-app-role.sql.
+  #
+  # That file creates it with a placeholder password committed to this
+  # repository ('georag-app-dev-replace-via-alter-role'). The operator must
+  # ALTER ROLE it to the value written here — see deploy/aws/README.md.
+  _db_secret_ref = [
+    # Laravel: config/database.php pgsql.password
+    { name = "DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app.arn}:GEORAG_APP_PASSWORD::" },
+    # FastAPI and the Hatchet worker: app/config.py POSTGRES_PASSWORD, which
+    # is a required field with no default — an unset value is a startup
+    # ValidationError, not a degraded mode.
+    { name = "POSTGRES_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app.arn}:GEORAG_APP_PASSWORD::" },
+  ]
+
+  # Application services get the whole common set plus the database
+  # credential, plus anything named for them above. The third-party
+  # containers get only what they themselves read, under the names THEY
+  # expect — qdrant reads QDRANT__SERVICE__API_KEY, not QDRANT_API_KEY, and
+  # giving it the client-side name would leave auth off while looking
+  # configured. The same trap caught three more containers below; each entry
+  # here is the name that container's own image reads, not ours.
   service_secrets = {
     for name, _cfg in local.services : name => lookup({
       qdrant = [{ name = "QDRANT__SERVICE__API_KEY", valueFrom = local._secret_ref["QDRANT_API_KEY"] }]
-      redis  = []
-      martin = []
+
+      # The SERVER needs the password too, not just the clients. Without it
+      # redis-server runs with no `requirepass` while every client is
+      # configured to send AUTH, and Redis answers AUTH-with-no-password
+      # set with an error — so cache, sessions, queues, Horizon and the
+      # Reverb backplane all fail closed. See the command in services.tf.
+      redis = [{ name = "REDIS_PASSWORD", valueFrom = local._secret_ref["REDIS_PASSWORD"] }]
+
+      # docker/martin.Dockerfile deliberately gives DATABASE_URL no default
+      # ("an absent one fails at boot with an obvious one") and
+      # docker/martin/martin.yaml:39 reads `connection_string:
+      # '${DATABASE_URL}'`. Nothing was supplying it, so every MVT tile in
+      # the platform was one boot failure away.
+      martin = [{ name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.app.arn}:MARTIN_DATABASE_URL::" }]
+
+      # hatchet-lite keeps its own database, on the same instance. The role
+      # and database are created by deploy/aws/bootstrap.sql; this is the
+      # connection string for them.
+      hatchet = [{ name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.app.arn}:HATCHET_DATABASE_URL::" }]
       }, name,
       concat(
         [for key, ref in local._secret_ref : { name = key, valueFrom = ref }],
+        local._db_secret_ref,
         [for key in lookup(local._extra_secret_ref, name, []) : {
           name      = key
           valueFrom = "${aws_secretsmanager_secret.app.arn}:${key}::"
@@ -149,11 +193,47 @@ locals {
     POSTGRES_DIRECT_HOST = local.db_host
     POSTGRES_PORT        = 5432
     POSTGRES_DB          = "georag"
+    # app/config.py defaults this to "georag", the OWNER. See the argument
+    # by _db_secret_ref above: the owner is not subject to plain ENABLE ROW
+    # LEVEL SECURITY, so the application must never connect as it.
+    POSTGRES_USER = "georag_app"
     # PgBouncer is compose-only and was already absent on Azure. asyncpg
     # runs statement_cache_size=0 regardless, so RDS Proxy drops in
     # cleanly if connection counts ever justify it. Not day one.
     DB_HOST = local.db_host
     DB_PORT = 5432
+
+    # ── Laravel's own connection and drivers ────────────────────────
+    # Every one of these was missing, and Laravel's defaults are not
+    # "unconfigured" — they are wrong in a way that starts cleanly:
+    #
+    #   DB_CONNECTION    config/database.php:19 defaults to `sqlite`, so
+    #                    Octane, Horizon and Reverb would each run against
+    #                    a local file instead of RDS.
+    #   DB_DATABASE      defaults to `laravel`
+    #   DB_USERNAME      defaults to `root`
+    #   QUEUE_CONNECTION config/queue.php:15 defaults to `database`, which
+    #                    is the quiet one: Horizon only ever supervises
+    #                    REDIS queues, so with the database driver jobs are
+    #                    written to a table that nothing drains. Both
+    #                    supervisors would sit idle and healthy while no
+    #                    queued work ran at all.
+    #   CACHE_STORE      config/cache.php:17 defaults to `database`
+    #   SESSION_DRIVER   config/session.php:20 defaults to `database`
+    #   FILESYSTEM_DISK  config/filesystems.php:15 defaults to `local`,
+    #                    which puts uploads on a Fargate task's ephemeral
+    #                    disk — gone on the next nightly stop/start.
+    #
+    # Values are .env.production.example's, except DB_USERNAME: that file
+    # predates the georag_app split and still says `georag`.
+    DB_CONNECTION = "pgsql"
+    DB_DATABASE   = "georag"
+    DB_USERNAME   = "georag_app"
+
+    QUEUE_CONNECTION = "redis"
+    CACHE_STORE      = "redis"
+    SESSION_DRIVER   = "redis"
+    FILESYSTEM_DISK  = "s3"
 
     REDIS_HOST = "redis.${aws_service_discovery_private_dns_namespace.this.name}"
     REDIS_PORT = 6379
@@ -352,6 +432,40 @@ locals {
           # itself reads. Setting it here too would put it in the task
           # definition in plaintext.
           QDRANT__STORAGE__STORAGE_PATH = "/qdrant/storage"
+        }
+
+        # The Hatchet engine had NO configuration here at all — it got the
+        # common set and nothing else, and hatchet-lite reads none of that.
+        # It would have failed at boot on the missing DATABASE_URL (supplied
+        # through `secrets`), taking all 51 registered workflows with it:
+        # every ingestion path and every cron in the platform.
+        #
+        # These are docker-compose.yml's hatchet-lite values, with the two
+        # that cannot carry over corrected for ECS.
+        hatchet = {
+          SERVER_MSGQUEUE_KIND          = "postgres"
+          SERVER_DEFAULT_ENGINE_VERSION = "V1"
+          SERVER_GRPC_BIND_ADDRESS      = "0.0.0.0"
+          SERVER_GRPC_PORT              = "7077"
+
+          # gRPC stays plaintext, and the SG is what keeps it private: the
+          # engine is not in a target group, so nothing outside the VPC can
+          # reach 7077. Terminating TLS here would mean issuing and rotating
+          # an internal certificate for a port only sibling tasks dial.
+          SERVER_GRPC_INSECURE = "t"
+
+          # The two that compose sets to `localhost`. A worker connects to
+          # whatever the engine ADVERTISES here, so localhost would send
+          # every worker back to its own task and no workflow would ever be
+          # picked up. It has to be the Cloud Map name.
+          SERVER_GRPC_BROADCAST_ADDRESS                          = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
+          SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
+
+          SERVER_URL                  = "https://${var.app_domain}"
+          SERVER_AUTH_COOKIE_DOMAIN   = var.app_domain
+          SERVER_AUTH_COOKIE_INSECURE = "f"
+
+          SERVER_AUTH_SET_EMAIL_VERIFIED = "t"
         }
       }, name, {})
     )

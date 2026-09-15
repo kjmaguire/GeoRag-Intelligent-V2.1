@@ -114,7 +114,7 @@ assert "terraform: an active save policy with no volume is rejected" fail \
 # Azure ran: AOF off and no volume, so every restart and every nightly
 # scale-to-zero dropped all sessions and any queued Horizon job.
 d="$(fixture)"
-mutate "$d" "${TF}" 's/"--appendonly", "yes",/"--appendonly", "no",/' 's|"--save", "",|"--databases", "4",|'
+mutate "$d" "${TF}" 's/"--appendonly yes",/"--appendonly no",/' 's|"--save '"'"''"'"'",|"--databases 4",|'
 assert "terraform: turning persistence back off is rejected" fail \
   "persistence is OFF" "$d"
 
@@ -129,7 +129,7 @@ assert "k8s: appendonly yes after losing the volume is rejected" fail \
 # The live drift: maxmemory equal to the container limit. Redis's guard
 # is unreachable because the platform kills the container first.
 d="$(fixture)"
-mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "1024mb",/'
+mutate "$d" "${TF}" 's/"--maxmemory 384mb",/"--maxmemory 1024mb",/'
 assert "terraform: maxmemory == task memory is rejected" fail \
   "is unreachable" "$d"
 
@@ -137,7 +137,7 @@ assert "terraform: maxmemory == task memory is rejected" fail \
 # Redis reads mb as binary, so 1024mb and a 1024 MiB task are the same
 # 1073741824 bytes -- a decimal reading would let this pass.
 d="$(fixture)"
-mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "1024mb",/'
+mutate "$d" "${TF}" 's/"--maxmemory 384mb",/"--maxmemory 1024mb",/'
 assert "terraform: redis 'mb' is parsed as binary, not decimal" fail \
   "at least 1280 MiB" "$d"
 
@@ -153,11 +153,11 @@ assert "k8s: no maxmemory under a memory limit is rejected" fail \
 # Just inside the boundary must pass, just outside must not: 819mb * 1.25
 # = 1023 MiB (fits 1024), 820mb * 1.25 = 1025 MiB (does not).
 d="$(fixture)"
-mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "819mb",/'
+mutate "$d" "${TF}" 's/"--maxmemory 384mb",/"--maxmemory 819mb",/'
 assert "terraform: 819mb is inside the headroom boundary" ok "" "$d"
 
 d="$(fixture)"
-mutate "$d" "${TF}" 's/"--maxmemory", "384mb",/"--maxmemory", "820mb",/'
+mutate "$d" "${TF}" 's/"--maxmemory 384mb",/"--maxmemory 820mb",/'
 assert "terraform: 820mb is outside the headroom boundary" fail \
   "is unreachable" "$d"
 

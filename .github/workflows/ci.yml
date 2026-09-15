@@ -623,6 +623,12 @@ jobs:
         run: bash scripts/tests/redis_manifests_test.sh
       - name: Redis persistence and memory-headroom invariants
         run: python scripts/check_redis_manifests.py
+      # `terraform validate` passes on a task definition that injects no
+      # database password, no DATABASE_URL and no requirepass — every one of
+      # which was true of this deployment on 2026-09-15. Schema-valid and
+      # unbootable are different questions; this asks the second one.
+      - name: ECS secret keys match their operator documentation
+        run: python scripts/check-ecs-secret-keys.py
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.

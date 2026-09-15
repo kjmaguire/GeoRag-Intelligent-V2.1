@@ -170,20 +170,38 @@ locals {
     # non-negotiable and enforced by scripts/check_redis_manifests.py:
     # one instance holds queue jobs with no TTL beside TTL'd cache and
     # sessions, and `allkeys-lru` would evict a queued job.
+    # Run through a shell ONLY so "$REDIS_PASSWORD" expands: ECS runs a
+    # command array with no shell, so the literal string would otherwise be
+    # handed to redis-server as the password. `exec` keeps redis-server as
+    # PID 1 so it still receives SIGTERM directly on task stop — which
+    # matters here, because that is what flushes the AOF cleanly on every
+    # one of the nightly shutdowns.
     redis = [
-      "redis-server",
-      "--appendonly", "yes",
-      "--appendfsync", "everysec",
-      # Explicit, not omitted. Silence is NOT "off": Redis's built-in save
-      # points stay active, so an AOF-only intent quietly runs RDB
-      # snapshots as well. Dropping this line is precisely half of what
-      # the Azure lift got wrong — it inherited `--appendonly yes` from
-      # compose, did not inherit the volume, and did not inherit this
-      # either. scripts/check_redis_manifests.py enforces both halves.
-      "--save", "",
-      "--maxmemory", "384mb",
-      "--maxmemory-policy", "volatile-lru",
-      "--databases", "4",
+      "sh", "-c",
+      join(" ", [
+        "exec redis-server",
+        # Every other topology in this repository sets this — compose
+        # (docker-compose.yml:403), the Helm chart, and all three
+        # kubernetes/manifests variants. ECS was the only one that did not,
+        # so this store would have come up with NO authentication while
+        # every client is configured to send AUTH. Redis answers AUTH on a
+        # server with no requirepass with an error, so the effect was not a
+        # weaker Redis, it was no working Redis: cache, sessions, queues,
+        # Horizon and the Reverb backplane all fail on connect.
+        "--requirepass \"$REDIS_PASSWORD\"",
+        "--appendonly yes",
+        "--appendfsync everysec",
+        # Explicit, not omitted. Silence is NOT "off": Redis's built-in save
+        # points stay active, so an AOF-only intent quietly runs RDB
+        # snapshots as well. Dropping this line is precisely half of what
+        # the Azure lift got wrong — it inherited `--appendonly yes` from
+        # compose, did not inherit the volume, and did not inherit this
+        # either. scripts/check_redis_manifests.py enforces both halves.
+        "--save ''",
+        "--maxmemory 384mb",
+        "--maxmemory-policy volatile-lru",
+        "--databases 4",
+      ]),
     ]
   }
 
@@ -228,7 +246,10 @@ locals {
 #             detecting a crash and detecting a hang.
 locals {
   service_healthcheck = {
-    redis           = ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+    # -a, because requirepass is now set: an unauthenticated PING answers
+    # NOAUTH, which would fail this check forever and put the task in a
+    # restart loop that looks like a Redis fault rather than a config one.
+    redis           = ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
     qdrant          = ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && printf 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200 OK' <&3"]
     martin          = ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
     hatchet         = ["CMD-SHELL", "wget -q -O - http://localhost:8888/api/ready >/dev/null 2>&1 || exit 1"]
