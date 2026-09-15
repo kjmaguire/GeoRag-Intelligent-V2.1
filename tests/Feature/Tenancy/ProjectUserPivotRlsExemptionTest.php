@@ -178,7 +178,7 @@ final class ProjectUserPivotRlsExemptionTest extends TestCase
             "These query project_user directly rather than through \$user->projects():\n  "
             .implode("\n  ", $offenders)
             ."\n\nThat matters because the pivot has NO row-level security, and the "
-            ."reason that is safe is that every existing read is already "
+            .'reason that is safe is that every existing read is already '
             ."constrained to the authenticated user's own id by the belongsToMany. "
             .'A direct query is not, and nothing in the database will stop it '
             .'returning another user\'s memberships. Either scope it explicitly '
@@ -199,7 +199,7 @@ final class ProjectUserPivotRlsExemptionTest extends TestCase
     {
         return preg_match(
             '/(?:DB::table|->from|join|JOIN)\s*\(?\s*[\'"]project_user[\'"]/i',
-            $contents
+            $contents,
         ) === 1;
     }
 
@@ -208,7 +208,7 @@ final class ProjectUserPivotRlsExemptionTest extends TestCase
     {
         $files = [];
         $walker = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
         );
         foreach ($walker as $file) {
             if ($file->isFile() && $file->getExtension() === 'php') {

@@ -45,7 +45,6 @@ declare(strict_types=1);
  *
  * Usage:  php scripts/check-rls-force-parity.php
  */
-
 const BASELINE = __DIR__.'/rls-force-baseline.txt';
 
 /**
@@ -65,7 +64,7 @@ function rlsStatements(string $sql): array
 
     preg_match_all(
         '/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\S+)\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY/i',
-        $sql, $m
+        $sql, $m,
     );
     foreach ($m[1] as $name) {
         $enable[] = strtolower(trim($name));
@@ -73,7 +72,7 @@ function rlsStatements(string $sql): array
 
     preg_match_all(
         '/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\S+)\s+FORCE\s+ROW\s+LEVEL\s+SECURITY/i',
-        $sql, $m
+        $sql, $m,
     );
     foreach ($m[1] as $name) {
         $force[] = strtolower(trim($name));
@@ -94,7 +93,7 @@ function ddlFiles(string $repo): array
             continue;
         }
         $walker = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
         );
         foreach ($walker as $file) {
             if ($file->isFile() && $file->getExtension() === $extension) {
@@ -148,7 +147,7 @@ $stale = array_values(array_diff($baseline, $gaps));
 if ($new === [] && $stale === []) {
     printf(
         "RLS force parity: %d baselined entr(ies), no new ENABLE-without-FORCE.\n",
-        count($baseline)
+        count($baseline),
     );
     exit(0);
 }
