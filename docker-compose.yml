@@ -1783,15 +1783,20 @@ services:
       # Ingest parser and OCR configuration.
       PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
       # OCR engine parity with the production task env — Cohere Parse is
-      # the primary engine (ADR-0019; on Bedrock since ADR-0022) and
-      # tesseract stays the in-container fallback. The model id defaults
-      # empty so the adapter raises its NotConfigured error loudly
+      # the primary engine (ADR-0019; on Cohere's own API since ADR-0023)
+      # and tesseract stays the in-container fallback. COHERE_API_KEY
+      # defaults empty so the adapter raises its NotConfigured error loudly
       # (CRITICAL) instead of the engine silently no-oping — an unset value
       # means EVERY page runs tesseract, with no table structure and no
-      # error. Bedrock needs no endpoint or key; boto3 signs the call.
+      # error. It is the SAME key the chat backend uses.
+      #
+      # BEDROCK_REGION stays because embeddings and reranking are still
+      # Bedrock calls from this worker; it is no longer OCR's business.
       OCR_ENGINE: ${OCR_ENGINE:-cohere_parse}
       BEDROCK_REGION: ${BEDROCK_REGION:-us-east-1}
-      BEDROCK_PARSE_MODEL_ID: ${BEDROCK_PARSE_MODEL_ID:-}
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+      COHERE_BASE_URL: ${COHERE_BASE_URL:-https://api.cohere.com}
+      COHERE_PARSE_MODEL: ${COHERE_PARSE_MODEL:-parse-v5.0}
       COHERE_PARSE_TIMEOUT_S: ${COHERE_PARSE_TIMEOUT_S:-120}
       COHERE_PARSE_MAX_PIXELS: ${COHERE_PARSE_MAX_PIXELS:-4000000}
       COHERE_PARSE_OUTPUT_FORMAT: ${COHERE_PARSE_OUTPUT_FORMAT:-blocks}

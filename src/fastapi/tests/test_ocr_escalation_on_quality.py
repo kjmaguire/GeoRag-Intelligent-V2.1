@@ -151,10 +151,8 @@ class TestTheLadderHasTwoRungs:
         from app.services.ingest import pdf_report
 
         monkeypatch.setenv("OCR_ENGINE", "cohere_parse")
-        monkeypatch.setenv(
-            "BEDROCK_PARSE_MODEL_ID",
-            "arn:aws:sagemaker:us-east-1:123456789012:endpoint/cohere-parse-v5",
-        )
+        monkeypatch.setenv("COHERE_API_KEY", "test-only-not-a-real-cohere-key")
+        monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID", raising=False)
         for name in (
             "AZURE_FOUNDRY_ENDPOINT",
             "AZURE_FOUNDRY_API_KEY",

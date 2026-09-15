@@ -21,12 +21,16 @@ from typing import Any
 
 import pytest
 
+# Parse left Bedrock on 2026-09-15 (ADR-0023) and its contract went with it,
+# so PARSE now comes from cohere_wire. It is still exercised in this file
+# rather than one of its own, because these tests are about the same property
+# for every adapter — the code and the description agree — and splitting them
+# by host would make that property two half-checks.
 from app.services.bedrock_wire import (
     CHAT_CONVERSE,
     CONTRACTS,
     EMBED_IMAGE,
     EMBED_TEXT,
-    PARSE,
     RERANK,
     Field,
     Status,
@@ -34,6 +38,7 @@ from app.services.bedrock_wire import (
     diff_report,
     diff_section,
 )
+from app.services.cohere_wire import PARSE
 
 # ---------------------------------------------------------------------------
 # Turning a declaration into a set of concrete paths
@@ -379,11 +384,18 @@ def test_the_response_field_is_camel_case() -> None:
 
 
 def test_parse_request_matches_the_contract() -> None:
+    """``model`` is back in the body, which is the whole ADR-0023 change here.
+
+    ``_request_body`` builds the document half and ``_invoke`` splices the
+    model in, so the contract is checked against the assembled body — the
+    same thing that goes on the wire — rather than against either half.
+    """
     from app.services.ingest import cohere_parse_client as parse
 
-    body = parse._request_body(b"\x89PNG fake")
-    _assert_request_matches(PARSE, {"modelId": "endpoint-arn", "body": body})
+    body = {"model": parse.parse_model(), **parse._request_body(b"\x89PNG fake")}
+    _assert_request_matches(PARSE, body)
     assert body["document"]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert body["model"] == "parse-v5.0"
 
 
 @pytest.mark.parametrize(
@@ -451,11 +463,12 @@ def test_nothing_claims_to_have_been_observed_on_bedrock() -> None:
 
     That is a good failure — but it must be a deliberate one, accompanied by
     a committed report, not a status that drifted upward while nobody was
-    looking. ADR-0022 makes that report the gate on trusting any adapter.
+    looking. ADR-0022 makes that report the gate on trusting any adapter, and
+    ADR-0023 keeps it: the host changed, the absence of evidence did not.
     """
     observed = [
         (c.name, f.path)
-        for c in CONTRACTS
+        for c in (*CONTRACTS, PARSE)
         for f in (*c.request, *c.response)
         if f.status is Status.OBSERVED
     ]

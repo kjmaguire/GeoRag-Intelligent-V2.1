@@ -5,16 +5,25 @@ a fake that returns hand-rolled response bodies. Rendering is replaced too, so
 these tests do not need a PDF; the render path has its own tests in
 test_cohere_parse_pixel_cap.
 
-Rewritten 2026-09-08 for ADR-0022 (Foundry → Bedrock). The seam changed shape
-— ``_invoke(model_id, body) -> bytes`` instead of
-``_post(url, headers, body) -> httpx.Response`` — but the adapter under test
-did not: the request body is still Cohere's own, minus ``model``, and the
-response adapter is untouched. That is the migration's central claim about
-this file, and these tests are what makes it checkable.
+Rewritten twice for a transport move, and the point of the file both times
+is that the transport is ALL that moved. 2026-09-08 (ADR-0022) took it from
+Foundry to Bedrock; 2026-09-15 (ADR-0023) takes it from Bedrock to Cohere's
+own API. The seam kept its shape across both — ``_invoke(model, body) ->
+bytes`` — and the response adapter has never been touched, which is the
+claim these tests exist to keep checkable.
 
-One class of test is deliberately gone: the retry ladder. botocore owns retry
-now, so by the time a ThrottlingException reaches this adapter it has already
-been retried and the only question left is whether the fallback is clean.
+What changed in the ADR-0023 pass:
+
+- ``model`` is back IN the request body. Bedrock had moved it out to
+  ``modelId``; Cohere's own API takes it inline, which is the shape
+  ADR-0019 first wrote against.
+- Failures are HTTP statuses, not botocore error codes. 401/403/404 are
+  operator problems and log at ERROR; 429 and 5xx are weather.
+- The retry ladder is BACK. botocore used to own it, so a throttle reaching
+  this adapter had already been retried and the only question left was
+  whether the fallback was clean. httpx retries nothing, so the retries are
+  explicit in ``_invoke`` and tested here — without them the move to this
+  host would quietly push more pages onto Tesseract.
 """
 
 from __future__ import annotations
@@ -24,28 +33,33 @@ import logging
 from pathlib import Path
 
 import pytest
-from botocore.exceptions import ClientError
 
 from app.services.ingest import cohere_parse_client as cpc
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cohere_parse"
 
-MODEL_ID = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/cohere-parse-v5"
+API_KEY = "test-only-not-a-real-cohere-key"
+MODEL = "parse-v5.0"
 
 
 def _body(payload) -> bytes:
-    """A successful InvokeModel response body."""
+    """A successful Parse response body."""
     return json.dumps(payload).encode()
 
 
-def _client_error(code: str, message: str = "") -> ClientError:
-    return ClientError({"Error": {"Code": code, "Message": message}}, "InvokeModel")
+def _http_error(status: int, message: str = "") -> cpc.CohereParseHttpError:
+    return cpc.CohereParseHttpError(status, message)
 
 
 @pytest.fixture(autouse=True)
 def _configured(monkeypatch):
     monkeypatch.setenv("OCR_ENGINE", "cohere_parse")
-    monkeypatch.setenv("BEDROCK_PARSE_MODEL_ID", MODEL_ID)
+    monkeypatch.setenv("COHERE_API_KEY", API_KEY)
+    monkeypatch.delenv("COHERE_PARSE_MODEL", raising=False)
+    monkeypatch.delenv("COHERE_BASE_URL", raising=False)
+    # ADR-0023 retired this for OCR; left set it only produces a warning,
+    # but an unrelated one in the middle of a caplog assertion is noise.
+    monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID", raising=False)
     # assert_no_retired_foundry_env reads the live environment, so a
     # developer's own Azure credentials would otherwise fail every test here.
     for name in (
@@ -81,8 +95,8 @@ def _capture_invoke(monkeypatch, responses):
     calls: list[dict] = []
     queue = list(responses)
 
-    def fake_invoke(model_id, body):
-        calls.append({"model_id": model_id, "body": body})
+    def fake_invoke(model, body):
+        calls.append({"model": model, "body": body})
         item = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(item, BaseException):
             raise item
@@ -98,13 +112,53 @@ class TestSelectionAndConfiguration:
         monkeypatch.setenv("OCR_ENGINE", "tesseract")
         assert not cpc.is_engine_selected()
 
-    def test_is_configured_needs_the_model_id(self, monkeypatch) -> None:
+    def test_is_configured_needs_the_api_key(self, monkeypatch) -> None:
+        """The credential IS the check now.
+
+        Under Bedrock it deliberately was not — the task role supplied it and
+        there was nothing in the environment to read. On this host a missing
+        key is visible before a page is even rendered, so it is worth
+        catching up front rather than as a 401 per page.
+        """
         assert cpc.is_configured()
-        monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID")
+        monkeypatch.delenv("COHERE_API_KEY")
         assert not cpc.is_configured()
 
+    def test_a_blank_key_is_not_configured(self, monkeypatch) -> None:
+        """The shape a half-filled secret leaves behind."""
+        monkeypatch.setenv("COHERE_API_KEY", "   ")
+        assert not cpc.is_configured()
+
+    def test_the_model_name_defaults_and_is_overridable(self, monkeypatch) -> None:
+        assert cpc.parse_model() == MODEL
+        monkeypatch.setenv("COHERE_PARSE_MODEL", "parse-v6.0")
+        assert cpc.parse_model() == "parse-v6.0"
+
+    def test_the_base_url_defaults_and_loses_a_trailing_slash(self, monkeypatch) -> None:
+        assert cpc.base_url() == "https://api.cohere.com"
+        monkeypatch.setenv("COHERE_BASE_URL", "https://proxy.internal/cohere/")
+        assert cpc.base_url() == "https://proxy.internal/cohere"
+
+    def test_a_leftover_bedrock_model_id_is_warned_about_not_obeyed(self, monkeypatch, caplog, blocks_payload) -> None:
+        """Not a raise, unlike the Foundry variables.
+
+        BEDROCK_PARSE_MODEL_ID may legitimately still be set: ADR-0023 took
+        Bedrock's default, not its support, and an operator running the
+        Marketplace endpoint for chat could want it. It is still worth
+        saying, because OCR is no longer billed through it and nothing else
+        would reveal that.
+        """
+        monkeypatch.setenv("BEDROCK_PARSE_MODEL_ID", "arn:aws:sagemaker:...")
+        _capture_invoke(monkeypatch, [_body(blocks_payload)])
+
+        with caplog.at_level(logging.WARNING, logger="georag.ingest.cohere_parse"):
+            result = cpc.ocr_page_sync("/x.pdf", 1)
+
+        assert result.request_succeeded, "the leftover must not break OCR"
+        assert any("BEDROCK_PARSE_MODEL_ID" in r.getMessage() for r in caplog.records)
+
     def test_missing_config_raises_not_configured_at_call_time(self, monkeypatch) -> None:
-        monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID")
+        monkeypatch.delenv("COHERE_API_KEY")
 
         with pytest.raises(cpc.CohereParseNotConfigured):
             cpc.ocr_page_sync("/x.pdf", 1)
@@ -137,21 +191,22 @@ class TestSelectionAndConfiguration:
 
 
 class TestWireShape:
-    def test_request_carries_the_model_id_and_a_data_uri(self, monkeypatch, blocks_payload) -> None:
-        """The model moves from the body to modelId; nothing else changes.
+    def test_request_carries_the_model_and_a_data_uri(self, monkeypatch, blocks_payload) -> None:
+        """The body is Cohere's own parse body again.
 
         This assertion is the migration's central claim about this adapter:
-        the request body is still Cohere's own parse body, so the response
-        adapter below did not have to be touched.
+        the document half of the request never changed across three hosts, so
+        the response adapter below never had to be touched either. What moved
+        is where ``model`` lives — Foundry and Cohere take it inline, Bedrock
+        took it out to ``modelId``.
         """
         calls = _capture_invoke(monkeypatch, [_body(blocks_payload)])
 
         cpc.ocr_page_sync("/x.pdf", 3)
 
-        assert calls[0]["model_id"] == MODEL_ID
+        assert calls[0]["model"] == MODEL
         body = calls[0]["body"]
         assert set(body) == {"document", "output_format"}
-        assert "model" not in body, "model belongs in modelId, not the body"
         assert body["document"]["type"] == "image_url"
         assert body["document"]["image_url"]["url"].startswith("data:image/png;base64,")
         assert body["output_format"] == "blocks"
@@ -241,48 +296,61 @@ class TestResponseAdapter:
 
 
 class TestFailureModes:
-    def test_a_rejected_request_fails_soft_with_the_error_code(self, monkeypatch) -> None:
-        _capture_invoke(
-            monkeypatch,
-            [_client_error("ValidationException", "image too large")],
-        )
+    def test_a_rejected_request_fails_soft_with_the_status(self, monkeypatch) -> None:
+        _capture_invoke(monkeypatch, [_http_error(413, "image too large")])
 
         result = cpc.ocr_page_sync("/x.pdf", 1)
 
         assert not result.request_succeeded
-        assert result.error.startswith("ValidationException:")
+        assert result.error.startswith("http_413:")
         assert "image too large" in result.error
         assert result.confidence_reported is False
 
-    @pytest.mark.parametrize("code", ["AccessDeniedException", "ResourceNotFoundException"])
-    def test_a_denied_call_is_logged_at_error(self, monkeypatch, caplog, code) -> None:
-        """The Foundry equivalent was an HTTP 403, and it earned its level:
-        Foundry blocked 1,421 of 2,524 calls on 2026-08-17 and nothing
-        noticed. Bedrock also surfaces this in InvocationClientErrors, but
-        the log line is the only place the page and the model id meet."""
-        _capture_invoke(monkeypatch, [_client_error(code, "nope")])
+    @pytest.mark.parametrize("status", [401, 403, 404])
+    def test_a_refused_call_is_logged_at_error(self, monkeypatch, caplog, status) -> None:
+        """This branch has earned its level on every host.
+
+        On Foundry it was an HTTP 403, and Foundry blocked 1,421 of 2,524
+        calls on 2026-08-17 with nothing noticing. On Bedrock the same
+        condition at least also showed up in InvocationClientErrors, which
+        was alarmed. On Cohere's API there is no AWS metric behind it at all
+        — CloudWatch cannot see a call that never went to AWS — so this log
+        line is the whole signal.
+        """
+        _capture_invoke(monkeypatch, [_http_error(status, "nope")])
 
         with caplog.at_level(logging.ERROR, logger="georag.ingest.cohere_parse"):
             result = cpc.ocr_page_sync("/x.pdf", 1)
 
         assert not result.request_succeeded
-        assert any(r.levelno == logging.ERROR and code in r.getMessage() for r in caplog.records)
+        assert any(r.levelno == logging.ERROR and "COHERE_PARSE_REJECTED" in r.getMessage() for r in caplog.records), (
+            "the alarm marker is what pages on this; without it nothing does"
+        )
 
-    def test_throttling_fails_soft_at_warning(self, monkeypatch, caplog) -> None:
-        """botocore has already exhausted its adaptive retries by here, so a
-        throttle that reaches this adapter is real — but it is weather, not
-        an operator error, so it does not get the ERROR level a denial does."""
-        _capture_invoke(monkeypatch, [_client_error("ThrottlingException", "slow down")])
+    def test_the_refusal_log_names_the_variable_to_check(self, monkeypatch, caplog) -> None:
+        """An operator reading this line at 3am should not have to guess."""
+        _capture_invoke(monkeypatch, [_http_error(401, "invalid api token")])
+
+        with caplog.at_level(logging.ERROR, logger="georag.ingest.cohere_parse"):
+            cpc.ocr_page_sync("/x.pdf", 1)
+
+        assert any("COHERE_API_KEY" in r.getMessage() for r in caplog.records)
+
+    def test_an_exhausted_throttle_fails_soft_at_warning(self, monkeypatch, caplog) -> None:
+        """A 429 that reaches this adapter has already been retried by
+        ``_invoke``, so it is real — but it is weather, not an operator
+        error, so it does not get the ERROR level a refusal does."""
+        _capture_invoke(monkeypatch, [_http_error(429, "slow down")])
 
         with caplog.at_level(logging.DEBUG, logger="georag.ingest.cohere_parse"):
             result = cpc.ocr_page_sync("/x.pdf", 1)
 
         assert not result.request_succeeded
-        assert result.error.startswith("ThrottlingException:")
+        assert result.error.startswith("http_429:")
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
     def test_transport_error_fails_soft(self, monkeypatch) -> None:
-        def boom(model_id, body):
+        def boom(model, body):
             raise OSError("down")
 
         monkeypatch.setattr(cpc, "_invoke", boom)
@@ -293,8 +361,8 @@ class TestFailureModes:
         assert "down" in result.error
 
     def test_non_json_body_fails_soft(self, monkeypatch) -> None:
-        """Kept distinct from a transport failure on purpose: "Bedrock
-        refused" and "Bedrock answered with something that is not JSON" want
+        """Kept distinct from a transport failure on purpose: "the API
+        refused" and "the API answered with something that is not JSON" want
         different operator responses."""
         _capture_invoke(monkeypatch, [b"<html>gateway</html>"])
 
@@ -378,11 +446,11 @@ class TestPageGroups:
     def test_a_failed_page_is_absent_and_an_empty_page_is_present(self, monkeypatch) -> None:
         by_page = {
             1: _body({"pages": [{"blocks": [{"type": "text", "text": "one"}]}]}),
-            2: _client_error("ValidationException", "bad"),
+            2: _http_error(422, "bad"),
             3: _body({"pages": [{"blocks": []}]}),
         }
 
-        def fake_invoke(model_id, body):
+        def fake_invoke(model, body):
             # The fake PNG carries the page number, so the body tells us which page this is.
             uri = body["document"]["image_url"]["url"]
             import base64
@@ -409,7 +477,7 @@ class TestPageGroups:
         lock = threading.Lock()
         state = {"in_flight": 0, "peak": 0}
 
-        def fake_invoke(model_id, body):
+        def fake_invoke(model, body):
             with lock:
                 state["in_flight"] += 1
                 state["peak"] = max(state["peak"], state["in_flight"])
@@ -447,7 +515,7 @@ class TestPageGroups:
                 state["peak"] = max(state["peak"], state["resident"])
             return b"\x89PNG-fake-" + str(page).encode()
 
-        def fake_invoke(model_id, body):
+        def fake_invoke(model, body):
             with lock:
                 state["resident"] -= 1
             return _body({"pages": [{"blocks": []}]})
@@ -482,10 +550,147 @@ class TestMetering:
     def test_failed_requests_are_not_metered(self, monkeypatch) -> None:
         from app.metrics import OCR_PAGES_TOTAL
 
-        _capture_invoke(monkeypatch, [_client_error("ValidationException", "bad")])
+        _capture_invoke(monkeypatch, [_http_error(422, "bad")])
         counter = OCR_PAGES_TOTAL.labels(engine="cohere_parse")
         before = counter._value.get()
 
         cpc.ocr_page_sync("/x.pdf", 1)
 
         assert counter._value.get() == before
+
+
+class TestRetryLadder:
+    """Back after a host change removed the thing that owned it.
+
+    botocore retried throttles and 5xx before anything reached this adapter.
+    httpx retries nothing. Had the retries not come back with the transport,
+    the move to Cohere's API would have quietly pushed more pages onto
+    Tesseract — a capability regression with no error anywhere to point at,
+    because every one of those pages still "succeeded" via the fallback.
+
+    These exercise ``_invoke`` for real and stub ``_post``, the innermost
+    seam, so the retry decision itself is under test rather than mocked past.
+    """
+
+    @staticmethod
+    def _responses(monkeypatch, items):
+        """Stub ``_post``; each item is a fake response or an exception."""
+        calls: list[dict] = []
+        queue = list(items)
+
+        class _FakeResponse:
+            def __init__(self, status_code, content=b"{}", headers=None):
+                self.status_code = status_code
+                self.content = content
+                self.text = content.decode(errors="replace")
+                self.headers = headers or {}
+
+        def fake_post(body):
+            calls.append(body)
+            item = queue.pop(0) if len(queue) > 1 else queue[0]
+            if isinstance(item, BaseException):
+                raise item
+            status, payload, headers = item
+            return _FakeResponse(status, payload, headers)
+
+        monkeypatch.setattr(cpc, "_post", fake_post)
+        monkeypatch.setattr(cpc.time, "sleep", lambda _s: None)
+        return calls, _FakeResponse
+
+    def test_a_throttle_is_retried_and_then_succeeds(self, monkeypatch) -> None:
+        calls, _ = self._responses(
+            monkeypatch,
+            [(429, b"slow down", {}), (200, b'{"pages": []}', {})],
+        )
+
+        assert cpc._invoke(MODEL, {"document": {}}) == b'{"pages": []}'
+        assert len(calls) == 2
+
+    @pytest.mark.parametrize("status", [500, 502, 503, 504])
+    def test_server_errors_are_retried(self, monkeypatch, status) -> None:
+        calls, _ = self._responses(
+            monkeypatch,
+            [(status, b"oops", {}), (200, b'{"pages": []}', {})],
+        )
+
+        cpc._invoke(MODEL, {"document": {}})
+        assert len(calls) == 2
+
+    def test_a_refusal_is_not_retried(self, monkeypatch) -> None:
+        """Retrying a 401 spends the page budget three times over to be told
+        the same thing. The key is not going to become valid in 500ms."""
+        calls, _ = self._responses(monkeypatch, [(401, b"invalid api token", {})])
+
+        with pytest.raises(cpc.CohereParseHttpError) as exc:
+            cpc._invoke(MODEL, {"document": {}})
+
+        assert exc.value.status_code == 401
+        assert len(calls) == 1
+
+    def test_retries_are_bounded(self, monkeypatch) -> None:
+        """A page is one unit of a bounded per-document budget. Retrying
+        forever costs the whole document's OCR window on one bad page."""
+        calls, _ = self._responses(monkeypatch, [(503, b"down", {})])
+
+        with pytest.raises(cpc.CohereParseHttpError):
+            cpc._invoke(MODEL, {"document": {}})
+
+        assert len(calls) == cpc._MAX_ATTEMPTS
+
+    def test_a_transport_error_is_retried_then_raised(self, monkeypatch) -> None:
+        import httpx
+
+        calls, _ = self._responses(monkeypatch, [httpx.ConnectError("no route")])
+
+        with pytest.raises(httpx.ConnectError):
+            cpc._invoke(MODEL, {"document": {}})
+
+        assert len(calls) == cpc._MAX_ATTEMPTS
+
+    def test_the_model_is_spliced_into_the_body(self, monkeypatch) -> None:
+        """`model` is back in the body — the ADR-0023 half of the move."""
+        calls, _ = self._responses(monkeypatch, [(200, b'{"pages": []}', {})])
+
+        cpc._invoke(MODEL, {"document": {"type": "image_url"}, "output_format": "blocks"})
+
+        assert calls[0]["model"] == MODEL
+        assert set(calls[0]) == {"model", "document", "output_format"}
+
+    def test_retry_after_is_honoured_when_sane(self, monkeypatch) -> None:
+        slept: list[float] = []
+        self._responses(
+            monkeypatch,
+            [(429, b"", {"retry-after": "2"}), (200, b'{"pages": []}', {})],
+        )
+        monkeypatch.setattr(cpc.time, "sleep", lambda s: slept.append(s))
+
+        cpc._invoke(MODEL, {"document": {}})
+
+        assert slept == [2.0]
+
+    def test_an_absurd_retry_after_is_capped(self, monkeypatch) -> None:
+        """Waiting minutes for one page is worse than falling to Tesseract
+        and moving on — the budget is per document, not per page."""
+        slept: list[float] = []
+        self._responses(
+            monkeypatch,
+            [(429, b"", {"retry-after": "3600"}), (200, b'{"pages": []}', {})],
+        )
+        monkeypatch.setattr(cpc.time, "sleep", lambda s: slept.append(s))
+
+        cpc._invoke(MODEL, {"document": {}})
+
+        assert slept == [cpc._MAX_RETRY_AFTER_S]
+
+    def test_a_garbage_retry_after_falls_back_to_backoff(self, monkeypatch) -> None:
+        """`Retry-After` can be an HTTP-date, which float() will not parse."""
+        slept: list[float] = []
+        self._responses(
+            monkeypatch,
+            [(429, b"", {"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}), (200, b'{"pages": []}', {})],
+        )
+        monkeypatch.setattr(cpc.time, "sleep", lambda s: slept.append(s))
+
+        cpc._invoke(MODEL, {"document": {}})
+
+        assert slept == [cpc._BACKOFF_BASE_S]

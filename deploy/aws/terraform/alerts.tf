@@ -84,7 +84,25 @@ locals {
       # group, not the sweep group.
       log_group   = "services"
       pattern     = "COHERE_PARSE_UNRECOGNISED_RESPONSE"
-      description = "Cohere Parse returned HTTP 200 with a body the response adapter does not recognise, so the page fell back to tesseract and extracted no tables. Parse's wire shape has never been verified empirically on any host (ADR-0022), making this the most likely way the model tier is wrong. Bedrock's own invocation-error metrics cannot see it — the call SUCCEEDED. Sustained firing means the adapter disagrees with the endpoint: run ops/validation/bedrock_probe.py and correct it from the report."
+      description = "Cohere Parse returned HTTP 200 with a body the response adapter does not recognise, so the page fell back to tesseract and extracted no tables. Parse's wire shape has never been verified empirically on any host (ADR-0019/0022/0023), making this the most likely way the model tier is wrong. No invocation-error metric can see it — the call SUCCEEDED. Sustained firing means the adapter disagrees with the API: run the probe and correct it from the report."
+    }
+    cohere-parse-rejected = {
+      # Same emitter, same services group. Separate from the marker above
+      # because they are different failures with different fixes: that one
+      # is "we read the answer wrong", this one is "we never got an answer".
+      #
+      # This alarm got MORE load-bearing on 2026-09-15, not less. While
+      # Parse ran on Bedrock, a refused call also raised
+      # AWS/Bedrock InvocationClientErrors, so this marker was a backstop.
+      # On Cohere's own API there is no AWS metric behind it at all —
+      # CloudWatch cannot see a request that never went to AWS — so the log
+      # line is the entire signal. Without this filter, an invalid or
+      # unentitled key degrades every scanned page to tesseract silently,
+      # which is exactly what Foundry did on 2026-08-17: 1,421 of 2,524
+      # calls blocked, nothing noticed.
+      log_group   = "services"
+      pattern     = "COHERE_PARSE_REJECTED"
+      description = "Cohere Parse refused the request (401/403/404/413/422). Every scanned page is falling back to tesseract, which extracts no tables. Usually COHERE_API_KEY: absent, invalid, or not entitled to Parse. Retryable statuses are NOT here — those are retried in the adapter and log at WARNING."
     }
     bedrock-endpoint-not-inservice = {
       # The sweep group, not the services group: this marker is

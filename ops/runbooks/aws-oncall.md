@@ -183,8 +183,15 @@ logs (`cohere_parse:` prefix) and the
 never stops ingestion: every failed page falls back to tesseract, which
 extracts no table structure, so the symptom is passages with
 `ocr_method='tesseract'` where `cohere_parse` was expected. A worker whose
-env is missing `BEDROCK_PARSE_MODEL_ID` logs one CRITICAL line and runs
-tesseract for every page.
+env is missing `COHERE_API_KEY` logs one CRITICAL line and runs tesseract
+for every page.
+
+⚠️ Since ADR-0023 (2026-09-15) Parse runs on **Cohere's own API**, not
+Bedrock, so no AWS metric sees it at all — CloudWatch cannot observe a
+request that never went to AWS. The `cohere-parse-rejected` log-marker
+alarm (`COHERE_PARSE_REJECTED`) is the entire signal for a refused call,
+and `cohere-parse-unrecognised-response` for a 200 the adapter could not
+read. Treat both as OCR outages, not as noise.
 
 Known false-positive source, carried across: the `> 50 / 15m` threshold
 was tuned for the answer path. A large scanned ingest sends one Parse

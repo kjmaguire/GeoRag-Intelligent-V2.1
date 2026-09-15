@@ -40,10 +40,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OCR_PAGES_PER_BATCH", raising=False)
     monkeypatch.setenv("OCR_ENGINE", "cohere_parse")
     # The selection path runs only for a selected AND configured engine.
-    monkeypatch.setenv(
-        "BEDROCK_PARSE_MODEL_ID",
-        "arn:aws:sagemaker:us-east-1:123456789012:endpoint/cohere-parse-v5",
-    )
+    monkeypatch.setenv("COHERE_API_KEY", "test-only-not-a-real-cohere-key")
+    monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID", raising=False)
     # assert_no_retired_foundry_env reads the live environment, so a
     # developer's own Azure credentials would otherwise fail these.
     for name in (
@@ -171,7 +169,7 @@ class TestSkipEnginePageRequest:
     ) -> None:
         import logging
 
-        monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID")
+        monkeypatch.delenv("COHERE_API_KEY")
         monkeypatch.setattr(pdf_report, "_ENGINE_NOT_CONFIGURED_WARNED", False)
 
         with patch.object(
@@ -193,7 +191,7 @@ class TestSkipEnginePageRequest:
         budget.assert_not_called()
         critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
         assert len(critical) == 1
-        assert "BEDROCK_PARSE_MODEL_ID" in critical[0].getMessage()
+        assert "COHERE_API_KEY" in critical[0].getMessage()
         assert out[2]["ocr_method"] == "unavailable"
 
     def test_a_raised_not_configured_is_still_critical_and_refunded(

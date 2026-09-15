@@ -468,10 +468,11 @@ honoured by both for A/B parity.
   sets `SEAWEEDFS_S3_ENDPOINT` defaulting to `http://minio:9000` — the old
   MinIO port — but nothing under `app/` reads that variable, so it is
   dead config rather than a bug.
-- **OCR / parsing** `OCR_ENGINE=cohere_parse` with `BEDROCK_REGION` and
-  `BEDROCK_PARSE_MODEL_ID` (empty default raises the adapter's
-  NotConfigured error loudly — unset means every page runs Tesseract with
-  no table structure and no error), `COHERE_PARSE_TIMEOUT_S=120`,
+- **OCR / parsing** `OCR_ENGINE=cohere_parse` with `COHERE_API_KEY` — the
+  same key the chat backend uses, since ADR-0023 (empty default raises the
+  adapter's NotConfigured error loudly — unset means every page runs
+  Tesseract with no table structure and no error) — plus
+  `COHERE_PARSE_MODEL=parse-v5.0`, `COHERE_PARSE_TIMEOUT_S=120`,
   `COHERE_PARSE_MAX_PIXELS=4000000`, `COHERE_PARSE_OUTPUT_FORMAT=blocks`,
   `PDF_PARSER_TESSERACT_FALLBACK_ENABLED=true`, `OCR_PAGES_PER_BATCH=8`,
   `OCR_MAX_PAGES_PER_DOC=300`, `PDF_PARSE_PAGE_WORKERS=4`,

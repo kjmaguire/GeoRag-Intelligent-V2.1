@@ -4,7 +4,7 @@ Every Bedrock adapter in this service says ``[UNVERIFIED]`` at the top,
 because none of them has been confirmed against a live endpoint. Those
 notices are prose, one per module, and prose cannot be diffed against a
 probe report. This module is the same claims expressed as **data**: for each
-of the six calls, exactly which fields the adapter sends and which it reads
+of the five calls, exactly which fields the adapter sends and which it reads
 back, and — the part that matters — how much we actually know about each one.
 
 It does NOT verify anything. Nothing here is evidence. What it buys is that
@@ -435,54 +435,18 @@ RERANK = WireContract(
 
 
 # ---------------------------------------------------------------------------
-# 6. Parse — bedrock-runtime InvokeModel
+# 6. Parse — MOVED 2026-09-15 (ADR-0023)
 # ---------------------------------------------------------------------------
-# NEVER EMPIRICALLY VERIFIED, on Foundry or on Bedrock. That is a stronger
-# statement than the rest of this file: for the other five calls a previous
-# host at least confirmed a related shape. Here nothing ever has, which is
-# why the response side is almost entirely TOLERATED alternates — the
-# adapter is guessing in three places at once and degrading rather than
-# crashing is the whole design.
-
-PARSE = WireContract(
-    name="parse",
-    service="bedrock-runtime",
-    method="invoke_model",
-    probe_section="parse",
-    request=(
-        Field("modelId", Status.ASSUMED, True, "BEDROCK_PARSE_MODEL_ID — a Marketplace endpoint."),
-        Field("body.document.type", Status.ASSUMED, True, "Literal 'image_url'."),
-        Field(
-            "body.document.image_url.url",
-            Status.ASSUMED,
-            True,
-            "One page as a data: URI. Oversized plan sheets are DOWNSCALED, "
-            "not tiled — Parse returns no word polygons to stitch tiles with.",
-        ),
-        Field("body.output_format", Status.ASSUMED, True, "'blocks' or 'markdown'."),
-    ),
-    response=(
-        Field("pages[]", Status.ASSUMED, True, "One entry; only pages[0] is read."),
-        Field("blocks[]", Status.TOLERATED, False, "Top-level, if the response omits the pages wrapper."),
-        Field("markdown", Status.TOLERATED, False, "Same, for markdown mode."),
-        Field("pages[].blocks[].type", Status.ASSUMED, False, "'text' | 'table' | 'image'; defaults to text."),
-        Field("pages[].blocks[].text", Status.ASSUMED, False, "Text block content — first spelling tried."),
-        Field("pages[].blocks[].content", Status.TOLERATED, False, "Second spelling."),
-        Field("pages[].blocks[].markdown", Status.TOLERATED, False, "Third spelling."),
-        Field("pages[].blocks[].html", Status.ASSUMED, False, "Table block, as an HTML fragment."),
-        Field("pages[].blocks[].description", Status.ASSUMED, False, "Image block description."),
-        Field("pages[].blocks[].caption", Status.TOLERATED, False, "Alternate spelling of the same."),
-        Field("pages[].markdown", Status.ASSUMED, False, "Markdown mode, as a bare string."),
-        Field("pages[].markdown.content", Status.TOLERATED, False, "Markdown mode, as an object."),
-    ),
-    notes=(
-        "Parse returns no per-word confidence and no polygons, so "
-        "PageOcrResult carries confidence_reported=False and the persist path "
-        "stores ocr_confidence as NULL. That is a property of the model, not "
-        "of the wire, and it does not change with the host.",
-    ),
-)
-
+# The Parse contract lives in `app/services/cohere_wire.py` now. Parse 5 is
+# an AWS Marketplace SageMaker package rather than a Bedrock model, priced
+# for an endpoint that bills while idle, so ADR-0023 moved OCR onto Cohere's
+# own API. A contract describing a call that is no longer made would be
+# exactly what this module's docstring warns about: a second place to be
+# wrong that reads as authority.
+#
+# The RESPONSE half went across unchanged, because it never belonged to a
+# host — it is what the model returns, and the response adapter in
+# `cohere_parse_client` has not been touched on any of the three moves.
 
 CONTRACTS: tuple[WireContract, ...] = (
     CHAT_CONVERSE,
@@ -490,7 +454,6 @@ CONTRACTS: tuple[WireContract, ...] = (
     EMBED_TEXT,
     EMBED_IMAGE,
     RERANK,
-    PARSE,
 )
 
 

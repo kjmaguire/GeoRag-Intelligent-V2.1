@@ -33,11 +33,11 @@ row carefully.
 
 | Role | Dev (compose) | Production (AWS, since 2026-09-08) |
 |---|---|---|
-| LLM | Amazon Bedrock, Cohere Command A+ | same — but a Bedrock **Marketplace** endpoint, not serverless: Bedrock's serverless Cohere generative catalogue is Command R/R+ (legacy) |
+| LLM | Cohere Command A+ on **Cohere's own API** | ADR-0022 routed it through a Bedrock **Marketplace** endpoint; ADR-0023 found that is an AWS Marketplace SageMaker package on A100/H100 that bills while idle, and moved it |
 | Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | Bedrock, Cohere Embed v4 (1024-dim) |
 | Reranker | `reranker` sidecar, Qwen3-Reranker-0.6B (GPU) | Bedrock, Cohere **Rerank 3.5** — NOT v4, which Bedrock does not serve |
 | Sparse | `sparse` sidecar, SPLADE++ (CPU) | **the `sparse` service — no hosted equivalent anywhere, on Bedrock or Cohere's own API** |
-| Scanned-page OCR | Cohere Parse 5 on Bedrock, Tesseract fallback | same — also a Marketplace endpoint; Bedrock's serverless catalogue has no Parse model at all |
+| Scanned-page OCR | Cohere Parse 5 on **Cohere's own API**, Tesseract fallback | moved with chat for the same reason (~$2.50/h for a Marketplace endpoint that has no idle state) |
 
 ⚠️ **The reranker dropped a major version, and it matters.**
 `RERANKER_SCORE_THRESHOLD_HOSTED` (0.2, renamed from `_FOUNDRY`) was

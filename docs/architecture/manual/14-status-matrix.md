@@ -243,8 +243,8 @@ Pydantic AI itself is vestigial: the guards live in
 |---|---|---|
 | `AGENTIC_RETRIEVAL_V2_ENABLED` | false (dev: true) | Use §04j LangGraph instead of legacy linear RAG |
 | `GEO_ANSWER_OIUR_ENABLED` | false (dev: true) | Wrap answers in OIUR envelope |
-| `OCR_ENGINE` | tesseract (compose: cohere_parse) | Selects Cohere Parse as primary scanned-page OCR (ADR-0019; on Bedrock since ADR-0022). Retired values fail loudly rather than downgrading silently |
-| `BEDROCK_PARSE_MODEL_ID` | unset | The Bedrock Marketplace endpoint serving Parse. **Unset means every page runs Tesseract** after one CRITICAL log line — no table structure, no error. Replaces `AZURE_FOUNDRY_PARSE_DEPLOYMENT` |
+| `OCR_ENGINE` | tesseract (compose: cohere_parse) | Selects Cohere Parse as primary scanned-page OCR (ADR-0019; on Cohere's own API since ADR-0023). Retired values fail loudly rather than downgrading silently |
+| `COHERE_API_KEY` | unset | The Cohere API key — one credential for both Parse and `LLM_BACKEND=cohere`. **Unset means every page runs Tesseract** after one CRITICAL log line — no table structure, no error. Replaces `BEDROCK_PARSE_MODEL_ID`, which replaced `AZURE_FOUNDRY_PARSE_DEPLOYMENT` |
 | `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Parse is unavailable or empty |
 | `OCR_ROUTING_THRESHOLDS_JSON` | unset | Calibrated multi-signal routing bands; unset fails closed to review |
 | `P04P_DUAL_WRITE_ENABLED` | false | Run legacy parser in parallel for A/B |

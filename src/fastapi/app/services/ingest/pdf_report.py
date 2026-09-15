@@ -2483,9 +2483,10 @@ def _warn_engine_not_configured_once(detail: str) -> None:
     _ENGINE_NOT_CONFIGURED_WARNED = True
     logger.critical(
         "pdf_report: %s. EVERY page from now on falls back to tesseract, "
-        "which extracts no tables. Check the BEDROCK_PARSE_MODEL_ID "
-        "environment variable and the task role's bedrock:InvokeModel "
-        "permission on the worker.",
+        "which extracts no tables. Check the COHERE_API_KEY environment "
+        "variable on the worker — since ADR-0023 Parse is reached on "
+        "Cohere's own API with that key, not through a Bedrock endpoint "
+        "and a task role.",
         detail,
     )
 
@@ -2629,7 +2630,7 @@ def _ocr_single_page(
         # once per page, and before the budget is charged for a request that
         # will never be sent.
         _warn_engine_not_configured_once(
-            "OCR_ENGINE selects Cohere Parse but BEDROCK_PARSE_MODEL_ID is not set"
+            "OCR_ENGINE selects Cohere Parse but COHERE_API_KEY is not set"
         )
         engine_selected = False
     # 2026-08-14 — per-document remote-OCR page budget (OCR_MAX_PAGES_PER_DOC,
