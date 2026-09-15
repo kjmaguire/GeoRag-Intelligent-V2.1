@@ -165,6 +165,12 @@ locals {
 
   db_host = aws_db_instance.this.address
 
+  # One number, three consumers — see EMBEDDING_DIMENSION below. 1024 is what
+  # georag_chunks is built at and what Cohere Embed v4 is asked for; changing
+  # it means re-embedding the corpus (scripts/reset_embeddings_for_reencode.py),
+  # not just editing this line.
+  embed_dimension = 1024
+
   # Values every service shares.
   common_environment = {
     # Gates main.py::_assert_production_posture — the only thing in the
@@ -273,7 +279,22 @@ locals {
     EMBEDDING_BACKEND       = "bedrock"
     RERANKER_BACKEND        = "bedrock"
     BEDROCK_EMBED_MODEL_ID  = var.bedrock_embed_model_id
-    BEDROCK_EMBED_DIMENSION = 1024
+    BEDROCK_EMBED_DIMENSION = local.embed_dimension
+
+    # The same number, under the name the OTHER two readers use, so all
+    # three agree by construction rather than by all defaulting to 1024:
+    #
+    #   services/embedding.py:69   sizes the vectors it writes, from
+    #                              BEDROCK_EMBED_DIMENSION
+    #   scripts/init_qdrant.py     sizes the collection it creates
+    #   main.py:592                refuses to serve when the live collection
+    #                              disagrees with EMBEDDING_DIMENSION
+    #
+    # Cohere Embed v4 is Matryoshka — 256/512/1024/1536 are all selectable —
+    # so this is a knob someone can reach for. Left split, moving it would
+    # have moved the writer while the guard went on comparing against a
+    # hardcoded 1024 and passing.
+    EMBEDDING_DIMENSION     = local.embed_dimension
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
     BEDROCK_CHAT_MODEL_ID   = "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_chat_endpoint_name}"
     BEDROCK_PARSE_MODEL_ID  = "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_parse_endpoint_name}"

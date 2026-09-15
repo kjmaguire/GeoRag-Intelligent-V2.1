@@ -170,6 +170,38 @@ Until that swap the engine is healthy and every worker and client is not,
 which reads like a Hatchet fault and is not one. `terraform apply` does not
 wait for steady state, so it will report success while this is still true.
 
+## Step 4: create the Qdrant collections, once
+
+`scripts/init_qdrant.py` is the only thing in this repository that creates
+`georag_chunks`, and nothing in the runtime path calls it on a cold start. The
+drift self-heal in `embed_pending_passages` looks like it would cover this, but
+it will not: it fires only when Qdrant is empty AND at least 50 passages are
+already marked embedded in Postgres, which is a wipe, not a fresh install.
+
+So on a brand-new Qdrant the collection simply is not there. Run it as a
+one-off task against the deployed FastAPI image:
+
+```bash
+aws ecs run-task --cluster georag --task-definition georag-fastapi \
+  --launch-type FARGATE --network-configuration "$PRIVATE_SUBNET_CONFIG" \
+  --overrides '{"containerOverrides":[{"name":"fastapi",
+    "command":["python3","/app/scripts/init_qdrant.py"]}]}'
+```
+
+It creates both collections with the named dense `""` slot **and** the named
+sparse `"text"` slot. The sparse slot is not optional: SPLADE++ has no hosted
+equivalent anywhere, so it runs as its own service here, and a collection
+bootstrapped without that slot silently loses the sparse leg of hybrid
+retrieval. A 2026-06-01 incident was exactly this.
+
+You do not have to remember this one. CD runs `scripts/ops/post_deploy_smoke.py`
+as a one-off task after every deploy (`cd.yml`), and its check 4 fails when
+Qdrant is up but the collections the query path needs are absent. If you skip
+this step the deploy gate tells you.
+
+The collection is sized from `BEDROCK_EMBED_DIMENSION`, the same variable the
+writer uses, so it cannot drift from what Cohere Embed v4 is asked to return.
+
 ## The reasoning carried over from Azure
 
 The Azure tree is being deleted, and several of its files were the only

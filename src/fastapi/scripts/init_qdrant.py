@@ -63,17 +63,26 @@ QDRANT_BASE_URL = (
 # with no key configured; any deployment that sets one (Azure) needs it.
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or ""
 
-# georag_chunks tracks the live runtime embedding dimension (Qwen3 = 1024).
+# georag_chunks tracks the live runtime embedding dimension.
 # Read from env so a fresh bootstrap can never drift from the FastAPI writer.
 #
-# Which var holds that dimension depends on the backend: the self-hosted path
-# reads EMBEDDING_DIMENSION, but EMBEDDING_BACKEND=foundry reads
-# AZURE_FOUNDRY_EMBED_DIMENSION (Cohere Embed v4's Matryoshka output_dimension).
-# Both currently land on 1024, so honouring only the former would agree with the
-# writer by coincidence rather than construction — precisely the 384-vs-1024
-# drift that silently wrote wrong-sized vectors before.
-if os.environ.get("EMBEDDING_BACKEND", "").lower() == "foundry":
-    CHUNKS_VECTOR_SIZE = int(os.environ.get("AZURE_FOUNDRY_EMBED_DIMENSION", "1024"))
+# Which var holds that dimension depends on the backend, and the branch has to
+# name the LIVE backend to be worth anything. Until 2026-09-15 it named
+# `foundry` — Azure AI Foundry, retired on 2026-09-08 (ADR-0022) — and sent
+# everything else, production included, to EMBEDDING_DIMENSION. But the
+# EMBEDDING_BACKEND=bedrock writer sizes its vectors from
+# BEDROCK_EMBED_DIMENSION (services/embedding.py:69), which is a DIFFERENT
+# variable. Both default to 1024, so the bootstrap agreed with the writer by
+# coincidence rather than construction — which is exactly the failure this
+# comment was written to warn about, and exactly the 384-vs-1024 drift that
+# silently wrote wrong-sized vectors before.
+#
+# It matters because Cohere Embed v4 is Matryoshka: 256/512/1024/1536 are all
+# selectable through BEDROCK_EMBED_DIMENSION. Changing it would have moved the
+# writer and left the bootstrap — and so the collection — at 1024.
+_EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "bedrock").strip().lower()
+if _EMBEDDING_BACKEND == "bedrock":
+    CHUNKS_VECTOR_SIZE = int(os.environ.get("BEDROCK_EMBED_DIMENSION", "1024"))
 else:
     CHUNKS_VECTOR_SIZE = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))
 # georag_reports is the frozen legacy bge-small 384 space (not swapped).
