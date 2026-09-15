@@ -139,19 +139,30 @@ IAM auth.**
   deployment — and the `<endpoint-name>-config` naming trap that could take
   out chat and OCR on a morning restart.
 
-### Open sub-decision: where rerank runs
+### Sub-decision: rerank stays on Bedrock at 3.5
 
-Not settled at the time of writing, recorded so it is not lost.
+**Decided 2026-09-15: rerank stays on Bedrock serverless, Rerank 3.5.**
 
-- **Bedrock, Rerank 3.5** (status quo, no work): in-region, IAM auth, no extra
-  network hop on the query hot path. But `RERANKER_SCORE_THRESHOLD_HOSTED =
-  0.2` was measured against **v4**, and it is the only retrieval-quality gate
-  in the system. It stays unvalidated, and re-measuring it is blocked on SME
-  chunk-level labelling that does not exist yet.
-- **Cohere API, Rerank v4** (recommended): the API key is being added
-  regardless, so the marginal cost is one more adapter path. The threshold
-  becomes the number it was actually measured on, closing an open risk for
-  free. Costs one external hop per query.
+The alternative was pointing rerank at Cohere's API for **v4**, using the key
+being added anyway. That was the recommendation on technical grounds, because
+`RERANKER_SCORE_THRESHOLD_HOSTED = 0.2` was measured against v4 and v4 is not
+on Bedrock. It was overruled for a reason that outranks it: **the account
+holds AWS credits, and Bedrock spend draws on them while Cohere API spend does
+not.** Rerank runs on every query, so it is the highest-call-volume of the
+three capabilities in question — exactly where credits are worth most. It also
+keeps IAM auth and avoids an external hop on the query hot path.
+
+The cost of that choice is stated plainly rather than absorbed: **the only
+retrieval-quality gate in the system is a threshold measured against a model
+that is no longer the one running.** 0.2 came from v4; 3.5 is a different
+model with a different score distribution. Until it is re-measured the gate
+may be letting weak chunks through, or refusing good answers, and nothing in
+the system will say which.
+
+**Revisit when the credits are exhausted.** At that point Bedrock rerank is
+billed cash like everything else, the reason for this choice disappears, and
+moving to Cohere v4 both restores a valid threshold and consolidates onto one
+vendor credential.
 
 ## Migration mechanics (for future reference)
 
@@ -239,8 +250,12 @@ will not be in six months.
   outage or pricing change hits three capabilities at once. `LLM_BACKEND`
   still offers `anthropic` as a chat fallback, which limits the blast radius
   for the query path but not for ingest.
-- Rerank stays at 3.5 with an unvalidated threshold unless the open
-  sub-decision above resolves to Cohere v4.
+- **Rerank stays at 3.5 with an unvalidated threshold.** Taken deliberately
+  to spend AWS credits rather than cash (see the sub-decision above), but the
+  consequence is real: the system's only retrieval-quality gate is calibrated
+  against a model that is not the one running. This is the single largest
+  quality risk left in the deployment now that the Bedrock wire shapes are no
+  longer in question.
 
 ## Verification (this commit)
 
@@ -264,11 +279,15 @@ A-10 with the 11-key secret.
 
 ## Follow-ups (NOT part of this ADR; tracked separately)
 
-- **Resolve the rerank sub-decision** — before the adapters are written, so
-  the work is scoped once.
-- **Re-measure `RERANKER_SCORE_THRESHOLD_HOSTED`** if rerank stays on Bedrock
-  3.5. Blocked on SME chunk-level relevance labelling;
-  `tests/golden_questions/seed_template.yaml` is a skeleton with none.
+- **Re-measure `RERANKER_SCORE_THRESHOLD_HOSTED` against Rerank 3.5.** Now
+  unconditional, since rerank is staying on Bedrock. Blocked on SME
+  chunk-level relevance labelling; `tests/golden_questions/seed_template.yaml`
+  is a skeleton with none. Until this is done the retrieval gate is
+  uncalibrated — treat refusal rates and answer quality in early production
+  as unverified rather than as signal.
+- **Revisit rerank's host when the AWS credits run out.** That is the trigger
+  condition for the sub-decision above; the reason for choosing Bedrock 3.5
+  expires with the credits.
 - **Rotate the Redis password** committed in `scripts/phase0_acceptance.sh`.
   It is in git history and predates all of this.
 - **Move off the account root user** before any production deployment.
