@@ -24,6 +24,19 @@
 > **application behaviour** is unaffected and still accurate; only the
 > question of where production runs has changed.
 >
+> **⚠️ 2026-09-15 — the AWS half of §4 and §12 was re-derived against
+> `deploy/aws/terraform/alerts.tf`** after
+> [ADR-0023](../../adr/0023-cohere-chat-and-parse-move-to-coheres-own-api.md)
+> moved chat and Parse off Bedrock. Three corrections, all of them cases of
+> this chapter describing alarms rather than reading them:
+> `georag-bedrock-endpoint-not-inservice` was listed as a live Sev 1 and no
+> longer exists (ADR-0023 deleted the Marketplace endpoints it watched); the
+> two `cohere-parse-*` alarms existed in Terraform and were missing from the
+> inventory entirely; and every marker alarm's window was given as its
+> emitter's cron cadence instead of the 15-minute period the single shared
+> `for_each` alarm actually uses. The `AWS/Bedrock` alarms are now scoped to
+> Embed and Rerank, which is all that is left in that namespace.
+>
 > **§1.2, §1.3, §2.3, §4, §5, §6 and §9 were rewritten on 2026-09-08**
 > rather than left under this notice. Observability was a rewrite, not a
 > port — Azure Monitor's KQL rules and CloudWatch's metric filters are
@@ -254,9 +267,29 @@ The two Bedrock error thresholds are the Foundry ones, carried across with
 their **measured** values rather than reinvented: Foundry blocked 1,421 of
 2,524 calls on 2026-08-17 and nothing noticed, which is what earned the
 rule its existence. Bedrock publishes the direct equivalents, so the
-numbers port. (Reaching Cohere's API directly would have meant rebuilding
-both application-side, which is one of the things that decided the route —
-ADR-0022 §11.)
+numbers port.
+
+> **⚠️ What these three alarms still cover, as of 2026-09-15.** Embed v4
+> and Rerank 3.5 — and nothing else.
+> [ADR-0023](../../adr/0023-cohere-chat-and-parse-move-to-coheres-own-api.md)
+> moved chat and Parse onto `api.cohere.com`, and CloudWatch cannot see a
+> request that never went to AWS. When this table was written a week
+> earlier all four Cohere models were on Bedrock and these alarms covered
+> the lot, so read the row as narrower than it looks: two of the four
+> models left the namespace. Parse was re-covered deliberately, by the
+> `cohere-parse-rejected` and `cohere-parse-unrecognised-response` log
+> markers in §5 — `alerts.tf` records that the first of those became *more*
+> load-bearing on 2026-09-15, not less, because the AWS metric behind it
+> went away. **Chat was not re-covered, and that was a judgement, not an
+> oversight.** A chat failure is not silent the way a Parse failure is: it
+> raises, `queries.py:832` logs it at ERROR with `error_class` and
+> `error_code`, and the user gets an SSE `failed` frame instead of an
+> answer. What it does *not* do is trip an alarm — the stream has already
+> returned HTTP 200 by then, so `georag-octane-5xx` never sees it either.
+> So sustained Cohere chat outage reaches operators through users
+> complaining, or through Logs Insights on `error_class`, and not through
+> a page. If that trade stops being acceptable, the mechanism is a fourth
+> log marker alongside the two Parse ones, not a metric alarm.
 
 **Two Azure alarm classes have no successor, deliberately.** The per-app
 `Restarts` counters are replaced by `HealthyHostCount`, which can tell
@@ -391,8 +424,7 @@ Everything below is in
 | Alarm | Kind | Sev | Signal |
 |---|---|---|---|
 | `georag-scheduler-sweep-failed` | log filter, 1 h | 1 | a sweep reported a failed action (§1.3) |
-| `georag-scheduler-sweep-missing` | log filter, 1 d | 1 | no `sweep complete` from either sweep in 25 h |
-| `georag-bedrock-endpoint-not-inservice` | log filter | 1 | **new on AWS.** A Marketplace endpoint failed to come back after the nightly delete: no chat and no OCR, invisible to every invocation metric because there are no invocations to fail |
+| `georag-scheduler-sweep-missing` | log filter, 25 h | 1 | no `sweep complete` from either sweep in 25 h |
 | `georag-octane-5xx` | metric, 5 m | 2 | >10 `HTTPCode_Target_5XX_Count` |
 | `georag-octane-dead-air` | metric, 2×5 m | 1 | `HealthyHostCount` < 1 |
 | `georag-octane-dead-air-alerting` | composite | 1 | the alarm that actually pages: dead-air AND not inside the maintenance window |
@@ -402,9 +434,23 @@ Everything below is in
 | `georag-bedrock-throttles` | metric, 2×15 m | 2 | `InvocationThrottles` > 100 |
 | `georag-pg-cpu` | metric, 3×5 m | 2 | `CPUUtilization` > 85% |
 | `georag-pg-storage` | metric, 5 m | 2 | `FreeStorageSpace` < 10 GiB |
-| `georag-answer-quality-regression` | log filter, 1 d | 2 | `ANSWER_QUALITY_REGRESSION` |
-| `georag-cost-burn-threshold-exceeded` | log filter, 1 h | 1 | `COST_BURN_THRESHOLD_EXCEEDED` |
-| `georag-qdrant-partial-loss` | log filter, 6 h | 2 | `QDRANT_PARTIAL_LOSS` |
+| `georag-answer-quality-regression` | marker, 15 m | 2 | `ANSWER_QUALITY_REGRESSION` — emitted daily by `answer_quality_watch` (`30 14 * * *`) |
+| `georag-cost-burn-threshold-exceeded` | marker, 15 m | 1 | `COST_BURN_THRESHOLD_EXCEEDED` — emitted by `cost_burn_watcher` (`*/5 * * * *`) |
+| `georag-qdrant-partial-loss` | marker, 15 m | 2 | `QDRANT_PARTIAL_LOSS` — emitted by the `embed_pending_passages` sweep |
+| `georag-cohere-parse-rejected` | marker, 15 m | 2 | `COHERE_PARSE_REJECTED` — Parse refused the call (401/403/404/413/422) and every scanned page is silently falling back to tesseract. **The entire signal since ADR-0023**: on Cohere's own API no AWS metric sits behind it |
+| `georag-cohere-parse-unrecognised-response` | marker, 15 m | 2 | `COHERE_PARSE_UNRECOGNISED_RESPONSE` — Parse returned HTTP 200 with a body the adapter does not recognise. No invocation metric on any host can see this one: the call *succeeded* |
+
+> **The five `marker` rows above share one alarm resource**, so they share
+> one window: `aws_cloudwatch_metric_alarm.markers` is a `for_each` over
+> `local.log_markers` with `period = 900`, `evaluation_periods = 1`,
+> `threshold > 0` and `treat_missing_data = "notBreaching"`
+> ([alerts.tf:142](../../../deploy/aws/terraform/alerts.tf)). An earlier
+> version of this table gave these rows windows of 1 h, 1 d and 6 h. Those
+> were the *emitters'* cadences, carried over from the Azure table and never
+> re-derived against the Terraform — no alarm has ever used them. The
+> distinction matters when reading a flapping alarm: the evaluation window
+> is 15 minutes regardless of how often the thing that writes the marker
+> runs.
 
 **Suppression is still derived, not written out again.** Azure needed two
 alert-processing rules keyed on a window spelled out separately from the
