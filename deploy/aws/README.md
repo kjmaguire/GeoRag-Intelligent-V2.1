@@ -240,6 +240,71 @@ this step the deploy gate tells you.
 The collection is sized from `BEDROCK_EMBED_DIMENSION`, the same variable the
 writer uses, so it cannot drift from what Cohere Embed v4 is asked to return.
 
+## One posture decision left open: X-Forwarded-For
+
+`TRUSTED_PROXIES` is set for you (`config.tf`, the VPC CIDR) because without
+it Laravel honours no `X-Forwarded-*` header at all and every request behind
+the TLS-terminating ALB looks like plain HTTP.
+
+`TRUST_FORWARDED_FOR` is **not** set, and that is deliberate.
+`App\Support\ProxyTrust` strips `X-Forwarded-For` in production unless it is,
+because Azure Container Apps' ingress passed a client-supplied chain straight
+through — so `$request->ip()` was whatever the caller typed. Measured
+2026-08-20.
+
+An AWS ALB does not do that: it appends the real peer to the chain, and
+`drop_invalid_header_fields = true` is set on the listener. So the condition
+ProxyTrust names for turning it on — "an ingress that APPENDS to the chain" —
+is met here, and with `TRUSTED_PROXIES` scoped to the VPC, Symfony can walk
+the chain and discard trusted hops to get the true client IP.
+
+It is left off because that file also says to verify before believing it, and
+that cannot be done from a repository. Left off, `$request->ip()` is the
+ALB's address: coarse, but unforgeable, and the two limiters that matter
+degrade gracefully — the login limiter also keys on the submitted email and
+the query limiter keys on the authenticated user id. What you lose is real
+client IPs in audit records and in the guest-facing tile limiter.
+
+To turn it on, run ProxyTrust's own three requests against the deployed ALB
+and confirm the middle one does **not** change the answer:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' "https://$APP_DOMAIN/metrics"
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 10.0.0.1' "https://$APP_DOMAIN/metrics"
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 8.8.8.8'  "https://$APP_DOMAIN/metrics"
+```
+
+If a spoofed header still moves the result, leave it off and say so in the
+runbook. If all three agree, set `TRUST_FORWARDED_FOR=true`.
+
+### And one more: RATE_LIMIT_ENABLED
+
+`main.py::_assert_production_posture` logs CRITICAL on a `GEORAG_ENV=production`
+process when `RATE_LIMIT_ENABLED` is off, saying "no request throttling of any
+kind is installed". On this deployment that line will appear on every FastAPI
+boot, and it overstates the case.
+
+FastAPI is not in an ALB target group. Nothing outside the VPC can reach it,
+and every request it serves arrives from an Octane task over Cloud Map. The
+per-client throttling is on the Laravel side, where the clients actually are:
+`auth-login`, `queries`, `public-geoscience-tiles` and
+`bridge:report-progress` limiters in `AppServiceProvider`, plus inline
+`throttle:` on the sensitive routes.
+
+Turning the FastAPI limiter on would not add a per-client control, because
+`slowapi` is wired with `key_func=get_remote_address` and every remote address
+it sees is an Octane task. At `RATE_LIMIT_DEFAULT=60/minute` that is a global
+cap of roughly 60 requests per minute per Octane task across all users — a
+crude ceiling that would start returning 429s under ordinary load.
+
+So it is left off, and the CRITICAL line is noise rather than a finding. Worth
+fixing properly at some point — either by keying the limiter on a
+workspace/user header Laravel already forwards, or by narrowing the posture
+check to deployments where FastAPI is internet-facing. Neither belongs in a
+cutover.
+
+No CloudWatch alarm watches for CRITICAL log lines, so this does not page.
+
 ## The reasoning carried over from Azure
 
 The Azure tree is being deleted, and several of its files were the only

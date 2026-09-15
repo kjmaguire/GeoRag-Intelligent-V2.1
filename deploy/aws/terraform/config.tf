@@ -195,6 +195,29 @@ locals {
     # "nobody said". Add it only when a genuine cross-origin caller exists.
     APP_URL = "https://${var.app_domain}"
 
+    # Without this, NOTHING from the load balancer is believed.
+    #
+    # ProxyTrust::proxies() fails closed in production: given no configured
+    # value it returns [], and with no trusted proxy Laravel honours no
+    # X-Forwarded-* header at all — including Proto. The ALB terminates TLS
+    # and forwards plain HTTP to the task, so `$request->isSecure()` would be
+    # FALSE on every request to an https:// site, and every URL Laravel
+    # generates from the request would come out http://.
+    #
+    # .env.production.example:96 has carried TRUSTED_PROXIES=CHANGE_ME_YOUR_PROXY_CIDR
+    # as a required value all along; nothing was supplying it here.
+    #
+    # The VPC CIDR rather than "*", which is what that file asks for ("real
+    # CIDR — not wildcard"). It is also tight: the tasks' security group only
+    # accepts ingress from the ALB's security group, so the only hop that can
+    # ever reach a task from outside is the ALB, and it is in this CIDR.
+    #
+    # NOTE: this does NOT by itself restore real client IPs. X-Forwarded-For
+    # is dropped separately by ProxyTrust::forwardedHeaders() unless
+    # TRUST_FORWARDED_FOR is set — see deploy/aws/README.md, which explains
+    # why that one is a deliberate decision for Kyle rather than a default.
+    TRUSTED_PROXIES = var.vpc_cidr
+
     POSTGRES_HOST        = local.db_host
     POSTGRES_DIRECT_HOST = local.db_host
     POSTGRES_PORT        = 5432
