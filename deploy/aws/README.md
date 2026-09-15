@@ -184,6 +184,88 @@ copy the production variant out of the existing one with
 "${ep}-config"` with the same variant, then `update-endpoint` onto it. Do
 that now, while an outage costs nothing.
 
+### Step 0 end to end, from a workstation
+
+Run this on a machine with a browser. It will **not** complete in a cloud
+development container: `aws login` exchanges its authorization code at
+`signin.aws.amazon.com`, and an agent sandbox typically refuses that host
+(verified 2026-09-15 — `403 to CONNECT`, while `oidc.*.amazonaws.com` and
+every service endpoint were reachable). The sign-in page renders, because
+that runs in your browser; the token exchange runs from the shell and does
+not, so no credentials are ever written and the failure reads as a proxy
+error. An IAM Identity Center account can use `aws sso login
+--use-device-code --no-browser` from such a container instead.
+
+Needs `uv` on PATH — `bedrock_probe.sh` runs `uv run --no-sync` inside
+`src/fastapi`.
+
+```bash
+# Every value below is a placeholder with a plausible default. Read each one
+# before running the block; none of them is guessed correctly for you.
+export REGION=ca-west-1          # the stack's region
+export PROFILE=georag
+
+# 1. Authenticate. Credentials last 12h, renewable 90 days without the browser.
+aws configure set region "$REGION" --profile "$PROFILE"
+aws login --region "$REGION" --profile "$PROFILE"
+aws sts get-caller-identity --profile "$PROFILE"
+
+# 2. Find the two Marketplace endpoints, and which region they are really in.
+#    That region is BEDROCK_REGION and may differ from the stack's region —
+#    `bedrock_region` is a separate variable for exactly this reason. If this
+#    comes back empty, the endpoints are in another region; try it there.
+aws sagemaker list-endpoints --profile "$PROFILE" --region "$REGION" \
+  --query 'Endpoints[].[EndpointName,EndpointStatus]' --output table
+
+# 3. The naming check above, which is what the section you just read is for.
+export BEDROCK_REGION="$REGION"  # or wherever step 2 actually found them
+export CHAT_ENDPOINT=georag-chat     # the names you gave them in the console
+export PARSE_ENDPOINT=georag-parse
+for ep in "$CHAT_ENDPOINT" "$PARSE_ENDPOINT"; do
+  actual=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
+             --profile "$PROFILE" --region "$BEDROCK_REGION" \
+             --query EndpointConfigName --output text)
+  status=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
+             --profile "$PROFILE" --region "$BEDROCK_REGION" \
+             --query EndpointStatus --output text)
+  echo "$ep [$status] -> config '$actual'   (sweep needs '${ep}-config')"
+done
+
+# 4. What the serverless catalogue actually offers in that region. Embed v4
+#    and Rerank 3.5 are catalogue models, not endpoints anyone deployed — a
+#    region that does not carry them has nowhere to run embeddings or
+#    reranking. Take the exact modelIds from this output rather than
+#    assuming them.
+aws bedrock list-foundation-models --profile "$PROFILE" --region "$BEDROCK_REGION" \
+  --query 'modelSummaries[?providerName==`Cohere`].[modelId,modelName]' --output table
+
+# 5. The probe. It takes NO --region flag: it reads the environment, and the
+#    two ARNs are built exactly as config.tf:331-332 builds them, so what is
+#    probed is what production will use.
+ACCOUNT=$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text)
+export AWS_PROFILE="$PROFILE"
+export AWS_REGION="$REGION"
+export BEDROCK_CHAT_MODEL_ID="arn:aws:sagemaker:${BEDROCK_REGION}:${ACCOUNT}:endpoint/${CHAT_ENDPOINT}"
+export BEDROCK_PARSE_MODEL_ID="arn:aws:sagemaker:${BEDROCK_REGION}:${ACCOUNT}:endpoint/${PARSE_ENDPOINT}"
+export BEDROCK_EMBED_MODEL_ID=cohere.embed-v4:0        # confirm against step 4
+export BEDROCK_RERANK_MODEL_ID=cohere.rerank-v3-5:0    # confirm against step 4
+bash ops/validation/bedrock_probe.sh
+
+# 6. COMMIT THE REPORT. The adapters carry [UNVERIFIED] until one exists,
+#    and aws-preflight.sh A-11 fails until one lands here.
+git add ops/validation/reports/bedrock_probe_*.json
+git commit -m "chore(validation): commit the in-region Bedrock wire-contract probe report"
+
+# 7. Everything the preflight could not answer without an account.
+AWS_REGION="$REGION" AWS_PROFILE="$PROFILE" bash scripts/operator/aws-preflight.sh
+```
+
+Read the report before trusting any adapter. If Parse's shape differs from
+what `_page_from_payload` expects, the probe says so — and since 2026-09-15
+the adapter says so too, at runtime: an unrecognised body now fails soft to
+tesseract behind the `COHERE_PARSE_UNRECOGNISED_RESPONSE` marker and its
+alarm, rather than returning a silently blank page that no metric could see.
+
 ## Step 1: bootstrap the database by hand, once
 
 `docker/postgresql/init/*.sql` runs from `/docker-entrypoint-initdb.d/` on a
