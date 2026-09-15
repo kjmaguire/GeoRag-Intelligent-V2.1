@@ -629,6 +629,12 @@ jobs:
       # unbootable are different questions; this asks the second one.
       - name: ECS secret keys match their operator documentation
         run: python scripts/check-ecs-secret-keys.py
+      # An alarm attached to the wrong log group sits at zero and reads as
+      # healthy, which is indistinguishable from the failure not happening.
+      # BEDROCK_ENDPOINT_NOT_INSERVICE — described in alerts.tf as Sev 1,
+      # "NO chat and NO OCR" — was in exactly that state.
+      - name: Log-marker alarms watch the group their emitter writes to
+        run: python scripts/check-log-marker-alarms.py
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.

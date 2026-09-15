@@ -50,20 +50,39 @@ locals {
   # Marker lines the workers emit, and what each one means. Ch 12 §1.3 is
   # the authority; the thresholds inside the emitting workflows are not
   # duplicated here, deliberately — a threshold in two places drifts.
+  #
+  # `log_group` is NOT decoration. This deployment writes to two groups —
+  # /ecs/georag for the ten services, /ecs/georag/scheduler for the two
+  # nightly sweeps (services.tf:10 and :15) — and a metric filter only ever
+  # sees the group it is attached to. Every marker here was filtered on the
+  # services group until 2026-09-15, including the one emitted solely by
+  # deploy/aws/scheduler/startup-sweep.sh, so the Sev 1 alarm on the
+  # sharpest edge in this deployment watched a log group the marker cannot
+  # appear in, and could never have fired.
+  #
+  # scripts/check-log-marker-alarms.py fails the build when a marker's
+  # filter and its emitter disagree.
   log_markers = {
     answer-quality-regression = {
+      log_group   = "services"
       pattern     = "ANSWER_QUALITY_REGRESSION"
       description = "answer_quality_watch (30 14 * * *): refusal, guard-fire or zero-evidence rate moved 15pp against the trailing week, or mean confidence dropped 0.15. A window under the 20-answer sample floor reports insufficient_sample and is deliberately NOT an alert."
     }
     cost-burn-threshold-exceeded = {
+      log_group   = "services"
       pattern     = "COST_BURN_THRESHOLD_EXCEEDED"
       description = "cost_burn_watcher (*/5 * * * *): a workspace spent past its hourly ceiling. At 2x the watcher suspends its LLM activity by itself."
     }
     qdrant-partial-loss = {
+      log_group   = "services"
       pattern     = "QDRANT_PARTIAL_LOSS"
       description = "embed_pending_passages sweep: Qdrant holds >2% fewer points for a project than silver.document_passages records as embedded."
     }
     bedrock-endpoint-not-inservice = {
+      # The sweep group, not the services group: this marker is
+      # emitted only by deploy/aws/scheduler/startup-sweep.sh, which
+      # runs as a scheduler task (scheduler.tf:53, :92).
+      log_group   = "scheduler"
       pattern     = "BEDROCK_ENDPOINT_NOT_INSERVICE"
       description = "NEW on AWS. A Marketplace endpoint failed to come back after the nightly delete. This leaves NO chat and NO OCR, and Bedrock's own invocation-error metrics cannot see it because there are no invocations to fail — the endpoint's absence is the whole failure. Sev 1."
     }
@@ -73,9 +92,13 @@ locals {
 resource "aws_cloudwatch_log_metric_filter" "markers" {
   for_each = local.log_markers
 
-  name           = each.key
-  log_group_name = aws_cloudwatch_log_group.services.name
-  pattern        = "\"${each.value.pattern}\""
+  name = each.key
+  log_group_name = (
+    each.value.log_group == "scheduler"
+    ? aws_cloudwatch_log_group.scheduler.name
+    : aws_cloudwatch_log_group.services.name
+  )
+  pattern = "\"${each.value.pattern}\""
 
   metric_transformation {
     name      = each.key

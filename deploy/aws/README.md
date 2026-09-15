@@ -75,6 +75,44 @@ adapter. Cohere Parse's wire shape has **never** been empirically verified,
 on Foundry or on Bedrock, and the chat path's three confirmed Foundry
 behaviours do not carry over by assumption.
 
+### Name the endpoint configs `<endpoint-name>-config`
+
+Terraform does not create the two Marketplace endpoints — you do, by
+subscribing in Bedrock Marketplace and deploying each model. Terraform only
+takes their **names**, as `bedrock_chat_endpoint_name` and
+`bedrock_parse_endpoint_name`.
+
+The nightly cycle deletes those endpoints and recreates them each morning
+from their **retained endpoint configs**, and it finds the config by
+convention, not by discovery:
+
+```
+scheduler.tf:82-85   "<endpoint-name>=<endpoint-name>-config"
+```
+
+The sweep role holds `sagemaker:DescribeEndpointConfig` but deliberately not
+`ListEndpointConfigs`, so it cannot go looking for a config under a different
+name. If the console named yours anything else, the deployment works on day
+one and then, on the first morning restart, `create-endpoint` fails and you
+have no chat and no OCR — the failure mode the section below calls Sev 1.
+
+So after deploying each model, check the config name and fix it if it does
+not match:
+
+```bash
+for ep in "$CHAT_ENDPOINT" "$PARSE_ENDPOINT"; do
+  actual=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
+             --query EndpointConfigName --output text)
+  echo "$ep -> $actual   (sweep will look for ${ep}-config)"
+done
+```
+
+An endpoint config is immutable but cheap to re-create under the right name:
+copy the production variant out of the existing one with
+`describe-endpoint-config`, `create-endpoint-config --endpoint-config-name
+"${ep}-config"` with the same variant, then `update-endpoint` onto it. Do
+that now, while an outage costs nothing.
+
 ## Step 1: bootstrap the database by hand, once
 
 `docker/postgresql/init/*.sql` runs from `/docker-entrypoint-initdb.d/` on a
