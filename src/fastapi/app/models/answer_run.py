@@ -52,25 +52,28 @@ FusionMethodLiteral = Literal["rrf", "dbsf"]
 
 # Mirrors the DB CHECK `answer_runs_backend_valid` exactly — the constraint
 # is (re)defined by migration
-# 2026_09_08_010000_extend_answer_runs_backend_check_for_bedrock
-# ('vllm', 'anthropic', 'azure', 'bedrock', 'unknown'). 'ollama' was dropped
-# from the DB CHECK back in 2026_06_02_220000 but lingered here; 'azure' was
-# unrepresentable in both while it was the live default (RAG-quality audit
-# 2026-08-14, finding 5); 'bedrock' became the live default with ADR-0022 and
-# repeated the same omission. tests/test_backend_enum_contract.py holds the
-# two sides in lockstep AND asserts that the configured default is in the set,
-# because exact Literal/CHECK agreement cannot detect a value MISSING FROM
-# BOTH — which is how this happened twice.
+# 2026_09_15_010000_extend_answer_runs_backend_check_for_cohere
+# ('vllm', 'anthropic', 'azure', 'bedrock', 'cohere', 'unknown'). 'ollama' was
+# dropped from the DB CHECK back in 2026_06_02_220000 but lingered here;
+# 'azure' was unrepresentable in both while it was the live default
+# (RAG-quality audit 2026-08-14, finding 5); 'bedrock' became the live default
+# with ADR-0022 and repeated the same omission; 'cohere' takes the default
+# with ADR-0023 and is added here in the same commit rather than after a third
+# audit. tests/test_backend_enum_contract.py holds the two sides in lockstep
+# AND asserts that the configured default is in the set, because exact
+# Literal/CHECK agreement cannot detect a value MISSING FROM BOTH — which is
+# how this happened twice.
 #
 # 'azure' stays: no new row can carry it (Settings rejects LLM_BACKEND=azure
 # since ADR-0022), but the Literal types reads of rows written before then.
-BackendLiteral = Literal["vllm", "anthropic", "azure", "bedrock", "unknown"]
+BackendLiteral = Literal["vllm", "anthropic", "azure", "bedrock", "cohere", "unknown"]
 
 # The recognised live backends; anything else normalises to "unknown".
 # 'azure' is deliberately absent — it is a legal stored value, not a
 # selectable one, so a stray LLM_BACKEND=azure normalises to "unknown"
-# rather than being recorded as if it had worked.
-_KNOWN_BACKENDS: frozenset[str] = frozenset({"vllm", "anthropic", "bedrock"})
+# rather than being recorded as if it had worked. 'bedrock' IS still here:
+# ADR-0023 took its default, not its support.
+_KNOWN_BACKENDS: frozenset[str] = frozenset({"vllm", "anthropic", "bedrock", "cohere"})
 
 
 def normalize_backend(value: str | None) -> BackendLiteral:

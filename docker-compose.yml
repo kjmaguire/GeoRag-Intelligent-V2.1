@@ -911,14 +911,30 @@ services:
       AWS_DEFAULT_REGION: us-east-1
       S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
       # LLM — backend selection + primary target.
-      # Amazon Bedrock is the default primary backend since 2026-09-08
-      # (ADR-0022); Azure AI Foundry held that role from 2026-07-30, and
-      # LLM_BACKEND=azure is now a startup ERROR naming its replacement.
-      LLM_BACKEND: ${LLM_BACKEND:-bedrock}
+      # Cohere's own API is the default primary backend since 2026-09-15
+      # (ADR-0023); Amazon Bedrock held that role from 2026-09-08 and Azure
+      # AI Foundry from 2026-07-30, and LLM_BACKEND=azure is now a startup
+      # ERROR naming its replacement.
+      LLM_BACKEND: ${LLM_BACKEND:-cohere}
       LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-}
       LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
       LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
       LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
+      # Cohere API (Cohere Command A+) — used when LLM_BACKEND=cohere.
+      # One key, no endpoint to stand up and nothing billing while idle,
+      # which is why ADR-0023 made it the default over the Bedrock
+      # Marketplace route below. No default for the key: a blank one is a
+      # clear RuntimeError naming the variable at first call, which beats
+      # a placeholder that reaches the wire and comes back 401.
+      #
+      # WIRE SHAPE UNVERIFIED — see app/agent/llm_cohere.py for exactly
+      # what is assumed. Confirm against the live API before cutover.
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+      COHERE_BASE_URL: ${COHERE_BASE_URL:-https://api.cohere.com}
+      COHERE_CHAT_MODEL: ${COHERE_CHAT_MODEL:-command-a-plus-05-2026}
+      COHERE_CHAT_MAX_MODEL_LEN: ${COHERE_CHAT_MAX_MODEL_LEN:-128000}
+      COHERE_CHAT_MAX_TOKENS: ${COHERE_CHAT_MAX_TOKENS:-4096}
+      COHERE_CHAT_TIMEOUT_S: ${COHERE_CHAT_TIMEOUT_S:-120}
       # Amazon Bedrock (Cohere Command A+) — used when LLM_BACKEND=bedrock.
       # No endpoint and no key: boto3's credential chain signs every call,
       # so in dev this uses whatever AWS profile or SSO session the host

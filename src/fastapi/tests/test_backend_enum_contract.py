@@ -17,6 +17,12 @@ information: the same defect finding 5 fixed, through a different door.
 ``test_configured_default_backend_is_representable`` closes that, by
 reading the default out of config.py rather than off either list.
 
+2026-09-15 (ADR-0023): ``cohere`` took the default from ``bedrock`` and was
+added to both sides in the same commit — the first time this did not need an
+audit to notice. The migration is now resolved by glob rather than by name,
+because a hardcoded filename means every NEW backend-check migration leaves
+this file parsing a superseded constraint.
+
 Run with:
     pytest tests/test_backend_enum_contract.py -v
 """
@@ -29,12 +35,31 @@ from typing import get_args
 
 from app.models.answer_run import _KNOWN_BACKENDS, BackendLiteral, normalize_backend
 
-_MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "database"
-    / "migrations"
-    / "2026_09_08_010000_extend_answer_runs_backend_check_for_bedrock.php"
-)
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "database" / "migrations"
+
+
+def _latest_backend_check_migration() -> Path:
+    """The migration that actually defines the CHECK after `migrate` runs.
+
+    Resolved by glob rather than named, which is a correction: this file
+    hardcoded ``..._for_bedrock.php`` and, when ADR-0023 added ``cohere`` in
+    a NEW migration, it went on parsing the superseded constraint. That is a
+    drift test that itself drifts — it would have reported disagreement
+    against a set the database had already moved past.
+
+    Laravel applies migrations in filename order and each of these drops and
+    recreates ``answer_runs_backend_valid`` outright, so the newest filename
+    is the constraint in force.
+    """
+    candidates = sorted(_MIGRATIONS_DIR.glob("*answer_runs_backend_check*.php"))
+    assert candidates, (
+        f"no *answer_runs_backend_check*.php migration under {_MIGRATIONS_DIR} "
+        "— the backend_used CHECK and BackendLiteral must be defined together"
+    )
+    return candidates[-1]
+
+
+_MIGRATION_PATH = _latest_backend_check_migration()
 
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / "app" / "config.py"
 

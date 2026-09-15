@@ -62,18 +62,22 @@ gets the same structured fallback the OpenAI path returns.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from app.agent.llm_common import (
+    _MIN_OUTPUT_TOKENS,
+    _SAFETY_MARGIN_TOKENS,
+    cap_output_tokens,
+    clean_model_text,
+    record_llm_metrics,
+)
+from app.agent.llm_common import (
+    BUDGET_EXHAUSTED_FALLBACK as _BUDGET_EXHAUSTED_FALLBACK,
+)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-#: Cohere wraps JSON-mode output in sentinel tokens. Property of the model,
-#: not the host — see the module docstring.
-_SENTINEL_RE = re.compile(r"<\|START_TEXT\|>|<\|END_TEXT\|>")
-_THINK_RE = re.compile(r"<think\b[^>]*>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
 #: Bedrock exception names that mean "try again" rather than "this is wrong".
 #: botocore's adaptive retry already handles these internally; this set is for
@@ -120,49 +124,6 @@ def _is_transient(exc: BaseException) -> bool:
     return _error_code(exc) in _TRANSIENT_ERROR_CODES
 
 
-def _clean(content: str) -> str:
-    """Strip <think> blocks and Cohere sentinel tokens, never emptying."""
-    if "<think>" in content:
-        stripped = _THINK_RE.sub("", content).strip()
-        if stripped:
-            content = stripped
-    if "<|START_TEXT|>" in content or "<|END_TEXT|>" in content:
-        stripped = _SENTINEL_RE.sub("", content).strip()
-        if stripped:
-            logger.debug("bedrock: stripped Cohere sentinel tokens")
-            content = stripped
-    return content
-
-
-# Pessimistic chars-per-token for the GeoRAG prompt mix, and the margin on
-# top. Production samples ran 2.39-2.77 chars/token (system prompt is dense
-# English, JSON-ish context blocks tokenise short, PLSS Township-Range syntax
-# finer still), so 2.2 over-estimates input cleanly on the finest content.
-# Same constants as `_call_openai_compatible_llm`, deliberately.
-_CHARS_PER_TOKEN = 2.2
-_SAFETY_MARGIN_TOKENS = 512
-_MIN_OUTPUT_TOKENS = 64
-
-
-def cap_output_tokens(*, max_output: int, max_model_len: int, prompt_chars: int) -> int:
-    """Shrink the output request so it cannot overflow the context window.
-
-    Without this, a long retrieval context plus a full-size output request
-    pushes ``prompt_tokens + max_tokens`` past the model's window and the
-    provider answers 400 instead of truncating — so the run fails AFTER
-    paying to build the prompt. The guard has been load-bearing on the
-    OpenAI-compatible path since the vLLM era; it did not survive the first
-    draft of the Bedrock port, which is why it is a named, tested function
-    here rather than four lines inline.
-
-    Never returns 0: an over-long prompt still asks for
-    ``_MIN_OUTPUT_TOKENS`` so the failure surfaces as a clean provider error
-    on the orchestrator's failover ladder.
-    """
-    room = max_model_len - int(prompt_chars / _CHARS_PER_TOKEN) - _SAFETY_MARGIN_TOKENS
-    return min(max_output, max(_MIN_OUTPUT_TOKENS, room))
-
-
 def _build_request(
     *,
     user_message: str,
@@ -196,9 +157,7 @@ def _build_request(
         # single most important thing for the probe to answer, because every
         # typed-output guard in orchestrator_validators.py depends on the
         # model actually returning JSON (hard rule 4).
-        request["additionalModelRequestFields"] = {
-            "response_format": {"type": "json_object"}
-        }
+        request["additionalModelRequestFields"] = {"response_format": {"type": "json_object"}}
     return request
 
 
@@ -222,14 +181,6 @@ def _extract_from_message(message: dict[str, Any]) -> tuple[str, str]:
     if sibling and not reasoning_parts:
         reasoning_parts.append(str(sibling))
     return "".join(content_parts), "".join(reasoning_parts)
-
-
-_BUDGET_EXHAUSTED_FALLBACK = (
-    "The model returned no content for this query due to token budget "
-    "exhaustion during its internal reasoning pass. This typically happens "
-    "on very large projects. Please retry, or raise the configured max "
-    "output/context budget if the problem persists."
-)
 
 
 async def call_bedrock_llm(
@@ -257,9 +208,7 @@ async def call_bedrock_llm(
     from app.agent.llm_calls import add_token_usage  # noqa: PLC0415
     from app.services._bedrock import bedrock_region  # noqa: PLC0415
 
-    system_content = "\n\n".join(
-        part for part in (system_prompt, project_preamble, project_facts) if part
-    )
+    system_content = "\n\n".join(part for part in (system_prompt, project_preamble, project_facts) if part)
     # See cap_output_tokens() — this is what makes BEDROCK_CHAT_MAX_MODEL_LEN
     # a real control rather than a setting that only looks like one.
     _requested_output = settings.BEDROCK_CHAT_MAX_TOKENS
@@ -271,10 +220,11 @@ async def call_bedrock_llm(
     )
     if max_output < _requested_output:
         logger.info(
-            "call_bedrock_llm: capping max_tokens %d -> %d "
-            "(prompt_chars=%d max_model_len=%d)",
-            _requested_output, max_output,
-            _prompt_chars, settings.BEDROCK_CHAT_MAX_MODEL_LEN,
+            "call_bedrock_llm: capping max_tokens %d -> %d (prompt_chars=%d max_model_len=%d)",
+            _requested_output,
+            max_output,
+            _prompt_chars,
+            settings.BEDROCK_CHAT_MAX_MODEL_LEN,
         )
 
     request = _build_request(
@@ -349,9 +299,10 @@ async def call_bedrock_llm(
                 raise
             attempt += 1
             logger.warning(
-                "bedrock chat: transient %s (attempt %d/%d) — retrying before "
-                "any token reached the user",
-                _error_code(exc), attempt, max_retries,
+                "bedrock chat: transient %s (attempt %d/%d) — retrying before any token reached the user",
+                _error_code(exc),
+                attempt,
+                max_retries,
             )
 
     input_tokens = int(usage.get("inputTokens", 0) or 0)
@@ -362,7 +313,8 @@ async def call_bedrock_llm(
     cache_read = int(usage.get("cacheReadInputTokens", 0) or 0)
     add_token_usage(input_tokens, output_tokens)
 
-    _record_metrics(
+    record_llm_metrics(
+        backend="bedrock",
         model=settings.effective_llm_model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -370,73 +322,31 @@ async def call_bedrock_llm(
         user_id=user_id,
     )
 
-    content = _clean(content).strip()
+    content = clean_model_text(content, backend="bedrock").strip()
     if not content and reasoning.strip():
         logger.warning(
             "budget_exhausted_by_thinking: empty content with %d-char reasoning. "
             "backend=bedrock model=%s max_tokens=%d stop_reason=%s "
             "input_tokens=%d. Consider raising BEDROCK_CHAT_MAX_TOKENS or "
             "disabling reasoning on this call site.",
-            len(reasoning), settings.effective_llm_model, max_output,
-            stop_reason, input_tokens,
+            len(reasoning),
+            settings.effective_llm_model,
+            max_output,
+            stop_reason,
+            input_tokens,
         )
         return _BUDGET_EXHAUSTED_FALLBACK
     return content
 
 
-def _record_metrics(
-    *,
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read: int,
-    user_id: str | None,
-) -> None:
-    """Mirror the OpenAI path's cost and token bookkeeping.
-
-    Kept separate so a metrics import failure cannot take out an answer that
-    has already been generated — the same posture the OpenAI path takes with
-    its ``except ImportError: pass``. It logs at debug rather than swallowing
-    silently: an answer is worth more than its bookkeeping, but a run whose
-    cost was never recorded should still leave a trace, because
-    `cost_burn_watcher` reads those counters and would otherwise just see a
-    quiet workspace (Ch 12 §1.3).
-    """
-    if input_tokens <= 0:
-        return
-    try:
-        from app.agent.pricing import (  # noqa: PLC0415
-            estimate_cost_usd,
-            has_pricing,
-            user_bucket,
-        )
-        from app.metrics import (  # noqa: PLC0415
-            LLM_COST_USD,
-            LLM_TOKENS_OUTPUT,
-            PROMPT_CACHE_TOKENS,
-            PROMPT_TOTAL_TOKENS,
-        )
-
-        PROMPT_TOTAL_TOKENS.labels(backend="bedrock").inc(input_tokens)
-        if cache_read > 0:
-            PROMPT_CACHE_TOKENS.labels(backend="bedrock").inc(cache_read)
-        if output_tokens > 0:
-            LLM_TOKENS_OUTPUT.labels(model=model).inc(output_tokens)
-        if has_pricing(model):
-            cost_usd = estimate_cost_usd(
-                model=model,
-                input_tokens=max(input_tokens - cache_read, 0),
-                output_tokens=output_tokens,
-                cached_input_tokens=cache_read,
-            )
-            if cost_usd > 0:
-                LLM_COST_USD.labels(model=model, user_bucket=user_bucket(user_id)).inc(cost_usd)
-    except ImportError:
-        logger.debug(
-            "bedrock: token/cost accounting skipped — metrics or pricing "
-            "module unavailable (model=%s, input_tokens=%d)",
-            model, input_tokens, exc_info=True,
-        )
-
-
-__all__ = ["BedrockPreStreamError", "call_bedrock_llm"]
+# cap_output_tokens and its two constants moved to llm_common on 2026-09-15
+# (ADR-0023) so a second Cohere transport could not fork them. They are
+# re-exported here because tests/test_bedrock_output_cap.py imports them from
+# this module by name, and the extraction is a move, not a behaviour change.
+__all__ = [
+    "BedrockPreStreamError",
+    "_MIN_OUTPUT_TOKENS",
+    "_SAFETY_MARGIN_TOKENS",
+    "call_bedrock_llm",
+    "cap_output_tokens",
+]

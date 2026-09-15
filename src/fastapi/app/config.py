@@ -245,35 +245,54 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = ""
 
     # -------------------------------------------------------------------------
-    # LLM — supports an OpenAI-compatible vLLM backend + native Anthropic:
-    #   vllm       (default for dev + prod) → vLLM serving Qwen3-14B-AWQ
-    #                                on the dev workstation A4500, scaled
-    #                                up on prod hardware. Single inference
-    #                                runtime per master-plan §12. Ollama
+    # LLM — four transports, all reaching a chat model over a different wire:
+    #   cohere     (default for dev + prod) → Cohere Command A+ on Cohere's
+    #                                own API, POST /v2/chat with an API key.
+    #   bedrock    → Cohere Command A+ through a Bedrock Marketplace endpoint
+    #                                (Converse). Still selectable; see the
+    #                                ADR-0023 note below for why it is no
+    #                                longer the default.
+    #   vllm       → vLLM serving Qwen3-14B-AWQ over the OpenAI-compatible
+    #                                /v1/chat/completions endpoint. Ollama
     #                                support removed 2026-05-17.
-    #   anthropic  (prod fallback) → Anthropic API (Claude Opus 4.7, Sonnet 4.6,
-    #                                Haiku 4.5). Native SDK — enables prompt
-    #                                caching, adaptive thinking, priority tier,
-    #                                and the 300k-output batch beta that the
-    #                                OpenAI-compatible proxy path cannot reach.
+    #   anthropic  (cross-vendor fallback) → Anthropic API (Claude Opus 4.8,
+    #                                Sonnet 4.6, Haiku 4.5). Native SDK —
+    #                                enables prompt caching, adaptive
+    #                                thinking, priority tier, and the
+    #                                300k-output batch beta that the
+    #                                OpenAI-compatible proxy path cannot
+    #                                reach.
     #
-    # Switch by setting LLM_BACKEND in .env. vLLM uses the OpenAI-compatible
-    # /v1/chat/completions endpoint; Anthropic uses its native messages API.
+    # Switch by setting LLM_BACKEND in .env.
     # -------------------------------------------------------------------------
 
-    # ADR-0022 (AWS move) — "bedrock" is the default primary backend,
-    # replacing "azure" (Azure AI Foundry), which replaced self-hosted vLLM
-    # before it. "vllm" remains supported for operators who keep running
-    # their own OpenAI-compatible endpoint (the docker-compose `vllm` service
-    # itself was removed; point VLLM_URL at an external instance if you need
-    # this path). "anthropic" remains the optional cross-vendor fallback
-    # (see LLM_BACKEND_FALLBACK).
+    # ADR-0023 (2026-09-15) — "cohere" is the default primary backend. It took
+    # the slot from "bedrock" (ADR-0022), which took it from "azure" (Azure AI
+    # Foundry), which took it from self-hosted vLLM.
     #
-    # "azure" is no longer accepted: `_reject_retired_llm_backend` below
+    # Why the default moved off bedrock one week after it arrived: Command A+
+    # turned out not to be a Bedrock model at all. It is an **AWS Marketplace**
+    # SageMaker package, and a Marketplace endpoint has no idle state — it
+    # bills for an A100/H100 for as long as it exists. Nothing was ever
+    # deployed, so `LLM_BACKEND=bedrock` in production would now address an
+    # endpoint that does not exist and is not going to.
+    #
+    # That is the same trap the default was picked to avoid in the first
+    # place: an unset value must select a host that is actually running, not
+    # one that only exists on paper. "bedrock" stays selectable for an
+    # operator who does subscribe and deploy the endpoint — the adapter is
+    # unchanged and `_validate_chat_backend_credentials` below makes the
+    # missing model id a startup error rather than a first-query one.
+    #
+    # Bedrock has NOT left the system: embeddings (Cohere Embed v4) and
+    # reranking (Cohere Rerank 3.5) still go there under EMBEDDING_BACKEND
+    # and RERANKER_BACKEND, which are separate variables from this one.
+    #
+    # "azure" is no longer accepted: `_reject_retired_azure_config` below
     # turns it into a startup error naming the replacement, rather than
     # letting a deployment that was never repointed fail at first query
     # against a Foundry endpoint that no longer exists.
-    LLM_BACKEND: str = "bedrock"  # "bedrock" | "vllm" | "anthropic"
+    LLM_BACKEND: str = "cohere"  # "cohere" | "bedrock" | "vllm" | "anthropic"
 
     # Legacy OpenAI-compatible target, retained for the "vllm" backend value
     # and as the last-resort default in `effective_llm_url`/`effective_llm_model`
@@ -384,6 +403,52 @@ class Settings(BaseSettings):
     # slow; this is the ceiling before that counts as a failure rather than a
     # cold start.
     BEDROCK_CHAT_COLD_START_TIMEOUT_S: float = 120.0
+
+    # -------------------------------------------------------------------------
+    # Cohere's own API — used when LLM_BACKEND=cohere (the default since
+    # ADR-0023). Same model as the bedrock path, different host: Command A+
+    # over `POST /v2/chat` with a bearer key, no idle cost and no endpoint to
+    # cycle.
+    #
+    # WIRE SHAPE — [UNVERIFIED], and materially less so than the Bedrock path.
+    # This is Cohere's own published first-party contract rather than a
+    # Marketplace passthrough nobody had exercised, but it has still not been
+    # confirmed by a live call from this codebase. `app/agent/llm_cohere.py`
+    # lists exactly what is assumed; the load-bearing one is that
+    # `response_format: {"type": "json_object"}` is honoured, because every
+    # typed-output guard in orchestrator_validators.py depends on it
+    # (CLAUDE.md hard rule 4).
+    #
+    # The Cohere sentinel wrapping (`<|START_TEXT|>`/`<|END_TEXT|>`) is
+    # stripped on this path exactly as on every other, because it is a
+    # property of the MODEL rather than of the host — see
+    # app/agent/llm_common.clean_model_text.
+    # -------------------------------------------------------------------------
+
+    # Written to Secrets Manager out of band, BEFORE the first terraform
+    # apply: ECS refuses to start a task that references a secret key which
+    # does not exist, and the failure presents as a task that never starts
+    # rather than as an application error (ADR-0023 migration step 5).
+    COHERE_API_KEY: str = ""
+    # Overridable for a proxy or a private deployment. Empty falls back to
+    # the public endpoint inside the adapter, so an operator who blanks it
+    # gets the default rather than a request to "".
+    COHERE_BASE_URL: str = "https://api.cohere.com"
+    COHERE_CHAT_MODEL: str = "command-a-plus-05-2026"
+    # Command A+: 128K input / 64K output. The same two numbers as
+    # BEDROCK_CHAT_MAX_MODEL_LEN / BEDROCK_CHAT_MAX_TOKENS, deliberately not
+    # shared with them — they describe the same model today, but one pair is
+    # free to follow a Marketplace deployment that pins an older build while
+    # the other follows whatever Cohere serves. `cap_output_tokens` reads
+    # these, which is what makes them real controls rather than settings that
+    # only look like ones.
+    COHERE_CHAT_MAX_MODEL_LEN: int = 128_000
+    COHERE_CHAT_MAX_TOKENS: int = 4096
+    # Read timeout for a single generation. There is no cold start to absorb
+    # here — that was a Marketplace-endpoint concern and it does not exist on
+    # this host — so this is sized for a long grounded answer at
+    # COHERE_CHAT_MAX_TOKENS, not for a container coming up.
+    COHERE_CHAT_TIMEOUT_S: float = 120.0
 
     # Anthropic native backend — only used when LLM_BACKEND=anthropic
     ANTHROPIC_API_KEY: str = ""
@@ -970,13 +1035,22 @@ class Settings(BaseSettings):
         resolves the Bedrock endpoint from the region, so there is no URL to
         hand out. This used to return Foundry's ``{endpoint}/openai/v1``;
         after ADR-0022 the only backend with a caller-supplied base URL is
-        vllm.
+        vllm, and that is still true after ADR-0023: ``cohere`` does have a
+        base URL, but it addresses ``/v2/chat`` rather than an
+        OpenAI-compatible surface, so handing it out here would invite a
+        caller to POST the wrong body to it.
         """
         if self.LLM_BACKEND == "bedrock":
             raise RuntimeError(
                 "effective_llm_url is not applicable to LLM_BACKEND=bedrock. "
                 "boto3 resolves the Bedrock endpoint from BEDROCK_REGION; "
                 "there is no base URL to configure."
+            )
+        if self.LLM_BACKEND == "cohere":
+            raise RuntimeError(
+                "effective_llm_url is not applicable to LLM_BACKEND=cohere. "
+                "Cohere's v2 API is not OpenAI-compatible; app/agent/"
+                "llm_cohere.py builds its own URL from COHERE_BASE_URL."
             )
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_URL
@@ -993,8 +1067,13 @@ class Settings(BaseSettings):
 
         For LLM_BACKEND=bedrock this is the Bedrock ``modelId`` — either a
         catalogue model id or, for a Marketplace deployment such as Command
-        A+, the ARN of the SageMaker-managed endpoint it created.
+        A+, the ARN of the SageMaker-managed endpoint it created. For
+        LLM_BACKEND=cohere it is Cohere's own model name, which is the plain
+        one (``command-a-plus-05-2026``) because there is no endpoint
+        indirection on that host.
         """
+        if self.LLM_BACKEND == "cohere":
+            return self.COHERE_CHAT_MODEL
         if self.LLM_BACKEND == "bedrock":
             return self.BEDROCK_CHAT_MODEL_ID
         if self.LLM_BACKEND == "vllm":
@@ -1465,15 +1544,21 @@ class Settings(BaseSettings):
     def effective_max_context_tokens(self) -> int:
         """Return the token budget appropriate for the active LLM_BACKEND.
 
-        Anthropic and Bedrock get generous budgets matching their much larger
-        context windows; the legacy local vLLM path keeps the 22K ceiling
-        sized for an 8K/16K-context deployment. Callers that truncate context
-        should use this property rather than the raw MAX_CONTEXT_TOKENS
-        setting.
+        Anthropic, Bedrock and Cohere get generous budgets matching their
+        much larger context windows; the legacy local vLLM path keeps the 22K
+        ceiling sized for an 8K/16K-context deployment. Callers that truncate
+        context should use this property rather than the raw
+        MAX_CONTEXT_TOKENS setting.
+
+        ``cohere`` and ``bedrock`` share a value because they share a MODEL:
+        both reach Command A+ and its 128K window, and the budget is a
+        property of that window rather than of the host in front of it. The
+        setting keeps its ADR-0022 name rather than being renamed a second
+        time in a week; the number was never Bedrock's.
         """
         if self.LLM_BACKEND == "anthropic":
             return self.MAX_CONTEXT_TOKENS_ANTHROPIC
-        if self.LLM_BACKEND == "bedrock":
+        if self.LLM_BACKEND in ("bedrock", "cohere"):
             return self.MAX_CONTEXT_TOKENS_BEDROCK
         return self.MAX_CONTEXT_TOKENS
 

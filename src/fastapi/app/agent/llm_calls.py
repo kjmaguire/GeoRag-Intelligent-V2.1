@@ -1545,11 +1545,21 @@ async def _call_llm(
     sanitized_query = _sanitize_query(query)
     user_message = _build_user_message(context, sanitized_query)
 
-    if settings.LLM_BACKEND == "bedrock":
-        # Bedrock Converse — its own wire shape, not an OpenAI-compatible
-        # one, so it dispatches here rather than into
-        # `_call_openai_compatible_llm` (ADR-0022). Same seam Anthropic uses.
-        from app.agent.llm_bedrock import call_bedrock_llm  # noqa: PLC0415
+    if settings.LLM_BACKEND in ("cohere", "bedrock"):
+        # Two hosts, one model. Cohere's v2 API and Bedrock Converse each
+        # have their own wire shape — neither is OpenAI-compatible — so both
+        # dispatch here rather than into `_call_openai_compatible_llm`
+        # (ADR-0022, ADR-0023). Same seam Anthropic uses.
+        #
+        # They share this branch because everything ABOVE the transport is
+        # identical: the same prompt, the same CORRECTION splice, the same
+        # return contract. Splitting them would duplicate that splice, and a
+        # correction hint silently missing from one backend is not a failure
+        # anything would report — the answer just comes back uncorrected.
+        if settings.LLM_BACKEND == "cohere":
+            from app.agent.llm_cohere import call_cohere_llm as _call_chat  # noqa: PLC0415
+        else:
+            from app.agent.llm_bedrock import call_bedrock_llm as _call_chat  # noqa: PLC0415
 
         # The multi-turn cache trick the Anthropic path uses does not apply,
         # so CORRECTION is spliced inline exactly as the vLLM path does it
@@ -1560,7 +1570,7 @@ async def _call_llm(
                 f"CORRECTION: Your previous answer had issues: {correction_hint}. "
                 f"Please fix these in your response."
             )
-        return await call_bedrock_llm(
+        return await _call_chat(
             user_message,
             temperature,
             system_prompt=system_prompt,

@@ -1,9 +1,25 @@
 """Z.1 / Appendix C §5 — External-LLM egress profile gate.
 
 This module is the load-bearing pre-check for any LLM call that would
-leave the GeoRAG trust boundary (currently: Anthropic Messages API on
-the ``LLM_BACKEND=anthropic`` fallback path; other third-party providers
-would route through the same gate).
+leave the GeoRAG trust boundary. Today it guards exactly one call site:
+the Anthropic Messages API on the ``LLM_BACKEND=anthropic`` fallback path.
+
+⚠️ SCOPE GAP, 2026-09-15 (ADR-0023). It used to be true that every
+third-party LLM call routed through here, because the only one was the
+Anthropic fallback and the primary backend was in-account (Bedrock, IAM,
+SigV4). ADR-0023 moved the PRIMARY chat path to ``api.cohere.com``, which
+is a third-party provider by the same definition — and
+``app/agent/llm_cohere.py`` does NOT call this gate. So under the current
+default backend, workspace text reaches an external provider on every
+query without the opt-in this module exists to require.
+
+That is recorded rather than quietly fixed because wiring the gate onto
+the default path is a policy decision, not a code one: the gate is
+default-deny, so enabling it there refuses every query from every
+workspace that has not set ``allow_external_llm: true``. Whether Cohere
+counts as inside the contracted boundary for this deployment is the SME's
+call. Until it is made, Appendix C §5 and the security posture table
+overstate what is enforced — see ADR-0023 "Consequences".
 
 The gate reads the active workspace's ``allow_external_llm`` policy
 flag (stored in ``silver.workspace_settings.extra_payload`` as the

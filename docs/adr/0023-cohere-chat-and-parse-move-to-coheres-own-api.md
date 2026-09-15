@@ -256,6 +256,33 @@ will not be in six months.
   against a model that is not the one running. This is the single largest
   quality risk left in the deployment now that the Bedrock wire shapes are no
   longer in question.
+- **The external-LLM egress gate no longer covers the primary chat path.**
+  ⚠️ **Open — needs an SME decision, found while writing the adapter
+  (2026-09-15).** `app/agent/egress_gate.py` is a default-deny check on
+  `silver.workspace_settings.extra_payload.allow_external_llm`, and its own
+  docstring says every third-party LLM call routes through it. That was true
+  while the only such call was the `anthropic` fallback and the primary
+  backend was in-account. It is not true now: `api.cohere.com` is a
+  third-party provider by the same definition, and `llm_cohere.py` does not
+  call the gate, so workspace text reaches an external provider on every
+  query with no opt-in.
+
+  It was left unwired rather than fixed in passing because the gate is
+  default-deny: turning it on for the default backend refuses every query
+  from every workspace that has not explicitly set the flag. Whether Cohere
+  is inside the contracted boundary for this deployment is a policy
+  question, not an implementation one. Two ways to resolve it:
+
+  1. **Cohere is contracted, like Bedrock.** Narrow the gate's stated scope
+     to providers outside the contracted set and say so in Appendix C §5 —
+     no code change, but the doc must stop claiming a check it does not make.
+  2. **Cohere is external, like Anthropic.** Call
+     `assert_external_llm_allowed` from `llm_cohere.py`, and default
+     `allow_external_llm` to true for existing workspaces in the same
+     migration, or every query starts refusing.
+
+  Until one is chosen, **Appendix C §5 and the security-posture table
+  overstate what is enforced.** That is the thing to fix first either way.
 
 ## Verification (this commit)
 

@@ -62,18 +62,74 @@ Azure OpenAI model on the Foundry resource, and unlike everything else in
 this table it was never a Cohere model — so "keep the model, change the
 host" does not apply. `page_vision_client` reports itself unconfigured
 until a Bedrock vision model is chosen. The feature is gated behind
-`IMAGE_VERBALIZATION_ENABLED` and has never run in production (§1.4).
+`IMAGE_VERBALIZATION_ENABLED` and has never run in production (§1.5).
 
-## 1. The LLM tier — Amazon Bedrock
+## 1. The LLM tier — Cohere Command A+, on Cohere's own API
 
-`LLM_BACKEND` selects the backend: **`bedrock`** (default) | `vllm` |
-`anthropic`. `azure` is a **startup error** naming its replacement, not an
-ignored value, and so is any leftover `AZURE_FOUNDRY_*` variable: a
+`LLM_BACKEND` selects the backend: **`cohere`** (default) | `bedrock` |
+`vllm` | `anthropic`. `azure` is a **startup error** naming its replacement,
+not an ignored value, and so is any leftover `AZURE_FOUNDRY_*` variable: a
 deployment that was never repointed carries well-formed settings addressing
 a resource that no longer exists, which would otherwise start cleanly and
 die at the first query.
 
-### 1.1 Bedrock (the default)
+`cohere` and `bedrock` reach the *same model* — Cohere Command A+ — over
+different transports, so they share a context budget
+(`MAX_CONTEXT_TOKENS_BEDROCK`, 100K under a 128K window) and the same
+sentinel-stripping. What differs is the wire shape and the cost shape.
+
+ADR-0023 (2026-09-15) made `cohere` the default one week after ADR-0022 made
+`bedrock` the default. The reason is not preference: Command A+ is an **AWS
+Marketplace** SageMaker package rather than a Bedrock model, its instance
+classes are A100/H100, and a Marketplace endpoint has no idle state — it
+bills for as long as it exists. Nothing was ever deployed, so `bedrock`
+addresses an endpoint that does not exist in this account. It stays
+selectable for an operator who does stand one up.
+
+Bedrock has **not** left the stack. Embeddings (Cohere Embed v4) and
+reranking (Cohere Rerank 3.5) still run there under `EMBEDDING_BACKEND` and
+`RERANKER_BACKEND`, which are separate variables from this one, and that is
+where the AWS credits are spent.
+
+*As built (2026-09-15):* `app/agent/llm_cohere.py` exists with the same
+contract as `llm_bedrock.call_bedrock_llm` and is dispatched from
+`llm_calls._call_llm`. Its wire shape is **[UNVERIFIED]** — written to
+Cohere's documented v2 contract, not yet confirmed by a live call from this
+codebase. `tests/test_cohere_chat_adapter.py` pins the adapter's behaviour
+against a mock transport, which proves the code and the description agree
+and proves nothing about Cohere.
+
+⚠️ **The external-LLM egress gate does not cover this path.**
+`app/agent/egress_gate.py` is a default-deny check that only
+`_call_anthropic_llm` calls. With the primary backend now a third-party API,
+workspace text leaves the trust boundary on every query without the opt-in
+that gate exists to require. Open SME decision — see ADR-0023
+"Consequences".
+
+### 1.1 Cohere's own API (the default)
+
+| Field | Value |
+|---|---|
+| Model | Cohere Command A+ (`COHERE_CHAT_MODEL`, default `command-a-plus-05-2026`) — the plain model name, because there is no endpoint indirection on this host |
+| Wire API | `POST {COHERE_BASE_URL}/v2/chat` with `Authorization: Bearer $COHERE_API_KEY` |
+| Streaming | SSE, `type`-tagged events; text on `content-delta`, usage on `message-end`. Forwarded by FastAPI as the usual `status`/`bind`/`delta`/`citation`/`completed`/`failed` frames |
+| Cost shape | Per token, nothing while idle. No endpoint to create, delete or wait for `InService` |
+
+The shape that differs from Converse and fails silently when reversed:
+`system` is a **message** here (`{"role": "system", ...}`), not a top-level
+parameter. A system prompt delivered as a user turn still returns fluent
+text — just without the grounding rules applied, while the citation guards
+go on enforcing against it. `tests/test_cohere_chat_adapter.py`'s first test
+is that one.
+
+Where the response shape is not recognised at all, the adapter raises
+`CohereResponseShapeError` rather than returning `""`. That is deliberate:
+an empty string is indistinguishable from a model that had nothing to say,
+and that ambiguity is exactly the bug `cohere_parse_client` carried until
+2026-09-15 — an unrecognised body produced a silently blank page that no
+metric could see.
+
+### 1.2 Bedrock (optional)
 
 | Field | Value |
 |---|---|
@@ -112,7 +168,7 @@ the Foundry-era sibling field — but tolerance is not knowledge.
 `ops/validation/bedrock_probe.py` exists to close this, and ADR-0022 makes
 its committed report the gate on trusting any of these adapters.
 
-### 1.2 vLLM (still supported, no longer shipped)
+### 1.3 vLLM (still supported, no longer shipped)
 
 The compose service is gone. `LLM_BACKEND=vllm` remains valid for an
 operator pointing at their own OpenAI-compatible endpoint, and a startup
@@ -120,7 +176,7 @@ validator fails the service when `VLLM_URL` is empty rather than silently
 falling back. `LLM_PRIMARY_MODEL` still defaults to `Qwen/Qwen3-14B-AWQ`,
 which is the historical default and not a model this deployment runs.
 
-### 1.3 Anthropic (optional fallback)
+### 1.4 Anthropic (optional fallback)
 
 `LLM_BACKEND=anthropic` uses the native Anthropic API with a pooled
 client; `REQUIRE_POOLED_ANTHROPIC_CLIENT` defaults true so a missing pool
@@ -142,7 +198,7 @@ nothing reads is a control that looks like it works.
 
 Client: [`app/agent/llm_calls.py`](../../../src/fastapi/app/agent/llm_calls.py).
 
-### 1.4 Vision / figures
+### 1.5 Vision / figures
 
 `VLLM_MODEL` (default `Qwen/Qwen3-14B-AWQ`) is the model name for the
 vLLM backend, not a separate VL deployment. Page-image description runs

@@ -127,18 +127,22 @@ async def _call_llm_for_context(
     decommissioned — a property worth keeping, since the backend has now
     changed twice more (Foundry 2026-07-30, Bedrock 2026-09-08).
 
-    Bedrock is not OpenAI-compatible, so it short-circuits to the Converse
-    adapter instead of building a URL. Everything else keeps the httpx path.
+    Neither Bedrock Converse nor Cohere's v2 API is OpenAI-compatible, so
+    both short-circuit to their own adapter instead of building a URL.
+    Everything else keeps the httpx path.
     """
     from app.config import settings  # noqa: PLC0415
 
-    if settings.LLM_BACKEND == "bedrock":
-        from app.agent.llm_bedrock import call_bedrock_llm  # noqa: PLC0415
+    if settings.LLM_BACKEND in ("cohere", "bedrock"):
+        if settings.LLM_BACKEND == "cohere":
+            from app.agent.llm_cohere import call_cohere_llm as _call_chat  # noqa: PLC0415
+        else:
+            from app.agent.llm_bedrock import call_bedrock_llm as _call_chat  # noqa: PLC0415
 
         # No token_callback: this is a batch cron, nobody is watching a
-        # stream, and a non-streaming Converse call is one round trip
-        # instead of an event loop per passage.
-        return (await call_bedrock_llm(prompt, 0.3)).strip()
+        # stream, and one non-streaming round trip beats an event loop per
+        # passage.
+        return (await _call_chat(prompt, 0.3)).strip()
 
     payload = {
         "model": model,
@@ -166,15 +170,16 @@ def _resolve_llm_target() -> tuple[str, str, dict[str, str]]:
     and pulling it into an ingest module would drag the whole agent
     dependency tree behind it.
 
-    Returns empty strings under LLM_BACKEND=bedrock, where there is no URL
-    to resolve — settings.effective_llm_url raises for that backend by
-    design, and _call_llm_for_context short-circuits before it would use
-    any of these. Resolving eagerly here and discarding the result is the
-    price of keeping the per-passage loop free of a second branch.
+    Returns empty strings under LLM_BACKEND=bedrock and =cohere, where there
+    is no OpenAI-compatible URL to resolve — settings.effective_llm_url
+    raises for both backends by design, and _call_llm_for_context
+    short-circuits before it would use any of these. Resolving eagerly here
+    and discarding the result is the price of keeping the per-passage loop
+    free of a second branch.
     """
     from app.config import settings
 
-    if settings.LLM_BACKEND == "bedrock":
+    if settings.LLM_BACKEND in ("bedrock", "cohere"):
         return "", settings.effective_llm_model, {}
     return settings.effective_llm_url, settings.effective_llm_model, {}
 
