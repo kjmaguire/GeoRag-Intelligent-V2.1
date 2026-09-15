@@ -48,8 +48,35 @@ variable "az_count" {
 # ---------------------------------------------------------------------------
 
 variable "db_instance_class" {
-  type    = string
-  default = "db.m7g.large"
+  description = <<-EOT
+    RDS instance class. Dropped from db.m7g.large to db.t4g.small on
+    2026-09-15 for cost: $0.18/hour to $0.032/hour, about $27/month at the
+    hours the AWS credit buys (see budget.tf). That is the second largest
+    saving available after Fargate Spot.
+
+    WHAT THE SMALLER CLASS COSTS, so the trade is re-litigated on evidence
+    rather than rediscovered:
+
+      * max_connections scales with memory on RDS
+        (LEAST({DBInstanceClassMemory/9531392}, 5000)), so 8 GiB -> ~901 and
+        2 GiB -> ~225. There is NO PgBouncer in this deployment — the ECS
+        service list has no pooler and Laravel connects direct — so that is
+        the real ceiling. Against it, the measured 24-hour peak on the Azure
+        server was 99 connections (MIGRATION-PLAN §"laravel-octane-cc"),
+        leaving ~2.3x headroom instead of ~9x. Fine for a pre-launch
+        platform with one user; the first thing to suspect if connections
+        start being refused under ingestion load.
+      * t4g is BURSTABLE. CPU is credit-limited, and a long ingestion run can
+        exhaust the credits and get throttled. A steady workload that would
+        have been fine on m7g can crawl here.
+
+    If either bites, db.t4g.medium is the middle step: 4 GiB, ~450
+    connections, twice the CPU credit accrual, ~$0.065/hour — still less than
+    half of m7g.large. Go back to db.m7g.large when there are real users and
+    the credit is no longer what funds this.
+  EOT
+  type        = string
+  default     = "db.t4g.small"
 }
 
 variable "db_allocated_storage_gb" {

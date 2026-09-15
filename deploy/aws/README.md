@@ -80,6 +80,11 @@ Two consequences shape the Terraform:
   EFS, logs. That alone exceeds the monthly credit *before a single container
   starts*. The power switch below is what makes the credit sufficient rather
   than a partial subsidy.
+- **`db_instance_class` is `db.t4g.small`**, not `db.m7g.large`: $0.032/hour
+  instead of $0.18. The variable's own documentation records what the smaller
+  class costs -- ~225 max_connections against a measured peak of 99, with no
+  PgBouncer in front, and burstable CPU that a long ingestion run can throttle.
+  `db.t4g.medium` is the middle step if either bites.
 - **One forgotten month at full size burns 5.5 months of credit.**
   `terraform/budget.tf` alerts at 50% and 80% of actual spend and at 100% of
   *forecast*. The forecast one is the useful one: it fires days before the
