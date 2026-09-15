@@ -3,7 +3,7 @@
 # scripts/section6_acceptance.sh
 #
 # Master-plan §6 (PublicGeo + density layer) — v1 acceptance harness.
-# Mirrors scripts/phase_h4_acceptance.sh + scripts/section11_acceptance.sh.
+# Mirrors scripts/phase_h4_acceptance.sh + scripts/section11_v2_acceptance.sh.
 #
 # Pre-requisites:
 #   - Docker compose stack up

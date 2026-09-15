@@ -61,14 +61,18 @@ else
     check "master sweep" fail "missing or not executable"
 fi
 
-# All 4 phase19 verifiers referenced in sweep
+# All remaining phase19 verifiers referenced in sweep.
+#
+# step2 was the Neo4j entity seed. It and its Cypher seed file
+# (database/raw/phase19/20-neo4j-entities.cypher) are both gone — Neo4j
+# left the stack 2026-07-28 — so this is three, not the original four.
 miss=0
-for v in phase19_step1_verify.sh phase19_step2_verify.sh \
+for v in phase19_step1_verify.sh \
          phase19_step3_verify.sh phase19_step4_verify.sh; do
     grep -q "$v" "$SWEEP" || miss=$((miss+1))
 done
 if [ "$miss" -eq 0 ]; then
-    check "Master sweep includes all 4 Phase 19 verifiers" ok
+    check "Master sweep includes all 3 remaining Phase 19 verifiers" ok
 else
     check "sweep coverage" fail "$miss Phase 19 verifiers missing"
 fi

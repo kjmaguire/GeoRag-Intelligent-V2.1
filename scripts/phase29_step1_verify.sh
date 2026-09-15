@@ -2,22 +2,26 @@
 # =============================================================================
 # scripts/phase29_step1_verify.sh
 #
-# Phase 29 Step 1 — populate_neo4j Report.title fix + downhole cache bypass.
+# Phase 29 Step 1 — downhole cache bypass.
 #
-#   1. populate_neo4j.py uses report_id-suffixed unique_title
-#   2. populate_neo4j.py carries R-P19-POPULATE marker
-#   3. orchestrator.py bypasses cache shortcut on categories.downhole=True
-#   4. orchestrator.py carries R-P28-VARIANCE marker
-#   5. populate_neo4j.py runs end-to-end with no constraint violations
-#   6. Cold-run golden ≥ 29 (gq-015 stable at peak; ±1 variance band tolerated)
+#   1. orchestrator.py bypasses cache shortcut on categories.downhole=True
+#   2. orchestrator.py carries R-P28-VARIANCE marker
+#   3. Cold-run golden ≥ 29 (gq-015 stable at peak; ±1 variance band tolerated)
+#
+# The three populate_neo4j.py checks that used to open this file were
+# removed on 2026-09-15. Neo4j left the stack 2026-07-28 and the script
+# they inspected does not exist anywhere in the tree, so all three could
+# only ever report FAIL and took the whole verifier red with them — which
+# is how a real regression in the downhole checks below would have gone
+# unnoticed. The Report.title unique_title fix they guarded is moot: there
+# is no graph to write a Report node into.
 # =============================================================================
 
 set -uo pipefail
 
 PASS=0
-TOTAL=6
+TOTAL=3
 REPO="${REPO:-/home/georag/projects/georag}"
-POP="$REPO/src/fastapi/scripts/populate_neo4j.py"
 ORCH="$REPO/src/fastapi/app/agent/orchestrator.py"
 
 check() {
@@ -32,21 +36,9 @@ check() {
 cat <<'BANNER'
 
 ============================================================
-PHASE 29 STEP 1 — populate_neo4j fix + downhole cache bypass
+PHASE 29 STEP 1 — downhole cache bypass
 ============================================================
 BANNER
-
-if grep -q "unique_title = f\"{r\\['title'\\]} ({r\\['report_id'\\]\\[:8\\]})\"" "$POP"; then
-    check "populate_neo4j.py uses report_id-suffixed unique_title" ok
-else
-    check "unique_title" fail "missing"
-fi
-
-if grep -q 'R-P19-POPULATE' "$POP"; then
-    check "populate_neo4j.py carries R-P19-POPULATE marker" ok
-else
-    check "marker" fail "missing"
-fi
 
 # Accept either the Phase 29 bypass OR the Phase 30 supersession.
 # Phase 30 R-P29-DOWNHOLE-CACHE removed the bypass and wired
@@ -70,15 +62,6 @@ if grep -qE 'R-P28-VARIANCE|R-P29-DOWNHOLE-CACHE' "$ORCH"; then
     check "orchestrator.py carries R-P28-VARIANCE or R-P29-DOWNHOLE-CACHE marker" ok
 else
     check "variance/downhole marker" fail "neither marker present"
-fi
-
-# Run populate_neo4j.py — expect zero exceptions
-out=$(docker exec -e DATABASE_URL="postgresql://georag_app:georag-app-dev-2026@pgbouncer:6432/georag" \
-    georag-fastapi python /app/scripts/populate_neo4j.py 2>&1 | tail -5)
-if echo "$out" | grep -q "Done\."; then
-    check "populate_neo4j.py runs end-to-end ('Done.' emitted)" ok
-else
-    check "populate run" fail "did not emit Done. ($(echo "$out" | head -1))"
 fi
 
 # Cold-run golden ≥ 29
