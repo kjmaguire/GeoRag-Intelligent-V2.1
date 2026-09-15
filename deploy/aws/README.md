@@ -142,10 +142,33 @@ this table names one nothing reads.
 | `REVERB_APP_SECRET` | the three Laravel services | Signs requests to the Pusher events API. The paired `REVERB_APP_KEY` is public and is a tfvar, not a secret. |
 | `APP_KEY_NEXT` | the rotation task only | **Not a go-live key.** It exists only while an `APP_KEY` rotation is in flight; the rotation script writes it, the task reads it, the script removes it. `terraform/rotation.tf` explains why it is a secret rather than a task override, and relies on its absence to make the rotation task unrunnable at any other time. Do not create it now. |
 
-`HATCHET_CLIENT_TOKEN` is the one with an ordering constraint: the engine
-mints it, so the first apply necessarily runs without it. Bring the stack up,
-read the token out of the engine, write it here, and force a new deployment of
-the services that consume it.
+### The one ordering constraint
+
+ECS will not start a task that references a secret key which does not exist —
+it fails before the container does, so the failure shows up as a task that
+never starts rather than an application error. Write every go-live key above
+before the first apply.
+
+`HATCHET_CLIENT_TOKEN` is the awkward one, because the Hatchet engine mints
+it and the engine is not up yet. Write a placeholder for it with the rest, so
+the tasks that reference it can start at all, then replace it:
+
+```bash
+# after the first apply, once the hatchet service is running
+aws ecs execute-command --cluster georag --task <hatchet-task> \
+  --container hatchet --interactive \
+  --command "/hatchet-admin token create --name ecs --tenant-id <tenant>"
+# write the real value into georag/app, then:
+aws ecs update-service --cluster georag --service georag-fastapi --force-new-deployment
+aws ecs update-service --cluster georag --service georag-hatchet-worker --force-new-deployment
+aws ecs update-service --cluster georag --service georag-laravel-octane --force-new-deployment
+aws ecs update-service --cluster georag --service georag-laravel-horizon --force-new-deployment
+aws ecs update-service --cluster georag --service georag-laravel-reverb --force-new-deployment
+```
+
+Until that swap the engine is healthy and every worker and client is not,
+which reads like a Hatchet fault and is not one. `terraform apply` does not
+wait for steady state, so it will report success while this is still true.
 
 ## The reasoning carried over from Azure
 
