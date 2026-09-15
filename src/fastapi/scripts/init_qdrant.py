@@ -81,10 +81,10 @@ QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or ""
 # selectable through BEDROCK_EMBED_DIMENSION. Changing it would have moved the
 # writer and left the bootstrap — and so the collection — at 1024.
 _EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "bedrock").strip().lower()
-if _EMBEDDING_BACKEND == "bedrock":
-    CHUNKS_VECTOR_SIZE = int(os.environ.get("BEDROCK_EMBED_DIMENSION", "1024"))
-else:
-    CHUNKS_VECTOR_SIZE = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))
+DIMENSION_SOURCE = (
+    "BEDROCK_EMBED_DIMENSION" if _EMBEDDING_BACKEND == "bedrock" else "EMBEDDING_DIMENSION"
+)
+CHUNKS_VECTOR_SIZE = int(os.environ.get(DIMENSION_SOURCE, "1024"))
 # georag_reports is the frozen legacy bge-small 384 space (not swapped).
 REPORTS_VECTOR_SIZE = 384
 DISTANCE = "Cosine"
@@ -215,7 +215,8 @@ async def bootstrap() -> None:
     print(f"Connecting to Qdrant at {QDRANT_BASE_URL} …")
     print(
         f"  georag_chunks dense size = {CHUNKS_VECTOR_SIZE} "
-        f"(from EMBEDDING_DIMENSION); georag_reports = {REPORTS_VECTOR_SIZE}"
+        f"(from {DIMENSION_SOURCE}, EMBEDDING_BACKEND={_EMBEDDING_BACKEND}); "
+        f"georag_reports = {REPORTS_VECTOR_SIZE}"
     )
 
     headers = {"Content-Type": "application/json"}

@@ -822,23 +822,33 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install FastAPI dependencies
-        working-directory: src/fastapi
-        run: uv sync --extra dev
-
       # The concrete check for the second live incident: init_qdrant.py IS
       # the bootstrap script, but nothing in this deployment's runtime path
       # ever calls it automatically — provisioning has always been a manual
       # step. Running it here against a fresh service Qdrant proves it still
       # actually creates georag_chunks/georag_reports at the right
       # dimension; its own internal verification exits non-zero on failure.
+      #
+      # `--no-project --with httpx` rather than `uv sync --extra dev`.
+      # init_qdrant.py imports stdlib and httpx, nothing else — no app
+      # modules — so syncing the project pulled torch, the full nvidia CUDA
+      # stack, polars and GDAL to run a script that speaks HTTP to Qdrant.
+      # On 2026-09-15 that install was still downloading nvidia-cublas when
+      # this job's 8-minute timeout killed it, and the gate never ran at all.
+      # A dependency tree measured in gigabytes is not a prerequisite for
+      # this check; it was just the nearest way to get an interpreter.
       - name: Bootstrap and verify Qdrant collections
         working-directory: src/fastapi
-        run: uv run python scripts/init_qdrant.py
+        run: uv run --no-project --with httpx python scripts/init_qdrant.py
         env:
           QDRANT_HOST: localhost
           QDRANT_PORT: "6333"
-          EMBEDDING_DIMENSION: "1024"
+          # Mirror production, which runs EMBEDDING_BACKEND=bedrock. The
+          # script picks the dimension variable by backend, so an
+          # EMBEDDING_DIMENSION set without a backend — which is what this
+          # job used to do — is read by nobody.
+          EMBEDDING_BACKEND: bedrock
+          BEDROCK_EMBED_DIMENSION: "1024"
 
   # ─── E2E money-path smoke (BLOCKING since 2026-08-21) ─────────────────
   # 2026-08-15 testing audit: the money path (upload -> parse -> OCR/native
