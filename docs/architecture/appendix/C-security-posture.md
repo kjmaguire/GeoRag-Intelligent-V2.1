@@ -65,9 +65,28 @@ kestra ←── HMAC-signed inbound webhooks (EXTERNAL_NOTIFICATION_HMAC_SECRET
 
 ## 5. External LLM data egress
 
+**What this gate covers, stated exactly, because it is narrower than its
+name.** `allow_external_llm` governs providers **outside the contracted
+set**, not every host outside the VPC. The contracted set is AWS (Bedrock)
+and **Cohere's own API** — decided by Kyle on 2026-09-15 when ADR-0023 moved
+the primary chat path to `api.cohere.com`, on the grounds that Cohere is
+already the model vendor for all four capabilities under a commercial
+agreement, and reaching it directly rather than through AWS's resale of it
+does not change who processes the data. Anthropic is a different vendor
+under a different agreement, and is the one call site that checks.
+
+So since 2026-09-15 workspace text and page images **do leave AWS on the
+normal path**, to Cohere, with no per-workspace opt-in. That is a deliberate
+position and it rests on one assumption: no client contract currently
+requires Canadian or in-cloud data residency. **If that changes, Cohere
+leaves the contracted set**, and this gate is the mechanism — see
+`egress_gate.py`'s SCOPE section for what wiring it up would take, including
+the migration that has to accompany it.
+
 | Risk | State | Mitigation | Next action |
 |---|---|---|---|
 | Workspace data sent to Anthropic when `LLM_BACKEND=anthropic` | Live | Per-workspace `silver.workspace_settings.extra_payload.allow_external_llm: bool` checked at the Anthropic call site (default-deny; missing flag = refuse). Implementation: [`src/fastapi/app/agent/egress_gate.py`](../../../src/fastapi/app/agent/egress_gate.py) raises `ExternalLlmEgressBlocked` (mapped to `GuardErrorCode.EGRESS_BLOCKED`); refusal surfaced via [`lang/en/guard_errors.php`](../../../lang/en/guard_errors.php) `EGRESS_BLOCKED` template. Test pin: `src/fastapi/tests/test_anthropic_egress_gate.py`. | Add a Settings-page toggle that flips `allow_external_llm` per workspace (admin-only); document the env-level `LLM_BACKEND` profile gate at deployment time |
+| Workspace text and page images sent to Cohere on the DEFAULT path | Live, **ungated by design** | Contracted provider (ADR-0023); no per-workspace opt-in. One API key, TLS, no residency guarantee. `COHERE_PARSE_REJECTED` / `COHERE_PARSE_UNRECOGNISED_RESPONSE` are the only observability — no AWS metric can see a call that never went to AWS | Revisit the moment a client contract asks for data residency; `egress_gate.py` is the mechanism and ADR-0023 the record |
 | Anthropic prompt caching includes evidence text | Live | `ANTHROPIC_ENABLE_PROMPT_CACHING=true` is a perf knob; the cached prompt is the same evidence the user supplied | Surface this in the Settings page so operators see what gets cached |
 | Cross-workspace prompt cache reuse | Partial | Prompt cache key includes workspace_id via prompt prefix | Add explicit cache-key salt = `workspace_id` |
 

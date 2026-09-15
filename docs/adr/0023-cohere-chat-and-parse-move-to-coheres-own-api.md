@@ -256,33 +256,36 @@ will not be in six months.
   against a model that is not the one running. This is the single largest
   quality risk left in the deployment now that the Bedrock wire shapes are no
   longer in question.
-- **The external-LLM egress gate no longer covers the primary chat path.**
-  ⚠️ **Open — needs an SME decision, found while writing the adapter
-  (2026-09-15).** `app/agent/egress_gate.py` is a default-deny check on
+- **The external-LLM egress gate does not cover the primary chat path, and
+  that is now a stated position rather than a gap.** `egress_gate.py` is a
+  default-deny check on
   `silver.workspace_settings.extra_payload.allow_external_llm`, and its own
-  docstring says every third-party LLM call routes through it. That was true
-  while the only such call was the `anthropic` fallback and the primary
-  backend was in-account. It is not true now: `api.cohere.com` is a
-  third-party provider by the same definition, and `llm_cohere.py` does not
-  call the gate, so workspace text reaches an external provider on every
-  query with no opt-in.
+  docstring used to claim every third-party LLM call routed through it. That
+  was true while the only such call was the `anthropic` fallback and the
+  primary backend was in-account; moving chat to `api.cohere.com` made it
+  false, because `llm_cohere.py` does not call the gate.
 
-  It was left unwired rather than fixed in passing because the gate is
-  default-deny: turning it on for the default backend refuses every query
-  from every workspace that has not explicitly set the flag. Whether Cohere
-  is inside the contracted boundary for this deployment is a policy
-  question, not an implementation one. Two ways to resolve it:
+  **Resolved 2026-09-15 by Kyle (SME): Cohere is inside the contracted set,
+  like Bedrock.** The flag governs providers outside the contracted set, not
+  every host outside the VPC. Cohere is already the model vendor for all
+  four capabilities under a commercial agreement, so reaching it directly
+  rather than through AWS's resale of it does not change who processes the
+  data. Anthropic is a different vendor under a different agreement, and
+  remains the one call site that checks. `egress_gate.py`'s SCOPE section
+  and Appendix C §5 now say this, where they previously implied a broader
+  check than exists.
 
-  1. **Cohere is contracted, like Bedrock.** Narrow the gate's stated scope
-     to providers outside the contracted set and say so in Appendix C §5 —
-     no code change, but the doc must stop claiming a check it does not make.
-  2. **Cohere is external, like Anthropic.** Call
-     `assert_external_llm_allowed` from `llm_cohere.py`, and default
-     `allow_external_llm` to true for existing workspaces in the same
-     migration, or every query starts refusing.
+  The alternative — call the gate from `llm_cohere.py` — was considered and
+  not taken. It would have required defaulting `allow_external_llm` to true
+  for every existing workspace in the same migration, because the gate is
+  default-deny and the primary backend refusing every query is an outage
+  rather than a posture. A flag that must be true everywhere to keep the
+  product working stops carrying information.
 
-  Until one is chosen, **Appendix C §5 and the security-posture table
-  overstate what is enforced.** That is the thing to fix first either way.
+  **This rests on one assumption and it is worth stating on its own: no
+  client contract currently requires Canadian or in-cloud data residency.**
+  The moment one does, Cohere leaves the contracted set and the gate is the
+  mechanism — for Parse as well as chat, since Parse sends page images.
 
 ## Verification (this commit)
 

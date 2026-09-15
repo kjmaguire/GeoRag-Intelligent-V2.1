@@ -99,12 +99,15 @@ codebase. `tests/test_cohere_chat_adapter.py` pins the adapter's behaviour
 against a mock transport, which proves the code and the description agree
 and proves nothing about Cohere.
 
-⚠️ **The external-LLM egress gate does not cover this path.**
+**Workspace text leaves AWS on this path, ungated, deliberately.**
 `app/agent/egress_gate.py` is a default-deny check that only
-`_call_anthropic_llm` calls. With the primary backend now a third-party API,
-workspace text leaves the trust boundary on every query without the opt-in
-that gate exists to require. Open SME decision — see ADR-0023
-"Consequences".
+`_call_anthropic_llm` calls, because the flag governs providers outside the
+**contracted set** rather than every host outside the VPC — and Kyle placed
+Cohere inside it on 2026-09-15 (ADR-0023), on the grounds that it is already
+the model vendor under a commercial agreement and reaching it directly
+rather than through AWS's resale does not change who processes the data.
+That rests on no client contract requiring Canadian or in-cloud residency;
+if one ever does, the gate is the mechanism, for Parse as well as chat.
 
 ### 1.1 Cohere's own API (the default)
 
