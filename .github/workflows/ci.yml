@@ -688,6 +688,25 @@ jobs:
       - name: Check for committed credentials
         run: php scripts/check-no-committed-secrets.php
 
+      # Third cheap disk read in the same job. ENABLE ROW LEVEL SECURITY does
+      # not apply to the table's OWNER — only FORCE does — and production
+      # migrates and applies database/raw/ as `georag`, which owns every table
+      # it creates. WorkspaceRlsCoverageTest already asserts zero
+      # ENABLE-without-FORCE, but only against the test cluster, which
+      # RefreshDatabase builds from database/migrations/ alone; no table that
+      # database/raw/ creates is visible to it. This reads both trees off disk.
+      #
+      # The 48 baselined entries are not open gaps — they are closed by the
+      # 2026_08_24_010000 catalog sweep, or live in raw files that
+      # database/raw/manifest.json never applies. The baseline exists because
+      # that sweep is a one-time migration: a NEW file in the old style would
+      # be closed by nothing.
+      - name: RLS force parity
+        run: php scripts/check-rls-force-parity.php
+
+      - name: Discrimination tests for that gate
+        run: bash scripts/tests/rls_force_parity_test.sh
+
   schema-and-qdrant-drift:
     name: Schema/Qdrant drift smoke gate
     runs-on: ubuntu-latest

@@ -1,0 +1,85 @@
+# Tables a DDL file switches RLS on for without forcing it in the same file.
+#
+# READ THIS BEFORE TREATING IT AS A TO-DO LIST. These are NOT open gaps.
+# Every entry is closed at runtime by one of exactly two things:
+#
+#   MIGRATIONS (33 entries, all dated before 2026-08-24)
+#     Closed by 2026_08_24_010000_force_row_level_security_on_all_rls_enabled
+#     _tables.php — a catalog-driven sweep that reads pg_class and forces
+#     whatever the cluster has ENABLE-only at that moment. It runs after all
+#     of them in the migration chain, and production migrates as `georag`,
+#     which owns every table it creates, so the sweep's ownership filter
+#     skips nothing there.
+#
+#   database/raw/ NOT IN THE MANIFEST (15 entries)
+#     `db:apply-raw` works from the explicit five-file list in
+#     database/raw/manifest.json. Nothing else in that tree is ever applied,
+#     so these files create no tables and force nothing because there is
+#     nothing to force. Verified 2026-09-15: every table the five manifest
+#     files enable RLS on is also forced by the same file, which is why none
+#     of them appears below.
+#
+# SO WHY KEEP THE FILE. Because that sweep is a ONE-TIME migration. It has
+# already run everywhere it is going to run, and it will not run again. A new
+# migration written in the old style would be closed by nothing at all, and
+# the runtime test that would otherwise catch it
+# (WorkspaceRlsCoverageTest::test_every_rls_enabled_table_is_forced) cannot
+# see the database/raw/ half, because RefreshDatabase never applies it.
+#
+# This list is the line between "covered by the sweep" and "written after
+# it". Anything not on it fails the build. An entry that no longer has the
+# gap also fails, because a closed exemption left in place is how the next
+# real one hides behind it.
+#
+# Format: <repo-relative path>::<table token, lowercased>
+# A token like `{$qualified}` or `silver.%I` is an interpolated name; it
+# matches when the same loop writes both statements.
+
+database/migrations/2026_05_13_090000_create_silver_saved_map_views.php::silver.saved_map_views
+database/migrations/2026_05_13_100000_create_targeting_schema.php::targeting.{$tbl}
+database/migrations/2026_05_13_120000_create_silver_hypotheses.php::silver.hypotheses
+database/migrations/2026_05_13_120000_create_silver_hypotheses.php::silver.hypothesis_evidence_links
+database/migrations/2026_05_13_130000_create_decision_intelligence_schema.php::silver.decision_records
+database/migrations/2026_05_13_130000_create_decision_intelligence_schema.php::silver.{$tbl}
+database/migrations/2026_05_13_150000_create_source_trust_schema.php::silver.source_trust_features
+database/migrations/2026_05_13_150000_create_source_trust_schema.php::silver.source_trust_scores
+database/migrations/2026_05_19_180100_enable_rls_on_uncovered_workspace_tables.php::audit.query_audit_log
+database/migrations/2026_05_19_180100_enable_rls_on_uncovered_workspace_tables.php::silver.collab_comments
+database/migrations/2026_05_19_180100_enable_rls_on_uncovered_workspace_tables.php::silver.qp_credentials
+database/migrations/2026_05_19_180100_enable_rls_on_uncovered_workspace_tables.php::{$tbl}
+database/migrations/2026_05_20_010000_close_deferred_rls_gaps.php::silver.geological_ontology_synonyms
+database/migrations/2026_05_20_010000_close_deferred_rls_gaps.php::silver.geological_ontology_terms
+database/migrations/2026_05_20_010000_close_deferred_rls_gaps.php::silver.target_rationales
+database/migrations/2026_05_20_010000_close_deferred_rls_gaps.php::silver.workspaces
+database/migrations/2026_05_20_050000_create_workspace_cost_quotas.php::usage.usage_aggregates_daily
+database/migrations/2026_05_20_050000_create_workspace_cost_quotas.php::usage.usage_events
+database/migrations/2026_05_20_050000_create_workspace_cost_quotas.php::usage.workspace_cost_ceilings
+database/migrations/2026_05_20_060800_enable_rls_on_drillhole_tables.php::{$qualified}
+database/migrations/2026_05_25_170825_enable_rls_on_bronze_tenancy_tables.php::bronze.ingest_manifest
+database/migrations/2026_05_25_170825_enable_rls_on_bronze_tenancy_tables.php::bronze.provenance
+database/migrations/2026_05_25_170825_enable_rls_on_bronze_tenancy_tables.php::bronze.source_files
+database/migrations/2026_05_25_173814_enable_rls_on_post_phase0_workspace_tables.php::{$qualified}
+database/migrations/2026_05_25_175214_enable_rls_on_phase0_workspace_tables_reconciliation.php::{$qualified}
+database/migrations/2026_05_25_180924_replace_broken_guc_rls_policies_with_canonical.php::silver.{$table}
+database/migrations/2026_05_25_182857_replace_broken_guc_rls_policies_missed_tables.php::silver.{$tbl}
+database/migrations/2026_05_25_184630_enable_rls_on_provisioned_silver_workspace_tables.php::silver.{$tbl}
+database/migrations/2026_05_29_190000_replace_broken_chr0_rls_policies.php::silver.target_rationales
+database/migrations/2026_05_29_190000_replace_broken_chr0_rls_policies.php::silver.workspaces
+database/migrations/2026_05_29_200000_replace_broken_guc_rls_policies_remaining_silver_tables.php::silver.{$tbl}
+database/migrations/2026_05_29_201500_replace_broken_guc_rls_policy_gold_repair_shadow_daily.php::gold.repair_shadow_daily
+database/migrations/2026_08_17_060000_enable_rls_on_target_backtests_and_workspace_roles.php::{$qualified}
+database/raw/_archive/phase0-109-section17-3-assays-schema.sql::silver.assay_samples
+database/raw/_archive/phase0-109-section17-3-assays-schema.sql::silver.assays
+database/raw/_archive/phase5-10-drillhole-intervals-visual.sql::gold.drillhole_intervals_visual
+database/raw/_archive/phase5-20-cross-section-panels.sql::gold.cross_section_panels
+database/raw/_archive/phase5-20-cross-section-panels.sql::silver.section_lines
+database/raw/_archive/phase5-30-structure-measurements-visual.sql::gold.structure_measurements_visual
+database/raw/_archive/phase5-30-structure-measurements-visual.sql::silver.structure_measurements
+database/raw/phase0/107-section19-3-interpretation-schema.sql::interpretation.interpretation_comments
+database/raw/phase0/107-section19-3-interpretation-schema.sql::interpretation.interpretation_notes
+database/raw/phase0/107-section19-3-interpretation-schema.sql::interpretation.interpretation_section_lines
+database/raw/phase0/107-section19-3-interpretation-schema.sql::interpretation.interpretation_target_zones
+database/raw/phase0/108-section4-tool-gateway-schema.sql::workspace.agent_permissions
+database/raw/phase0/108-section4-tool-gateway-schema.sql::workspace.approval_requirements
+database/raw/phase0/108-section4-tool-gateway-schema.sql::workspace.tool_invocations
+database/raw/phase0/110-section7-4-claim-ledger.sql::silver.claim_ledger

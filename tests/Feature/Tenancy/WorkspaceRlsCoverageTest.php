@@ -25,6 +25,15 @@ use Tests\TestCase;
  *                             carry no workspace_id and are user-scoped.
  *   - laravel-managed       — sessions, password_resets, etc.
  *
+ * One table in that `public` exclusion is load-bearing for tenancy rather
+ * than incidental to it: `project_user`, the pivot hasProjectAccess(),
+ * isProjectOwner() and BindWorkspaceRlsContext all resolve through. It is
+ * covered by the same rationale — no workspace_id, already scoped to one
+ * user by the belongsToMany — but it reads like a hole and has been written
+ * up as one more than once. ProjectUserPivotRlsExemptionTest holds the
+ * argument, including why the obvious policy would be an outage rather than
+ * a fix, and pins the facts it rests on.
+ *
  * Excluded tables fall into three categories:
  *   1. Self-referential (silver.workspaces — tenant policy would block
  *      the membership lookup it depends on).
