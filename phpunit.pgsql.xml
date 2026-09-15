@@ -97,6 +97,11 @@
                  (and its regression, an empty items[] for the rightful owner)
                  is only observable under real Postgres. -->
             <file>tests/Feature/Api/V1/PublicApiControllerTargetsTest.php</file>
+            <!-- 2026-09-15: PublicApiController::webhooks() queried four
+                 columns workflow.flow_registry never had (42703 on every
+                 call) and had no admin gate. The table is provisioned by a
+                 pgsql-only migration, so the fix is only observable here. -->
+            <file>tests/Feature/Api/V1/PublicApiControllerWebhooksTest.php</file>
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>

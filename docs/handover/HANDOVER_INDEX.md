@@ -172,7 +172,7 @@ Items flagged by code inspection or by drift between code and canonical spec. No
 - **Per-flow JWT rotation cadence** vs `flow_jwt_key_reaper` expiry window.
 - **`HATCHET_CLIENT_TOKEN`** first-time provisioning path in cold-start runbook.
 - **`EXTERNAL_NOTIFICATION_HMAC_SECRET`** distribution + revocation process.
-- **Webhook subscription CRUD** — `/api/v1/webhooks` advertises registry; subscribe/unsubscribe surface in Kestra; endpoints not enumerated.
+- **Webhook subscription CRUD** — `/api/v1/webhooks` lists the registry (admin only) and nothing more. The Kestra surface this used to point at was removed 2026-07-28; adding a flow is `INSERT INTO workflow.flow_registry`, not an API call.
 - **Auth methods beyond Sanctum** — architecture HTML may describe OIDC/SSO. Confirm.
 
 ### 5.4 Tenancy + multi-DB plumbing
