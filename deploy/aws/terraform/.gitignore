@@ -26,6 +26,10 @@
 *.tfvars
 *.tfvars.json
 
+# Backend partial config. The bucket name is not itself a secret, but this file
+# sits exactly where someone would paste something that is.
+backend.hcl
+
 # Saved plans. A plan file embeds the same values state does.
 *.tfplan
 plan.out
@@ -40,4 +44,14 @@ crash.*.log
 
 # Templates are meant to be shared — they carry key names, never values.
 !*.tfvars.example
+!backend.hcl.example
+
+# The dependency lock file SHOULD be committed — it pins provider versions and
+# their checksums so every apply resolves identically. It is not here yet
+# because a lock generated from a single-platform mirror records one hash, and
+# `init` then fails for anyone on a different OS/arch. Generate a real one on
+# the first init and commit it, covering every platform the team runs:
+#
+#   terraform providers lock \
+#     -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64
 !.terraform.lock.hcl

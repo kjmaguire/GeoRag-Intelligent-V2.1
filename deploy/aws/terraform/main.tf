@@ -16,7 +16,7 @@
 # fails over into it. Read that before sizing anything up.
 
 terraform {
-  required_version = ">= 1.9"
+  required_version = ">= 1.10" # backend.tf uses use_lockfile (S3 native locking)
   required_providers {
     aws = {
       source  = "hashicorp/aws"

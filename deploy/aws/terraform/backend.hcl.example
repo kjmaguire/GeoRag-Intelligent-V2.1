@@ -1,0 +1,11 @@
+# Copy to backend.hcl and fill in, then:
+#   terraform init -backend-config=backend.hcl
+#
+# Create the bucket first (it cannot be managed by the state it holds):
+#   bash deploy/aws/terraform/bootstrap-state.sh <bucket> <region>
+#
+# S3 bucket names are globally unique. Something like georag-tfstate-<account-id>
+# avoids collisions without encoding anything sensitive.
+
+bucket = "georag-tfstate-CHANGEME"
+region = "us-east-1"

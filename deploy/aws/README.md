@@ -33,6 +33,40 @@ Note that `scripts/operator/preflight.sh` is a **different** script and does
 not gate this deployment: it predates ADR-0022 and checks SSH hosts and SOPS
 for the compose model, which Fargate does not use.
 
+## Before the first apply: remote state
+
+Until 2026-09-15 this tree had **no backend block**, so state was a local file
+next to whoever ran `terraform apply`. For the one record of what exists in the
+account, that is the failure the rest of this tree was written to avoid: lose
+the machine and the resources keep running with nothing able to manage them —
+the next apply does not adopt them, it tries to *create* them and collides on
+names already taken, and the way out is importing every resource by hand. It
+also means no locking, and an apply from any ephemeral box (a CI runner, a
+cloud dev environment) discards the state when the box is reclaimed.
+
+Create the bucket once per account, then init against it:
+
+```bash
+bash deploy/aws/terraform/bootstrap-state.sh georag-tfstate-<account-id> <region>
+
+cd deploy/aws/terraform
+cp backend.hcl.example backend.hcl        # fill in the bucket
+terraform init -backend-config=backend.hcl
+```
+
+The bucket is created by a script rather than by Terraform on purpose: it
+cannot be managed by the state it holds. The script is idempotent, so re-running
+it also serves as a check that versioning, encryption, the public-access block
+and the TLS-only policy are still in place. Versioning is the one to care about
+— state is overwritten on every apply.
+
+Locking needs no DynamoDB table: `backend.tf` sets `use_lockfile`, so the lock
+is a conditional write in the same bucket. That needs Terraform >= 1.10, which
+is why `required_version` says so.
+
+`backend.hcl` is gitignored, along with `*.tfstate` and `*.tfvars`. Nothing in
+`backend.hcl` is secret, but it sits where something secret would get pasted.
+
 ## Layout
 
 | Path | What it is |

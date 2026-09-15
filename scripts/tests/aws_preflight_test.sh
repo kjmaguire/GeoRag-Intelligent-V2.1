@@ -49,6 +49,18 @@ locals {
 }
 TF
 
+  cat >"$d/deploy/aws/terraform/backend.tf" <<'TF'
+terraform {
+  backend "s3" {
+    key          = "georag/production/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+TF
+  printf 'bucket = "georag-tfstate-fixture"\nregion = "us-east-1"\n' \
+    >"$d/deploy/aws/terraform/backend.hcl"
+
   cat >"$d/deploy/aws/README.md" <<'MD'
 | Key | Read by | What it is |
 | --- | --- | --- |
@@ -90,6 +102,7 @@ if grep -qE '^✓ A-01' <<<"$OUT"; then ok "A-01 passes when TF_VAR_ supplies th
 if grep -qE '^✓ A-03' <<<"$OUT"; then ok "A-03 passes with GEORAG_ENV=production"; else bad "A-03 should pass"; fi
 if grep -qE '^✓ A-05' <<<"$OUT"; then ok "A-05 passes with nothing sensitive tracked"; else bad "A-05 should pass"; fi
 if grep -qE '^✓ A-11' <<<"$OUT"; then ok "A-11 passes with a probe report present"; else bad "A-11 should pass"; fi
+if grep -qE '^✓ A-13' <<<"$OUT"; then ok "A-13 passes with an S3 backend and backend.hcl"; else bad "A-13 should pass"; fi
 if ! grep -qE '^✗' <<<"$OUT"; then ok "no failures on a clean fixture"; else bad "clean fixture produced: $(grep '^✗' <<<"$OUT" | tr '\n' ' ')"; fi
 rm -rf "$D"
 
@@ -188,6 +201,50 @@ if grep -qE '^⚠ A-10' <<<"$OUT" && grep -q '2 keys expected' <<<"$OUT"; then
   ok "counts 2 go-live keys from a 3-row table, excluding APP_KEY_NEXT"
 else
   bad "expected A-10 unverified with 2 keys; got: $(grep -A1 'A-10' <<<"$OUT" | tr '\n' ' ')"
+fi
+rm -rf "$D"
+
+# ---------------------------------------------------------------------------
+case_ "A-13 — no backend block, so state would be local"
+# Live failure: state lands next to whoever ran apply. Lose the machine and the
+# resources keep running with nothing able to manage them -- the next apply
+# collides on names already taken. This repository shipped with no backend
+# block at all until 2026-09-15.
+D=$(make_fixture)
+rm -f "$D/deploy/aws/terraform/backend.tf" "$D/deploy/aws/terraform/backend.hcl"
+OUT=$(run_gate "$D" | strip_ansi)
+if grep -qE '^✗ A-13' <<<"$OUT" && grep -q 'LOCAL' <<<"$OUT"; then
+  ok "rejects a tree with no backend block"
+else
+  bad "should have failed A-13"
+fi
+rm -rf "$D"
+
+# ---------------------------------------------------------------------------
+case_ "A-13 — backend declared but partial config not supplied"
+# Live failure: `terraform init` without -backend-config prompts, or in a
+# non-interactive run fails. Declaring the backend is not the same as wiring it.
+D=$(make_fixture)
+rm -f "$D/deploy/aws/terraform/backend.hcl"
+OUT=$(run_gate "$D" | strip_ansi)
+if grep -qE '^✗ A-13' <<<"$OUT" && grep -q 'backend.hcl' <<<"$OUT"; then
+  ok "rejects an S3 backend with no backend.hcl"
+else
+  bad "should have failed A-13 naming backend.hcl"
+fi
+rm -rf "$D"
+
+# ---------------------------------------------------------------------------
+case_ "A-13b — a local .tfstate left in the working directory"
+# Live failure: an apply already ran without the backend, so that file is the
+# only record of those resources and the remote backend does not know them.
+D=$(make_fixture)
+echo '{"version":4}' >"$D/deploy/aws/terraform/terraform.tfstate"
+OUT=$(run_gate "$D" | strip_ansi)
+if grep -qE '^✗ A-13b' <<<"$OUT" && grep -q 'migrate-state' <<<"$OUT"; then
+  ok "rejects a stray local state file, and names the migration"
+else
+  bad "should have failed A-13b"
 fi
 rm -rf "$D"
 

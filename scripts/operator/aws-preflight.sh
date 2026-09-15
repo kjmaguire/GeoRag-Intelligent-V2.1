@@ -20,6 +20,7 @@
 #   A-09  endpoint config misnamed      — works on day one, Sev 1 next morning
 #   A-10  a missing secret key          — the task never starts; not an app error
 #   A-11  no probe report               — every Bedrock wire shape is assumed
+#   A-13  state kept locally            — lose the file, orphan every resource
 #
 # Checks that need AWS report `warn`, not `fail`, when the CLI or credentials
 # are absent: an unanswerable question is not a passed one. Run this from a
@@ -176,6 +177,34 @@ if [ -z "$tracked" ]; then
 else
   check "A-05" "no Terraform state/tfvars/plan tracked by git" fail \
     "TRACKED: ${tracked//$'\n'/, } — these carry plaintext secrets; git rm --cached and rotate"
+fi
+
+# ---------------------------------------------------------------------------
+# A-13 — Terraform state is remote, not a local file
+#
+# With no backend block, state lands next to whoever ran apply. Lose that
+# machine and the resources keep running with nothing able to manage them: the
+# next apply does not adopt them, it tries to create them and collides on names
+# already taken. Applying from an ephemeral box discards the state outright.
+# ---------------------------------------------------------------------------
+if grep -qE '^\s*backend\s+"s3"' "$TF_DIR"/*.tf 2>/dev/null; then
+  if [ -f "$TF_DIR/backend.hcl" ] || [ -n "${TF_BACKEND_CONFIG:-}" ]; then
+    check "A-13" "Terraform state is remote (S3 backend configured)" ok
+  else
+    check "A-13" "Terraform state is remote (S3 backend configured)" fail \
+      "backend.tf declares S3 but ${TF_DIR}/backend.hcl is absent — partial config needs it: cp backend.hcl.example backend.hcl, then terraform init -backend-config=backend.hcl"
+  fi
+else
+  check "A-13" "Terraform state is remote (S3 backend configured)" fail \
+    "no backend block — state would be LOCAL; losing it orphans every resource"
+fi
+
+# Local state left lying around means an apply already ran without the backend.
+if ls "$TF_DIR"/*.tfstate >/dev/null 2>&1; then
+  check "A-13b" "no local .tfstate in the working directory" fail \
+    "a local state file exists — migrate it: terraform init -migrate-state -backend-config=backend.hcl"
+else
+  check "A-13b" "no local .tfstate in the working directory" ok
 fi
 
 # ---------------------------------------------------------------------------
