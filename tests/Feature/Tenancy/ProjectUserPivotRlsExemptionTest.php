@@ -79,6 +79,15 @@ final class ProjectUserPivotRlsExemptionTest extends TestCase
      */
     public function test_the_pivot_has_no_workspace_id_to_write_a_policy_against(): void
     {
+        // This asks a question about the schema the migrations build, so it
+        // needs a migrated database. The file is registered in
+        // phpunit.pgsql.xml's read-only suite, which runs after the
+        // RefreshDatabase group has populated the cluster; under the SQLite
+        // fast suite there is no schema to inspect at all.
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('Needs the migrated Postgres schema.');
+        }
+
         $this->assertTrue(
             Schema::hasTable('project_user'),
             'The pivot is gone. AppServiceProvider refuses to boot without it, '
