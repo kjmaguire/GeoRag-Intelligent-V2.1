@@ -278,6 +278,20 @@ worker — the pattern that OOM-killed the container on 2026-06-24 with the
   Marketplace in the target region**, which could not be verified from the
   session that wrote this. If they are not, the fallback is the declined hybrid:
   chat and parse on `api.cohere.com`, embeddings and reranking left on Bedrock.
+
+  *Resolved 2026-09-15:* Kyle confirmed both models are present in Bedrock
+  Marketplace and deployed both from the Bedrock console, so the fallback is
+  not needed and option D stands. Confirmed as **Bedrock** Marketplace, not an
+  AWS Marketplace SageMaker model package — the distinction decides the whole
+  adapter layer, because a Bedrock Marketplace deployment is invoked through
+  `bedrock-runtime` Converse with the endpoint ARN as `modelId` (which is what
+  `config.py::effective_llm_model` and `llm_bedrock.py` do), while a SageMaker
+  model package would need `sagemaker-runtime.invoke_endpoint` and a different
+  request and response shape — that is option C, and a rewrite.
+
+  This settles **availability only**. It says nothing about the wire shapes,
+  which remain unverified on all four models: see Verification below, and run
+  `ops/validation/bedrock_probe.py`.
 - Vendor lock-in moves rather than reduces: Foundry-shaped coupling becomes
   Bedrock-shaped coupling, which is the thing option A would have avoided.
 

@@ -113,8 +113,23 @@ unset rather than shipping a bundle with `key: undefined`.
 
 **Confirm in-region that Cohere Command A+ and Parse 5 are subscribable in
 Bedrock Marketplace, and that Embed v4 and Rerank 3.5 are enabled
-serverless.** The entire model tier rests on this and it could not be
-verified from the session that wrote it:
+serverless.** The entire model tier rests on this.
+
+> **2026-09-15:** Kyle confirmed Command A+ and Parse 5 are in Bedrock
+> Marketplace and deployed both from the Bedrock console. That is the right
+> half of a distinction worth stating once, because the two look alike and
+> only one works with this code: a **Bedrock** Marketplace deployment is
+> invoked through `bedrock-runtime` Converse with the endpoint ARN as
+> `modelId`, which is what `llm_bedrock.py` does. An **AWS Marketplace**
+> SageMaker model package is a different product — `sagemaker-runtime.
+> invoke_endpoint`, different request and response shape, ADR-0022 option C,
+> a rewrite. Chat and OCR would fail at the first call, not at deploy.
+>
+> Availability is therefore settled. The wire shapes are **not** — that is
+> the probe below, and it is still the largest open risk in this deployment.
+
+The serverless half is still worth checking, since Embed v4 and Rerank 3.5
+come from the catalogue rather than from an endpoint you deployed:
 
 ```bash
 aws bedrock list-foundation-models --region "$BEDROCK_REGION" \
