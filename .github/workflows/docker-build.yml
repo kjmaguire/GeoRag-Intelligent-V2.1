@@ -176,9 +176,9 @@ jobs:
       # Everything removed is a preinstalled toolchain for a language this
       # repository never builds on the host — both images are built inside
       # Docker, so the host needs docker and nothing else. Android alone is
-      # most of the ~25 GB this frees. CodeQL's toolcache goes too: it is
-      # used by codeql.yml, which is a different workflow on a different
-      # runner.
+      # most of the ~25 GB this frees. CodeQL's toolcache goes too: it was
+      # only ever used by codeql.yml, which was deleted on 2026-09-15 (see
+      # Ch 07), and the runner image ships it regardless.
       #
       # Inline rather than a third-party "free disk space" action, on
       # purpose. The Trivy step below was moved off a floating `@master` ref

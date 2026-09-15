@@ -27,7 +27,7 @@ make_fixture() {
   mkdir -p "$d/.github/workflows" "$d/scripts" "$d/deploy/aws"
   cp "$CHECKER" "$d/scripts/check-ci-path-filters.py"
   touch "$d/deploy/aws/README.md" "$d/georag-architecture.html"
-  for wf in ci codeql docker-build; do
+  for wf in ci docker-build; do
     cat >"$d/.github/workflows/${wf}.yml" <<'YML'
 on:
   pull_request:
@@ -50,7 +50,7 @@ case_ "baseline — filters that skip only inert prose"
 D=$(make_fixture)
 OUT=$(run_checker "$D"); RC=$?
 if [ "$RC" -eq 0 ]; then ok "accepts docs/** and root *.md"; else bad "should pass; got: $OUT"; fi
-if grep -q "3 workflow(s) filtered" <<<"$OUT"; then ok "reports how many it actually checked"; else bad "should say what it checked"; fi
+if grep -q "2 workflow(s) filtered" <<<"$OUT"; then ok "reports how many it actually checked"; else bad "should say what it checked"; fi
 rm -rf "$D"
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ case_ "the other trap — the architecture doc"
 # tests/Unit/ArchitectureDocSchemaParityTest.php fails when the doc names a
 # schema.table no migration creates. Ignore it and that gate stops existing.
 D=$(make_fixture)
-sed -i "s|- 'docs/\*\*'|- '*.html'|" "$D/.github/workflows/codeql.yml"
+sed -i "s|- 'docs/\*\*'|- '*.html'|" "$D/.github/workflows/docker-build.yml"
 OUT=$(run_checker "$D"); RC=$?
 if [ "$RC" -ne 0 ] && grep -q "georag-architecture.html" <<<"$OUT"; then
   ok "rejects '*.html', and names the parity test"
@@ -98,7 +98,7 @@ case_ "a run that checked nothing is not a pass"
 # The absence-as-success shape, in the checker itself: if the parser stops
 # finding paths-ignore blocks it would report success having verified nothing.
 D=$(make_fixture)
-for wf in ci codeql docker-build; do
+for wf in ci docker-build; do
   "$PYTHON" - "$D/.github/workflows/${wf}.yml" <<'PY'
 import sys, pathlib
 p = pathlib.Path(sys.argv[1])

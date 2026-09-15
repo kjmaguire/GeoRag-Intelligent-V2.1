@@ -35,7 +35,7 @@ outside the application.
 |---|---|---|
 | **Laravel Horizon** (Redis queues) | Three short, user-triggered jobs: query streaming, export generation, a debounced view refresh | `dispatch()` from three controllers |
 | **Hatchet** (`hatchet-lite` + one worker) | Everything durable: ingestion, embedding, every cron, the outbox, the Phase 0 agents, reports and training skeletons | FastAPI trigger endpoints, in-process `aio_run_no_wait`, 29 cron expressions |
-| GitHub Actions `schedule:` | Nightly eval gate, weekly coverage and CodeQL | cron on the runner |
+| GitHub Actions `schedule:` | Nightly eval gate and weekly coverage | cron on the runner |
 | EventBridge Scheduler | Nightly shutdown and morning startup of the production tier | one timezone-aware cron each (§3.2) |
 
 There is **no Laravel scheduler**: `routes/console.php` registers only the
@@ -220,8 +220,37 @@ its three attempts before dead-lettering.
 |---|---|---|
 | `eval-gate.yml` | `17 5 * * *` | Nightly golden-query and hallucination gate with LLM and embeddings stubbed ([Ch 14](14-status-matrix.md)) |
 | `coverage.yml` | `40 6 * * 0` | Weekly coverage; runner-only |
-| `codeql.yml` | `16 23 * * 1` | Weekly CodeQL (also on PRs) |
 | `perf-baseline.yml` | *(disabled)* | Its schedule is commented out; it had produced months of green runs against no target |
+
+`codeql.yml` (`16 23 * * 1`) was deleted on 2026-09-15. It did not fail on
+findings — it never got as far as querying. Every language failed at the
+upload step with `CodeQL job status was configuration error. Details: Code
+scanning is not enabled for this repository`, because code scanning is
+enabled by default on PUBLIC repositories and this one was switched to
+private on 2026-09-15. The repository's plan offers no Code scanning section
+under Settings -> Code security at all, so it cannot be turned on.
+
+**What went with it, stated plainly rather than left to be discovered:**
+static analysis for Python, JavaScript/TypeScript and Actions workflows,
+including the taint and injection queries nothing else here replaces. The
+workflow was deleted rather than left red or wrapped in
+`continue-on-error`, because a permanently-failing security scan trains
+everyone to ignore a red check, and a silenced one reads as coverage that
+does not exist. Neither is better than an honest absence.
+
+What still covers some of that ground: Trivy on both images
+(`docker-build.yml`), `scripts/check-no-committed-secrets.php`, ruff, mypy,
+phpstan at larastan level 6, ESLint in the Frontend job, and the tenant
+isolation auditor. None of them does interprocedural taint analysis.
+
+Restore it if the repository goes public again, or if the plan gains code
+scanning. `actionlint` and `bandit` are free and would cover part of the gap
+in the meantime; neither is wired up.
+
+The `permissions:` blocks in the remaining workflows stay. They were added
+because CodeQL's `actions/missing-workflow-permissions` query flagged their
+absence, and least privilege is correct whether or not the query that found
+it still runs.
 
 `chaos.yml` (`0 6 * * 1`) was deleted on 2026-09-07 with the one test it
 ran. Its header already recorded that `-m chaos` selected 1 of 2227
@@ -313,7 +342,6 @@ What the window does to orchestration:
 | 14:45 | `enrich_passage_context` |
 | 15:00 | `model_cost_summary_run` |
 | 17:00 Mon | `what_changed_weekly` |
-| 23:16 Mon | GitHub Actions `codeql` |
 
 ---
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A CI path filter must not skip a document CI reads as DATA.
 
-Three workflows carry `paths-ignore` so a documentation-only push costs
-nothing: ci.yml, codeql.yml and docker-build.yml. That is worth real money —
+Two workflows carry `paths-ignore` so a documentation-only push costs
+nothing: ci.yml and docker-build.yml. That is worth real money —
 ci.yml alone bills 28 minutes per push on a private repository, and three of
 eight pushes on 2026-09-15 were documentation only and ran all 24 checks.
 
@@ -40,8 +40,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: Workflows that carry a docs-only filter.
-WORKFLOWS = ("ci.yml", "codeql.yml", "docker-build.yml")
+#: Workflows that carry a docs-only filter. codeql.yml was here until
+#: 2026-09-15, when it was deleted — code scanning is not available for this
+#: repository, so every language failed at the SARIF upload (Ch 07). A name
+#: left here would fail this check on a missing file rather than on a bad
+#: filter, which is a confusing way to learn a workflow is gone.
+WORKFLOWS = ("ci.yml", "docker-build.yml")
 
 #: Documents CI parses as data, and what reads each. The reader is named so a
 #: future maintainer can check the claim rather than trust it.
