@@ -75,7 +75,10 @@ import sys
 sys.exit(0)
 PY
 
+  # BOTH probes, because ADR-0023 split the model tier across two vendors'
+  # auth and A-11 now wants a report from each.
   echo '{}' >"$d/ops/validation/reports/bedrock_probe_20260915T000000Z.json"
+  echo '{}' >"$d/ops/validation/reports/cohere_probe_20260915T000000Z.json"
 
   git -C "$d" init -q
   git -C "$d" config user.email t@t.t
@@ -176,12 +179,12 @@ if grep -qE '^✓ A-05' <<<"$OUT"; then ok "allows a committed .tfvars.example";
 rm -rf "$D"
 
 # ---------------------------------------------------------------------------
-case_ "A-11 — no Bedrock probe report"
-# Live failure: every Bedrock adapter was written to documentation and never
+case_ "A-11 — no probe report at all"
+# Live failure: every model adapter was written to documentation and never
 # verified. The path this replaced had three behaviours documentation got
 # WRONG, settled only by a live call.
 D=$(make_fixture)
-rm -f "$D"/ops/validation/reports/bedrock_probe_*.json
+rm -f "$D"/ops/validation/reports/*_probe_*.json
 OUT=$(run_gate "$D" | strip_ansi)
 if grep -qE '^✗ A-11' <<<"$OUT" && grep -q 'ASSUMED' <<<"$OUT"; then
   ok "rejects a tree with no probe report, and says the shapes are assumed"
@@ -189,6 +192,26 @@ else
   bad "should have failed A-11"
 fi
 rm -rf "$D"
+
+# ---------------------------------------------------------------------------
+case_ "A-11 — ONE probe report is not enough"
+# The discrimination that matters after ADR-0023. Neither probe covers the
+# other's models: bedrock_probe reaches Embed v4 and Rerank 3.5, cohere_probe
+# reaches Command A+ and Parse 5. A gate satisfied by either alone would read
+# green while half the model tier stayed assumed — which is the same
+# satisfied-by-existence failure the verdict inside each probe exists to stop.
+for present in bedrock cohere; do
+  D=$(make_fixture)
+  other=$([ "$present" = bedrock ] && echo cohere || echo bedrock)
+  rm -f "$D/ops/validation/reports/${other}_probe_"*.json
+  OUT=$(run_gate "$D" | strip_ansi)
+  if grep -qE '^✗ A-11' <<<"$OUT" && grep -q "MISSING:${other}" <<<"$OUT"; then
+    ok "rejects a tree with only the ${present} report, and names ${other}"
+  else
+    bad "A-11 passed with only the ${present} probe report"
+  fi
+  rm -rf "$D"
+done
 
 # ---------------------------------------------------------------------------
 case_ "A-10 — go-live key derivation excludes APP_KEY_NEXT"

@@ -99,6 +99,15 @@ codebase. `tests/test_cohere_chat_adapter.py` pins the adapter's behaviour
 against a mock transport, which proves the code and the description agree
 and proves nothing about Cohere.
 
+Closing that is `ops/validation/cohere_probe.sh` — the sibling of the
+Bedrock probe, and the two do not overlap: Embed v4 and Rerank 3.5 on one
+side, Command A+ and Parse 5 on the other. `aws-preflight.sh` A-11 requires
+a committed report from **each**. The probe runs the real
+`_extract_content`, `_delta_text` and `_page_from_payload` against live
+bodies, so what it reports is about the shipped adapters rather than a
+reimplementation, and `ops/validation/tests/fake_cohere.py` lets it be
+exercised without a key.
+
 **Workspace text leaves AWS on this path, ungated, deliberately.**
 `app/agent/egress_gate.py` is a default-deny check that only
 `_call_anthropic_llm` calls, because the flag governs providers outside the

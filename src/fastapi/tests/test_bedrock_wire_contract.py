@@ -38,7 +38,7 @@ from app.services.bedrock_wire import (
     diff_report,
     diff_section,
 )
-from app.services.cohere_wire import PARSE
+from app.services.cohere_wire import CHAT_V2, PARSE
 
 # ---------------------------------------------------------------------------
 # Turning a declaration into a set of concrete paths
@@ -454,6 +454,111 @@ def test_an_unrecognised_parse_payload_degrades_rather_than_raising() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 7. Chat on Cohere's own API (ADR-0023)
+# ---------------------------------------------------------------------------
+
+
+def _cohere_chat_request(**kwargs: Any) -> dict[str, Any]:
+    from app.agent.llm_cohere import _build_request
+
+    base: dict[str, Any] = {
+        "user_message": "What is the average grade?",
+        "system_content": "You are a geologist.",
+        "temperature": 0.1,
+        "max_output": 512,
+        "response_format": None,
+        "stream": False,
+    }
+    base.update(kwargs)
+    return _build_request(**base)
+
+
+def test_cohere_chat_request_matches_the_contract() -> None:
+    _assert_request_matches(CHAT_V2, _cohere_chat_request())
+
+
+def test_the_cohere_system_prompt_is_a_message_not_a_top_level_field() -> None:
+    """The mirror image of the Converse test above, and the same trap.
+
+    Converse takes `system` as a top-level parameter; Cohere v2 takes it as a
+    message. Each is silently wrong on the other host — a system prompt
+    delivered as a user turn still produces fluent output, just without the
+    grounding rules — and the generic path-set check cannot see it, because a
+    system message and a user message are the same shape. That is why both
+    hosts get a test written for this specifically.
+    """
+    body = _cohere_chat_request()
+    assert "system" not in body, "that is the Bedrock Converse shape"
+    assert body["messages"][0]["role"] == "system"
+    assert body["messages"][-1]["role"] == "user"
+
+
+def test_the_cohere_json_mode_field_is_top_level() -> None:
+    """Hard rule 4's dependency, on this host.
+
+    Not `additionalModelRequestFields` — that is Converse's passthrough for a
+    runtime with no first-class JSON mode. Cohere v2 documents this as a
+    parameter of its own, which is a reason to expect it to work and not a
+    reason to assume it does: the probe still asks.
+    """
+    body = _cohere_chat_request(response_format="json_object")
+    assert body["response_format"] == {"type": "json_object"}
+    assert "additionalModelRequestFields" not in body
+
+
+def test_the_cohere_request_omits_json_mode_when_not_asked() -> None:
+    assert "response_format" not in _cohere_chat_request()
+
+
+def test_the_cohere_streaming_request_is_the_same_shape() -> None:
+    """Only `stream` differs. A streaming path that quietly dropped a field
+    would be a different contract wearing the same name."""
+    unary = _cohere_chat_request(stream=False)
+    streaming = _cohere_chat_request(stream=True)
+    assert _paths(streaming) == _paths(unary)
+    assert streaming["stream"] is True
+    assert unary["stream"] is False
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        pytest.param(
+            {"message": {"content": [{"type": "text", "text": "hello"}]}},
+            "hello",
+            id="documented_typed_blocks",
+        ),
+        pytest.param(
+            {"message": {"content": "hello"}}, "hello", id="tolerated_bare_string"
+        ),
+        pytest.param({"text": "hello"}, "hello", id="tolerated_pre_v2_spelling"),
+    ],
+)
+def test_every_declared_cohere_chat_shape_is_actually_handled(
+    payload: dict, expected: str
+) -> None:
+    """Each TOLERATED alternate has to work. One that is declared and broken
+    is worse than one never claimed."""
+    from app.agent.llm_cohere import _extract_content
+
+    assert _extract_content(payload) == expected
+
+
+def test_an_unrecognised_cohere_chat_payload_raises_rather_than_returning_empty() -> None:
+    """The one place this adapter is deliberately NOT tolerant.
+
+    Parse degrades to tesseract, so a wrong guess there costs tables. Chat
+    has no floor to fall to, and an empty string is indistinguishable from a
+    model that had nothing to say — the ambiguity cohere_parse_client carried
+    until 2026-09-15.
+    """
+    from app.agent.llm_cohere import CohereResponseShapeError, _extract_content
+
+    with pytest.raises(CohereResponseShapeError):
+        _extract_content({"unexpected": "shape"})
+
+
+# ---------------------------------------------------------------------------
 # The contract's own invariants
 # ---------------------------------------------------------------------------
 
@@ -468,7 +573,7 @@ def test_nothing_claims_to_have_been_observed_on_bedrock() -> None:
     """
     observed = [
         (c.name, f.path)
-        for c in (*CONTRACTS, PARSE)
+        for c in (*CONTRACTS, PARSE, CHAT_V2)
         for f in (*c.request, *c.response)
         if f.status is Status.OBSERVED
     ]

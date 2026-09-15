@@ -378,13 +378,30 @@ fi
 # still covers embeddings and reranking on Bedrock, and the chat and parse
 # halves now need a run against api.cohere.com.
 # ---------------------------------------------------------------------------
-reports=$(ls ops/validation/reports/bedrock_probe_*.json 2>/dev/null | wc -l | tr -d ' ')
-if [ "$reports" != "0" ]; then
-  newest=$(ls -t ops/validation/reports/bedrock_probe_*.json 2>/dev/null | head -1)
-  check "A-11" "Bedrock wire-contract probe report present" ok "$newest"
+# TWO reports, not one. The model tier is split across two vendors' auth
+# since ADR-0023 and neither probe covers the other's models: bedrock_probe
+# reaches Embed v4 and Rerank 3.5, cohere_probe reaches Command A+ and Parse
+# 5. A single report satisfying this check would leave half the tier assumed
+# while the gate read green — which is the shape of defect this whole file
+# exists for.
+probe_missing=""
+probe_found=""
+
+for probe in bedrock cohere; do
+  count=$(ls "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$count" != "0" ]; then
+    newest=$(ls -t "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | head -1)
+    probe_found="${probe_found}${newest} "
+  else
+    probe_missing="${probe_missing}${probe} "
+  fi
+done
+
+if [ -z "$probe_missing" ]; then
+  check "A-11" "wire-contract probe reports present (bedrock + cohere)" ok "$probe_found"
 else
-  check "A-11" "Bedrock wire-contract probe report present" fail \
-    "run: ${PYTHON} ops/validation/bedrock_probe.py --region \"\$BEDROCK_REGION\" — until then every Bedrock wire shape is ASSUMED"
+  check "A-11" "wire-contract probe reports present (bedrock + cohere)" fail \
+    "MISSING:${probe_missing}— run ops/validation/bedrock_probe.sh and ops/validation/cohere_probe.sh. Until both land, that half of the model tier is ASSUMED"
 fi
 
 # ---------------------------------------------------------------------------

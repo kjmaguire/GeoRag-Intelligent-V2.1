@@ -79,7 +79,10 @@ from typing import Any
 # reason every section below degrades: this script has to stay runnable from
 # an operator's laptop against a checkout that may not have the FastAPI
 # package importable. Losing the diff must not cost the observations.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "fastapi"))
+
+from _probe_verdict import compute_verdict  # noqa: E402
 try:
     from app.services.bedrock_wire import diff_report as _diff_report
 except Exception as _exc:  # noqa: BLE001 — any import failure, not just ImportError
@@ -481,67 +484,56 @@ def probe_latency(samples: int) -> dict[str, Any]:
 _EVIDENCE_SECTIONS = ("chat", "chat_stream", "embed", "rerank", "parse", "latency")
 
 
+#: Error codes that mean the credentials were the problem, not the call.
+#: Worth saying separately from "nothing worked": one is fixed by running
+#: `aws login`, the other by reading the report.
+_AUTH_CODES = frozenset({
+    "UnrecognizedClientException",
+    "InvalidClientTokenId",
+    "AccessDeniedException",
+    "ExpiredTokenException",
+})
+
+
+def _is_auth_failure(section: dict) -> bool:
+    return (section.get("error") or {}).get("code") in _AUTH_CODES
+
+
 def verdict(report: dict) -> dict:
     """Say plainly whether this run verified anything.
 
-    THE POINT. Every section of this probe degrades instead of raising, so one
-    run can fail completely — expired credentials, wrong region, no IAM
-    permission — and still produce a well-formed JSON file. Without this the
-    script printed "COMMIT THIS REPORT" and exited 0 over a report whose every
-    section was a 403, which would put a file on disk that ADR-0022 treats as
-    the gate on trusting the adapters while it contains no evidence at all.
-    That is the same shape as the defects this migration kept turning up: not
-    an error, just a thing quietly not carrying the information it claims to.
+    The reasoning lives in ops/validation/_probe_verdict.py, which both
+    probes share — see that module's docstring for why a report that
+    verifies nothing must not read as a pass, and what shipped once because
+    it did. This function is the Bedrock half: which sections count as
+    evidence, and how a credentials failure is recognised here.
+
+    ``availability`` is checked for an auth failure too even though it is
+    not an evidence section, because it is usually the FIRST call a run
+    makes — so it is where an expired token shows up before anything else
+    has had a chance to.
     """
-    failed, skipped, missing, ok = [], [], [], []
-    for name in _EVIDENCE_SECTIONS:
-        # A section ABSENT from the report is not a pass. It reads as one if
-        # you only test for "error"/"skipped" — the same absence-as-success
-        # shape this function exists to stop — and it is how adding a section
-        # to _EVIDENCE_SECTIONS without wiring it up would quietly inflate
-        # the verified count.
-        if name not in report:
-            missing.append(name)
-            continue
-        section = report[name] or {}
-        if "error" in section:
-            failed.append(name)
-        elif "skipped" in section:
-            skipped.append(name)
-        else:
-            ok.append(name)
-
-    auth_codes = {"UnrecognizedClientException", "InvalidClientTokenId",
-                  "AccessDeniedException", "ExpiredTokenException"}
-    saw_auth_failure = any(
-        (report.get(n) or {}).get("error", {}).get("code") in auth_codes
-        for n in _EVIDENCE_SECTIONS
-    ) or (report.get("availability", {})
-          .get("cohere_serverless_error", {})
-          .get("code") in auth_codes)
-
-    if saw_auth_failure and not ok:
-        summary = ("could not authenticate to Bedrock; nothing was observed. "
-                   "Check credentials, region and IAM permissions.")
-    elif not ok:
-        summary = "no section produced an observation."
-    else:
-        summary = (f"verified {len(ok)}/{len(_EVIDENCE_SECTIONS)} sections "
-                   f"(ok={','.join(ok) or '-'}; "
-                   f"failed={','.join(failed) or '-'}; "
-                   f"skipped={','.join(skipped) or '-'}"
-                   + (f"; MISSING={','.join(missing)}" if missing else "")
-                   + ").")
-
-    return {
-        "verified_anything": bool(ok),
-        "sections_ok": ok,
-        "sections_failed": failed,
-        "sections_skipped": skipped,
-        "sections_missing": missing,
-        "authentication_failed": saw_auth_failure,
-        "summary": summary,
-    }
+    result = compute_verdict(
+        report,
+        sections=_EVIDENCE_SECTIONS,
+        is_auth_failure=_is_auth_failure,
+        auth_hint="Check credentials, region and IAM permissions.",
+    )
+    if not result["authentication_failed"]:
+        availability_auth = (
+            (report.get("availability") or {})
+            .get("cohere_serverless_error", {})
+            .get("code")
+            in _AUTH_CODES
+        )
+        if availability_auth:
+            result["authentication_failed"] = True
+            if not result["verified_anything"]:
+                result["summary"] = (
+                    "could not authenticate to Bedrock; nothing was observed. "
+                    "Check credentials, region and IAM permissions."
+                )
+    return result
 
 
 def main() -> int:

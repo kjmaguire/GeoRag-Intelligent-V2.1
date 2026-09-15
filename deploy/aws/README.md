@@ -235,23 +235,30 @@ export BEDROCK_EMBED_MODEL_ID=cohere.embed-v4:0        # confirm against step 3
 export BEDROCK_RERANK_MODEL_ID=cohere.rerank-v3-5:0    # confirm against step 3
 bash ops/validation/bedrock_probe.sh
 
-# 5. COMMIT THE REPORT. The adapters carry [UNVERIFIED] until one exists,
-#    and aws-preflight.sh A-11 fails until one lands here.
-git add ops/validation/reports/bedrock_probe_*.json
-git commit -m "chore(validation): commit the in-region Bedrock wire-contract probe report"
+# 5. The OTHER probe — chat and OCR, which do not touch AWS at all. It needs
+#    no AWS credentials and everything above is irrelevant to it; what it
+#    needs is a key whose plan covers BOTH models. Read the HEADLINES block
+#    it prints: "role:'system' honoured: False" is a 200 OK with the
+#    grounding rules silently dropped, and nothing else in the system can
+#    see that.
+export COHERE_API_KEY=...   # the key you wrote into Secrets Manager
+bash ops/validation/cohere_probe.sh
 
-# 6. Everything the preflight could not answer without an account.
+# 6. COMMIT BOTH REPORTS. The adapters carry [UNVERIFIED] until they exist,
+#    and aws-preflight.sh A-11 fails until BOTH land here. The Cohere report
+#    never contains the key — only its length.
+git add ops/validation/reports/bedrock_probe_*.json ops/validation/reports/cohere_probe_*.json
+git commit -m "chore(validation): commit the wire-contract probe reports"
+
+# 7. Everything the preflight could not answer without an account.
 AWS_REGION="$REGION" AWS_PROFILE="$PROFILE" bash scripts/operator/aws-preflight.sh
 ```
 
-> ⚠️ **The probe still only covers the Bedrock half.**
-> `ops/validation/bedrock_probe.py` was written when all four capabilities
-> were Bedrock calls. After ADR-0023 its embed and rerank sections are still
-> right and its chat and parse sections have nothing to talk to. Verifying
-> the Cohere half against `api.cohere.com` is ADR-0023 migration step 6 and
-> needs a probe that does not exist yet — so until it does, read
-> `app/agent/llm_cohere.py` and `app/services/cohere_wire.py` for exactly
-> what is assumed, and treat the first live call as the verification.
+> **Two probes, and `aws-preflight.sh` A-11 wants a report from each.**
+> Neither covers the other's models: `bedrock_probe` reaches Embed v4 and
+> Rerank 3.5, `cohere_probe` reaches Command A+ and Parse 5. One report
+> satisfying the gate would leave half the model tier assumed while the
+> check read green.
 
 Read the report before trusting any adapter. If Parse's shape differs from
 what `_page_from_payload` expects, the adapter says so at runtime: since

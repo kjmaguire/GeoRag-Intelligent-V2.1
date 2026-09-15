@@ -301,11 +301,44 @@ This ADR records a decision; the code lands separately. What is verified here:
 - `httpx>=0.28` confirmed as an existing direct dependency, so the adapters
   add none.
 
-When the code lands, verification is: a committed
-`ops/validation/reports/` probe report against the live Cohere API covering
-chat (including streaming), parse, and embeddings; `[UNVERIFIED]` removed
-from the adapters it covers; and `scripts/operator/aws-preflight.sh` passing
-A-10 with the 11-key secret.
+### Verification, as built (2026-09-15)
+
+The instrument now exists: `ops/validation/cohere_probe.py`, the sibling of
+`bedrock_probe.py`. Neither covers the other's models — Embed v4 and Rerank
+3.5 on one side, Command A+ and Parse 5 on the other — so
+`aws-preflight.sh` A-11 requires a committed report from **each**. One
+report satisfying that gate would leave half the model tier assumed while
+the check read green, which is the same satisfied-by-existence failure the
+verdict inside each probe was written to stop.
+
+What the Cohere probe asks that no test can: whether
+`response_format: {"type": "json_object"}` is honoured (hard rule 4 rides on
+it), where reasoning lands, whether the `<|START_TEXT|>` sentinels survive
+this host, the SSE event vocabulary, both Parse output formats, and the
+pixel ladder that turns `COHERE_PARSE_MAX_PIXELS` from a guess into a
+measurement. It runs the **real** `_extract_content`, `_delta_text` and
+`_page_from_payload` against the live bodies, so its answer is about the
+shipped adapters rather than about a reimplementation.
+
+The load-bearing one is the system-message check. Cohere v2 takes system as
+a MESSAGE where Converse takes it as a top-level parameter; a host that
+drops it returns 200 with fluent text and raises nothing, while the
+citation guards go on enforcing against output produced from a prompt that
+never carried the grounding rules. The probe sends a system prompt whose
+obedience is checkable from the answer alone.
+
+`ops/validation/tests/fake_cohere.py` lets all of that be exercised without
+a key, and it earned its place immediately: running the probe against it
+found **three** real defects, none of which reading would have caught. One
+was live in the Bedrock probe — a section whose every nested call had
+failed still counted as an observation, so a run where nothing worked
+reported "verified 1/4 sections". Both probes now share one implementation
+of that rule.
+
+So verification is still: a committed report from each probe against live
+credentials, `[UNVERIFIED]` removed from the adapters each one covers, and
+`aws-preflight.sh` passing A-08, A-10 (11 keys) and A-11. What changed is
+that closing it is now a command rather than a project.
 
 ## Follow-ups (NOT part of this ADR; tracked separately)
 
