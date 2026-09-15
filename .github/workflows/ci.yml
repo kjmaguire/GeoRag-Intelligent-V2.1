@@ -3,8 +3,50 @@ name: GeoRAG CI
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -635,6 +677,15 @@ jobs:
       # "NO chat and NO OCR" — was in exactly that state.
       - name: Log-marker alarms watch the group their emitter writes to
         run: python scripts/check-log-marker-alarms.py
+      # The docs-only paths-ignore filters save 28 billable minutes on a
+      # prose push. They also open one silent hole: two "documents" here are
+      # parsed as DATA (deploy/aws/README.md's key table, and the
+      # architecture doc's schema.table list). A filter that skipped either
+      # would let a real breakage merge green.
+      - name: CI path filters do not skip a doc that CI parses
+        run: python scripts/check-ci-path-filters.py
+      - name: Discrimination tests for that filter check
+        run: bash scripts/tests/ci_path_filter_test.sh
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.

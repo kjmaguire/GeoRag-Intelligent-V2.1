@@ -23,8 +23,50 @@ name: Docker Build (GHCR + Trivy + SBOM)
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
 
 concurrency:
   # Deliberately NOT ci-${{ github.ref }} — concurrency groups are
