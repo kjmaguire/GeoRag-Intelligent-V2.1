@@ -11,6 +11,28 @@ from `.env.production.example`. Nothing running could be diffed against
 anything in the repository. Starting from a blank cloud is the one chance
 not to repeat that.
 
+## Check the preconditions first
+
+```bash
+AWS_REGION=<region> bash scripts/operator/aws-preflight.sh
+```
+
+Read-only, and it exits non-zero rather than letting a cutover start on a
+missed step. It reports **unverified** rather than passing for anything it
+cannot reach the account to answer, so run it from a shell with AWS access —
+a check nobody could answer is not a check that passed.
+
+It covers the steps below that have a queryable answer: the variables with no
+default, the secret keys in `georag/app`, the Marketplace endpoints and
+— the one that costs you a morning — whether their configs carry the
+`<endpoint-name>-config` name the nightly sweep looks for. The one-time
+actions (Steps 1, 2 and 4) have no state to query and are listed by the
+script as still yours.
+
+Note that `scripts/operator/preflight.sh` is a **different** script and does
+not gate this deployment: it predates ADR-0022 and checks SSH hosts and SOPS
+for the compose model, which Fargate does not use.
+
 ## Layout
 
 | Path | What it is |
