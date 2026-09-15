@@ -229,6 +229,16 @@ def _extract_usage(payload: Any) -> tuple[int, int]:
             int(source.get("output_tokens", 0) or 0),
         )
     except (TypeError, ValueError):
+        # Degrading to zeros is right — usage is bookkeeping, not the answer,
+        # and failing a generated answer over its accounting would be the
+        # wrong trade. Saying nothing is not: `cost_burn_watcher` reads these
+        # counters, and a workspace whose spend silently stops being recorded
+        # looks exactly like a workspace that stopped asking questions.
+        logger.debug(
+            "cohere: usage block present but unreadable (keys=%s) — recording zero tokens for this call",
+            sorted(source) if isinstance(source, dict) else type(source).__name__,
+            exc_info=True,
+        )
         return 0, 0
 
 

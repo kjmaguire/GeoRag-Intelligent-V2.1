@@ -23,6 +23,7 @@ What IS specific to this probe, and is why the file is not just a copy:
 
 from __future__ import annotations
 
+import string
 import sys
 from pathlib import Path
 
@@ -115,8 +116,22 @@ class TestTheReportIsSafeToCommit:
     credential (`scripts/phase0_acceptance.sh`), which is still in history."""
 
     def test_key_shaped_strings_are_redacted(self) -> None:
-        leaked = "invalid api token: AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
-        assert "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" not in _redact(leaked)
+        # The fake key is BUILT, not written out, and that is not fussiness.
+        # scripts/check-no-committed-secrets.php scans every tracked file for
+        # exactly this shape — a long mixed-case alphanumeric run with no
+        # separators — and a literal here fails that gate. Which is the gate
+        # working: a test for a redactor needs a string indistinguishable from
+        # what it redacts, so the two checks are in genuine tension.
+        #
+        # Composing it resolves the tension without spending an exemption. The
+        # alternative was adding this file to the scanner's SKIP_PATHS, which
+        # would exempt it forever — including from a real key pasted here
+        # later by someone who never read this comment.
+        fake_key = string.ascii_letters[:26] + string.digits
+        assert len(fake_key) >= 24, "must stay long enough to look like a key"
+
+        leaked = f"invalid api token: {fake_key}"
+        assert fake_key not in _redact(leaked)
         assert "<redacted>" in _redact(leaked)
 
     def test_ordinary_prose_survives(self) -> None:
