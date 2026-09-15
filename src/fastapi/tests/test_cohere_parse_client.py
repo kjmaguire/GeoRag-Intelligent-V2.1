@@ -39,9 +39,7 @@ def _body(payload) -> bytes:
 
 
 def _client_error(code: str, message: str = "") -> ClientError:
-    return ClientError(
-        {"Error": {"Code": code, "Message": message}}, "InvokeModel"
-    )
+    return ClientError({"Error": {"Code": code, "Message": message}}, "InvokeModel")
 
 
 @pytest.fixture(autouse=True)
@@ -60,9 +58,7 @@ def _configured(monkeypatch):
     monkeypatch.delenv("COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS", raising=False)
     # Rendering is not under test here.
     monkeypatch.setattr(cpc, "_page_count", lambda _path: 999)
-    monkeypatch.setattr(
-        cpc, "_render_page", lambda _path, page: b"\x89PNG-fake-" + str(page).encode()
-    )
+    monkeypatch.setattr(cpc, "_render_page", lambda _path, page: b"\x89PNG-fake-" + str(page).encode())
 
 
 @pytest.fixture
@@ -107,9 +103,7 @@ class TestSelectionAndConfiguration:
         monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID")
         assert not cpc.is_configured()
 
-    def test_missing_config_raises_not_configured_at_call_time(
-        self, monkeypatch
-    ) -> None:
+    def test_missing_config_raises_not_configured_at_call_time(self, monkeypatch) -> None:
         monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID")
 
         with pytest.raises(cpc.CohereParseNotConfigured):
@@ -143,9 +137,7 @@ class TestSelectionAndConfiguration:
 
 
 class TestWireShape:
-    def test_request_carries_the_model_id_and_a_data_uri(
-        self, monkeypatch, blocks_payload
-    ) -> None:
+    def test_request_carries_the_model_id_and_a_data_uri(self, monkeypatch, blocks_payload) -> None:
         """The model moves from the body to modelId; nothing else changes.
 
         This assertion is the migration's central claim about this adapter:
@@ -176,15 +168,11 @@ class TestWireShape:
         with caplog.at_level(logging.WARNING, logger="georag.ingest.cohere_parse"):
             cpc.ocr_page_sync("/x.pdf", 1)
         assert calls[-1]["body"]["output_format"] == "blocks"
-        assert any(
-            "COHERE_PARSE_OUTPUT_FORMAT" in r.getMessage() for r in caplog.records
-        )
+        assert any("COHERE_PARSE_OUTPUT_FORMAT" in r.getMessage() for r in caplog.records)
 
 
 class TestResponseAdapter:
-    def test_blocks_become_text_in_order_with_a_table_grid(
-        self, monkeypatch, blocks_payload
-    ) -> None:
+    def test_blocks_become_text_in_order_with_a_table_grid(self, monkeypatch, blocks_payload) -> None:
         _capture_invoke(monkeypatch, [_body(blocks_payload)])
 
         result = cpc.ocr_page_sync("/x.pdf", 1)
@@ -195,9 +183,7 @@ class TestResponseAdapter:
         assert result.mean_confidence == 0.0
         assert result.detected_region_count == 0
         assert result.text.startswith("# 14 MINERAL RESOURCE ESTIMATES")
-        assert result.text.rstrip().endswith(
-            "Mineral resources are not mineral reserves."
-        )
+        assert result.text.rstrip().endswith("Mineral resources are not mineral reserves.")
         # The table is both a grid (for the table sections) and inline text.
         assert len(result.tables) == 1
         grid = result.tables[0]
@@ -214,14 +200,9 @@ class TestResponseAdapter:
 
         result = cpc.ocr_page_sync("/x.pdf", 1)
 
-        assert (
-            "[Figure: Plan view map of the Madison deposit showing drill collars.]"
-            in result.text
-        )
+        assert "[Figure: Plan view map of the Madison deposit showing drill collars.]" in result.text
 
-    def test_markdown_mode_strips_image_refs_and_converts_html_tables(
-        self, monkeypatch, markdown_payload
-    ) -> None:
+    def test_markdown_mode_strips_image_refs_and_converts_html_tables(self, monkeypatch, markdown_payload) -> None:
         _capture_invoke(monkeypatch, [_body(markdown_payload)])
 
         result = cpc.ocr_page_sync("/x.pdf", 1)
@@ -235,9 +216,7 @@ class TestResponseAdapter:
         assert "Indicated" in result.text
 
     def test_markdown_as_a_plain_string_is_accepted(self, monkeypatch) -> None:
-        _capture_invoke(
-            monkeypatch, [_body({"pages": [{"markdown": "Just prose."}]})]
-        )
+        _capture_invoke(monkeypatch, [_body({"pages": [{"markdown": "Just prose."}]})])
 
         result = cpc.ocr_page_sync("/x.pdf", 1)
 
@@ -252,9 +231,7 @@ class TestResponseAdapter:
         assert result.request_succeeded
         assert result.text == ""
 
-    def test_page_text_is_stripped_so_joiner_arithmetic_stays_exact(
-        self, monkeypatch
-    ) -> None:
+    def test_page_text_is_stripped_so_joiner_arithmetic_stays_exact(self, monkeypatch) -> None:
         _capture_invoke(
             monkeypatch,
             [_body({"pages": [{"blocks": [{"type": "text", "text": "  hello \n\n"}]}]})],
@@ -264,9 +241,7 @@ class TestResponseAdapter:
 
 
 class TestFailureModes:
-    def test_a_rejected_request_fails_soft_with_the_error_code(
-        self, monkeypatch
-    ) -> None:
+    def test_a_rejected_request_fails_soft_with_the_error_code(self, monkeypatch) -> None:
         _capture_invoke(
             monkeypatch,
             [_client_error("ValidationException", "image too large")],
@@ -279,9 +254,7 @@ class TestFailureModes:
         assert "image too large" in result.error
         assert result.confidence_reported is False
 
-    @pytest.mark.parametrize(
-        "code", ["AccessDeniedException", "ResourceNotFoundException"]
-    )
+    @pytest.mark.parametrize("code", ["AccessDeniedException", "ResourceNotFoundException"])
     def test_a_denied_call_is_logged_at_error(self, monkeypatch, caplog, code) -> None:
         """The Foundry equivalent was an HTTP 403, and it earned its level:
         Foundry blocked 1,421 of 2,524 calls on 2026-08-17 and nothing
@@ -293,10 +266,7 @@ class TestFailureModes:
             result = cpc.ocr_page_sync("/x.pdf", 1)
 
         assert not result.request_succeeded
-        assert any(
-            r.levelno == logging.ERROR and code in r.getMessage()
-            for r in caplog.records
-        )
+        assert any(r.levelno == logging.ERROR and code in r.getMessage() for r in caplog.records)
 
     def test_throttling_fails_soft_at_warning(self, monkeypatch, caplog) -> None:
         """botocore has already exhausted its adaptive retries by here, so a
@@ -333,6 +303,57 @@ class TestFailureModes:
         assert not result.request_succeeded
         assert result.error.startswith("non_json_response")
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"result": {"content": "surprise"}},  # plausible alternative shape
+            {"pages": [{"unexpected": 1}]},  # page dict, no blocks/markdown
+            {"pages": "not-a-list"},
+            [],  # top-level array
+        ],
+    )
+    def test_an_unrecognised_shape_fails_soft_and_is_logged(self, monkeypatch, caplog, payload) -> None:
+        """HTTP 200 with a body we do not recognise is NOT success.
+
+        Until 2026-09-15 this returned PageOcrResult("", 0.0) with
+        request_succeeded left at its True default and no log line at all.
+        pdf_report.py:2665 drops to tesseract only `if not
+        request_succeeded` — "NOT merely empty text", as its comment says —
+        so the page was billed, produced no text and no tables, did not fall
+        back, and said nothing. Indistinguishable from a blank sheet.
+
+        This is the failure mode this deployment is most likely to hit:
+        Cohere Parse's wire shape has never been verified on any host
+        (ADR-0022), so a body we cannot read is exactly what being wrong
+        about it looks like.
+        """
+        _capture_invoke(monkeypatch, [_body(payload)])
+
+        with caplog.at_level(logging.ERROR, logger="georag.ingest.cohere_parse"):
+            result = cpc.ocr_page_sync("/x.pdf", 1)
+
+        assert not result.request_succeeded
+        assert result.error == "unrecognised_response_shape"
+        assert result.text == ""
+        assert any(
+            r.levelno == logging.ERROR and "COHERE_PARSE_UNRECOGNISED_RESPONSE" in r.getMessage()
+            for r in caplog.records
+        ), "the marker alerts.tf filters on must appear in the message"
+
+    def test_unrecognised_shape_log_does_not_leak_document_text(self, monkeypatch, caplog) -> None:
+        """A Parse body carries the document's text. The diagnostic names the
+        top-level keys so the adapter can be corrected; it must not copy
+        values into CloudWatch."""
+        secret = "CONFIDENTIAL assay 12.4 g/t Au"
+        _capture_invoke(monkeypatch, [_body({"unknown_key": secret})])
+
+        with caplog.at_level(logging.ERROR, logger="georag.ingest.cohere_parse"):
+            cpc.ocr_page_sync("/x.pdf", 1)
+
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "unknown_key" in joined
+        assert secret not in joined
+
     def test_render_failure_fails_soft_without_a_request(self, monkeypatch) -> None:
         calls = _capture_invoke(monkeypatch, [_body({"pages": []})])
         monkeypatch.setattr(cpc, "_render_page", lambda _path, page: None)
@@ -345,9 +366,7 @@ class TestFailureModes:
 
 
 class TestPageGroups:
-    def test_group_posts_one_request_per_page_keyed_by_absolute_page(
-        self, monkeypatch, blocks_payload
-    ) -> None:
+    def test_group_posts_one_request_per_page_keyed_by_absolute_page(self, monkeypatch, blocks_payload) -> None:
         calls = _capture_invoke(monkeypatch, [_body(blocks_payload)])
 
         mapping = cpc.ocr_page_block_sync("/x.pdf", [7, 3, 3, 12])
@@ -356,9 +375,7 @@ class TestPageGroups:
         assert len(calls) == 3
         assert all(r.request_succeeded for r in mapping.values())
 
-    def test_a_failed_page_is_absent_and_an_empty_page_is_present(
-        self, monkeypatch
-    ) -> None:
+    def test_a_failed_page_is_absent_and_an_empty_page_is_present(self, monkeypatch) -> None:
         by_page = {
             1: _body({"pages": [{"blocks": [{"type": "text", "text": "one"}]}]}),
             2: _client_error("ValidationException", "bad"),
@@ -384,9 +401,7 @@ class TestPageGroups:
         assert mapping[1].text == "one"
         assert mapping[3].text == ""
 
-    def test_in_flight_requests_are_bounded_by_page_concurrency(
-        self, monkeypatch
-    ) -> None:
+    def test_in_flight_requests_are_bounded_by_page_concurrency(self, monkeypatch) -> None:
         import threading
         import time
 
@@ -453,9 +468,7 @@ class TestPageGroups:
 
 
 class TestMetering:
-    def test_successful_requests_increment_the_engine_labelled_counter(
-        self, monkeypatch, blocks_payload
-    ) -> None:
+    def test_successful_requests_increment_the_engine_labelled_counter(self, monkeypatch, blocks_payload) -> None:
         from app.metrics import OCR_PAGES_TOTAL
 
         _capture_invoke(monkeypatch, [_body(blocks_payload)])

@@ -311,9 +311,7 @@ def _render_page(pdf_path: str, page_number: int) -> bytes | None:
         # arithmetic and a vendor-side 4xx. Encoding runs outside the lock.
         if image.width * image.height > cap:
             shrink = math.sqrt(cap / (image.width * image.height))
-            image = image.resize(
-                (max(1, int(image.width * shrink)), max(1, int(image.height * shrink)))
-            )
+            image = image.resize((max(1, int(image.width * shrink)), max(1, int(image.height * shrink))))
         buf = io.BytesIO()
         image.save(buf, format="PNG", optimize=False)
         return buf.getvalue()
@@ -352,9 +350,7 @@ _CLIENT_TIMEOUT: float | None = None
 #: levels: a denied call is an operator problem worth an ERROR, a throttle
 #: is weather. botocore has already exhausted its own retries by the time
 #: either reaches here.
-_DENIED_CODES = frozenset(
-    {"AccessDeniedException", "ResourceNotFoundException", "ValidationException"}
-)
+_DENIED_CODES = frozenset({"AccessDeniedException", "ResourceNotFoundException", "ValidationException"})
 
 
 def _bedrock_client():
@@ -438,9 +434,7 @@ def _parse_png(png_bytes: bytes, *, log_page: int | None) -> PageOcrResult:
                 message or exc,
             )
         else:
-            logger.warning(
-                "cohere_parse: request failed%s: %s %s", where, exc, message
-            )
+            logger.warning("cohere_parse: request failed%s: %s %s", where, exc, message)
         return PageOcrResult(
             "",
             0.0,
@@ -510,13 +504,51 @@ def _page_from_payload(payload: Any) -> PageOcrResult:
     elif isinstance(payload, dict) and ("blocks" in payload or "markdown" in payload):
         page = payload
 
-    if not isinstance(page, dict):
-        return PageOcrResult("", 0.0, confidence_reported=False)
+    if isinstance(page, dict):
+        blocks = page.get("blocks")
+        if isinstance(blocks, list):
+            return _page_from_blocks(blocks)
+        if "markdown" in page:
+            return _page_from_markdown(page.get("markdown"))
 
-    blocks = page.get("blocks")
-    if isinstance(blocks, list):
-        return _page_from_blocks(blocks)
-    return _page_from_markdown(page.get("markdown"))
+    # Fixed 2026-09-15: every path above used to fall through to
+    # `_page_from_markdown(page.get("markdown"))`, which returns an empty
+    # PageOcrResult — and request_succeeded defaults to TRUE
+    # (ocr_types.py:45). The caller drops to tesseract only `if not
+    # result.request_succeeded` — pdf_report.py:2665, whose own comment reads
+    # "NOT merely empty text". So a response whose SHAPE we do not recognise
+    # produced a page that was billed (_meter_pages ran before this), yielded
+    # no text and no tables, did NOT fall back to tesseract, and left no log
+    # line. Indistinguishable from a blank sheet, at scale.
+    #
+    # This is the failure this deployment is most likely to actually hit.
+    # Cohere Parse's wire shape has never been verified empirically on ANY
+    # host, Foundry included (ADR-0022, Verification), so "HTTP 200 with a
+    # body we do not recognise" is precisely the shape of being wrong about
+    # it — and it was the one case the old code scored as success.
+    #
+    # An empty page is still success, and deliberately so: a genuinely blank
+    # scan arrives as a RECOGNISED shape — `blocks` a list (possibly empty),
+    # or a `markdown` key present — and returns above. Only an unrecognised
+    # shape reaches here.
+    #
+    # Only key names are logged, never values: a Parse body carries the
+    # document's text, and this line goes to CloudWatch.
+    inspected = page if isinstance(page, dict) else payload
+    logger.error(
+        "COHERE_PARSE_UNRECOGNISED_RESPONSE: no recognisable page in the "
+        "Parse body (keys=%s). Falling back to tesseract, which extracts no "
+        "tables. Run ops/validation/bedrock_probe.py and correct the response "
+        "adapter from its report.",
+        sorted(inspected)[:10] if isinstance(inspected, dict) else type(inspected).__name__,
+    )
+    return PageOcrResult(
+        "",
+        0.0,
+        request_succeeded=False,
+        error="unrecognised_response_shape",
+        confidence_reported=False,
+    )
 
 
 def _page_from_blocks(blocks: list[Any]) -> PageOcrResult:
@@ -551,11 +583,7 @@ def _page_from_blocks(blocks: list[Any]) -> PageOcrResult:
 
 
 def _page_from_markdown(markdown: Any) -> PageOcrResult:
-    content = (
-        _first(markdown, "content", "text", "markdown")
-        if isinstance(markdown, dict)
-        else markdown
-    )
+    content = _first(markdown, "content", "text", "markdown") if isinstance(markdown, dict) else markdown
     if not isinstance(content, str) or not content.strip():
         return PageOcrResult("", 0.0, confidence_reported=False)
 
@@ -569,9 +597,7 @@ def _page_from_markdown(markdown: Any) -> PageOcrResult:
 
     if include_image_descriptions():
         text = _MARKDOWN_IMAGE_RE.sub(
-            lambda m: (
-                f"[Figure: {m.group('alt').strip()}]" if m.group("alt").strip() else ""
-            ),
+            lambda m: f"[Figure: {m.group('alt').strip()}]" if m.group("alt").strip() else "",
             text,
         )
     else:
@@ -616,9 +642,7 @@ def ocr_page_sync(pdf_path: str, page_num: int) -> PageOcrResult:
     return _parse_png(png, log_page=page_num)
 
 
-def ocr_page_block_sync(
-    pdf_path: str, page_numbers: Sequence[int]
-) -> dict[int, PageOcrResult]:
+def ocr_page_block_sync(pdf_path: str, page_numbers: Sequence[int]) -> dict[int, PageOcrResult]:
     """OCR a group of pages: each worker renders its page, then posts it.
 
     Returns ``{absolute_page_number: PageOcrResult}`` for the pages whose
@@ -655,11 +679,7 @@ def ocr_page_block_sync(
     with ThreadPoolExecutor(max_workers=workers) as executor:
         results = list(executor.map(_one, ordered))
 
-    return {
-        page_number: result
-        for page_number, result in results
-        if result is not None and result.request_succeeded
-    }
+    return {page_number: result for page_number, result in results if result is not None and result.request_succeeded}
 
 
 __all__ = [

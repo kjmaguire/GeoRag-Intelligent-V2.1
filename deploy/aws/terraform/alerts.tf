@@ -78,6 +78,14 @@ locals {
       pattern     = "QDRANT_PARTIAL_LOSS"
       description = "embed_pending_passages sweep: Qdrant holds >2% fewer points for a project than silver.document_passages records as embedded."
     }
+    cohere-parse-unrecognised-response = {
+      # Emitted by src/fastapi/app/services/ingest/cohere_parse_client.py,
+      # which runs in the fastapi and hatchet-worker services — the services
+      # group, not the sweep group.
+      log_group   = "services"
+      pattern     = "COHERE_PARSE_UNRECOGNISED_RESPONSE"
+      description = "Cohere Parse returned HTTP 200 with a body the response adapter does not recognise, so the page fell back to tesseract and extracted no tables. Parse's wire shape has never been verified empirically on any host (ADR-0022), making this the most likely way the model tier is wrong. Bedrock's own invocation-error metrics cannot see it — the call SUCCEEDED. Sustained firing means the adapter disagrees with the endpoint: run ops/validation/bedrock_probe.py and correct it from the report."
+    }
     bedrock-endpoint-not-inservice = {
       # The sweep group, not the services group: this marker is
       # emitted only by deploy/aws/scheduler/startup-sweep.sh, which
