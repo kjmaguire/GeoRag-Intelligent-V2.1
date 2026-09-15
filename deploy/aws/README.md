@@ -23,11 +23,11 @@ cannot reach the account to answer, so run it from a shell with AWS access —
 a check nobody could answer is not a check that passed.
 
 It covers the steps below that have a queryable answer: the variables with no
-default, the secret keys in `georag/app`, the Marketplace endpoints and
-— the one that costs you a morning — whether their configs carry the
-`<endpoint-name>-config` name the nightly sweep looks for. The one-time
-actions (Steps 1, 2 and 4) have no state to query and are listed by the
-script as still yours.
+default, the secret keys in `georag/app`, whether `COHERE_API_KEY` holds a
+real value rather than the bootstrap placeholder — the one that starts the
+tasks cleanly and then fails every query — and whether any SageMaker endpoint
+is still running and billing. The one-time actions (Steps 1, 2 and 4) have no
+state to query and are listed by the script as still yours.
 
 Note that `scripts/operator/preflight.sh` is a **different** script and does
 not gate this deployment: it predates ADR-0022 and checks SSH hosts and SOPS
@@ -84,9 +84,16 @@ terraform plan -var-file=production.tfvars
 ```
 
 `production.tfvars` is not in the repository. The variables with no default
-are the ones a deployment must decide: `acm_certificate_arn`, `app_domain`,
-`reverb_app_key`, `alert_email`, and the two Bedrock Marketplace endpoint
-names.
+are the four a deployment must decide: `acm_certificate_arn`, `app_domain`,
+`reverb_app_key` and `alert_email`.
+
+It was six until 2026-09-15. `bedrock_chat_endpoint_name` and
+`bedrock_parse_endpoint_name` went with ADR-0023, which moved chat and OCR
+onto Cohere's own API — the models were AWS Marketplace SageMaker packages
+on A100/H100 and ~$2.50/hour, billing whether or not anything called them.
+The Cohere equivalents (`cohere_chat_model`, `cohere_parse_model`,
+`cohere_base_url`) all have working defaults, and the credential is a secret,
+not a tfvar: a tfvar would put it in Terraform state.
 
 `app_domain` is the bare public hostname — no scheme, no path — and must be
 a name on `acm_certificate_arn`. It drives `APP_URL`, and through it
@@ -111,78 +118,77 @@ unset rather than shipping a bundle with `key: undefined`.
 
 ## Step 0, before anything else
 
-**Confirm in-region that Cohere Command A+ and Parse 5 are subscribable in
-Bedrock Marketplace, and that Embed v4 and Rerank 3.5 are enabled
-serverless.** The entire model tier rests on this.
+**Confirm that your Cohere API key covers Command A+ and Parse 5, and that
+Embed v4 and Rerank 3.5 are enabled serverless in your Bedrock region.** The
+model tier is split across two vendors' auth since ADR-0023 and rests on
+both halves.
 
-> **2026-09-15:** Kyle confirmed Command A+ and Parse 5 are in Bedrock
-> Marketplace and deployed both from the Bedrock console. That is the right
-> half of a distinction worth stating once, because the two look alike and
-> only one works with this code: a **Bedrock** Marketplace deployment is
-> invoked through `bedrock-runtime` Converse with the endpoint ARN as
-> `modelId`, which is what `llm_bedrock.py` does. An **AWS Marketplace**
-> SageMaker model package is a different product — `sagemaker-runtime.
-> invoke_endpoint`, different request and response shape, ADR-0022 option C,
-> a rewrite. Chat and OCR would fail at the first call, not at deploy.
+> **What changed on 2026-09-15, and why this section is much shorter than it
+> was.** ADR-0022 routed all four Cohere capabilities through Bedrock, and
+> this step used to be about deploying two Bedrock Marketplace endpoints and
+> naming their configs correctly. When the account was reachable for the
+> first time, that turned out not to hold: Command A+ and Parse 5 are **AWS
+> Marketplace** SageMaker model packages, not Bedrock models. The two look
+> alike and are both called "the marketplace", but only one works with the
+> Bedrock adapter — a *Bedrock* Marketplace deployment is invoked through
+> `bedrock-runtime` Converse with the endpoint ARN as `modelId`, while an
+> *AWS Marketplace* package needs `sagemaker-runtime.invoke_endpoint` and a
+> different request and response shape. Getting it wrong does not fail at
+> deploy: `terraform apply` succeeds, the tasks start, and chat and OCR fail
+> at the first call.
 >
-> Availability is therefore settled. The wire shapes are **not** — that is
-> the probe below, and it is still the largest open risk in this deployment.
+> On top of that, Command A+ wanted A100 or H100 instances and Parse ran
+> about $2.50/hour, and a Marketplace endpoint has **no idle state** — it
+> bills for as long as it exists. ADR-0023 moved both to Cohere's own API.
+> Nothing was ever deployed, so no idle cost was incurred, and the endpoint
+> naming trap, the nightly recreate and the Sev 1 alarm that watched it are
+> all gone with them.
+>
+> Embeddings and reranking did **not** move. They are serverless Bedrock
+> models with IAM auth, they cost nothing at rest, and they are where the
+> account's AWS credits get spent.
 
-The serverless half is still worth checking, since Embed v4 and Rerank 3.5
-come from the catalogue rather than from an endpoint you deployed:
+### The Cohere half
+
+There is no endpoint to stand up and nothing to name. What has to be true is
+that the key works and its plan covers both models — a key entitled to chat
+but not Parse deploys cleanly and then sends every scanned page to tesseract,
+which extracts no tables and raises nothing.
+
+Write it into Secrets Manager **before the first apply**. ECS refuses to
+start a task that references a secret key which does not exist, and the
+failure presents as a task that never starts rather than as an application
+error — see Step 3.
+
+### The Bedrock half
+
+Embed v4 and Rerank 3.5 come from the serverless catalogue rather than from
+anything you deployed, so a region that does not carry them has nowhere to
+run embeddings or reranking at all:
 
 ```bash
 aws bedrock list-foundation-models --region "$BEDROCK_REGION" \
   --query 'modelSummaries[?providerName==`Cohere`].[modelId,modelName]' --output table
 ```
 
-If Command A+ or Parse 5 are not available, the fallback is the option Kyle
-declined: chat and parse on `api.cohere.com`, embeddings and reranking left
-on Bedrock. ADR-0022 §11 records that as the escape hatch rather than a
-redesign.
+Take the exact `modelId` values from that output rather than assuming them.
+As of 2026-09-15 `ca-west-1` (Calgary) carried **zero** Cohere models despite
+serving 19 foundation models; `ca-central-1`, `us-east-1` and `us-west-2`
+each carried six. `bedrock_region` is a separate variable from `region` for
+exactly this reason.
 
-Then run the wire-contract probe and commit its report before trusting any
-adapter. Cohere Parse's wire shape has **never** been empirically verified,
-on Foundry or on Bedrock, and the chat path's three confirmed Foundry
-behaviours do not carry over by assumption.
+### Then the probe, and commit its report
 
-### Name the endpoint configs `<endpoint-name>-config`
+Every model adapter in this repository says `[UNVERIFIED]` at the top,
+because none has been confirmed against a live call from this codebase.
+Cohere Parse's shape has **never** been verified on any host — Foundry,
+Bedrock or Cohere's own API — and the chat path's three confirmed Foundry
+behaviours (JSON `response_format`, reasoning in a sibling field, and the
+`<|START_TEXT|>`/`<|END_TEXT|>` sentinel wrapping) do not carry over by
+assumption to a new host. Documentation got all three wrong on Foundry; only
+a real request settled it.
 
-Terraform does not create the two Marketplace endpoints — you do, by
-subscribing in Bedrock Marketplace and deploying each model. Terraform only
-takes their **names**, as `bedrock_chat_endpoint_name` and
-`bedrock_parse_endpoint_name`.
-
-The nightly cycle deletes those endpoints and recreates them each morning
-from their **retained endpoint configs**, and it finds the config by
-convention, not by discovery:
-
-```
-scheduler.tf:82-85   "<endpoint-name>=<endpoint-name>-config"
-```
-
-The sweep role holds `sagemaker:DescribeEndpointConfig` but deliberately not
-`ListEndpointConfigs`, so it cannot go looking for a config under a different
-name. If the console named yours anything else, the deployment works on day
-one and then, on the first morning restart, `create-endpoint` fails and you
-have no chat and no OCR — the failure mode the section below calls Sev 1.
-
-So after deploying each model, check the config name and fix it if it does
-not match:
-
-```bash
-for ep in "$CHAT_ENDPOINT" "$PARSE_ENDPOINT"; do
-  actual=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
-             --query EndpointConfigName --output text)
-  echo "$ep -> $actual   (sweep will look for ${ep}-config)"
-done
-```
-
-An endpoint config is immutable but cheap to re-create under the right name:
-copy the production variant out of the existing one with
-`describe-endpoint-config`, `create-endpoint-config --endpoint-config-name
-"${ep}-config"` with the same variant, then `update-endpoint` onto it. Do
-that now, while an outage costs nothing.
+`aws-preflight.sh` A-11 fails until a report is committed.
 
 ### Step 0 end to end, from a workstation
 
@@ -202,7 +208,7 @@ Needs `uv` on PATH — `bedrock_probe.sh` runs `uv run --no-sync` inside
 ```bash
 # Every value below is a placeholder with a plausible default. Read each one
 # before running the block; none of them is guessed correctly for you.
-export REGION=ca-west-1          # the stack's region
+export REGION=us-east-1          # the stack's region; ca-west-1 has no Cohere
 export PROFILE=georag
 
 # 1. Authenticate. Credentials last 12h, renewable 90 days without the browser.
@@ -210,61 +216,50 @@ aws configure set region "$REGION" --profile "$PROFILE"
 aws login --region "$REGION" --profile "$PROFILE"
 aws sts get-caller-identity --profile "$PROFILE"
 
-# 2. Find the two Marketplace endpoints, and which region they are really in.
-#    That region is BEDROCK_REGION and may differ from the stack's region —
-#    `bedrock_region` is a separate variable for exactly this reason. If this
-#    comes back empty, the endpoints are in another region; try it there.
+# 2. Nothing should be running on SageMaker. ADR-0023 removed the Marketplace
+#    endpoints; anything listed here bills continuously and no part of this
+#    deployment uses it. aws-preflight.sh A-09 checks the same thing.
 aws sagemaker list-endpoints --profile "$PROFILE" --region "$REGION" \
   --query 'Endpoints[].[EndpointName,EndpointStatus]' --output table
 
-# 3. The naming check above, which is what the section you just read is for.
-export BEDROCK_REGION="$REGION"  # or wherever step 2 actually found them
-export CHAT_ENDPOINT=georag-chat     # the names you gave them in the console
-export PARSE_ENDPOINT=georag-parse
-for ep in "$CHAT_ENDPOINT" "$PARSE_ENDPOINT"; do
-  actual=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
-             --profile "$PROFILE" --region "$BEDROCK_REGION" \
-             --query EndpointConfigName --output text)
-  status=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
-             --profile "$PROFILE" --region "$BEDROCK_REGION" \
-             --query EndpointStatus --output text)
-  echo "$ep [$status] -> config '$actual'   (sweep needs '${ep}-config')"
-done
-
-# 4. What the serverless catalogue actually offers in that region. Embed v4
-#    and Rerank 3.5 are catalogue models, not endpoints anyone deployed — a
-#    region that does not carry them has nowhere to run embeddings or
-#    reranking. Take the exact modelIds from this output rather than
-#    assuming them.
+# 3. What the serverless catalogue actually offers. Embed v4 and Rerank 3.5
+#    are catalogue models — take the exact modelIds from this output.
+export BEDROCK_REGION="$REGION"
 aws bedrock list-foundation-models --profile "$PROFILE" --region "$BEDROCK_REGION" \
   --query 'modelSummaries[?providerName==`Cohere`].[modelId,modelName]' --output table
 
-# 5. The probe. It takes NO --region flag: it reads the environment, and the
-#    two ARNs are built exactly as config.tf:331-332 builds them, so what is
-#    probed is what production will use.
-ACCOUNT=$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text)
+# 4. The probe. It takes NO --region flag: it reads the environment.
 export AWS_PROFILE="$PROFILE"
 export AWS_REGION="$REGION"
-export BEDROCK_CHAT_MODEL_ID="arn:aws:sagemaker:${BEDROCK_REGION}:${ACCOUNT}:endpoint/${CHAT_ENDPOINT}"
-export BEDROCK_PARSE_MODEL_ID="arn:aws:sagemaker:${BEDROCK_REGION}:${ACCOUNT}:endpoint/${PARSE_ENDPOINT}"
-export BEDROCK_EMBED_MODEL_ID=cohere.embed-v4:0        # confirm against step 4
-export BEDROCK_RERANK_MODEL_ID=cohere.rerank-v3-5:0    # confirm against step 4
+export BEDROCK_EMBED_MODEL_ID=cohere.embed-v4:0        # confirm against step 3
+export BEDROCK_RERANK_MODEL_ID=cohere.rerank-v3-5:0    # confirm against step 3
 bash ops/validation/bedrock_probe.sh
 
-# 6. COMMIT THE REPORT. The adapters carry [UNVERIFIED] until one exists,
+# 5. COMMIT THE REPORT. The adapters carry [UNVERIFIED] until one exists,
 #    and aws-preflight.sh A-11 fails until one lands here.
 git add ops/validation/reports/bedrock_probe_*.json
 git commit -m "chore(validation): commit the in-region Bedrock wire-contract probe report"
 
-# 7. Everything the preflight could not answer without an account.
+# 6. Everything the preflight could not answer without an account.
 AWS_REGION="$REGION" AWS_PROFILE="$PROFILE" bash scripts/operator/aws-preflight.sh
 ```
 
+> ⚠️ **The probe still only covers the Bedrock half.**
+> `ops/validation/bedrock_probe.py` was written when all four capabilities
+> were Bedrock calls. After ADR-0023 its embed and rerank sections are still
+> right and its chat and parse sections have nothing to talk to. Verifying
+> the Cohere half against `api.cohere.com` is ADR-0023 migration step 6 and
+> needs a probe that does not exist yet — so until it does, read
+> `app/agent/llm_cohere.py` and `app/services/cohere_wire.py` for exactly
+> what is assumed, and treat the first live call as the verification.
+
 Read the report before trusting any adapter. If Parse's shape differs from
-what `_page_from_payload` expects, the probe says so — and since 2026-09-15
-the adapter says so too, at runtime: an unrecognised body now fails soft to
-tesseract behind the `COHERE_PARSE_UNRECOGNISED_RESPONSE` marker and its
-alarm, rather than returning a silently blank page that no metric could see.
+what `_page_from_payload` expects, the adapter says so at runtime: since
+2026-09-15 an unrecognised body fails soft to tesseract behind the
+`COHERE_PARSE_UNRECOGNISED_RESPONSE` marker and its alarm, rather than
+returning a silently blank page that no metric could see. A refused call has
+its own marker, `COHERE_PARSE_REJECTED`, and that one is now the *entire*
+signal: CloudWatch cannot see a request that never went to AWS.
 
 ## Step 1: bootstrap the database by hand, once
 
@@ -331,6 +326,7 @@ this table names one nothing reads.
 | `HATCHET_DATABASE_URL` | hatchet | Full connection string for the `hatchet` role and database that `bootstrap.sql` creates. |
 | `FLOW_JWT_SECRET` | fastapi, hatchet-worker | HS256 signing key for per-flow integration JWTs. |
 | `REVERB_APP_SECRET` | the three Laravel services | Signs requests to the Pusher events API. The paired `REVERB_APP_KEY` is public and is a tfvar, not a secret. |
+| `COHERE_API_KEY` | fastapi, hatchet-worker | One key, two capabilities: Command A+ chat (`LLM_BACKEND=cohere`) and Parse 5 OCR (`OCR_ENGINE=cohere_parse`), per ADR-0023. The worker needs its own copy — the parser runs there, not behind a call to fastapi. Confirm the key's plan covers **both** models; a key entitled to chat but not Parse starts everything cleanly and then sends every scanned page to tesseract. |
 | `APP_KEY_NEXT` | the rotation task only | **Not a go-live key.** It exists only while an `APP_KEY` rotation is in flight; the rotation script writes it, the task reads it, the script removes it. `terraform/rotation.tf` explains why it is a secret rather than a task override, and relies on its absence to make the rotation task unrunnable at any other time. Do not create it now. |
 
 ### The one ordering constraint
@@ -547,18 +543,26 @@ cost lever this deployment has.
 
 ## The Bedrock endpoints are the sharp edge
 
-Command A+ and Parse 5 are not in Bedrock's serverless catalogue, so they
-run on SageMaker-managed endpoints that bill for as long as they exist.
-There is no idle state — the only way not to pay is to delete them, so the
-sweeps do, and recreate them each morning from their retained configs.
+**Resolved 2026-09-15 (ADR-0023). Left here because the shape is worth
+remembering, not because it is still live.**
 
-A failed recreate is not a degraded path. It is **no chat and no OCR**,
-with no Bedrock invocation metric to alarm on because there are no
-invocations to fail. The startup sweep therefore waits for `InService` and
-does not report success without it; the `BEDROCK_ENDPOINT_NOT_INSERVICE`
-marker it emits is matched by a CloudWatch metric filter and alarmed Sev 1.
-This is the one operational cost the Bedrock route added that has no Azure
-precedent, and it lives entirely in the scheduler.
+Command A+ and Parse 5 are not in Bedrock's serverless catalogue. They ran
+on SageMaker-managed endpoints that bill for as long as they exist — no idle
+state, so the only way not to pay was to delete them nightly and recreate
+them each morning from retained configs.
+
+A failed recreate was not a degraded path. It was **no chat and no OCR**,
+with no invocation metric to alarm on because there were no invocations to
+fail, so the startup sweep waited for `InService` and emitted
+`BEDROCK_ENDPOINT_NOT_INSERVICE` at Sev 1. That was the one operational cost
+the Bedrock route added with no Azure precedent.
+
+Both models now run on Cohere's own API, billed per token and per page.
+There is no endpoint, so there is nothing to delete, nothing to recreate,
+nothing to wait for and no alarm — the sweeps only touch ECS and RDS. The
+cost that replaced it is a long-lived API key to hold and rotate, and a
+refused call that no AWS metric can see: `COHERE_PARSE_REJECTED` and
+`COHERE_PARSE_UNRECOGNISED_RESPONSE` are the whole signal for OCR.
 
 ## What is still not measured
 

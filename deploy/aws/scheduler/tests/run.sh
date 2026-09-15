@@ -18,16 +18,21 @@
 #   shutdown_db_stop_no_op      an exit code that lies in the other
 #                               direction, as on 2026-08-19 and 08-20
 #   *_one_service_fails         one failed action must not strand the rest
-#   endpoint_*                  NEW on AWS: a Marketplace endpoint that
-#                               fails to come back leaves no chat and no
-#                               OCR at all, with no Bedrock invocation
-#                               metric to alarm on — there are no
-#                               invocations to fail. The sweep must not
-#                               report success without InService.
 #
-# What is NOT here any more, deliberately: the dst_* cases. EventBridge
-# Scheduler is timezone-aware, so there is one schedule, one fire and no
-# guard to get wrong. See shutdown-sweep.sh's header.
+# What is NOT here any more, deliberately:
+#
+#   dst_*         EventBridge Scheduler is timezone-aware, so there is one
+#                 schedule, one fire and no guard to get wrong. See
+#                 shutdown-sweep.sh's header.
+#   endpoint_*    Removed 2026-09-15 with the code they covered (ADR-0023).
+#                 They tested that a Marketplace endpoint failing to come
+#                 back was a LOUD failure, because it left no chat and no
+#                 OCR with no invocation metric to alarm on. Chat and OCR
+#                 moved to Cohere's own API: no endpoint to recreate, so
+#                 no failure mode to assert on. The fake-aws harness keeps
+#                 its endpoint knobs (see tests/fake-aws) so the cases can
+#                 come back with the code if a Marketplace endpoint is ever
+#                 deployed deliberately.
 #
 # Usage: bash deploy/aws/scheduler/tests/run.sh
 set -uo pipefail
@@ -88,7 +93,6 @@ run() {
             PATH="${WORK}/bin:${PATH}" \
             FAKE_AWS_LOG="${WORK}/aws.log" \
             SWEEP_POLL_INTERVAL_S=1 \
-            SWEEP_ENDPOINT_TIMEOUT_S=2 \
             "$@" bash "$script" 2>&1)
   RC=$?
   PASS=$((PASS + 1))
@@ -136,35 +140,15 @@ run shutdown_db_unreadable "$SHUTDOWN" FAKE_AWS_DB_STATE=GONE
 assert_rc 1
 assert_says "could not read"
 
-run shutdown_no_endpoints_configured "$SHUTDOWN"
+# A ratchet, not a scenario. The endpoint cases are gone (see the header),
+# and the thing that must not come back is the CALL — the scheduler role no
+# longer holds sagemaker:DeleteEndpoint, so a resurrected branch would fail
+# with AccessDenied in the middle of the night rather than at review.
+run shutdown_touches_no_endpoints "$SHUTDOWN" \
+    SWEEP_BEDROCK_ENDPOINTS="georag-chat georag-parse"
 assert_rc 0
-assert_says "no Bedrock Marketplace endpoints configured"
 assert_aws_calls "sagemaker delete-endpoint" 0
-
-run shutdown_deletes_endpoints "$SHUTDOWN" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat georag-parse" \
-    FAKE_AWS_EP_STATES="georag-chat:InService georag-parse:InService"
-assert_rc 0
-assert_says "georag-chat: deleted"
-assert_says "georag-parse: deleted"
-assert_aws_calls "sagemaker delete-endpoint" 2
-
-run shutdown_endpoint_already_gone "$SHUTDOWN" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat" \
-    FAKE_AWS_EP_STATES="georag-chat:MISSING" FAKE_AWS_EP_DELETE_RC=254 \
-    FAKE_AWS_EP_DELETE_TAKES_EFFECT=1
-# A previous run already deleted it. The command fails; the end state is
-# what was wanted. Same reasoning as the Postgres case.
-assert_rc 0
-assert_says "already deleted"
-
-run shutdown_endpoint_delete_really_failed "$SHUTDOWN" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat" \
-    FAKE_AWS_EP_STATES="georag-chat:InService" FAKE_AWS_EP_DELETE_RC=254
-# Delete failed AND the endpoint is still there — this one really is a
-# failure, and it costs money every hour it goes unnoticed.
-assert_rc 1
-assert_says "still exists after delete"
+assert_aws_calls "sagemaker describe-endpoint" 0
 
 # ---------------------------------------------------------------------
 # Startup
@@ -214,47 +198,15 @@ run startup_unstable_service_is_a_failure "$STARTUP" FAKE_AWS_UNSTABLE="fastapi"
 assert_rc 1
 assert_says "fastapi did not reach a stable state"
 
-run startup_recreates_endpoints "$STARTUP" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat=georag-chat-config georag-parse=georag-parse-config"
+# The matching ratchet. The startup sweep used to block for up to 15
+# minutes waiting for an endpoint to reach InService; it must not do that
+# again by accident, and it must not call an API the role cannot use.
+run startup_touches_no_endpoints "$STARTUP" \
+    SWEEP_BEDROCK_ENDPOINTS="georag-chat=georag-chat-config"
 assert_rc 0
-assert_says "georag-chat: creating from config georag-chat-config"
-assert_says "startup sweep complete"
-assert_aws_calls "sagemaker create-endpoint" 2
-
-run startup_endpoint_already_inservice "$STARTUP" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat" \
-    FAKE_AWS_EP_STATES="georag-chat:InService"
-assert_rc 0
-assert_says "already InService"
 assert_aws_calls "sagemaker create-endpoint" 0
-
-run startup_endpoint_create_fails "$STARTUP" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat" FAKE_AWS_EP_CREATE_RC=254
-assert_rc 1
-assert_says "BEDROCK_ENDPOINT_NOT_INSERVICE"
-assert_says "startup sweep INCOMPLETE"
-
-run startup_endpoint_lands_failed "$STARTUP" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat" FAKE_AWS_EP_AFTER_CREATE=Failed
-assert_rc 1
-assert_says "BEDROCK_ENDPOINT_NOT_INSERVICE"
-assert_says "status Failed"
-
-run startup_endpoint_never_ready "$STARTUP" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat" FAKE_AWS_EP_AFTER_CREATE=Creating
-# The timeout case: the sweep must NOT report complete just because the
-# create call succeeded. An endpoint stuck in Creating is a platform with
-# no chat.
-assert_rc 1
-assert_says "BEDROCK_ENDPOINT_NOT_INSERVICE"
-assert_silent_about "startup sweep complete"
-
-run startup_endpoint_failure_does_not_stop_the_tiers "$STARTUP" \
-    SWEEP_BEDROCK_ENDPOINTS="georag-chat" FAKE_AWS_EP_CREATE_RC=254
-assert_rc 1
-# Same independence rule as everywhere else: no chat is bad, no platform
-# is worse. Every service is still started.
-assert_aws_calls "ecs update-service" 10
+assert_aws_calls "sagemaker describe-endpoint" 0
+assert_silent_about "BEDROCK_ENDPOINT_NOT_INSERVICE"
 
 # ---------------------------------------------------------------------
 

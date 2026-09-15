@@ -199,28 +199,27 @@ request per page, and a throttle storm the adapter recovers from still
 counts toward it. Check the OCR counter is still rising before treating it
 as an outage.
 
-### A Bedrock Marketplace endpoint did not come back
+### ~~A Bedrock Marketplace endpoint did not come back~~ (gone 2026-09-15)
 
-**New on AWS, and the one that will not announce itself.** Chat (Command
-A+) and OCR (Parse 5) run on SageMaker-managed endpoints that bill while
-they exist, so the nightly sweeps delete and recreate them. A failed
-recreate leaves no chat and no OCR at all — and Bedrock's invocation-error
-metrics cannot see it, because there are no invocations to fail.
+**This runbook entry no longer applies, and that is worth one paragraph
+rather than a deletion, because it was the sharpest edge in the
+deployment.** Chat (Command A+) and OCR (Parse 5) ran on SageMaker-managed
+endpoints that bill while they exist, so the nightly sweeps deleted and
+recreated them. A failed recreate left no chat and no OCR at all, and no
+invocation-error metric could see it because there were no invocations to
+fail — hence the `BEDROCK_ENDPOINT_NOT_INSERVICE` Sev 1.
 
-```bash
-aws sagemaker describe-endpoint --endpoint-name <chat-endpoint> \
-  --query '{status:EndpointStatus,reason:FailureReason}'
-```
+ADR-0023 moved both models to Cohere's own API. There are no endpoints, the
+sweeps touch only ECS and RDS, and the alarm is gone. If `sagemaker
+list-endpoints` ever returns something in this account, that is not an
+outage — it is an endpoint billing continuously that nothing uses, and
+`aws-preflight.sh` A-09 checks for exactly that.
 
-Anything other than `InService` is the incident. The startup sweep emits
-`BEDROCK_ENDPOINT_NOT_INSERVICE` and does not report success without it,
-and a CloudWatch metric filter alarms on that marker at Sev 1. Recreate
-from the retained config:
-
-```bash
-aws sagemaker create-endpoint --endpoint-name <chat-endpoint> \
-  --endpoint-config-name <chat-endpoint>-config
-```
+**What replaced it as the quiet failure:** a `COHERE_API_KEY` that is
+present but wrong, or not entitled to Parse. ECS starts every task cleanly,
+then chat 401s and every scanned page falls back to tesseract. `A-08` in
+the preflight catches a placeholder value; at runtime the signal is
+`COHERE_PARSE_REJECTED` in the services log group.
 
 The endpoint CONFIGS are never deleted, precisely so this is one call
 rather than a rebuild. A cold create takes minutes.

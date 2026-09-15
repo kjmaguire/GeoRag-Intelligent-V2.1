@@ -39,13 +39,12 @@ resource "aws_ecs_task_definition" "shutdown_sweep" {
     image      = "public.ecr.aws/aws-cli/aws-cli:latest"
     entryPoint = ["/bin/bash", "-c"]
     command    = [file("${path.module}/../scheduler/shutdown-sweep.sh")]
+    # SWEEP_BEDROCK_ENDPOINTS is gone (ADR-0023). The sweep deleted
+    # Marketplace endpoints overnight because they bill for as long as they
+    # exist; there are none left. Services and the database are still swept.
     environment = [
       { name = "SWEEP_CLUSTER", value = aws_ecs_cluster.this.name },
       { name = "SWEEP_DB_INSTANCE", value = aws_db_instance.this.identifier },
-      {
-        name  = "SWEEP_BEDROCK_ENDPOINTS"
-        value = "${var.bedrock_chat_endpoint_name} ${var.bedrock_parse_endpoint_name}"
-      },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -73,18 +72,15 @@ resource "aws_ecs_task_definition" "startup_sweep" {
     image      = "public.ecr.aws/aws-cli/aws-cli:latest"
     entryPoint = ["/bin/bash", "-c"]
     command    = [file("${path.module}/../scheduler/startup-sweep.sh")]
+    # SWEEP_BEDROCK_ENDPOINTS is gone (ADR-0023), and with it the
+    # `<endpoint-name>-config` naming convention it encoded. That convention
+    # was a trap: a config named anything else meant create-endpoint failed
+    # on a morning restart, leaving no chat and no OCR with no invocation
+    # metric to alarm on — ADR-0022 called it the sharpest edge in this
+    # deployment. There is nothing left to recreate.
     environment = [
       { name = "SWEEP_CLUSTER", value = aws_ecs_cluster.this.name },
       { name = "SWEEP_DB_INSTANCE", value = aws_db_instance.this.identifier },
-      {
-        # "name=config" pairs. The endpoint CONFIGS are never deleted, so
-        # a recreate is one call rather than a rebuild.
-        name = "SWEEP_BEDROCK_ENDPOINTS"
-        value = join(" ", [
-          "${var.bedrock_chat_endpoint_name}=${var.bedrock_chat_endpoint_name}-config",
-          "${var.bedrock_parse_endpoint_name}=${var.bedrock_parse_endpoint_name}-config",
-        ])
-      },
     ]
     logConfiguration = {
       logDriver = "awslogs"

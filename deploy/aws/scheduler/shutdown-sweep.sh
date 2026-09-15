@@ -31,13 +31,18 @@
 #    included. That was the biggest single cost item the Azure sweep could
 #    not touch.
 #
-# 3. BEDROCK MARKETPLACE ENDPOINTS ARE DELETED, NOT SCALED. Command A+ and
-#    Cohere Parse 5 are not in Bedrock's serverless catalogue, so they run
-#    on SageMaker-managed endpoints that bill for as long as they exist
-#    (ADR-0022). There is no idle state; the only way not to pay is to
-#    delete them. The startup sweep recreates them from the endpoint
-#    configs, which are NOT deleted — recreating an endpoint from an
-#    existing config is one call, recreating the config is several.
+# 3. THERE IS NO MODEL TIER TO SWEEP. Until 2026-09-15 this script also
+#    deleted Bedrock Marketplace endpoints for Command A+ and Cohere Parse
+#    5, because a Marketplace endpoint bills for as long as it exists and
+#    the only way not to pay is to delete it. ADR-0023 moved both onto
+#    Cohere's own API, where billing is per token and per page: nothing
+#    accrues overnight, so nothing needs deleting.
+#
+#    The code is REMOVED rather than left inert behind an unset variable.
+#    The scheduler role no longer holds sagemaker:DeleteEndpoint, so a
+#    dormant branch someone re-enabled would fail with AccessDenied at 2am
+#    — a trap dressed as a feature flag. Embeddings and reranking are still
+#    Bedrock calls, but they are serverless and cost nothing at rest.
 #
 # ---------------------------------------------------------------------
 # WHY THIS IS NOT `set -e` AND NOT `|| echo "skip ..."`
@@ -105,12 +110,6 @@ SERVICES=(
   laravel-reverb
 )
 
-# Bedrock Marketplace endpoints, deleted nightly. Empty means "none
-# configured" — a deployment that reverted to the hybrid Cohere-direct
-# fallback (ADR-0022 §11) has nothing to delete here and should leave
-# these unset rather than editing the script.
-read -r -a MARKETPLACE_ENDPOINTS <<< "${SWEEP_BEDROCK_ENDPOINTS:-}"
-
 FAILURES=()
 
 log()  { printf '%s\n' "$*" >&2; }
@@ -131,31 +130,6 @@ for svc in "${SERVICES[@]}"; do
     fail "desired-count 0 on $svc"
   fi
 done
-
-# --- Bedrock Marketplace endpoints ------------------------------------
-if [ "${#MARKETPLACE_ENDPOINTS[@]}" -gt 0 ] && [ -n "${MARKETPLACE_ENDPOINTS[0]}" ]; then
-  log "--- deleting ${#MARKETPLACE_ENDPOINTS[@]} Bedrock Marketplace endpoint(s) ---"
-  for ep in "${MARKETPLACE_ENDPOINTS[@]}"; do
-    delete_rc=0
-    aws sagemaker delete-endpoint --endpoint-name "$ep" --output text >/dev/null 2>&1 \
-      || delete_rc=$?
-
-    # State check, same reasoning as Postgres below. A ValidationException
-    # for "endpoint does not exist" is the desired end state reached by a
-    # previous run, not a failure — and distinguishing that from a real
-    # error by parsing the message would mean guessing AWS's wording.
-    if aws sagemaker describe-endpoint --endpoint-name "$ep" \
-         --query EndpointStatus --output text >/dev/null 2>&1; then
-      fail "endpoint ${ep} still exists after delete (delete exited ${delete_rc})"
-    elif [ "$delete_rc" -ne 0 ]; then
-      log "${ep}: delete exited ${delete_rc} but the endpoint is gone -- already deleted"
-    else
-      log "${ep}: deleted"
-    fi
-  done
-else
-  log "--- no Bedrock Marketplace endpoints configured, skipping ---"
-fi
 
 # --- RDS --------------------------------------------------------------
 log "--- stopping ${DB_INSTANCE} ---"
@@ -181,11 +155,8 @@ case "$db_state" in
     ;;
 esac
 
-ENDPOINT_COUNT=0
-if [ "${#MARKETPLACE_ENDPOINTS[@]}" -gt 0 ] && [ -n "${MARKETPLACE_ENDPOINTS[0]}" ]; then
-  ENDPOINT_COUNT=${#MARKETPLACE_ENDPOINTS[@]}
-fi
-TOTAL=$(( ${#SERVICES[@]} + ENDPOINT_COUNT + 1 ))
+# Services, plus the database. The endpoint term is gone with ADR-0023.
+TOTAL=$(( ${#SERVICES[@]} + 1 ))
 
 if [ ${#FAILURES[@]} -eq 0 ]; then
   log "shutdown sweep complete: ${TOTAL}/${TOTAL} actions succeeded"

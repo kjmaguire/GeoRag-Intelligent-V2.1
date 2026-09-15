@@ -269,13 +269,19 @@ What the window does to orchestration:
   `--min-replicas 0` was a floor rather than an off switch and the worker's
   own crons meant it was never idle, so the largest single line item — 4
   vCPU / 8 GiB — ran through every "shutdown".
-- **Two SageMaker endpoints are deleted and recreated** with the window.
-  Cohere Command A+ and Parse are not in Bedrock's serverless catalogue, so
-  they run on Marketplace endpoints that bill for as long as they exist; the
-  only way not to pay is to delete them. A failed recreate is not a degraded
-  path, it is no chat and no OCR, and no Bedrock invocation metric can see it
-  because there are no invocations to fail — hence the
-  `BEDROCK_ENDPOINT_NOT_INSERVICE` marker and its Sev 1 alarm (§5).
+- **The model tier is not swept at all**, and that is a 2026-09-15 change.
+  Until ADR-0023 this window also deleted and recreated two SageMaker
+  endpoints: Cohere Command A+ and Parse are not in Bedrock's serverless
+  catalogue, so they ran on Marketplace endpoints that bill for as long as
+  they exist, and the only way not to pay was to delete them. A failed
+  recreate was not a degraded path — it was no chat and no OCR, invisible to
+  every invocation metric because there were no invocations to fail, which is
+  why it carried the `BEDROCK_ENDPOINT_NOT_INSERVICE` Sev 1.
+
+  Both models moved to Cohere's own API (per token, per page, nothing
+  accruing at rest), so there is nothing left to cycle and the alarm is gone.
+  Embeddings and reranking are still Bedrock but have always been
+  serverless. The sweeps now touch only ECS services and RDS.
 
 ---
 
@@ -316,10 +322,18 @@ What the window does to orchestration:
 [`deploy/aws/terraform/alerts.tf`](../../../deploy/aws/terraform/alerts.tf)
 defines the log-based rules as CloudWatch metric filters plus alarms:
 `scheduler-sweep-failed` and `scheduler-sweep-missing` (the two sweeps),
-`BEDROCK_ENDPOINT_NOT_INSERVICE` (Sev 1 — new on AWS, and the one failure
-the metric alarms structurally cannot catch), `answer-quality-regression`
-(reads `answer_quality_watch`'s log line), a cost-ceiling rule (reads
-`cost_burn_watcher`), and a Qdrant-missing-points rule.
+`answer-quality-regression` (reads `answer_quality_watch`'s log line), a
+cost-ceiling rule (reads `cost_burn_watcher`), a Qdrant-missing-points rule,
+and two OCR rules — `cohere-parse-rejected` and
+`cohere-parse-unrecognised-response`.
+
+Those last two carry more weight than their names suggest. Since ADR-0023
+Parse runs on Cohere's own API, so **no AWS metric observes it at all** —
+CloudWatch cannot see a request that never went to AWS. A refused call and a
+200 the adapter cannot read are both invisible except through these log
+lines, and both degrade every scanned page to Tesseract without raising
+anything. `BEDROCK_ENDPOINT_NOT_INSERVICE` was removed in the same change;
+the endpoints it watched no longer exist.
 
 These match **marker log lines**, so changing a log string silently
 disables an alarm. That was true on Azure and is true here.

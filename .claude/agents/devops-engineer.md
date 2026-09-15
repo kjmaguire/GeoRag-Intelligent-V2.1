@@ -152,8 +152,9 @@ Every service needs a healthcheck. Applications expose `/up` (Laravel) and
 CloudWatch, routed to one SNS topic with a single email subscriber. The alarms
 live in `deploy/aws/terraform/alerts.tf` and are the Azure baseline rewritten,
 not ported: several are metric filters on **marker log lines** such as
-`ANSWER_QUALITY_REGRESSION` and `BEDROCK_ENDPOINT_NOT_INSERVICE`, so changing a
-log string silently disables an alarm. **There are no latency alerts and no
+`ANSWER_QUALITY_REGRESSION` and `COHERE_PARSE_REJECTED`, so changing a log
+string silently disables an alarm. `scripts/check-log-marker-alarms.py` is the
+gate that stops one being filtered on the wrong log group. **There are no latency alerts and no
 paging.** `docs/architecture/manual/12-observability.md` is the inventory: logs,
 the two unscraped `/metrics` endpoints, trace-id propagation, probes and the
 alert rules. There is no Prometheus or Grafana configuration anywhere in the

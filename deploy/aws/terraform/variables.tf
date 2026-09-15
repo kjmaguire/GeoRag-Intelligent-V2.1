@@ -103,23 +103,50 @@ variable "bedrock_rerank_model_id" {
   default     = "cohere.rerank-v3-5:0"
 }
 
-variable "bedrock_chat_endpoint_name" {
+# ---------------------------------------------------------------------------
+# Cohere's own API — chat and OCR (ADR-0023)
+# ---------------------------------------------------------------------------
+# `bedrock_chat_endpoint_name` and `bedrock_parse_endpoint_name` used to live
+# here, both with no default, and they are gone. Command A+ and Parse 5 are
+# AWS *Marketplace* SageMaker packages rather than Bedrock models — A100/H100
+# and ~$2.50/hour, billing whether or not anything calls them, because a
+# Marketplace endpoint has no idle state. Nothing was ever deployed, so no
+# idle cost was incurred.
+#
+# Their removal takes the no-default tfvars from six to four, and with them
+# the `<endpoint-name>-config` naming convention that would have taken out
+# chat and OCR on a morning restart with nothing to alarm on.
+#
+# The credential is NOT here. COHERE_API_KEY is in Secrets Manager; putting
+# it in a tfvar would put it in Terraform state.
+
+variable "cohere_base_url" {
   description = <<-EOT
-    Name of the Bedrock Marketplace / SageMaker-managed endpoint serving
-    Cohere Command A+. Bedrock's serverless generative catalogue is
-    Command R/R+ (legacy), which is not the model this deployment runs.
-    The nightly sweeps delete and recreate this endpoint, because it bills
-    for as long as it exists.
+    Cohere API root. Override only for a proxy or a private deployment —
+    the default is the public endpoint.
   EOT
   type        = string
+  default     = "https://api.cohere.com"
 }
 
-variable "bedrock_parse_endpoint_name" {
+variable "cohere_chat_model" {
   description = <<-EOT
-    Name of the Marketplace endpoint serving Cohere Parse 5. Bedrock's
-    serverless catalogue carries no Parse model at all.
+    Cohere Command A+, the chat model (LLM_BACKEND=cohere). A plain model
+    name, not an endpoint ARN: there is no endpoint indirection on this
+    host, which is the difference ADR-0023 was chosen for.
   EOT
   type        = string
+  default     = "command-a-plus-05-2026"
+}
+
+variable "cohere_parse_model" {
+  description = <<-EOT
+    Cohere Parse 5, the scanned-page OCR model (OCR_ENGINE=cohere_parse).
+    The wire shape has never been empirically verified on any host — run
+    the probe before trusting it (ADR-0019/0022/0023).
+  EOT
+  type        = string
+  default     = "parse-v5.0"
 }
 
 # ---------------------------------------------------------------------------

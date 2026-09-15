@@ -83,11 +83,13 @@ The repo is a single monorepo containing:
   ([ADR-0001](../../adr/); [ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)
   supersedes [ADR-0020](../../adr/0020-azure-blob-replaces-seaweedfs-in-production.md)).
   Production credentials come from the ECS task role, not from a key.
-- **Amazon Bedrock** for the LLM (Cohere Command A+ through the Converse
-  API on a Marketplace endpoint; Anthropic Claude wired as optional
-  fallback) and for scanned-page OCR (Cohere Parse 5, also a Marketplace
-  endpoint — [ADR-0019](../../adr/) chose the model, ADR-0022 moved the
-  host). There is no LLM container in the stack; `LLM_BACKEND=vllm` remains
+- **Cohere's own API** for the LLM (Cohere Command A+ over `/v2/chat`;
+  Anthropic Claude wired as optional fallback) and for scanned-page OCR
+  (Cohere Parse 5 over `/v2/parse` — [ADR-0019](../../adr/) chose the model,
+  ADR-0022 moved the host to Bedrock, ADR-0023 moved it here a week later
+  because both models turned out to be AWS Marketplace SageMaker packages
+  that bill while idle). **Amazon Bedrock** keeps embeddings (Cohere Embed
+  v4) and reranking (Cohere Rerank 3.5), which are serverless and IAM-authed. There is no LLM container in the stack; `LLM_BACKEND=vllm` remains
   a supported value for operators pointing at their own OpenAI-compatible
   endpoint, and `LLM_BACKEND=azure` is now a startup error.
 - A **Martin 1.11** tile server ([docker/martin/martin.yaml](../../../docker/martin/martin.yaml))
@@ -152,10 +154,11 @@ Production is ECS Fargate, cluster `georag`, no GPU
   is new to production because the sparse leg of hybrid retrieval has no
   managed equivalent anywhere.
 - RDS for PostgreSQL 18 `georag-pg` (PgBouncer is still compose-only), EFS
-  for Qdrant and Redis, four S3 buckets, and **Amazon Bedrock** for LLM,
-  embeddings, reranking and OCR. Chat (Cohere Command A+) and OCR (Cohere
-  Parse 5) are Bedrock **Marketplace** endpoints rather than serverless
-  models, because Bedrock's serverless Cohere catalogue carries neither.
+  for Qdrant and Redis, four S3 buckets, and **Amazon Bedrock** for embeddings
+  and reranking. Chat (Cohere Command A+) and OCR (Cohere Parse 5) are NOT on
+  Bedrock: its serverless Cohere catalogue carries neither, and both are AWS
+  Marketplace SageMaker packages that bill while idle, so ADR-0023 put them on
+  Cohere's own API with one shared key.
 - Two EventBridge schedules stop and start the stack nightly at 23:00 and
   06:00 US-Pacific, running the sweeps in
   [deploy/aws/scheduler/](../../../deploy/aws/scheduler/). EventBridge is

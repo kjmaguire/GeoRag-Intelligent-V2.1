@@ -104,14 +104,16 @@ locals {
       pattern     = "COHERE_PARSE_REJECTED"
       description = "Cohere Parse refused the request (401/403/404/413/422). Every scanned page is falling back to tesseract, which extracts no tables. Usually COHERE_API_KEY: absent, invalid, or not entitled to Parse. Retryable statuses are NOT here — those are retried in the adapter and log at WARNING."
     }
-    bedrock-endpoint-not-inservice = {
-      # The sweep group, not the services group: this marker is
-      # emitted only by deploy/aws/scheduler/startup-sweep.sh, which
-      # runs as a scheduler task (scheduler.tf:53, :92).
-      log_group   = "scheduler"
-      pattern     = "BEDROCK_ENDPOINT_NOT_INSERVICE"
-      description = "NEW on AWS. A Marketplace endpoint failed to come back after the nightly delete. This leaves NO chat and NO OCR, and Bedrock's own invocation-error metrics cannot see it because there are no invocations to fail — the endpoint's absence is the whole failure. Sev 1."
-    }
+    # bedrock-endpoint-not-inservice was here until 2026-09-15. ADR-0022
+    # called it the sharpest edge in this deployment: a Marketplace endpoint
+    # that failed to come back after the nightly delete left NO chat and NO
+    # OCR, with no invocation-error metric able to see it because there were
+    # no invocations to fail.
+    #
+    # ADR-0023 removed the endpoints, so the alarm has nothing to watch.
+    # Deleted rather than left in place: an alarm on a marker nothing can
+    # emit sits at zero forever and reads as healthy, which is the exact
+    # failure scripts/check-log-marker-alarms.py exists to catch.
   }
 }
 

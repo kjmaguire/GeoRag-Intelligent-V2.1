@@ -46,6 +46,10 @@ resource "aws_secretsmanager_secret" "app" {
 #                            REVERB_APP_KEY is public by design
 #                            (config/reverb.php) and is a variable below,
 #                            not a secret — the browser receives it.
+#   COHERE_API_KEY           ONE key for two capabilities: Command A+ chat
+#                            (LLM_BACKEND=cohere) and Parse 5 OCR
+#                            (OCR_ENGINE=cohere_parse). Added by ADR-0023,
+#                            which makes this eleven keys, not ten.
 #
 # FLOW_JWT_SECRET was absent from this file until 2026-09-14, while
 # docker-compose.yml marked it `${VAR:?}` required — so dev could not start
@@ -56,7 +60,10 @@ resource "aws_secretsmanager_secret" "app" {
 # misconfiguration is exactly the shape this file exists to prevent.
 #
 # There is no Foundry key here and no storage account key. Both are gone:
-# Bedrock and S3 authenticate with the task role.
+# Bedrock and S3 authenticate with the task role. COHERE_API_KEY is the one
+# long-lived credential in the model tier, and ADR-0023 records that as a
+# named cost of the route rather than an oversight — chat and OCR are the
+# two capabilities AWS could not serve at a workable price.
 resource "aws_secretsmanager_secret_version" "app_placeholder" {
   secret_id     = aws_secretsmanager_secret.app.id
   secret_string = jsonencode({ PLACEHOLDER = "set-these-out-of-band" })
@@ -87,8 +94,16 @@ locals {
   # Add to this map rather than to _secret_ref whenever a new secret has a
   # named reader instead of a general one.
   _extra_secret_ref = {
-    fastapi        = ["FLOW_JWT_SECRET"]
-    hatchet-worker = ["FLOW_JWT_SECRET"]
+    # COHERE_API_KEY has exactly two readers and they are these. fastapi
+    # calls Command A+ for chat; hatchet-worker calls Parse 5 for OCR, and
+    # it needs its OWN copy — the parser runs in the worker, not behind an
+    # API call to fastapi. A worker without it logs one CRITICAL and runs
+    # tesseract on every page, which extracts no tables and raises nothing.
+    #
+    # Not in _secret_ref because the laravel services have no use for it;
+    # they never reach a model directly.
+    fastapi        = ["FLOW_JWT_SECRET", "COHERE_API_KEY"]
+    hatchet-worker = ["FLOW_JWT_SECRET", "COHERE_API_KEY"]
 
     # Only the three PHP services broadcast or serve WebSocket frames.
     # fastapi streams SSE to Laravel, which re-broadcasts; it never signs
@@ -300,14 +315,22 @@ locals {
     AWS_BUCKET_BACKUPS       = aws_s3_bucket.this["backups"].id
 
     # ── Models ──────────────────────────────────────────────────────
-    # Set explicitly on every service even though `bedrock` is the code
-    # default. EMBEDDING_BACKEND in particular MUST match between the
+    # Set explicitly on every service even though each of these is also the
+    # code default. EMBEDDING_BACKEND in particular MUST match between the
     # query path (fastapi) and the ingest path (hatchet-worker): a
     # mismatch writes one vector space and queries another, which is
     # ADR-0021's migration step 2 and the reason it is stated rather than
     # inherited.
+    #
+    # The three backends no longer agree, and that is deliberate (ADR-0023).
+    # Embeddings and reranking stay on Bedrock, where IAM authenticates them
+    # and AWS credits pay for them. Chat and OCR moved to Cohere's own API,
+    # because Command A+ and Parse 5 are AWS *Marketplace* SageMaker
+    # packages — A100/H100 and ~$2.50/h respectively, billing whether or not
+    # anything calls them. BEDROCK_REGION still matters: two of the four
+    # capabilities are still Bedrock calls.
     BEDROCK_REGION          = local.bedrock_region
-    LLM_BACKEND             = "bedrock"
+    LLM_BACKEND             = "cohere"
     EMBEDDING_BACKEND       = "bedrock"
     RERANKER_BACKEND        = "bedrock"
     BEDROCK_EMBED_MODEL_ID  = var.bedrock_embed_model_id
@@ -328,9 +351,18 @@ locals {
     # hardcoded 1024 and passing.
     EMBEDDING_DIMENSION     = local.embed_dimension
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
-    BEDROCK_CHAT_MODEL_ID   = "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_chat_endpoint_name}"
-    BEDROCK_PARSE_MODEL_ID  = "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_parse_endpoint_name}"
-    OCR_ENGINE              = "cohere_parse"
+
+    # Chat and OCR, on Cohere's own API. Plain model names, not endpoint
+    # ARNs: there is no endpoint indirection on this host, which is most of
+    # the point. The key itself is a secret (see _extra_secret_ref) and is
+    # written to Secrets Manager out of band BEFORE the first apply — ECS
+    # refuses to start a task referencing a key that does not exist, and
+    # the failure presents as a task that never starts rather than as an
+    # application error.
+    COHERE_BASE_URL    = var.cohere_base_url
+    COHERE_CHAT_MODEL  = var.cohere_chat_model
+    COHERE_PARSE_MODEL = var.cohere_parse_model
+    OCR_ENGINE         = "cohere_parse"
 
     # SPLADE++ has no managed equivalent anywhere. This is what makes the
     # sparse leg of hybrid retrieval exist; unset, sparse_encoder falls

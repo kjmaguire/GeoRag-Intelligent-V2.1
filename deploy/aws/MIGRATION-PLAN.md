@@ -8,6 +8,16 @@ on 2026-09-08 and are recorded in §11; the recommendations that were not taken
 are kept as written so the trade is legible later. ADR-0022 is the decision
 record.
 
+**Superseded in part, 2026-09-15.** Everything here about the Bedrock
+Marketplace endpoints for Cohere Command A+ and Parse 5 — the nightly
+delete-and-recreate, the `<endpoint-name>-config` convention, the
+`BEDROCK_ENDPOINT_NOT_INSERVICE` Sev 1 — describes a route that was never
+deployed and no longer exists. Both models are AWS *Marketplace* SageMaker
+packages rather than Bedrock models, on A100/H100 and ~$2.50/hour with no
+idle state, and **ADR-0023** moved them to Cohere's own API. Embeddings and
+reranking stayed on Bedrock. Read this document as the record of a decision,
+not as the current architecture; the manual is the current architecture.
+
 **Constraint that shapes everything:** no data migration. Postgres, Qdrant,
 Redis and Blob start empty on AWS. That means the embedding vector space can
 change for free, the `georag_chunks` collection can be recreated at any

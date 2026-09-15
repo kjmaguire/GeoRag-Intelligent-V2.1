@@ -86,31 +86,25 @@ data "aws_iam_policy_document" "task" {
   statement {
     sid    = "BedrockServerless"
     effect = "Allow"
+    # Converse and ConverseStream are gone with ADR-0023: chat left Bedrock,
+    # and a grant kept "in case someone flips LLM_BACKEND=bedrock" is a
+    # standing permission for a call nothing makes. Re-add it with the
+    # endpoint if that ever happens.
     actions = [
       "bedrock:InvokeModel",
-      "bedrock:InvokeModelWithResponseStream",
-      "bedrock:Converse",
-      "bedrock:ConverseStream",
       "bedrock:Rerank",
     ]
-    # Scoped to the four models this deployment uses, not "*". A wildcard
+    # Scoped to the two models this deployment uses, not "*". A wildcard
     # here would let a compromised task invoke any model in the account,
     # which is a cost problem before it is a security one.
+    #
+    # Two, not four. Command A+ and Parse 5 were never Bedrock models —
+    # they are AWS Marketplace SageMaker packages, and ADR-0023 moved both
+    # to Cohere's own API rather than pay for endpoints that bill idle. The
+    # `sagemaker:InvokeEndpoint` statement that sat here went with them.
     resources = [
       "arn:aws:bedrock:${local.bedrock_region}::foundation-model/${var.bedrock_embed_model_id}",
       "arn:aws:bedrock:${local.bedrock_region}::foundation-model/${var.bedrock_rerank_model_id}",
-      "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_chat_endpoint_name}",
-      "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_parse_endpoint_name}",
-    ]
-  }
-
-  statement {
-    sid     = "InvokeMarketplaceEndpoints"
-    effect  = "Allow"
-    actions = ["sagemaker:InvokeEndpoint"]
-    resources = [
-      "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_chat_endpoint_name}",
-      "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_parse_endpoint_name}",
     ]
   }
 
@@ -160,12 +154,13 @@ data "aws_iam_policy_document" "scheduler_task" {
   statement {
     sid    = "ReadEverythingItTouches"
     effect = "Allow"
+    # sagemaker:DescribeEndpoint and :ListEndpoints are gone with ADR-0023.
+    # The sweeps have no endpoints left to cycle, so a read grant for them
+    # would outlive its only caller.
     actions = [
       "ecs:DescribeServices",
       "ecs:ListServices",
       "rds:DescribeDBInstances",
-      "sagemaker:DescribeEndpoint",
-      "sagemaker:ListEndpoints",
     ]
     resources = ["*"]
   }
@@ -187,26 +182,17 @@ data "aws_iam_policy_document" "scheduler_task" {
     resources = [aws_db_instance.this.arn]
   }
 
-  statement {
-    sid    = "CycleMarketplaceEndpoints"
-    effect = "Allow"
-    # Create and delete only. NOT UpdateEndpoint, and NOT anything against
-    # the endpoint CONFIGS — those are retained across the nightly cycle
-    # precisely so the sweep never has to recreate them, and a sweep that
-    # could delete one would turn a bad night into a rebuild.
-    actions = ["sagemaker:CreateEndpoint", "sagemaker:DeleteEndpoint"]
-    resources = [
-      "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_chat_endpoint_name}",
-      "arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.bedrock_parse_endpoint_name}",
-    ]
-  }
-
-  statement {
-    sid       = "UseTheRetainedEndpointConfigs"
-    effect    = "Allow"
-    actions   = ["sagemaker:DescribeEndpointConfig"]
-    resources = ["arn:aws:sagemaker:${local.bedrock_region}:${data.aws_caller_identity.current.account_id}:endpoint-config/*"]
-  }
+  # CycleMarketplaceEndpoints and UseTheRetainedEndpointConfigs were here
+  # until 2026-09-15. They granted sagemaker:CreateEndpoint /
+  # :DeleteEndpoint so the nightly sweeps could delete Marketplace
+  # endpoints overnight and recreate them in the morning, because those
+  # endpoints bill for as long as they exist.
+  #
+  # ADR-0023 removed the endpoints, so the grants have no caller. They are
+  # deleted rather than left dormant: the scheduler role could delete a
+  # SageMaker endpoint in this account, and a permission whose only
+  # justification has gone is exactly what the "Contributor incident" note
+  # above is about.
 
   statement {
     sid    = "OwnLogs"

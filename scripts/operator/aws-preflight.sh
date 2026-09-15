@@ -17,9 +17,10 @@
 # reads as a fault in something else:
 #
 #   A-05  state/tfvars committed        — plaintext secrets in git, permanently
-#   A-09  endpoint config misnamed      — works on day one, Sev 1 next morning
+#   A-08  a placeholder credential      — the task STARTS, then every query and
+#                                         every scanned page fails at runtime
 #   A-10  a missing secret key          — the task never starts; not an app error
-#   A-11  no probe report               — every Bedrock wire shape is assumed
+#   A-11  no probe report               — every model wire shape is assumed
 #   A-13  state kept locally            — lose the file, orphan every resource
 #
 # Checks that need AWS report `warn`, not `fail`, when the CLI or credentials
@@ -242,45 +243,82 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# A-08/A-09 — the two Marketplace endpoints, and their config NAMES
+# A-08 — COHERE_API_KEY is a real value, not the bootstrap placeholder
 #
-# The nightly sweep recreates each endpoint from its retained config and finds
-# that config by convention (scheduler.tf: "<endpoint-name>-config"), holding
-# DescribeEndpointConfig but deliberately not ListEndpointConfigs. A config the
-# console named anything else works on day one and fails on the first morning
-# restart, with no chat and no OCR and no invocation metric to alarm on.
+# This replaced A-08/A-09, which checked that the two Bedrock Marketplace
+# endpoints were InService and that their configs followed the
+# `<endpoint-name>-config` convention the nightly sweep recreated them by.
+# ADR-0023 removed the endpoints, so both checks now have nothing to look at.
+#
+# What replaced them is the failure the Cohere route actually has, and it is a
+# nastier shape than A-10's. A-10 catches a MISSING key: ECS then refuses to
+# start the task, which is loud. A key that is PRESENT but still holds
+# config.tf's `set-these-out-of-band` placeholder starts the task cleanly, and
+# then every chat query 401s and every scanned page silently falls back to
+# tesseract with no tables. Nothing about the deploy looks wrong.
+#
+# The value is never printed or logged — only its length and whether it equals
+# the placeholder.
 # ---------------------------------------------------------------------------
-CHAT_EP="${TF_VAR_bedrock_chat_endpoint_name:-}"
-PARSE_EP="${TF_VAR_bedrock_parse_endpoint_name:-}"
+if [ "$AWS_USABLE" = "1" ]; then
+  cohere_state=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ID" \
+    --query SecretString --output text 2>/dev/null | "$PYTHON" -c '
+import json, sys
+try:
+    v = json.load(sys.stdin).get("COHERE_API_KEY")
+except Exception:
+    print("UNREADABLE"); raise SystemExit
+if v is None:
+    print("ABSENT")
+elif not str(v).strip():
+    print("BLANK")
+elif str(v).strip() == "set-these-out-of-band" or "PLACEHOLDER" in str(v).upper():
+    print("PLACEHOLDER")
+else:
+    print("SET len=%d" % len(str(v).strip()))
+' 2>/dev/null || echo "UNREADABLE")
+  case "$cohere_state" in
+    SET*)
+      check "A-08" "COHERE_API_KEY is a real value" ok "$cohere_state"
+      ;;
+    ABSENT|BLANK|PLACEHOLDER)
+      check "A-08" "COHERE_API_KEY is a real value" fail \
+        "${cohere_state} — chat 401s and every scanned page falls back to tesseract, silently. ${README} Step 3"
+      ;;
+    *)
+      check "A-08" "COHERE_API_KEY is a real value" warn "secret unreadable"
+      ;;
+  esac
+else
+  check "A-08" "COHERE_API_KEY is a real value" warn "needs AWS access"
+fi
 
-if [ "$AWS_USABLE" = "1" ] && [ -n "$CHAT_EP$PARSE_EP" ]; then
-  ep_fail=0
-  cfg_fail=0
-  detail=""
-  for ep in "$CHAT_EP" "$PARSE_EP"; do
-    [ -z "$ep" ] && continue
-    status=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
-      --query EndpointStatus --output text 2>/dev/null || echo "ABSENT")
-    cfg=$(aws sagemaker describe-endpoint --endpoint-name "$ep" \
-      --query EndpointConfigName --output text 2>/dev/null || echo "-")
-    [ "$status" != "InService" ] && ep_fail=1
-    [ "$cfg" != "${ep}-config" ] && cfg_fail=1
-    detail="${detail}${ep}=${status} cfg=${cfg} (sweep wants ${ep}-config); "
-  done
-  if [ "$ep_fail" = "0" ]; then
-    check "A-08" "both Marketplace endpoints InService" ok "$detail"
+# ---------------------------------------------------------------------------
+# A-09 — no Marketplace endpoints are left running and billing
+#
+# The inverse of the check this number used to be. ADR-0023 moved chat and OCR
+# off Bedrock Marketplace because those endpoints bill for as long as they
+# exist, with no idle state — roughly $600/month for Parse alone even under the
+# nightly shutdown. Nothing in this deployment creates one any more, and the
+# scheduler role no longer holds DeleteEndpoint, so an endpoint left over from
+# an experiment would accrue forever with nothing to turn it off.
+#
+# ADR-0023 recorded that `sagemaker list-endpoints` returned 0 in all four
+# candidate regions on 2026-09-15. This keeps that true.
+# ---------------------------------------------------------------------------
+if [ "$AWS_USABLE" = "1" ]; then
+  live_eps=$(aws sagemaker list-endpoints --query 'Endpoints[].EndpointName' \
+    --output text 2>/dev/null || echo "UNREADABLE")
+  if [ "$live_eps" = "UNREADABLE" ]; then
+    check "A-09" "no SageMaker endpoints billing" warn "list-endpoints refused"
+  elif [ -z "$live_eps" ] || [ "$live_eps" = "None" ]; then
+    check "A-09" "no SageMaker endpoints billing" ok "0 endpoints"
   else
-    check "A-08" "both Marketplace endpoints InService" fail "$detail"
-  fi
-  if [ "$cfg_fail" = "0" ]; then
-    check "A-09" "endpoint configs named <endpoint-name>-config" ok
-  else
-    check "A-09" "endpoint configs named <endpoint-name>-config" fail \
-      "rename now — the first nightly restart loses chat AND OCR. ${README} Step 0"
+    check "A-09" "no SageMaker endpoints billing" fail \
+      "still running: ${live_eps} — these bill continuously and nothing in this deployment uses them (ADR-0023)"
   fi
 else
-  check "A-08" "both Marketplace endpoints InService" warn "needs AWS access + endpoint names"
-  check "A-09" "endpoint configs named <endpoint-name>-config" warn "needs AWS access + endpoint names"
+  check "A-09" "no SageMaker endpoints billing" warn "needs AWS access"
 fi
 
 # ---------------------------------------------------------------------------
@@ -331,12 +369,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# A-11 — a Bedrock wire-contract probe report is committed
+# A-11 — a wire-contract probe report is committed
 #
-# Every Bedrock adapter says at the top that it was written to documentation and
+# Every model adapter says at the top that it was written to documentation and
 # never verified. The path this replaced had three behaviours that documentation
 # alone got wrong, settled only by a live call. Cohere Parse has never been
-# verified on any host.
+# verified on any host, and after ADR-0023 neither has Cohere chat: the probe
+# still covers embeddings and reranking on Bedrock, and the chat and parse
+# halves now need a run against api.cohere.com.
 # ---------------------------------------------------------------------------
 reports=$(ls ops/validation/reports/bedrock_probe_*.json 2>/dev/null | wc -l | tr -d ' ')
 if [ "$reports" != "0" ]; then

@@ -22,22 +22,24 @@
 # ---------------------------------------------------------------------
 # THE BEDROCK ENDPOINT STEP IS THE ONE THAT CAN LEAVE THE PLATFORM DEAD
 # ---------------------------------------------------------------------
-# New on AWS, and the sharpest edge the Bedrock route added (ADR-0022).
-# Command A+ and Cohere Parse 5 run on SageMaker-managed endpoints that
-# bill while they exist, so the shutdown sweep deletes them and this one
-# recreates them from their retained endpoint configs.
+# The sharpest edge this sweep carried is GONE as of 2026-09-15 (ADR-0023),
+# and it is worth recording what it was. Command A+ and Cohere Parse 5 ran
+# on SageMaker-managed endpoints that bill while they exist, so the
+# shutdown sweep deleted them and this one recreated them from retained
+# configs — minutes to reach InService, able to fail outright, and a failed
+# recreate was no chat and no OCR at all with NO invocation metric to alarm
+# on, because there were no invocations to fail. That is why this sweep
+# waited for InService and emitted `BEDROCK_ENDPOINT_NOT_INSERVICE`.
 #
-# Recreation is not instant — a cold endpoint takes minutes to reach
-# InService — and it can fail outright. A failed recreate is not a
-# degraded path: it is no chat and no OCR at all, with NO Bedrock
-# invocation metric to alarm on, because there are no invocations to
-# fail. So this sweep waits for InService and does NOT report success
-# without it. The `BEDROCK_ENDPOINT_NOT_INSERVICE` marker below is what
-# the CloudWatch metric filter in deploy/aws/alerts/ matches.
+# Both models moved to Cohere's own API, which has no endpoint to stand up
+# and bills per token and per page. There is nothing to recreate, nothing
+# to wait for, and nothing that can fail silently at 6am. The whole block
+# is deleted rather than gated on an unset variable: the scheduler role no
+# longer holds sagemaker:CreateEndpoint, so a dormant branch someone
+# re-enabled would fail with AccessDenied.
 #
-# Endpoints are created FIRST, before the ECS tiers, because they are the
-# slowest thing here by an order of magnitude and nothing in the app tier
-# needs them to boot — only to answer.
+# Embeddings and reranking are still Bedrock, and always were serverless —
+# nothing to cycle, nothing accruing overnight.
 set -uo pipefail
 
 CLUSTER="${SWEEP_CLUSTER:-georag}"
@@ -67,14 +69,11 @@ SERVICE_COUNT=$(( ${#TIER1[@]} + ${#TIER2[@]} + ${#TIER3[@]} ))
 # backplane a second task drops roughly half of every query's frames.
 declare -A DESIRED=( [laravel-octane]=2 [laravel-reverb]=2 )
 
-# "name=endpoint-config-name" pairs. Empty means the deployment is on the
-# hybrid Cohere-direct fallback and has no endpoints to manage.
-read -r -a MARKETPLACE_ENDPOINTS <<< "${SWEEP_BEDROCK_ENDPOINTS:-}"
-ENDPOINT_TIMEOUT_S="${SWEEP_ENDPOINT_TIMEOUT_S:-900}"
-# Floored at 1. A zero interval makes the wait loop below spin without ever
+# Floored at 1. A zero interval makes a wait loop spin without ever
 # advancing its own clock, which is an infinite loop holding an ECS task
 # open until the platform's own timeout kills it — found by the test
-# harness passing 0 to make the cases fast.
+# harness passing 0 to make the cases fast. Kept after the endpoint loop
+# was removed because the tier waits below use it too.
 POLL_INTERVAL_S="${SWEEP_POLL_INTERVAL_S:-15}"
 [ "$POLL_INTERVAL_S" -ge 1 ] 2>/dev/null || POLL_INTERVAL_S=1
 
@@ -84,70 +83,6 @@ log()  { printf '%s\n' "$*" >&2; }
 fail() { FAILURES+=("$1"); log "FAILED: $1"; }
 
 desired_for() { printf '%s' "${DESIRED[$1]:-1}"; }
-
-# --- Bedrock Marketplace endpoints ------------------------------------
-recreate_endpoint() {
-  local spec="$1"
-  local name="${spec%%=*}"
-  local config="${spec#*=}"
-  [ "$config" = "$name" ] && config="${name}-config"
-
-  local status
-  status=$(aws sagemaker describe-endpoint --endpoint-name "$name" \
-             --query EndpointStatus --output text 2>/dev/null || echo "")
-
-  if [ "$status" = "InService" ]; then
-    log "${name}: already InService"
-    return 0
-  fi
-
-  if [ -z "$status" ]; then
-    if ! aws sagemaker create-endpoint \
-           --endpoint-name "$name" --endpoint-config-name "$config" \
-           --query EndpointArn --output text >/dev/null; then
-      fail "BEDROCK_ENDPOINT_NOT_INSERVICE ${name}: create-endpoint failed (config ${config})"
-      return 1
-    fi
-    log "${name}: creating from config ${config}"
-  else
-    log "${name}: found in state ${status}, waiting"
-  fi
-
-  local waited=0
-  while [ "$waited" -lt "$ENDPOINT_TIMEOUT_S" ]; do
-    sleep "$POLL_INTERVAL_S"
-    waited=$(( waited + POLL_INTERVAL_S ))
-    status=$(aws sagemaker describe-endpoint --endpoint-name "$name" \
-               --query EndpointStatus --output text 2>/dev/null || echo "")
-    case "$status" in
-      InService)
-        log "${name}: InService after ${waited}s"
-        return 0
-        ;;
-      Failed|OutOfService|RollingBack)
-        fail "BEDROCK_ENDPOINT_NOT_INSERVICE ${name}: status ${status} after ${waited}s"
-        return 1
-        ;;
-      *)
-        log "${name}: ${status:-unknown} (${waited}s)"
-        ;;
-    esac
-  done
-
-  fail "BEDROCK_ENDPOINT_NOT_INSERVICE ${name}: still ${status:-unknown} after ${ENDPOINT_TIMEOUT_S}s"
-  return 1
-}
-
-ENDPOINT_COUNT=0
-if [ "${#MARKETPLACE_ENDPOINTS[@]}" -gt 0 ] && [ -n "${MARKETPLACE_ENDPOINTS[0]}" ]; then
-  ENDPOINT_COUNT=${#MARKETPLACE_ENDPOINTS[@]}
-  log "--- recreating ${ENDPOINT_COUNT} Bedrock Marketplace endpoint(s) ---"
-  for spec in "${MARKETPLACE_ENDPOINTS[@]}"; do
-    recreate_endpoint "$spec" || true
-  done
-else
-  log "--- no Bedrock Marketplace endpoints configured, skipping ---"
-fi
 
 # --- RDS --------------------------------------------------------------
 log "--- starting ${DB_INSTANCE} ---"
@@ -230,7 +165,8 @@ for svc in "${TIER3[@]}"; do
   wait_stable "$svc" || true
 done
 
-TOTAL=$(( SERVICE_COUNT + ENDPOINT_COUNT + 1 ))
+# Services, plus the database. The endpoint term is gone with ADR-0023.
+TOTAL=$(( SERVICE_COUNT + 1 ))
 if [ ${#FAILURES[@]} -eq 0 ]; then
   log "startup sweep complete: ${TOTAL}/${TOTAL} actions succeeded and all readiness checks passed"
   exit 0
