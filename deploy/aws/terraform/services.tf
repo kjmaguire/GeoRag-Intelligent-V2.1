@@ -22,6 +22,8 @@ resource "aws_cloudwatch_log_group" "scheduler" {
 # ---------------------------------------------------------------------------
 
 resource "aws_lb" "this" {
+  count = local.on
+
   name               = local.name
   load_balancer_type = "application"
   subnets            = aws_subnet.public[*].id
@@ -37,6 +39,8 @@ resource "aws_lb" "this" {
 }
 
 resource "aws_lb_target_group" "octane" {
+  count = local.on
+
   name        = "${local.name}-octane"
   port        = 80
   protocol    = "HTTP"
@@ -59,6 +63,8 @@ resource "aws_lb_target_group" "octane" {
 }
 
 resource "aws_lb_target_group" "reverb" {
+  count = local.on
+
   name        = "${local.name}-reverb"
   port        = 8080
   protocol    = "HTTP"
@@ -91,7 +97,9 @@ resource "aws_lb_target_group" "reverb" {
 }
 
 resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.this.arn
+  count = local.on
+
+  load_balancer_arn = aws_lb.this[0].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
@@ -99,17 +107,19 @@ resource "aws_lb_listener" "https" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.octane.arn
+    target_group_arn = aws_lb_target_group.octane[0].arn
   }
 }
 
 resource "aws_lb_listener_rule" "reverb" {
-  listener_arn = aws_lb_listener.https.arn
+  count = local.on
+
+  listener_arn = aws_lb_listener.https[0].arn
   priority     = 10
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.reverb.arn
+    target_group_arn = aws_lb_target_group.reverb[0].arn
   }
 
   condition {
@@ -120,7 +130,9 @@ resource "aws_lb_listener_rule" "reverb" {
 }
 
 resource "aws_lb_listener" "http_redirect" {
-  load_balancer_arn = aws_lb.this.arn
+  count = local.on
+
+  load_balancer_arn = aws_lb.this[0].arn
   port              = 80
   protocol          = "HTTP"
 
@@ -275,7 +287,7 @@ locals {
 }
 
 resource "aws_ecs_task_definition" "this" {
-  for_each = local.services
+  for_each = local.on == 1 ? local.services : {}
 
   family                   = "${local.name}-${each.key}"
   requires_compatibilities = ["FARGATE"]
@@ -357,7 +369,7 @@ resource "aws_ecs_task_definition" "this" {
 # ---------------------------------------------------------------------------
 
 resource "aws_ecs_service" "this" {
-  for_each = local.services
+  for_each = local.on == 1 ? local.services : {}
 
   name            = each.key
   cluster         = aws_ecs_cluster.this.id
@@ -378,7 +390,7 @@ resource "aws_ecs_service" "this" {
   dynamic "load_balancer" {
     for_each = each.key == "laravel-octane" ? [1] : []
     content {
-      target_group_arn = aws_lb_target_group.octane.arn
+      target_group_arn = aws_lb_target_group.octane[0].arn
       container_name   = each.key
       container_port   = 80
     }
@@ -387,7 +399,7 @@ resource "aws_ecs_service" "this" {
   dynamic "load_balancer" {
     for_each = each.key == "laravel-reverb" ? [1] : []
     content {
-      target_group_arn = aws_lb_target_group.reverb.arn
+      target_group_arn = aws_lb_target_group.reverb[0].arn
       container_name   = each.key
       container_port   = 8080
     }
@@ -454,6 +466,8 @@ resource "aws_ecs_service" "this" {
 # not bind. It binds again the first time this runs against a populated
 # database.
 resource "aws_ecs_task_definition" "migrate" {
+  count = local.on
+
   family                   = "${local.name}-migrate"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -488,7 +502,7 @@ resource "aws_ecs_task_definition" "migrate" {
       # RDS generates and rotates the master password into its own secret;
       # nothing in this repository or in CI ever holds it.
       name      = "MIGRATE_DB_PASSWORD"
-      valueFrom = "${aws_db_instance.this.master_user_secret[0].secret_arn}:password::"
+      valueFrom = "${local.db.master_user_secret[0].secret_arn}:password::"
     }])
     logConfiguration = {
       logDriver = "awslogs"

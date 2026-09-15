@@ -67,11 +67,61 @@ is why `required_version` says so.
 `backend.hcl` is gitignored, along with `*.tfstate` and `*.tfvars`. Nothing in
 `backend.hcl` is secret, but it sits where something secret would get pasted.
 
+## Turning the whole thing off
+
+Running costs roughly **$555/month**; switched off it is **$5-20**. The switch
+is a Terraform variable:
+
+```bash
+terraform apply -var power=off    # tear down everything billed by the hour
+terraform apply -var power=on     # ~15 minutes back to a serving stack
+```
+
+**Powering off destroys resources; it does not stop them.** That is deliberate
+and `terraform/power.tf` carries the full reasoning. The short version is that
+"stopped" does not exist for most of this:
+
+- An **ALB** and a **NAT gateway** have no stopped state at all. They bill for
+  as long as they exist -- $63/month between them, with nobody connected.
+- **RDS force-starts a stopped instance after 7 days.** The nightly sweeps hide
+  that, because they re-stop it the same night. Leave it "stopped" for a month
+  and it wakes up, bills a day of compute, and sleeps again, repeatedly, with
+  nothing reporting it.
+
+The nightly sweeps are still the right tool for a seven-hour window. They are
+not an off switch for a week.
+
+**Your data survives.** Nothing holding state is gated: S3 (the corpus), EFS
+(the Qdrant index and Redis AOF), ECR, Secrets Manager and the CloudWatch log
+groups all stay. The database is destroyed, but `skip_final_snapshot = false`
+means RDS writes `georag-pg-final` on the way out. To come back up on that data
+rather than on an empty database:
+
+```bash
+terraform apply -var power=on -var restore_from_snapshot=georag-pg-final
+```
+
+Leave `restore_from_snapshot` unset and you get a fresh, empty instance --
+which is what you want for the first ever apply, when no snapshot exists.
+
+> **Do not use a bare `terraform destroy` instead.** Three things stop it, and
+> one of them locks you out for a month: `aws_secretsmanager_secret.app` has
+> `recovery_window_in_days = 30`, so destroy schedules it for deletion and the
+> next apply fails with *"a secret with this name is already scheduled for
+> deletion"* until someone runs `aws secretsmanager restore-secret`. The
+> versioned S3 buckets (no `force_destroy`) and `deletion_protection` on RDS
+> each block it as well. `power = "off"` sidesteps all three by leaving those
+> resources alone.
+
+`scripts/check-aws-power-flag.py` runs in CI and fails if a new hourly-billed
+resource is added without the gate, or if a stateful one is added with it.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `terraform/` | Everything: VPC, ALB, ECS, RDS, EFS, S3, ECR, IAM, Secrets Manager, EventBridge Scheduler, CloudWatch |
+| `terraform/power.tf` | The `power = on\|off` switch, and why "off" destroys rather than stops |
 | `scheduler/` | The two nightly sweep scripts, embedded into task definitions by `terraform/scheduler.tf` |
 | `scheduler/tests/` | Behavioural tests for the sweeps, run against a fake `aws` CLI |
 | `rotation/` | The `APP_KEY` rotation, and the script it runs inside a one-off task (`terraform/rotation.tf`) |

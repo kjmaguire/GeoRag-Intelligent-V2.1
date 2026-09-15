@@ -25,6 +25,8 @@
 # drift the deleted script existed to police.
 
 resource "aws_ecs_task_definition" "shutdown_sweep" {
+  count = local.on
+
   family                   = "${local.name}-shutdown-sweep"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -44,7 +46,7 @@ resource "aws_ecs_task_definition" "shutdown_sweep" {
     # exist; there are none left. Services and the database are still swept.
     environment = [
       { name = "SWEEP_CLUSTER", value = aws_ecs_cluster.this.name },
-      { name = "SWEEP_DB_INSTANCE", value = aws_db_instance.this.identifier },
+      { name = "SWEEP_DB_INSTANCE", value = local.db.identifier },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -58,6 +60,8 @@ resource "aws_ecs_task_definition" "shutdown_sweep" {
 }
 
 resource "aws_ecs_task_definition" "startup_sweep" {
+  count = local.on
+
   family                   = "${local.name}-startup-sweep"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -80,7 +84,7 @@ resource "aws_ecs_task_definition" "startup_sweep" {
     # deployment. There is nothing left to recreate.
     environment = [
       { name = "SWEEP_CLUSTER", value = aws_ecs_cluster.this.name },
-      { name = "SWEEP_DB_INSTANCE", value = aws_db_instance.this.identifier },
+      { name = "SWEEP_DB_INSTANCE", value = local.db.identifier },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -110,6 +114,8 @@ locals {
 }
 
 resource "aws_scheduler_schedule" "shutdown" {
+  count = local.on
+
   name                         = "${local.name}-shutdown"
   schedule_expression          = var.shutdown_cron
   schedule_expression_timezone = var.maintenance_timezone
@@ -123,7 +129,7 @@ resource "aws_scheduler_schedule" "shutdown" {
     role_arn = aws_iam_role.scheduler.arn
 
     ecs_parameters {
-      task_definition_arn = aws_ecs_task_definition.shutdown_sweep.arn_without_revision
+      task_definition_arn = aws_ecs_task_definition.shutdown_sweep[0].arn_without_revision
       launch_type         = "FARGATE"
       network_configuration {
         subnets          = aws_subnet.private[*].id
@@ -144,6 +150,8 @@ resource "aws_scheduler_schedule" "shutdown" {
 }
 
 resource "aws_scheduler_schedule" "startup" {
+  count = local.on
+
   name                         = "${local.name}-startup"
   schedule_expression          = var.startup_cron
   schedule_expression_timezone = var.maintenance_timezone
@@ -157,7 +165,7 @@ resource "aws_scheduler_schedule" "startup" {
     role_arn = aws_iam_role.scheduler.arn
 
     ecs_parameters {
-      task_definition_arn = aws_ecs_task_definition.startup_sweep.arn_without_revision
+      task_definition_arn = aws_ecs_task_definition.startup_sweep[0].arn_without_revision
       launch_type         = "FARGATE"
       network_configuration {
         subnets          = aws_subnet.private[*].id

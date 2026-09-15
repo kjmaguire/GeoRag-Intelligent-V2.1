@@ -178,7 +178,10 @@ locals {
     )
   }
 
-  db_host = aws_db_instance.this.address
+  # "" when powered off. Nothing reads it in that state — every task
+  # definition that would is gated too — but the local is evaluated
+  # regardless, so it has to survive the database not existing.
+  db_host = try(local.db.address, "")
 
   # One number, three consumers — see EMBEDDING_DIMENSION below. 1024 is what
   # georag_chunks is built at and what Cohere Embed v4 is asked for; changing

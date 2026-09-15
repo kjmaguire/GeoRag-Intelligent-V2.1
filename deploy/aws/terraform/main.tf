@@ -137,24 +137,38 @@ resource "aws_route_table_association" "public" {
 # against an AZ failure that nothing else in this deployment survives
 # anyway. Revisit together with RDS Multi-AZ, not before.
 resource "aws_eip" "nat" {
+  count  = local.on
   domain = "vpc"
   tags   = { Name = "${local.name}-nat" }
 }
 
 resource "aws_nat_gateway" "this" {
-  allocation_id = aws_eip.nat.id
+  count         = local.on
+  allocation_id = aws_eip.nat[0].id
   subnet_id     = aws_subnet.public[0].id
   depends_on    = [aws_internet_gateway.this]
   tags          = { Name = local.name }
 }
 
+# The route table itself is NOT gated, and the default route is no longer
+# inline in it. Two things depend on the table surviving a power cycle: the
+# S3 gateway endpoint below attaches to it, and the private subnets
+# associate with it. Only the hop through the NAT is gated, so powering off
+# leaves the private subnets with no egress — which is correct, there is
+# nothing running in them to need any.
+#
+# Inline `route` blocks and `aws_route` resources cannot both manage the
+# same table; Terraform fights itself if they do. Hence the lift.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.this.id
-  }
-  tags = { Name = "${local.name}-private" }
+  tags   = { Name = "${local.name}-private" }
+}
+
+resource "aws_route" "private_nat" {
+  count                  = local.on
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.this[0].id
 }
 
 resource "aws_route_table_association" "private" {
@@ -284,7 +298,7 @@ resource "aws_service_discovery_private_dns_namespace" "this" {
 }
 
 resource "aws_service_discovery_service" "this" {
-  for_each = local.services
+  for_each = local.on == 1 ? local.services : {}
 
   name = each.key
 

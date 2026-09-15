@@ -1,6 +1,6 @@
 output "alb_dns_name" {
   description = "Point the application's DNS record at this."
-  value       = aws_lb.this.dns_name
+  value       = try(one(aws_lb.this).dns_name, null)
 }
 
 output "cluster_name" {
@@ -13,12 +13,12 @@ output "ecr_repository_urls" {
 }
 
 output "db_endpoint" {
-  value = aws_db_instance.this.address
+  value = try(local.db.address, null)
 }
 
 output "db_master_secret_arn" {
   description = "RDS-managed master password. Nothing in this repo holds it."
-  value       = aws_db_instance.this.master_user_secret[0].secret_arn
+  value       = try(local.db.master_user_secret[0].secret_arn, null)
 }
 
 output "app_secret_arn" {
@@ -56,5 +56,5 @@ output "app_key_rotation_task_family" {
     re-encryption in. Not startable outside a rotation: it references an
     APP_KEY_NEXT secret key that only exists while one is in flight.
   EOT
-  value       = aws_ecs_task_definition.app_key_rotation.family
+  value       = try(one(aws_ecs_task_definition.app_key_rotation).family, null)
 }

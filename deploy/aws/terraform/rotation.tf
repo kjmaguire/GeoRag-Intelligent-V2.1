@@ -56,6 +56,8 @@
 # Terraform registers it anyway, because registration does not resolve
 # secrets — only task start does.
 resource "aws_ecs_task_definition" "app_key_rotation" {
+  count = local.on
+
   family                   = "${local.name}-app-key-rotation"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"

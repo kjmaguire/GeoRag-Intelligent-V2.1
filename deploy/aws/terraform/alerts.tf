@@ -140,7 +140,7 @@ resource "aws_cloudwatch_log_metric_filter" "markers" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "markers" {
-  for_each = local.log_markers
+  for_each = local.on == 1 ? local.log_markers : {}
 
   alarm_name          = "${local.name}-${each.key}"
   alarm_description   = each.value.description
@@ -178,6 +178,8 @@ resource "aws_cloudwatch_log_metric_filter" "sweep_incomplete" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "sweep_failed" {
+  count = local.on
+
   alarm_name          = "${local.name}-scheduler-sweep-failed"
   alarm_description   = "A nightly sweep reported a failed action or could not authenticate. Sev 1."
   namespace           = "GeoRAG/Markers"
@@ -207,6 +209,8 @@ resource "aws_cloudwatch_log_metric_filter" "sweep_complete" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "sweep_missing" {
+  count = local.on
+
   alarm_name        = "${local.name}-scheduler-sweep-missing"
   alarm_description = "No sweep verdict in 25 hours. The dead-man signal: a sweep killed at its timeout emits nothing at all, so the failure rule above cannot see it. Sev 1."
 
@@ -229,6 +233,8 @@ resource "aws_cloudwatch_metric_alarm" "sweep_missing" {
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_metric_alarm" "octane_5xx" {
+  count = local.on
+
   alarm_name        = "${local.name}-octane-5xx"
   alarm_description = "The only public service is returning 5xx. Azure had no availability or error-rate rule on its equivalent at all, despite Container Apps emitting the split for free."
 
@@ -243,12 +249,14 @@ resource "aws_cloudwatch_metric_alarm" "octane_5xx" {
   alarm_actions       = local.alarm_actions
 
   dimensions = {
-    LoadBalancer = aws_lb.this.arn_suffix
-    TargetGroup  = aws_lb_target_group.octane.arn_suffix
+    LoadBalancer = aws_lb.this[0].arn_suffix
+    TargetGroup  = aws_lb_target_group.octane[0].arn_suffix
   }
 }
 
 resource "aws_cloudwatch_metric_alarm" "octane_dead_air" {
+  count = local.on
+
   alarm_name        = "${local.name}-octane-dead-air"
   alarm_description = <<-EOT
     No healthy Octane task. The restart counter Azure used could not tell
@@ -272,8 +280,8 @@ resource "aws_cloudwatch_metric_alarm" "octane_dead_air" {
   treat_missing_data  = "breaching"
 
   dimensions = {
-    LoadBalancer = aws_lb.this.arn_suffix
-    TargetGroup  = aws_lb_target_group.octane.arn_suffix
+    LoadBalancer = aws_lb.this[0].arn_suffix
+    TargetGroup  = aws_lb_target_group.octane[0].arn_suffix
   }
 }
 
@@ -282,17 +290,19 @@ resource "aws_cloudwatch_metric_alarm" "octane_dead_air" {
 # the window was already spelled out in three places and did not need a
 # fourth.
 resource "aws_cloudwatch_composite_alarm" "octane_dead_air_outside_window" {
+  count = local.on
+
   alarm_name        = "${local.name}-octane-dead-air-alerting"
   alarm_description = "Dead air on the public service, outside the nightly maintenance window."
 
-  alarm_rule    = "ALARM(${aws_cloudwatch_metric_alarm.octane_dead_air.alarm_name})"
+  alarm_rule    = "ALARM(${aws_cloudwatch_metric_alarm.octane_dead_air[0].alarm_name})"
   alarm_actions = local.alarm_actions
 
   # Suppressed while the platform is intentionally stopped. Without this the
   # alarm fires every single night by design, which is how an alert channel
   # becomes noise nobody reads.
   actions_suppressor {
-    alarm            = aws_cloudwatch_metric_alarm.maintenance_window.alarm_name
+    alarm            = aws_cloudwatch_metric_alarm.maintenance_window[0].alarm_name
     wait_period      = 60
     extension_period = 60
   }
@@ -312,6 +322,8 @@ resource "aws_cloudwatch_log_metric_filter" "shutdown_complete" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
+  count = local.on
+
   alarm_name        = "${local.name}-maintenance-window"
   alarm_description = <<-EOT
     In ALARM while the platform is intentionally stopped, suppressing the
@@ -349,6 +361,8 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
 # a vendor API directly would have required.
 
 resource "aws_cloudwatch_metric_alarm" "bedrock_client_errors" {
+  count = local.on
+
   alarm_name        = "${local.name}-bedrock-client-errors"
   alarm_description = "Bedrock rejected more than 50 calls in 15 minutes. Threshold carried from the Foundry rule, where it was set against a real incident."
 
@@ -364,6 +378,8 @@ resource "aws_cloudwatch_metric_alarm" "bedrock_client_errors" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "bedrock_server_errors" {
+  count = local.on
+
   alarm_name        = "${local.name}-bedrock-server-errors"
   alarm_description = "More than 5 Bedrock server errors in 15 minutes. Threshold carried from the Foundry rule."
 
@@ -379,6 +395,8 @@ resource "aws_cloudwatch_metric_alarm" "bedrock_server_errors" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "bedrock_throttles" {
+  count = local.on
+
   alarm_name        = "${local.name}-bedrock-throttles"
   alarm_description = <<-EOT
     Sustained Bedrock throttling. New on AWS: Foundry's shared per-
@@ -405,6 +423,8 @@ resource "aws_cloudwatch_metric_alarm" "bedrock_throttles" {
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_metric_alarm" "db_cpu" {
+  count = local.on
+
   alarm_name        = "${local.name}-pg-cpu"
   alarm_description = "Sustained Postgres CPU. Unlike the Azure equivalent, this one has query-level evidence behind it: log_min_duration_statement is set (see data.tf), which it was not on Flexible Server."
 
@@ -418,10 +438,12 @@ resource "aws_cloudwatch_metric_alarm" "db_cpu" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
 
-  dimensions = { DBInstanceIdentifier = aws_db_instance.this.identifier }
+  dimensions = { DBInstanceIdentifier = local.db.identifier }
 }
 
 resource "aws_cloudwatch_metric_alarm" "db_storage" {
+  count = local.on
+
   alarm_name        = "${local.name}-pg-storage"
   alarm_description = "Less than 10 GiB free. Storage autoscaling is on, so this is a warning that it is working, not that it is about to stop."
 
@@ -435,7 +457,7 @@ resource "aws_cloudwatch_metric_alarm" "db_storage" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
 
-  dimensions = { DBInstanceIdentifier = aws_db_instance.this.identifier }
+  dimensions = { DBInstanceIdentifier = local.db.identifier }
 }
 
 # NOTE, and it is the same note Ch 12 ends on: none of this measures answer

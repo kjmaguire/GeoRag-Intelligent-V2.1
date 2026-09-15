@@ -39,10 +39,13 @@ data "aws_iam_policy_document" "execution_secrets" {
       "secretsmanager:GetSecretValue",
       "kms:Decrypt",
     ]
-    resources = [
+    # compact() drops the RDS master secret when the database is powered
+    # off. The role itself is not gated — it is free, and recreating it on
+    # every power-on would churn the trust policy for no saving.
+    resources = compact([
       aws_secretsmanager_secret.app.arn,
-      aws_db_instance.this.master_user_secret[0].secret_arn,
-    ]
+      try(local.db.master_user_secret[0].secret_arn, ""),
+    ])
   }
 }
 
@@ -178,8 +181,11 @@ data "aws_iam_policy_document" "scheduler_task" {
     # Deliberately NOT rds:DeleteDBInstance, rds:ModifyDBInstance or
     # anything else. This is the exact list the sweeps call, and the
     # Contributor incident is why.
-    actions   = ["rds:StopDBInstance", "rds:StartDBInstance"]
-    resources = [aws_db_instance.this.arn]
+    actions = ["rds:StopDBInstance", "rds:StartDBInstance"]
+    # A statement with an empty resource list is invalid, so this degrades
+    # to a resource that matches nothing rather than to []. The sweeps are
+    # gated anyway; this only has to stay syntactically valid.
+    resources = [try(local.db.arn, "arn:aws:rds:::db:none")]
   }
 
   # CycleMarketplaceEndpoints and UseTheRetainedEndpointConfigs were here
@@ -231,10 +237,14 @@ data "aws_iam_policy_document" "scheduler" {
   statement {
     effect  = "Allow"
     actions = ["ecs:RunTask"]
-    resources = [
-      aws_ecs_task_definition.shutdown_sweep.arn_without_revision,
-      aws_ecs_task_definition.startup_sweep.arn_without_revision,
-    ]
+    # The sweeps are gated with the rest of the compute. This policy
+    # document is not — the role is free and keeping it stable across power
+    # cycles avoids churning its trust relationship — so the resource list
+    # degrades to a non-matching ARN rather than to [], which is invalid.
+    resources = coalescelist(compact([
+      try(one(aws_ecs_task_definition.shutdown_sweep).arn_without_revision, ""),
+      try(one(aws_ecs_task_definition.startup_sweep).arn_without_revision, ""),
+    ]), ["arn:aws:ecs:::task-definition/none"])
     condition {
       test     = "ArnLike"
       variable = "ecs:cluster"

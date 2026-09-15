@@ -57,10 +57,23 @@ resource "aws_db_parameter_group" "this" {
 }
 
 resource "aws_db_instance" "this" {
+  # Gated. Powering off destroys the instance after writing
+  # `final_snapshot_identifier`; power.tf explains why "stopped" is not an
+  # off switch (RDS force-starts after 7 days) and how to restore.
+  count = local.on
+
   identifier     = "${local.name}-pg"
   engine         = "postgres"
   engine_version = var.db_engine_version
   instance_class = var.db_instance_class
+
+  # Unset on a first apply and on an empty redeploy, which creates a fresh
+  # instance. Set to `georag-pg-final` to come back up on the data the last
+  # power-off preserved. `snapshot_identifier` is ignored once the instance
+  # exists, so it cannot silently replace a live database on a re-apply —
+  # but CHANGING it does force replacement, hence the warning on the
+  # variable.
+  snapshot_identifier = var.restore_from_snapshot
 
   allocated_storage     = var.db_allocated_storage_gb
   max_allocated_storage = var.db_allocated_storage_gb * 4

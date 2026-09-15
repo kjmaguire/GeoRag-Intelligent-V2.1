@@ -686,6 +686,17 @@ jobs:
         run: python scripts/check-ci-path-filters.py
       - name: Discrimination tests for that filter check
         run: bash scripts/tests/ci_path_filter_test.sh
+      # The power flag's promise is that `power = "off"` destroys everything
+      # billed by the hour and keeps everything holding state. A new hourly
+      # resource added without the gate bills around the clock in a
+      # deployment its owner believes is switched off, and the only signal
+      # is the bill, a month late. The reverse is worse: gating S3 or the
+      # Secrets Manager secret makes a power cycle destroy the corpus or
+      # trip the 30-day recovery-window trap.
+      - name: AWS power flag still covers what it claims
+        run: python scripts/check-aws-power-flag.py
+      - name: Discrimination tests for the power-flag check
+        run: bash scripts/tests/aws_power_flag_test.sh
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.
