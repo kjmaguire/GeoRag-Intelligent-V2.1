@@ -61,7 +61,13 @@ return [
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
-            'bucket' => env('AWS_BUCKET'),
+            // AWS_BUCKET first, because compose sets it; AWS_BUCKET_BRONZE
+            // second, because the ECS task definitions set that one and this
+            // disk is what StorageService::bronze() writes every upload
+            // through. With only the first name honoured this bucket
+            // resolved to NULL on AWS — and with 'throw' => false below, a
+            // failed put() returns false rather than raising.
+            'bucket' => env('AWS_BUCKET', env('AWS_BUCKET_BRONZE')),
             'url' => env('AWS_URL'),
             // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
             // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
@@ -83,7 +89,12 @@ return [
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
-            'bucket' => env('MINIO_BUCKET_BRONZE', 'bronze'),
+            // AWS_BUCKET_BRONZE is what the ECS task definitions set
+            // (deploy/aws/terraform/config.tf). The MINIO_ name is compose's
+            // and stays as the fallback; on AWS it resolved to the literal
+            // string 'bronze', which is not this deployment's bucket and is
+            // not a name this account owns.
+            'bucket' => env('AWS_BUCKET_BRONZE', env('MINIO_BUCKET_BRONZE', 'bronze')),
             'url' => env('AWS_URL'),
             // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
             // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
@@ -104,7 +115,9 @@ return [
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
-            'bucket' => env('MINIO_BUCKET_EXPORTS', 'georag-exports'),
+            // Same as above: AWS_BUCKET_EXPORTS is the deployed name,
+            // MINIO_BUCKET_EXPORTS is compose's.
+            'bucket' => env('AWS_BUCKET_EXPORTS', env('MINIO_BUCKET_EXPORTS', 'georag-exports')),
             'url' => env('AWS_URL'),
             // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
             // Python side reads first (storage-abstraction plan); AWS_ENDPOINT

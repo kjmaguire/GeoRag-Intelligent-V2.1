@@ -260,8 +260,17 @@ locals {
     # rather than passing None, so boto3's chain resolves them. No
     # AWS_ENDPOINT_URL either — an explicit endpoint pins every call to
     # that host, which is right for SeaweedFS and wrong for S3.
-    STORAGE_BACKEND          = "s3_compatible"
-    AWS_DEFAULT_REGION       = var.region
+    STORAGE_BACKEND    = "s3_compatible"
+    AWS_DEFAULT_REGION = var.region
+    # Laravel's `s3` disk reads AWS_BUCKET, and that disk is what
+    # StorageService::bronze() writes every upload through
+    # (UploadController:496). Unset, its bucket resolved to null while the
+    # disk is configured 'throw' => false — so the put() returned false, the
+    # request carried on, and a bronze.manifest row was written for an object
+    # that is not there. config/filesystems.php now falls back to
+    # AWS_BUCKET_BRONZE as well, but production states it rather than relying
+    # on the fallback.
+    AWS_BUCKET               = aws_s3_bucket.this["bronze"].id
     AWS_BUCKET_BRONZE        = aws_s3_bucket.this["bronze"].id
     AWS_BUCKET_BRONZE_RASTER = aws_s3_bucket.this["bronze-raster"].id
     AWS_BUCKET_EXPORTS       = aws_s3_bucket.this["exports"].id
