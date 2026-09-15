@@ -78,12 +78,20 @@ MUST_NOT_GATE = {
     "aws_vpc_endpoint",
     "aws_security_group",
     "aws_ecs_cluster",
+    # Attaching capacity providers to the cluster costs nothing and must
+    # survive a power cycle: an unattached FARGATE provider is what makes
+    # `-var fargate_capacity=on_demand` fail on the demo it was set for.
+    "aws_ecs_cluster_capacity_providers",
     "aws_service_discovery_private_dns_namespace",
     "aws_db_subnet_group",
     "aws_db_parameter_group",
     "aws_iam_role",
     "aws_iam_role_policy",
     "aws_iam_role_policy_attachment",
+    # The spend guard must outlive the thing it guards. The failure it exists
+    # to catch is "the platform is running when I believed it was off" — a
+    # state in which a gated budget would already have been destroyed.
+    "aws_budgets_budget",
 }
 
 BLOCK = re.compile(r'^resource\s+"([a-z0-9_]+)"\s+"([a-z0-9_]+)"\s*\{', re.M)

@@ -191,6 +191,25 @@ variable "alert_email" {
   type        = string
 }
 
+variable "monthly_budget_usd" {
+  description = <<-EOT
+    The monthly spend line that budget.tf alerts against, in USD. Defaults to
+    100, which is the AWS promotional credit granted per month — so the
+    default makes "over budget" mean "now spending real money".
+
+    This ALERTS, it does not cap. AWS has no hard spending limit for ordinary
+    accounts; acting on the alert is a human running
+    `terraform apply -var power=off`.
+  EOT
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.monthly_budget_usd > 0
+    error_message = "monthly_budget_usd must be greater than zero."
+  }
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

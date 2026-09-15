@@ -278,6 +278,31 @@ resource "aws_security_group" "database" {
 # Cluster, discovery, registry
 # ---------------------------------------------------------------------------
 
+# Both providers are attached, always, regardless of which one the services
+# are currently asked to use. Attaching a provider costs nothing; NOT having
+# it attached is what makes `-var fargate_capacity=on_demand` fail at the
+# worst possible moment, which is the demo you switched off Spot for.
+resource "aws_ecs_cluster_capacity_providers" "this" {
+  cluster_name       = aws_ecs_cluster.this.name
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  # A precondition rather than a `check` block, deliberately: `check` only
+  # emits a warning and lets the apply proceed. A name in on_demand_services
+  # that matches no service leaves the operator believing a tier is protected
+  # from Spot interruption when it is not — a belief that gets tested in front
+  # of whoever the demo was for. Fail the plan instead.
+  lifecycle {
+    precondition {
+      condition = length(local.unknown_on_demand) == 0
+      error_message = format(
+        "on_demand_services names no such service: %s. Valid names: %s.",
+        join(", ", local.unknown_on_demand),
+        join(", ", sort(keys(local.services))),
+      )
+    }
+  }
+}
+
 resource "aws_ecs_cluster" "this" {
   name = local.name
 

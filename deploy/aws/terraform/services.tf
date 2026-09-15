@@ -375,7 +375,13 @@ resource "aws_ecs_service" "this" {
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.this[each.key].arn
   desired_count   = each.value.desired
-  launch_type     = "FARGATE"
+  # `launch_type` and `capacity_provider_strategy` are mutually exclusive, so
+  # this replaces it. local.capacity_for is defined in spot.tf and resolves
+  # per service, so one name can sit on on-demand while the rest run Spot.
+  capacity_provider_strategy {
+    capacity_provider = local.capacity_for[each.key]
+    weight            = 1
+  }
 
   network_configuration {
     subnets          = aws_subnet.private[*].id

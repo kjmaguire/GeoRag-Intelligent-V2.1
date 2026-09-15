@@ -67,6 +67,62 @@ is why `required_version` says so.
 `backend.hcl` is gitignored, along with `*.tfstate` and `*.tfvars`. Nothing in
 `backend.hcl` is secret, but it sits where something secret would get pasted.
 
+## The budget this runs under
+
+AWS promotional credit: **$100/month for six months**, plus a one-off $100 for
+the account-setup activities. That is the whole budget -- the Activate Founders
+application was rejected on 2026-09-15, so there is no larger pool behind it and
+no cash line to fall back on.
+
+Two consequences shape the Terraform:
+
+- **The always-on floor is ~$108/month** -- NAT, ALB, RDS storage and backups,
+  EFS, logs. That alone exceeds the monthly credit *before a single container
+  starts*. The power switch below is what makes the credit sufficient rather
+  than a partial subsidy.
+- **One forgotten month at full size burns 5.5 months of credit.**
+  `terraform/budget.tf` alerts at 50% and 80% of actual spend and at 100% of
+  *forecast*. The forecast one is the useful one: it fires days before the
+  credit is gone, while switching off still helps.
+
+A budget **alerts, it does not cap**. AWS has no hard spending limit for
+ordinary accounts. Acting on the alert is a human running
+`terraform apply -var power=off`.
+
+With the power switch and Spot, $622 of credit buys roughly **1,266 task-hours
+-- about 7 hours a day, every day, for six months**, at the real production
+sizing.
+
+## Fargate Spot
+
+`fargate_capacity` defaults to **`spot`**, which is ~70% off and the largest
+lever on the running cost:
+
+| | Fargate $/hr | Total $/hr | hrs/day on credit |
+| --- | --- | --- | --- |
+| On demand | 0.68 | 0.97 | 3.0 |
+| **All Spot (default)** | **0.20** | **0.49** | **5.9** |
+| Spot, `laravel-octane` on demand | 0.27 | 0.56 | 5.2 |
+
+**What Spot costs you:** a task can be reclaimed with two minutes' notice, and
+a replacement only starts when Spot capacity exists. An interruption is a
+restart, not a graceful drain -- fine for `hatchet-worker` (Hatchet retries the
+step), visible for `laravel-reverb` (websockets drop and reconnect).
+
+**Before a demo**, take the user-facing tier off Spot without giving up the
+discount on the nine services nobody sees:
+
+```bash
+terraform apply -var 'on_demand_services=["laravel-octane"]'
+```
+
+That costs about **$0.07/hour extra -- $12 over 180 hours**. A name that
+matches no service fails the plan rather than warning, because a typo there
+means believing a tier is protected when it is not.
+
+`fargate_capacity=on_demand` switches everything back. Both capacity providers
+are always attached to the cluster, so that switch never fails for want of one.
+
 ## Turning the whole thing off
 
 Running costs roughly **$555/month**; switched off it is **$5-20**. The switch
@@ -122,6 +178,8 @@ resource is added without the gate, or if a stateful one is added with it.
 | --- | --- |
 | `terraform/` | Everything: VPC, ALB, ECS, RDS, EFS, S3, ECR, IAM, Secrets Manager, EventBridge Scheduler, CloudWatch |
 | `terraform/power.tf` | The `power = on\|off` switch, and why "off" destroys rather than stops |
+| `terraform/budget.tf` | The spend guard: alerts at 50/80% actual and 100% forecast |
+| `terraform/spot.tf` | Fargate Spot, and the per-service on-demand escape hatch |
 | `scheduler/` | The two nightly sweep scripts, embedded into task definitions by `terraform/scheduler.tf` |
 | `scheduler/tests/` | Behavioural tests for the sweeps, run against a fake `aws` CLI |
 | `rotation/` | The `APP_KEY` rotation, and the script it runs inside a one-off task (`terraform/rotation.tf`) |
