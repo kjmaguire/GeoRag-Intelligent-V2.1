@@ -16,7 +16,7 @@ Kubernetes cluster with no internet access.
 
 Typical bundle size: **15–20 GB** (images + the Helm chart). No model
 weights are bundled: the chart deploys no inference server. LLM calls
-go to Azure AI Foundry, or to an OpenAI-compatible endpoint you run
+go to Cohere's own API, or to an OpenAI-compatible endpoint you run
 yourself (`LLM_BACKEND=vllm` with `VLLM_URL` pointing at it) — which
 in an air-gapped install means one you host inside the enclave.
 

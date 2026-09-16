@@ -2258,11 +2258,14 @@ _OCR_STATE_LOCK = threading.Lock()
 # document. Keyed per path, bounded FIFO of documents. The cross-run Prometheus counter (OCR_PAGES_TOTAL, one
 # label per engine) lives in the engine adapter itself.
 _OCR_PAGE_BUDGET_ENV = "OCR_MAX_PAGES_PER_DOC"
-#: Pre-2026-09-02 name. Read as a fallback with a one-time warning so a live
-#: worker env that still carries it keeps its cap instead of silently
-#: reverting to the default; dropped once the DI adapter is removed.
-_LEGACY_PAGE_BUDGET_ENV = "AZURE_DI_MAX_PAGES_PER_DOC"
-_LEGACY_BUDGET_ENV_WARNED = False
+# AZURE_DI_MAX_PAGES_PER_DOC was read as a fallback here, with a one-time
+# warning, so a live worker env still carrying the pre-2026-09-02 name kept
+# its cap instead of silently reverting to the default. Its own note said
+# "dropped once the DI adapter is removed", and that condition is met: ADR-0019
+# retired Document Intelligence on 2026-09-02 and ADR-0022 took the whole
+# deployment off Azure. Nothing in the Terraform, compose file or secret key
+# list sets the old name, and production is a fresh AWS deployment with no
+# legacy environment to inherit, so the fallback had no caller left.
 _OCR_PAGES_USED: dict[str, int] = {}
 _OCR_CAP_LOGGED: set[str] = set()
 
@@ -2288,17 +2291,7 @@ _OCR_BUDGET_REGISTRY_MAX = 32
 
 
 def _ocr_max_pages_per_doc() -> int:
-    global _LEGACY_BUDGET_ENV_WARNED
     raw = os.environ.get(_OCR_PAGE_BUDGET_ENV)
-    if raw is None and os.environ.get(_LEGACY_PAGE_BUDGET_ENV) is not None:
-        raw = os.environ.get(_LEGACY_PAGE_BUDGET_ENV)
-        if not _LEGACY_BUDGET_ENV_WARNED:
-            _LEGACY_BUDGET_ENV_WARNED = True
-            logger.warning(
-                "pdf_report: %s is the old name for %s — rename it in the "
-                "worker environment",
-                _LEGACY_PAGE_BUDGET_ENV, _OCR_PAGE_BUDGET_ENV,
-            )
     try:
         return int(raw if raw is not None else "300")
     except ValueError:

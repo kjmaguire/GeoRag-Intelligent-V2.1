@@ -105,16 +105,18 @@ final class SecurityHeadersMiddleware
      * Reads the same disk config `StorageService` resolves through, so the
      * allowlist cannot drift from the endpoint actually in use.
      *
-     * BOTH drivers have to be read, not just one. `config/filesystems.php`
-     * resolves each of these disks to `driver => 'azure'` when
-     * STORAGE_BACKEND=azure_blob and to `'s3'` otherwise, and the two name
-     * their host in different keys: the S3 side in `endpoint`/`url`, the
-     * Azure side in `account_name` (or a `BlobEndpoint` inside the connection
-     * string). Reading only the S3 keys is how this first shipped a
-     * `frame-src` holding no real origin at all on the Azure deployment — the
-     * directive was present, so the header looked fixed, while the Reports
-     * "Original" iframe stayed blocked because the host it actually loads was
-     * never in the list.
+     * One driver now, not two. `config/filesystems.php` resolved these disks
+     * to `driver => 'azure'` when STORAGE_BACKEND=azure_blob until ADR-0022
+     * retired that backend on 2026-09-08; the blob-host reader that fed this
+     * list from `account_name`/`connection_string` went with it on
+     * 2026-09-16, because no disk carries either key any more.
+     *
+     * The lesson it was written for still applies to whatever is added next:
+     * this first shipped a `frame-src` holding no real origin at all, so the
+     * directive was present and the header looked fixed while the Reports
+     * "Original" iframe stayed blocked, because the host it actually loads
+     * was never in the list. A new driver that names its host in some other
+     * key has to be read here too.
      *
      * A disk with no configured endpoint (AWS's own hosts, where the SDK
      * derives the URL) contributes nothing here; `s3.amazonaws.com` is
@@ -131,11 +133,6 @@ final class SecurityHeadersMiddleware
             foreach (['endpoint', 'url'] as $key) {
                 $origins[] = self::originFromUrl(config("filesystems.disks.{$disk}.{$key}"));
             }
-
-            $origins[] = self::azureBlobOrigin(
-                config("filesystems.disks.{$disk}.account_name"),
-                config("filesystems.disks.{$disk}.connection_string"),
-            );
         }
 
         // Presigned S3 downloads resolve to the bucket's own host even when
@@ -171,45 +168,6 @@ final class SecurityHeadersMiddleware
         return "{$scheme}://{$host}{$port}";
     }
 
-    /**
-     * The blob host an Azure-driver disk presigns against.
-     *
-     * `AppServiceProvider`'s SAS callback returns
-     * `https://{account}.blob.core.windows.net/{container}/{path}?{token}`,
-     * so that origin — not the container, not the path — is what the iframe
-     * loads and what `frame-src` has to allow.
-     *
-     * Two overrides are honoured because both are real deployments rather
-     * than hypotheticals: `BlobEndpoint` in the connection string replaces
-     * the host outright (Azurite, and private-endpoint deployments that
-     * resolve to a privatelink host), and `EndpointSuffix` moves it to a
-     * sovereign cloud. Managed-identity deployments set neither and carry no
-     * connection string at all, so `account_name` is then the only source —
-     * which is exactly the configuration this method was first written
-     * without, leaving production with an empty allowlist.
-     */
-    private static function azureBlobOrigin(mixed $accountName, mixed $connectionString): ?string
-    {
-        $connection = is_string($connectionString) ? $connectionString : '';
-
-        if (preg_match('/BlobEndpoint=([^;]+)/i', $connection, $matches) === 1) {
-            return self::originFromUrl(trim($matches[1]));
-        }
-
-        $account = is_string($accountName) && trim($accountName) !== '' ? trim($accountName) : null;
-        if ($account === null && preg_match('/AccountName=([^;]+)/i', $connection, $matches) === 1) {
-            $account = trim($matches[1]);
-        }
-        if ($account === null || $account === '') {
-            return null;
-        }
-
-        $suffix = preg_match('/EndpointSuffix=([^;]+)/i', $connection, $matches) === 1
-            ? trim($matches[1])
-            : 'core.windows.net';
-
-        return "https://{$account}.blob.{$suffix}";
-    }
 
     /**
      * Build the CSP string. Kept as a method (not constant) so the

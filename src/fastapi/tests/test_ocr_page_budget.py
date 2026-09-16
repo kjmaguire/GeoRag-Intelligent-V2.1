@@ -40,16 +40,12 @@ def _clean_registry(monkeypatch):
 
 class TestTheCapHolds:
     def test_a_long_document_gets_exactly_the_cap(self) -> None:
-        granted = sum(
-            1 for _ in range(400) if pdf_report._ocr_budget_take("/data/A.pdf")
-        )
+        granted = sum(1 for _ in range(400) if pdf_report._ocr_budget_take("/data/A.pdf"))
 
         assert granted == 300
 
     def test_a_short_document_is_never_capped(self) -> None:
-        granted = sum(
-            1 for _ in range(40) if pdf_report._ocr_budget_take("/data/B.pdf")
-        )
+        granted = sum(1 for _ in range(40) if pdf_report._ocr_budget_take("/data/B.pdf"))
 
         assert granted == 40
         assert pdf_report._ocr_budget_warning("/data/B.pdf") is None
@@ -113,24 +109,3 @@ class TestConcurrentDocumentsDoNotResetEachOther:
             pdf_report._ocr_budget_take(f"/data/doc-{n}.pdf")
 
         assert len(pdf_report._OCR_PAGES_USED) <= pdf_report._OCR_BUDGET_REGISTRY_MAX
-
-
-class TestTheOldEnvNameStillWorks:
-    def test_legacy_name_is_honoured_with_a_warning(self, monkeypatch, caplog) -> None:
-        """A worker env that still says AZURE_DI_MAX_PAGES_PER_DOC keeps its cap."""
-        monkeypatch.delenv("OCR_MAX_PAGES_PER_DOC", raising=False)
-        monkeypatch.setenv("AZURE_DI_MAX_PAGES_PER_DOC", "7")
-        monkeypatch.setattr(pdf_report, "_LEGACY_BUDGET_ENV_WARNED", False)
-
-        with caplog.at_level("WARNING"):
-            assert pdf_report._ocr_max_pages_per_doc() == 7
-            assert pdf_report._ocr_max_pages_per_doc() == 7
-
-        warned = [r for r in caplog.records if "old name" in r.getMessage()]
-        assert len(warned) == 1
-
-    def test_new_name_wins_over_the_old_one(self, monkeypatch) -> None:
-        monkeypatch.setenv("OCR_MAX_PAGES_PER_DOC", "12")
-        monkeypatch.setenv("AZURE_DI_MAX_PAGES_PER_DOC", "7")
-
-        assert pdf_report._ocr_max_pages_per_doc() == 12

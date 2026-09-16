@@ -73,7 +73,7 @@ of them reach kube-dns, and one policy per component allows exactly the
 traffic in the map at the top of `templates/networkpolicy.yaml`. The
 ingress controller is identified by `networkPolicy.ingressController`
 (K3s Traefik in `kube-system` by default; `values-vanilla.yaml` switches
-it to `ingress-nginx`). Components that call Azure AI Foundry / Blob get
+it to `ingress-nginx`). Components that call Cohere's API or S3 get
 internet egress on 443 with private ranges carved out
 (`networkPolicy.externalEgress`); anything else external goes in
 `networkPolicy.extraEgress`. K3s enforces NetworkPolicy out of the box;
@@ -143,7 +143,7 @@ service's `resources` block. The included tiers:
 
 No GPU node is required: this chart deploys no inference server. The
 embedding, reranker and sparse sidecars run on CPU by default, and LLM
-calls go to Azure AI Foundry (or an OpenAI-compatible endpoint you run).
+calls go to Cohere's own API (or an OpenAI-compatible endpoint you run).
 
 ## Troubleshooting
 

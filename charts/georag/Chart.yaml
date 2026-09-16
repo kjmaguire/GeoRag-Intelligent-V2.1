@@ -6,9 +6,9 @@ description: |
   FastAPI, Laravel Octane, Hatchet, Martin). K3s-tuned by default;
   works on vanilla Kubernetes via values-vanilla.yaml.
 
-  LLM inference is not deployed by this chart. Set the Azure AI Foundry
-  variables on the FastAPI deployment, or point LLM_BACKEND=vllm at an
-  OpenAI-compatible endpoint you run yourself.
+  LLM inference is not deployed by this chart. Set COHERE_API_KEY (and
+  COHERE_BASE_URL if you proxy it) on the FastAPI deployment, or point
+  LLM_BACKEND=vllm at an OpenAI-compatible endpoint you run yourself.
 
 type: application
 version: 0.2.0

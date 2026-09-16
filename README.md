@@ -148,7 +148,7 @@ npm run test -- --coverage
 - [**docs/acceptance-criteria.md**](docs/acceptance-criteria.md) — Canonical "is V1 done?" checklist, 21/22 ✅ at engineering close
 - [**docs/OPERATOR-AFTERNOON.md**](docs/OPERATOR-AFTERNOON.md) — One-afternoon checklist for first production deploy (SOPS bootstrap, GitHub Secrets, cold-start)
 - [**docs/RUNBOOK.md**](docs/RUNBOOK.md) — Operator procedures for PII decryption, secret rotation, database maintenance
-- [**ops/runbooks/**](ops/runbooks/) — four Azure-era runbooks (`azure-oncall`, `secret-rotation`, `refusal-rate-spike`, `raw-sql-layer`) plus 40 archived compose-era ones under `_archived/`
+- [**ops/runbooks/**](ops/runbooks/) — four runbooks (`aws-oncall`, `secret-rotation`, `refusal-rate-spike`, `raw-sql-layer` — the last three still carry Azure-era procedures in places, and say so) plus 40 archived compose-era ones under `_archived/`
 - [**ops/backlog/v1.5-followups.md**](ops/backlog/v1.5-followups.md) — V1.5 follow-up tracker with per-item close-out evidence
 
 ## Contributing
