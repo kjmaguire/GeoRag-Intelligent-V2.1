@@ -719,6 +719,12 @@ jobs:
       # harder to spot than an empty one.
       - name: Service-to-service URLs resolve inside the VPC
         run: python scripts/check-internal-urls.py
+      # hatchet-worker probed with wget on an image that only has curl, so the
+      # check could never pass — and essential=true means ECS replaces the task
+      # forever. A probe that always fails is worse than no probe: the symptom
+      # is a restarting worker, which looks like the hang it was added to catch.
+      - name: ECS health checks can actually pass
+        run: python scripts/check-ecs-healthchecks.py
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.

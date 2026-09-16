@@ -80,6 +80,14 @@ locals {
   }
 }
 
+locals {
+  # The services that must never go to zero during a deploy. Both run desired
+  # 2 for exactly that reason (see the services map above); this is the half
+  # that makes the second task actually do its job. Keep the two lists in step
+  # — a service at desired 1 named here cannot satisfy a 50% floor.
+  zero_downtime_services = toset(["laravel-octane", "laravel-reverb"])
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 }

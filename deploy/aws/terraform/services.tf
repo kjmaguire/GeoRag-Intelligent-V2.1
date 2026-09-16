@@ -261,11 +261,24 @@ locals {
     # -a, because requirepass is now set: an unauthenticated PING answers
     # NOAUTH, which would fail this check forever and put the task in a
     # restart loop that looks like a Redis fault rather than a config one.
-    redis           = ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
-    qdrant          = ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && printf 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200 OK' <&3"]
-    martin          = ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
-    hatchet         = ["CMD-SHELL", "wget -q -O - http://localhost:8888/api/ready >/dev/null 2>&1 || exit 1"]
-    hatchet-worker  = ["CMD-SHELL", "wget -q -O - http://localhost:8001/health >/dev/null 2>&1 || exit 1"]
+    redis   = ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+    qdrant  = ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && printf 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200 OK' <&3"]
+    martin  = ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
+    hatchet = ["CMD-SHELL", "wget -q -O - http://localhost:8888/api/ready >/dev/null 2>&1 || exit 1"]
+    # curl, NOT wget. This runs the FASTAPI image, which installs curl and has
+    # never carried wget (docker/fastapi.Dockerfile — zero occurrences; its own
+    # HEALTHCHECK uses curl, and the runtime stage is python:3.13-slim, which
+    # ships neither). The wget form was copied from the hatchet-engine and
+    # martin checks above, whose images do have it.
+    #
+    # It could never have passed. `sh -c` reports "wget: not found" and exits
+    # 127, the `|| exit 1` fires, the container is marked UNHEALTHY, and since
+    # essential = true ECS stops and replaces the task — forever. The check
+    # written specifically to catch a HUNG worker holding its queue lease would
+    # instead have killed a perfectly healthy one every few minutes, and the
+    # symptom (a worker that keeps restarting) looks like the hang it was
+    # meant to detect.
+    hatchet-worker  = ["CMD", "curl", "-f", "http://localhost:8001/health"]
     fastapi         = ["CMD", "curl", "-f", "http://localhost:8000/health"]
     sparse          = ["CMD", "curl", "-f", "http://localhost:8000/health"]
     laravel-octane  = ["CMD", "curl", "-f", "http://localhost:80/up"]
@@ -419,12 +432,19 @@ resource "aws_ecs_service" "this" {
     rollback = true
   }
 
-  # A single-task service cannot do a rolling deploy without going to
-  # zero, so everything except Octane accepts a gap. Octane, at desired 2,
-  # keeps one task serving throughout — which is the entire reason it is
-  # not at 1 (ADR-0022 §3).
-  deployment_minimum_healthy_percent = each.key == "laravel-octane" ? 50 : 0
-  deployment_maximum_percent         = each.key == "laravel-octane" ? 200 : 100
+  # A single-task service cannot do a rolling deploy without going to zero, so
+  # the eight at desired 1 accept a gap. The two at desired 2 must not, and
+  # until 2026-09-16 only Octane was configured that way.
+  #
+  # Reverb was the omission, and it defeated the reason it runs two tasks at
+  # all. main.tf says it plainly: "at desired 1 every deploy and every task
+  # replacement drops every open WebSocket, which on this platform means every
+  # in-flight answer stream." With min 0 / max 100 ECS may stop BOTH tasks
+  # before starting a replacement, so a routine deploy of the laravel image
+  # could drop every live answer stream — the precise failure the second task
+  # was paid for to prevent.
+  deployment_minimum_healthy_percent = contains(local.zero_downtime_services, each.key) ? 50 : 0
+  deployment_maximum_percent         = contains(local.zero_downtime_services, each.key) ? 200 : 100
 
   # The nightly sweeps own desired_count between 23:00 and 06:00 local.
   # Without this, every `terraform apply` during the window would start
