@@ -334,6 +334,27 @@ class TileProxyController extends Controller
             );
         }
 
+        // ── Resolve tenant scope for Martin ───────────────────────────────────
+        // Martin connects to Postgres directly, as its own role, never through
+        // this (or any) authenticated session — so it never sees an
+        // app.workspace_id GUC unless we hand it one explicitly. Every
+        // silver.pg_*_by_project function now REQUIRES workspace_id in its
+        // query_params (2026_09_16_120000_scope_silver_mvt_functions_to_workspace_id.php)
+        // and raises rather than silently returning an empty tile when it is
+        // missing, so this must be resolved and forwarded on every request.
+        // Sourced from silver.projects rather than trusted from the client:
+        // the access check above only proves the user belongs to SOME
+        // workspace that can see this project, not which one, and a
+        // client-supplied workspace_id would let a member of workspace A pass
+        // workspace B's id against a project_id they happen to have access to.
+        $workspaceId = $this->resolveWorkspaceIdForProject($projectId);
+        if ($workspaceId === null) {
+            return response()->json(
+                ['message' => 'Unable to resolve a workspace for this project.'],
+                404,
+            );
+        }
+
         // ── ETag derivation (cheap index scan on silver.projects) ────────────
         $dbStart = microtime(true);
         $etag = $this->computeSilverEtag($projectId, $z, $x, $y);
@@ -350,7 +371,10 @@ class TileProxyController extends Controller
         }
 
         $tileStart = microtime(true);
-        $upstream = $this->fetchFromMartin($request, $source, $z, $x, $y, ['project_id' => $projectId]);
+        $upstream = $this->fetchFromMartin($request, $source, $z, $x, $y, [
+            'project_id' => $projectId,
+            'workspace_id' => $workspaceId,
+        ]);
         $tileMs = round((microtime(true) - $tileStart) * 1000, 1);
 
         if ($upstream instanceof SymfonyResponse) {
@@ -610,6 +634,36 @@ class TileProxyController extends Controller
         }
 
         return $user->hasProjectAccess($projectId);
+    }
+
+    /**
+     * Resolve the workspace a project belongs to, for forwarding to Martin
+     * as the tenant-scope query_params key every silver.pg_*_by_project
+     * function now requires.
+     *
+     * Deliberately a direct silver.projects lookup rather than trusting a
+     * client-supplied value or reusing the authenticated user's "current"
+     * workspace: the project is the source of truth for which tenant its
+     * rows belong to, and userHasProjectAccess() only proves membership in
+     * some workspace that can reach this project, not which one.
+     *
+     * Returns null when the project row cannot be found (e.g. deleted
+     * between the access check and this lookup) so the caller can respond
+     * with 404 rather than forwarding an unscoped or wrong-tenant request
+     * to Martin.
+     */
+    private function resolveWorkspaceIdForProject(string $projectId): ?string
+    {
+        $row = DB::selectOne(
+            'SELECT workspace_id FROM silver.projects WHERE project_id = :pid',
+            ['pid' => $projectId],
+        );
+
+        if ($row === null || $row->workspace_id === null) {
+            return null;
+        }
+
+        return (string) $row->workspace_id;
     }
 
     /**

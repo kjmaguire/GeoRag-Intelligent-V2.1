@@ -65,10 +65,18 @@ ON CONFLICT (project_id) DO NOTHING;
 -- lon=-112, lat=55  →  easting≈328000, northing≈6100000
 -- lon=-108, lat=55  →  easting≈670000, northing≈6100000
 -- (all well within tile 3/1/2 which spans lon -135…-90)
+-- workspace_id is included explicitly: silver.collars.workspace_id is
+-- nullable (added by 2026_05_25_184335_provision_silver_workspace_columns_
+-- for_test_db.php as ADD COLUMN IF NOT EXISTS workspace_id uuid, no backfill,
+-- no NOT NULL) and silver.pg_collars_by_project now filters on it explicitly
+-- (2026_09_16_120000_scope_silver_mvt_functions_to_workspace_id.php) — an
+-- unset workspace_id here would make the golden-snapshot collars assertions
+-- silently see zero rows instead of the fixture.
 INSERT INTO silver.collars (
     collar_id,
     hole_id,
     project_id,
+    workspace_id,
     easting,
     northing,
     elevation,
@@ -84,6 +92,7 @@ VALUES
     'b0000001-0000-0000-0000-deadbeefcafe',
     'GF-001',
     '00000000-0000-0000-0000-deadbeefcafe',
+    'a0000000-0000-0000-0000-000000000001',
     500000.0,
     6100000.0,
     500.0,
@@ -98,6 +107,7 @@ VALUES
     'b0000002-0000-0000-0000-deadbeefcafe',
     'GF-002',
     '00000000-0000-0000-0000-deadbeefcafe',
+    'a0000000-0000-0000-0000-000000000001',
     501500.0,
     6100500.0,
     502.0,
@@ -112,6 +122,7 @@ VALUES
     'b0000003-0000-0000-0000-deadbeefcafe',
     'GF-003',
     '00000000-0000-0000-0000-deadbeefcafe',
+    'a0000000-0000-0000-0000-000000000001',
     502500.0,
     6101000.0,
     498.0,
@@ -123,6 +134,15 @@ VALUES
     ST_SetSRID(ST_MakePoint(502500.0, 6101000.0), 32613)
 )
 ON CONFLICT (project_id, hole_id) DO NOTHING;
+
+-- Idempotent-seed safety net: this file may already have run once against a
+-- given database before workspace_id was added to the collars INSERT above
+-- (ON CONFLICT DO NOTHING skips re-applying it). Backfill explicitly so a
+-- re-run of this seed always leaves collars.workspace_id populated.
+UPDATE silver.collars
+   SET workspace_id = 'a0000000-0000-0000-0000-000000000001'
+ WHERE project_id = '00000000-0000-0000-0000-deadbeefcafe'
+   AND workspace_id IS NULL;
 
 -- ── 3. Drill traces (1 LineStringZ per collar, EPSG:4326) ─────────────────────
 -- Traces must span enough degrees to survive ST_SimplifyPreserveTopology(100m)
@@ -276,9 +296,16 @@ VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- ── 7. Seismic survey (1 bbox Polygon, EPSG:4326) ────────────────────────────
+-- workspace_id included explicitly for the same reason as the collars
+-- INSERT above: silver.seismic_surveys.workspace_id is backfilled once by
+-- 2026_08_19_020000_reconcile_rls_on_undeclared_workspace_tables.php for
+-- EXISTING rows at migration time only — a row inserted afterwards by this
+-- seed would otherwise land with workspace_id NULL, which
+-- silver.pg_seismic_by_project now filters out explicitly.
 INSERT INTO silver.seismic_surveys (
     survey_id,
     project_id,
+    workspace_id,
     survey_name,
     survey_type,
     num_traces,
@@ -292,6 +319,7 @@ INSERT INTO silver.seismic_surveys (
 VALUES (
     'a0000001-0000-0000-0000-deadbeefcafe',
     '00000000-0000-0000-0000-deadbeefcafe',
+    'a0000000-0000-0000-0000-000000000001',
     'GoldenFixture 3D Survey',
     '3D',
     5000,
@@ -306,6 +334,12 @@ VALUES (
     )
 )
 ON CONFLICT (survey_id) DO NOTHING;
+
+-- Idempotent-seed safety net (same rationale as the collars UPDATE above).
+UPDATE silver.seismic_surveys
+   SET workspace_id = 'a0000000-0000-0000-0000-000000000001'
+ WHERE project_id = '00000000-0000-0000-0000-deadbeefcafe'
+   AND workspace_id IS NULL;
 
 -- ── 8. Geochemistry (3 rows, EPSG:4326 Points, project_id required) ──────────
 -- collar_id FK references the collars inserted above.

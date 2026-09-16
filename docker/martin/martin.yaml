@@ -46,15 +46,33 @@ postgres:
   # All function sources implement RETURNS TABLE(mvt bytea, etag_hash text).
   # Martin advertises these as /tiles/<id>/{z}/{x}/{y} endpoints.
   #
-  # BLOCKED silver functions (4 of 7) are NOT wired here because their source
-  # tables do not exist. The SQL stubs RAISE EXCEPTION to prevent silent 500s.
-  # Wire them in a follow-up migration once the silver tables are created:
-  #   - pg_boundaries_by_project  → needs silver.project_boundaries
-  #   - pg_formations_by_project  → needs silver.geological_formations
-  #   - pg_historic_workings_by_project → needs silver.historic_workings
-  #   - pg_geochem_by_project     → needs silver.geochemistry schema redesign
+  # All 9 silver workspace-scoped functions below are live — the "4 of 7
+  # BLOCKED / RAISE EXCEPTION stub" note that used to be here was stale as of
+  # 2026-04-22: migration 2026_04_22_140000_create_silver_boundary_formation_
+  # working_geochem.php created the 4 backing tables and 140001 replaced the
+  # stub bodies with real queries the same day. Left here as a correction
+  # rather than deleted, since the same stale claim may be echoed elsewhere.
+  #
+  # TENANT ISOLATION (2026-09-16): Martin connects to Postgres directly, as
+  # its own role, never through a Laravel/FastAPI session — so
+  # `current_setting('app.workspace_id', true)` is unset for every request
+  # these functions see unless the caller supplies it explicitly. All 9
+  # `pg_*_by_project` functions below now REQUIRE `workspace_id` in the
+  # query_params JSON (the same Martin URL-param mechanism documented on
+  # `significant_intersections_by_project` below): missing or malformed
+  # `workspace_id` raises rather than silently returning an empty tile. Each
+  # function also arms `app.workspace_id` via `set_config` for whichever RLS
+  # policy the table carries, AND filters explicitly on the table's own
+  # `workspace_id` column as defense-in-depth — see
+  # database/migrations/2026_09_16_120000_scope_silver_mvt_functions_to_workspace_id.php.
+  # The upstream caller (app/Http/Controllers/PublicGeoscience/TileProxyController.php
+  # ::silverTile()) resolves workspace_id from the access-checked project_id
+  # and forwards it to Martin — a request through that proxy already supplies
+  # it; only a caller talking to Martin directly needs to add it by hand.
   functions:
-    # ── Silver workspace-scoped layers (3 of 7 implemented) ──────────────
+    # ── Silver workspace-scoped layers ────────────────────────────────────
+    # Params (passed via the Martin URL): project_id (required),
+    # workspace_id (required — tenant scope; see note above).
     pg_collars_by_project:
       schema: silver
       function: pg_collars_by_project
@@ -63,6 +81,7 @@ postgres:
       maxzoom: 22
       bounds: [-180, -90, 180, 90]
 
+    # Params: project_id (required), workspace_id (required).
     pg_drill_traces_by_project:
       schema: silver
       function: pg_drill_traces_by_project
@@ -71,6 +90,7 @@ postgres:
       maxzoom: 22
       bounds: [-180, -90, 180, 90]
 
+    # Params: project_id (required), workspace_id (required).
     pg_seismic_by_project:
       schema: silver
       function: pg_seismic_by_project
@@ -79,7 +99,8 @@ postgres:
       maxzoom: 22
       bounds: [-180, -90, 180, 90]
 
-    # ── Silver workspace-scoped layers (4 of 7 unblocked by Chunk 8.2b) ──
+    # ── Silver workspace-scoped layers (unblocked by Chunk 8.2b) ─────────
+    # Params: project_id (required), workspace_id (required).
     pg_boundaries_by_project:
       schema: silver
       function: pg_boundaries_by_project
@@ -88,6 +109,7 @@ postgres:
       maxzoom: 22
       bounds: [-180, -90, 180, 90]
 
+    # Params: project_id (required), workspace_id (required).
     pg_formations_by_project:
       schema: silver
       function: pg_formations_by_project
@@ -96,6 +118,7 @@ postgres:
       maxzoom: 22
       bounds: [-180, -90, 180, 90]
 
+    # Params: project_id (required), workspace_id (required).
     pg_historic_workings_by_project:
       schema: silver
       function: pg_historic_workings_by_project
@@ -109,6 +132,7 @@ postgres:
     # Lets the MapLibre project map render section lines drawn from the
     # B6 cross-section visualization. Migration:
     # 2026_05_22_020000_add_cross_section_mvt_and_geophysics_unique.
+    # Params: project_id (required), workspace_id (required).
     pg_cross_section_lines_by_project:
       schema: silver
       function: pg_cross_section_lines_by_project
@@ -117,6 +141,7 @@ postgres:
       maxzoom: 22
       bounds: [-180, -90, 180, 90]
 
+    # Params: project_id (required), workspace_id (required).
     pg_geochem_by_project:
       schema: silver
       function: pg_geochem_by_project
@@ -139,6 +164,7 @@ postgres:
     # — imported_points / imported_lines / imported_polygons — split on
     # ST_Dimension, because one MapLibre layer cannot paint points, lines and
     # polygons together. A client must add three style layers, not one.
+    # Params: project_id (required), workspace_id (required).
     pg_spatial_features_by_project:
       schema: silver
       function: pg_spatial_features_by_project

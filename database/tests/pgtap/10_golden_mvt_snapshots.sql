@@ -84,8 +84,12 @@ SELECT ok(
 -- Tile: z=3, x=1, y=2  (lon -135 to -90, lat ~41 to ~67)
 -- Project: 00000000-0000-0000-0000-deadbeefcafe  (GoldenFixture, data_version=1)
 --
--- Note: All 7 etag_hash values are identical (5e649996...) because they share
--- the formula md5(data_version|z|x|y|project_id). This is correct and expected.
+-- Note: this file only ever asserted md5(mvt), never etag_hash, so the
+-- 2026-09-16 tenant-isolation fix (which added workspace_id into the
+-- etag_hash formula: md5(data_version|z|x|y|project_id|workspace_id)) does
+-- not change anything asserted here. The mvt bytes themselves are unchanged
+-- by that fix as long as the fixture rows' workspace_id matches the
+-- workspace_id now required in query_params (see seed_golden_fixture.sql).
 -- The MVT byte md5 values DIFFER per layer (different feature sets and geometry).
 -- ══════════════════════════════════════════════════════════════════════════════
 
@@ -102,14 +106,14 @@ SELECT ok(
 -- assertion below; the other 6 layers remain exact-md5 golden checks.
 SELECT ok(
     (SELECT octet_length(mvt) > 0 FROM silver.pg_collars_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_collars_by_project(3,1,2): MVT bytes non-empty (golden md5 stale after 2026_05_24 uncertainty attrs; regen manifest to restore exact check)'
 );
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_drill_traces_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     '2a5b60dcbd6a677c142ef61f68016f7d',
     'pg_drill_traces_by_project(3,1,2): MVT bytes match golden snapshot'
@@ -117,7 +121,7 @@ SELECT is(
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_seismic_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     '9bd62f37ae939dfb4bcd1fa48e183327',
     'pg_seismic_by_project(3,1,2): MVT bytes match golden snapshot'
@@ -125,7 +129,7 @@ SELECT is(
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_boundaries_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     '2681fbee28a088b4f9116f04855d3818',
     'pg_boundaries_by_project(3,1,2): MVT bytes match golden snapshot'
@@ -133,7 +137,7 @@ SELECT is(
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_formations_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     '7a95cd4517f105a2f030f2fa54c9c203',
     'pg_formations_by_project(3,1,2): MVT bytes match golden snapshot'
@@ -141,7 +145,7 @@ SELECT is(
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_historic_workings_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     '30b392f09f0bb7bf3d4ea4650163d90e',
     'pg_historic_workings_by_project(3,1,2): MVT bytes match golden snapshot'
@@ -149,7 +153,7 @@ SELECT is(
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_geochem_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     '4be83161da76152f072a9df8c5f844df',
     'pg_geochem_by_project(3,1,2): MVT bytes match golden snapshot'
@@ -165,70 +169,70 @@ SELECT is(
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_collars_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     (SELECT md5(mvt) FROM silver.pg_collars_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_collars_by_project: MVT output is deterministic (two identical calls)'
 );
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_drill_traces_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     (SELECT md5(mvt) FROM silver.pg_drill_traces_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_drill_traces_by_project: MVT output is deterministic (two identical calls)'
 );
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_seismic_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     (SELECT md5(mvt) FROM silver.pg_seismic_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_seismic_by_project: MVT output is deterministic (two identical calls)'
 );
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_boundaries_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     (SELECT md5(mvt) FROM silver.pg_boundaries_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_boundaries_by_project: MVT output is deterministic (two identical calls)'
 );
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_formations_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     (SELECT md5(mvt) FROM silver.pg_formations_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_formations_by_project: MVT output is deterministic (two identical calls)'
 );
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_historic_workings_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     (SELECT md5(mvt) FROM silver.pg_historic_workings_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_historic_workings_by_project: MVT output is deterministic (two identical calls)'
 );
 
 SELECT is(
     (SELECT md5(mvt) FROM silver.pg_geochem_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     (SELECT md5(mvt) FROM silver.pg_geochem_by_project(
-        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
+        3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe", "workspace_id": "a0000000-0000-0000-0000-000000000001"}'::json
     ) WHERE mvt IS NOT NULL),
     'pg_geochem_by_project: MVT output is deterministic (two identical calls)'
 );
