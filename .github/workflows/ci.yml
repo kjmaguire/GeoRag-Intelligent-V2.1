@@ -705,6 +705,13 @@ jobs:
         run: python scripts/check-ecs-image-tags.py
       - name: Discrimination tests for the image-tag check
         run: bash scripts/tests/ecs_image_tags_test.sh
+      # cd.yml built three images and docker-build.yml built two, so martin
+      # reached production unbuilt — and its COPY source did not resolve
+      # against the context cd.yml uses. hadolint had linted the file all
+      # along; a linter never checks that a COPY source exists. An image is
+      # not deployable until CI has actually built it.
+      - name: CI builds every image CD deploys
+        run: python scripts/check-image-build-parity.py
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.

@@ -130,7 +130,8 @@ jobs:
     # even before accounting for the Trivy scan + SBOM steps that run
     # after the build within the same budget. 45 gives real headroom.
     timeout-minutes: 45
-    # Matrix over the two images so each gets its own cache scope and SBOM.
+    # Matrix over the three images CD builds, so each gets its own cache
+    # scope and SBOM.
     # Failures in one image do not cancel the other. The dagster leg was
     # dropped 2026-08-05 — Dagster services were retired in Phase B2 and
     # nothing deploys this image anymore.
@@ -147,6 +148,20 @@ jobs:
             context: src
           - service: laravel
             dockerfile: docker/laravel.Dockerfile
+            context: .
+          # Added 2026-09-16. cd.yml has always built three images and this
+          # workflow built two, so martin reached production unbuilt: its
+          # `COPY martin/martin.yaml` could not resolve against cd.yml's
+          # repository-root context, and the first deploy would have been the
+          # first time anything tried. ci.yml lints it with hadolint, which
+          # checks syntax and never whether a COPY source exists.
+          #
+          # The rule this restores is simply that CI builds every image CD
+          # builds. It costs almost nothing here — martin is a FROM and a COPY
+          # over a pinned upstream digest, seconds rather than the fastapi
+          # leg's minutes.
+          - service: martin
+            dockerfile: docker/martin.Dockerfile
             context: .
 
     # GITHUB_TOKEN must have packages:write to push to GHCR.

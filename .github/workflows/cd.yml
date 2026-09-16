@@ -204,7 +204,38 @@ jobs:
             exit 1
           fi
 
+      # ECR here is IMMUTABLE (deploy/aws/terraform/main.tf), so a tag is
+      # written once and can never be moved. A rebuild of the same commit
+      # almost never reproduces the same digest — base-image drift, apt
+      # mirrors, timestamps — so re-running this workflow on a SHA that was
+      # already pushed fails the push with ImageTagAlreadyExistsException,
+      # naming neither the cause nor the remedy.
+      #
+      # That lands hardest exactly where it hurts most: the FIRST deploy is
+      # the one most likely to fail downstream (a placeholder secret, an
+      # unbootstrapped database) and be retried. "Re-run failed jobs" happens
+      # to work, because it skips this job; "Re-run all jobs" — the obvious
+      # thing to reach for — did not.
+      #
+      # The image for a given SHA is the image for that SHA, so re-using it is
+      # correct rather than merely convenient. If this check cannot answer (no
+      # ecr:DescribeImages on the deploy role, a throttle), it falls through to
+      # building, which is the pre-existing behaviour and the safe direction.
+      - name: Already pushed?
+        id: existing
+        run: |
+          TAG="${{ needs.check-ci.outputs.short_sha }}"
+          REPO="georag/${{ matrix.image }}"
+          if aws ecr describe-images --repository-name "$REPO" \
+               --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "${REPO}:${TAG} is already in ECR — reusing it, not rebuilding."
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
+        if: steps.existing.outputs.found != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
