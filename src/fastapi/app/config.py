@@ -1042,16 +1042,39 @@ class Settings(BaseSettings):
         # environment there, so they are read the same way here rather than
         # being promoted to Settings fields. Promoting them would move the
         # defaults away from the code that documents why each is 30.
+        #
+        # ONLY the budgets actually in the code path are checked. A budget
+        # that no call reaches cannot expire, and demanding it be consistent
+        # anyway is how a check starts failing environments it has nothing to
+        # say about: the E2E smoke job runs a stubbed local embedder and an
+        # in-process sparse encoder, so neither 30s value is reachable there,
+        # and an unconditional check would have blocked the app from booting
+        # over two numbers that were never going to be read.
         import os as _os  # noqa: PLC0415
 
-        nested = {
-            "BEDROCK_EMBED_TIMEOUT_S": float(
+        nested: dict[str, float] = {}
+
+        # The Bedrock budget bites only on the hosted path — which is
+        # production, and is where this was found.
+        # Read from the environment with the same default services/embedding.py
+        # uses -- it is not a Settings field, and an unset value selects the
+        # hosted backend rather than a model host that does not exist in
+        # production.
+        if (
+            _os.environ.get("EMBEDDING_BACKEND") or "bedrock"
+        ).strip().lower() == "bedrock":
+            nested["BEDROCK_EMBED_TIMEOUT_S"] = float(
                 _os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30") or "30"
-            ),
-            "SPARSE_SERVICE_TIMEOUT_S": float(
+            )
+
+        # SPARSE_SERVICE_TIMEOUT_S is the HTTP client timeout for the sidecar
+        # hop. With SPARSE_SERVICE_URL unset the encode runs in-process and
+        # that value is never consulted.
+        if (_os.environ.get("SPARSE_SERVICE_URL") or "").strip():
+            nested["SPARSE_SERVICE_TIMEOUT_S"] = float(
                 _os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30"
-            ),
-        }
+            )
+
         too_big = {
             name: value for name, value in nested.items()
             if value >= self.TIMEOUT_QDRANT_S

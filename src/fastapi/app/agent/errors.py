@@ -6,7 +6,10 @@ messages so the frontend can render actionable feedback.
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
+
+logger = logging.getLogger(__name__)
 
 
 class ErrorCode(StrEnum):
@@ -81,7 +84,18 @@ def classify_error(exc: Exception) -> tuple[ErrorCode, str]:
         if isinstance(exc, WorkspaceQuotaExceeded):
             return ErrorCode.QUOTA_EXCEEDED, USER_MESSAGES[ErrorCode.QUOTA_EXCEEDED]
     except ImportError:  # pragma: no cover - llm_calls always importable in app
-        pass
+        # Not silent: this runs inside somebody else's except block, so
+        # raising here would replace the error being classified with an
+        # import error and lose the original entirely. Degrading to
+        # INTERNAL_ERROR is the right behaviour; saying so is what stops
+        # the next person wondering why a quota stop was reported as a
+        # mystery.
+        logger.debug(
+            "classify_error: app.agent.llm_calls unavailable, so the "
+            "WorkspaceQuotaExceeded branch was skipped for %s",
+            type(exc).__name__,
+            exc_info=True,
+        )
 
     if isinstance(exc, asyncio.TimeoutError):
         return ErrorCode.TIMEOUT, USER_MESSAGES[ErrorCode.TIMEOUT]

@@ -1103,6 +1103,16 @@ jobs:
       RERANKER_TORCH_THREADS: "4"
       TIMEOUT_GATHER_S: "25"
       TIMEOUT_RERANKER_S: "22"
+      # Same reasoning, third budget. TIMEOUT_QDRANT_S defaults to 45 because
+      # on AWS it wraps a Bedrock embedding call and an HTTP hop to a SPLADE++
+      # sidecar, each with its own 30s budget. Neither exists here: this job
+      # runs a stubbed local embedder (EMBEDDING_BACKEND=local) and an
+      # in-process sparse encoder (no SPARSE_SERVICE_URL), so the only thing
+      # left inside the budget is the Qdrant query itself. 45 would not fit
+      # inside the 25s gather above and the config validator rejects that
+      # pairing outright — correctly, because an inner budget larger than the
+      # deadline wrapping it can only ever fire second.
+      TIMEOUT_QDRANT_S: "20"
 
     steps:
       - uses: actions/checkout@v7
