@@ -18,7 +18,7 @@ aiobotocore==2.25.1
     # via aioboto3
 aiofiles==25.1.0
     # via aioboto3
-aiohappyeyeballs==2.6.1
+aiohappyeyeballs==2.7.1
     # via aiohttp
 aiohttp==3.14.3
     # via
@@ -28,17 +28,17 @@ aioitertools==0.13.0
     # via aiobotocore
 aiosignal==1.4.0
     # via aiohttp
-annotated-doc==0.0.4
+annotated-doc==0.0.5
     # via
     #   fastapi
     #   typer
-annotated-types==0.7.0
+annotated-types==0.8.0
     # via pydantic
-anthropic==0.122.0
+anthropic==0.125.0
     # via
     #   georag-fastapi
     #   pydantic-ai-slim
-anyio==4.13.0
+anyio==4.15.1
     # via
     #   anthropic
     #   httpx
@@ -55,7 +55,7 @@ attrs==26.1.0
     # via
     #   aiohttp
     #   rasterio
-authlib==1.7.2
+authlib==1.8.0
     # via georag-fastapi
 backoff==2.2.1
     # via langfuse
@@ -71,11 +71,11 @@ botocore==1.40.61
     #   s3transfer
 brotli==1.2.0 ; platform_python_implementation == 'CPython'
     # via fonttools
-brotlicffi==1.2.0.1 ; platform_python_implementation != 'CPython'
+brotlicffi==1.2.0.2 ; platform_python_implementation != 'CPython'
     # via fonttools
-cachetools==7.0.5
+cachetools==7.1.8
     # via georag-fastapi
-certifi==2026.2.25
+certifi==2026.7.22
     # via
     #   httpcore
     #   httpx
@@ -83,40 +83,38 @@ certifi==2026.2.25
     #   pyproj
     #   rasterio
     #   requests
-cffi==2.0.0
+cffi==2.1.1
     # via
     #   brotlicffi
     #   cryptography
     #   weasyprint
-charset-normalizer==3.4.7
+charset-normalizer==3.5.1
     # via
     #   georag-geoparsers
     #   pdfminer-six
     #   requests
-click==8.4.2
+click==8.5.0
     # via
-    #   cligj
     #   huggingface-hub
     #   rasterio
     #   uvicorn
-cligj==0.7.2
-    # via rasterio
 cloudpickle==3.1.2
-    # via shap
+    # via
+    #   joblib
+    #   shap
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
-    #   click
     #   tqdm
     #   typer
-contourpy==1.3.3
+contourpy==1.4.0
     # via matplotlib
-cryptography==50.0.0
+cryptography==50.0.1
     # via
     #   authlib
     #   georag-fastapi
     #   joserfc
     #   pdfminer-six
-cssselect2==0.9.0
+cssselect2==0.10.1
     # via weasyprint
 cycler==0.12.1
     # via matplotlib
@@ -127,7 +125,7 @@ distro==1.9.0
     #   anthropic
     #   langsmith
     #   openai
-docstring-parser==0.17.0
+docstring-parser==0.18.0
     # via anthropic
 et-xmlfile==2.0.0
     # via openpyxl
@@ -135,11 +133,11 @@ ezdxf==1.4.4
     # via georag-geoparsers
 fastapi==0.141.1
     # via georag-fastapi
-filelock==3.25.2
+filelock==3.32.7
     # via
     #   huggingface-hub
     #   torch
-fonttools==4.63.0
+fonttools==4.65.0
     # via
     #   ezdxf
     #   matplotlib
@@ -148,48 +146,48 @@ frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
-fsspec==2026.3.0
+fsspec==2026.7.0
     # via
     #   huggingface-hub
     #   torch
-genai-prices==0.1.3
+genai-prices==0.1.7
     # via pydantic-ai-slim
 geopandas==1.1.4
     # via
     #   georag-fastapi
     #   georag-geoparsers
-googleapis-common-protos==1.74.0
+googleapis-common-protos==1.75.3
     # via
     #   grpcio-status
     #   opentelemetry-exporter-otlp-proto-http
-griffelib==2.0.2
+griffelib==2.3.0
     # via pydantic-ai-slim
-grpcio==1.80.0
+grpcio==1.84.0
     # via
     #   grpcio-status
     #   grpcio-tools
     #   hatchet-sdk
     #   qdrant-client
-grpcio-status==1.80.0
+grpcio-status==1.84.0
     # via hatchet-sdk
-grpcio-tools==1.80.0
+grpcio-tools==1.81.1
     # via hatchet-sdk
 h11==0.16.0
     # via
     #   httpcore
     #   httpcore2
     #   uvicorn
-h2==4.3.0
+h2==4.4.1
     # via httpx
-hatchet-sdk==1.37.2
+hatchet-sdk==1.40.1
     # via georag-fastapi
 hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via huggingface-hub
-hpack==4.1.0
+hpack==4.2.0
     # via h2
 httpcore==1.0.9
     # via httpx
-httpcore2==2.3.0
+httpcore2==2.13.0 ; sys_platform != 'emscripten'
     # via httpx2
 httptools==0.8.0
     # via uvicorn
@@ -201,32 +199,33 @@ httpx==0.28.1
     #   langchain-core
     #   langfuse
     #   langgraph-sdk
-    #   langsmith
     #   openai
     #   pydantic-ai-slim
     #   pydantic-graph
     #   qdrant-client
-httpx2==2.3.0
-    # via genai-prices
-huggingface-hub==1.27.0
+httpx2==2.13.0
+    # via
+    #   genai-prices
+    #   langsmith
+httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
+    # via httpx2
+huggingface-hub==1.31.0
     # via
     #   sentence-transformers
     #   tokenizers
     #   transformers
 hyperframe==6.1.0
     # via h2
-idna==3.11
+idna==3.19
     # via
     #   anyio
     #   httpx
     #   httpx2
     #   requests
     #   yarl
-importlib-metadata==8.7.1
-    # via opentelemetry-api
 jinja2==3.1.6
     # via torch
-jiter==0.13.0
+jiter==0.17.0
     # via
     #   anthropic
     #   openai
@@ -235,24 +234,24 @@ jmespath==1.1.0
     #   aiobotocore
     #   boto3
     #   botocore
-joblib==1.5.3
+joblib==1.6.0
     # via scikit-learn
-joserfc==1.7.4
+joserfc==1.7.5
     # via authlib
 jsonpatch==1.33
     # via langchain-core
 jsonpointer==3.1.1
     # via jsonpatch
-kiwisolver==1.5.0
+kiwisolver==1.5.1
     # via matplotlib
-langchain-core==1.5.5
+langchain-core==1.6.3
     # via
     #   georag-fastapi
     #   langgraph
     #   langgraph-checkpoint
     #   langgraph-prebuilt
     #   langgraph-sdk
-langchain-protocol==0.0.18
+langchain-protocol==0.0.19
     # via
     #   langchain-core
     #   langgraph-sdk
@@ -269,9 +268,9 @@ langgraph-checkpoint==4.2.0
     #   langgraph-prebuilt
 langgraph-prebuilt==1.1.0
     # via langgraph
-langgraph-sdk==0.4.2
+langgraph-sdk==0.4.4
     # via langgraph
-langsmith==0.10.12
+langsmith==0.12.5
     # via langchain-core
 lasio==0.32
     # via
@@ -279,14 +278,14 @@ lasio==0.32
     #   georag-geoparsers
 limits==5.8.0
     # via slowapi
-llvmlite==0.48.0
+llvmlite==0.49.0
     # via
     #   georag-fastapi
     #   numba
     #   shap
-logfire-api==4.31.1
+logfire-api==4.41.0
     # via pydantic-graph
-lxml==6.1.1
+lxml==6.1.3
     # via
     #   pikepdf
     #   python-docx
@@ -294,7 +293,7 @@ markdown-it-py==4.2.0
     # via rich
 markupsafe==3.0.3
     # via jinja2
-matplotlib==3.11.1
+matplotlib==3.11.2
     # via
     #   georag-fastapi
     #   mplstereonet
@@ -304,18 +303,20 @@ mplstereonet==0.6.3
     # via georag-fastapi
 mpmath==1.3.0
     # via sympy
-multidict==6.7.1
+multidict==6.8.0
     # via
     #   aiobotocore
     #   aiohttp
     #   yarl
+narwhals==2.26.0
+    # via scikit-learn
 networkx==3.6.1
     # via torch
-numba==0.66.0
+numba==0.67.0
     # via
     #   georag-fastapi
     #   shap
-numpy==2.4.4
+numpy==2.5.3
     # via
     #   contourpy
     #   ezdxf
@@ -344,28 +345,28 @@ openpyxl==3.1.5
     # via
     #   georag-fastapi
     #   georag-geoparsers
-opentelemetry-api==1.39.1
+opentelemetry-api==1.44.0
     # via
     #   langfuse
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
     #   pydantic-ai-slim
-opentelemetry-exporter-otlp-proto-common==1.39.1
+opentelemetry-exporter-otlp-proto-common==1.44.0
     # via opentelemetry-exporter-otlp-proto-http
-opentelemetry-exporter-otlp-proto-http==1.39.1
+opentelemetry-exporter-otlp-proto-http==1.44.0
     # via langfuse
-opentelemetry-proto==1.39.1
+opentelemetry-proto==1.44.0
     # via
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-sdk==1.39.1
+opentelemetry-sdk==1.44.0
     # via
     #   langfuse
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-semantic-conventions==0.60b1
+opentelemetry-semantic-conventions==0.65b0
     # via opentelemetry-sdk
-orjson==3.11.9
+orjson==3.12.0
     # via
     #   langgraph-sdk
     #   langsmith
@@ -397,7 +398,7 @@ pdfminer-six==20260107
     #   pdfplumber
 pdfplumber==0.11.10
     # via georag-fastapi
-pikepdf==10.10.0
+pikepdf==10.13.0.post1
     # via georag-fastapi
 pillow==12.3.0
     # via
@@ -408,19 +409,19 @@ pillow==12.3.0
     #   pikepdf
     #   pytesseract
     #   weasyprint
-polars==1.44.0
+polars==1.44.2
     # via georag-geoparsers
-polars-runtime-32==1.44.0
+polars-runtime-32==1.44.2
     # via polars
 portalocker==3.2.0
     # via qdrant-client
-prometheus-client==0.24.1
+prometheus-client==0.26.0
     # via
     #   hatchet-sdk
     #   prometheus-fastapi-instrumentator
 prometheus-fastapi-instrumentator==8.1.0
     # via georag-fastapi
-propcache==0.4.1
+propcache==0.5.4
     # via
     #   aiohttp
     #   yarl
@@ -436,7 +437,7 @@ psutil==7.2.2
     # via georag-fastapi
 pycparser==3.0 ; implementation_name != 'PyPy'
     # via cffi
-pydantic==2.13.4
+pydantic==2.13.5
     # via
     #   anthropic
     #   fastapi
@@ -452,21 +453,21 @@ pydantic==2.13.4
     #   pydantic-graph
     #   pydantic-settings
     #   qdrant-client
-pydantic-ai-slim==2.31.0
+pydantic-ai-slim==2.31.1
     # via georag-fastapi
-pydantic-core==2.46.4
+pydantic-core==2.46.5
     # via pydantic
-pydantic-graph==2.31.0
+pydantic-graph==2.31.1
     # via pydantic-ai-slim
-pydantic-settings==2.13.1
+pydantic-settings==2.15.0
     # via
     #   georag-fastapi
     #   hatchet-sdk
 pydyf==0.12.1
     # via weasyprint
-pygments==2.20.0
+pygments==2.21.0
     # via rich
-pyjwt==2.13.0
+pyjwt==2.14.0
     # via georag-fastapi
 pyogrio==0.13.0
     # via
@@ -477,15 +478,15 @@ pyparsing==3.3.2
     #   ezdxf
     #   matplotlib
     #   rasterio
-pypdf==6.14.2
+pypdf==6.19.0
     # via georag-fastapi
-pypdfium2==5.12.1
+pypdfium2==5.13.0
     # via
     #   georag-fastapi
     #   pdfplumber
-pyphen==0.17.2
+pyphen==0.18.1
     # via weasyprint
-pyproj==3.7.2
+pyproj==3.8.0
     # via
     #   geopandas
     #   georag-geoparsers
@@ -500,13 +501,13 @@ python-dateutil==2.9.0.post0
     #   pandas
 python-docx==1.2.0
     # via georag-fastapi
-python-dotenv==1.2.2
+python-dotenv==1.2.3
     # via
     #   pydantic-settings
     #   uvicorn
 python-multipart==0.0.32
     # via georag-fastapi
-pywin32==311 ; sys_platform == 'win32'
+pywin32==312 ; sys_platform == 'win32'
     # via portalocker
 pyyaml==6.0.3
     # via
@@ -514,23 +515,23 @@ pyyaml==6.0.3
     #   langchain-core
     #   transformers
     #   uvicorn
-qdrant-client==1.19.0
+qdrant-client==1.19.1
     # via georag-fastapi
-rapidfuzz==3.14.5
+rapidfuzz==3.14.6
     # via
     #   georag-fastapi
     #   georag-geoparsers
-rasterio==1.5.0
+rasterio==1.5.1
     # via
     #   georag-fastapi
     #   georag-geoparsers
-redis==7.4.0
+redis==7.4.1
     # via georag-fastapi
-regex==2026.4.4
+regex==2026.9.10
     # via
     #   tiktoken
     #   transformers
-requests==2.33.1
+requests==2.34.2
     # via
     #   langsmith
     #   opentelemetry-exporter-otlp-proto-http
@@ -544,12 +545,12 @@ s3transfer==0.14.0
     # via boto3
 safetensors==0.8.0
     # via transformers
-scikit-learn==1.8.0
+scikit-learn==1.9.1
     # via
     #   georag-fastapi
     #   sentence-transformers
     #   shap
-scipy==1.17.1
+scipy==1.18.1
     # via
     #   scikit-learn
     #   sentence-transformers
@@ -585,7 +586,7 @@ sniffio==1.3.1
     #   anthropic
     #   langsmith
     #   openai
-starlette==1.3.1
+starlette==1.6.0
     # via
     #   fastapi
     #   georag-fastapi
@@ -596,9 +597,9 @@ tenacity==9.1.4
     # via
     #   hatchet-sdk
     #   langchain-core
-threadpoolctl==3.6.0
+threadpoolctl==3.7.0
     # via scikit-learn
-tiktoken==0.12.0
+tiktoken==0.14.0
     # via pydantic-ai-slim
 tinycss2==1.5.1
     # via
@@ -606,30 +607,31 @@ tinycss2==1.5.1
     #   weasyprint
 tinyhtml5==2.1.0
     # via weasyprint
-tokenizers==0.22.2
+tokenizers==0.23.2
     # via
     #   sentence-transformers
     #   transformers
-tqdm==4.67.3
+tqdm==4.70.1
     # via
     #   huggingface-hub
     #   openai
     #   sentence-transformers
     #   shap
     #   transformers
-transformers==5.15.0
+transformers==5.17.0
     # via
     #   georag-fastapi
     #   sentence-transformers
-truststore==0.10.4
+truststore==0.10.4 ; sys_platform != 'emscripten'
     # via
     #   httpcore2
     #   httpx2
-typer==0.27.1
+typer==0.27.2
     # via transformers
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   anthropic
+    #   anyio
     #   ezdxf
     #   fastapi
     #   grpcio
@@ -650,7 +652,7 @@ typing-extensions==4.15.0
     #   shap
     #   torch
     #   typing-inspection
-typing-inspection==0.4.2
+typing-inspection==0.4.4
     # via
     #   fastapi
     #   hatchet-sdk
@@ -658,28 +660,28 @@ typing-inspection==0.4.2
     #   pydantic-ai-slim
     #   pydantic-graph
     #   pydantic-settings
-tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     # via pandas
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   botocore
     #   georag-fastapi
     #   hatchet-sdk
     #   qdrant-client
     #   requests
-uuid-utils==0.17.0
+uuid-utils==0.17.1
     # via
     #   langchain-core
     #   langsmith
-uvicorn==0.52.3
+uvicorn==0.53.0
     # via georag-fastapi
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
     # via uvicorn
-watchfiles==1.1.1
+watchfiles==1.2.0
     # via uvicorn
 weasyprint==69.0
     # via georag-fastapi
-webencodings==0.5.1
+webencodings==0.6.1
     # via
     #   cssselect2
     #   tinycss2
@@ -694,7 +696,7 @@ wrapt==1.17.3
     #   aiobotocore
     #   deprecated
     #   langfuse
-xgboost==3.3.0 ; sys_platform != 'linux'
+xgboost==3.4.1 ; sys_platform != 'linux'
     # via georag-fastapi
 xgboost-cpu==3.4.1 ; sys_platform == 'linux'
     # via georag-fastapi
@@ -704,10 +706,8 @@ xxhash==3.8.1
     # via
     #   langgraph
     #   langsmith
-yarl==1.23.0
+yarl==1.25.1
     # via aiohttp
-zipp==3.23.0
-    # via importlib-metadata
 zopfli==0.4.3
     # via fonttools
 zstandard==0.25.0
