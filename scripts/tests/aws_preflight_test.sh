@@ -204,6 +204,54 @@ if grep -qE '^✓ A-05' <<<"$OUT"; then ok "allows a committed .tfvars.example";
 rm -rf "$D"
 
 # ---------------------------------------------------------------------------
+case_ "A-01 — a tfvars file Terraform does not auto-load"
+# Terraform reads terraform.tfvars and *.auto.tfvars by itself and nothing
+# else. production.tfvars -- the name README and .gitignore both use -- needs
+# -var-file on plan AND apply. This check globbed *.tfvars with no notion of
+# that, so the value counted as supplied while a bare `terraform apply` went
+# on prompting for it, and the operator reasonably concluded the gate lied.
+D=$(make_fixture)
+printf 'acm_certificate_arn = "arn:aws:acm:x"\n' >"$D/deploy/aws/terraform/production.tfvars"
+OUT=$( cd "$D" && bash scripts/operator/aws-preflight.sh 2>&1 | strip_ansi )
+if grep -qE '^✓ A-01' <<<"$OUT" && grep -q 'NOT auto-loaded' <<<"$OUT" && grep -q 'var-file' <<<"$OUT"; then
+  ok "counts it as supplied but names the flag it needs"
+else
+  bad "A-01 did not flag a non-auto-loaded tfvars: $(grep -A1 A-01 <<<"$OUT" | head -2 | tr '\n' ' ')"
+fi
+rm -rf "$D"
+
+# ---------------------------------------------------------------------------
+case_ "A-01 — an auto-loaded tfvars needs no flag and must not be nagged about"
+# The other half: a check that cries wolf on the correct arrangement gets
+# ignored on the incorrect one.
+for name in terraform.tfvars production.auto.tfvars; do
+  D=$(make_fixture)
+  printf 'acm_certificate_arn = "arn:aws:acm:x"\n' >"$D/deploy/aws/terraform/$name"
+  OUT=$( cd "$D" && bash scripts/operator/aws-preflight.sh 2>&1 | strip_ansi )
+  if grep -qE '^✓ A-01' <<<"$OUT" && ! grep -q 'NOT auto-loaded' <<<"$OUT"; then
+    ok "stays quiet about $name"
+  else
+    bad "A-01 nagged about $name, which Terraform does auto-load"
+  fi
+  rm -rf "$D"
+done
+
+# ---------------------------------------------------------------------------
+case_ "A-01 — the committed template must not count as a value"
+# production.tfvars.example is tracked on purpose. If its placeholder text
+# satisfied the check, every fresh clone would pass A-01 having supplied
+# nothing at all.
+D=$(make_fixture)
+printf 'acm_certificate_arn = "set-me"\n' >"$D/deploy/aws/terraform/production.tfvars.example"
+OUT=$( cd "$D" && bash scripts/operator/aws-preflight.sh 2>&1 | strip_ansi )
+if grep -qE '^✗ A-01' <<<"$OUT" && grep -q 'acm_certificate_arn' <<<"$OUT"; then
+  ok "ignores the .example template"
+else
+  bad "A-01 accepted a placeholder from production.tfvars.example"
+fi
+rm -rf "$D"
+
+# ---------------------------------------------------------------------------
 case_ "A-11 — no probe report at all"
 # Live failure: every model adapter was written to documentation and never
 # verified. The path this replaced had three behaviours documentation got

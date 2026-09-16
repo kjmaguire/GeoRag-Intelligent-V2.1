@@ -100,21 +100,53 @@ if [ -z "$NO_DEFAULT" ]; then
   check "A-01" "Terraform variables without defaults are supplied" warn \
     "could not parse ${TF_DIR}/*.tf — check ${PYTHON} is available"
 else
+  # Terraform AUTO-LOADS only terraform.tfvars, terraform.tfvars.json and
+  # *.auto.tfvars{,.json}. Everything else needs -var-file on the command
+  # line, and this check used to glob *.tfvars without that distinction --
+  # so a value sitting in production.tfvars (which is what README and
+  # .gitignore both name) satisfied A-01 while a bare `terraform apply`
+  # went right on prompting for it. Reported as supplied, because it is,
+  # but the detail line now names the flag it needs.
   missing=""
   found=""
+  needs_flag=""
   for v in $NO_DEFAULT; do
     env_name="TF_VAR_${v}"
     if [ -n "${!env_name:-}" ]; then
       found="${found} ${v}(env)"
-    elif ls "$TF_DIR"/*.tfvars "$TF_DIR"/*.tfvars.json >/dev/null 2>&1 \
-      && grep -rqE "^[[:space:]]*\"?${v}\"?[[:space:]]*[=:]" "$TF_DIR"/*.tfvars "$TF_DIR"/*.tfvars.json 2>/dev/null; then
-      found="${found} ${v}(tfvars)"
-    else
-      missing="${missing} ${v}"
+      continue
     fi
+
+    hit_file=""
+    for f in "$TF_DIR"/*.tfvars "$TF_DIR"/*.tfvars.json; do
+      [ -f "$f" ] || continue
+      case "$f" in *.tfvars.example|*.tfvars.json.example) continue ;; esac
+      if grep -qE "^[[:space:]]*\"?${v}\"?[[:space:]]*[=:]" "$f" 2>/dev/null; then
+        hit_file="$f"
+        break
+      fi
+    done
+
+    if [ -z "$hit_file" ]; then
+      missing="${missing} ${v}"
+      continue
+    fi
+
+    base="$(basename "$hit_file")"
+    case "$base" in
+      terraform.tfvars|terraform.tfvars.json|*.auto.tfvars|*.auto.tfvars.json)
+        found="${found} ${v}(${base})" ;;
+      *)
+        found="${found} ${v}(${base})"
+        case "$needs_flag" in *"$base"*) ;; *) needs_flag="${needs_flag} ${base}" ;; esac ;;
+    esac
   done
   if [ -z "$missing" ]; then
-    check "A-01" "all no-default Terraform variables supplied" ok "${found# }"
+    detail="${found# }"
+    if [ -n "$needs_flag" ]; then
+      detail="${detail} — NOT auto-loaded:${needs_flag}. Terraform reads only terraform.tfvars and *.auto.tfvars by itself, so pass -var-file=<file> on plan AND apply, or rename it *.auto.tfvars"
+    fi
+    check "A-01" "all no-default Terraform variables supplied" ok "$detail"
   else
     check "A-01" "all no-default Terraform variables supplied" fail \
       "unset:${missing} — apply will prompt or fail; see ${README}"
