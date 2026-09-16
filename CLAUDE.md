@@ -101,16 +101,38 @@ doc names a `schema.table` no migration creates.
 ## Agent delegation
 
 This project has specialized Claude Code subagents in `.claude/agents/`. Use
-them for focused work — each has its own context window and domain expertise:
+them for focused work — each has its own context window and domain expertise.
+There are two families and the split matters: **layer agents write the code,
+domain experts judge whether it is right.** When both apply, the layer agent
+writes and the expert reviews.
+
+**Layer agents**
 
 - **`senior-reviewer`** (Opus) — architectural review at milestone gates ONLY. Read-only. Sparingly.
-- **`backend-laravel`** (Sonnet) — all Laravel work
-- **`backend-fastapi`** (Sonnet) — all FastAPI + Pydantic AI work
+- **`backend-laravel`** (Sonnet) — routine Laravel feature work
+- **`backend-fastapi`** (Sonnet) — routine FastAPI work
 - **`data-engineer`** (Sonnet) — ingestion pipeline, PostGIS schemas, format parsers
-- **`frontend-engineer`** (Sonnet) — React + Inertia + shadcn/ui + visualizations
-- **`devops-engineer`** (Sonnet) — Docker Compose, deployment, database tuning
-- **`test-engineer`** (Sonnet) — all test writing, golden query sets, snapshot tests
+- **`frontend-engineer`** (Sonnet) — routine React components
+- **`devops-engineer`** (Sonnet) — docker-compose, the Helm chart, database tuning
+- **`test-engineer`** (Sonnet) — all test writing, golden query sets
 - **`boilerplate-writer`** (Haiku) — migrations, scaffolding, docstrings, simple docs
+
+**Domain experts** (all Sonnet — the expertise is in the brief, not the tier)
+
+- **`rag-expert`** — retrieval quality, citations, the six hallucination layers, refusals. *Read-only.*
+- **`agentic-ai-expert`** — the LangGraph loop, guard chain, tool dispatch, budgets. *Read-only.*
+- **`chat-expert`** — SSE → Reverb → Echo → React, every terminal path. *Read-only.*
+- **`cohere-expert`** — Command A+, Parse 5, Embed v4, Rerank 3.5, and which host serves which
+- **`aws-expert`** — ECS/RDS/Terraform, the power switch, the nightly sweeps, cost
+- **`hatchet-expert`** — the 51 workflows, `on_crons`, durable retries, idempotency
+- **`postgres-gis-expert`** — schemas, RLS and tenant isolation, GIST, PgBouncer, RDS
+- **`gis-expert`** — CRS and datums, dip/azimuth, desurveying, Martin/MapLibre
+- **`ingestion-gis-expert`** — the parsers, the PDF/OCR stack, medallion, provenance
+- **`laravel-expert`** — Octane safety, Horizon, framework judgement calls
+- **`react-expert`** — React 19 + Inertia v3 depth, streaming render performance
+
+`.claude/agents/README.md` has the full "which agent for which question" table
+and the boundary rules where two agents overlap.
 
 Claude Code will auto-delegate based on agent descriptions. You can also
 invoke explicitly with `@agent-name` in a prompt.
