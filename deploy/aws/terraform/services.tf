@@ -295,7 +295,7 @@ resource "aws_ecs_task_definition" "this" {
   cpu                      = each.value.cpu
   memory                   = each.value.memory
   execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+  task_role_arn            = local.task_role_for[each.key]
 
   dynamic "volume" {
     for_each = contains(["qdrant", "redis"], each.key) ? [each.key] : []

@@ -139,6 +139,90 @@ resource "aws_iam_role_policy" "task" {
 }
 
 # ---------------------------------------------------------------------------
+# Stores role — the four containers that run somebody else's image
+# ---------------------------------------------------------------------------
+# qdrant, redis, martin and hatchet used to share `aws_iam_role.task` with the
+# application tier, which meant four unmodified third-party images each held
+# s3:DeleteObject over every bucket — bronze, bronze-raster, exports and
+# backups — plus bedrock:InvokeModel. The corpus is the one irreplaceable
+# thing in this deployment (data.tf: no backup workflow, S3 versioning IS the
+# backup), so a container that cannot name a bucket should not be able to
+# empty one.
+#
+# None of the four has any reason to hold those grants, and this is checkable
+# rather than assumed: `local.service_environment` in config.tf gives not one
+# of them an AWS_*, S3_*, BEDROCK_* or *_BUCKET variable, so there is no
+# bucket name or model id in their environment to act on. Qdrant's S3 snapshot
+# feature is not configured; Martin reads Postgres for MVT tiles; Hatchet's
+# queue is Postgres. What they actually touch is EFS, and only two of them
+# even do that.
+#
+# The EFS grant covers all four rather than splitting a third role for a
+# one-statement difference: martin and hatchet mount nothing, and an unused
+# mount permission on a filesystem they have no volume for is a far smaller
+# surface than delete on the corpus.
+#
+# NOT extended to `sparse`, although its own docstring says it imports only
+# the sparse encoder — no Settings, no DB, no Qdrant. It runs the fastapi
+# image, which does carry boto3, and the saving over confirming that import
+# graph against a running task is not worth a service that fails in
+# production. Revisit with the first deployed build.
+#
+# Secrets are NOT fetched by this role. The execution role pulls every
+# `valueFrom` before the container starts, which is why Martin and Hatchet can
+# reach Postgres through MARTIN_DATABASE_URL and HATCHET_DATABASE_URL with an
+# otherwise empty task role.
+
+resource "aws_iam_role" "stores" {
+  name               = "${local.name}-ecs-task-stores"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+data "aws_iam_policy_document" "stores" {
+  statement {
+    sid    = "OwnLogs"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = ["${aws_cloudwatch_log_group.services.arn}:*"]
+  }
+
+  statement {
+    sid    = "EfsMounts"
+    effect = "Allow"
+    actions = [
+      "elasticfilesystem:ClientMount",
+      "elasticfilesystem:ClientWrite",
+    ]
+    resources = [aws_efs_file_system.this.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "stores" {
+  name   = "georag"
+  role   = aws_iam_role.stores.id
+  policy = data.aws_iam_policy_document.stores.json
+}
+
+locals {
+  # Which task role each service runs under. Anything not named here gets the
+  # application role, so a service added without a thought keeps working and
+  # the tightening is the deliberate act — the safe direction for a default.
+  stores_role_services = toset(["qdrant", "redis", "martin", "hatchet"])
+
+  task_role_for = {
+    for name, _ in local.services :
+    name => (
+      contains(local.stores_role_services, name)
+      ? aws_iam_role.stores.arn
+      : aws_iam_role.task.arn
+    )
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Scheduler role — the nightly sweeps
 # ---------------------------------------------------------------------------
 # Narrow from the start. On Azure these two jobs held Contributor over the
