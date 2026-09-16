@@ -93,7 +93,7 @@ function trackedFiles(): array
 
 $patterns = [
     // KEY: value / KEY=value / "KEY" => "value"
-    '/(?:PASSWORD|PASSWD|SECRET|TOKEN)[A-Z_]*\s*[:=>]+\s*[\'"]?([^\'"\s,;)]+)/i',
+    '/(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN)[A-Z_]*\s*[:=>]+\s*[\'"]?([^\'"\s,;)]+)/i',
     // postgres://user:password@host, redis://…, amqp://…
     '#[a-z][a-z0-9+.-]*://[^:/@\s]+:([^@/\s]+)@#i',
     // ${NEO4J_PASSWORD:-24kNKWLbX20bgHEXAuMSGjCp228LIfUE} — a shell default.
@@ -107,7 +107,24 @@ $patterns = [
     // repo, while this check reported clean. Capture the value itself.
     // Digits belong in the name class: the first credential this caught
     // was NEO4J_PASSWORD, and `[A-Z_]*` cannot match the 4 in NEO4J.
-    '/\$\{[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN)[A-Z0-9_]*:[-=]([^}\s]+)\}/i',
+    '/\$\{[A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN)[A-Z0-9_]*:[-=]([^}\s]+)\}/i',
+    // `redis-cli -a <value>` and `--requirepass <value>`.
+    //
+    // Every pattern above matches an ASSIGNMENT. A credential handed to a
+    // program as an argument is not one, so none of them ever looked at
+    //
+    //     docker exec georag-redis redis-cli -a 'N2Wz…' --no-auth-warning
+    //
+    // which sat in scripts/phase0_wrapper_smoke.sh from 2026-08-25 until
+    // 2026-09-15 while this checker reported clean across 3144 tracked files.
+    // ee853f5 had swept two sibling occurrences and missed this shape twice,
+    // because a `grep PASSWORD` finds assignments and this is not one.
+    //
+    // Interpolated forms stay quiet on their own merit rather than by
+    // exception: `--requirepass "$REDIS_PASSWORD"` captures a value carrying
+    // `$`, which looksGenerated() already rejects.
+    '/\bredis-(?:cli|benchmark)\b[^\r\n]*?\s-a\s+[\'"]?([^\'"\s]+)/i',
+    '/--requirepass[=\s]+[\'"]?([^\'"\s]+)/i',
 ];
 
 $hits = [];
@@ -144,7 +161,8 @@ echo "\nThese tracked files carry values that look like real credentials:\n\n";
 foreach (array_unique($hits) as $hit) {
     echo "  {$hit}\n";
 }
-echo "\nThis repository is public. If any of these is a live credential:\n";
+echo "\nThis repository was public until 2026-09-15, and git history outlives\n";
+echo "the working tree either way. If any of these is a live credential:\n";
 echo "  1. Rotate it. That is the load-bearing step — the value is in git\n";
 echo "     history whether or not you remove it from the working tree.\n";
 echo "  2. Replace it with a placeholder and add the placeholder to ALLOWED\n";

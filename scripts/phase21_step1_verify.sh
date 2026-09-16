@@ -20,7 +20,19 @@ TOTAL=5
 REPO="${REPO:-/home/georag/projects/georag}"
 ORCH="$REPO/src/fastapi/app/agent/orchestrator.py"
 REDIS=georag-redis
-REDIS_PWD='N2Wz3FdVExUkEs8AysiAmh4usppA8FZ'
+
+# The password is resolved, never recorded. ENV_FILE is pointed at this
+# script's own $REPO so the lookup follows the same tree the checks above
+# read orchestrator.py from, rather than the library's default of the
+# checkout it happens to live in. See scripts/lib/redis_password.sh for why
+# no script here carries the value.
+# shellcheck source=lib/redis_password.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib/redis_password.sh"
+ENV_FILE="${ENV_FILE:-$REPO/.env}"
+if ! REDIS_PWD="$(redis_password)"; then
+    echo "phase21_step1_verify: cannot run checks 4 and 5 without the Redis password." >&2
+    exit 2
+fi
 
 check() {
     if [ "$2" = ok ]; then

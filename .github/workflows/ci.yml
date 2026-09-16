@@ -762,6 +762,16 @@ jobs:
       - name: Check for committed credentials
         run: php scripts/check-no-committed-secrets.php
 
+      # The check above is a claim about 3000+ files, so it is only worth the
+      # line it prints if it can still say no. On 2026-09-15 it reported clean
+      # while two tracked files carried a Redis password that had been
+      # publicly readable: `REDIS_PWD=` abbreviated past a name pattern
+      # matching PASSWORD|PASSWD, and `redis-cli -a '<value>'` is an argument
+      # rather than an assignment, which no pattern examined. Both shapes are
+      # now cases below, along with the interpolated forms that must NOT fire.
+      - name: Credential scanner discrimination tests
+        run: bash scripts/tests/committed_secrets_test.sh
+
       # Third cheap disk read in the same job. ENABLE ROW LEVEL SECURITY does
       # not apply to the table's OWNER — only FORCE does — and production
       # migrates and applies database/raw/ as `georag`, which owns every table

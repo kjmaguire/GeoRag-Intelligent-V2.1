@@ -28,6 +28,12 @@
 #                       and georag-laravel-horizon both qualify).
 # =============================================================================
 
+# Redis credential resolution lives in its own library so scripts that need
+# it never carry the value. Sourced here so every Phase 0 verifier gets
+# `redis_password` for free; it reads nothing until it is called.
+# shellcheck source=redis_password.sh
+. "$(dirname "${BASH_SOURCE[0]}")/redis_password.sh"
+
 # Detect mode.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     export PHASE0_MODE="host"
