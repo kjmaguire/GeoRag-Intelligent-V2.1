@@ -97,7 +97,7 @@ resource "aws_lb_target_group" "reverb" {
 }
 
 resource "aws_lb_listener" "https" {
-  count = local.on
+  count = local.on * local.alb_edge
 
   load_balancer_arn = aws_lb.this[0].arn
   port              = 443
@@ -127,14 +127,29 @@ resource "aws_lb_listener" "https" {
       condition     = var.manage_dns || var.acm_certificate_arn != ""
       error_message = "manage_dns is false, so Terraform issues no certificate — set acm_certificate_arn to one that certifies app_domain and lives in var.region, or set manage_dns = true to have Route 53 issue it."
     }
+
+    # app_domain gained a default of "" so that edge = "cloudfront" needs no
+    # domain. That takes it out of aws-preflight.sh A-01 as well, so this is
+    # what catches an "alb" edge with nothing to certify — at plan time,
+    # rather than at the ACM call after the VPC and RDS already exist.
+    precondition {
+      condition     = var.app_domain != ""
+      error_message = "edge = \"alb\" serves a certificate for app_domain, which is empty. Set app_domain to the hostname you own, or leave edge = \"cloudfront\" to be served on the distribution's own *.cloudfront.net name with no domain at all."
+    }
   }
 }
 
+# The WebSocket path, on whichever listener this edge created. `one()` of an
+# empty list is null, so coalesce picks the mode's listener without either
+# branch indexing a resource that does not exist.
 resource "aws_lb_listener_rule" "reverb" {
   count = local.on
 
-  listener_arn = aws_lb_listener.https[0].arn
-  priority     = 10
+  listener_arn = coalesce(
+    one(aws_lb_listener.origin[*].arn),
+    one(aws_lb_listener.https[*].arn),
+  )
+  priority = 10
 
   action {
     type             = "forward"
@@ -146,10 +161,81 @@ resource "aws_lb_listener_rule" "reverb" {
       values = ["/app/*", "/apps/*"]
     }
   }
+
+  # In CloudFront mode with a secret set, the listener's DEFAULT action is a
+  # 403 and every rule must re-prove the request came from our distribution.
+  # Without this the WebSocket path would be the one unauthenticated hole
+  # through the origin check.
+  dynamic "condition" {
+    for_each = local.cf == 1 && var.cloudfront_origin_secret != "" ? [1] : []
+    content {
+      http_header {
+        http_header_name = "X-Origin-Verify"
+        values           = [var.cloudfront_origin_secret]
+      }
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# The CloudFront-mode listener
+# ---------------------------------------------------------------------------
+# Plain HTTP, because the load balancer has no certificate when there is no
+# domain. It is not open to the internet: the security group in main.tf admits
+# only the CloudFront origin-facing prefix list, and with
+# `cloudfront_origin_secret` set the default action refuses anything that does
+# not carry the header our distribution adds.
+resource "aws_lb_listener" "origin" {
+  count = local.on * local.cf
+
+  load_balancer_arn = aws_lb.this[0].arn
+  port              = 80
+  protocol          = "HTTP"
+
+  dynamic "default_action" {
+    for_each = var.cloudfront_origin_secret == "" ? [1] : []
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.octane[0].arn
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = var.cloudfront_origin_secret != "" ? [1] : []
+    content {
+      type = "fixed-response"
+      fixed_response {
+        content_type = "text/plain"
+        message_body = "Direct origin access is refused. Reach this service through its CloudFront distribution."
+        status_code  = "403"
+      }
+    }
+  }
+}
+
+# Only exists when the default action above is the 403: this is what lets a
+# verified request through to the application.
+resource "aws_lb_listener_rule" "origin_verified" {
+  count = local.on * local.cf * (var.cloudfront_origin_secret != "" ? 1 : 0)
+
+  listener_arn = aws_lb_listener.origin[0].arn
+  priority     = 20
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.octane[0].arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "X-Origin-Verify"
+      values           = [var.cloudfront_origin_secret]
+    }
+  }
 }
 
 resource "aws_lb_listener" "http_redirect" {
-  count = local.on
+  count = local.on * local.alb_edge
 
   load_balancer_arn = aws_lb.this[0].arn
   port              = 80

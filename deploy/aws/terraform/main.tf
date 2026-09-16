@@ -200,27 +200,59 @@ resource "aws_vpc_endpoint" "s3" {
 # Security groups
 # ---------------------------------------------------------------------------
 
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  count = local.cf
+  name  = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
 resource "aws_security_group" "alb" {
   name        = "${local.name}-alb"
   description = "Public ingress to laravel-octane and laravel-reverb"
   vpc_id      = aws_vpc.this.id
 
-  ingress {
-    description      = "HTTPS from the internet"
-    from_port        = 443
-    to_port          = 443
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
+  # edge = "alb": the load balancer IS the public edge and terminates TLS.
+  dynamic "ingress" {
+    for_each = local.alb_edge == 1 ? [1] : []
+    content {
+      description      = "HTTPS from the internet"
+      from_port        = 443
+      to_port          = 443
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
   }
 
-  ingress {
-    description      = "HTTP, redirected to HTTPS by the listener"
-    from_port        = 80
-    to_port          = 80
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
+  dynamic "ingress" {
+    for_each = local.alb_edge == 1 ? [1] : []
+    content {
+      description      = "HTTP, redirected to HTTPS by the listener"
+      from_port        = 80
+      to_port          = 80
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+
+  # edge = "cloudfront": the listener is plain HTTP, so it must NOT be open to
+  # the internet — that would serve the whole application unencrypted to
+  # anyone who resolves the load balancer's hostname, with the CloudFront
+  # certificate providing a false sense of having TLS at all.
+  #
+  # The managed prefix list is every CloudFront edge address, maintained by
+  # AWS. It is narrow enough to stop direct access and NOT narrow enough to
+  # identify this distribution: see `cloudfront_origin_secret` in edge.tf for
+  # the half this cannot do.
+  dynamic "ingress" {
+    for_each = local.cf == 1 ? [1] : []
+    content {
+      description     = "HTTP from CloudFront edges only"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront[0].id]
+    }
   }
 
   egress {

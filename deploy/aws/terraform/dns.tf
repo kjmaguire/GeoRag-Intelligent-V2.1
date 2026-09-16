@@ -55,8 +55,11 @@ variable "hosted_zone_name" {
 }
 
 locals {
-  dns             = var.manage_dns ? 1 : 0
-  issue_cert      = var.manage_dns && var.acm_certificate_arn == "" ? 1 : 0
+  # `edge = "cloudfront"` means there is no domain and no certificate to issue:
+  # the distribution serves *.cloudfront.net on AWS's own certificate. Every
+  # resource in this file is skipped, and app_domain goes unused.
+  dns             = var.manage_dns && var.edge == "alb" ? 1 : 0
+  issue_cert      = var.manage_dns && var.edge == "alb" && var.acm_certificate_arn == "" ? 1 : 0
   zone_name       = var.hosted_zone_name != "" ? var.hosted_zone_name : var.app_domain
   certificate_arn = var.acm_certificate_arn != "" ? var.acm_certificate_arn : one(aws_acm_certificate_validation.this[*].certificate_arn)
 }

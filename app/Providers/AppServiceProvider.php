@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -41,6 +42,25 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // TLS terminates at the edge, never at this process, so the request's
+        // own scheme is not the scheme the browser used.
+        //
+        // With edge = "alb" the load balancer terminates TLS and sets
+        // X-Forwarded-Proto: https, which ProxyTrust already honours. With
+        // edge = "cloudfront" it does NOT: the load balancer's listener is
+        // plain HTTP there, so it truthfully reports `http`, and Laravel would
+        // generate http:// URLs into a page the browser loaded over https.
+        // Every asset and form action becomes mixed content and the browser
+        // blocks it.
+        //
+        // Keyed on APP_URL rather than on APP_ENV, because APP_URL is exactly
+        // the condition that matters: it is the address the browser uses, and
+        // deploy/aws/terraform/config.tf sets it from the real public host in
+        // both edge modes. Local development over http is unaffected.
+        if (str_starts_with((string) config('app.url'), 'https://')) {
+            URL::forceScheme('https');
+        }
+
         Gate::define('viewPortfolio', [DashboardPolicy::class, 'viewPortfolio']);
         Gate::define('viewProject', [DashboardPolicy::class, 'viewProject']);
 

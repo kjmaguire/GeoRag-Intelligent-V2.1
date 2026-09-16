@@ -67,12 +67,75 @@ is why `required_version` says so.
 `backend.hcl` is gitignored, along with `*.tfstate` and `*.tfvars`. Nothing in
 `backend.hcl` is secret, but it sits where something secret would get pasted.
 
-## The domain
+## The public edge, and why you need no domain
 
-`app_domain` is a hard prerequisite, not a nicety: `aws_lb_listener.https` is
-the only listener that serves the application, and it cannot be created
-without a certificate. There is no HTTP-only mode, deliberately — the
-alternative is plaintext session cookies and `ws://` answer streams.
+Azure Container Apps handed every app a free `*.azurecontainerapps.io`
+hostname WITH a managed certificate. **AWS has no equivalent**, and Route 53
+sells domains rather than giving them away — there is no free tier for
+registration at any TLD. This tree used to assume that gap away: `app_domain`
+and a certificate were required inputs, so nothing could be applied at all
+until a domain had been bought.
+
+`edge` closes it, and defaults to the path that costs nothing:
+
+| `edge` | public hostname | needs |
+| --- | --- | --- |
+| **`cloudfront`** (default) | the distribution's own `*.cloudfront.net` | nothing |
+| `alb` | `app_domain` | a domain, and a certificate |
+
+Every CloudFront distribution is served under AWS's own certificate for
+`*.cloudfront.net`, because AWS owns that domain and has already validated it.
+Put the distribution in front of the load balancer and the platform answers on
+real, browser-trusted HTTPS with no domain, no ACM certificate and no DNS.
+`app_domain` is unused and unset in this mode, which is why it is no longer in
+the A-01 list.
+
+**What it costs.** CloudFront bills per request and per GB out. There is a
+free tier; read its current terms in the console rather than trusting a figure
+written here. `cloudfront_price_class` defaults to `PriceClass_100` — North
+America and Europe only, the cheapest tier.
+
+**What you give up.** A `*.cloudfront.net` address is unbrandable and
+obviously a placeholder, which is fine before launch and wrong in front of a
+customer. It is also on the Public Suffix List, so a cookie can never be
+scoped wider than the exact host; nothing here needs that (`SESSION_DOMAIN` is
+unset, making the session cookie host-only) but a future subdomain split would.
+
+**Two things make this safe rather than merely working:**
+
+- The load balancer's listener is plain HTTP in this mode, so its security
+  group admits ONLY the `com.amazonaws.global.cloudfront.origin-facing` prefix
+  list. Left open to the internet it would serve the whole application
+  unencrypted to anyone who resolved its hostname, with CloudFront's
+  certificate supplying a false sense of having TLS at all.
+- That prefix list is every CloudFront edge, not just yours, so any AWS
+  customer who learns the load balancer's hostname could front this
+  application from their own distribution and their own domain —
+  authentication still applies, so it is not a breach, but it is a ready-made
+  phishing page wearing the real login form. `cloudfront_origin_secret` closes
+  it: `openssl rand -hex 32`, set it, and the listener's default action
+  becomes a 403 for anything not carrying the header. Preflight A-14 reports
+  it as a warning rather than a failure, because empty is a defensible choice
+  with no users yet.
+
+**The application had to change too.** TLS terminates at CloudFront, and the
+load balancer behind it truthfully reports `http` in `X-Forwarded-Proto` —
+which `ProxyTrust` honours. Laravel would then generate `http://` URLs into a
+page the browser loaded over `https://`, and the browser would block every one
+as mixed content. `AppServiceProvider` now calls `URL::forceScheme('https')`
+whenever `APP_URL` is an https address, which is true in both edge modes and
+false in local development.
+
+**Switching to a real domain later** is `-var edge=alb` plus `app_domain`, at
+which point dns.tf takes over and the section below applies. A precondition on
+the HTTPS listener fails the plan if `edge = "alb"` arrives without a domain,
+since `app_domain` now has a default and A-01 no longer covers it.
+
+## The domain (edge = "alb")
+
+With `edge = "alb"` the load balancer is the public edge and `app_domain` is a
+hard prerequisite: `aws_lb_listener.https` cannot be created without a
+certificate, and a certificate cannot be issued for a name you do not own.
 
 Since 2026-09-16 the rest is declarative. `dns.tf` issues the ACM
 certificate, writes its own DNS validation records, waits for ACM to report

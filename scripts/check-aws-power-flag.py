@@ -67,6 +67,10 @@ MUST_GATE = {
     "aws_ecs_service",
     "aws_ecs_task_definition",
     "aws_scheduler_schedule",
+    # A distribution bills per request and per GB while it exists, and an
+    # ungated one would keep answering for an origin that power=off deleted —
+    # serving 502s under the platform's only public hostname.
+    "aws_cloudfront_distribution",
     "aws_cloudwatch_metric_alarm",
     "aws_cloudwatch_composite_alarm",
     "aws_service_discovery_service",

@@ -222,6 +222,24 @@ resource "aws_lb" "this" {
 }
 TF
 
+# --- CloudFront as the public edge (2026-09-16) ----------------------------
+# The distribution bills per request and per GB for as long as it exists, and
+# an ungated one outlives the ALB that power=off deletes -- so it keeps
+# answering on the platform's only public hostname, with 502s.
+
+run 0 "a gated CloudFront distribution passes" <<'TF'
+resource "aws_cloudfront_distribution" "this" {
+  count   = local.cf * local.on
+  enabled = true
+}
+TF
+
+run 1 "an UNGATED CloudFront distribution fails -- it bills and outlives the ALB" <<'TF'
+resource "aws_cloudfront_distribution" "this" {
+  enabled = true
+}
+TF
+
 run 0 "the committed tree passes" <<'TF'
 TF
 python3 "$CHECK" >/dev/null 2>&1 \

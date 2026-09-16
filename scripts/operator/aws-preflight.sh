@@ -209,6 +209,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# A-14 — the CloudFront origin is not open to every other AWS customer
+# ---------------------------------------------------------------------------
+# Only meaningful when CloudFront is the edge. The load balancer's security
+# group admits the com.amazonaws.global.cloudfront.origin-facing prefix list,
+# which is EVERY CloudFront edge rather than only this distribution: without
+# the shared header, any AWS customer who learns the load balancer's hostname
+# can front this application from their own distribution and their own domain.
+# A warning, not a failure — an empty value is a defensible choice while there
+# are no users, and edge.tf says so.
+EDGE_MODE="$(sed -n '/variable "edge"/,/^}/p' "$TF_DIR/edge.tf" 2>/dev/null |
+  sed -n 's/^  default *= *"\([a-z]*\)"/\1/p' | head -1)"
+if [ "${EDGE_MODE:-cloudfront}" != "cloudfront" ]; then
+  check "A-14" "CloudFront origin secret set" ok "edge is not cloudfront; not applicable"
+elif grep -qE '^\s*cloudfront_origin_secret\s*=\s*"[^"]+"' "$TF_DIR"/*.tfvars 2>/dev/null; then
+  check "A-14" "CloudFront origin secret set" ok
+else
+  check "A-14" "CloudFront origin secret set" warn \
+    "unset — the ALB accepts any CloudFront distribution, not just yours. openssl rand -hex 32, then set cloudfront_origin_secret"
+fi
+
+# ---------------------------------------------------------------------------
 # A-06 — AWS credentials usable
 # ---------------------------------------------------------------------------
 if ! have_aws; then

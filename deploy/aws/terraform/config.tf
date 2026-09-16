@@ -211,7 +211,11 @@ locals {
     # same-origin and config/cors.php:39 already resolves an unset value to
     # an empty allowlist in production, which is the safe reading of
     # "nobody said". Add it only when a genuine cross-origin caller exists.
-    APP_URL = "https://${var.app_domain}"
+    # local.public_url, not var.app_domain: with edge = "cloudfront" the
+    # hostname does not exist until the distribution does. Terraform resolves
+    # the ordering — the distribution has no dependency on ECS, so it is
+    # created first and the real value lands in the task definition.
+    APP_URL = local.public_url
 
     # Without this, NOTHING from the load balancer is believed.
     #
@@ -421,7 +425,7 @@ locals {
     # real domain would have been rejected and no query would have
     # streamed. Bare host, no scheme and no port: Reverb matches against
     # the HOST parsed out of the Origin header.
-    REVERB_ALLOWED_ORIGINS = var.app_domain
+    REVERB_ALLOWED_ORIGINS = local.public_host
 
     # REVERB_HOST is deliberately absent here. On the server it lands in
     # config/reverb.php:34 as `hostname`, which is not the same knob as the
@@ -593,8 +597,8 @@ locals {
           SERVER_GRPC_BROADCAST_ADDRESS                          = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
           SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
 
-          SERVER_URL                  = "https://${var.app_domain}"
-          SERVER_AUTH_COOKIE_DOMAIN   = var.app_domain
+          SERVER_URL                  = local.public_url
+          SERVER_AUTH_COOKIE_DOMAIN   = local.public_host
           SERVER_AUTH_COOKIE_INSECURE = "f"
 
           SERVER_AUTH_SET_EMAIL_VERIFIED = "t"
@@ -634,8 +638,15 @@ variable "app_domain" {
     `hosted_zone_name` says otherwise — the Route 53 zone the records are
     written into. If you supply `acm_certificate_arn` yourself, that
     certificate must certify this name.
+
+    EMPTY IS VALID, and is the default, because `edge = "cloudfront"` has no
+    domain at all: the public hostname is the distribution's own
+    *.cloudfront.net name, which does not exist until apply. A precondition on
+    the HTTPS listener fails the plan if edge = "alb" arrives without one,
+    rather than letting the apply reach ACM and stop there.
   EOT
   type        = string
+  default     = ""
 
   validation {
     # A scheme here would produce `https://https://…` in APP_URL and an
