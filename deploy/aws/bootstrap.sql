@@ -74,6 +74,37 @@ CREATE EXTENSION IF NOT EXISTS h3_postgis;
 CREATE SCHEMA IF NOT EXISTS partman;
 CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
 
+-- pg_cron drives pg_partman's maintenance here, not pg_partman_bgw: found on
+-- a real first apply (2026-09-16) that RDS rejects pg_partman_bgw in
+-- shared_preload_libraries outright (not in its allow-list at all -- RDS
+-- does not run third-party background workers). pg_cron IS on that
+-- allow-list, and deploy/aws/terraform/data.tf now sets
+-- shared_preload_libraries=pg_stat_statements,pg_cron,auto_explain plus
+-- cron.database_name=georag so pg_cron's scheduler runs against this
+-- database. CREATE EXTENSION pg_cron and cron.schedule(...) both have to
+-- run here, in the cron.database_name target, per RDS's documented pg_cron
+-- setup -- not in the postgres maintenance DB the self-managed convention
+-- uses.
+--
+-- Without this, partman.create_parent() (audit.audit_ledger,
+-- workflow.workflow_runs, usage.usage_events -- see database/raw/phase0/
+-- 20/30/60-layer-*.sql) configures partitioning but nothing ever calls
+-- partman.run_maintenance_proc() to act on it: no new partitions get
+-- created and none of the configured retention actually drops old ones.
+-- Not a boot-time failure -- an inserts-start-failing-months-later one,
+-- the day the last pre-created partition runs out.
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+-- Idempotent: cron.schedule() upserts by job name as of pg_cron 1.4+, but
+-- unschedule-then-schedule works across the version range and reads
+-- unambiguously on a second run of this file.
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
+SELECT cron.schedule(
+    'partman-maintenance',
+    '0 3 * * *',
+    $$CALL partman.run_maintenance_proc()$$
+);
+
 -- ---------------------------------------------------------------------------
 -- georag_app -- the role every application container connects as
 -- ---------------------------------------------------------------------------

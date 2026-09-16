@@ -38,12 +38,20 @@ output "ecr_repository_urls" {
 }
 
 output "db_endpoint" {
-  value = try(local.db.address, null)
+  # Not a secret by itself (a hostname), but local.db = one(aws_db_instance.this)
+  # (power.tf) references the WHOLE resource, and manage_master_user_password
+  # marks that resource sensitive wholesale — every attribute reached through
+  # local.db inherits the taint, .address included. Found live: a real apply
+  # into an empty account refuses to complete without this, "Output refers to
+  # sensitive values" on both outputs below.
+  value     = try(local.db.address, null)
+  sensitive = true
 }
 
 output "db_master_secret_arn" {
   description = "RDS-managed master password. Nothing in this repo holds it."
   value       = try(local.db.master_user_secret[0].secret_arn, null)
+  sensitive   = true
 }
 
 output "app_secret_arn" {
@@ -86,5 +94,10 @@ output "app_key_rotation_task_family" {
     re-encryption in. Not startable outside a rotation: it references an
     APP_KEY_NEXT secret key that only exists while one is in flight.
   EOT
-  value       = try(one(aws_ecs_task_definition.app_key_rotation).family, null)
+  # Just the family name (a string), but one(...) references the whole task
+  # definition resource, whose container_definitions carries Secrets Manager
+  # references the AWS provider marks sensitive — same wholesale-taint
+  # pattern as db_endpoint above. Found live on the same real apply.
+  value     = try(one(aws_ecs_task_definition.app_key_rotation).family, null)
+  sensitive = true
 }
