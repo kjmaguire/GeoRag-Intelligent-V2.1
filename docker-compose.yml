@@ -1129,7 +1129,7 @@ services:
           # operations the embedding model + reranker run on CPU. Previously
           # shared with the local vllm container (removed 2026-07-30, Azure
           # AI Foundry cutover) — the GPU is now free for training whenever
-          # hatchet-worker-ai's embed/rerank load allows.
+          # hatchet-worker's embed/rerank load allows.
           devices:
             - driver: nvidia
               count: 1
