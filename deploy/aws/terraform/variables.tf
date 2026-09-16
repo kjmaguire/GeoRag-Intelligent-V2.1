@@ -96,6 +96,62 @@ variable "db_engine_version" {
   default     = "18.1"
 }
 
+variable "db_deletion_protection" {
+  description = <<-EOT
+    RDS deletion protection. `true` is the resting state and the right one:
+    it is what stands between a mistyped `terraform destroy` and the only
+    copy of the database.
+
+    IT ALSO BLOCKS THE POWER FLAG, which is why this is a variable rather
+    than a hardcoded `true`. Terraform does not disable deletion protection
+    on its way to deleting something, and setting `count = 0` does not help —
+    the attribute change is never applied to a resource that is going away.
+    So `terraform apply -var power=off` fails on the RDS destroy with
+    "Cannot delete protected DB Instance" unless protection came off in an
+    EARLIER apply:
+
+      terraform apply -var power=on -var db_deletion_protection=false
+      terraform apply -var power=off -var db_deletion_protection=false
+
+    The first is an in-place attribute change with no downtime. The
+    precondition on `aws_db_subnet_group` fails the PLAN if you skip it, so
+    the failure arrives before anything is destroyed rather than half way
+    through. Setting it false shows up in the plan, which is the point:
+    turning the seatbelt off stays a deliberate, visible act.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "db_final_snapshot_suffix" {
+  description = <<-EOT
+    Appended to the final snapshot name, which is otherwise
+    `<name_prefix>-pg-final`.
+
+    RDS snapshot identifiers are UNIQUE PER ACCOUNT. A fixed name works once
+    and then collides: the second `-var power=off` fails because the snapshot
+    the first one wrote is still there. That is invisible until the second
+    power cycle, which is exactly when a demo schedule hits it.
+
+    Leave empty for a single on/off cycle. For a repeating cadence pass a
+    date, so each teardown leaves its own restorable snapshot:
+
+      terraform apply -var power=off -var db_final_snapshot_suffix=$(date +%Y%m%d)
+
+    Old snapshots are NOT cleaned up by Terraform — they are manual snapshots
+    and outlive `db_backup_retention_days` deliberately. Delete the ones you
+    no longer want by hand; snapshot storage is billed on the data actually
+    in them.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9-]*$", var.db_final_snapshot_suffix))
+    error_message = "db_final_snapshot_suffix must be letters, digits and hyphens only — it becomes part of an RDS snapshot identifier."
+  }
+}
+
 variable "db_backup_retention_days" {
   description = <<-EOT
     35 matches what Azure Flexible Server was configured for, which is the

@@ -130,13 +130,39 @@ are always attached to the cluster, so that switch never fails for want of one.
 
 ## Turning the whole thing off
 
-Running costs roughly **$555/month**; switched off it is **$5-20**. The switch
-is a Terraform variable:
+What it costs depends far more on HOURS than on sizing. Against the current
+defaults (Fargate Spot, `db.t4g.small`):
+
+| shape | $/month |
+| --- | --- |
+| powered off | ~$13 |
+| 4h/day, weekdays only (a demo stack) | ~$39 |
+| 17h/day (what the nightly sweeps give you) | ~$190 |
+| 24/7 | ~$256 |
+
+$555 was the figure before Fargate Spot and `db.t4g.small` became the
+defaults; it is what on-demand at the original sizing would cost. The model
+these come from reads the sizing out of `main.tf` rather than estimating --
+every rate is a named constant, so swapping one moves every number with it.
+
+The switch is a Terraform variable:
 
 ```bash
-terraform apply -var power=off    # tear down everything billed by the hour
-terraform apply -var power=on     # ~15 minutes back to a serving stack
+terraform apply -var power=on  -var db_deletion_protection=false   # clear the seatbelt
+terraform apply -var power=off -var db_deletion_protection=false   # tear it down
+terraform apply -var power=on                                      # ~15 min back up
 ```
+
+**Powering off takes two applies, and that is not an oversight.** RDS
+`deletion_protection` is what stands between a mistyped `terraform destroy` and
+the only copy of the database, so it is on by default. Terraform does not clear
+it on the way to deleting, and `count = 0` applies no attribute change to a
+resource that is going away -- so the flag has to come off in an *earlier*
+apply. The first command above is an in-place change with no downtime. Skip it
+and the plan fails before anything is destroyed, thanks to a precondition on
+`aws_db_subnet_group`; without that precondition the apply would get as far as
+the RDS destroy and die there, with the ALB, the NAT gateway and every ECS
+service already gone.
 
 **Powering off destroys resources; it does not stop them.** That is deliberate
 and `terraform/power.tf` carries the full reasoning. The short version is that
@@ -165,17 +191,35 @@ terraform apply -var power=on -var restore_from_snapshot=georag-pg-final
 Leave `restore_from_snapshot` unset and you get a fresh, empty instance --
 which is what you want for the first ever apply, when no snapshot exists.
 
+**Cycling more than once?** Snapshot identifiers are unique per account, so a
+fixed name works exactly once: the second power-off collides with the snapshot
+the first one wrote. For a repeating cadence -- a demo stack that comes up for
+a few hours on weekdays, say -- give each teardown its own name:
+
+```bash
+terraform apply -var power=off -var db_deletion_protection=false \
+  -var db_final_snapshot_suffix=$(date +%Y%m%d)
+```
+
+Terraform does not clean these up; they are manual snapshots and outlive
+`db_backup_retention_days` on purpose. Delete the ones you no longer want by
+hand.
+
 > **Do not use a bare `terraform destroy` instead.** Three things stop it, and
 > one of them locks you out for a month: `aws_secretsmanager_secret.app` has
 > `recovery_window_in_days = 30`, so destroy schedules it for deletion and the
 > next apply fails with *"a secret with this name is already scheduled for
 > deletion"* until someone runs `aws secretsmanager restore-secret`. The
 > versioned S3 buckets (no `force_destroy`) and `deletion_protection` on RDS
-> each block it as well. `power = "off"` sidesteps all three by leaving those
-> resources alone.
+> each block it as well. `power = "off"` sidesteps the first two by leaving
+> those resources alone, and turns the third into the deliberate two-apply
+> sequence above.
 
 `scripts/check-aws-power-flag.py` runs in CI and fails if a new hourly-billed
-resource is added without the gate, or if a stateful one is added with it.
+resource is added without the gate, if a stateful one is added with it, or if a
+gated resource carries something that would block its own destruction -- which
+is how both of the problems above were found, on 2026-09-16, before the first
+power-off ever ran.
 
 > **Already made a budget in the console?** `terraform/budget.tf` creates one
 > named `georag-monthly`, and AWS budget names are unique per account. If yours

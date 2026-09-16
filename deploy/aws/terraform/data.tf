@@ -18,6 +18,22 @@
 resource "aws_db_subnet_group" "this" {
   name       = local.name
   subnet_ids = aws_subnet.private[*].id
+
+  # Fails the PLAN when a power-off is requested with deletion protection
+  # still on, instead of letting the apply get as far as the RDS destroy and
+  # fail there — by which point the ALB, NAT gateway and every ECS service
+  # are already gone and the stack is half torn down.
+  #
+  # It also fires when there is no database to protect (a power-off of a
+  # deployment that never had one). That is a harmless false alarm with an
+  # obvious remedy, and the trade is worth it: the real case it catches is
+  # the one that leaves a mess.
+  lifecycle {
+    precondition {
+      condition     = var.power == "on" || var.db_deletion_protection == false
+      error_message = "power=off cannot destroy the database while db_deletion_protection is true. Clear it in a separate, earlier apply:\n  terraform apply -var power=on  -var db_deletion_protection=false\n  terraform apply -var power=off -var db_deletion_protection=false\nSee variables.tf for why this takes two applies."
+    }
+  }
 }
 
 resource "aws_db_parameter_group" "this" {
@@ -97,11 +113,28 @@ resource "aws_db_instance" "this" {
   parameter_group_name   = aws_db_parameter_group.this.name
   publicly_accessible    = false
 
-  backup_retention_period   = var.db_backup_retention_days
-  copy_tags_to_snapshot     = true
-  deletion_protection       = true
+  backup_retention_period = var.db_backup_retention_days
+  copy_tags_to_snapshot   = true
+
+  # BOTH of these were constants until 2026-09-16, and both blocked the very
+  # teardown power.tf is built around. Neither had ever run: there are no AWS
+  # credentials in CI, so `terraform plan` has never executed in either power
+  # state and the first power-off would have discovered them.
+  #
+  #   deletion_protection = true  -> `-var power=off` fails on the destroy
+  #     with "Cannot delete protected DB Instance". Terraform does not clear
+  #     the flag on its way to deleting, and count = 0 does not apply an
+  #     attribute change to a resource that is going away. Power-off is
+  #     therefore TWO applies; see the variable, and the plan-time
+  #     precondition on aws_db_subnet_group that catches a skipped first one.
+  #
+  #   final_snapshot_identifier = "<fixed>"  -> works ONCE. RDS snapshot
+  #     identifiers are unique per account, so the second power-off collides
+  #     with the snapshot the first one wrote. Invisible until the second
+  #     cycle, which is precisely when a recurring demo schedule meets it.
+  deletion_protection       = var.db_deletion_protection
   skip_final_snapshot       = false
-  final_snapshot_identifier = "${local.name}-pg-final"
+  final_snapshot_identifier = local.db_final_snapshot
 
   # Single-AZ, matching what Azure ran and what the nightly stop/start
   # implies: a Multi-AZ instance cannot be stopped. Making this Multi-AZ

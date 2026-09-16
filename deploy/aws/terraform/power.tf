@@ -2,11 +2,22 @@
 # The power switch
 # ---------------------------------------------------------------------------
 # `power = "off"` destroys everything that bills by the hour and keeps
-# everything that holds state. It is the difference between ~$555/month and
-# roughly $5-20/month for a deployment nobody is using yet.
+# everything that holds state. On the current defaults (Fargate Spot,
+# db.t4g.small) that is the difference between ~$190/month at the nightly
+# sweeps' 17h/day, or ~$39 at 4h/day on weekdays, and ~$13/month for a
+# deployment nobody is using yet. The ~$555 this header used to quote was
+# on-demand at the original sizing, before spot.tf and the smaller RDS class.
 #
-#   terraform apply -var power=off     # tear the running system down
+#   terraform apply -var power=on  -var db_deletion_protection=false
+#   terraform apply -var power=off -var db_deletion_protection=false
 #   terraform apply -var power=on      # ~15 minutes to a serving stack
+#
+# POWERING OFF TAKES TWO APPLIES. RDS deletion protection is on by default and
+# Terraform does not clear it on the way to deleting, so it has to come off in
+# an earlier apply (an in-place change, no downtime). The precondition on
+# aws_db_subnet_group fails the PLAN if you skip that step, which is the point:
+# without it the apply reaches the RDS destroy and dies there, after the ALB,
+# the NAT gateway and every ECS service are already gone.
 #
 # WHY DESTROY RATHER THAN STOP. The nightly sweeps already scale ECS to zero
 # and stop RDS, and for a seven-hour window that is exactly right. It is not
@@ -52,7 +63,8 @@
 # know to run `aws secretsmanager restore-secret`. Keeping the secret out of
 # the power flag sidesteps that entirely. Two S3 buckets with versioning and
 # no `force_destroy`, plus `deletion_protection` on RDS, would each stop a
-# bare destroy as well.
+# bare destroy as well — the RDS one also stops THIS teardown until it is
+# cleared, which is why power-off is two applies rather than one.
 #
 # THE DATABASE. Powering off destroys the instance, which is what takes the
 # $93/month compute and the $11.50/month storage to zero. The data is not
@@ -61,6 +73,11 @@
 # `db_backup_retention_days` and does not expire with the automated backups.
 # Snapshot storage is billed, but free up to 100% of provisioned storage, so
 # an empty database's snapshot is free.
+#
+# The snapshot NAME must vary if you power-cycle repeatedly: identifiers are
+# unique per account, so a fixed name works once and the second power-off
+# collides with the first one's snapshot. `db_final_snapshot_suffix` exists for
+# that, and check-aws-power-flag.py fails if the name goes back to a constant.
 #
 # To come back up ON that data rather than on an empty database, pass the
 # snapshot to the next apply:
@@ -110,4 +127,14 @@ locals {
   # attribute off it goes through here so the reference degrades in one
   # place rather than at a dozen call sites.
   db = one(aws_db_instance.this)
+
+  # The name the final snapshot is written under. Empty suffix keeps the
+  # historical `<prefix>-pg-final`, which is what every doc and the
+  # restore_from_snapshot examples already name; a suffix makes each teardown
+  # in a repeating cadence land on its own identifier instead of colliding.
+  db_final_snapshot = (
+    var.db_final_snapshot_suffix == ""
+    ? "${local.name}-pg-final"
+    : "${local.name}-pg-final-${var.db_final_snapshot_suffix}"
+  )
 }

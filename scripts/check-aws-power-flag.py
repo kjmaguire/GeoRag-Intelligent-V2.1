@@ -19,6 +19,26 @@ Manager secret would mean a power cycle destroys the corpus, or trips the
 
 A new resource of an unknown type is reported too, so the choice is made
 deliberately rather than by omission.
+
+THIRD: a gated resource must not carry an attribute that blocks its own
+destruction. Gating something the provider then refuses to delete is worse
+than not gating it — `-var power=off` gets as far as the ALB, the NAT gateway
+and every ECS service before failing, leaving the stack half torn down.
+
+Two shipped in the original power flag on 2026-09-15 and neither had ever
+run, because there are no AWS credentials in CI and `terraform plan` has
+never executed in either power state:
+
+    deletion_protection = true        RDS refuses the delete. Terraform does
+                                      not clear the flag on its way out, and
+                                      count = 0 applies no attribute change
+                                      to a resource that is going away.
+    final_snapshot_identifier = <const>
+                                      Works once. Snapshot identifiers are
+                                      unique per account, so the SECOND
+                                      power-off collides with the snapshot
+                                      the first one wrote — invisible until
+                                      the second cycle.
 """
 
 from __future__ import annotations
@@ -97,6 +117,92 @@ MUST_NOT_GATE = {
 BLOCK = re.compile(r'^resource\s+"([a-z0-9_]+)"\s+"([a-z0-9_]+)"\s*\{', re.M)
 GATED = re.compile(r"count\s*=\s*local\.on\b|for_each\s*=\s*local\.on\s*==\s*1\s*\?")
 
+#: Attributes that stop the provider destroying the resource they sit on, and
+#: what makes each one safe. Checked on GATED resources only — on an ungated
+#: one, deletion protection is simply protection doing its job.
+_LITERAL_TRUE = re.compile(r"=\s*true\b")
+_PREVENT_DESTROY = re.compile(r"prevent_destroy\s*=\s*true\b")
+
+
+def _parse_locals(text: str) -> dict[str, str]:
+    """`local.<name>` -> its defining expression, across every locals block.
+
+    A real (if small) parser rather than a substring test, because the
+    question this has to answer is precise: does the snapshot name vary
+    between two power cycles of the SAME deployment? A looser "does it
+    mention any variable anywhere" test passes the very tree this rule was
+    written for — `"${local.name}-pg-final"` reaches `var.name_prefix`, which
+    is deployment identity and fixed by definition.
+    """
+    out: dict[str, str] = {}
+    for m in re.finditer(r"^locals\s*\{", text, re.M):
+        depth, i = 0, m.end() - 1
+        while i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        body = text[m.end() : i]
+        starts = [a for a in re.finditer(r"^\s{2}([a-z0-9_]+)\s*=", body, re.M)]
+        for n, a in enumerate(starts):
+            end = starts[n + 1].start() if n + 1 < len(starts) else len(body)
+            out[a.group(1)] = body[a.end() : end]
+    return out
+
+
+def _expand(expr: str, defs: dict[str, str], depth: int = 4) -> str:
+    """Inline `local.X` references so the variables behind them are visible."""
+    for _ in range(depth):
+        refs = set(re.findall(r"local\.([a-z0-9_]+)", expr))
+        if not refs & defs.keys():
+            break
+        for name in refs & defs.keys():
+            expr = expr.replace(f"local.{name}", f" {defs[name]} ")
+    return expr
+
+
+def _vars_in(expr: str) -> set[str]:
+    return set(re.findall(r"var\.([a-z0-9_]+)", expr))
+
+
+def destroy_blockers(body: str, locals_text: dict[str, str]) -> list[str]:
+    """Reasons `power=off` would fail to destroy this gated resource."""
+    found = []
+
+    for line in body.splitlines():
+        stripped = line.strip()
+
+        if stripped.startswith("deletion_protection") and _LITERAL_TRUE.search(stripped):
+            found.append(
+                "deletion_protection = true — RDS refuses the delete and the "
+                "power-off fails part-way through. Make it a variable so it can "
+                "be cleared in an earlier apply."
+            )
+
+        if stripped.startswith("final_snapshot_identifier"):
+            value = stripped.split("=", 1)[1] if "=" in stripped else ""
+            # Must depend on something BEYOND deployment identity. A name
+            # built only from `local.name` is fixed for the life of the
+            # deployment, which is exactly the collision case.
+            identity = _vars_in(_expand("local.name", locals_text))
+            if not (_vars_in(_expand(value, locals_text)) - identity):
+                found.append(
+                    "final_snapshot_identifier is a constant — snapshot names are "
+                    "unique per account, so the SECOND power-off collides with the "
+                    "first one's snapshot. Give it an operator-settable suffix."
+                )
+
+        if _PREVENT_DESTROY.search(stripped):
+            found.append(
+                "lifecycle.prevent_destroy = true — Terraform refuses to destroy "
+                "this at all, so the gate on it can never take effect."
+            )
+
+    return found
+
 
 def blocks():
     for tf in sorted(TF.glob("*.tf")):
@@ -109,7 +215,8 @@ def blocks():
 
 
 def main() -> int:
-    ungated, wrongly_gated, unknown = [], [], []
+    ungated, wrongly_gated, unknown, blocked = [], [], [], []
+    locals_text = _parse_locals("\n".join(f.read_text() for f in sorted(TF.glob("*.tf"))))
     for fname, rtype, rname, body in blocks():
         addr = f"{rtype}.{rname}  ({fname})"
         gated = bool(GATED.search(body))
@@ -121,6 +228,8 @@ def main() -> int:
                 wrongly_gated.append(addr)
         else:
             unknown.append(addr)
+        if gated:
+            blocked += [f"{addr}\n      {why}" for why in destroy_blockers(body, locals_text)]
 
     for label, items, why in (
         (
@@ -141,6 +250,12 @@ def main() -> int:
             "decide deliberately: add the TYPE to MUST_GATE or MUST_NOT_GATE "
             "in this script",
         ),
+        (
+            "gated but cannot be destroyed",
+            blocked,
+            "power=off would fail PART WAY THROUGH, after the ALB, the NAT "
+            "gateway and the ECS services are already gone",
+        ),
     ):
         if items:
             print(f"\n{len(items)} {label}:", file=sys.stderr)
@@ -148,12 +263,12 @@ def main() -> int:
                 print(f"  - {a}", file=sys.stderr)
             print(f"  -> {why}", file=sys.stderr)
 
-    if ungated or wrongly_gated or unknown:
+    if ungated or wrongly_gated or unknown or blocked:
         return 1
     total = sum(1 for _ in blocks())
     print(
-        f"AWS power flag: {total} resource(s); "
-        f"every hourly-billed one gated, every stateful one kept."
+        f"AWS power flag: {total} resource(s); every hourly-billed one gated, "
+        f"every stateful one kept, and every gated one destroyable."
     )
     return 0
 

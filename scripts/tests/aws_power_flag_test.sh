@@ -80,6 +80,79 @@ resource "aws_elasticache_cluster" "surprise" {
 }
 TF
 
+# ---------------------------------------------------------------------------
+# Gating a resource the provider then refuses to delete. Both of these shipped
+# in the original power flag and neither had ever run — there are no AWS
+# credentials in CI, so `terraform plan` has never executed in either power
+# state. A power-off would have failed AFTER destroying the ALB, the NAT
+# gateway and every ECS service.
+# ---------------------------------------------------------------------------
+
+run 1 "a gated database with deletion_protection = true fails" <<'TF'
+resource "aws_db_instance" "this" {
+  count               = local.on
+  deletion_protection = true
+}
+TF
+
+run 0 "...but the same flag behind a variable passes" <<'TF'
+resource "aws_db_instance" "this" {
+  count               = local.on
+  deletion_protection = var.db_deletion_protection
+}
+TF
+
+run 0 "deletion_protection on an UNGATED resource is fine -- that is the seatbelt working" <<'TF'
+resource "aws_ecs_cluster" "this" {
+  deletion_protection = true
+}
+TF
+
+run 1 "a constant final_snapshot_identifier fails -- the SECOND power-off collides" <<'TF'
+locals {
+  name = var.name_prefix
+}
+
+resource "aws_db_instance" "this" {
+  count                     = local.on
+  final_snapshot_identifier = "${local.name}-pg-final"
+}
+TF
+
+run 0 "...a name carrying an operator-settable suffix passes" <<'TF'
+locals {
+  name = var.name_prefix
+  snap = "${local.name}-pg-final-${var.db_final_snapshot_suffix}"
+}
+
+resource "aws_db_instance" "this" {
+  count                     = local.on
+  final_snapshot_identifier = local.snap
+}
+TF
+
+run 1 "name_prefix alone does not count as varying -- it is deployment identity" <<'TF'
+locals {
+  name = "${var.name_prefix}-${var.region}"
+  snap = "${local.name}-pg-final"
+}
+
+resource "aws_db_instance" "this" {
+  count                     = local.on
+  final_snapshot_identifier = local.snap
+}
+TF
+
+run 1 "lifecycle.prevent_destroy on a gated resource fails -- the gate can never fire" <<'TF'
+resource "aws_lb" "this" {
+  count = local.on
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+TF
+
 run 0 "the committed tree passes" <<'TF'
 TF
 python3 "$CHECK" >/dev/null 2>&1 \
