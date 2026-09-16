@@ -127,8 +127,29 @@ variable "db_instance_class" {
 }
 
 variable "db_allocated_storage_gb" {
-  type    = number
-  default = 100
+  description = <<-EOT
+    Initial gp3 storage, in GB. 20 is the RDS minimum for gp3 and the right
+    starting point here for three reasons that hold together:
+
+      * `max_allocated_storage` below is 4x this, so RDS grows the volume on
+        its own when free space drops under 10%. Starting small is not a cap.
+      * gp3 under 400 GB gets the same baseline 3000 IOPS and 125 MB/s at any
+        size, so 20 GB buys exactly the performance 100 GB did.
+      * Allocated storage can be increased at any time and NEVER decreased.
+        Low is the reversible direction; 100 GB would have been permanent.
+
+    Postgres here holds relational rows and PostGIS geometry only -- the
+    vectors are in Qdrant and the documents are in S3 -- so the footprint this
+    has to cover is metadata, not corpus.
+
+    WHAT IT COSTS YOU. Autoscaling steps by max(5 GB, 10% of allocated) with a
+    six-hour cooldown between events, so from 20 GB it climbs 5 GB at a time.
+    A bulk ingest that adds tens of GB in an afternoon can outrun that and hit
+    a full volume. If a large backfill is planned, raise this BEFORE the run
+    rather than relying on autoscaling to keep up.
+  EOT
+  type        = number
+  default     = 20
 }
 
 variable "db_engine_version" {
