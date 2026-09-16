@@ -8,8 +8,9 @@ Each wrapper:
 
 Schedules. The hours are NOT the Phase 0 kickoff §Step 6 ones any more:
 every fixed-hour slot moved on 2026-09-16, when the nightly shutdown
-window shrank to eight hours a day (09:00-17:00 Pacific) and closed
-00:00-17:00 UTC. The relative order and stagger are what the kickoff
+window shrank to eight and a half hours a day (08:30-17:00 Pacific) and
+closed 00:00-16:30 UTC, the half hour to 17:00 being the startup sweep's
+own head start. The relative order and stagger are what the kickoff
 actually specified, and those survived intact.
 
     tenant_isolation_audit          0 17 * * *     nightly 17:00 UTC
@@ -429,7 +430,7 @@ model_cost_summary_run = hatchet.workflow(
     # scaling hatchet-worker-cc to zero at both DST candidate hours. ADR-0022
     # retired that on 2026-09-08 — one timezone-aware EventBridge schedule
     # scaling every ECS service to --desired-count 0 — and on 2026-09-16 the
-    # window shrank to 09:00-17:00 Pacific, closing 00:00-17:00 UTC, which is
+    # window shrank to 08:30-17:00 Pacific, closing 00:00-16:30 UTC, which is
     # what moved this to 22:00. See
     # tests/test_crons_avoid_the_shutdown_window.py, which derives the span
     # from the Terraform rather than from this comment.

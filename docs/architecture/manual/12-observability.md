@@ -455,11 +455,19 @@ Everything below is in
 **Suppression is still derived, not written out again.** Azure needed two
 alert-processing rules keyed on a window spelled out separately from the
 crons; here the composite alarm's suppressor is an alarm driven by the
-shutdown sweep's own completion marker, and `local.maintenance_window_hours`
+shutdown sweep's own completion marker, and `local.maintenance_window_minutes`
 is computed from the two cron expressions. A schedule change carries the
 suppression with it, which is the point — the 2026-08-20 Azure rule
 hard-coded 00:00–10:15 UTC and was wrong in both directions once the crons
 moved a day later.
+
+**Derived is not the same as correct.** That local counted whole hours until
+2026-09-16, which was exact only while both sweeps fired on the hour. The
+moment `startup_cron` moved to 08:30 it would have read 15 hours for a 15h30m
+window, and the shortfall lands at the END of the window — the marker ages
+out, the suppressor releases, and this alarm pages every morning while the
+platform is still coming up. Deriving a window is worth nothing if the
+derivation truncates.
 
 The log-filter alarms match **marker log lines**, so renaming a marker
 silently disables its alarm. Nothing enforces that link; it is the

@@ -15,7 +15,7 @@ def test_pg_partman_maintenance_is_registered_with_expected_cron() -> None:
         or getattr(pg_partman_maintenance, "on_crons", None)
     )
     # 19:15 UTC. Moved from 04:15 on 2026-09-16, when the shutdown window
-    # shrank to 09:00-17:00 Pacific and closed 00:00-17:00 UTC. The literal
+    # shrank to 08:30-17:00 Pacific and closed 00:00-16:30 UTC. The literal
     # is fine here -- unlike repair_shadow_aggregate this slot encodes no
     # relationship -- but the constraint that actually matters (that it is
     # not inside the window) is enforced by

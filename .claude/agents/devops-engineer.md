@@ -140,8 +140,11 @@ Every service needs a healthcheck. Applications expose `/up` (Laravel) and
 - Task environment is Terraform's, not the console's. Non-secret values live in
   `deploy/aws/terraform/config.tf`; secrets are Secrets Manager references
   injected by the execution role and never pass through Terraform state.
-- The nightly sweeps stop and start the stack (23:00–06:00 US-Pacific, one fire
-  each — EventBridge Scheduler is timezone-aware). Their bodies are
+- The nightly sweeps stop and start the stack (17:00–08:30 US/Canada Pacific,
+  one fire each — EventBridge Scheduler is timezone-aware). Startup is at 08:30
+  rather than 09:00 to keep the sweep off the 17:00 UTC Hatchet crons in PST;
+  `deploy/aws/terraform/variables.tf` carries why, and
+  `src/fastapi/tests/test_crons_avoid_the_shutdown_window.py` enforces it. Their bodies are
   `deploy/aws/scheduler/{shutdown,startup}-sweep.sh`, read into the task
   definitions by Terraform's `file()`, so there is exactly one copy. Edit the
   script and apply; never inline a body into the task definition.

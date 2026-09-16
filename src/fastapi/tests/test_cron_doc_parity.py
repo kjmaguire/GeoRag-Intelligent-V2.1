@@ -1,7 +1,7 @@
 """The written-down schedule has to be the schedule that runs.
 
 WHY THIS EXISTS
-    On 2026-09-16 twenty Hatchet crons moved, to fit inside an eight-hour
+    On 2026-09-16 twenty Hatchet crons moved, to fit inside a business-day
     open window. The ``on_crons=`` values moved. Roughly thirty places that
     quoted those values did not: ``worker.py``'s registration comments,
     ``phase0_agents.py``'s header table and every one of its section
@@ -20,11 +20,23 @@ WHAT IT CHECKS
        line of a workflow module is one that module actually declares.
     2. Every row of the manual's workflow tables that names a workflow and
        gives a cron agrees with that workflow's ``on_crons``.
+    3. Every row of the manual's consolidated UTC timetable that gives a
+       clock time and names workflows agrees with those workflows'
+       ``on_crons``.
+    4. The manual's EventBridge schedule table quotes the sweep crons and
+       timezone that ``variables.tf`` actually declares. That table decides
+       when EVERY cron above can run, so a stale row there invalidates the
+       whole chapter rather than one line of it.
 
-    Both directions are deliberate. (1) catches a module lying about
+    All three directions are deliberate. (1) catches a module lying about
     itself, which is what the reader in the file sees. (2) catches the doc
     drifting from the code, which is what the reader at the architecture
-    level sees.
+    level sees. (3) exists because (1) and (2) both missed an entire stale
+    table: when the crons moved on 2026-09-16 the §2.2 registry tables were
+    re-pointed and §4's timetable was not, so the chapter carried the old
+    schedule and the new one side by side for a day. The timetable's rows
+    are keyed on a TIME rather than a workflow name, so the parser for (2)
+    skipped every one of them.
 
 WHAT IT DOES NOT CHECK
     Prose times ("nightly 17:00 UTC") are not parsed -- too many of them
@@ -40,6 +52,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = Path(__file__).resolve().parent.parent / "app" / "hatchet_workflows"
 MANUAL = REPO / "docs" / "architecture" / "manual" / "07-orchestration.md"
+TERRAFORM = REPO / "deploy" / "aws" / "terraform" / "variables.tf"
 
 #: `name="x"` ... `on_crons=[...]` inside one hatchet.workflow(...) call.
 _WORKFLOW = re.compile(r'hatchet\.workflow\(\s*name="([^"]+)"(.*?)\n\)', re.S)
@@ -143,6 +156,134 @@ def _manual_rows() -> list[tuple[int, str, set[str], set[str]]]:
 def test_the_manual_table_was_found() -> None:
     rows = _manual_rows()
     assert len(rows) >= 15, f"only {len(rows)} cron rows parsed from {MANUAL.name}"
+
+
+#: `| 17:00 |` or `| 17:00 Mon |`. Anything else in the first cell -- "every
+#: 15 min", ":00 hourly", "15:30 (PDT) / 16:30 (PST)" -- is a cadence or a
+#: sweep, not a workflow slot, and is skipped.
+_TIMETABLE_CELL = re.compile(r"^\s*(\d{1,2}):(\d{2})(?:\s+\S+)?\s*$")
+
+
+def _timetable_rows() -> list[tuple[int, str, int, set[str]]]:
+    """(line number, raw line, minutes past UTC midnight, workflow names)."""
+    rows: list[tuple[int, str, int, set[str]]] = []
+    for number, line in enumerate(MANUAL.read_text(encoding="utf-8").splitlines(), 1):
+        cells = line.split("|")
+        if len(cells) < 4:
+            continue
+        when = _TIMETABLE_CELL.match(cells[1])
+        if not when:
+            continue
+        names = set(re.findall(r"`([a-z0-9_]+)`", cells[2]))
+        if names:
+            rows.append(
+                (number, line, int(when.group(1)) * 60 + int(when.group(2)), names)
+            )
+    return rows
+
+
+def test_the_timetable_was_found() -> None:
+    rows = _timetable_rows()
+    assert len(rows) >= 12, f"only {len(rows)} timetable rows parsed from {MANUAL.name}"
+
+
+def test_the_timetable_agrees_with_the_code() -> None:
+    declared = declared_crons()
+    offenders: list[str] = []
+
+    for number, line, minutes, names in _timetable_rows():
+        for name in sorted(names):
+            actual = declared.get(name)
+            if actual is None:
+                continue  # GitHub Actions, or a workflow with no cron
+            slots = set()
+            for expression in actual:
+                minute, hour = expression.split()[:2]
+                if hour == "*" or hour.startswith("*/"):
+                    continue  # a cadence, listed in the table's top rows
+                slots.add(
+                    int(hour.split(",")[0]) * 60
+                    + (0 if minute.startswith("*") else int(minute.split(",")[0]))
+                )
+            if slots and minutes not in slots:
+                offenders.append(
+                    f"  {MANUAL.name}:{number} `{name}` is listed at "
+                    f"{minutes // 60:02d}:{minutes % 60:02d} UTC, but runs at "
+                    + ", ".join(f"{s // 60:02d}:{s % 60:02d}" for s in sorted(slots))
+                    + f"\n      {line.strip()}"
+                )
+
+    assert not offenders, (
+        "The manual's consolidated UTC timetable disagrees with the code:\n"
+        + "\n".join(offenders)
+        + "\n\nThis is the table an operator reads to find out what the "
+        "platform does overnight. It went a day carrying the pre-2026-09-16 "
+        "schedule while the rest of the chapter carried the new one; fix the "
+        "table, not this test."
+    )
+
+
+#: `| `georag-shutdown` | `cron(0 17 * * ? *)` | `America/Vancouver` | ... |`
+_SWEEP_ROW = re.compile(
+    r"^\|\s*`georag-(shutdown|startup)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`"
+)
+
+
+def _terraform_default(variable: str) -> str:
+    text = TERRAFORM.read_text(encoding="utf-8")
+    block = re.search(rf'variable\s+"{variable}"\s*\{{(.*?)\n\}}', text, re.S)
+    assert block, f"no variable {variable!r} in {TERRAFORM.name}"
+    match = re.search(r'default\s*=\s*"([^"]+)"', block.group(1))
+    assert match, f"no default for {variable!r}"
+    return match.group(1)
+
+
+def test_the_manual_quotes_the_sweep_schedule_terraform_declares() -> None:
+    """The stale row that hid all the others.
+
+    §3.2's table and the paragraph under it carried `cron(0 23 * * ? *)` /
+    `cron(0 6 * * ? *)` on `America/Los_Angeles` -- the pre-2026-09-16
+    schedule -- while §2.2 of the same chapter already described the new one.
+    Neither of the checks above could see it: the cells hold a sweep name and
+    a 6-field EventBridge expression, not a workflow name and a 5-field
+    Hatchet cron.
+    """
+    expected = {
+        "shutdown": _terraform_default("shutdown_cron"),
+        "startup": _terraform_default("startup_cron"),
+    }
+    timezone = _terraform_default("maintenance_timezone")
+
+    seen: set[str] = set()
+    offenders: list[str] = []
+
+    for number, line in enumerate(MANUAL.read_text(encoding="utf-8").splitlines(), 1):
+        row = _SWEEP_ROW.match(line)
+        if not row:
+            continue
+        which, cron, zone = row.groups()
+        seen.add(which)
+        if cron != expected[which]:
+            offenders.append(
+                f"  {MANUAL.name}:{number} georag-{which} -> doc `{cron}`, "
+                f"terraform `{expected[which]}`"
+            )
+        if zone != timezone:
+            offenders.append(
+                f"  {MANUAL.name}:{number} georag-{which} -> doc timezone "
+                f"`{zone}`, terraform `{timezone}`"
+            )
+
+    assert seen == {"shutdown", "startup"}, (
+        f"only found sweep rows for {sorted(seen)} in {MANUAL.name} — §3.2's "
+        "EventBridge table is the thing this checks, and it has moved or been "
+        "reformatted out from under this regex"
+    )
+    assert not offenders, (
+        "The manual's EventBridge schedule table disagrees with the "
+        "Terraform:\n" + "\n".join(offenders) + "\n\nThis table decides "
+        "when every cron in the chapter can run at all. Fix the table."
+    )
 
 
 def test_the_manual_agrees_with_the_code() -> None:

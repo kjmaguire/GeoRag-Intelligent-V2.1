@@ -15,7 +15,7 @@ asyncpg + direct postgres connection.
 Schedule: `0 18 * * *` UTC — between audit_ledger_verify (17:00)
 and flow_jwt_key_reaper (19:00), so the three maintenance workflows
 still fan out rather than landing on top of each other. No longer the
-small hours: the window moved to 09:00-17:00 Pacific on 2026-09-16.
+small hours: the window moved to 08:30-17:00 Pacific on 2026-09-16.
 """
 
 from __future__ import annotations

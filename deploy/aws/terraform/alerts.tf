@@ -332,16 +332,23 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
     The signal is "the shutdown sweep reported complete within the window's
     own length", which is true from the moment the platform goes down until
     the moment it comes back up and false the rest of the day. The period is
-    DERIVED from the two cron expressions (local.maintenance_window_hours)
+    DERIVED from the two cron expressions (local.maintenance_window_minutes)
     rather than written out again: the window was already spelled out in
     three places on Azure and did not need a fourth, which is the same
     reason the parity checker verified the cron against the DST guard.
+
+    The period must cover the WHOLE window, not most of it. Any shortfall
+    lands at the end, where the marker ages out while the platform is still
+    down — so the suppressor releases, this alarm's dead air is real, and the
+    page arrives every morning until someone silences the channel. That is
+    why the derivation counts minutes: startup moved to 08:30 on 2026-09-16
+    and an hour-granular window would have been thirty minutes short.
   EOT
 
   namespace           = "GeoRAG/Markers"
   metric_name         = "shutdown-sweep-complete"
   statistic           = "Sum"
-  period              = local.maintenance_window_hours * 3600
+  period              = local.maintenance_window_minutes * 60
   evaluation_periods  = 1
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"

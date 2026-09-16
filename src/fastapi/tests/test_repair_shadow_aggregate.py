@@ -187,8 +187,8 @@ def test_workflow_cron_is_15_minutes_after_audit_ledger():
     """The gap to audit_ledger_verify is what matters, so assert the GAP.
 
     This used to assert the literal ``["15 2 * * *"]``. On 2026-09-16 the
-    shutdown window shrank to eight hours a day and every fixed-hour cron
-    moved into 17:00-00:00 UTC -- a change that preserved this relationship
+    shutdown window shrank to a business day and every fixed-hour cron moved
+    into the evening UTC band -- a change that preserved this relationship
     exactly and still broke the test, because the test was checking a
     coordinate rather than the thing its own name describes.
 

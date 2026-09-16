@@ -327,12 +327,15 @@ variable "shutdown_cron" {
 
       24h/day   ~$240/month
       17h/day   ~$173/month     <- what this used to be
-       8h/day    ~$88/month     <- what it is now
+      8.5h/day   ~$93/month     <- what it is now
+       8h/day    ~$88/month     <- what it was earlier on 2026-09-16
 
     against a $100/month promotional credit with no cash line behind it
     (budget.tf). 17h/day overspent the credit by roughly 70% every month, for
-    a platform with no users yet. 8h/day fits inside it with headroom — the
-    break-even is about 9.4 hours a day.
+    a platform with no users yet. 8.5h/day fits inside it — the break-even is
+    about 9.4 hours a day — but the headroom is now about $7/month rather
+    than $12, so a second surprise does not fit. The extra half hour is on
+    `startup_cron`, which explains what it buys.
 
     Changing this changes nothing else by hand: the maintenance-window alarm
     in alerts.tf derives its period from these two expressions, so the dead-air
@@ -340,6 +343,11 @@ variable "shutdown_cron" {
   EOT
   type        = string
   default     = "cron(0 17 * * ? *)"
+
+  validation {
+    condition     = can(regex("^cron\\([0-9]{1,2} [0-9]{1,2} ", var.shutdown_cron))
+    error_message = "shutdown_cron must fire at one fixed minute and one fixed hour, e.g. \"cron(30 8 * * ? *)\". scheduler.tf reads both fields with tonumber() to derive the maintenance window's length, and a \"*/15\" or \"8,9\" there is either a plan error or a silently wrong alert-suppression period."
+  }
 }
 
 variable "startup_cron" {
@@ -347,13 +355,42 @@ variable "startup_cron" {
     Local-time cron for the startup sweep, in `maintenance_timezone`. See
     `shutdown_cron` for what the window costs.
 
-    09:00-17:00 is a working day, chosen deliberately over the wider window
+    08:30-17:00 is a working day, chosen deliberately over the wider window
     it replaces. The platform is DOWN outside it — not degraded, destroyed to
     the power flag's keep-list — so pick hours you will actually be at the
     keyboard. Coming back up takes about fifteen minutes.
+
+    THE HALF HOUR IS NOT COSMETIC. This sweep is scheduled in local time and
+    Hatchet crons are UTC, so the window's UTC position moves with DST. At
+    09:00 local — where this sat for part of 2026-09-16 — the PST half of the
+    year started the platform at 17:00 UTC exactly, which is the
+    same instant as four Hatchet crons that fire at `0 17 * * *`
+    (`audit_ledger_verify`, `nightly_ingestion_integrity`,
+    `tenant_isolation_audit`, `what_changed_weekly`) and minutes before two
+    more. RDS has not started at that instant and the Hatchet engine that
+    creates cron runs does not exist yet, so those ticks would not have been
+    late — they would have been lost, every day from November to March, with
+    no run, no failure and no alarm to say so.
+
+    08:30 puts the PST start at 16:30 UTC and gives the sweep thirty minutes
+    before the first tick. It was chosen over re-slotting the crons because
+    the staggers between them carry the meaning (the shadow aggregate 15 min
+    behind the audit verify, the JWT key reaper 2h behind it), and moving
+    twenty crons to protect four is the larger change.
+
+    THIRTY MINUTES IS AN ESTIMATE, NOT A MEASUREMENT. Nothing has been
+    deployed on this account, so the dominant term — RDS cold start, ahead of
+    tier 1 reaching `services-stable` — has never been observed here. If a
+    morning sweep is ever seen finishing after 17:00 UTC in PST, move this
+    number, not the crons.
   EOT
   type        = string
-  default     = "cron(0 9 * * ? *)"
+  default     = "cron(30 8 * * ? *)"
+
+  validation {
+    condition     = can(regex("^cron\\([0-9]{1,2} [0-9]{1,2} ", var.startup_cron))
+    error_message = "startup_cron must fire at one fixed minute and one fixed hour, e.g. \"cron(30 8 * * ? *)\". scheduler.tf reads both fields with tonumber() to derive the maintenance window's length, and a \"*/15\" or \"8,9\" there is either a plan error or a silently wrong alert-suppression period."
+  }
 }
 
 # ---------------------------------------------------------------------------

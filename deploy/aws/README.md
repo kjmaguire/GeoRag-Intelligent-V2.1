@@ -216,8 +216,8 @@ ordinary accounts. Acting on the alert is a human running
 
 With the power switch and Spot, $622 of credit buys roughly **1,266 task-hours
 -- about 7 hours a day, every day, for six months**, at the real production
-sizing. The shipped schedule is 8h/day, which is close enough to that
-ceiling to matter: see the table under "Turning the whole thing off".
+sizing. The shipped schedule is 8.5h/day, which is over that ceiling rather
+than merely close to it: see the table under "Turning the whole thing off".
 
 ## Fargate Spot
 
@@ -258,7 +258,8 @@ defaults (Fargate Spot, `db.t4g.small`):
 | --- | --- |
 | powered off | ~$13 |
 | 4h/day, weekdays only (a demo stack) | ~$39 |
-| **8h/day (what the nightly sweeps give you)** | **~$88** |
+| **8.5h/day (what the nightly sweeps give you)** | **~$93** |
+| 8h/day (the sweeps before `startup_cron` moved to 08:30) | ~$88 |
 | 17h/day (the pre-2026-09-16 default) | ~$173 |
 | 24/7 | ~$240 |
 
@@ -266,6 +267,12 @@ $555 was the figure before Fargate Spot and `db.t4g.small` became the
 defaults; it is what on-demand at the original sizing would cost. The model
 these come from reads the sizing out of `main.tf` rather than estimating --
 every rate is a named constant, so swapping one moves every number with it.
+
+The **8.5h row is interpolated, not re-modelled**: the rows above sit on a
+line of ~$9.50 per daily-hour per month plus ~$12 of always-on (ALB, NAT,
+EFS, S3), which reproduces every other figure in the table to the dollar.
+Nothing here has been billed on a real account yet, so treat the whole
+column as a sizing estimate and check Cost Explorer after the first week.
 
 The switch is a Terraform variable:
 
@@ -297,8 +304,8 @@ and `terraform/power.tf` carries the full reasoning. The short version is that
   and it wakes up, bills a day of compute, and sleeps again, repeatedly, with
   nothing reporting it.
 
-The nightly sweeps are still the right tool for a sixteen-hour window. They
-are not an off switch for a week.
+The nightly sweeps are still the right tool for a fifteen-and-a-half-hour
+window. They are not an off switch for a week.
 
 **Your data survives.** Nothing holding state is gated: S3 (the corpus), EFS
 (the Qdrant index and Redis AOF), ECR, Secrets Manager and the CloudWatch log
@@ -807,8 +814,11 @@ guard exiting 0 on the wrong one — and that guard was subtly wrong for two
 days a year until 2026-08-21. EventBridge Scheduler takes a timezone.
 
 **The alert suppression window is derived, not written out again.** It
-comes from the two cron expressions (`local.maintenance_window_hours`), and
-is surfaced as a Terraform output so it can be checked.
+comes from the two cron expressions (`local.maintenance_window_minutes`, in
+minutes since 2026-09-16 — an hour-granular version silently floors a window
+whose sweeps do not both fire on the hour, and the shortfall lands where the
+platform is still down). `maintenance_window_hours` surfaces it as a
+Terraform output, fractional, so it can be checked.
 
 ## What changed, on purpose
 

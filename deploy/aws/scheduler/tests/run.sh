@@ -6,7 +6,7 @@
 # Ported from deploy/azure/containerapps/scripts/tests/run.sh on 2026-09-08
 # (ADR-0022). There is still no staging environment to rehearse a sweep on,
 # so this harness remains the only thing standing between a scheduler edit
-# and finding out at 06:00.
+# and finding out at 08:30.
 #
 # Every case corresponds to something observed in production on Azure, or
 # to a failure mode the Bedrock route newly introduced:

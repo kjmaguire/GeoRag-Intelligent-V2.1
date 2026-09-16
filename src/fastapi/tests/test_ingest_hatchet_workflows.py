@@ -43,7 +43,8 @@ def test_embed_pending_passages_cron_schedule():
     to keep has had nothing on the other side of it for a while.
 
     Moved 2026-09-16 with the rest of the fixed-hour crons, when the nightly
-    shutdown window shrank to eight hours a day and closed 00:00-17:00 UTC.
+    shutdown window shrank to eight and a half hours a day and closed
+    00:00-16:30 UTC.
     The constraint that actually binds now is that it sits INSIDE the open
     window, and that is asserted from the Terraform by
     tests/test_crons_avoid_the_shutdown_window.py rather than restated here.

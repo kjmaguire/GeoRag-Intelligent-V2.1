@@ -3,8 +3,8 @@
 # ---------------------------------------------------------------------------
 # `power = "off"` destroys everything that bills by the hour and keeps
 # everything that holds state. On the current defaults (Fargate Spot,
-# db.t4g.small) that is the difference between ~$88/month at the nightly
-# sweeps' 8h/day, or ~$39 at 4h/day on weekdays, and ~$13/month for a
+# db.t4g.small) that is the difference between ~$93/month at the nightly
+# sweeps' 8.5h/day, or ~$39 at 4h/day on weekdays, and ~$13/month for a
 # deployment nobody is using yet. The ~$555 this header used to quote was
 # on-demand at the original sizing, before spot.tf and the smaller RDS class.
 #
@@ -20,7 +20,8 @@
 # the NAT gateway and every ECS service are already gone.
 #
 # WHY DESTROY RATHER THAN STOP. The nightly sweeps already scale ECS to zero
-# and stop RDS, and for a sixteen-hour window that is exactly right. It is
+# and stop RDS, and for a fifteen-and-a-half-hour window that is exactly
+# right. It is
 # still not an off switch:
 #
 #   * RDS force-starts a stopped instance after 7 days (data.tf). The nightly

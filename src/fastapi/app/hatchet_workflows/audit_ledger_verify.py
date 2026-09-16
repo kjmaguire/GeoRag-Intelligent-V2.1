@@ -8,8 +8,12 @@ inserted ``audit.audit_ledger_verification_runs`` row, and surfaces
 
 Schedule: ``0 17 * * *`` UTC nightly (Tenant Isolation Auditor pattern
 from the kickoff -- that workflow still shares the slot). It was 02:00
-until 2026-09-16, when the nightly shutdown window shrank to eight hours
-a day and closed 00:00-17:00 UTC. Manually invokable via ``audit_ledger_verify.run({})``.
+until 2026-09-16, when the nightly shutdown window shrank to eight and a
+half hours a day and closed 00:00-16:30 UTC, with the half hour to 17:00
+reserved for the startup sweep. This slot is therefore the earliest legal
+one there is -- if that head start ever has to grow, this cron and the
+stagger chain hanging off it move first. Manually invokable via
+``audit_ledger_verify.run({})``.
 """
 
 from __future__ import annotations

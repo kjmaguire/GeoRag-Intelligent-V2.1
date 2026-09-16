@@ -99,18 +99,36 @@ resource "aws_ecs_task_definition" "startup_sweep" {
 
 locals {
   # The maintenance window's length, derived from the two cron expressions
-  # rather than configured separately. `cron(0 17 * * ? *)` -> 17,
-  # `cron(0 9 * * ? *)` -> 9, so the window is (9 - 17 + 24) % 24 = 16 hours.
+  # rather than configured separately. `cron(0 17 * * ? *)` -> 17:00,
+  # `cron(30 8 * * ? *)` -> 08:30, so the window is 930 minutes — 15h30m.
   #
   # Deriving it is the point. On Azure the window was spelled out in the
   # shutdown cron, the startup cron, the DST guard's target hour and the
   # alert suppression rule, and `check_scheduler_job_parity.py` existed
   # partly to keep those in agreement. Two of those four are gone with the
   # guard; this keeps the fourth from coming back.
-  shutdown_hour = tonumber(split(" ", replace(var.shutdown_cron, "/^cron\\(|\\)$/", ""))[1])
-  startup_hour  = tonumber(split(" ", replace(var.startup_cron, "/^cron\\(|\\)$/", ""))[1])
+  #
+  # MINUTES, NOT HOURS, since 2026-09-16. This was `(startup_hour -
+  # shutdown_hour + 24) % 24` while both sweeps fired on the hour, which was
+  # exact right up until `startup_cron` moved to 08:30 — at which point it
+  # would have read 15 hours for a 15h30m window, expiring the dead-air
+  # alarm's suppressor (alerts.tf) half an hour before the platform came
+  # back and paging every single morning. Deriving the window is worth
+  # nothing if the derivation quietly truncates.
+  shutdown_fields = split(" ", replace(var.shutdown_cron, "/^cron\\(|\\)$/", ""))
+  startup_fields  = split(" ", replace(var.startup_cron, "/^cron\\(|\\)$/", ""))
 
-  maintenance_window_hours = (local.startup_hour - local.shutdown_hour + 24) % 24
+  # tonumber() fails the PLAN on a `*/15`-style field rather than producing a
+  # nonsense window. A sweep has one fire time; see the `*_cron` variables'
+  # validation blocks, which reject the shape before it reaches here.
+  shutdown_minute_of_day = tonumber(local.shutdown_fields[1]) * 60 + tonumber(local.shutdown_fields[0])
+  startup_minute_of_day  = tonumber(local.startup_fields[1]) * 60 + tonumber(local.startup_fields[0])
+
+  maintenance_window_minutes = (local.startup_minute_of_day - local.shutdown_minute_of_day + 1440) % 1440
+
+  # Fractional on purpose: 930 minutes is 15.5, and an operator reading the
+  # output needs the half hour to be visible rather than floored away.
+  maintenance_window_hours = local.maintenance_window_minutes / 60
 }
 
 resource "aws_scheduler_schedule" "shutdown" {

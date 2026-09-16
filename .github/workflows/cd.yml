@@ -76,7 +76,7 @@ env:
   AWS_REGION: us-east-1
   ECS_CLUSTER: georag
   # The RDS instance behind the migration task and every service.
-  # Deliberately stopped 23:00-06:00 US-Pacific nightly for cost (see
+  # Deliberately stopped 17:00-08:30 US/Canada Pacific nightly for cost (see
   # deploy/aws/terraform/scheduler.tf). The deploy job gates on its state
   # so an in-window merge fails with the real story instead of a generic
   # migration failure. Unlike the Azure gate, this needs no timezone
@@ -296,7 +296,7 @@ jobs:
           echo "database state: $STATE"
           if [ "$STATE" != "available" ]; then
             echo "::error::${DB_INSTANCE} is '${STATE}', not 'available'."
-            echo "The platform is stopped nightly for cost (23:00-06:00 US-Pacific)."
+            echo "The platform is stopped nightly for cost (17:00-08:30 US/Canada Pacific)."
             echo "Re-run this deploy after the morning startup sweep, or start the"
             echo "instance by hand if this is urgent."
             exit 1

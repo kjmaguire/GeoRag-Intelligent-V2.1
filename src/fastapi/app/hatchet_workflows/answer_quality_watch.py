@@ -278,10 +278,12 @@ answer_quality_watch = hatchet.workflow(
     # shutdown-sweep.sh scales every ECS service to --desired-count 0 and
     # stops the RDS instance; startup-sweep.sh reverses it. There is no
     # worker during the window, so a cron inside it does not run late — it
-    # does not run. Since 2026-09-16 that window is 09:00-17:00 Pacific,
-    # eight hours a day to fit the AWS credit, which closes everything
-    # from 00:00 to 17:00 UTC once both sides of a DST boundary are
-    # treated as shut.
+    # does not run. Since 2026-09-16 that window is 08:30-17:00 Pacific,
+    # eight and a half hours a day to fit the AWS credit, which closes
+    # everything from 00:00 to 16:30 UTC once both sides of a DST boundary
+    # are treated as shut. The half hour from 16:30 to 17:00 is not open
+    # either: it is the startup sweep's head start, which has to bring RDS
+    # and tier 1 up before a cron tick means anything.
     #
     # The description above used to name Container Apps and the Flexible
     # Server; that was the Azure mechanism, retired by ADR-0022.

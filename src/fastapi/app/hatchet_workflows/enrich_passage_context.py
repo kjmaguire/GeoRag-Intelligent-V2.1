@@ -127,9 +127,10 @@ enrich_passage_context_wf = hatchet.workflow(
     #   14:45  after the LATER of the two startup candidate hours, which
     #          is the only time a schedule can be sure of without knowing
     #          which side of a DST boundary it will run on.
-    #   21:45  on 2026-09-16 the window shrank to 09:00-17:00 Pacific —
-    #          eight hours a day, to fit the AWS credit inside $100/month —
-    #          which closes 00:00-17:00 UTC. 14:45 went back inside it.
+    #   21:45  on 2026-09-16 the window shrank to 08:30-17:00 Pacific —
+    #          eight and a half hours a day, to fit the AWS credit inside
+    #          $100/month — which closes 00:00-16:30 UTC. 14:45 went back
+    #          inside it.
     #
     # Running after embed_pending_passages' 20:45 daily tick rather than
     # before it is fine: embed also runs */10, so enrichment written at

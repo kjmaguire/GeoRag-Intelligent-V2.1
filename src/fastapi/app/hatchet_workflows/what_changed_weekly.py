@@ -12,8 +12,8 @@ see weekly delta surfaces in the audit ledger without any manual
 intervention.
 
 Cron: ``0 17 * * 1`` UTC — Mondays at 17:00. It was 06:00 until
-2026-09-16, when the nightly shutdown window shrank to eight hours a day
-and closed 00:00-17:00 UTC; the old slot's stated reason (15 min after
+2026-09-16, when the nightly shutdown window shrank to eight and a half
+hours a day and closed 00:00-16:30 UTC; the old slot's stated reason (15 min after
 the eval nightly's final embed pass) went with it, since that pass is now
 at 20:45.
 
@@ -90,8 +90,8 @@ what_changed_weekly = hatchet.workflow(
     # sweep scaling hatchet-worker-cc to zero at both DST candidate hours.
     # ADR-0022 retired all of that on 2026-09-08: shutdown-sweep.sh now scales
     # every ECS service to --desired-count 0 on ONE timezone-aware EventBridge
-    # schedule, and since 2026-09-16 the window is 09:00-17:00 Pacific, closing
-    # 00:00-17:00 UTC. See tests/test_crons_avoid_the_shutdown_window.py, which
+    # schedule, and since 2026-09-16 the window is 08:30-17:00 Pacific, closing
+    # 00:00-16:30 UTC. See tests/test_crons_avoid_the_shutdown_window.py, which
     # derives that span from the Terraform rather than from this comment.
     on_crons=["0 17 * * 1"],  # Mondays at 17:00 UTC
 )

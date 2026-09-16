@@ -551,7 +551,7 @@ resource "aws_ecs_service" "this" {
   deployment_minimum_healthy_percent = contains(local.zero_downtime_services, each.key) ? 50 : 0
   deployment_maximum_percent         = contains(local.zero_downtime_services, each.key) ? 200 : 100
 
-  # The nightly sweeps own desired_count between 17:00 and 09:00 local.
+  # The nightly sweeps own desired_count between 17:00 and 08:30 local.
   # Without this, every `terraform apply` during the window would start
   # the whole platform back up and quietly undo the cost saving.
   lifecycle {

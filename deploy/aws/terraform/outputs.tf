@@ -61,6 +61,11 @@ output "maintenance_window_hours" {
     operator can confirm the alert suppression window matches what they
     think the schedule is — the check the Azure parity script did for the
     cron and the DST guard.
+
+    FRACTIONAL since 2026-09-16: the default schedule is 17:00 to 08:30
+    local, so this reads 15.5. If it ever reads a whole number of hours when
+    the crons are not both on the hour, scheduler.tf has gone back to
+    truncating and the dead-air suppressor is short by the remainder.
   EOT
   value       = local.maintenance_window_hours
 }
