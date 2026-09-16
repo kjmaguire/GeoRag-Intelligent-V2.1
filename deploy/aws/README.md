@@ -600,10 +600,43 @@ fresh compose volume and nowhere else. Ch 02 §1.2 records that those scripts
 that neither `migrate` nor `db:apply-raw` creates has to be applied once, as
 the master user:
 
+It creates three login roles, so it needs three passwords. Pass them as
+psql variables — **the file will not run without them**, and under
+`\set ON_ERROR_STOP on` it aborts at the first one rather than half-applying:
+
 ```bash
+SECRET=$(aws secretsmanager get-secret-value --secret-id georag/app \
+           --query SecretString --output text)
+
 psql -h "$(terraform -chdir=deploy/aws/terraform output -raw db_endpoint)" \
-     -U georag -d georag -f deploy/aws/bootstrap.sql
+     -U georag -d georag \
+     -v georag_app_password="$(jq -r .GEORAG_APP_PASSWORD <<<"$SECRET")" \
+     -v martin_password="$(jq -r .MARTIN_DATABASE_URL <<<"$SECRET" \
+                           | sed -E 's|.*://[^:]+:([^@]+)@.*|\1|')" \
+     -v hatchet_password="$(jq -r .HATCHET_DATABASE_URL <<<"$SECRET" \
+                            | sed -E 's|.*://[^:]+:([^@]+)@.*|\1|')" \
+     -f deploy/aws/bootstrap.sql
 ```
+
+So Step 3 comes first in practice: the secret has to hold these values before
+this runs. Two of the three passwords are extracted from **inside** a
+connection string rather than read from a key of their own, because those
+strings are what the tasks actually present: `martin_password` out of
+`MARTIN_DATABASE_URL`, `hatchet_password` out of `HATCHET_DATABASE_URL`. If a
+role's password and the one embedded in its URL differ, the role exists, can
+log in, and still refuses the only client that uses it.
+
+There is deliberately no `HATCHET_DB_PASSWORD` key. That name is compose-only
+(`docker-compose.yml`, `docker/postgresql/init/20-hatchet-database.sql`), and
+`jq -r` on a key that is absent prints the string `null` — which would set the
+role's password to the literal four characters `null` and fail authentication
+later, from a command that looked like it worked.
+
+Run it again whenever you are unsure. It is idempotent by construction and
+re-running it is the intended way to verify it: the last thing it prints is
+`rolname, rolcanlogin` for all six roles. **`georag_app`, `hatchet` and
+`martin_readonly` must all read `t`.** The three `georag_read/write/audit`
+grant-holders must read `f` — nothing connects as those.
 
 Getting this wrong does not fail loudly. The extensions are the visible half.
 The other half is the Hatchet engine's own role and database — Hatchet runs
@@ -614,19 +647,37 @@ do not exist while every container reports healthy.
 
 `bootstrap.sql` says what it deliberately leaves to something else, and why.
 
-## Step 2: set the application role's password
+## Step 2: nothing — Step 1 does this now
 
-`database/raw/phase1/10-georag-app-role.sql` creates `georag_app` with a
-placeholder password that is committed to this repository
-(`georag-app-dev-replace-via-alter-role`). The role name says what to do with
-it. `db:apply-raw` will not change it on a re-run, because the whole `CREATE
-ROLE` sits behind `IF NOT EXISTS`, so this is a real step and not a formality:
+This step used to say: run `ALTER ROLE georag_app PASSWORD ...`, because
+`database/raw/phase1/10-georag-app-role.sql` creates the role with a
+placeholder password committed to this repository.
 
-```bash
-psql -h "$(terraform -chdir=deploy/aws/terraform output -raw db_endpoint)" \
-     -U georag -d georag \
-     -c "ALTER ROLE georag_app PASSWORD '<the value you put in GEORAG_APP_PASSWORD>';"
-```
+Every sentence of that was wrong on AWS, and the three errors compounded into
+a deployment that could not start:
+
+1. **That file has never run here.** `db:apply-raw` walks
+   `database/raw/manifest.json`, which is deliberately an explicit list rather
+   than a glob, and lists five `phase0/*` files. `phase1/10` is not one of
+   them.
+2. **It could not have won anyway.** `services.tf` runs
+   `migrate && db:apply-raw` — migrations first — and migration
+   `2026_04_09_173750` creates `georag_app` **NOLOGIN** on any pgsql
+   connection. `phase1/10`'s own `CREATE ROLE` is behind `IF NOT EXISTS`, so
+   it would have skipped.
+3. **`ALTER ROLE ... PASSWORD` does not grant LOGIN.** Verified against
+   PostgreSQL rather than assumed: afterwards `rolcanlogin` is still false. A
+   password on a role that may not connect is not a login.
+
+So every application container — all five that talk to Postgres — would have
+come up and died on `FATAL: role "georag_app" is not permitted to log in`.
+Nothing caught it: compose creates the role differently, and CI applies only
+`phase0/*.sql` and migrates as the owner.
+
+`bootstrap.sql` now creates `georag_app` itself, with LOGIN, before the
+migration chain runs, so `2026_04_09_173750`'s `IF NOT EXISTS` finds it and
+leaves it alone. `scripts/check-bootstrap-roles.py` fails CI if that ever
+regresses, for any of the three login roles.
 
 Every application container connects as `georag_app`, never as `georag`.
 `georag` is the RDS master and owns every table, and `ENABLE ROW LEVEL
