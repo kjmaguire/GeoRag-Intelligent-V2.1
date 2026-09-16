@@ -44,7 +44,16 @@ names already taken, and the way out is importing every resource by hand. It
 also means no locking, and an apply from any ephemeral box (a CI runner, a
 cloud dev environment) discards the state when the box is reclaimed.
 
-Create the bucket once per account, then init against it:
+One command resolves your account ID, creates/verifies the bucket, writes
+`backend.hcl`, and runs `terraform init`:
+
+```bash
+bash deploy/aws/terraform/init-backend.sh
+```
+
+That covers the whole first-run flow below manually, for the case where you
+want to name the bucket yourself instead of the auto-generated
+`georag-tfstate-<account-id>`:
 
 ```bash
 bash deploy/aws/terraform/bootstrap-state.sh georag-tfstate-<account-id> <region>
