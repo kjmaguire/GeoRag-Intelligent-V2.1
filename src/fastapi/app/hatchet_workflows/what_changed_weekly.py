@@ -11,8 +11,11 @@ triggered by hand or by an API call. With this wrapper, operators
 see weekly delta surfaces in the audit ledger without any manual
 intervention.
 
-Cron: ``0 6 * * 1`` UTC — Mondays at 06:00 (15min after the eval
-nightly's 05:45 final slot, keeping the AI pool spread out).
+Cron: ``0 17 * * 1`` UTC — Mondays at 17:00. It was 06:00 until
+2026-09-16, when the nightly shutdown window shrank to eight hours a day
+and closed 00:00-17:00 UTC; the old slot's stated reason (15 min after
+the eval nightly's final embed pass) went with it, since that pass is now
+at 20:45.
 
 Triggering manually:
   ``what_changed_weekly.aio_mock_run(WeeklyDigestInput())``

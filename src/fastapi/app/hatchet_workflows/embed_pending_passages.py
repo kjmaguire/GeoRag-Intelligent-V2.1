@@ -10,8 +10,11 @@ Manual invocation:
   embed_pending_passages_wf.run({"workspace_id": "<uuid>", "project_id": "<uuid>"})
 
 Cron-fire (when project_id="*"): walks all projects with un-embedded
-passages and syncs them. Cron schedule omitted for now — operator
-triggers manually after each cluster ingest.
+passages and syncs them. Two schedules, not none: ``*/10 * * * *``
+picks up newly landed passages within ten minutes, and ``45 20 * * *``
+is the daily sweep that catches whatever the fast tick missed. The
+operator-triggers-it-by-hand era ended when those were added; see the
+schedule comment on the workflow for the hours' history.
 """
 from __future__ import annotations
 

@@ -6,13 +6,18 @@ Each wrapper:
   - registers the agents.runtime so the @georag_agent decorator works
   - invokes the underlying agent and returns its summary
 
-Schedules per Phase 0 kickoff §Step 6:
+Schedules. The hours are NOT the Phase 0 kickoff §Step 6 ones any more:
+every fixed-hour slot moved on 2026-09-16, when the nightly shutdown
+window shrank to eight hours a day (09:00-17:00 Pacific) and closed
+00:00-17:00 UTC. The relative order and stagger are what the kickoff
+actually specified, and those survived intact.
 
-    tenant_isolation_audit          0 2  * * *    nightly 02:00 UTC
-    storage_tiering_run             0 3  * * *    daily   03:00 UTC
-    store_reconciliation_run        0 4  * * *    nightly 04:00 UTC
-    model_upgrade_watch_run         0 5  * * *    daily   05:00 UTC
-    model_cost_summary_run          0 6  * * *    daily   06:00 UTC
+    tenant_isolation_audit          0 17 * * *     nightly 17:00 UTC
+    graph_tenant_audit              30 17 * * *    nightly 17:30 UTC
+    storage_tiering_run             0 18 * * *     daily   18:00 UTC
+    store_reconciliation_run        0 19 * * *     nightly 19:00 UTC
+    model_upgrade_watch_run         0 20 * * *     daily   20:00 UTC
+    model_cost_summary_run          0 22 * * *     daily   22:00 UTC
     index_health_check              0 */6 * * *    every 6 h
 
 On-demand only (no cron — triggered via FastAPI route or manual run):
@@ -154,7 +159,7 @@ def _ctx_from(input: AgentRunInput, hctx: Context) -> AgentContext:
 
 
 # =============================================================================
-# 1. Tenant Isolation Auditor — nightly 02:00 UTC
+# 1. Tenant Isolation Auditor — nightly 17:00 UTC
 # =============================================================================
 class TenantIsolationAuditOutput(BaseModel):
     """Output schema for the tenant_isolation_audit workflow.
@@ -193,9 +198,9 @@ async def _run_tenant_isolation(
 
 
 # =============================================================================
-# 1b. Graph Tenant Auditor — Z-roadmap Z.9, nightly 02:30 UTC
+# 1b. Graph Tenant Auditor — Z-roadmap Z.9, nightly 17:30 UTC
 #
-# Sibling to tenant_isolation_audit (PG-side, 02:00 UTC). Offset by 30
+# Sibling to tenant_isolation_audit (PG-side, 17:00 UTC). Offset by 30
 # minutes so the two auditors don't contend for the Hatchet ai-pool
 # slot or write to silver.tenant_isolation_audit at the same instant.
 # =============================================================================
@@ -250,7 +255,7 @@ async def _run_lineage_walk(
 
 
 # =============================================================================
-# 3. Storage Tiering Agent — daily 03:00 UTC
+# 3. Storage Tiering Agent — daily 18:00 UTC
 # =============================================================================
 class StorageTieringRunOutput(BaseModel):
     """Output schema for the storage_tiering_run workflow.
@@ -331,7 +336,7 @@ async def _run_index_health(
 
 
 # =============================================================================
-# 5. Store Reconciliation Agent — nightly 04:00 UTC
+# 5. Store Reconciliation Agent — nightly 19:00 UTC
 # =============================================================================
 class StoreReconciliationRunOutput(BaseModel):
     """Output schema for the store_reconciliation_run workflow.
@@ -364,7 +369,7 @@ async def _run_store_recon(
 
 
 # =============================================================================
-# 6. Model Upgrade Watch Agent — daily 05:00 UTC
+# 6. Model Upgrade Watch Agent — daily 20:00 UTC
 # =============================================================================
 class ModelUpgradeWatchRunOutput(BaseModel):
     """Output schema for the model_upgrade_watch_run workflow.
@@ -399,7 +404,7 @@ async def _run_model_upgrade_watch(
 
 
 # =============================================================================
-# 8. Model Cost Summary Agent — daily 06:00 UTC
+# 8. Model Cost Summary Agent — daily 22:00 UTC
 # =============================================================================
 class ModelCostSummaryRunOutput(BaseModel):
     """Output schema for the model_cost_summary_run workflow.

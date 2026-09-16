@@ -190,7 +190,10 @@ adds `silver.document_passages.contextualized_content TEXT NULL`.
   **before embedding** (Anthropic "contextual retrieval" technique).
 - Written by the new **`enrich_passage_context` Hatchet workflow**
   ([enrich_passage_context.py](../../../src/fastapi/app/hatchet_workflows/enrich_passage_context.py))
-  — daily 04:30 UTC, before `embed_pending_passages` at 05:45 UTC.
+  — daily 21:45 UTC, which is AFTER `embed_pending_passages`' daily
+  20:45 tick rather than before it. That inversion is deliberate and
+  harmless: embed also runs `*/10 * * * *`, so a header written at 21:45
+  is embedded within ten minutes instead of waiting a day.
   Calls `services/ingest/context_enricher.py`.
 - `passage_embedder.py` then embeds the enriched text in place of raw.
 - Work-queue: partial index `WHERE contextualized_content IS NULL AND embedding_id IS NULL`.

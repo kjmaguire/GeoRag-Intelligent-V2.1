@@ -136,7 +136,8 @@ enrich_passage_context_wf = hatchet.workflow(
     # 21:45 is picked up within ten minutes rather than waiting a day.
     #
     # tests/test_crons_avoid_the_shutdown_window.py reads the window from
-    # the job YAML, so the next move is caught rather than reasoned about.
+    # the EventBridge schedules in deploy/aws/terraform/scheduler.tf, so
+    # the next move is caught rather than reasoned about.
     on_crons=["45 21 * * *"],
     input_validator=EnrichPassageContextInput,
     # 2026-08-21 — see verbalize_page_images.py for the full write-up. Short

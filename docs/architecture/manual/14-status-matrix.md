@@ -142,7 +142,7 @@ than services: `georag-shutdown-sweep` and `georag-startup-sweep`
 | `continuous_learning_loop`, `field_outcome_learning` | Experimental |
 | `tiff_ocr_cluster` | Deprecated (replaced by `tiff_normalize` per ADR-0005) |
 | `repair_shadow_aggregate` | Live (added 2026-05-27 per ADR-0009 / [Ch 16 §2](16-algorithmic-spines.md)) — cron `15 2 * * *` UTC |
-| `enrich_passage_context` | Live (2026-05-30) — contextual-retrieval header generation; daily 04:30 UTC; [Ch 18 §5](18-model-stack-evolution.md) |
+| `enrich_passage_context` | Live (2026-05-30) — contextual-retrieval header generation; daily 21:45 UTC; [Ch 18 §5](18-model-stack-evolution.md) |
 | `score_answer_quality` | Removed (09d1d35, 2026-07-27) — the LLM-as-judge faithfulness + context-precision scorer no longer exists. Nothing in production measures answer quality. |
 | `ingest_zip_archive` | Live (2026-06-03) — ZIP fan-out with parent-run observability; [Ch 18 §8](18-model-stack-evolution.md) |
 | `tiff_normalize` | Live (ADR-0005 — normalises TIFFs to PDF then routes through `ingest_pdf`) |

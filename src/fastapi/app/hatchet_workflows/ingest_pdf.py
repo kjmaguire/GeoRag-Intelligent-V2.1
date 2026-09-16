@@ -2107,7 +2107,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         )
 
     # Trigger embedding for this project so chunks land in qdrant
-    # immediately, instead of waiting for the 05:45 UTC daily cron.
+    # immediately, instead of waiting for the 20:45 UTC daily cron.
     # Fire-and-forget — embedding can take minutes for big PDFs; we don't
     # block persist on it. The workflow's own retries/idempotency handle
     # transient failures.
@@ -2132,7 +2132,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         except Exception as embed_err:
             log.warning(
                 "ingest_pdf.persist: failed to dispatch embed workflow: %s — "
-                "chunks will be picked up by daily cron at 05:45 UTC",
+                "chunks will be picked up by daily cron at 20:45 UTC",
                 embed_err,
             )
 

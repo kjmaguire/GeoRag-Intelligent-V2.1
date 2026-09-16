@@ -7,12 +7,14 @@ WHAT THE WINDOW ACTUALLY IS
     and a cron scheduled inside it does not run late -- it does not run.
 
     Rewritten 2026-09-08 for ADR-0022. The window is now scheduled in a
-    NAMED TIMEZONE (EventBridge Scheduler), not in UTC: 23:00 to 06:00
-    US-Pacific. Hatchet crons are UTC, so the window's UTC position still
-    moves with DST -- 06:00-13:00 in PDT, 07:00-14:00 in PST -- and both
-    are therefore treated as closed. That is the same conservative span
-    the Azure version computed, arrived at from the timezone rather than
-    from a pair of double-fire cron hours.
+    NAMED TIMEZONE (EventBridge Scheduler), not in UTC. Since 2026-09-16
+    it runs 17:00 to 09:00 America/Vancouver -- sixteen hours closed, to
+    fit the platform inside an eight-hour business day and a $100/month
+    credit. Hatchet crons are UTC, so the window's UTC position still
+    moves with DST -- 00:00-16:00 in PDT, 01:00-17:00 in PST -- and both
+    are therefore treated as closed, leaving 17:00-00:00 UTC as the span
+    a fixed-hour cron can safely sit in. The hours are read from the
+    Terraform below, so do not trust this paragraph over shutdown_window().
 
     What is GONE is the reason there were two cron hours to read: Container
     Apps Jobs had no timezone support, so each sweep fired at both

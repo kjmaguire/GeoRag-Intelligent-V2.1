@@ -523,7 +523,7 @@ enabled in production and not in compose.
 | `silver.query_traces` | `trace_writer` (§3.3) | the §0e per-turn retrieval trace |
 | `silver.ingest_progress` | ingestion workflows via `_progress` | one row per ingestion run with its status and `outcome_detail`; what `stale_run_detector` sweeps and the IngestionRuns UI reads |
 | `audit.audit_ledger` | Laravel `AuditEmitter`, FastAPI agents and watchers | hash-chained, monthly-partitioned by pg_partman (`database/raw/phase0/20-layer-b-audit-ledger.sql`); the trigger in `90-audit-hash-chain-trigger.sql` computes each row's hash |
-| `audit.audit_ledger_verification_runs` | `audit_ledger_verify` (Hatchet cron `0 2 * * *`) calling `audit.run_verification()` | one verdict row per nightly walk of the previous 24 h; forks land in `audit.audit_ledger_chain_fork_quarantine` |
+| `audit.audit_ledger_verification_runs` | `audit_ledger_verify` (Hatchet cron `0 17 * * *`) calling `audit.run_verification()` | one verdict row per nightly walk of the previous 24 h; forks land in `audit.audit_ledger_chain_fork_quarantine` |
 | `gold.mv_refresh_log` | `mv_refresh` workflows | per-view refresh timing; feeds the unread `georag_mv_refresh_lag_seconds` gauge |
 | `outbox.pending_propagations` | the two Phase 0 outbox writers (Ch 07 §2.5) | propagation lag |
 | `usage.usage_events`, `usage.workspace_cost_ceilings` | LLM call sites; admin UI | inputs to `cost_burn_watcher`; a breach writes a `cost.burn.alert` ledger row and an `AdminSurfaceUpdated` broadcast to the admin alerts inbox, which reaches nobody who is not already looking at it (hence the Log Analytics rule) |

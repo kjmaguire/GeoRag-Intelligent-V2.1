@@ -2,7 +2,7 @@
 
 Two workflows live here:
 
-* ``audit_ledger_verify`` — nightly cron (02:00 UTC) that calls the
+* ``audit_ledger_verify`` — nightly cron (17:00 UTC) that calls the
   pure-SQL ``audit.run_verification`` function for the previous 24 h
   window. Writes one row to ``audit.audit_ledger_verification_runs``
   with status ``clean`` / ``break`` / ``error``.

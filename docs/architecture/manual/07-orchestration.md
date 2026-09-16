@@ -107,6 +107,17 @@ exists so the every-minute crons could one day move to a small always-on
 pool; today it is dormant. `python -m app.hatchet_workflows.worker --list`
 prints the names without connecting. Crons are UTC.
 
+Every fixed-hour slot below sits between 17:00 and 23:00 UTC. That is not a
+preference: since 2026-09-16 the EventBridge sweeps
+(`deploy/aws/terraform/scheduler.tf`) run the platform 09:00-17:00
+America/Vancouver, which closes 00:00-17:00 UTC once both sides of a DST
+boundary are taken as closed. A cron outside that band does not run late, it
+does not run -- `src/fastapi/tests/test_crons_avoid_the_shutdown_window.py`
+derives the span from the Terraform and fails the build. The relative
+staggers (audit verify, then the shadow aggregate 15 minutes behind it, and
+so on) are the part that carries meaning; the absolute hours have moved
+three times and will move again.
+
 **Ingestion list (13)**
 
 | Workflow | Cron | Role |
@@ -117,34 +128,34 @@ prints the names without connecting. Crons are UTC.
 | `ingest_zip_archive` | — | Extracts and fans out by extension |
 | `ingest_spatial`, `ingest_tabular`, `ingest_well_logs` | — | Vector, drill CSV/XLSX, LAS ingest ([Ch 04 §4](04-ingestion-flow.md#4-the-other-ingest-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
 | `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `started` past 15 min: completes finished-but-unmarked embeds, re-dispatches dead parses in-process, times out the rest |
-| `nightly_ingestion_integrity` | `0 2 * * *`, `0 4 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
+| `nightly_ingestion_integrity` | `0 17 * * *`, `0 19 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
 | `reliability_metrics_publisher` | `* * * * *` | Refreshes in-process Prometheus gauges that nothing scrapes in production ([Ch 12](12-observability.md)) |
-| `storage_tiering_run` | `0 3 * * *` | Phase 0 agent |
+| `storage_tiering_run` | `0 18 * * *` | Phase 0 agent |
 | `index_health_check` | `0 */6 * * *` | Phase 0 agent (hypopg what-ifs) |
-| `store_reconciliation_run` | `0 4 * * *` | Phase 0 agent; cross-store counts, consumes outbox dead-letters |
+| `store_reconciliation_run` | `0 19 * * *` | Phase 0 agent; cross-store counts, consumes outbox dead-letters |
 
 **AI list (38)**
 
 | Workflow | Cron | Role |
 |---|---|---|
-| `audit_ledger_verify` | `0 2 * * *` | Hash-chain verification of the previous 24 h |
-| `repair_shadow_aggregate` | `15 2 * * *` | Repair-loop shadow telemetry → `gold.repair_shadow_daily` |
-| `tenant_isolation_audit` | `0 2 * * *` | Phase 0 agent; writes outbox rows |
-| `graph_tenant_audit` | `30 2 * * *` | Phase 0 agent for a graph store that no longer exists; runs nightly regardless |
-| `mv_refresh_silver` | `0 3 * * *` | `REFRESH MATERIALIZED VIEW` on the silver fact-source views |
-| `public_geo_sync` | `30 3 * * 0` | Weekly ArcGIS refresh of `public_geo` (the live owner since the Dagster pull went) |
-| `flow_jwt_key_reaper` | `0 4 * * *` | Expires `workflow.flow_jwt_keys` rows |
-| `cold_tier_archive` | `0 4 * * *` | Writes-only cold-tier archive; pruning is operator-gated |
-| `idempotency_keys_cleanup`, `pg_partman_maintenance` | `15 4 * * *` | TTL purge of `workspace.idempotency_keys`; advance the monthly partitions |
-| `retention_sweep` | `45 4 * * *` | `audit.query_audit_log` 180 d, terminal `silver.ingest_progress` 90 d |
-| `model_upgrade_watch_run` | `0 5 * * *` | Phase 0 agent |
-| `embed_pending_passages` | `45 5 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`) |
+| `audit_ledger_verify` | `0 17 * * *` | Hash-chain verification of the previous 24 h |
+| `repair_shadow_aggregate` | `15 17 * * *` | Repair-loop shadow telemetry → `gold.repair_shadow_daily` |
+| `tenant_isolation_audit` | `0 17 * * *` | Phase 0 agent; writes outbox rows |
+| `graph_tenant_audit` | `30 17 * * *` | Phase 0 agent for a graph store that no longer exists; runs nightly regardless |
+| `mv_refresh_silver` | `0 18 * * *` | `REFRESH MATERIALIZED VIEW` on the silver fact-source views |
+| `public_geo_sync` | `30 18 * * 0` | Weekly ArcGIS refresh of `public_geo` (the live owner since the Dagster pull went) |
+| `flow_jwt_key_reaper` | `0 19 * * *` | Expires `workflow.flow_jwt_keys` rows |
+| `cold_tier_archive` | `0 19 * * *` | Writes-only cold-tier archive; pruning is operator-gated |
+| `idempotency_keys_cleanup`, `pg_partman_maintenance` | `15 19 * * *` | TTL purge of `workspace.idempotency_keys`; advance the monthly partitions |
+| `retention_sweep` | `45 19 * * *` | `audit.query_audit_log` 180 d, terminal `silver.ingest_progress` 90 d |
+| `model_upgrade_watch_run` | `0 20 * * *` | Phase 0 agent |
+| `embed_pending_passages` | `45 20 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`) |
 | `verbalize_page_images` | `20 * * * *` | Inert unless `IMAGE_VERBALIZATION_ENABLED`; returns before touching Postgres |
 | `qdrant_payload_audit` | `0 * * * *` | Guard 2 payload-shape audit; fail-open when Qdrant is unreachable (§7) |
-| `answer_quality_watch` | `30 14 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
-| `enrich_passage_context` | `45 14 * * *` | Contextual-retrieval headers (one LLM call per passage) |
-| `model_cost_summary_run` | `0 15 * * *` | Phase 0 agent |
-| `what_changed_weekly` | `0 17 * * 1` | Fans `what_changed_detector` across active workspaces (the inline comment still says "06:00 UTC") |
+| `answer_quality_watch` | `30 21 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
+| `enrich_passage_context` | `45 21 * * *` | Contextual-retrieval headers (one LLM call per passage) |
+| `model_cost_summary_run` | `0 22 * * *` | Phase 0 agent |
+| `what_changed_weekly` | `0 17 * * 1` | Fans `what_changed_detector` across active workspaces |
 | `cost_burn_watcher` | `*/5 * * * *` | Emits `cost.burn.alert` audit rows; suspends LLM activity at 2× the ceiling |
 | `promote_silver_to_gold` | — | Silver → gold visual tables; dispatched per project and by the nightly sweep |
 | `nl_summaries` | — | One retrievable passage per structured row (ADR-0012); registered, deliberately unscheduled |
@@ -415,12 +426,17 @@ Where each finding stands in the code on 2026-09-07:
 
 ## 8. Stale comments worth clearing
 
-- `worker.py` header: "registers two workflows".
+Cleared 2026-09-16: the `worker.py` "registers two workflows" header, the
+`what_changed_weekly.py` "Mondays at 06:00 UTC" annotation, the
+`embed_pending_passages.py` "Cron schedule omitted for now" docstring, and
+every schedule comment that still quoted a pre-move hour (`worker.py`'s
+registration list, `phase0_agents.py`'s header table and section banners,
+`audit_ledger_verify.py`, `repair_shadow_aggregate.py`, `laravel_bridge.py`,
+`public_geoscience_tool.py`, `ingest_pdf.py`). What remains:
+
 - `docker-compose.yml` hatchet headers and the shutdown-job header: "32
   registered crons", "Phase 0 only registers the synthetic workflow", the
   moved-in cron list.
-- `what_changed_weekly.py`: `0 17 * * 1` annotated "Mondays at 06:00 UTC".
-- `embed_pending_passages.py` docstring: "Cron schedule omitted for now".
 - `external_notification.py` and `public_geoscience_pull.py` docstrings:
   describe Kestra as the caller.
 - `docker-compose.yml` `HATCHET_PG_*` comment and `config/database.php`

@@ -6,8 +6,10 @@ workflow only computes the time window, calls the function, reads back the
 inserted ``audit.audit_ledger_verification_runs`` row, and surfaces
 ``status`` / ``rows_verified`` to Hatchet for observability.
 
-Schedule: ``0 2 * * *`` UTC nightly (Tenant Isolation Auditor pattern from
-the kickoff). Manually invokable via ``audit_ledger_verify.run({})``.
+Schedule: ``0 17 * * *`` UTC nightly (Tenant Isolation Auditor pattern
+from the kickoff -- that workflow still shares the slot). It was 02:00
+until 2026-09-16, when the nightly shutdown window shrank to eight hours
+a day and closed 00:00-17:00 UTC. Manually invokable via ``audit_ledger_verify.run({})``.
 """
 
 from __future__ import annotations
