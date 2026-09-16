@@ -172,7 +172,11 @@ kubectl delete namespace georag
 |---|---|---|---|
 | PodDisruptionBudget | on | — | nothing; emitted only for components running ≥2 replicas |
 | NetworkPolicy | off | `--set networkPolicy.enabled=true` | a CNI that enforces it (K3s does; vanilla: Calico / Cilium) and the right `networkPolicy.ingressController` block |
-| ServiceMonitor | off | `--set serviceMonitor.enabled=true` | Prometheus Operator CRDs (`kube-prometheus-stack`) |
+
+ServiceMonitor was removed 2026-09-16 — this repo has no Prometheus
+Operator CRDs and no scrape config anywhere. Production and dev
+observability are CloudWatch/marker-log alarms and Laravel Pulse. Install
+`kube-prometheus-stack` yourself first if you want Prometheus scraping.
 
 Enable NetworkPolicy only after a first install works without it: a
 `networkPolicy.ingressController` selector that does not match your
