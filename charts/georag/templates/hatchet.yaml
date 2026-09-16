@@ -60,32 +60,45 @@ spec:
           requests:
             storage: {{ .Values.hatchet.engine.persistence.size }}
   {{- end }}
-{{- if .Values.hatchet.workers.ai.enabled }}
+{{- if .Values.hatchet.worker.enabled }}
 ---
+# One merged worker Deployment, matching docker-compose.yml's
+# `hatchet-worker` service and the AWS ECS Terraform: no `--pool` flag,
+# the registered workflow set is selected entirely by the WORKER_POOL
+# env var (ingestion | ai | all — default all). This used to be two
+# Deployments (hatchet-worker-ai / hatchet-worker-ingestion) gated by
+# `--pool`; that was the pre-merge architecture and has been collapsed
+# to match. `hatchet.worker.pool` stays chart-configurable for an
+# on-prem operator who wants to split pools across nodes for resource
+# reasons (e.g. GPU nodes for `ai`) — do that by installing this chart
+# twice, once per pool, under distinct release names, not by
+# reintroducing a second Deployment template here.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-hatchet-worker-ai
+  name: {{ .Release.Name }}-hatchet-worker
   namespace: {{ .Values.global.namespace }}
   labels: {{- include "georag.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.hatchet.workers.ai.replicas }}
+  replicas: {{ .Values.hatchet.worker.replicas }}
   selector:
-    matchLabels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ai" "root" .) | nindent 6 }}
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker" "root" .) | nindent 6 }}
   template:
     metadata:
-      labels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ai" "root" .) | nindent 8 }}
+      labels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker" "root" .) | nindent 8 }}
     spec:
       {{- include "georag.imagePullSecrets" . | nindent 6 }}
       containers:
         - name: worker
           image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ai"]
+          command: ["python", "-m", "app.hatchet_workflows.worker"]
           envFrom:
             - secretRef:
                 name: {{ .Release.Name }}-secrets
           env:
+            - name: WORKER_POOL
+              value: {{ .Values.hatchet.worker.pool | quote }}
             - name: HATCHET_CLIENT_HOST
               value: "{{ .Release.Name }}-hatchet:7077"
             - name: POSTGRES_HOST
@@ -100,42 +113,6 @@ spec:
               value: {{ .Release.Name }}-redis
             - name: QDRANT_HOST
               value: {{ .Release.Name }}-qdrant
-          resources: {{- toYaml .Values.hatchet.workers.ai.resources | nindent 12 }}
-{{- end }}
-{{- if .Values.hatchet.workers.ingestion.enabled }}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ .Release.Name }}-hatchet-worker-ingestion
-  namespace: {{ .Values.global.namespace }}
-  labels: {{- include "georag.labels" . | nindent 4 }}
-spec:
-  replicas: {{ .Values.hatchet.workers.ingestion.replicas }}
-  selector:
-    matchLabels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ingestion" "root" .) | nindent 6 }}
-  template:
-    metadata:
-      labels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ingestion" "root" .) | nindent 8 }}
-    spec:
-      {{- include "georag.imagePullSecrets" . | nindent 6 }}
-      containers:
-        - name: worker
-          image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ingestion"]
-          envFrom:
-            - secretRef:
-                name: {{ .Release.Name }}-secrets
-          env:
-            - name: HATCHET_CLIENT_HOST
-              value: "{{ .Release.Name }}-hatchet:7077"
-            - name: POSTGRES_HOST
-              value: {{ .Release.Name }}-pgbouncer
-            - name: POSTGRES_PORT
-              value: "6432"
-            - name: REDIS_HOST
-              value: {{ .Release.Name }}-redis
-          resources: {{- toYaml .Values.hatchet.workers.ingestion.resources | nindent 12 }}
+          resources: {{- toYaml .Values.hatchet.worker.resources | nindent 12 }}
 {{- end }}
 {{- end }}

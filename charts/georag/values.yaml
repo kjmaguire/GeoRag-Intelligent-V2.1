@@ -76,7 +76,7 @@ pgbouncer:
   enabled: true
   image:
     repository: edoburu/pgbouncer
-    tag: "1.25"
+    tag: "v1.25.1-p0"
   service:
     port: 6432
   replicas: 2
@@ -94,7 +94,7 @@ qdrant:
   enabled: true
   image:
     repository: qdrant/qdrant
-    tag: "v1.17.0"
+    tag: "v1.17.1"
   service:
     grpcPort: 6334
     httpPort: 6333
@@ -141,7 +141,7 @@ seaweedfs:
   enabled: true
   image:
     repository: chrislusf/seaweedfs
-    tag: "3.85"
+    tag: "4.35"
   service:
     masterPort: 9333
     s3Port: 8333
@@ -214,15 +214,22 @@ laravelReverb:
     limits:   { cpu: "500m", memory: "1Gi" }
 
 # ─────────────────────────────────────────────────────────────────────
-# Hatchet — workflow engine for AI + ingestion pools.
-# StatefulSet for the engine + Deployments for each worker pool.
+# Hatchet — workflow engine. StatefulSet for the engine + one merged
+# worker Deployment, matching docker-compose.yml's `hatchet-worker`
+# service and the AWS ECS Terraform (WORKER_POOL=all, no --pool flag).
+# This chart used to run two worker Deployments (ai / ingestion); that
+# was the pre-merge architecture. `worker.pool` stays configurable —
+# ingestion | ai | all — for an on-prem operator who wants to split
+# pools across nodes for resource reasons, by installing the chart
+# twice under distinct release names with different `worker.pool`
+# values, not via two Deployment templates in this chart.
 # ─────────────────────────────────────────────────────────────────────
 hatchet:
   enabled: true
   engine:
     image:
       repository: ghcr.io/hatchet-dev/hatchet/hatchet-lite
-      tag: "v0.50"
+      tag: "v0.86.12"
     service:
       grpcPort: 7077
       apiPort: 8080
@@ -232,19 +239,13 @@ hatchet:
     resources:
       requests: { cpu: "250m", memory: "512Mi" }
       limits:   { cpu: "1",    memory: "1Gi" }
-  workers:
-    ai:
-      enabled: true
-      replicas: 1
-      resources:
-        requests: { cpu: "500m", memory: "1Gi" }
-        limits:   { cpu: "2",    memory: "4Gi" }
-    ingestion:
-      enabled: true
-      replicas: 2
-      resources:
-        requests: { cpu: "500m", memory: "1Gi" }
-        limits:   { cpu: "2",    memory: "4Gi" }
+  worker:
+    enabled: true
+    replicas: 2
+    pool: all   # ingestion | ai | all
+    resources:
+      requests: { cpu: "500m", memory: "1Gi" }
+      limits:   { cpu: "2",    memory: "4Gi" }
 
 # ─────────────────────────────────────────────────────────────────────
 # Martin — PostGIS → MVT tile server (read-only, stateless).
@@ -253,7 +254,7 @@ martin:
   enabled: true
   image:
     repository: ghcr.io/maplibre/martin
-    tag: "v0.18"
+    tag: "1.11.0"
   service:
     port: 3000
   replicas: 2
@@ -289,10 +290,15 @@ jobs:
     schedule: "0 3 * * *"
 
 # ─────────────────────────────────────────────────────────────────────
-# Hardening — NetworkPolicy, PodDisruptionBudget, ServiceMonitor.
+# Hardening — NetworkPolicy, PodDisruptionBudget.
 # Ported 2026-09-06 from the deleted ops/charts skeleton and rewritten
-# for this chart's components. All three are additive; none changes a
-# workload.
+# for this chart's components. Both are additive; neither changes a
+# workload. (A third template, ServiceMonitor, was ported alongside
+# these but removed 2026-09-16 — this repo deploys no Prometheus
+# Operator CRDs and no scrape config anywhere; see docker-compose.yml's
+# header and docs/architecture/manual/12-observability.md. Production
+# and dev observability are CloudWatch/marker-log alarms and Laravel
+# Pulse, not Prometheus.)
 # ─────────────────────────────────────────────────────────────────────
 networkPolicy:
   # Default-deny for every pod in the release plus one allow policy per
@@ -341,25 +347,6 @@ podDisruptionBudget:
   # a component down to one never blocks `kubectl drain`.
   enabled: true
   minAvailable: 1
-
-serviceMonitor:
-  # Requires the Prometheus Operator CRDs (kube-prometheus-stack). OFF by
-  # default because `helm install` fails on a cluster without them.
-  enabled: false
-  interval: 30s
-  scrapeTimeout: 10s
-  # kube-prometheus-stack selects ServiceMonitors by release=<its name>.
-  labels:
-    release: prometheus
-  fastapi:
-    enabled: true   # /metrics is unauthenticated inside the cluster
-  laravel:
-    # Laravel's /metrics requires the X-Service-Key header
-    # (app/Http/Middleware/VerifyServiceKey.php) and Prometheus Operator
-    # has no per-endpoint custom-header field. Leave off until a
-    # header-injecting scrape path exists (a sidecar, or Prometheus 3.x
-    # `http_headers` via additionalScrapeConfigs).
-    enabled: false
 
 # ─────────────────────────────────────────────────────────────────────
 # Deferred to §11.6-v3 (not yet templated):
