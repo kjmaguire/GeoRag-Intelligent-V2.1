@@ -23,6 +23,23 @@
 #         it into workflow.flow_registry (encrypted via pgcrypto). After
 #         this, future mints of this flow's JWT use the per-flow key
 #         and set the `kid` claim.
+#
+# 2026-09-14 (ADR-0022) — HALF OF THIS SCRIPT IS DEAD.
+#
+#   `mint` and `provision-key` still work: they touch only FastAPI's own
+#   flow_jwt module and workflow.flow_registry.
+#
+#   `write` and `rotate` do not. They PUT to Kestra's KV store at
+#   http://localhost:${KESTRA_PORT} using KESTRA_BASIC_AUTH_*, and Kestra
+#   was removed on 2026-07-28 — no compose service, no container, and
+#   those two env vars are in no .env example. The subcommands are left
+#   in place rather than deleted because a future integration edge will
+#   need the same shape, but running them today fails at curl.
+#
+#   The env-var fallback these JWTs verify against was renamed
+#   KESTRA_FLOW_JWT_SECRET → FLOW_JWT_SECRET on the same date. This
+#   script never read it — it mints through the Python module — so
+#   nothing here changed for that.
 # =============================================================================
 
 set -euo pipefail

@@ -15,8 +15,8 @@ You are the FastAPI domain service engineer for GeoRAG. You build the Python dom
 - asyncpg (PostgreSQL via PgBouncer), aioredis (Redis), async Qdrant client
 - sentence-transformers for embeddings (specific model TBD via Milestone 2 benchmarking)
 - Cross-encoder reranker (specific model TBD via Milestone 2 benchmarking)
-- Azure AI Foundry serving Cohere Command A+ over the unified OpenAI v1 API (`LLM_BACKEND=azure`, the default since 2026-07-30)
-- LLM backend selection (you own this): `LLM_BACKEND` is `azure` | `vllm` | `anthropic`. `vllm` is retained for operators pointing at their own OpenAI-compatible endpoint — the compose service was removed, the backend value was not. Anthropic is the optional cross-vendor fallback. Keep the provider abstraction behind the OpenAI-compatible interface so the agent does not know which backend is active. See `app/config.py` for the exact wire contract.
+- Cohere's own API serving Cohere Command A+ over `POST {COHERE_BASE_URL}/v2/chat` (`LLM_BACKEND=cohere`, the default since ADR-0023, 2026-09-15)
+- LLM backend selection (you own this): `LLM_BACKEND` is `cohere` (default) | `bedrock` | `vllm` | `anthropic`. `azure` is a hard STARTUP ERROR naming its replacement, and `Settings._reject_retired_azure_config` also fails startup on any leftover `AZURE_FOUNDRY_*` variable — do not reintroduce either. `vllm` is retained for operators pointing at their own OpenAI-compatible endpoint; the compose service was removed, the backend value was not. Anthropic is the optional cross-vendor fallback. Note that chat is NOT a branch of the OpenAI-compatible client: `app/agent/llm_cohere.py` is a sibling of `llm_bedrock.py` and of the Anthropic path, with the host-neutral pieces in `app/agent/llm_common.py`. See `app/config.py` and `app/services/cohere_wire.py` for the exact wire contract.
 
 ## Required reading before work
 

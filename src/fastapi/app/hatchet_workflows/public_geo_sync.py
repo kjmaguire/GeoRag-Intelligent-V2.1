@@ -30,12 +30,14 @@ any case.
 
 Schedule
 --------
-``30 3 * * 0`` — 03:30 UTC on Sundays. These are government feeds that change
+``30 18 * * 0`` — 18:30 UTC on Sundays. These are government feeds that change
 on a monthly-to-quarterly cadence, so nightly would be pure waste against
 someone else's infrastructure; weekly keeps the mirror honest without the
-politeness problem. The slot sits after the backup window (02:00-03:00) and
-before pg_partman_maintenance (04:15), so a multi-hour full pull does not
-contend with the other nightly writers.
+politeness problem. The slot sits before pg_partman_maintenance (19:15), so a
+multi-hour full pull does not contend with the other writers. It was also
+placed "after the backup window (02:00-03:00)"; those per-store ``backup_*``
+workflows were deleted 2026-08-23, so that half of the constraint no longer
+binds.
 
 Failure behaviour
 -----------------
@@ -101,7 +103,7 @@ class PublicGeoSyncOut(BaseModel):
 
 public_geo_sync = hatchet.workflow(
     name="public_geo_sync",
-    on_crons=["30 3 * * 0"],  # 03:30 UTC Sundays — see module docstring
+    on_crons=["30 18 * * 0"],  # 18:30 UTC Sundays — see module docstring
     input_validator=PublicGeoSyncInput,
 )
 

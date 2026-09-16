@@ -177,21 +177,47 @@ class TestEnrichmentReachesTheVector:
 
 
 class TestBackendRouting:
-    def test_azure_resolves_to_foundry_with_auth(self, monkeypatch) -> None:
+    def test_bedrock_resolves_to_a_model_with_no_url(self, monkeypatch) -> None:
+        """Bedrock has no base URL — boto3 resolves the endpoint from the
+        region, and settings.effective_llm_url raises for this backend by
+        design (ADR-0022). The resolver returns "" rather than raising
+        because _call_llm_for_context short-circuits before it would use
+        one, and the per-passage loop resolves eagerly."""
         from app.config import settings
 
-        monkeypatch.setattr(settings, "LLM_BACKEND", "azure")
-        monkeypatch.setattr(
-            settings, "AZURE_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com"
-        )
-        monkeypatch.setattr(settings, "AZURE_FOUNDRY_DEPLOYMENT", "Cohere-command-a-plus")
-        monkeypatch.setattr(settings, "AZURE_FOUNDRY_API_KEY", "k")
+        monkeypatch.setattr(settings, "LLM_BACKEND", "bedrock")
+        monkeypatch.setattr(settings, "BEDROCK_CHAT_MODEL_ID", "command-a-plus-endpoint")
 
         base_url, model, headers = ce._resolve_llm_target()
 
-        assert base_url == "https://example.services.ai.azure.com/openai/v1"
-        assert model == "Cohere-command-a-plus"
-        assert headers == {"api-key": "k"}
+        assert base_url == ""
+        assert model == "command-a-plus-endpoint"
+        assert headers == {}
+
+    async def test_bedrock_calls_the_converse_adapter_not_httpx(
+        self, monkeypatch
+    ) -> None:
+        """The whole point of the branch: Bedrock is not OpenAI-compatible,
+        so a URL-shaped call would go nowhere."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "LLM_BACKEND", "bedrock")
+
+        called: dict = {}
+
+        async def fake_call(prompt, temperature, **kwargs):
+            called["prompt"] = prompt
+            called["temperature"] = temperature
+            return "  A contextual header.  "
+
+        import app.agent.llm_bedrock as bedrock_mod
+
+        monkeypatch.setattr(bedrock_mod, "call_bedrock_llm", fake_call)
+
+        out = await ce._call_llm_for_context("the prompt", None, "", "", None)
+
+        assert out == "A contextual header."
+        assert called["prompt"] == "the prompt"
 
     def test_it_no_longer_pins_itself_to_the_removed_vllm_service(self) -> None:
         source = code_only(inspect.getsource(ce))

@@ -1117,6 +1117,33 @@ def _assert_production_posture() -> None:
             "project's reports."
         )
 
+    # ADR-0023 — the selected chat backend must carry the credential it
+    # needs. Unlike the controls above this is not a hardening switch: with
+    # it missing, every query fails at the first call. It is still a CRITICAL
+    # rather than a refusal to start, because this container also serves
+    # ingest, render and health, and taking all of that down over a chat
+    # credential trades one broken capability for four.
+    #
+    # ECS normally makes this unreachable — a task referencing a Secrets
+    # Manager key that does not exist never starts at all. What it does NOT
+    # catch is the key existing with an empty or whitespace value, which is
+    # exactly the shape a half-finished `put-secret-value` leaves behind.
+    _chat_credentials = {
+        "cohere": ("COHERE_API_KEY", settings.COHERE_API_KEY),
+        "bedrock": ("BEDROCK_CHAT_MODEL_ID", settings.BEDROCK_CHAT_MODEL_ID),
+        "anthropic": ("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY),
+        "vllm": ("VLLM_URL", settings.VLLM_URL),
+    }
+    _required = _chat_credentials.get(settings.LLM_BACKEND)
+    if _required and not _required[1].strip():
+        _safety_logger.critical(
+            "GEORAG_ENV=production with LLM_BACKEND=%s but %s is empty — "
+            "every chat query will fail at the first call. Set it on the "
+            "task definition (it is written to Secrets Manager out of band; "
+            "see deploy/aws/README.md).",
+            settings.LLM_BACKEND, _required[0],
+        )
+
 
 _assert_production_posture()
 

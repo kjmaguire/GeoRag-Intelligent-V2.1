@@ -13,8 +13,10 @@ operational housekeeping with no decisional cognition. Hatchet-scheduled,
 no LangGraph, no LLM calls. Audit-trailed via emit_audit so ops can see
 "X rows expired tonight" in the audit ledger.
 
-Cron: 04:15 UTC nightly. Stagger from audit_ledger_verify (02:00) and
-storage_tiering_run (03:00) so the workspace.* writes don't contend.
+Cron: 19:15 UTC nightly. Stagger from audit_ledger_verify (17:00) and
+mv_refresh_silver (18:00) so the workspace.* writes don't contend. The
+original text named storage_tiering_run, which no longer exists in this
+package; mv_refresh_silver holds that slot now.
 """
 from __future__ import annotations
 
@@ -58,7 +60,7 @@ _dsn = build_dsn
 
 idempotency_keys_cleanup = hatchet.workflow(
     name="idempotency_keys_cleanup",
-    on_crons=["15 4 * * *"],  # 04:15 UTC nightly
+    on_crons=["15 19 * * *"],  # 19:15 UTC nightly
     input_validator=CleanupInput,
 )
 

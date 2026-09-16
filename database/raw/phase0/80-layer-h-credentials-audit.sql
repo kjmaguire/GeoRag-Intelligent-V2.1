@@ -2,7 +2,7 @@
 -- Phase 0 — Layer H — audit.integration_credentials_audit
 --
 -- OAuth/token lifecycle audit. Phase 0 ships the table; the Credential Health
--- Agent that writes here ships in Phase 2 (after Activepieces deploys and
+-- Agent that writes here ships in Phase 2 (once an integration edge exists and
 -- there are real integrations to audit). NB: master plan v2.4.2 §30 has the
 -- agent in Phase 0 but registry v1.3 correctly classifies it Phase 2 — see
 -- Phase 0 kickoff §Step 7 Finding 2.

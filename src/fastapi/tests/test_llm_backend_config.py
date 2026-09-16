@@ -66,12 +66,82 @@ class TestVllmUrlValidator:
         s = _settings(LLM_BACKEND="vllm", VLLM_URL="http://inference.internal:8000/v1")
         assert s.effective_llm_url == "http://inference.internal:8000/v1"
 
-    def test_the_default_azure_backend_needs_no_vllm_url(self):
+    def test_the_default_cohere_backend_needs_no_vllm_url(self):
         """The regression that matters most: the validator must not make the
         default backend harder to configure."""
-        s = _settings(AZURE_FOUNDRY_ENDPOINT="https://example.services.ai.azure.com")
-        assert s.LLM_BACKEND == "azure"
+        s = _settings(COHERE_API_KEY="test-only-not-a-real-key")
+        assert s.LLM_BACKEND == "cohere"
         assert s.VLLM_URL == ""
+
+    def test_the_retired_azure_backend_is_a_startup_error(self):
+        """ADR-0022. A deployment that was never repointed carries
+        well-formed settings addressing a resource that no longer exists, so
+        without this it starts cleanly and fails at first query with a
+        connection error — the shape of silent misconfiguration that
+        ocr_engine.py was written to prevent."""
+        with pytest.raises(pydantic.ValidationError, match="LLM_BACKEND=azure"):
+            _settings(LLM_BACKEND="azure")
+
+    def test_leftover_foundry_variables_are_a_startup_error(self, monkeypatch):
+        """The shape a half-finished migration actually takes: the backend
+        selector gets updated and the credentials are left behind."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "leftover")
+        with pytest.raises(pydantic.ValidationError, match="AZURE_FOUNDRY_API_KEY"):
+            _settings()
+
+
+class TestCohereBackendResolution:
+    """ADR-0023 — `cohere` reaches the same model over a different host.
+
+    These are source-of-truth checks, not wire checks: the Cohere API shape
+    is [UNVERIFIED] and no test here pretends otherwise. What they do pin is
+    that selecting the backend resolves to the Cohere settings rather than
+    silently falling through to `LLM_PRIMARY_MODEL` — the failure mode that
+    an unrecognised LLM_BACKEND value has by design.
+    """
+
+    def test_cohere_is_the_default_backend(self):
+        """ADR-0023 flipped the default off `bedrock`.
+
+        Not cosmetic. `bedrock` chat addresses an AWS Marketplace endpoint
+        that was never deployed and, on A100/H100 pricing, is not going to
+        be — so leaving it as the default means an unset value selects a
+        host that does not exist, which is the exact trap the default was
+        chosen to avoid when it moved off Azure.
+        """
+        assert _settings(COHERE_API_KEY="k").LLM_BACKEND == "cohere"
+
+    def test_cohere_resolves_its_own_model_not_the_fallback(self):
+        s = _settings(LLM_BACKEND="cohere", COHERE_CHAT_MODEL="command-a-plus-05-2026")
+        assert s.effective_llm_model == "command-a-plus-05-2026"
+        assert s.effective_llm_model != s.LLM_PRIMARY_MODEL
+
+    def test_cohere_has_no_openai_compatible_url(self):
+        """`/v2/chat` is not `/v1/chat/completions`.
+
+        `effective_llm_url` raising is what stops a caller POSTing an
+        OpenAI-shaped body at a Cohere base URL and getting a 4xx it would
+        have to reverse-engineer.
+        """
+        s = _settings(LLM_BACKEND="cohere")
+        with pytest.raises(RuntimeError, match="not applicable to LLM_BACKEND=cohere"):
+            _ = s.effective_llm_url
+
+    def test_cohere_gets_the_command_a_context_budget(self):
+        """Same model as the bedrock path, so the same window.
+
+        A cohere deployment falling through to MAX_CONTEXT_TOKENS (22K, sized
+        for a 16K-context vLLM) would quietly throw away four fifths of the
+        retrieved evidence on every query and report nothing.
+        """
+        s = _settings(LLM_BACKEND="cohere")
+        assert s.effective_max_context_tokens == s.MAX_CONTEXT_TOKENS_BEDROCK
+        assert s.effective_max_context_tokens > s.MAX_CONTEXT_TOKENS
+
+    def test_bedrock_remains_selectable(self):
+        """ADR-0023 took bedrock's default, not its support."""
+        s = _settings(LLM_BACKEND="bedrock", BEDROCK_CHAT_MODEL_ID="arn:aws:sagemaker:...")
+        assert s.effective_llm_model == "arn:aws:sagemaker:..."
 
 
 def test_no_default_points_at_the_deleted_vllm_service():

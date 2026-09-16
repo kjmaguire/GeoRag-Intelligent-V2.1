@@ -43,42 +43,59 @@ EMBEDDING_MODEL_REVISION = (
 _HTTP_TIMEOUT_S = float(os.environ.get("EMBEDDING_SERVICE_TIMEOUT_S", "30") or "30")
 
 # ---------------------------------------------------------------------------
-# Azure AI Foundry (Cohere Embed v4) backend — EMBEDDING_BACKEND=foundry
+# Amazon Bedrock (Cohere Embed v4) backend — EMBEDDING_BACKEND=bedrock
 # ---------------------------------------------------------------------------
 # Takes precedence over EMBEDDING_SERVICE_URL below. No local model, no
-# sidecar, at all. Reuses the same Azure AI Services resource as the LLM/
-# reranker (AZURE_FOUNDRY_ENDPOINT/API_KEY) with its own deployment name.
+# sidecar, at all. Reaches Bedrock with the ECS task role's SigV4 credentials
+# (app.services._bedrock) rather than an endpoint plus API key.
 #
-# Default flipped "local" -> "foundry" on 2026-09-06. Production has run
-# Foundry since 2026-07-30 and has no GPU host, so an UNSET variable on an
-# Azure app used to select a model host that does not exist there and the
-# query path silently ran with no embedding model. Unset now means Foundry
-# in code and in docker-compose.yml alike; .env.example sets
-# EMBEDDING_BACKEND=local explicitly to use the self-hosted sidecar.
-EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "foundry").strip().lower()
-AZURE_FOUNDRY_EMBED_DEPLOYMENT = (os.environ.get("AZURE_FOUNDRY_EMBED_DEPLOYMENT") or "").strip()
+# Default was "foundry" from 2026-09-06 until the AWS move on 2026-09-08; it
+# is "bedrock" now for the same reason it was "foundry" then. Production has
+# no GPU host, so an UNSET variable used to select a model host that does not
+# exist there and the query path silently ran with no embedding model
+# (ADR-0021 gotcha 1). Unset means Bedrock in code and in docker-compose.yml
+# alike; .env.example sets EMBEDDING_BACKEND=local explicitly to use the
+# self-hosted sidecar.
+EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "bedrock").strip().lower()
+# Bedrock model id for Cohere Embed v4, or the ARN of a Bedrock Marketplace
+# endpoint serving it. [UNVERIFIED] that this exact id is offered in the
+# target region — ADR-0022 step 0.
+BEDROCK_EMBED_MODEL_ID = (
+    os.environ.get("BEDROCK_EMBED_MODEL_ID") or "cohere.embed-v4:0"
+).strip()
 # Cohere Embed v4 supports Matryoshka-truncated output at 256/512/1024/1536
 # dims. Request 1024 to match the existing georag_chunks collection schema
 # exactly — no Qdrant migration needed. MUST match settings.EMBEDDING_DIMENSION.
-AZURE_FOUNDRY_EMBED_DIMENSION = int(os.environ.get("AZURE_FOUNDRY_EMBED_DIMENSION", "1024"))
-AZURE_FOUNDRY_EMBED_TIMEOUT_S = float(os.environ.get("AZURE_FOUNDRY_EMBED_TIMEOUT_S", "30"))
+BEDROCK_EMBED_DIMENSION = int(os.environ.get("BEDROCK_EMBED_DIMENSION", "1024"))
+BEDROCK_EMBED_TIMEOUT_S = float(os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30"))
 
 
-class _FoundryEmbedding:
-    """Cohere Embed v4 (Azure AI Foundry) behind the SentenceTransformer surface.
+class _BedrockEmbedding:
+    """Cohere Embed v4 on Amazon Bedrock, behind the SentenceTransformer surface.
 
     Mirrors ``SentenceTransformer.encode(str|list, normalize_embeddings=...)
     -> np.ndarray`` and ``.get_sentence_embedding_dimension()`` — same
-    contract as ``_RemoteEmbedding`` above, so it's a drop-in wherever the
+    contract as ``_RemoteEmbedding`` below, so it's a drop-in wherever the
     query-path or ingestion code holds an embedding-model reference.
 
-    Wire shape empirically verified 2026-07-30 against a live deployment:
-        POST {endpoint}/providers/cohere/v2/embed
-        api-key: <key>
-        body: {"model": "<deployment>", "texts": [str, ...],
-               "input_type": "search_document"|"search_query",
-               "embedding_types": ["float"], "output_dimension": 1024}
-        -> {"embeddings": {"float": [[...], ...]}}
+    Wire shape (ADR-0022)::
+
+        bedrock-runtime.invoke_model(
+            modelId=<BEDROCK_EMBED_MODEL_ID>,
+            body={"texts": [str, ...],
+                  "input_type": "search_document"|"search_query",
+                  "embedding_types": ["float"], "output_dimension": 1024})
+        -> body {"embeddings": {"float": [[...], ...]}}
+
+    The request body is **Cohere's own v2 schema**, unchanged from the
+    Foundry path this replaced — Bedrock's InvokeModel passes the provider
+    body through and takes the model out of it into ``modelId``. That is why
+    this adapter is a transport swap and not a rewrite.
+
+    **[UNVERIFIED]** — the Foundry contract was confirmed empirically against
+    a live deployment on 2026-07-30. This one has not been; run
+    ``ops/validation/bedrock_probe.py`` and commit its report before trusting
+    it in production (ADR-0022 "Verification").
 
     Cohere recommends asymmetric embedding: ``input_type="search_document"``
     for indexed corpus chunks, ``"search_query"`` for retrieval-time
@@ -93,41 +110,44 @@ class _FoundryEmbedding:
 
     def __init__(
         self,
-        endpoint: str,
-        api_key: str,
-        deployment: str,
+        model_id: str = BEDROCK_EMBED_MODEL_ID,
         *,
-        dimension: int = AZURE_FOUNDRY_EMBED_DIMENSION,
-        timeout_s: float = AZURE_FOUNDRY_EMBED_TIMEOUT_S,
+        dimension: int = BEDROCK_EMBED_DIMENSION,
+        timeout_s: float = BEDROCK_EMBED_TIMEOUT_S,
     ) -> None:
-        self._url = endpoint.rstrip("/") + "/providers/cohere/v2/embed"
-        self._api_key = api_key
-        self._deployment = deployment
+        self._model_id = model_id
         self._dimension = dimension
         self._timeout_s = timeout_s
 
+    def _client(self):
+        from app.services._bedrock import get_client  # noqa: PLC0415
+
+        # Ingestion has no wall clock, so this client keeps the full adaptive
+        # retry ceiling. Contrast the reranker, which derives its attempt
+        # count from the caller's budget.
+        return get_client("bedrock-runtime", read_timeout_s=self._timeout_s)
+
+    def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
+        import json  # noqa: PLC0415
+
+        resp = self._client().invoke_model(
+            modelId=self._model_id,
+            body=json.dumps(body),
+            accept="application/json",
+            contentType="application/json",
+        )
+        return json.loads(resp["body"].read())
+
     def _post(self, texts: list[str], input_type: str) -> np.ndarray:
-        import httpx  # noqa: PLC0415
-
-        from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
-
-        def _do() -> httpx.Response:
-            return httpx.post(
-                self._url,
-                headers={"api-key": self._api_key},
-                timeout=self._timeout_s,
-                json={
-                    "model": self._deployment,
-                    "texts": texts,
-                    "input_type": input_type,
-                    "embedding_types": ["float"],
-                    "output_dimension": self._dimension,
-                },
-            )
-
-        resp = with_foundry_retry(_do, label="foundry_embed")
-        vectors = resp.json()["embeddings"]["float"]
-        return np.asarray(vectors, dtype=np.float32)
+        payload = self._invoke(
+            {
+                "texts": texts,
+                "input_type": input_type,
+                "embedding_types": ["float"],
+                "output_dimension": self._dimension,
+            }
+        )
+        return np.asarray(payload["embeddings"]["float"], dtype=np.float32)
 
     def encode(
         self,
@@ -154,8 +174,7 @@ class _FoundryEmbedding:
     # is the entire reason this feature is cheap to add — do not "fix" it
     # by giving images their own collection.
     #
-    # Two hard constraints from the model card (verified against
-    # learn.microsoft.com 2026-08-18, `embed-v-4-0` on Foundry):
+    # Two hard constraints from the model card, unchanged by the host:
     #   1. Images cap at 2M pixels. Callers MUST downscale first — see
     #      app.services.ingest.page_image.render_page_png, which is the
     #      only supported producer. A 250-DPI letter page is ~5.8M px and
@@ -164,16 +183,14 @@ class _FoundryEmbedding:
     #      ("cannot have both text and image inputs"). So this is a
     #      separate request from _post(), never a merged one.
     #
-    # WIRE SHAPE: unlike the text path above (empirically verified against
-    # a live deployment 2026-07-30) the image path is written to Cohere's
-    # documented v2 contract but has NOT yet been confirmed against this
-    # deployment. Cohere shipped two accepted shapes for v4 — the older
+    # WIRE SHAPE: Cohere shipped two accepted shapes for v4 — the older
     # `images: [data-uri]` and the newer interleaved `inputs: [...]` — and
-    # which one a given Foundry build accepts is not documented. Rather
-    # than guess, the primary shape is tried first and a 400/422 falls
-    # back to the alternate ONCE, logging whichever succeeded so the first
-    # real run tells us definitively. Collapse this to the winner (and
-    # delete the fallback) once observed in production logs.
+    # which one a given host accepts is not documented. That ambiguity
+    # predates the AWS move and survives it, so the same strategy carries
+    # over: try the primary, fall back ONCE on a schema rejection, and log
+    # whichever won so the first real run tells us definitively. Collapse
+    # this to the winner (and delete the fallback) once observed in
+    # production logs.
     _IMAGE_WIRE_SHAPE: str | None = None  # None = undetermined; set on first success
 
     def embed_image(self, png_bytes: bytes, *, mime: str = "image/png") -> np.ndarray:
@@ -187,15 +204,10 @@ class _FoundryEmbedding:
         """
         import base64  # noqa: PLC0415
 
-        import httpx  # noqa: PLC0415
-
-        from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
-
         data_uri = f"data:{mime};base64,{base64.b64encode(png_bytes).decode('ascii')}"
 
         def _body_images() -> dict[str, Any]:
             return {
-                "model": self._deployment,
                 "images": [data_uri],
                 "input_type": "image",
                 "embedding_types": ["float"],
@@ -204,7 +216,6 @@ class _FoundryEmbedding:
 
         def _body_inputs() -> dict[str, Any]:
             return {
-                "model": self._deployment,
                 "inputs": [{"content": [{"type": "image_url", "image_url": {"url": data_uri}}]}],
                 "input_type": "image",
                 "embedding_types": ["float"],
@@ -213,44 +224,39 @@ class _FoundryEmbedding:
 
         shapes: list[tuple[str, Any]] = (
             [("images", _body_images), ("inputs", _body_inputs)]
-            if _FoundryEmbedding._IMAGE_WIRE_SHAPE in (None, "images")
+            if _BedrockEmbedding._IMAGE_WIRE_SHAPE in (None, "images")
             else [("inputs", _body_inputs), ("images", _body_images)]
         )
 
         last_exc: Exception | None = None
         for name, build_body in shapes:
-            def _do(_b=build_body) -> httpx.Response:
-                return httpx.post(
-                    self._url,
-                    headers={"api-key": self._api_key},
-                    timeout=self._timeout_s,
-                    json=_b(),
-                )
-
             try:
-                resp = with_foundry_retry(_do, label=f"foundry_embed_image[{name}]")
-            except httpx.HTTPStatusError as exc:
+                payload = self._invoke(build_body())
+            except Exception as exc:  # noqa: BLE001 — narrowed immediately below
                 # Only a schema rejection is worth re-shaping for. Anything
-                # else (401, 429, 5xx) means the request was understood and
-                # retrying with different JSON just burns another call.
-                if exc.response is not None and exc.response.status_code in (400, 422):
+                # else (auth, throttling, 5xx) means the request was
+                # understood and retrying with different JSON just burns
+                # another call. botocore raises ValidationException for a
+                # body the model rejects; every other ClientError code, and
+                # anything that is not a ClientError at all, propagates.
+                code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+                if code in ("ValidationException", "ModelErrorException"):
                     last_exc = exc
                     logger.debug(
-                        "foundry image embed: wire shape %r rejected (%s) — trying alternate",
-                        name, exc.response.status_code,
+                        "bedrock image embed: wire shape %r rejected (%s) — trying alternate",
+                        name, code,
                     )
                     continue
                 raise
 
-            if name != _FoundryEmbedding._IMAGE_WIRE_SHAPE:
-                _FoundryEmbedding._IMAGE_WIRE_SHAPE = name
-                logger.info("foundry image embed: using wire shape %r", name)
-            vectors = resp.json()["embeddings"]["float"]
-            return np.asarray(vectors, dtype=np.float32)[0]
+            if name != _BedrockEmbedding._IMAGE_WIRE_SHAPE:
+                _BedrockEmbedding._IMAGE_WIRE_SHAPE = name
+                logger.info("bedrock image embed: using wire shape %r", name)
+            return np.asarray(payload["embeddings"]["float"], dtype=np.float32)[0]
 
         raise RuntimeError(
             "Cohere Embed v4 rejected both documented image wire shapes "
-            f"(images[], inputs[]) on deployment {self._deployment!r}"
+            f"(images[], inputs[]) on model {self._model_id!r}"
         ) from last_exc
 
     def get_sentence_embedding_dimension(self) -> int:
@@ -314,23 +320,34 @@ def get_embedding_model(
 ) -> Any:
     """Return the embedding model for the FastAPI query path.
 
-    Precedence: EMBEDDING_BACKEND=foundry (Cohere Embed v4, no local model at
+    Precedence: EMBEDDING_BACKEND=bedrock (Cohere Embed v4, no local model at
     all) > a shared-sidecar HTTP proxy when EMBEDDING_SERVICE_URL is set >
     locally-loaded SentenceTransformer on CPU (the prior default).
     """
-    if EMBEDDING_BACKEND == "foundry":
-        endpoint = (os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
-        api_key = (os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
-        if not (endpoint and api_key and AZURE_FOUNDRY_EMBED_DEPLOYMENT):
+    from app.services._bedrock import (  # noqa: PLC0415
+        assert_no_retired_foundry_env,
+        bedrock_region,
+        reject_retired_backend,
+    )
+
+    # `foundry` used to be this setting's default and is still in every
+    # pre-2026-09-08 deployment's environment. It fails here, loudly, rather
+    # than falling through to the sidecar branch below — which on an AWS task
+    # would resolve to no embedding model at all and a query path that
+    # retrieves nothing while reporting success (ADR-0021 gotcha 1).
+    reject_retired_backend(EMBEDDING_BACKEND, setting="EMBEDDING_BACKEND")
+
+    if EMBEDDING_BACKEND == "bedrock":
+        assert_no_retired_foundry_env(context="EMBEDDING_BACKEND=bedrock")
+        if not BEDROCK_EMBED_MODEL_ID:
             raise RuntimeError(
-                "EMBEDDING_BACKEND=foundry but AZURE_FOUNDRY_ENDPOINT/API_KEY/"
-                "AZURE_FOUNDRY_EMBED_DEPLOYMENT not fully set"
+                "EMBEDDING_BACKEND=bedrock but BEDROCK_EMBED_MODEL_ID is empty"
             )
         logger.info(
-            "Embedding model via Azure AI Foundry: deployment=%s dim=%d",
-            AZURE_FOUNDRY_EMBED_DEPLOYMENT, AZURE_FOUNDRY_EMBED_DIMENSION,
+            "Embedding model via Amazon Bedrock: model=%s region=%s dim=%d",
+            BEDROCK_EMBED_MODEL_ID, bedrock_region(), BEDROCK_EMBED_DIMENSION,
         )
-        return _FoundryEmbedding(endpoint, api_key, AZURE_FOUNDRY_EMBED_DEPLOYMENT)
+        return _BedrockEmbedding(BEDROCK_EMBED_MODEL_ID)
     if EMBEDDING_SERVICE_URL:
         logger.info("Embedding model via shared sidecar: %s", EMBEDDING_SERVICE_URL)
         return _RemoteEmbedding(EMBEDDING_SERVICE_URL)

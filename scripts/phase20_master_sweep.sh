@@ -12,10 +12,13 @@ set -uo pipefail
 REPO="${REPO:-/home/georag/projects/georag}"
 cd "$REPO"
 
-# Inherit Phase 19's verifier list + add phase20_step1.
+# Inherit Phase 19's verifier list.
 mapfile -t VERIFIERS < <(awk '/^    scripts\/phase[0-9]/{gsub(/^    /,""); gsub(/[[:space:]]*$/,""); print}' \
     "$REPO/scripts/phase19_master_sweep.sh")
-VERIFIERS+=("scripts/phase20_step1_verify.sh")
+# Phase 20's only verifier, phase20_step1_verify.sh, was deleted on
+# 2026-09-15: every check it made was against Neo4j, removed from the
+# stack 2026-07-28. Nothing replaced it, so this sweep no longer adds
+# anything to Phase 19's list.
 
 TOTAL_VERIFIERS=0
 PASS_VERIFIERS=0

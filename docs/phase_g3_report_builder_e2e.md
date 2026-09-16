@@ -21,7 +21,14 @@ minimum-viable body that produces real artifacts:
 | `compliance_check` | Runs a 5-gate export checklist (evidence presence, citations populated, claim validation rate, risk tier valid, manifests built); sets `state.compliance_passed` + `failure_reason` on miss | §29.2 full 10-gate checklist (jurisdictions, licensing, PII) |
 | `geologist_approval` | R3 → auto-approve; R4 → pending geologist SignOffRecord; R5 → pending geologist + QP | Hatchet pause-resume + sign-off UI |
 | `export_package` | Renders a single self-contained markdown bundle (concatenated section bodies + citation footer + provenance proof footer) as a `data:text/markdown;base64` URI | WeasyPrint PDF + python-docx + openpyxl renderers |
-| `activepieces_delivery` | Log-only; sets `delivery_dispatched=True` (renamed in spirit to Kestra per ADR-0001 but function name preserved for backward-compat) | Real Kestra flow dispatch (§7.11) |
+| `delivery_dispatch` | Log-only; sets `delivery_dispatched=True` | Real flow dispatch (§7.11) |
+
+> **Corrected 2026-09-14.** This node was `activepieces_delivery`, kept under
+> that name for backward compatibility after the orchestrator it named was
+> sunset. The AWS migration (ADR-0022) renamed it to `delivery_dispatch`:
+> Activepieces was retired at Phase 3 Step 7 and the Kestra replacement this
+> table pointed at was retired on 2026-07-28 without ever running, so there
+> was no longer anything to be compatible with. Real dispatch has no owner.
 
 ## Graph wiring extension
 
@@ -104,7 +111,7 @@ Canary suite post-G.3: **229 / 0** (+10, no regressions since G.2).
    recorded as pending; the actual workflow needs to suspend and
    wait on a `/admin/reports/<id>/sign-off` POST that fills
    `SignOffRecord.signed_at` + records the audit anchor.
-5. **Real Kestra delivery dispatch** — the `activepieces_delivery`
+5. **Real delivery dispatch** — the `delivery_dispatch`
    stub now logs only. Wire the actual Kestra flow registration +
    the per-target dispatcher (email, Teams, SharePoint, Slack).
 6. **SeaweedFS upload** — replace the inline `data:` URIs with

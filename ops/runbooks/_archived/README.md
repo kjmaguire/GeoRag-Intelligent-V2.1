@@ -24,7 +24,7 @@ The two that mattered most:
   command in it is `docker logs georag-<x>` against a Docker host that
   does not exist.
 
-**Use `ops/runbooks/azure-oncall.md` instead.**
+**Use `ops/runbooks/aws-oncall.md` instead.**
 
 ## Why keep them at all
 

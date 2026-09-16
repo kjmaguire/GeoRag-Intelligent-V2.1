@@ -5,7 +5,7 @@ drops the response GeoJSON to bronze under a versioned key, then POSTs
 to ``/internal/v1/integrations/public_geoscience_pull/trigger`` with
 ``{minio_key, source_id, source_url, fetched_at}``. This workflow:
 
-  1. checks the platform feature flag ``activepieces.public_geoscience_pull.enabled``;
+  1. checks the platform feature flag ``flows.public_geoscience_pull.enabled``;
   2. reads the S3 object, validates it's parseable GeoJSON, counts
      features, hashes the bytes;
   3. records the pull in ``bronze.provenance`` so downstream silver
@@ -43,14 +43,14 @@ log = logging.getLogger("georag.hatchet.public_geoscience_pull")
 # IO models
 # =============================================================================
 class PublicGeoSciencePullInput(BaseModel):
-    """Sent by Kestra' HTTP piece. Kestra is the integration
-    edge — this workflow does NOT call upstream itself; the flow is
-    responsible for fetching + dropping into S3."""
+    """Sent by the external integration edge over HTTP. This workflow
+    does NOT call upstream itself; whatever fires it is responsible for
+    fetching the feed and dropping the response into S3."""
 
     minio_key: str = Field(..., description="S3 key under bronze/")
     source_id: str = Field(..., description="public_geo source identifier")
     source_url: str | None = Field(default=None, description="Upstream URL (informational, recorded only)")
-    fetched_at: str | None = Field(default=None, description="ISO-8601 timestamp Kestra stamped on fetch")
+    fetched_at: str | None = Field(default=None, description="ISO-8601 timestamp the caller stamped on fetch")
 
 
 class PublicGeoSciencePullOut(BaseModel):
@@ -76,8 +76,10 @@ async def _download_from_s3(minio_key: str) -> bytes:
 
 async def _flag_enabled(conn: asyncpg.Connection) -> bool:
     # Phase 3 Step 3 — namespace renamed to orchestrator-neutral
-    # `flows.<flow>.enabled`. The migration mirrors values from the
-    # old activepieces.* row; Step 7 drops the old rows.
+    # `flows.<flow>.enabled`. The default row is seeded by
+    # database/raw/phase4/20-flow-registry-table.sql and by migration
+    # 2026_08_17_050000; absent, the flag reads false and the workflow
+    # skips rather than pulling.
     row = await conn.fetchrow(
         """
         SELECT bool_value
@@ -154,13 +156,22 @@ async def pull(
             # sha256, return it without inserting again. The dashboard
             # surface reads `created_at` to detect re-pulls of identical
             # content.
+            #
+            # `parser_name` was 'activepieces_public_geoscience_pull' until
+            # the AWS migration (ADR-0022) dropped the last Activepieces
+            # naming. It is the idempotency discriminator, so the lookup and
+            # the insert below must always carry the same literal. On a
+            # cluster that already holds rows under the old name, the first
+            # re-pull of identical content writes one new provenance row
+            # instead of matching; bronze starts empty on AWS, so there is
+            # nothing to match there.
             async with conn.transaction():
                 existing = await conn.fetchrow(
                     """
                     SELECT provenance_id::text AS pid
                       FROM bronze.provenance
                      WHERE source_file_sha256 = $1
-                       AND parser_name        = 'activepieces_public_geoscience_pull'
+                       AND parser_name        = 'public_geoscience_pull'
                      ORDER BY ingested_at DESC
                      LIMIT 1
                     """,
@@ -183,7 +194,7 @@ async def pull(
                              source_col_map)
                         VALUES ('bronze', 'public_geoscience_raw', $1::uuid,
                                 $2, $3,
-                                'activepieces_public_geoscience_pull', '1', $4::uuid,
+                                'public_geoscience_pull', '1', $4::uuid,
                                 $5::jsonb)
                         RETURNING provenance_id::text
                         """,

@@ -12,7 +12,7 @@
 #
 # Coverage: pg_basebackup is CLUSTER-LEVEL — it captures every logical
 # database on the server in one consistent snapshot. As of Phase 2 that
-# is `georag`, `hatchet`, and `activepieces`. New logical DBs added in
+# is `georag` and `hatchet`. New logical DBs added in
 # future phases are automatically included; no script change needed.
 # (Phase 2 R-P2-8 — verified via scripts/phase2_rp28_backups_verify.sh.)
 #

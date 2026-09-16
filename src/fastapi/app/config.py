@@ -10,6 +10,7 @@ by any module without re-defining magic numbers.
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar
 
 from pydantic import field_validator, model_validator
@@ -66,10 +67,20 @@ class Settings(BaseSettings):
     FASTAPI_SERVICE_KEY_PREVIOUS: str = ""
     FASTAPI_SERVICE_KEY_PREVIOUS_KID: str = ""
 
-    # Phase 3 Step 3 — per-flow JWT signing secret for Kestra → FastAPI
-    # integrations bridge. Distinct from FASTAPI_SERVICE_KEY so rotation
-    # of one doesn't disturb the other. 32-byte minimum per HS256.
-    KESTRA_FLOW_JWT_SECRET: str = ""
+    # Phase 3 Step 3 — shared fallback signing secret for the per-flow
+    # JWT bridge (services/flow_jwt.py). Distinct from FASTAPI_SERVICE_KEY
+    # so rotation of one doesn't disturb the other. 32-byte minimum per
+    # HS256.
+    #
+    # Renamed from KESTRA_FLOW_JWT_SECRET 2026-09-14 (ADR-0022). The
+    # orchestrator it was named for was retired 2026-07-28 without ever
+    # being deployed; the bridge it signs for is still here. Because
+    # Settings runs with extra="forbid", the OLD name left in a .env is
+    # now a startup crash naming the new one — which is the intended
+    # behaviour, not an accident: a stale key silently ignored would
+    # leave the secret unset and every verify failing at request time
+    # instead.
+    FLOW_JWT_SECRET: str = ""
 
     @field_validator("FASTAPI_SERVICE_KEY")
     @classmethod
@@ -234,29 +245,54 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = ""
 
     # -------------------------------------------------------------------------
-    # LLM — supports an OpenAI-compatible vLLM backend + native Anthropic:
-    #   vllm       (default for dev + prod) → vLLM serving Qwen3-14B-AWQ
-    #                                on the dev workstation A4500, scaled
-    #                                up on prod hardware. Single inference
-    #                                runtime per master-plan §12. Ollama
+    # LLM — four transports, all reaching a chat model over a different wire:
+    #   cohere     (default for dev + prod) → Cohere Command A+ on Cohere's
+    #                                own API, POST /v2/chat with an API key.
+    #   bedrock    → Cohere Command A+ through a Bedrock Marketplace endpoint
+    #                                (Converse). Still selectable; see the
+    #                                ADR-0023 note below for why it is no
+    #                                longer the default.
+    #   vllm       → vLLM serving Qwen3-14B-AWQ over the OpenAI-compatible
+    #                                /v1/chat/completions endpoint. Ollama
     #                                support removed 2026-05-17.
-    #   anthropic  (prod fallback) → Anthropic API (Claude Opus 4.7, Sonnet 4.6,
-    #                                Haiku 4.5). Native SDK — enables prompt
-    #                                caching, adaptive thinking, priority tier,
-    #                                and the 300k-output batch beta that the
-    #                                OpenAI-compatible proxy path cannot reach.
+    #   anthropic  (cross-vendor fallback) → Anthropic API (Claude Opus 4.8,
+    #                                Sonnet 4.6, Haiku 4.5). Native SDK —
+    #                                enables prompt caching, adaptive
+    #                                thinking, priority tier, and the
+    #                                300k-output batch beta that the
+    #                                OpenAI-compatible proxy path cannot
+    #                                reach.
     #
-    # Switch by setting LLM_BACKEND in .env. vLLM uses the OpenAI-compatible
-    # /v1/chat/completions endpoint; Anthropic uses its native messages API.
+    # Switch by setting LLM_BACKEND in .env.
     # -------------------------------------------------------------------------
 
-    # Phase C (Azure lift) — "azure" is now the default primary backend,
-    # replacing self-hosted vLLM. "vllm" remains supported for operators who
-    # keep running their own OpenAI-compatible endpoint (the docker-compose
-    # `vllm` service itself was removed; point VLLM_URL at an external
-    # instance if you need this path). "anthropic" remains the optional
-    # cross-vendor fallback (see LLM_BACKEND_FALLBACK).
-    LLM_BACKEND: str = "azure"  # "azure" | "vllm" | "anthropic"
+    # ADR-0023 (2026-09-15) — "cohere" is the default primary backend. It took
+    # the slot from "bedrock" (ADR-0022), which took it from "azure" (Azure AI
+    # Foundry), which took it from self-hosted vLLM.
+    #
+    # Why the default moved off bedrock one week after it arrived: Command A+
+    # turned out not to be a Bedrock model at all. It is an **AWS Marketplace**
+    # SageMaker package, and a Marketplace endpoint has no idle state — it
+    # bills for an A100/H100 for as long as it exists. Nothing was ever
+    # deployed, so `LLM_BACKEND=bedrock` in production would now address an
+    # endpoint that does not exist and is not going to.
+    #
+    # That is the same trap the default was picked to avoid in the first
+    # place: an unset value must select a host that is actually running, not
+    # one that only exists on paper. "bedrock" stays selectable for an
+    # operator who does subscribe and deploy the endpoint — the adapter is
+    # unchanged and `_validate_chat_backend_credentials` below makes the
+    # missing model id a startup error rather than a first-query one.
+    #
+    # Bedrock has NOT left the system: embeddings (Cohere Embed v4) and
+    # reranking (Cohere Rerank 3.5) still go there under EMBEDDING_BACKEND
+    # and RERANKER_BACKEND, which are separate variables from this one.
+    #
+    # "azure" is no longer accepted: `_reject_retired_azure_config` below
+    # turns it into a startup error naming the replacement, rather than
+    # letting a deployment that was never repointed fail at first query
+    # against a Foundry endpoint that no longer exists.
+    LLM_BACKEND: str = "cohere"  # "cohere" | "bedrock" | "vllm" | "anthropic"
 
     # Legacy OpenAI-compatible target, retained for the "vllm" backend value
     # and as the last-resort default in `effective_llm_url`/`effective_llm_model`
@@ -313,60 +349,106 @@ class Settings(BaseSettings):
     VLLM_QUANTIZATION: str = "awq_marlin"
     VLLM_MAX_MODEL_LEN: int = 8192
 
-    # Azure AI Foundry — used when LLM_BACKEND=azure (the default primary
-    # backend post Phase-C cutover). Deployed model is Cohere Command A+
-    # (Cohere-command-a-plus-05-2026, Preview; 128K in / 64K out, tool
-    # calling, reasoning content — see the Azure migration plan).
+    # Amazon Bedrock — used when LLM_BACKEND=bedrock (the default primary
+    # backend after the 2026-09-08 AWS move, ADR-0022). The deployed model is
+    # Cohere Command A+ (command-a-plus-05-2026), reached through a **Bedrock
+    # Marketplace** endpoint rather than the serverless catalogue: Bedrock's
+    # serverless Cohere generative line is Command R/R+ (legacy), which is not
+    # the model this deployment runs.
     #
-    # 2026-07-30 — wire shape EMPIRICALLY VERIFIED against a live deployment
-    # (not assumed from docs, which disagreed with each other — the Foundry
-    # catalog table said "Text only" response formats for this model, while
-    # Cohere's own docs list it under Structured Outputs support; a real
-    # test call settled it). Confirmed contract:
-    #   POST {endpoint}/openai/v1/chat/completions
-    #   api-key: <key>
-    #   body: {"model": "<deployment-name>", "messages": [...],
-    #          "response_format": {"type": "json_object"}, ...}
-    # This is the newer unified **OpenAI v1 API** surface
-    # (`/openai/v1/...`, no `?api-version=` query param needed) — NOT the
-    # `/models/chat/completions` Azure AI Model Inference API path an
-    # earlier pass of this code assumed from documentation alone, and NOT
-    # the classic `/openai/deployments/{name}/chat/completions?api-
-    # version=...` path either. `effective_llm_url` builds the
-    # `{endpoint}/openai/v1` base; `_call_openai_compatible_llm` appends
-    # `/chat/completions` with no version suffix.
+    # WIRE SHAPE — [UNVERIFIED]. This is the one place the migration lost a
+    # hard-won empirical result rather than carrying it forward. Against
+    # Foundry's OpenAI-compatible surface, three behaviours were confirmed by
+    # a real test call on 2026-07-30, all three of which a reader would NOT
+    # have assumed from documentation (the docs disagreed with each other):
     #
-    # Two response-shape quirks confirmed by the live test call, both
-    # handled in `_call_openai_compatible_llm`:
-    #   1. Reasoning lives in a separate `reasoning_content` message field
-    #      (not inline `<think>` tags like Qwen3) — cleaner to strip, but a
-    #      different code path than the vLLM branch's regex strip.
-    #   2. JSON-mode output arrives wrapped in Cohere sentinel tokens:
-    #      `<|START_TEXT|>{"...":...}<|END_TEXT|>` — must be stripped
-    #      before the caller's `json.loads()`.
-    #   3. Same "reasoning ate the whole token budget" failure mode as
-    #      Qwen3 is reproducible here too (empty `content`, partial
-    #      `reasoning_content`, `finish_reason: "length"`) — same class of
-    #      defensive handling applies, wired to the new field.
+    #   1. JSON `response_format` was supported despite the Foundry catalog
+    #      table saying "Text only" for this model.
+    #   2. Reasoning arrived in a separate `reasoning_content` message field,
+    #      not inline <think> tags like Qwen3.
+    #   3. JSON-mode output arrived wrapped in Cohere sentinel tokens,
+    #      `<|START_TEXT|>{...}<|END_TEXT|>`, which the client had to strip
+    #      before json.loads().
     #
-    # AZURE_FOUNDRY_ENDPOINT: Azure AI Services / Foundry resource endpoint,
-    # e.g. https://<resource-name>.services.ai.azure.com — no trailing
-    # slash, no `/openai/v1` suffix — that's built by `effective_llm_url`.
-    AZURE_FOUNDRY_ENDPOINT: str = ""
-    AZURE_FOUNDRY_API_KEY: str = ""
-    # Deployment name as created in the Foundry portal — sent as the body
-    # `model` field. Note: some Foundry model cards (this one included)
-    # don't let you choose a custom deployment name; it defaults to the
-    # catalog model ID itself (e.g. "Cohere-command-a-plus-05-2026").
-    AZURE_FOUNDRY_DEPLOYMENT: str = ""
-    # Cohere Command A+: 128K input / 64K output tokens (Foundry catalog
-    # spec). MUST be retuned if the deployed model differs.
-    AZURE_FOUNDRY_MAX_MODEL_LEN: int = 128_000
-    AZURE_FOUNDRY_MAX_TOKENS: int = 4096
-    # Preview-model risk: Command A+ is a Preview SKU (05-2026). Azure
-    # previews carry no SLA and can change wire shape without notice.
-    # Re-verify this contract with a live test call after any Azure/Cohere
-    # announcement before assuming it still holds.
+    # NONE of those carries over by assumption. They were properties of
+    # Foundry's proxy in front of Cohere, and Bedrock's Converse API has its
+    # own response shape — reasoning is a `reasoningContent` content block
+    # rather than a sibling field, and whether the sentinel wrapping survives
+    # the runtime is unknown. Run `ops/validation/bedrock_probe.py` and commit
+    # its report before trusting this path (ADR-0022 "Verification").
+    #
+    # The fourth behaviour DOES carry over, because it is the model's and not
+    # the host's: the "reasoning ate the whole token budget" failure mode
+    # (empty content, partial reasoning, finish_reason "length") is
+    # reproducible on any host and needs the same defensive handling.
+    #
+    # BEDROCK_CHAT_MODEL_ID: either a Bedrock model id or — for Command A+,
+    # which is Marketplace-only — the ARN of the SageMaker-managed endpoint
+    # the Marketplace subscription created. Both are passed as `modelId`.
+    BEDROCK_CHAT_MODEL_ID: str = ""
+    # Cohere Command A+: 128K input / 64K output tokens. MUST be retuned if
+    # the deployed model differs.
+    BEDROCK_CHAT_MAX_MODEL_LEN: int = 128_000
+    BEDROCK_CHAT_MAX_TOKENS: int = 4096
+    # Region for every Bedrock call. Separate from the stack's own region
+    # because the Bedrock catalogue varies by region and the models this
+    # deployment needs may not live where the rest of the services do —
+    # confirming that is step 0 of the migration (ADR-0022). Empty means
+    # "inherit AWS_REGION", resolved in app.services._bedrock.bedrock_region.
+    BEDROCK_REGION: str = ""
+    # Marketplace endpoints do NOT scale to zero — they bill for SageMaker
+    # compute for as long as they exist, which is why the nightly sweeps
+    # delete and recreate them (deploy/aws/scheduler/). A cold recreate takes
+    # minutes, so the first call after a startup sweep can legitimately be
+    # slow; this is the ceiling before that counts as a failure rather than a
+    # cold start.
+    BEDROCK_CHAT_COLD_START_TIMEOUT_S: float = 120.0
+
+    # -------------------------------------------------------------------------
+    # Cohere's own API — used when LLM_BACKEND=cohere (the default since
+    # ADR-0023). Same model as the bedrock path, different host: Command A+
+    # over `POST /v2/chat` with a bearer key, no idle cost and no endpoint to
+    # cycle.
+    #
+    # WIRE SHAPE — [UNVERIFIED], and materially less so than the Bedrock path.
+    # This is Cohere's own published first-party contract rather than a
+    # Marketplace passthrough nobody had exercised, but it has still not been
+    # confirmed by a live call from this codebase. `app/agent/llm_cohere.py`
+    # lists exactly what is assumed; the load-bearing one is that
+    # `response_format: {"type": "json_object"}` is honoured, because every
+    # typed-output guard in orchestrator_validators.py depends on it
+    # (CLAUDE.md hard rule 4).
+    #
+    # The Cohere sentinel wrapping (`<|START_TEXT|>`/`<|END_TEXT|>`) is
+    # stripped on this path exactly as on every other, because it is a
+    # property of the MODEL rather than of the host — see
+    # app/agent/llm_common.clean_model_text.
+    # -------------------------------------------------------------------------
+
+    # Written to Secrets Manager out of band, BEFORE the first terraform
+    # apply: ECS refuses to start a task that references a secret key which
+    # does not exist, and the failure presents as a task that never starts
+    # rather than as an application error (ADR-0023 migration step 5).
+    COHERE_API_KEY: str = ""
+    # Overridable for a proxy or a private deployment. Empty falls back to
+    # the public endpoint inside the adapter, so an operator who blanks it
+    # gets the default rather than a request to "".
+    COHERE_BASE_URL: str = "https://api.cohere.com"
+    COHERE_CHAT_MODEL: str = "command-a-plus-05-2026"
+    # Command A+: 128K input / 64K output. The same two numbers as
+    # BEDROCK_CHAT_MAX_MODEL_LEN / BEDROCK_CHAT_MAX_TOKENS, deliberately not
+    # shared with them — they describe the same model today, but one pair is
+    # free to follow a Marketplace deployment that pins an older build while
+    # the other follows whatever Cohere serves. `cap_output_tokens` reads
+    # these, which is what makes them real controls rather than settings that
+    # only look like ones.
+    COHERE_CHAT_MAX_MODEL_LEN: int = 128_000
+    COHERE_CHAT_MAX_TOKENS: int = 4096
+    # Read timeout for a single generation. There is no cold start to absorb
+    # here — that was a Marketplace-endpoint concern and it does not exist on
+    # this host — so this is sized for a long grounded answer at
+    # COHERE_CHAT_MAX_TOKENS, not for a container coming up.
+    COHERE_CHAT_TIMEOUT_S: float = 120.0
 
     # Anthropic native backend — only used when LLM_BACKEND=anthropic
     ANTHROPIC_API_KEY: str = ""
@@ -851,7 +933,56 @@ class Settings(BaseSettings):
                 "LLM_BACKEND=vllm requires VLLM_URL to point at an "
                 "OpenAI-compatible endpoint you operate. The bundled `vllm` "
                 "service was removed on 2026-07-30, so there is no default "
-                "to fall back to. Set VLLM_URL, or use LLM_BACKEND=azure."
+                "to fall back to. Set VLLM_URL, or use LLM_BACKEND=bedrock."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_retired_azure_config(self) -> Settings:
+        """Fail startup on Azure AI Foundry configuration (ADR-0022).
+
+        Azure was retired on 2026-09-08 and production reaches Cohere through
+        Amazon Bedrock. A deployment that was never repointed carries
+        well-formed settings that address a resource which no longer exists,
+        so without this it starts cleanly and fails at first query with a
+        connection error — the same shape of silent misconfiguration that
+        `services/ingest/ocr_engine.py` was written to prevent after a
+        retired OCR engine value ran Tesseract on every page and said
+        nothing (2026-08-21).
+
+        Startup is the right place: it is the last moment an operator is
+        still watching, and every one of these is a one-line env fix.
+        """
+        if self.LLM_BACKEND == "azure":
+            raise ValueError(
+                "LLM_BACKEND=azure selects Azure AI Foundry, retired "
+                "2026-09-08 (ADR-0022). Set LLM_BACKEND=bedrock and "
+                "BEDROCK_CHAT_MODEL_ID to the Bedrock Marketplace endpoint "
+                "ARN serving Cohere Command A+."
+            )
+        stale = [
+            name
+            for name in (
+                "AZURE_FOUNDRY_ENDPOINT",
+                "AZURE_FOUNDRY_API_KEY",
+                "AZURE_FOUNDRY_DEPLOYMENT",
+                "AZURE_FOUNDRY_EMBED_DEPLOYMENT",
+                "AZURE_FOUNDRY_RERANK_DEPLOYMENT",
+                "AZURE_FOUNDRY_PARSE_DEPLOYMENT",
+                "RERANKER_SCORE_THRESHOLD_FOUNDRY",
+            )
+            if (os.environ.get(name) or "").strip()
+        ]
+        if stale:
+            raise ValueError(
+                f"{', '.join(stale)} is set, but Azure AI Foundry was retired "
+                "on 2026-09-08 (ADR-0022). Unset it. The Bedrock equivalents "
+                "are BEDROCK_REGION, BEDROCK_CHAT_MODEL_ID, "
+                "BEDROCK_EMBED_MODEL_ID, BEDROCK_RERANK_MODEL_ID, "
+                "BEDROCK_PARSE_MODEL_ID and RERANKER_SCORE_THRESHOLD_HOSTED. "
+                "Note that RERANKER_SCORE_THRESHOLD_HOSTED must be "
+                "re-measured against Cohere Rerank 3.5 rather than copied "
+                "from the Foundry value, which was calibrated against v4."
             )
         return self
 
@@ -900,19 +1031,27 @@ class Settings(BaseSettings):
         Raises when LLM_BACKEND=anthropic, because the Anthropic path does
         not use a base URL — it goes through the native SDK.
 
-        For LLM_BACKEND=azure this returns the unified OpenAI v1 API's
-        base path (``{endpoint}/openai/v1``) — empirically confirmed
-        2026-07-30 against a live Cohere Command A+ deployment (this is
-        what Azure's own portal hands you as the connection endpoint for
-        this model, not the ``/models/chat/completions`` Model Inference
-        API path an earlier pass of this code assumed from docs). The
-        caller (`_call_openai_compatible_llm`) appends ``/chat/
-        completions`` with no version suffix — this API surface needs no
-        ``?api-version=`` query param. The deployment name goes in the
-        request body's `model` field, not the URL.
+        Raises for LLM_BACKEND=bedrock too, and for the same reason: boto3
+        resolves the Bedrock endpoint from the region, so there is no URL to
+        hand out. This used to return Foundry's ``{endpoint}/openai/v1``;
+        after ADR-0022 the only backend with a caller-supplied base URL is
+        vllm, and that is still true after ADR-0023: ``cohere`` does have a
+        base URL, but it addresses ``/v2/chat`` rather than an
+        OpenAI-compatible surface, so handing it out here would invite a
+        caller to POST the wrong body to it.
         """
-        if self.LLM_BACKEND == "azure":
-            return f"{self.AZURE_FOUNDRY_ENDPOINT.rstrip('/')}/openai/v1"
+        if self.LLM_BACKEND == "bedrock":
+            raise RuntimeError(
+                "effective_llm_url is not applicable to LLM_BACKEND=bedrock. "
+                "boto3 resolves the Bedrock endpoint from BEDROCK_REGION; "
+                "there is no base URL to configure."
+            )
+        if self.LLM_BACKEND == "cohere":
+            raise RuntimeError(
+                "effective_llm_url is not applicable to LLM_BACKEND=cohere. "
+                "Cohere's v2 API is not OpenAI-compatible; app/agent/"
+                "llm_cohere.py builds its own URL from COHERE_BASE_URL."
+            )
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_URL
         if self.LLM_BACKEND == "anthropic":
@@ -926,12 +1065,17 @@ class Settings(BaseSettings):
     def effective_llm_model(self) -> str:
         """Return the LLM model name based on the active backend.
 
-        For LLM_BACKEND=azure this is the deployment name, sent as the
-        request body's `model` field — the Azure AI Model Inference API
-        (Cohere-on-Foundry) routes by body field, not URL path.
+        For LLM_BACKEND=bedrock this is the Bedrock ``modelId`` — either a
+        catalogue model id or, for a Marketplace deployment such as Command
+        A+, the ARN of the SageMaker-managed endpoint it created. For
+        LLM_BACKEND=cohere it is Cohere's own model name, which is the plain
+        one (``command-a-plus-05-2026``) because there is no endpoint
+        indirection on that host.
         """
-        if self.LLM_BACKEND == "azure":
-            return self.AZURE_FOUNDRY_DEPLOYMENT
+        if self.LLM_BACKEND == "cohere":
+            return self.COHERE_CHAT_MODEL
+        if self.LLM_BACKEND == "bedrock":
+            return self.BEDROCK_CHAT_MODEL_ID
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_MODEL
         if self.LLM_BACKEND == "anthropic":
@@ -964,7 +1108,7 @@ class Settings(BaseSettings):
     # bge-reranker; the live backend is Cohere Rerank v4 over HTTP to
     # Foundry, whose own per-call timeout also defaulted to 8.0 s. An 8 s
     # HTTP timeout under an 8 s wait_for leaves exactly zero room, so the
-    # retry path in _foundry_retry was unreachable: any 429 (Foundry TPM
+    # retry path in the retired _foundry_retry was unreachable: any 429 (TPM
     # quota is shared across every deployment on the resource) meant the
     # wait_for fired, the branch silently fell back to raw Qdrant cosine
     # ordering, and the executor thread kept retrying in the background
@@ -1179,21 +1323,32 @@ class Settings(BaseSettings):
     # 2026-08-15 — audit finding: this threshold is applied in
     # app/agent/tools.py:search_documents to the RAW pre-transform score
     # (see ``needs_sigmoid`` in that function), and it is a NO-OP against
-    # RERANKER_BACKEND=foundry (live default). cross_encoder/qwen3_causal
+    # RERANKER_BACKEND=bedrock (live default). cross_encoder/qwen3_causal
     # emit unbounded real-valued logits (~[-15,+15]) where "0.0" is a
-    # meaningful sign check. _FoundryReranker (Cohere Rerank v4) instead
-    # returns Cohere's own ``relevance_score`` — a calibrated [0,1]
+    # meaningful sign check. _BedrockReranker (Cohere Rerank 3.5) instead
+    # returns Cohere's own relevance score — a calibrated [0,1]
     # probability that is NEVER negative — so ``score >= 0.0`` passes
     # every candidate through regardless of actual relevance. See
-    # RERANKER_SCORE_THRESHOLD_FOUNDRY below for the backend-aware fix.
+    # RERANKER_SCORE_THRESHOLD_HOSTED below for the backend-aware fix.
     RERANKER_SCORE_THRESHOLD: float = 0.0
 
-    # Foundry-backend counterpart to RERANKER_SCORE_THRESHOLD above.
+    # Hosted-backend counterpart to RERANKER_SCORE_THRESHOLD above.
     # Applied instead of RERANKER_SCORE_THRESHOLD whenever
-    # RERANKER_BACKEND=foundry (app.services.reranker.RERANKER_BACKEND),
-    # because Cohere Rerank v4's relevance_score lives in a completely
-    # different scale ([0,1] calibrated probability vs. the cross-encoder
-    # backends' unbounded logit). 0.2 is a "clearly irrelevant" floor per
+    # RERANKER_BACKEND=bedrock (app.services.reranker.RERANKER_BACKEND),
+    # because Cohere's relevance score lives in a completely different scale
+    # ([0,1] calibrated probability vs. the cross-encoder backends' unbounded
+    # logit). Renamed from RERANKER_SCORE_THRESHOLD_FOUNDRY on 2026-09-08
+    # (ADR-0022) because the value is a property of the *model family*, not
+    # of the host it runs on, and naming it after a retired host is how a
+    # setting outlives the thing it was named for.
+    #
+    # ⚠️ 0.2 was measured against Cohere Rerank **v4** on 2026-08-15. Bedrock
+    # serves Rerank **3.5**, whose score distribution is not guaranteed to
+    # match. This value is carried over UNVALIDATED and must be re-measured
+    # on the golden set. It is the only retrieval-quality gate in the system,
+    # so a wrong value here changes the refusal rate with no other signal.
+    #
+    # 0.2 is a "clearly irrelevant" floor per
     # Cohere's documented score semantics — looser than the 0.5-0.6
     # min_relevance gates in the §04i Layer 1 planner path. Read that
     # comparison with care: it described a second, stricter per-sub-query
@@ -1203,7 +1358,7 @@ class Settings(BaseSettings):
     # therefore the ONLY retrieval-quality gate applied today, not a loose
     # first pass backed by a stricter one downstream. Re-tune
     # against golden_queries (scripts/run_eval_120.py) before changing.
-    RERANKER_SCORE_THRESHOLD_FOUNDRY: float = 0.2
+    RERANKER_SCORE_THRESHOLD_HOSTED: float = 0.2
 
     # -------------------------------------------------------------------------
     # Hallucination prevention layer configuration (Section 04i)
@@ -1231,7 +1386,7 @@ class Settings(BaseSettings):
     #
     # The live Layer 1 bar on the document path is now the backend-aware
     # reranker threshold (RERANKER_SCORE_THRESHOLD /
-    # RERANKER_SCORE_THRESHOLD_FOUNDRY above), which is applied where the
+    # RERANKER_SCORE_THRESHOLD_HOSTED above), which is applied where the
     # scores are genuinely calibrated. This value is retained for callers
     # holding real cosine scores and for the sweep harness. Before wiring a
     # new call site, read the scale contract at the point where this gate
@@ -1377,26 +1532,34 @@ class Settings(BaseSettings):
     # surfaces as 400-class errors from vLLM, not silent truncation.
     MAX_CONTEXT_TOKENS: int = 22_000              # A4500 / qwen3-14b-awq (16K model_len)
     MAX_CONTEXT_TOKENS_ANTHROPIC: int = 200_000   # Claude 1M ctx, 200K leaves response headroom
-    # Headroom under AZURE_FOUNDRY_MAX_MODEL_LEN (128K default — Cohere
+    # Headroom under BEDROCK_CHAT_MAX_MODEL_LEN (128K default — Cohere
     # Command A+'s documented input ceiling) for the up-to-64K output +
-    # reasoning_content overhead + system prompt + safety margin. Retune
-    # alongside AZURE_FOUNDRY_MAX_MODEL_LEN if the deployed model differs.
-    MAX_CONTEXT_TOKENS_AZURE: int = 100_000
+    # reasoning overhead + system prompt + safety margin. Retune alongside
+    # BEDROCK_CHAT_MAX_MODEL_LEN if the deployed model differs. Renamed from
+    # MAX_CONTEXT_TOKENS_AZURE on 2026-09-08 (ADR-0022) — the number is a
+    # property of the model, not of the cloud that used to serve it.
+    MAX_CONTEXT_TOKENS_BEDROCK: int = 100_000
 
     @property
     def effective_max_context_tokens(self) -> int:
         """Return the token budget appropriate for the active LLM_BACKEND.
 
-        Anthropic and Azure Foundry get generous budgets matching their
-        much larger context windows; the legacy local vLLM path keeps the
-        22K ceiling sized for an 8K/16K-context deployment. Callers that
-        truncate context should use this property rather than the raw
+        Anthropic, Bedrock and Cohere get generous budgets matching their
+        much larger context windows; the legacy local vLLM path keeps the 22K
+        ceiling sized for an 8K/16K-context deployment. Callers that truncate
+        context should use this property rather than the raw
         MAX_CONTEXT_TOKENS setting.
+
+        ``cohere`` and ``bedrock`` share a value because they share a MODEL:
+        both reach Command A+ and its 128K window, and the budget is a
+        property of that window rather than of the host in front of it. The
+        setting keeps its ADR-0022 name rather than being renamed a second
+        time in a week; the number was never Bedrock's.
         """
         if self.LLM_BACKEND == "anthropic":
             return self.MAX_CONTEXT_TOKENS_ANTHROPIC
-        if self.LLM_BACKEND == "azure":
-            return self.MAX_CONTEXT_TOKENS_AZURE
+        if self.LLM_BACKEND in ("bedrock", "cohere"):
+            return self.MAX_CONTEXT_TOKENS_BEDROCK
         return self.MAX_CONTEXT_TOKENS
 
     # Per-category row caps inside _build_context.

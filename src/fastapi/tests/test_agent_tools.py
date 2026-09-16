@@ -543,21 +543,21 @@ class TestSearchDocuments:
         assert "reranked" in result.data_source
 
     @pytest.mark.asyncio
-    async def test_reranker_foundry_backend_does_not_double_sigmoid(self) -> None:
+    async def test_reranker_hosted_backend_does_not_double_sigmoid(self) -> None:
         """_FoundryReranker (Cohere Rerank v4) returns an ALREADY-calibrated
         [0,1] relevance_score, unlike cross_encoder/qwen3_causal's raw
-        logits. Sigmoiding it a second time compresses every foundry score
+        logits. Sigmoiding it a second time compresses every hosted score
         into ~[0.5, 0.73], silently corrupting the min_relevance gates that
         assume real [0,1] calibration (the planner modules plan_executor.py
         and decomposer.py, both deleted 2026-08-28 as unreachable; the
         invariant this test pins is what keeps the corruption from returning
-        if such a gate is reintroduced) — caught in a live review session. With RERANKER_BACKEND="foundry",
+        if such a gate is reintroduced) — caught in a live review session. With RERANKER_BACKEND="bedrock",
         the stored relevance_score must equal the raw score exactly, not
         sigmoid(raw score)."""
         import numpy as np
 
         fake_point = MagicMock()
-        fake_point.id = "chunk-uuid-foundry-001"
+        fake_point.id = "chunk-uuid-bedrock-001"
         fake_point.score = 0.5
         fake_point.payload = {
             "text": "Indicated resources: 12.5 Mt at 0.45% Cu",
@@ -590,14 +590,14 @@ class TestSearchDocuments:
         ctx = _MockRunContext(deps=deps)
 
         with patch("app.agent.tools.settings") as mock_settings, \
-             patch("app.agent.tools.RERANKER_BACKEND", "foundry"), \
+             patch("app.agent.tools.RERANKER_BACKEND", "bedrock"), \
              patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.TIMEOUT_RERANKER_S = 8.0
             mock_settings.RETRIEVAL_TOP_N = 20
             mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3
             mock_settings.RERANKER_SCORE_THRESHOLD = 0.0
-            mock_settings.RERANKER_SCORE_THRESHOLD_FOUNDRY = 0.2
+            mock_settings.RERANKER_SCORE_THRESHOLD_HOSTED = 0.2
             mock_settings.RERANKER_TOP_K = 5
 
             result: DocumentSearchResult = await search_documents(
@@ -611,13 +611,13 @@ class TestSearchDocuments:
         assert result.chunks[0].relevance_score == pytest.approx(0.95)
 
     @pytest.mark.asyncio
-    async def test_reranker_foundry_threshold_drops_low_relevance_candidates(self) -> None:
+    async def test_reranker_hosted_threshold_drops_low_relevance_candidates(self) -> None:
         """2026-08-15 audit fix: RERANKER_SCORE_THRESHOLD (0.0) was a no-op
-        against the foundry backend because Cohere's relevance_score is a
+        against the hosted backend because Cohere's relevance score is a
         [0,1] probability that is never negative — ``score >= 0.0`` passed
         every candidate through regardless of actual relevance. With
-        RERANKER_BACKEND="foundry", the gate must use
-        RERANKER_SCORE_THRESHOLD_FOUNDRY instead: a clearly-irrelevant
+        RERANKER_BACKEND="bedrock", the gate must use
+        RERANKER_SCORE_THRESHOLD_HOSTED instead: a clearly-irrelevant
         candidate (0.05) must be dropped while a relevant one (0.6) survives.
         """
         import numpy as np
@@ -665,7 +665,7 @@ class TestSearchDocuments:
         ctx = _MockRunContext(deps=deps)
 
         with patch("app.agent.tools.settings") as mock_settings, \
-             patch("app.agent.tools.RERANKER_BACKEND", "foundry"), \
+             patch("app.agent.tools.RERANKER_BACKEND", "bedrock"), \
              patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.TIMEOUT_RERANKER_S = 8.0
@@ -673,7 +673,7 @@ class TestSearchDocuments:
             mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3
             # Sign-only threshold would pass BOTH (0.05 >= 0.0 and 0.6 >= 0.0).
             mock_settings.RERANKER_SCORE_THRESHOLD = 0.0
-            mock_settings.RERANKER_SCORE_THRESHOLD_FOUNDRY = 0.2
+            mock_settings.RERANKER_SCORE_THRESHOLD_HOSTED = 0.2
             mock_settings.RERANKER_TOP_K = 5
 
             result: DocumentSearchResult = await search_documents(
@@ -682,7 +682,7 @@ class TestSearchDocuments:
                 project_id="proj-test-uuid",
             )
 
-        # Only the 0.6-relevance chunk survives the 0.2 foundry floor.
+        # Only the 0.6-relevance chunk survives the 0.2 hosted floor.
         assert result.count == 1
         assert result.chunks[0].chunk_id == "chunk-uuid-relevant"
         assert result.chunks[0].relevance_score == pytest.approx(0.6)
@@ -833,7 +833,7 @@ class TestSearchDocuments:
         constant, with no relation to similarity. Gating those with a
         calibrated 0.5 dropped every chunk, and because `reranker is None`
         is reachable from nothing more exotic than an unset
-        AZURE_FOUNDRY_API_KEY, that turned every document query in the
+        Bedrock model id, that turned every document query in the
         system into "insufficient information".
 
         The contract now matches the `rerank_degraded` branch, which is the

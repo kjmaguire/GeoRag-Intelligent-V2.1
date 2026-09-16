@@ -162,72 +162,79 @@ class _Resp:
 class TestImageWireShapeFallback:
     """Cohere accepts either `images: [...]` or `inputs: [...]` for v4.
 
-    Which one a given Foundry build takes is undocumented, so embed_image
-    tries one and falls back on a schema rejection. These tests pin that
-    behaviour without a live endpoint.
+    Which one a given host takes is undocumented — it was undocumented on
+    Foundry and it is undocumented on Bedrock — so embed_image tries one and
+    falls back on a schema rejection. These tests pin that behaviour without
+    a live endpoint.
+
+    The failure discriminator changed with the transport (ADR-0022): an HTTP
+    400/422 became a botocore ValidationException. The rule it encodes did
+    not: only a *schema* rejection is worth re-shaping for, because anything
+    else means the request was understood and resending different JSON just
+    burns another call.
     """
 
     @pytest.fixture(autouse=True)
     def _reset_shape_cache(self):
-        from app.services.embedding import _FoundryEmbedding
+        from app.services.embedding import _BedrockEmbedding
 
-        original = _FoundryEmbedding._IMAGE_WIRE_SHAPE
-        _FoundryEmbedding._IMAGE_WIRE_SHAPE = None
+        original = _BedrockEmbedding._IMAGE_WIRE_SHAPE
+        _BedrockEmbedding._IMAGE_WIRE_SHAPE = None
         yield
-        _FoundryEmbedding._IMAGE_WIRE_SHAPE = original
+        _BedrockEmbedding._IMAGE_WIRE_SHAPE = original
 
     def _client(self):
-        from app.services.embedding import _FoundryEmbedding
+        from app.services.embedding import _BedrockEmbedding
 
-        return _FoundryEmbedding("https://example.invalid", "key", "embed-v-4-0")
+        return _BedrockEmbedding("cohere.embed-v4:0")
+
+    @staticmethod
+    def _client_error(code: str):
+        from botocore.exceptions import ClientError
+
+        return ClientError({"Error": {"Code": code, "Message": "no"}}, "InvokeModel")
 
     def test_falls_back_to_the_alternate_shape_on_a_schema_rejection(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import httpx
-
         from app.services import embedding as emb
 
         seen: list[str] = []
         vector = [0.5] * 1024
 
-        def fake_retry(do, label: str = ""):
-            body = do.__defaults__[0]()  # the bound _b=build_body default
+        def fake_invoke(_self, body):
             shape = "images" if "images" in body else "inputs"
             seen.append(shape)
             if shape == "images":
-                response = httpx.Response(400, json={"message": "unsupported field"})
-                raise httpx.HTTPStatusError("400", request=None, response=response)
-            return _Resp({"embeddings": {"float": [vector]}})
+                raise self._client_error("ValidationException")
+            return {"embeddings": {"float": [vector]}}
 
-        monkeypatch.setattr(
-            "app.services._foundry_retry.with_foundry_retry", fake_retry,
-        )
+        monkeypatch.setattr(emb._BedrockEmbedding, "_invoke", fake_invoke)
 
         got = self._client().embed_image(b"\x89PNG fake")
 
         assert seen == ["images", "inputs"], "should try both shapes, in order"
         assert len(got) == 1024
-        assert emb._FoundryEmbedding._IMAGE_WIRE_SHAPE == "inputs"
+        assert emb._BedrockEmbedding._IMAGE_WIRE_SHAPE == "inputs"
 
     def test_a_non_schema_error_is_not_retried_with_different_json(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """429/5xx mean the request was understood — reshaping just burns a call."""
-        import httpx
+        """Throttling/5xx mean the request was understood — reshaping just
+        burns a call. botocore has already retried by the time this raises."""
+        from botocore.exceptions import ClientError
+
+        from app.services import embedding as emb
 
         calls: list[int] = []
 
-        def fake_retry(do, label: str = ""):
+        def fake_invoke(_self, _body):
             calls.append(1)
-            response = httpx.Response(429, json={"message": "throttled"})
-            raise httpx.HTTPStatusError("429", request=None, response=response)
+            raise self._client_error("ThrottlingException")
 
-        monkeypatch.setattr(
-            "app.services._foundry_retry.with_foundry_retry", fake_retry,
-        )
+        monkeypatch.setattr(emb._BedrockEmbedding, "_invoke", fake_invoke)
 
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(ClientError):
             self._client().embed_image(b"\x89PNG fake")
 
         assert len(calls) == 1
@@ -235,15 +242,12 @@ class TestImageWireShapeFallback:
     def test_both_shapes_rejected_raises_rather_than_returning_a_bad_vector(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import httpx
+        from app.services import embedding as emb
 
-        def fake_retry(do, label: str = ""):
-            response = httpx.Response(400, json={"message": "nope"})
-            raise httpx.HTTPStatusError("400", request=None, response=response)
+        def fake_invoke(_self, _body):
+            raise self._client_error("ValidationException")
 
-        monkeypatch.setattr(
-            "app.services._foundry_retry.with_foundry_retry", fake_retry,
-        )
+        monkeypatch.setattr(emb._BedrockEmbedding, "_invoke", fake_invoke)
 
         with pytest.raises(RuntimeError, match="both documented image wire shapes"):
             self._client().embed_image(b"\x89PNG fake")

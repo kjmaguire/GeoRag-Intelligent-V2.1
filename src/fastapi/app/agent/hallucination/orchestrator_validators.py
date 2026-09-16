@@ -917,7 +917,35 @@ async def verify_entities(
     # puts on this pattern, so a depth interval like "20-30 m" is not read
     # as a hole name.
     if _HOLE_CONTEXT_RE.search(clean):
-        candidates.extend(_NUMERIC_HOLE_ID_RE.findall(clean))
+        # …but NOT the numeric tail of an alphanumeric ID already matched
+        # above. `\b` sits between the "-" and the "22" of "PLS-22-08", so
+        # NUMERIC_HOLE_ID_RE extracts "22-08" from it as though it were a
+        # second, separate hole. That hole is not in silver.collars, and the
+        # warning it produced starts with "Layer 4: Drill-hole ID" — the ONE
+        # prefix the severity classifier treats as critical on its own. So a
+        # perfectly grounded answer naming a real hole in the ordinary
+        # PREFIX-YY-NN format got its confidence floored and should_retry
+        # set, for a hole nobody mentioned.
+        #
+        # It hid because every fixture in tests/test_layer_golden_outputs.py
+        # passed pg_pool=None, so the lookup never ran there; the file even
+        # carried a test asserting the resulting silence. Giving those
+        # fixtures a working pool is what surfaced it.
+        #
+        # Containment, not suffix-matching: a numeric candidate is dropped
+        # whenever it appears inside any alphanumeric ID from the same
+        # answer. That is deliberately conservative — an answer naming both
+        # "PLS-22-08" and a genuinely separate hole "22-08" loses the check
+        # on the latter. Missing one check is recoverable; flooring
+        # confidence on correct answers is how a guard gets ignored, and
+        # then it is not a guard (see this file's own header on the
+        # false-positive cost).
+        _alpha = [hid.upper() for hid in candidates]
+        candidates.extend(
+            hid
+            for hid in _NUMERIC_HOLE_ID_RE.findall(clean)
+            if not any(hid.upper() in alpha for alpha in _alpha)
+        )
 
     hole_ids = [
         hid.upper() for hid in dict.fromkeys(candidates)
@@ -974,8 +1002,42 @@ async def verify_entities(
                         f"for this project"
                     )
         except Exception:
-            logger.debug(
-                "orchestrator_validators: hole-ID entity resolution failed (fail-open)"
+            # FAIL CLOSED. This used to swallow at DEBUG and return as though
+            # every hole ID had resolved, which quietly undid the 2026-08-15
+            # fix one level above: `validate_node` wraps
+            # run_post_assembly_validation in a fail-closed handler, but this
+            # except sits BELOW that call, so nothing ever reached it.
+            #
+            # The cost of the old behaviour was specific. This is the ONE
+            # warning the severity classifier treats as critical on its own
+            # (see the header comment on this section, and the
+            # `startswith("Layer 4: Drill-hole ID")` bucket in
+            # run_post_assembly_validation) — so a fabricated hole ID that
+            # coincided with a PgBouncer blip or a PostGIS timeout shipped at
+            # whatever confidence retrieval produced, unflagged.
+            #
+            # The warning below carries that same critical prefix, which is
+            # what escalates it, but it does NOT claim any particular hole is
+            # missing — only that fabrication could not be ruled out. That
+            # distinction matters: the answer may be perfectly sound, and the
+            # banner the caller sees should say "unverified", not "wrong".
+            #
+            # Deliberately still inside the try, so the commodity and
+            # formation checks below still run. Re-raising would hand the
+            # whole response to the outer handler and lose them for an error
+            # that only invalidates this one check.
+            logger.warning(
+                "orchestrator_validators: hole-ID entity resolution failed for "
+                "%d hole ID(s) — failing CLOSED, escalating as unverified",
+                len(hole_ids),
+                exc_info=True,
+            )
+            warnings.append(
+                f"Layer 4: Drill-hole ID resolution could not complete for "
+                f"{len(hole_ids)} hole ID(s) mentioned in this answer — "
+                f"silver.collars was unreachable, so fabricated hole IDs "
+                f"could not be ruled out. This answer is UNVERIFIED on that "
+                f"check, not confirmed clean."
             )
 
     # --- Commodity codes: must appear in tool results ---

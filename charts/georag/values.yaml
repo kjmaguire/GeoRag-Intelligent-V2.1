@@ -315,8 +315,8 @@ networkPolicy:
     namespace: kube-system
     podSelector:
       k8s-app: kube-dns
-  # Internet on 443 for the components that call Azure AI Foundry, Azure
-  # Blob or an SMTP relay (fastapi, laravel-octane, laravel-horizon, the
+  # Internet on 443 for the components that call Cohere's API, S3
+  # or an SMTP relay (fastapi, laravel-octane, laravel-horizon, the
   # hatchet workers). Private ranges are carved out so the rule cannot
   # reach other in-cluster or on-prem services.
   externalEgress:

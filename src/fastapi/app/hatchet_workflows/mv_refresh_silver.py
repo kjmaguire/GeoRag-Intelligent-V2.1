@@ -12,9 +12,10 @@ SECURITY DEFINER function nightly. Same pattern as
 `flow_jwt_key_reaper` (Phase 7 Step 2) — AI pool, cron-triggered,
 asyncpg + direct postgres connection.
 
-Schedule: `0 3 * * *` UTC — between audit_ledger_verify (02:00)
-and flow_jwt_key_reaper (04:00), so the three nightly maintenance
-workflows fan out across the small hours.
+Schedule: `0 18 * * *` UTC — between audit_ledger_verify (17:00)
+and flow_jwt_key_reaper (19:00), so the three maintenance workflows
+still fan out rather than landing on top of each other. No longer the
+small hours: the window moved to 08:30-17:00 Pacific on 2026-09-16.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ class MvRefreshSilverOutput(BaseModel):
 
 mv_refresh_silver = hatchet.workflow(
     name="mv_refresh_silver",
-    on_crons=["0 3 * * *"],
+    on_crons=["0 18 * * *"],
     input_validator=MvRefreshSilverInput,
 )
 

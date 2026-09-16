@@ -65,7 +65,7 @@ log = logging.getLogger("georag.hatchet.answer_quality_watch")
 
 #: Distinctive prefix for the one line an alert rule should match. Log
 #: Analytics has no metric to threshold on, so the log line IS the signal
-#: -- see deploy/azure/alerts/create-alerts.sh.
+#: -- see the metric filter in deploy/aws/terraform/alerts.tf.
 ALERT_MARKER = "ANSWER_QUALITY_REGRESSION"
 
 #: Below this many runs in EITHER window, no comparison is made. Chosen
@@ -273,19 +273,25 @@ def parse_windows(rows: list[dict[str, Any]]) -> tuple[QualityWindow, QualityWin
 
 answer_quality_watch = hatchet.workflow(
     name="answer_quality_watch",
-    # 14:30 UTC, and the time is load-bearing.
+    # 21:30 UTC, and the time is load-bearing.
     #
-    # shutdown-sweep.sh scales hatchet-worker-cc to --min-replicas 0 and
-    # stops the Flexible Server; startup-sweep.sh reverses it. The jobs
-    # fire at 0 6,7 and 0 13,14 UTC and each drops the hour that is not
-    # the right Pacific local time, so BOTH candidate hours are closed as
-    # far as a schedule can know: nothing between 06:00 and 14:00 UTC
-    # runs at all, because there is no worker to run it.
+    # shutdown-sweep.sh scales every ECS service to --desired-count 0 and
+    # stops the RDS instance; startup-sweep.sh reverses it. There is no
+    # worker during the window, so a cron inside it does not run late — it
+    # does not run. Since 2026-09-16 that window is 08:30-17:00 Pacific,
+    # eight and a half hours a day to fit the AWS credit, which closes
+    # everything from 00:00 to 16:30 UTC once both sides of a DST boundary
+    # are treated as shut. The half hour from 16:30 to 17:00 is not open
+    # either: it is the startup sweep's head start, which has to bring RDS
+    # and tier 1 up before a cron tick means anything.
     #
-    # This was written at 13:15 — inside the window every winter — which
-    # is exactly the mistake tests/test_crons_avoid_the_shutdown_window.py
-    # now catches.
-    on_crons=["30 14 * * *"],
+    # The description above used to name Container Apps and the Flexible
+    # Server; that was the Azure mechanism, retired by ADR-0022.
+    #
+    # This was written at 13:15, then moved to 14:30, and both ended up
+    # inside a later window — exactly the mistake
+    # tests/test_crons_avoid_the_shutdown_window.py now catches.
+    on_crons=["30 21 * * *"],
     input_validator=AnswerQualityWatchInput,
 )
 

@@ -19,7 +19,6 @@
 #   §29 QP Credentials    /admin/qp-credentials
 #       Workspace Members /admin/workspace-members
 #       Workspace Settings /admin/workspace-settings/{ws_id}
-#       Activepieces Chan /admin/activepieces-channels
 #       Audit Explorer    /admin/audit-explorer
 #       Saved Maps        /admin/saved-maps
 #       Alerts Inbox      /admin/alerts-inbox  (NEW Phase H4)
@@ -95,7 +94,6 @@ check "GET  /api/v1/admin/reports/types"               "curl_code '$FASTAPI_URL/
 check "GET  /api/v1/admin/reports/builds"              "curl_code '$FASTAPI_URL/api/v1/admin/reports/builds?limit=10'"
 check "GET  /api/v1/admin/qp-credentials"              "curl_code '$FASTAPI_URL/api/v1/admin/qp-credentials'"
 check "GET  /api/v1/admin/workspace-members"           "curl_code '$FASTAPI_URL/api/v1/admin/workspace-members'"
-check "GET  /api/v1/admin/activepieces-channels"       "curl_code '$FASTAPI_URL/api/v1/admin/activepieces-channels'"
 check "GET  /api/v1/admin/saved-maps"                  "curl_code '$FASTAPI_URL/api/v1/admin/saved-maps'"
 check "GET  /api/v1/admin/alerts-inbox"                "curl_code '$FASTAPI_URL/api/v1/admin/alerts-inbox?limit=10'"
 check "GET  /api/v1/admin/audit-explorer/search"       "curl_code '$FASTAPI_URL/api/v1/admin/audit-explorer/search?limit=10'"

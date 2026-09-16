@@ -1,0 +1,57 @@
+# Terraform working files — none of this belongs in git.
+#
+# Added 2026-09-15. Before this file existed the repository ignored nothing
+# terraform-related at all (the root .gitignore has no tfstate or tfvars rule),
+# which made two leaks a single `git add -A` away on the day of the cutover:
+#
+#   * State. `terraform apply` writes every value it touches into state in
+#     PLAINTEXT, including the RDS master password and anything read back out
+#     of Secrets Manager. That is why Step 3 has the operator write the secret
+#     values by hand and why Terraform deliberately creates `georag/app` empty
+#     (deploy/aws/README.md) — committing state would undo that whole design.
+#   * tfvars. The six variables with no default are supplied here, and a file
+#     an operator fills in under time pressure is exactly where a password
+#     gets pasted by mistake.
+#
+# This is not hypothetical in this repository: a live Redis password was
+# committed in scripts/phase0_acceptance.sh and is still in git history.
+
+# State, and its backups. Plaintext secrets.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Variable files. Supply the six no-default variables here; never commit them.
+# (.tfvars.example stays tracked — see the negation below.)
+*.tfvars
+*.tfvars.json
+
+# Backend partial config. The bucket name is not itself a secret, but this file
+# sits exactly where someone would paste something that is.
+backend.hcl
+
+# Saved plans. A plan file embeds the same values state does.
+*.tfplan
+plan.out
+
+# Provider plugins, modules and lock metadata for the local working dir.
+.terraform/
+.terraform.tfstate.lock.info
+
+# Crash logs can contain variable values.
+crash.log
+crash.*.log
+
+# Templates are meant to be shared — they carry key names, never values.
+!*.tfvars.example
+!backend.hcl.example
+
+# The dependency lock file SHOULD be committed — it pins provider versions and
+# their checksums so every apply resolves identically. It is not here yet
+# because a lock generated from a single-platform mirror records one hash, and
+# `init` then fails for anyone on a different OS/arch. Generate a real one on
+# the first init and commit it, covering every platform the team runs:
+#
+#   terraform providers lock \
+#     -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64
+!.terraform.lock.hcl

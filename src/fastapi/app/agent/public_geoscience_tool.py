@@ -12,7 +12,7 @@
 
 Where the data comes from
 -------------------------
-``public_geo.*``, kept fresh by the ``public_geo_sync`` workflow (03:30 UTC
+``public_geo.*``, kept fresh by the ``public_geo_sync`` workflow (18:30 UTC
 Sundays), which pulls each survey's live ArcGIS service and upserts it. This
 tool reads that mirror rather than calling the surveys itself, for two
 reasons:

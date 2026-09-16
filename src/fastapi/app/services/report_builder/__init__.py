@@ -7,7 +7,7 @@ signed, compliance-checked report bundle. Twelve nodes per §15.1:
     verify_evidence_budget → generate_section_drafts →
     validate_claims → attach_citations → generate_maps_charts →
     build_appendix → compliance_check → geologist_approval →
-    export_package → activepieces_delivery
+    export_package → delivery_dispatch
 
 This module currently exposes:
 - `ReportBuilderState` — Pydantic model carrying graph state between
@@ -22,10 +22,10 @@ work routed through the workflow layer.
 """
 from app.services.report_builder.graph import build_report_builder_graph
 from app.services.report_builder.nodes import (
-    activepieces_delivery,
     attach_citations,
     build_appendix,
     compliance_check,
+    delivery_dispatch,
     export_package,
     gather_evidence,
     generate_maps_charts,
@@ -62,6 +62,6 @@ __all__ = [
     "compliance_check",
     "geologist_approval",
     "export_package",
-    "activepieces_delivery",
+    "delivery_dispatch",
     "build_report_builder_graph",
 ]

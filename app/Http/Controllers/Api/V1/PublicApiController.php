@@ -24,7 +24,7 @@ use Illuminate\Support\Facades\Http;
  *   /api/v1/interpretations/{project_id} — wraps the existing internal proxy
  *   /api/v1/audit/{workspace_id}   — audit ledger excerpt (regulator gate)
  *   /api/v1/usage/{workspace_id}   — usage events + cost rollup
- *   /api/v1/webhooks               — registered outbound webhooks
+ *   /api/v1/webhooks               — registered webhook flows (admin only)
  *
  * Each endpoint reads from the existing tables — no new business logic.
  * Auth via Sanctum (existing global group).
@@ -255,7 +255,15 @@ class PublicApiController extends Controller
             'workspace_id' => $workspaceId,
             'items' => $rows,
             'count' => count($rows),
-            'note' => 'Hash-chain proof available at /api/v1/audit/{workspace_id}/chain-proof (separate endpoint)',
+            // Corrected 2026-09-15: this advertised
+            // /api/v1/audit/{workspace_id}/chain-proof, a route that has
+            // never been registered — a regulator following the note got a
+            // 404. The hash chain IS verified, just not over HTTP: the
+            // audit_ledger_verify Hatchet workflow runs audit.run_verification
+            // nightly at 02:00 UTC and records each pass in
+            // audit.audit_ledger_verification_runs. Name that instead of a
+            // URL that does not resolve.
+            'note' => 'Hash-chain verification runs nightly (audit_ledger_verify, 02:00 UTC); results are recorded in audit.audit_ledger_verification_runs. No HTTP proof endpoint is exposed.',
         ]);
     }
 
@@ -305,12 +313,35 @@ class PublicApiController extends Controller
 
     public function webhooks(Request $request): JsonResponse
     {
-        // Registered outbound webhooks from workflow.flow_registry
+        // Admin gate. workflow.flow_registry is platform configuration, not
+        // tenant data — database/raw/phase0/98-rls-tenant-isolation-block3.sql
+        // exempts it from tenant isolation by name ("platform credentials"),
+        // so there is no workspace_id to scope on and the per-workspace gate
+        // used by ::audit()/::usage() cannot apply here. The same table backs
+        // /admin/integrations, so match that surface: operators only.
+        $user = $request->user();
+        if ($user === null || ! $user->is_admin) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+
+        // Webhook-kind flows from workflow.flow_registry.
+        //
+        // Fixed 2026-09-15: this selected flow_type, target_url,
+        // last_attempted_at and last_status and filtered on
+        // flow_type = 'outbound_webhook'. None of those columns has ever
+        // existed — the table is flow_name/kind/description/
+        // hatchet_workflow_*/pydantic_input_attr/flag_name/enabled/
+        // created_at/updated_at (phase4/20-flow-registry-table.sql, plus
+        // phase5/20's jwt_secret_* which must never be returned here), so
+        // every call returned Postgres 42703 undefined_column. There is no
+        // outbound-webhook concept either: flow_registry_kind_check admits
+        // only scheduled-import, inbound-webhook, placeholder and
+        // agent-trigger. Inbound is what the registry actually holds.
         $rows = DB::select(
-            "SELECT flow_name, flow_type, target_url,
-                    enabled, last_attempted_at, last_status, created_at
+            "SELECT flow_name, kind, description, flag_name,
+                    enabled, created_at, updated_at
                FROM workflow.flow_registry
-              WHERE flow_type = 'outbound_webhook'
+              WHERE kind = 'inbound-webhook'
               ORDER BY flow_name",
         );
 
@@ -331,7 +362,9 @@ class PublicApiController extends Controller
                 ['name' => 'interpretations', 'sample' => '/api/v1/interpretations/{project_id}'],
                 ['name' => 'audit',           'sample' => '/api/v1/audit/{workspace_id}'],
                 ['name' => 'usage',           'sample' => '/api/v1/usage/{workspace_id}?days=30'],
-                ['name' => 'webhooks',        'sample' => '/api/v1/webhooks'],
+                // admin_only so a developer browsing the index knows why a
+                // 404 comes back rather than assuming the route is missing.
+                ['name' => 'webhooks',        'sample' => '/api/v1/webhooks', 'admin_only' => true],
             ],
         ]);
     }
@@ -341,7 +374,16 @@ class PublicApiController extends Controller
     {
         $path = base_path('docs/api/openapi.json');
         if (! file_exists($path)) {
-            return response()->json(['error' => 'openapi.json not present — run scripts/generate_openapi.sh'], 404);
+            // Corrected 2026-09-15: named scripts/generate_openapi.sh, which
+            // does not exist and never has. The snapshot is produced by
+            // hitting GET /openapi.json on the FastAPI container and saving
+            // the body here (docs/handover/API_DOCUMENTATION.md:662) — note
+            // that production sets OPENAPI_DOCS_PUBLIC=False, so that route
+            // has to be mounted for the duration.
+            return response()->json([
+                'error' => 'openapi.json not present — regenerate it from GET /openapi.json '
+                    .'on the FastAPI container into docs/api/openapi.json',
+            ], 404);
         }
         $body = file_get_contents($path);
 

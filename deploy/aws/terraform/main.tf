@@ -1,0 +1,425 @@
+# GeoRAG on AWS — network, cluster, registry (ADR-0022).
+#
+# Unlike the Azure deployment, this is written down. There was no Bicep,
+# Terraform or ARM template for the Container Apps at all: ~55 environment
+# variables per app were set by hand and drifted freely from
+# `.env.production.example`, and the Azure README recorded that as a known
+# gap without ever closing it (ADR-0022, Consequences). Starting from a
+# blank cloud is the one chance to not repeat that, so every resource
+# below exists in code or does not exist.
+#
+# WHAT THIS IS NOT. Two tasks behind an ALB across two AZs is not high
+# availability. Only the two ALB-reachable services run more than one
+# task, RDS is Single-AZ, Qdrant and Redis are single tasks holding EFS
+# mounts, and the whole platform is stopped nightly on purpose. The second
+# AZ is here because an ALB requires two subnets, not because anything
+# fails over into it. Read that before sizing anything up.
+
+terraform {
+  required_version = ">= 1.10" # backend.tf uses use_lockfile (S3 native locking)
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.region
+  default_tags {
+    tags = merge({
+      Project   = "georag"
+      ManagedBy = "terraform"
+    }, var.tags)
+  }
+}
+
+locals {
+  name           = var.name_prefix
+  bedrock_region = var.bedrock_region != "" ? var.bedrock_region : var.region
+
+  # Every service and its size. Ten of them; all run on Fargate in the
+  # private subnets and all get a Cloud Map DNS name.
+  #
+  # There is deliberately no `public` flag here. An earlier draft had one
+  # and nothing read it — worse, it said laravel-reverb was not public
+  # while the listener rule in services.tf routes /app/* straight to it.
+  # What is reachable from outside is decided by ONE thing, the ALB target
+  # group attachments in services.tf, and a second declaration of the same
+  # fact is a place for the two to disagree.
+  services = {
+    laravel-octane  = { cpu = 1024, memory = 2048, desired = 2 }
+    laravel-horizon = { cpu = 1024, memory = 2048, desired = 1 }
+    # Two tasks, and it is REVERB_SCALING_ENABLED that makes that legal
+    # rather than the other way round. Cloud Map hands a publisher one
+    # task at random out of a MULTIVALUE record, so without the Redis
+    # pub/sub backplane roughly half of every query's frames would be
+    # published to a task holding none of that query's subscribers and
+    # would simply vanish. See reverb_server_environment in config.tf.
+    #
+    # The second task exists for the same reason Octane's does: at desired
+    # 1 every deploy and every task replacement drops every open
+    # WebSocket, which on this platform means every in-flight answer
+    # stream. Note the dependency it adds — Reverb now needs Redis to fan
+    # out, where before it needed nothing.
+    laravel-reverb = { cpu = 512, memory = 1024, desired = 2 }
+    fastapi        = { cpu = 2048, memory = 4096, desired = 1 }
+    hatchet        = { cpu = 1024, memory = 2048, desired = 1 }
+    # 4 vCPU / 8 GiB, desired 1. Several workflows are max_runs=1
+    # singletons and Ch 07 records maxReplicas 1 as a still-open finding,
+    # not a free knob. Do not raise this without reading it.
+    hatchet-worker = { cpu = 4096, memory = 8192, desired = 1 }
+    qdrant         = { cpu = 1024, memory = 4096, desired = 1 }
+    redis          = { cpu = 512, memory = 1024, desired = 1 }
+    martin         = { cpu = 512, memory = 1024, desired = 1 }
+    # SPLADE++ — the one model with no managed equivalent anywhere,
+    # including on Cohere (ADR-0022 decision 4). ~440 MB, CPU only. Without
+    # it the sparse leg of hybrid retrieval does not exist.
+    sparse = { cpu = 512, memory = 2048, desired = 1 }
+  }
+}
+
+locals {
+  # The services that must never go to zero during a deploy. Both run desired
+  # 2 for exactly that reason (see the services map above); this is the half
+  # that makes the second task actually do its job. Keep the two lists in step
+  # — a service at desired 1 named here cannot satisfy a 50% floor.
+  zero_downtime_services = toset(["laravel-octane", "laravel-reverb"])
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+
+resource "aws_vpc" "this" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags                 = { Name = local.name }
+}
+
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = local.name }
+}
+
+resource "aws_subnet" "public" {
+  count                   = var.az_count
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+  tags                    = { Name = "${local.name}-public-${count.index}" }
+}
+
+resource "aws_subnet" "private" {
+  count             = var.az_count
+  vpc_id            = aws_vpc.this.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 100)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags              = { Name = "${local.name}-private-${count.index}" }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.this.id
+  }
+  tags = { Name = "${local.name}-public" }
+}
+
+resource "aws_route_table_association" "public" {
+  count          = var.az_count
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# One NAT gateway, not one per AZ. Tasks need egress for ECR pulls and
+# Bedrock; a second NAT would double a fixed monthly cost to protect
+# against an AZ failure that nothing else in this deployment survives
+# anyway. Revisit together with RDS Multi-AZ, not before.
+resource "aws_eip" "nat" {
+  count  = local.on
+  domain = "vpc"
+  tags   = { Name = "${local.name}-nat" }
+}
+
+resource "aws_nat_gateway" "this" {
+  count         = local.on
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
+  depends_on    = [aws_internet_gateway.this]
+  tags          = { Name = local.name }
+}
+
+# The route table itself is NOT gated, and the default route is no longer
+# inline in it. Two things depend on the table surviving a power cycle: the
+# S3 gateway endpoint below attaches to it, and the private subnets
+# associate with it. Only the hop through the NAT is gated, so powering off
+# leaves the private subnets with no egress — which is correct, there is
+# nothing running in them to need any.
+#
+# Inline `route` blocks and `aws_route` resources cannot both manage the
+# same table; Terraform fights itself if they do. Hence the lift.
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${local.name}-private" }
+}
+
+resource "aws_route" "private_nat" {
+  count                  = local.on
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.this[0].id
+}
+
+resource "aws_route_table_association" "private" {
+  count          = var.az_count
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+# S3 goes over a gateway endpoint rather than the NAT. Bronze traffic is
+# the largest data flow in the system — every uploaded PDF, every page
+# render — and NAT charges per gigabyte processed. The endpoint is free.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.this.id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.private.id]
+  tags              = { Name = "${local.name}-s3" }
+}
+
+# ---------------------------------------------------------------------------
+# Security groups
+# ---------------------------------------------------------------------------
+
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  count = local.cf
+  name  = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+resource "aws_security_group" "alb" {
+  name        = "${local.name}-alb"
+  description = "Public ingress to laravel-octane and laravel-reverb"
+  vpc_id      = aws_vpc.this.id
+
+  # edge = "alb": the load balancer IS the public edge and terminates TLS.
+  dynamic "ingress" {
+    for_each = local.alb_edge == 1 ? [1] : []
+    content {
+      description      = "HTTPS from the internet"
+      from_port        = 443
+      to_port          = 443
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = local.alb_edge == 1 ? [1] : []
+    content {
+      description      = "HTTP, redirected to HTTPS by the listener"
+      from_port        = 80
+      to_port          = 80
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+
+  # edge = "cloudfront": the listener is plain HTTP, so it must NOT be open to
+  # the internet — that would serve the whole application unencrypted to
+  # anyone who resolves the load balancer's hostname, with the CloudFront
+  # certificate providing a false sense of having TLS at all.
+  #
+  # The managed prefix list is every CloudFront edge address, maintained by
+  # AWS. It is narrow enough to stop direct access and NOT narrow enough to
+  # identify this distribution: see `cloudfront_origin_secret` in edge.tf for
+  # the half this cannot do.
+  dynamic "ingress" {
+    for_each = local.cf == 1 ? [1] : []
+    content {
+      description     = "HTTP from CloudFront edges only"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront[0].id]
+    }
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "tasks" {
+  name        = "${local.name}-tasks"
+  description = "ECS tasks. Internal traffic is service-to-service by SG."
+  vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description     = "From the ALB"
+    from_port       = 0
+    to_port         = 65535
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  ingress {
+    description = "Service to service inside the VPC"
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    self        = true
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "database" {
+  name        = "${local.name}-database"
+  description = "RDS and EFS. Reachable only from tasks."
+  vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description     = "Postgres from tasks"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.tasks.id]
+  }
+
+  ingress {
+    description     = "NFS from tasks (EFS for Qdrant and Redis)"
+    from_port       = 2049
+    to_port         = 2049
+    protocol        = "tcp"
+    security_groups = [aws_security_group.tasks.id]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Cluster, discovery, registry
+# ---------------------------------------------------------------------------
+
+# Both providers are attached, always, regardless of which one the services
+# are currently asked to use. Attaching a provider costs nothing; NOT having
+# it attached is what makes `-var fargate_capacity=on_demand` fail at the
+# worst possible moment, which is the demo you switched off Spot for.
+resource "aws_ecs_cluster_capacity_providers" "this" {
+  cluster_name       = aws_ecs_cluster.this.name
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  # A precondition rather than a `check` block, deliberately: `check` only
+  # emits a warning and lets the apply proceed. A name in on_demand_services
+  # that matches no service leaves the operator believing a tier is protected
+  # from Spot interruption when it is not — a belief that gets tested in front
+  # of whoever the demo was for. Fail the plan instead.
+  lifecycle {
+    precondition {
+      condition = length(local.unknown_on_demand) == 0
+      error_message = format(
+        "on_demand_services names no such service: %s. Valid names: %s.",
+        join(", ", local.unknown_on_demand),
+        join(", ", sort(keys(local.services))),
+      )
+    }
+  }
+}
+
+resource "aws_ecs_cluster" "this" {
+  name = local.name
+
+  setting {
+    # WAS "enhanced", justified by a comment claiming it was "the price of the
+    # alarms in alerts.tf having anything to read". That claim was false. Every
+    # alarm in alerts.tf reads AWS/ApplicationELB (2), AWS/RDS (2), AWS/Bedrock
+    # (3) or the custom GeoRAG/Markers namespace (8). Not one reads
+    # ECS/ContainerInsights, so the enhanced tier was collecting a paid,
+    # per-observation metric stream with no consumer anywhere in the repository.
+    #
+    # WHAT IS NOT LOST BY TURNING IT OFF. Service-level CPUUtilization and
+    # MemoryUtilization are published to the AWS/ECS namespace by ECS itself,
+    # free, with or without Container Insights. What the paid tiers add is
+    # per-TASK and per-CONTAINER granularity and the curated dashboards —
+    # useful while sizing a new deployment, and nothing here depends on them.
+    #
+    # Turn it back on deliberately, for a sizing exercise, and turn it off
+    # again afterwards. It is a variable so that is one flag rather than an
+    # edit. See var.container_insights for the observability gap this leaves
+    # open — it is real, and it was open while the enhanced tier was paying
+    # for metrics nobody alarmed on.
+    name  = "containerInsights"
+    value = var.container_insights
+  }
+}
+
+resource "aws_service_discovery_private_dns_namespace" "this" {
+  name        = "${local.name}.internal"
+  description = "Service-to-service names, replacing Container Apps' internal DNS"
+  vpc         = aws_vpc.this.id
+}
+
+resource "aws_service_discovery_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+
+  name = each.key
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.this.id
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+    routing_policy = "MULTIVALUE"
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
+resource "aws_ecr_repository" "this" {
+  for_each = toset(["laravel", "fastapi", "martin"])
+
+  name                 = "${local.name}/${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "this" {
+  for_each   = aws_ecr_repository.this
+  repository = each.value.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep the last 30 images; CD tags by short SHA"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 30
+      }
+      action = { type = "expire" }
+    }]
+  })
+}

@@ -46,16 +46,28 @@ return [
             'report' => false,
         ],
 
+        // STORAGE_BACKEND mirrors georag_object_storage's Python-side seam
+        // (factory.py). It had two values until 2026-09-08; `azure_blob` went
+        // with the cloud (ADR-0022) and `s3_compatible` is all that remains,
+        // covering SeaweedFS and MinIO in dev and on-prem and real S3 in
+        // production. The variable is kept — both layers still read it, and a
+        // deployment that still says `azure_blob` gets a loud failure from
+        // the Python factory rather than a silent fallback.
         's3' => [
-            // STORAGE_BACKEND mirrors georag_object_storage's Python-side seam
-            // (factory.py): "s3_compatible" (SeaweedFS/MinIO/AWS, default) or
-            // "azure_blob". Same env var, same two values, both layers switch
-            // together.
-            'driver' => env('STORAGE_BACKEND') === 'azure_blob' ? 'azure' : 's3',
+            'driver' => 's3',
+            // Null in production: the ECS task role supplies credentials and
+            // the AWS SDK's default provider chain resolves them. Set only in
+            // compose, against SeaweedFS.
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
-            'bucket' => env('AWS_BUCKET'),
+            // AWS_BUCKET first, because compose sets it; AWS_BUCKET_BRONZE
+            // second, because the ECS task definitions set that one and this
+            // disk is what StorageService::bronze() writes every upload
+            // through. With only the first name honoured this bucket
+            // resolved to NULL on AWS — and with 'throw' => false below, a
+            // failed put() returns false rather than raising.
+            'bucket' => env('AWS_BUCKET', env('AWS_BUCKET_BRONZE')),
             'url' => env('AWS_URL'),
             // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
             // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
@@ -66,18 +78,6 @@ return [
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
             'throw' => false,
             'report' => false,
-            // Azure Blob — only read when driver resolves to 'azure' above.
-            // Container name matches georag_object_storage's azure_config.py
-            // Bucket.BRONZE mapping (AZURE_STORAGE_CONTAINER_BRONZE, default
-            // "bronze") since this disk is where UploadController streams
-            // report/archive uploads (bronze bucket, `reports/{project_id}/…`
-            // prefix).
-            'connection_string' => env('AZURE_STORAGE_CONNECTION_STRING'),
-            'container' => env('AZURE_STORAGE_CONTAINER_BRONZE', 'bronze'),
-            // Managed-identity auth (opt-in) — see AppServiceProvider's
-            // Storage::extend('azure', ...) closure for the full contract.
-            'auth_mode' => env('AZURE_STORAGE_AUTH_MODE', 'connection_string'),
-            'account_name' => env('AZURE_STORAGE_ACCOUNT_NAME'),
         ],
 
         // Read-only access to the bronze bucket — used to mint presigned
@@ -85,11 +85,16 @@ return [
         // PNGs live under bronze://figures/{report_id}/). Application code
         // never writes through this disk; it's only used for temporaryUrl().
         's3-bronze' => [
-            'driver' => env('STORAGE_BACKEND') === 'azure_blob' ? 'azure' : 's3',
+            'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
-            'bucket' => env('MINIO_BUCKET_BRONZE', 'bronze'),
+            // AWS_BUCKET_BRONZE is what the ECS task definitions set
+            // (deploy/aws/terraform/config.tf). The MINIO_ name is compose's
+            // and stays as the fallback; on AWS it resolved to the literal
+            // string 'bronze', which is not this deployment's bucket and is
+            // not a name this account owns.
+            'bucket' => env('AWS_BUCKET_BRONZE', env('MINIO_BUCKET_BRONZE', 'bronze')),
             'url' => env('AWS_URL'),
             // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
             // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
@@ -100,21 +105,19 @@ return [
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
             'throw' => false,
             'report' => false,
-            'connection_string' => env('AZURE_STORAGE_CONNECTION_STRING'),
-            'container' => env('AZURE_STORAGE_CONTAINER_BRONZE', 'bronze'),
-            'auth_mode' => env('AZURE_STORAGE_AUTH_MODE', 'connection_string'),
-            'account_name' => env('AZURE_STORAGE_ACCOUNT_NAME'),
         ],
 
         // Dedicated bucket for generated export artifacts (ZIP, CSV, GeoPackage
         // bundles). Kept separate from the bronze layer so exports never
         // pollute the immutable raw archive.
         's3-exports' => [
-            'driver' => env('STORAGE_BACKEND') === 'azure_blob' ? 'azure' : 's3',
+            'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
-            'bucket' => env('MINIO_BUCKET_EXPORTS', 'georag-exports'),
+            // Same as above: AWS_BUCKET_EXPORTS is the deployed name,
+            // MINIO_BUCKET_EXPORTS is compose's.
+            'bucket' => env('AWS_BUCKET_EXPORTS', env('MINIO_BUCKET_EXPORTS', 'georag-exports')),
             'url' => env('AWS_URL'),
             // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
             // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
@@ -125,10 +128,6 @@ return [
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
             'throw' => false,
             'report' => false,
-            'connection_string' => env('AZURE_STORAGE_CONNECTION_STRING'),
-            'container' => env('AZURE_STORAGE_CONTAINER_EXPORTS', 'exports'),
-            'auth_mode' => env('AZURE_STORAGE_AUTH_MODE', 'connection_string'),
-            'account_name' => env('AZURE_STORAGE_ACCOUNT_NAME'),
         ],
 
     ],

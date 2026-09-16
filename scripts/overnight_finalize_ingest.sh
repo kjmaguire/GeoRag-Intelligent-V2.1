@@ -5,62 +5,26 @@
 # Post-ingest finalization. Runs AFTER scripts/overnight_uranium_ingest.sh
 # finishes. Does the steps the cluster_runner doesn't:
 #
-#   1. KG sync — push silver entities into Neo4j (one node per project +
-#      per drillhole + per report). Enables §04i Layer 4 entity
-#      resolution to recognize the new Wyoming holes/operators.
-#   2. Qdrant passage embedding — embed every new silver.document_passages
+#   1. Qdrant passage embedding — embed every new silver.document_passages
 #      row produced by PDF ingestion.
-#   3. Final silver/gold row counts + project list for the report.
+#   2. Final silver/gold row counts + project list for the report.
 #
-# Idempotent — running twice is a no-op on already-synced projects.
+# Idempotent — running twice re-embeds nothing already embedded.
+#
+# A KG-sync phase used to run first, pushing silver entities into Neo4j so
+# §04i Layer 4 entity resolution would recognize the new Wyoming holes and
+# operators. It was removed on 2026-09-15: it imported
+# app.services.ingest.kg_sync, deleted with Neo4j on 2026-07-28, so it
+# raised ImportError once per project and the loop swallowed it — the
+# script printed "KG sync done: 0/N projects" and carried on to exit 0.
+# Layer 4's graph half is permanently fail-open (CLAUDE.md hard rule 9);
+# its Postgres half needs nothing from this script.
 # =============================================================================
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WS_ID="${WS_ID:-a0000000-0000-0000-0000-000000000001}"
-
-echo "==> Phase: KG sync for every project"
-PROJECTS=$(docker exec georag-postgresql psql -U georag -d georag -tA -c "
-    SELECT project_id::text || '|' || slug
-      FROM silver.projects
-     WHERE workspace_id = '${WS_ID}'
-     ORDER BY project_name;")
-
-count=0
-synced=0
-while IFS='|' read -r PID SLUG; do
-    count=$((count+1))
-    [ -z "$PID" ] && continue
-    echo "  [$count] sync $SLUG ($PID)"
-    if docker exec -e NEO4J_USER="${NEO4J_USER:-neo4j}" georag-fastapi python3 -c "
-import asyncio, asyncpg, os, sys
-sys.path.insert(0, '/app')
-# kg_sync uses NEO4J_USER; map from NEO4J_USERNAME if only that is set
-if 'NEO4J_USER' not in os.environ and 'NEO4J_USERNAME' in os.environ:
-    os.environ['NEO4J_USER'] = os.environ['NEO4J_USERNAME']
-from app.services.ingest.kg_sync import sync_silver_project_to_neo4j
-
-async def main():
-    dsn = ('postgres://'+os.environ.get('POSTGRES_USER','georag')
-           + ':'+os.environ['POSTGRES_PASSWORD']
-           + '@postgresql:5432/'+os.environ.get('POSTGRES_DB','georag'))
-    conn = await asyncpg.connect(dsn, statement_cache_size=0)
-    try:
-        r = await sync_silver_project_to_neo4j(conn, project_id='$PID')
-        print(f'  sync result: {r}')
-    finally:
-        await conn.close()
-
-asyncio.run(main())
-" 2>&1 | tail -3; then
-        synced=$((synced+1))
-    fi
-done <<< "$PROJECTS"
-
-echo
-echo "==> KG sync done: $synced/$count projects"
-echo
 
 echo "==> Phase: trigger Qdrant embedding for new passages"
 # embed_pending_passages walks silver.document_passages for the workspace

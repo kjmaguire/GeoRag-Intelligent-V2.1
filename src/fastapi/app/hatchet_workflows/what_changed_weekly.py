@@ -11,8 +11,11 @@ triggered by hand or by an API call. With this wrapper, operators
 see weekly delta surfaces in the audit ledger without any manual
 intervention.
 
-Cron: ``0 6 * * 1`` UTC — Mondays at 06:00 (15min after the eval
-nightly's 05:45 final slot, keeping the AI pool spread out).
+Cron: ``0 17 * * 1`` UTC — Mondays at 17:00. It was 06:00 until
+2026-09-16, when the nightly shutdown window shrank to eight and a half
+hours a day and closed 00:00-16:30 UTC; the old slot's stated reason (15 min after
+the eval nightly's final embed pass) went with it, since that pass is now
+at 20:45.
 
 Triggering manually:
   ``what_changed_weekly.aio_mock_run(WeeklyDigestInput())``
@@ -83,11 +86,14 @@ what_changed_weekly = hatchet.workflow(
     name="what_changed_weekly",
     input_validator=WeeklyDigestInput,
     # Moved 2026-08-21: 17:00 UTC Monday — 06:00 was inside the shutdown window.
-    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
-    # scales hatchet-worker-cc to zero and both DST candidate hours of
-    # each sweep count as closed. See
-    # tests/test_crons_avoid_the_shutdown_window.py.
-    on_crons=["0 17 * * 1"],  # Mondays at 06:00 UTC
+    # The window was 06:00-14:00 UTC then, closed by an Azure Container Apps
+    # sweep scaling hatchet-worker-cc to zero at both DST candidate hours.
+    # ADR-0022 retired all of that on 2026-09-08: shutdown-sweep.sh now scales
+    # every ECS service to --desired-count 0 on ONE timezone-aware EventBridge
+    # schedule, and since 2026-09-16 the window is 08:30-17:00 Pacific, closing
+    # 00:00-16:30 UTC. See tests/test_crons_avoid_the_shutdown_window.py, which
+    # derives that span from the Terraform rather than from this comment.
+    on_crons=["0 17 * * 1"],  # Mondays at 17:00 UTC
 )
 
 

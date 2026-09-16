@@ -6,6 +6,16 @@
 > way. Two things were corrected because they read as current state rather
 > than history: the model table in §2 and the re-index hazard in §2.1, both
 > of which described a stack that predates the 2026-07-30 Foundry cutover.
+> Corrected again 2026-09-08 for the move to Amazon Bedrock
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)),
+> for the same reason: a "**Superseded.** Production default is X" cell
+> reads as current state no matter what the chapter header says.
+> Corrected a third time 2026-09-15, when
+> [ADR-0023](../../adr/0023-cohere-chat-and-parse-move-to-coheres-own-api.md)
+> took chat and OCR back off Bedrock onto Cohere's own API one week later.
+> The split that leaves is the thing to carry away from this chapter: the
+> four Cohere models no longer share one host. Embed and Rerank are
+> serverless Bedrock; Command A+ and Parse are `api.cohere.com`.
 > Everything in §3 (PaddleOCR, Docling) was already flagged as superseded.
 > [Ch 08](08-llm-and-ml.md) is the current model stack; where the two
 > disagree, Ch 08 wins.
@@ -38,16 +48,18 @@ defaults.** Always read the model stack in two columns.
 
 | Slot | Production (live, env-driven) | Code/compose default (stale) |
 |---|---|---|
-| Dense embedder | `Qwen/Qwen3-Embedding-0.6B`, 1024-dim | **Superseded.** Production default is Cohere Embed v4 on Foundry at 1024-dim; the Qwen model runs only in the dev `embedding` sidecar |
-| Reranker | `Qwen/Qwen3-Reranker-0.6B` on GPU — validated +13.9 % NDCG@10 over bge (0.7048 vs 0.6188) | **Superseded.** Production default is Cohere Rerank v4 on Foundry; Qwen3-Reranker runs in the dev `reranker` sidecar |
-| VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` on vLLM | **Gone.** The vLLM service was deleted 2026-07-30. Page description now runs through a Foundry vision model, off the ingest critical path and inert unless `IMAGE_VERBALIZATION_ENABLED` |
-| Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` | **Superseded.** Cohere Command A+ on Foundry (`LLM_BACKEND=azure`). The Qwen name survives as `LLM_PRIMARY_MODEL`'s default, which applies only to `LLM_BACKEND=vllm` |
-| Sparse | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | **Unchanged and self-hosted** — the one component with no Foundry equivalent |
+| Dense embedder | `Qwen/Qwen3-Embedding-0.6B`, 1024-dim | **Superseded.** Production default is Cohere Embed v4 on Bedrock at 1024-dim (Foundry 2026-07-30 → 2026-09-08); the Qwen model runs only in the dev `embedding` sidecar |
+| Reranker | `Qwen/Qwen3-Reranker-0.6B` on GPU — validated +13.9 % NDCG@10 over bge (0.7048 vs 0.6188) | **Superseded.** Production default is Cohere Rerank on Bedrock; Qwen3-Reranker runs in the dev `reranker` sidecar. Note the version went BACKWARDS at the cloud move — Foundry served v4, Bedrock serves 3.5 — and `RERANKER_SCORE_THRESHOLD_HOSTED` was measured against v4 |
+| VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` on vLLM | **Gone.** The vLLM service was deleted 2026-07-30. Page description runs through a Bedrock vision model, off the ingest critical path and inert unless `IMAGE_VERBALIZATION_ENABLED` — and now also unless `BEDROCK_VISION_MODEL_ID` is set, which has no default because Bedrock has no equivalent of the retired `gpt-5-mini` |
+| Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` | **Superseded.** Cohere Command A+ on Cohere's own API (`LLM_BACKEND=cohere`, the default since ADR-0023; `azure` is a startup error). It was `bedrock` for one week — Command A+ turned out to be an AWS *Marketplace* SageMaker package, not a Bedrock model, so it billed A100/H100 hours whether or not anything called it. `bedrock` stays selectable for an operator who deploys such an endpoint anyway. The Qwen name survives as `LLM_PRIMARY_MODEL`'s default, which applies only to `LLM_BACKEND=vllm` |
+| Sparse | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | **Unchanged and self-hosted** — the one component with no managed equivalent on any cloud, or on Cohere's own API. Self-hosted or the sparse leg of hybrid retrieval does not exist (ADR-0022 decision 4) |
 
 > The VRAM-gating and rollback advice that used to sit here concerned a
 > single A4500 shared with vLLM. Neither the GPU contention nor the vLLM
 > service exists in production any more; both `EMBEDDING_BACKEND` and
-> `RERANKER_BACKEND` default to `foundry`.
+> `RERANKER_BACKEND` default to `bedrock` (they defaulted to `foundry`
+> between 2026-09-06 and 2026-09-08, and that value is now rejected at
+> startup rather than ignored).
 
 ### 2.1 The re-index hazard (closed by deletion)
 
@@ -100,9 +112,13 @@ Two OOM fixes landed as optional sidecar services:
 ## 3. §04p OCR/VL upgrades (ADR-0015/0016/0017)
 
 > **Historical record:** the OCR choices in §3.1 were superseded on
-> 2026-07-29 and again on 2026-09-02. Docling and PaddleOCR were removed,
-> then Azure Document Intelligence was replaced by Cohere Parse v5 on Azure
-> AI Foundry (ADR-0019); Tesseract remains the last-resort fallback. See
+> 2026-07-29, again on 2026-09-02, again on 2026-09-08 and again on
+> 2026-09-15. Docling and PaddleOCR were removed, then Azure Document
+> Intelligence was replaced by Cohere Parse (ADR-0019), which moved from
+> Foundry to Bedrock with the cloud (ADR-0022) and then off Bedrock onto
+> Cohere's own API a week later (ADR-0023) — `POST
+> {COHERE_BASE_URL}/v2/parse`, keyed by `COHERE_API_KEY`, the same
+> credential chat uses. Tesseract remains the last-resort fallback. See
 > [Ch 05](05-pdf-stack.md).
 
 ### 3.1 PaddleOCR 2.10 → 3.7 (ADR-0016, Accepted Phase 1)
@@ -174,7 +190,10 @@ adds `silver.document_passages.contextualized_content TEXT NULL`.
   **before embedding** (Anthropic "contextual retrieval" technique).
 - Written by the new **`enrich_passage_context` Hatchet workflow**
   ([enrich_passage_context.py](../../../src/fastapi/app/hatchet_workflows/enrich_passage_context.py))
-  — daily 04:30 UTC, before `embed_pending_passages` at 05:45 UTC.
+  — daily 21:45 UTC, which is AFTER `embed_pending_passages`' daily
+  20:45 tick rather than before it. That inversion is deliberate and
+  harmless: embed also runs `*/10 * * * *`, so a header written at 21:45
+  is embedded within ten minutes instead of waiting a day.
   Calls `services/ingest/context_enricher.py`.
 - `passage_embedder.py` then embeds the enriched text in place of raw.
 - Work-queue: partial index `WHERE contextualized_content IS NULL AND embedding_id IS NULL`.

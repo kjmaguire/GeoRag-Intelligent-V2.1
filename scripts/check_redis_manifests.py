@@ -8,12 +8,18 @@ RULE 1 -- persistence requires a durable path.
     `--appendonly yes` (or an active RDB save policy) with no volume
     mounted at the data directory is not persistence. It is fsyncs and
     rewrite forks writing to a disk that is discarded on restart. This
-    is exactly what shipped to Azure: deploy/azure/containerapps/redis.yaml
+    is exactly what shipped to Azure: the container app's manifest
     inherited `--appendonly yes` from docker-compose.yml and did not
     inherit `volumes: redis_data:/data`, so the queue durability the flag
-    exists to provide has never existed there -- while the scheduler
-    restarts the app twice a day. `--save ""` was dropped in the same
-    port, silently leaving Redis's default RDB snapshots running too.
+    exists to provide never existed there -- while the scheduler restarted
+    the app twice a day. `--save ""` was dropped in the same port,
+    silently leaving Redis's default RDB snapshots running too. (That
+    manifest was deleted with the rest of deploy/azure/ on 2026-09-08; it
+    is `deploy/azure/containerapps/redis.yaml` in git history.)
+
+    That defect is FIXED as of 2026-09-08 (ADR-0022): the AWS deployment
+    mounts EFS at /data with AOF on. The rule stays, and now guards the
+    fix rather than documenting the wound.
 
 RULE 2 -- a container memory limit requires a reachable maxmemory cap.
     Redis's maxmemory bounds its own dataset accounting. Client output
@@ -21,7 +27,7 @@ RULE 2 -- a container memory limit requires a reachable maxmemory cap.
     sit on top of it. Two ways to get this wrong, and this repo had both:
       * no --maxmemory at all (all four k8s/Helm targets, under a 2Gi
         limit) -- Redis grows until the kernel kills the pod;
-      * --maxmemory exactly equal to the limit (Azure: 512mb in 0.5Gi)
+      * --maxmemory exactly equal to the limit (Azure was 512mb in 0.5Gi)
         -- the platform OOM-kills the container before Redis's own guard
         can engage, which makes the eviction policy unreachable code. It
         did not matter which policy was set.
@@ -34,8 +40,8 @@ WHAT THIS DELIBERATELY DOES NOT CHECK
     queue jobs share the instance with cache and carry no TTL, and only
     while nothing calls Cache::forever(). That is a judgement about the
     application, not a property of the manifest, so it lives in
-    deploy/azure/containerapps/redis.yaml's header where the reasoning
-    can be read -- not in a regex that would go stale silently.
+    deploy/aws/terraform/services.tf's comment where the reasoning can be
+    read -- not in a regex that would go stale silently.
 
 A NOTE ON SCOPING, WHICH THIS CHECKER GOT WRONG ONCE
     kubernetes/manifests/*.yaml are multi-document files holding a dozen
@@ -156,20 +162,18 @@ class Target:
         self.values_section = values_section
 
 
-# Container Apps writes `memory: 0.5Gi` directly under the container's
-# `resources:`. Kubernetes nests it under `resources: limits:`.
-_CA_LIMIT = r"resources:\s*\n\s*cpu:[^\n]*\n\s*memory:\s*(\S+)"
+# Kubernetes nests the memory limit under `resources: limits:`. The
+# Container Apps pattern that used to sit beside this went with the Azure
+# deployment on 2026-09-08; production is Terraform now, read by
+# check_terraform().
 _K8S_LIMIT = r"limits:\s*\n\s*cpu:[^\n]*\n\s*memory:\s*(\S+)"
 
 TARGETS = [
-    Target(
-        path="deploy/azure/containerapps/redis.yaml",
-        limit_pattern=_CA_LIMIT,
-        # No volume here by design -- see the file's header. Rule 1 then
-        # requires persistence to be OFF, which is what makes the absence
-        # of this evidence a checked outcome rather than an assumption.
-        volume_evidence=r"mountPath:\s*/data",
-    ),
+    # The production deployment is Terraform, not YAML, so it is checked
+    # by check_terraform() below rather than by a Target: the extractors
+    # here split documents on `---` and read flags off indented `-` lines,
+    # and HCL has neither. Forcing one regex over both shapes is exactly
+    # the scoping mistake this file's own header records having made once.
     Target(
         path="charts/georag/templates/redis.yaml",
         limit_pattern=r"limits:\s*\{[^}]*memory:\s*\"?([^\",}]+)\"?",
@@ -210,6 +214,115 @@ def values_section(text: str, name: str) -> str:
     if not match:
         raise ValueError(f"no top-level '{name}:' section")
     return match.group(1)
+
+
+#: The production deployment. Separate from TARGETS because HCL is not YAML.
+TERRAFORM_SERVICES = "deploy/aws/terraform/services.tf"
+TERRAFORM_SIZING = "deploy/aws/terraform/main.tf"
+
+
+def check_terraform(problems: list) -> None:
+    """The same two rules against deploy/aws/terraform.
+
+    Its own function rather than a Target because the shapes genuinely
+    differ: the YAML extractors split documents on `---` and read flags off
+    indented `-` lines, and HCL has neither. The RULES are identical; only
+    the reading is.
+    """
+    services = (REPO / TERRAFORM_SERVICES).read_text(encoding="utf-8")
+    sizing = (REPO / TERRAFORM_SIZING).read_text(encoding="utf-8")
+
+    # Anchored INSIDE `service_command`, not on any `redis = [` in the file.
+    # There is more than one: `service_healthcheck` also keys on service name,
+    # so a bare search finds whichever comes first and silently reads the
+    # wrong list if the file is reordered. This is the same failure the
+    # `attaches` pattern below was tightened for — two different facts that a
+    # loose pattern conflates.
+    commands = re.search(r"service_command\s*=\s*\{(.*?)\n  \}", services, re.S)
+    block = re.search(r"redis\s*=\s*\[(.*?)\n\s*\]", commands.group(1), re.S) if commands else None
+    if not block:
+        problems.append(
+            f"{TERRAFORM_SERVICES}: no `redis = [ ... ]` inside `service_command` "
+            "-- the task definition changed shape and this check is no longer "
+            "reading it")
+        return
+
+    # Flatten the HCL list into the flag string `flag()` already understands.
+    command = re.sub(r"[\"',]", " ", block.group(1))
+
+    maxmemory = flag(command, "maxmemory")
+    policy = flag(command, "maxmemory-policy")
+    appendonly = flag(command, "appendonly")
+    save = flag(command, "save")
+
+    # --- rule 1: persistence requires a durable path -------------------
+    rdb_active = save is not None and save != ""
+    persists = (appendonly == "yes") or rdb_active
+    # The EFS volume is attached by a `dynamic "volume"` block gated on the
+    # service name, and mounted at /data for redis specifically. BOTH halves
+    # are required: a volume that is not mounted at the data directory is
+    # the same non-persistence in a different costume.
+    # Anchored on `for_each =` specifically. The same contains() gate
+    # appears twice — once attaching the EFS volume, once adding the
+    # mountPoints — and matching either would let a mount that points at
+    # no volume read as durable. Two different facts; the loose pattern
+    # conflated them.
+    attaches = re.search(
+        r'for_each\s*=\s*contains\(\["qdrant", ?"redis"\], ?each\.key\)', services)
+    mounts = re.search(r'each\.key == "qdrant" \? "/qdrant/storage" : "/data"', services)
+    has_volume = bool(attaches and mounts)
+
+    if persists and not has_volume:
+        why = []
+        if appendonly == "yes":
+            why.append("--appendonly yes")
+        if rdb_active:
+            why.append(f"--save {save}")
+        problems.append(
+            "{}: {} but redis has no EFS volume mounted at /data -- the data "
+            "directory is ephemeral, so this is cost without durability. "
+            "That is precisely the defect the Azure deployment shipped."
+            .format(TERRAFORM_SERVICES, " and ".join(why)))
+    if not persists:
+        problems.append(
+            f"{TERRAFORM_SERVICES}: redis persistence is OFF. It was off on "
+            "Azure too, and that is why every restart and every nightly "
+            "scale-to-zero dropped all sessions and any queued Horizon job. "
+            "Turning it back off needs a recorded reason, not a default.")
+
+    # --- rule 2: a memory limit requires a reachable cap ---------------
+    limit_match = re.search(r"redis\s*=\s*\{[^}]*memory\s*=\s*(\d+)", sizing)
+    if not limit_match:
+        problems.append(
+            f"{TERRAFORM_SIZING}: could not locate redis's task memory -- the "
+            "services map changed shape and this check is no longer reading "
+            "it")
+        return
+    limit = int(limit_match.group(1)) * 1024 ** 2  # Fargate memory is MiB
+
+    if maxmemory is None:
+        problems.append(
+            f"{TERRAFORM_SERVICES}: task memory is {limit_match.group(1)} MiB "
+            "but no --maxmemory is set. Redis will grow until the platform "
+            "kills the task; the eviction policy never runs.")
+        return
+
+    cap = redis_size(maxmemory)
+    required = int(cap * HEADROOM)
+    if required > limit:
+        problems.append(
+            "{}: --maxmemory {} needs a task memory of at least {:.0f} MiB "
+            "({}x headroom) but it is {:.0f} MiB. The platform kills the task "
+            "before Redis can evict, so --maxmemory-policy {} is unreachable."
+            .format(TERRAFORM_SERVICES, maxmemory, required / 1024 ** 2,
+                    HEADROOM, limit / 1024 ** 2, policy or "<unset>"))
+        return
+
+    print("OK   {:<45} maxmemory {} in {:.0f} MiB ({:.0f}% headroom), policy "
+          "{}, persistence {}".format(
+              TERRAFORM_SERVICES, maxmemory, limit / 1024 ** 2,
+              (limit - cap) / cap * 100, policy or "<unset>",
+              "on with volume" if persists and has_volume else "off"))
 
 
 def check(target: Target, problems: list) -> None:
@@ -302,6 +415,11 @@ def check(target: Target, problems: list) -> None:
 
 def main() -> int:
     problems: list = []
+    try:
+        check_terraform(problems)
+    except (OSError, ValueError) as exc:
+        problems.append(f"{TERRAFORM_SERVICES}: {exc}")
+
     for target in TARGETS:
         try:
             check(target, problems)

@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
-# preflight.sh — verify operator setup is complete before first prod deploy.
+# preflight.sh — verify operator setup for the SSH/compose deployment model.
+#
+# NOT the gate for the AWS cutover. Use scripts/operator/aws-preflight.sh.
+#
+# O-01..O-07 below check the model that ADR-0022 replaced on 2026-09-08: SOPS
+# age keys, an SSH host trio per environment, a SOPS-encrypted
+# .env.production.enc, a cold-start runbook that is now under _archived/, and an
+# Alertmanager template. ECS Fargate has no SSH hosts, configuration is handed
+# to containers out of Secrets Manager, and Alertmanager/Prometheus are defined
+# nowhere in this repository. None of these items gates an ECS deploy, and a
+# green run here says nothing about one.
+#
+# Kept, not deleted, because charts/georag/ still targets on-prem/k3s and these
+# checks remain meaningful there.
 #
 # Read-only. Returns non-zero if any O-01..O-07 item fails.
 # Pass --emit-cd-patch to print a unified diff that removes continue-on-error
@@ -76,8 +89,10 @@ if [ "$EMIT_CD_PATCH" = "1" ]; then
   exit 0
 fi
 
-c_blu "GeoRAG operator preflight"
+c_blu "GeoRAG operator preflight — SSH/compose deployment model"
 c_blu "Repo: ${REPO_ROOT}"
+c_yel "NOTE: this does not gate the AWS/ECS cutover (ADR-0022)."
+c_yel "      For that, run: bash scripts/operator/aws-preflight.sh"
 echo
 
 # ---------------------------------------------------------------------------

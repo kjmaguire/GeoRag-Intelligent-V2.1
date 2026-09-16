@@ -38,6 +38,7 @@ or a real PostgreSQL. The Anthropic SDK is mocked via
 package does not gate the suite. The DB pool is a fake whose
 ``fetchrow`` is parameterised per-test.
 """
+
 from __future__ import annotations
 
 import json
@@ -115,33 +116,42 @@ class TestEvaluatePolicy:
 
     @pytest.mark.asyncio
     async def test_flag_true_is_allowed(self):
-        pool = _make_pool(rows={
-            _WORKSPACE_ALLOWED: _row({"allow_external_llm": True}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_ALLOWED: _row({"allow_external_llm": True}),
+            }
+        )
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=_WORKSPACE_ALLOWED, pg_pool=pool,
+            workspace_id=_WORKSPACE_ALLOWED,
+            pg_pool=pool,
         )
         assert allowed is True
         assert reason == "flag_enabled"
 
     @pytest.mark.asyncio
     async def test_flag_false_is_blocked(self):
-        pool = _make_pool(rows={
-            _WORKSPACE_DENIED: _row({"allow_external_llm": False}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_DENIED: _row({"allow_external_llm": False}),
+            }
+        )
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=_WORKSPACE_DENIED, pg_pool=pool,
+            workspace_id=_WORKSPACE_DENIED,
+            pg_pool=pool,
         )
         assert allowed is False
         assert reason == "flag_disabled"
 
     @pytest.mark.asyncio
     async def test_key_missing_is_blocked_default_deny(self):
-        pool = _make_pool(rows={
-            _WORKSPACE_MISSING_KEY: _row({"unrelated_pref": "value"}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_MISSING_KEY: _row({"unrelated_pref": "value"}),
+            }
+        )
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=_WORKSPACE_MISSING_KEY, pg_pool=pool,
+            workspace_id=_WORKSPACE_MISSING_KEY,
+            pg_pool=pool,
         )
         assert allowed is False
         assert reason == "flag_not_set"
@@ -151,7 +161,8 @@ class TestEvaluatePolicy:
         # _WORKSPACE_NO_ROW not in rows → fetchrow returns None
         pool = _make_pool(rows={})
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=_WORKSPACE_NO_ROW, pg_pool=pool,
+            workspace_id=_WORKSPACE_NO_ROW,
+            pg_pool=pool,
         )
         assert allowed is False
         assert reason == "flag_not_set"
@@ -160,7 +171,8 @@ class TestEvaluatePolicy:
     async def test_no_workspace_is_blocked(self):
         pool = _make_pool(rows={})
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=None, pg_pool=pool,
+            workspace_id=None,
+            pg_pool=pool,
         )
         assert allowed is False
         assert reason == "missing_workspace"
@@ -170,7 +182,8 @@ class TestEvaluatePolicy:
         # The gate treats an empty string the same as None.
         pool = _make_pool(rows={})
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id="", pg_pool=pool,
+            workspace_id="",
+            pg_pool=pool,
         )
         assert allowed is False
         assert reason == "missing_workspace"
@@ -179,7 +192,8 @@ class TestEvaluatePolicy:
     async def test_db_error_is_blocked_default_deny(self):
         pool = _make_pool(raise_on_fetch=True)
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=_WORKSPACE_DB_ERROR, pg_pool=pool,
+            workspace_id=_WORKSPACE_DB_ERROR,
+            pg_pool=pool,
         )
         assert allowed is False
         # DB error is folded into flag_not_set for caller-side determinism;
@@ -190,11 +204,14 @@ class TestEvaluatePolicy:
     async def test_json_string_payload_is_parsed(self):
         # Some asyncpg configurations return jsonb as a raw JSON string
         # (no codec). The gate must handle both shapes.
-        pool = _make_pool(rows={
-            _WORKSPACE_ALLOWED: _row(json.dumps({"allow_external_llm": True})),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_ALLOWED: _row(json.dumps({"allow_external_llm": True})),
+            }
+        )
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=_WORKSPACE_ALLOWED, pg_pool=pool,
+            workspace_id=_WORKSPACE_ALLOWED,
+            pg_pool=pool,
         )
         assert allowed is True
         assert reason == "flag_enabled"
@@ -203,11 +220,14 @@ class TestEvaluatePolicy:
     async def test_non_bool_value_is_blocked(self):
         # A misconfigured row that stored a string "true" instead of a
         # JSON boolean must NOT be coerced — default-deny.
-        pool = _make_pool(rows={
-            _WORKSPACE_ALLOWED: _row({"allow_external_llm": "true"}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_ALLOWED: _row({"allow_external_llm": "true"}),
+            }
+        )
         allowed, reason = await evaluate_external_llm_policy(
-            workspace_id=_WORKSPACE_ALLOWED, pg_pool=pool,
+            workspace_id=_WORKSPACE_ALLOWED,
+            pg_pool=pool,
         )
         assert allowed is False
         assert reason == "flag_not_set"
@@ -218,22 +238,28 @@ class TestAssertGate:
 
     @pytest.mark.asyncio
     async def test_allowed_returns_none(self):
-        pool = _make_pool(rows={
-            _WORKSPACE_ALLOWED: _row({"allow_external_llm": True}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_ALLOWED: _row({"allow_external_llm": True}),
+            }
+        )
         result = await assert_external_llm_allowed(
-            workspace_id=_WORKSPACE_ALLOWED, pg_pool=pool,
+            workspace_id=_WORKSPACE_ALLOWED,
+            pg_pool=pool,
         )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_denied_raises_with_guard_code(self):
-        pool = _make_pool(rows={
-            _WORKSPACE_DENIED: _row({"allow_external_llm": False}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_DENIED: _row({"allow_external_llm": False}),
+            }
+        )
         with pytest.raises(ExternalLlmEgressBlocked) as excinfo:
             await assert_external_llm_allowed(
-                workspace_id=_WORKSPACE_DENIED, pg_pool=pool,
+                workspace_id=_WORKSPACE_DENIED,
+                pg_pool=pool,
             )
         exc = excinfo.value
         assert exc.workspace_id == _WORKSPACE_DENIED
@@ -248,7 +274,8 @@ class TestAssertGate:
         pool = _make_pool(rows={})
         with pytest.raises(ExternalLlmEgressBlocked) as excinfo:
             await assert_external_llm_allowed(
-                workspace_id=None, pg_pool=pool,
+                workspace_id=None,
+                pg_pool=pool,
             )
         assert excinfo.value.reason == "missing_workspace"
         assert excinfo.value.guard_code is GuardErrorCode.EGRESS_BLOCKED
@@ -272,9 +299,7 @@ def _make_fake_anthropic_client(final_text: str = "ok"):
     return SimpleNamespace(
         messages=SimpleNamespace(
             create=AsyncMock(return_value=fake_msg),
-            stream=AsyncMock(side_effect=AssertionError(
-                "stream() must not be called in egress-gate tests"
-            )),
+            stream=AsyncMock(side_effect=AssertionError("stream() must not be called in egress-gate tests")),
         )
     )
 
@@ -287,9 +312,11 @@ class TestAnthropicCallSiteWiring:
     async def test_allowed_workspace_passes_through_to_anthropic(self):
         from app.agent.llm_calls import _call_anthropic_llm
 
-        pool = _make_pool(rows={
-            _WORKSPACE_ALLOWED: _row({"allow_external_llm": True}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_ALLOWED: _row({"allow_external_llm": True}),
+            }
+        )
         client = _make_fake_anthropic_client(final_text="grounded answer")
 
         result = await _call_anthropic_llm(
@@ -310,9 +337,11 @@ class TestAnthropicCallSiteWiring:
     async def test_denied_workspace_blocks_before_sdk_call(self):
         from app.agent.llm_calls import _call_anthropic_llm
 
-        pool = _make_pool(rows={
-            _WORKSPACE_DENIED: _row({"allow_external_llm": False}),
-        })
+        pool = _make_pool(
+            rows={
+                _WORKSPACE_DENIED: _row({"allow_external_llm": False}),
+            }
+        )
         client = _make_fake_anthropic_client()
 
         with pytest.raises(ExternalLlmEgressBlocked) as excinfo:
@@ -379,3 +408,64 @@ class TestAnthropicCallSiteWiring:
         # The gate short-circuits before touching the pool at all.
         pool.acquire.assert_not_called()
         assert client.messages.create.await_count == 0
+
+
+class TestTheGatesScopeIsDeliberatelyNarrow:
+    """ADR-0023 — the gate covers NON-CONTRACTED providers, not every host.
+
+    These read like tests that assert an absence, and that is the point. The
+    change they guard against looks like a security improvement and is an
+    outage: `assert_external_llm_allowed` is default-deny, so calling it from
+    the DEFAULT chat backend refuses every query from every workspace that
+    has not explicitly set `allow_external_llm: true` — which, on a
+    deployment with fresh stores, is all of them.
+
+    Kyle decided on 2026-09-15 that Cohere is inside the contracted set:
+    same vendor as Bedrock's Cohere models, same commercial agreement,
+    reached directly rather than through AWS's resale of it. Anthropic is a
+    different vendor and stays gated.
+
+    If data residency ever becomes a client requirement, these are the tests
+    to delete — together, and alongside the migration that defaults the flag
+    to true for existing workspaces. Deleting them without that migration is
+    the outage.
+    """
+
+    def test_the_cohere_chat_adapter_does_not_call_the_gate(self):
+        import inspect
+
+        from app.agent import llm_cohere
+
+        source = inspect.getsource(llm_cohere)
+        assert "assert_external_llm_allowed" not in source, (
+            "llm_cohere.py now calls the egress gate. The gate is DEFAULT-DENY "
+            "and this is the default backend, so every query from every "
+            "workspace without allow_external_llm=true will refuse. If that is "
+            "intended, it needs a migration defaulting the flag for existing "
+            "workspaces in the same change — see ADR-0023 Consequences."
+        )
+
+    def test_the_parse_client_does_not_call_the_gate(self):
+        """Parse sends page IMAGES, and runs in a Hatchet worker with no
+        workspace context on the call. Same decision, same consequence."""
+        import inspect
+
+        from app.services.ingest import cohere_parse_client
+
+        assert "assert_external_llm_allowed" not in inspect.getsource(cohere_parse_client)
+
+    def test_the_anthropic_path_still_does(self):
+        """The ratchet only holds if the gate still guards something."""
+        import inspect
+
+        from app.agent import llm_calls
+
+        assert "assert_external_llm_allowed" in inspect.getsource(llm_calls)
+
+    def test_the_module_says_what_its_scope_is(self):
+        """The scope is a policy decision, so it has to be written down where
+        the next reader of this module will find it — not only in an ADR."""
+        from app.agent import egress_gate
+
+        assert egress_gate.__doc__ is not None
+        assert "contracted" in egress_gate.__doc__.lower()

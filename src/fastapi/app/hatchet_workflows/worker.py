@@ -115,7 +115,7 @@ POOLS = {
         audit_ledger_verify,
         # Plan §4b Stage 1 follow-up — nightly aggregator of repair-loop
         # shadow telemetry (silver.query_traces → gold.repair_shadow_daily).
-        # Cron 02:15 UTC, 15 minutes after audit_ledger_verify so they
+        # Cron 17:15 UTC, 15 minutes after audit_ledger_verify so they
         # don't contend for connections.
         repair_shadow_aggregate,
         phase2_smoke, public_geoscience_pull, external_notification,
@@ -129,7 +129,7 @@ POOLS = {
         # 2026-08-14 DB audit M1 — nightly batched purge of expired
         # audit.query_audit_log rows (180d) + terminal
         # silver.ingest_progress rows (90d, always keeping the newest
-        # attempt per file for the IngestionRuns UI). 04:45 UTC.
+        # attempt per file for the IngestionRuns UI). 19:45 UTC.
         retention_sweep,
         # Phase 15 Step 1 (R-P14-2) — nightly REFRESH MATERIALIZED VIEW
         # for the agent's silver fact-source MVs. Keeps the agent
@@ -165,7 +165,7 @@ POOLS = {
         what_changed_detector,
         # Doc-phase 182 / Master-plan §12 polish — what_changed_weekly
         # cron-fans-out the detector across every active workspace
-        # every Monday at 06:00 UTC. Emits a workspace.what_changed.
+        # every Monday at 17:00 UTC. Emits a workspace.what_changed.
         # weekly_digest audit anchor (system-wide, NULL workspace_id).
         what_changed_weekly,
         # sync_silver_to_kg (doc-phase 183, silver → Neo4j sync) removed
@@ -184,7 +184,9 @@ POOLS = {
         # boot). Cheap (~50 scrolls + one audit_ledger row) and pages
         # within ~5 minutes of any new write producing minimal payloads.
         qdrant_payload_audit_wf,
-        # Contextual retrieval — daily 04:30 UTC, before embed at 05:45 UTC.
+        # Contextual retrieval — daily 21:45 UTC. It runs AFTER embed's
+        # 20:45 daily tick rather than before it, which is fine because
+        # embed also runs */10; see the schedule comment on the workflow.
         # Generates Qwen3 context headers (contextualized_content) so
         # passage_embedder uses enriched text for better recall.
         enrich_passage_context_wf,
@@ -238,11 +240,13 @@ POOLS = {
         # `docker exec` to a container that could never exist on Container
         # Apps.
         # 2026-06-27 audit T5 — advance the three monthly-partitioned
-        # ledgers before their p_premake=3 window expires. 04:15 UTC.
+        # ledgers before their p_premake=3 window expires. 19:15 UTC.
         pg_partman_maintenance,
-        # Master-plan §11.10 — nightly cold-tier archive (04:00 UTC,
-        # after the backup window closes). Writes-only; pruning is
-        # operator-gated.
+        # Master-plan §11.10 — nightly cold-tier archive (19:00 UTC).
+        # The slot used to be justified as "after the backup window
+        # closes"; the per-store backup_* workflows were deleted
+        # 2026-08-23, so there is no window to be after. Writes-only;
+        # pruning is operator-gated.
         cold_tier_archive_workflow,
         # Master-plan §5 — cost-burn watcher emits cost.burn.alert
         # audit rows when a workspace's hourly LLM spend crosses the
@@ -256,8 +260,8 @@ POOLS = {
         #
         # That Dagster pipeline then went dormant on 2026-07-28, leaving
         # public_geo.* with no writer at all: the local copy went three weeks
-        # stale and Azure never received a row. public_geo_sync (03:30 UTC
-        # Sundays) takes the job back, pulling the surveys' live ArcGIS
+        # stale and the remote copy never received a row. public_geo_sync
+        # (18:30 UTC Sundays) takes the job back, pulling the surveys' live ArcGIS
         # services directly instead of via a Bronze staging hop.
         public_geo_sync,
         # Master-plan §11.3 wave 1 — per-workspace logical export

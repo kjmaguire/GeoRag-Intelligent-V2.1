@@ -68,7 +68,7 @@ def test_an_ordinary_request_is_unaffected(caplog) -> None:
 
 
 def test_the_probe_paths_cover_what_the_platform_actually_calls() -> None:
-    # deploy/azure/containerapps/probes.json configures httpGet probes on
+    # The ECS container health checks in deploy/aws/terraform hit
     # /health (hatchet worker) and /up (reverb, horizon); main.py serves
     # /health and /ready. Drifting apart means either dead entries here or
     # a live probe path still logging at INFO.

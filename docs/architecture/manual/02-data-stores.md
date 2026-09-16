@@ -7,6 +7,25 @@
 > `deploy/azure/` and `ops/runbooks/`. Where dev and production differ, both
 > are stated. Anything the repo does not record (Flexible Server SKU, the
 > live Azure env values) is said to be unrecorded rather than guessed.
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> Everything this chapter says about the **dev stack** and about
+> **application behaviour** is unaffected and still accurate; only the
+> question of where production runs has changed.
+>
+> **§1's production notes and §8's recovery table were rewritten on
+> 2026-09-08.** Two of those rows changed in substance rather than in
+> hosting: Redis now has AOF on a real volume (it had `--appendonly yes`
+> and no volume on Azure), and object storage now has versioning and
+> retention where it previously had no backup posture at all. Leaving
+> either under a dated notice would have understated the deployment.
+
 
 Four durable stores (PostgreSQL, Qdrant, Redis, object storage), one tile
 generator (Martin) and one engine database (Hatchet). This chapter covers
@@ -82,12 +101,12 @@ Two things to know about this list:
 `max_connections=200` in dev; PgBouncer multiplexes up to 1000 client
 connections onto a pool of 50 ([Ch 01 §2](01-services.md#2-always-on-substrate)).
 
-**Production has no PgBouncer.** Every Container App connects to
-`georag-pg-cc` directly. The Flexible Server's SKU and connection limit are
-not recorded in the repo; `ops/runbooks/azure-oncall.md` shows the
-`az postgres flexible-server` commands used to inspect it. None of the
-compose-side tuning (`shared_buffers`, `work_mem`, `io_method`…) reaches
-Azure. Note also that `.env.production.example` sets `DB_USERNAME=georag`
+**Production has no PgBouncer.** Every task connects to RDS directly. The
+instance class is `deploy/aws/terraform/`'s to state — unlike the Azure
+Flexible Server, whose SKU and connection limit were not recorded in the
+repository at all. None of the compose-side tuning (`shared_buffers`,
+`work_mem`, `io_method`…) reaches the managed server; RDS applies its own
+parameter group. Note also that `.env.production.example` sets `DB_USERNAME=georag`
 (line 143) directly under a comment saying Laravel connects as
 `georag_app`; compose ignores that key because the services set
 `DB_USERNAME` from `GEORAG_APP_USER`, but the example is wrong as a
@@ -101,8 +120,8 @@ production template and the live Azure env is not in the repo.
 | `georag_app` | yes | [database/raw/phase1/10-georag-app-role.sql](../../../database/raw/phase1/10-georag-app-role.sql) | `NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`. Runtime role for Laravel and FastAPI. USAGE on 13 schemas; SELECT/INSERT/UPDATE on their tables (DELETE only on `workspace.idempotency_keys` and `workspace.dry_run_outputs`); EXECUTE on the four `audit.*` hash-chain functions. The script's final block **raises** if the role is ever SUPERUSER or BYPASSRLS. |
 | `georag_read`, `georag_write`, `georag_audit` | no (groups) | [docker/postgresql/init/init-roles.sql](../../../docker/postgresql/init/init-roles.sql) | Least-privilege groups: read = SELECT on silver/bronze/gold/public_geo; write inherits read + INSERT/UPDATE on silver/public; audit = INSERT on `audit.*`. **Nothing outside `database/` references them** — no connection string uses them. The header also names a `georag_admin` that is never created. |
 | `hatchet` | yes | [docker/postgresql/init/20-hatchet-database.sql](../../../docker/postgresql/init/20-hatchet-database.sql) | Owner of the `hatchet` DB; password `hatchet` unless `HATCHET_DB_PASSWORD` is set. |
-| `martin_readonly` | dev: no; Azure: yes | migration `2026_04_22_130000_create_silver_mvt_functions.php` (+ later MVT migrations) | `NOLOGIN NOINHERIT NOSUPERUSER`, EXECUTE on the `silver.pg_*` tile functions. On Azure `deploy/azure/containerapps/rotate-martin-credential.sh` gives it a password and `martin-cc` connects as it. In compose Martin still connects as `georag_app` (§5). |
-| ~~`kestra`~~ | — | dropped by `database/raw/phase3/95-kestra-sunset.sql` | history |
+| `martin_readonly` | dev: no; Azure: yes | migration `2026_04_22_130000_create_silver_mvt_functions.php` (+ later MVT migrations) | `NOLOGIN NOINHERIT NOSUPERUSER`, EXECUTE on the `silver.pg_*` tile functions. It has no password-granting script since the Azure tree was deleted (ADR-0022); on AWS, Martin runs as a Fargate task and connects as `georag_app` like the rest. In compose Martin still connects as `georag_app` (§5). |
+| ~~`activepieces`~~, ~~`kestra`~~ | — | dropped by [`database/raw/phase3/90-activepieces-sunset.sql`](../../../database/raw/phase3/90-activepieces-sunset.sql) and [`95-kestra-sunset.sql`](../../../database/raw/phase3/95-kestra-sunset.sql) | history. Both were LOGIN roles with hardcoded passwords, created by `phase2/10-activepieces-role-and-db.sql` and `phase3/10-kestra-role-and-db.sql`. Those two files were **deleted** in the AWS migration (ADR-0022) so no operator can apply them to a fresh RDS instance; the sunset files above are all that remains, and they exist to clean a cluster that already has the roles. Both are no-ops on AWS. |
 
 `init-roles.sql` **is** inside the auto-init directory; an older note
 saying it had to be applied by hand is obsolete. It guards the grants on
@@ -401,13 +420,14 @@ agent went with them. What remains:
 
 | Store | Recovery story | Evidence |
 |---|---|---|
-| PostgreSQL | Azure automated backups, 35-day PITR. No repo-side dump or WAL upload runs. | [Ch 14](14-status-matrix.md); `docker/postgresql/backup.sh` and `wal-upload.sh` have no caller |
+| PostgreSQL | RDS automated backups, 35-day PITR. No repo-side dump or WAL upload runs. | [Ch 14](14-status-matrix.md); `docker/postgresql/backup.sh` and `wal-upload.sh` have no caller |
 | Qdrant | Derived data: reset `embedding_id` and let `embed_pending_passages` rebuild from `silver.document_passages` | `scripts/reset_embeddings_for_reencode.py` |
-| Redis | None. Cache plus short-lived queue jobs; Azure instance is ephemeral by configuration | `deploy/azure/containerapps/redis.yaml` |
-| Blob | LRS only; no versioning or second copy recorded | `deploy/azure/README.md` |
+| Redis | AOF on an EFS volume since 2026-09-08. The Azure app had `--appendonly yes` with **no volume**, so every nightly restart dropped sessions and any queued Horizon job | `deploy/aws/terraform/services.tf`; `scripts/check_redis_manifests.py` |
+| Object storage | S3 versioning with 90-day non-current retention since 2026-09-08. On Azure it was the one irreplaceable copy: LRS only, no backup workflow, no restore procedure | `deploy/aws/terraform/`; ADR-0022 |
 | `backups.snapshot_runs` | Table exists and the admin router lists it; no workflow writes to it | `app/routers/admin_tier234.py` |
 
-`ops/runbooks/azure-oncall.md` states plainly that no restore has ever
-been rehearsed and there is no working restore procedure to document.
-That is the current posture, accepted deliberately; treat a Postgres PITR
-drill as the highest-value gap in this chapter.
+`ops/runbooks/aws-oncall.md` states plainly that **nothing here has been
+restore-tested**. The two rows above are more mechanism than Azure ever
+had, and a mechanism that should work is not a restore procedure. That is
+the current posture, accepted deliberately; treat a Postgres PITR drill as
+the highest-value gap in this chapter.

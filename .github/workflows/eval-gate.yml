@@ -140,11 +140,25 @@ jobs:
       FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
       HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
       # STUBBED — see workflow header. Same stub used by ci.yml's E2E smoke job.
-      EMBEDDING_BACKEND: foundry
-      AZURE_FOUNDRY_ENDPOINT: http://localhost:8899
-      AZURE_FOUNDRY_API_KEY: stub-key
-      AZURE_FOUNDRY_EMBED_DEPLOYMENT: stub-embed
-      AZURE_FOUNDRY_EMBED_DIMENSION: "1024"
+      #
+      # 2026-09-16: this block still said EMBEDDING_BACKEND=foundry and set
+      # four AZURE_FOUNDRY_* variables. ci.yml's E2E smoke job was moved off
+      # that shape on 2026-09-08 (ADR-0022) and this one was missed, so the
+      # two had drifted despite the comment above claiming they matched.
+      #
+      # It was not merely stale, it was broken: `foundry` is a startup ERROR
+      # rather than an ignored value, and Settings._reject_retired_azure_config
+      # fails startup on ANY AZURE_FOUNDRY_* being set, naming the replacement.
+      # This job could not have reached its first assertion.
+      #
+      # Same fix ci.yml took, for the same reason: Bedrock is reached with
+      # boto3/SigV4 and has no configurable base URL, so there is nothing to
+      # point at a stub. The stub serves the embedding SIDECAR contract and
+      # the job selects that branch, which keeps the runner free of AWS
+      # credentials. `local` rather than unset, because the code default is
+      # `bedrock` and that short-circuits before EMBEDDING_SERVICE_URL is read.
+      EMBEDDING_BACKEND: local
+      EMBEDDING_SERVICE_URL: http://localhost:8899
       LLM_BACKEND: vllm
       VLLM_URL: http://localhost:8899/v1
 

@@ -27,7 +27,7 @@ calling Postgres functions or wrapping `ST_AsMVT()` around table queries.
 - Healthcheck: `wget /health` ([docker-compose.yml:824-828](../../../docker-compose.yml)).
 - Metrics: `/metrics` (native since Martin 1.7) — **nothing scrapes it**. Prometheus was removed 2026-07-28 ([Ch 12 §2](12-observability.md)).
   The four `martin-alerts.yml` rules it used to back went with the
-  `docker/prometheus/` directory. No Azure Monitor rule replaced them, so
+  `docker/prometheus/` directory. No production alert rule replaced them, so
   a tile-server regression surfaces only as the client-side
   `tileFailureWatchdog` in the browser ([Ch 10 §10](10-frontend.md)).
 - Catalog: `GET /catalog` lists every source.

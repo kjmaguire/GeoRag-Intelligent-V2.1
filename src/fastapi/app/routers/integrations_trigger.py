@@ -1,17 +1,22 @@
-"""Phase 3 — internal route that bridges Kestra flows to Hatchet workflows.
+"""Phase 3 — internal route that bridges external flows to Hatchet workflows.
 
-Kestra is the integration edge: it owns external-feed scheduling,
-webhook reception, and third-party connectors. When a flow needs to
-do work that lives inside the GeoRAG stack — drop a row in bronze,
-kick off a Hatchet workflow, write to silver — it POSTs here.
+The integration edge owns external-feed scheduling, webhook reception,
+and third-party connectors. When a flow needs to do work that lives
+inside the GeoRAG stack — drop a row in bronze, kick off a Hatchet
+workflow, write to silver — it POSTs here.
+
+**There is no integration edge today.** Kestra held that role and was
+removed 2026-07-28 without a flow ever deployed; nothing calls this
+router. The machinery is kept because the contract is sound and the
+next edge will need the same shape — see Ch 11 of the manual.
 
 **Auth (Phase 3 Step 7 — Kestra sunset complete):**
 
   - **Per-flow JWT** is the only accepted auth.
     ``Authorization: Bearer <jwt>`` where the JWT carries
-    ``scope=flow:<flow_name>`` for THIS flow. Each Kestra flow holds
-    its own JWT in Kestra's secret store; a leak compromises one
-    flow rather than every integration.
+    ``scope=flow:<flow_name>`` for THIS flow. Each calling flow holds
+    its own JWT in its own secret store; a leak compromises one flow
+    rather than every integration.
   - The legacy ``X-Service-Key`` fallback was removed at Step 7.
 
 Registry: ``FLOW_REGISTRY`` maps a flow_name (URL path param) to the
@@ -133,7 +138,7 @@ async def trigger_integration(
     """Dispatch a registered flow.
 
     Returns 202 Accepted with the Hatchet workflow_run_id. The caller
-    (Kestra flow) does NOT wait for completion; flows that need a
+    (the calling flow) does NOT wait for completion; flows that need a
     synchronous result should poll a separate status endpoint added
     in a later phase.
 

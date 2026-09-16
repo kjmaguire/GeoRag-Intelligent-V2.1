@@ -10,8 +10,11 @@ Manual invocation:
   embed_pending_passages_wf.run({"workspace_id": "<uuid>", "project_id": "<uuid>"})
 
 Cron-fire (when project_id="*"): walks all projects with un-embedded
-passages and syncs them. Cron schedule omitted for now — operator
-triggers manually after each cluster ingest.
+passages and syncs them. Two schedules, not none: ``*/10 * * * *``
+picks up newly landed passages within ten minutes, and ``45 20 * * *``
+is the daily sweep that catches whatever the fast tick missed. The
+operator-triggers-it-by-hand era ended when those were added; see the
+schedule comment on the workflow for the hours' history.
 """
 from __future__ import annotations
 
@@ -129,15 +132,16 @@ _dsn = build_dsn
 
 embed_pending_passages_wf = hatchet.workflow(
     name="embed_pending_passages",
-    # Doc-phase 183 — daily embed sync at 05:45 UTC (after kg_sync at
-    # 05:30).
+    # Doc-phase 183 — daily embed sync at 20:45 UTC. The original slot was
+    # 05:45, chosen to land after kg_sync at 05:30; kg_sync went with Neo4j
+    # on 2026-07-28, so only the daily tick itself still matters.
     # 2026-05-22 — added an "every 10 minutes" safety-net cron so that
     # when the persist-side inline trigger races with a Hatchet retry
     # (BattleNorth bug), unembedded passages get picked up within ~10 min
     # instead of waiting a full day. The function is idempotent (passages
     # already with embedding_id get skipped) so frequent runs are cheap
     # when nothing is pending.
-    on_crons=["45 5 * * *", "*/10 * * * *"],
+    on_crons=["45 20 * * *", "*/10 * * * *"],
     input_validator=EmbedPendingPassagesInput,
     # Per-workspace singleton. The every-10-min safety-net cron + daily
     # cron + manual triggers all queue behind the in-flight run for the
@@ -183,7 +187,8 @@ embed_pending_passages_wf = hatchet.workflow(
 #: notices — retrieval just returns fewer hits, and the passage is
 #: unreachable while every record says it is fine.
 #:
-#: Matched by alert rule 5e in deploy/azure/alerts/create-alerts.sh. There
+#: Matched by the qdrant-partial-loss metric filter in
+#: deploy/aws/terraform/alerts.tf. There
 #: is no metric to threshold: the Prometheus registry on this worker is
 #: unscraped, so the log line IS the signal.
 QDRANT_PARTIAL_LOSS_MARKER = "QDRANT_PARTIAL_LOSS"

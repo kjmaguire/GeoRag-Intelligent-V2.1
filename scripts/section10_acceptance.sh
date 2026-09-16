@@ -3,7 +3,7 @@
 # scripts/section10_acceptance.sh
 #
 # Master-plan §10 (Eval harness + Customer Support Cockpit) — v1
-# acceptance harness. Mirrors scripts/section11_acceptance.sh in shape +
+# acceptance harness. Mirrors scripts/section11_v2_acceptance.sh in shape +
 # exit-code semantics. Run after any §10 change + before declaring the
 # §10-v1 surface clean.
 #

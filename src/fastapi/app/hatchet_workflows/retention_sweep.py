@@ -40,10 +40,14 @@ fail-open when app.workspace_id is unset anyway — see
 should eventually move to an explicit BYPASSRLS maintenance role instead
 of leaning on owner-bypass / fail-open behaviour.
 
-Cron: 04:45 UTC nightly — after cold_tier_archive (04:00),
-pg_partman_maintenance + idempotency_keys_cleanup (04:15) and
-enrich_passage_context (04:30), before the embed sweep (05:45), so the
-DELETEs don't contend with the other nightly writers.
+Cron: 19:45 UTC nightly — after cold_tier_archive (19:00) and
+pg_partman_maintenance + idempotency_keys_cleanup (19:15), before the
+embed sweep (20:45), so the DELETEs don't contend with the other writers.
+
+The old text also claimed to run after enrich_passage_context "(04:30)".
+That was already wrong — enrich moved to 14:45 on 2026-08-21 and this line
+was never updated — and it is now wrong in the other direction: enrich runs
+at 21:45, AFTER this sweep. Nothing here depends on that ordering.
 """
 from __future__ import annotations
 
@@ -179,7 +183,7 @@ async def _delete_in_batches(
 
 retention_sweep = hatchet.workflow(
     name="retention_sweep",
-    on_crons=["45 4 * * *"],  # 04:45 UTC nightly — see module docstring
+    on_crons=["45 19 * * *"],  # 19:45 UTC nightly — see module docstring
     input_validator=RetentionSweepInput,
 )
 

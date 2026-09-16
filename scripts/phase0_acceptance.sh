@@ -186,7 +186,11 @@ $PG_PSQL_BIN -q -c "
 " >/dev/null
 
 export WS_ID="$ACCEPTANCE_WS_ID"
-export REDIS_PASSWORD="${REDIS_PASSWORD:-N2Wz3FdVExUkEs8AysiAmh4usppA8FZ}"
+# Read from the environment. This used to carry the dev cluster's real
+# Redis password as a `:-` default, in a public repo, past
+# check-no-committed-secrets.php — see that script's third pattern.
+: "${REDIS_PASSWORD:?set REDIS_PASSWORD before running this harness (docker exec georag-redis env | grep REDIS_PASSWORD)}"
+export REDIS_PASSWORD
 agent_invoke_out=$(fastapi_python_with_env WS_ID REDIS_PASSWORD -- -c "
 import asyncio, asyncpg, os, sys, uuid
 import redis.asyncio as aioredis

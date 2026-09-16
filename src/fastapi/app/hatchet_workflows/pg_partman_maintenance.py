@@ -4,7 +4,8 @@ The audit, workflow, and usage ledgers are monthly-partitioned with three
 future partitions premade. This durable Hatchet cron advances those partitions
 before the premade window expires.
 
-Schedule: 04:15 UTC nightly, matching the retired Ofelia job.
+Schedule: 19:15 UTC nightly. It matched the retired Ofelia job at 04:15
+until the shutdown window moved to 08:30-17:00 Pacific on 2026-09-16.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ class PgPartmanMaintenanceOutput(BaseModel):
 
 pg_partman_maintenance = hatchet.workflow(
     name="pg_partman_maintenance",
-    on_crons=["15 4 * * *"],
+    on_crons=["15 19 * * *"],
     input_validator=PgPartmanMaintenanceInput,
 )
 

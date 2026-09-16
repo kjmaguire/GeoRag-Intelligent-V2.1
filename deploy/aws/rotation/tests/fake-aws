@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI, used by run.sh. Every invocation is appended to
+# $FAKE_AWS_LOG so a test can assert what the rotation actually attempted,
+# and in what ORDER — several cases are entirely about ordering (nothing is
+# staged before the snapshot; nothing is promoted before the task exits 0).
+#
+# Same design as deploy/aws/scheduler/tests/fake-aws, and for the same
+# reason: behaviour is driven entirely by environment variables so a case
+# reads as one line of setup. It differs in one way — this fake keeps
+# STATE, under $FAKE_AWS_STATE, because the rotation reads back what it
+# wrote. A put-secret-value that a later get-secret-value does not see
+# would make the promotion untestable, which is most of what there is to
+# test.
+#
+#   FAKE_AWS_DB_STATE          RDS instance status                (available)
+#   FAKE_AWS_SNAPSHOT_RC       exit code for `rds create-db-snapshot`    (0)
+#   FAKE_AWS_SNAPSHOT_WAIT_RC  exit code for `rds wait db-snapshot-available` (0)
+#   FAKE_AWS_NO_TASKDEF        describe-task-definition fails           ("")
+#   FAKE_AWS_MISSING_SERVICES  services that do not exist               ("")
+#   FAKE_AWS_SCALE_FAIL        services whose `update-service` fails    ("")
+#   FAKE_AWS_STUCK_RUNNING     services whose runningCount never falls  ("")
+#   FAKE_AWS_UNSTABLE          services `wait services-stable` fails for("")
+#   FAKE_AWS_RUNTASK_NOARN     run-task returns no ARN                  ("")
+#   FAKE_AWS_RUNTASK_NOSTOP    `wait tasks-stopped` fails               ("")
+#   FAKE_AWS_TASK_EXIT         container exit code, 1st run-task         (0)
+#   FAKE_AWS_VERIFY_EXIT       container exit code, 2nd run-task         (0)
+#   FAKE_AWS_PUT_SECRET_RC     exit code for `put-secret-value`          (0)
+set -uo pipefail
+
+printf '%s\n' "$*" >> "${FAKE_AWS_LOG:?FAKE_AWS_LOG must be set}"
+STATE="${FAKE_AWS_STATE:?FAKE_AWS_STATE must be set}"
+
+arg_after() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+  return 1
+}
+
+in_list() {
+  local needle="$1" item
+  shift
+  for item in $*; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+QUERY="$(arg_after --query "$@" || true)"
+
+case "$1 ${2:-}" in
+
+  "sts get-caller-identity")
+    exit 0
+    ;;
+
+  "rds describe-db-instances")
+    printf '%s\n' "${FAKE_AWS_DB_STATE:-available}"
+    exit 0
+    ;;
+
+  "rds create-db-snapshot")
+    arg_after --db-snapshot-identifier "$@" >> "${STATE}/snapshots"
+    exit "${FAKE_AWS_SNAPSHOT_RC:-0}"
+    ;;
+
+  "rds wait")
+    exit "${FAKE_AWS_SNAPSHOT_WAIT_RC:-0}"
+    ;;
+
+  "ecs describe-clusters")
+    printf '%s\n' "$(arg_after --clusters "$@")"
+    exit 0
+    ;;
+
+  "ecs describe-task-definition")
+    [ -n "${FAKE_AWS_NO_TASKDEF:-}" ] && exit 254
+    exit 0
+    ;;
+
+  "ecs describe-services")
+    svc="$(arg_after --services "$@")"
+    if in_list "$svc" "${FAKE_AWS_MISSING_SERVICES:-}"; then
+      printf 'None\n'
+      exit 0
+    fi
+    case "$QUERY" in
+      *serviceName*) printf '%s\n' "$svc" ;;
+      *desiredCount*) printf '%s\n' "$(cat "${STATE}/desired.${svc}" 2>/dev/null || echo 1)" ;;
+      *runningCount*)
+        if in_list "$svc" "${FAKE_AWS_STUCK_RUNNING:-}"; then
+          # Never comes down, whatever the desired count says. This is the
+          # case the rotation must refuse to proceed through: a writer that
+          # is still up encrypts rows under the old key mid-rotation.
+          printf '%s\n' "$(cat "${STATE}/initial.${svc}" 2>/dev/null || echo 1)"
+        else
+          printf '%s\n' "$(cat "${STATE}/desired.${svc}" 2>/dev/null || echo 1)"
+        fi
+        ;;
+      *) printf '\n' ;;
+    esac
+    exit 0
+    ;;
+
+  "ecs update-service")
+    svc="$(arg_after --service "$@")"
+    in_list "$svc" "${FAKE_AWS_SCALE_FAIL:-}" && exit 254
+    if n="$(arg_after --desired-count "$@")"; then
+      printf '%s' "$n" > "${STATE}/desired.${svc}"
+    fi
+    exit 0
+    ;;
+
+  "ecs wait")
+    case "${3:-}" in
+      services-stable)
+        svc="$(arg_after --services "$@")"
+        in_list "$svc" "${FAKE_AWS_UNSTABLE:-}" && exit 255
+        exit 0
+        ;;
+      tasks-stopped)
+        [ -n "${FAKE_AWS_RUNTASK_NOSTOP:-}" ] && exit 255
+        exit 0
+        ;;
+    esac
+    exit 0
+    ;;
+
+  "ecs run-task")
+    [ -n "${FAKE_AWS_RUNTASK_NOARN:-}" ] && { printf 'None\n'; exit 0; }
+    n=$(( $(cat "${STATE}/runtask.count" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "${STATE}/runtask.count"
+    # The override carries the base64'd script. Kept so a case can assert
+    # WHICH script ran without decoding it in the assertion itself.
+    arg_after --overrides "$@" | head -c 4000 >> "${STATE}/overrides.${n}"
+    # What APP_KEY the secret held AT THE MOMENT this task started. The
+    # ordering that matters most in the whole rotation is that the answer
+    # is still the OLD key for the re-encryption task: promoting before the
+    # task succeeds would leave the apps holding a key the data was never
+    # re-encrypted to.
+    jq -r '.APP_KEY' < "${STATE}/secret.json" > "${STATE}/appkey-at-runtask.${n}" 2>/dev/null
+    printf 'arn:aws:ecs:us-east-1:000000000000:task/georag/fake%s\n' "$n"
+    exit 0
+    ;;
+
+  "ecs describe-tasks")
+    n="$(cat "${STATE}/runtask.count" 2>/dev/null || echo 1)"
+    case "$QUERY" in
+      *exitCode*)
+        if [ "$n" = 1 ]; then printf '%s\n' "${FAKE_AWS_TASK_EXIT:-0}";
+        else printf '%s\n' "${FAKE_AWS_VERIFY_EXIT:-0}"; fi
+        ;;
+      *stoppedReason*) printf 'Essential container in task exited\n' ;;
+      *) printf '\n' ;;
+    esac
+    exit 0
+    ;;
+
+  "secretsmanager get-secret-value")
+    cat "${STATE}/secret.json"
+    exit 0
+    ;;
+
+  "secretsmanager put-secret-value")
+    rc="${FAKE_AWS_PUT_SECRET_RC:-0}"
+    [ "$rc" != 0 ] && exit "$rc"
+    src="$(arg_after --secret-string "$@")"
+    # The real CLI takes file://PATH; the rotation uses that form for every
+    # write precisely so the document never becomes an argv. Honour only
+    # that form, so a change that starts passing it inline fails here.
+    case "$src" in
+      file://*) cat "${src#file://}" > "${STATE}/secret.json" ;;
+      *) printf 'fake-aws: put-secret-value was given a non-file secret-string\n' >&2; exit 253 ;;
+    esac
+    exit 0
+    ;;
+
+esac
+
+printf 'fake-aws: unhandled command: %s\n' "$*" >&2
+exit 252

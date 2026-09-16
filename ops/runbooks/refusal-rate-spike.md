@@ -1,4 +1,26 @@
-# Refusal-rate spike — triage on Azure
+# Refusal-rate spike — triage
+
+> **⚠️ 2026-09-08 — production moved to AWS
+> ([ADR-0022](../../docs/adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Read "Foundry" below as "Amazon Bedrock" and Azure Monitor metric names
+> as their `AWS/Bedrock` equivalents (`ClientErrors` ->
+> `InvocationClientErrors`, and so on). The measured thresholds carried
+> over unchanged; the triage logic is about the answer path and did not
+> change at all.
+>
+> Two things in this document DID change substantively:
+>
+> - **`RERANKER_SCORE_THRESHOLD_FOUNDRY` is now
+>   `RERANKER_SCORE_THRESHOLD_HOSTED`**, and the model under it dropped
+>   from Cohere Rerank **v4** to **3.5**, which Bedrock serves instead.
+>   The 0.2 value was measured against v4 and is carried over
+>   unvalidated. If you are reading this runbook because refusals spiked
+>   shortly after 2026-09-08, THAT is the first thing to check — it is
+>   the only retrieval-quality gate in the system.
+> - **Cohere Parse and Command A+ run on Bedrock Marketplace endpoints**
+>   that the nightly sweeps delete and recreate. A failed recreate means
+>   no chat and no OCR at all, and no invocation metric can see it.
+>   `aws-oncall.md` §4 has the check.
 
 **What this is.** The system started saying "I can't answer that" (or
 answering with nothing to cite) far more than it did last week. Refusing is
@@ -49,7 +71,7 @@ It refuses to compare unless **both** windows have at least 20 runs
 (`insufficient_sample`), because three queries and one refusal is 33% and
 means nothing. When something moved it logs one line containing
 `ANSWER_QUALITY_REGRESSION` on hatchet-worker-cc, and the Azure Monitor
-rule `answer-quality-regression` (`deploy/azure/alerts/create-alerts.sh`)
+alarm `answer-quality-regression` (`deploy/aws/terraform/alerts.tf`)
 emails `georag-alerts-ag`. So:
 
 - The alert is **a day late by design**. What it names happened yesterday.
@@ -170,7 +192,7 @@ problems and are not.
 
 **Postgres.** If it is `Stopped` outside 06:00–14:00 UTC, or the app tier
 came up against a stopped server, every query fails its health probe
-(`azure-oncall.md` §1 — start it, then restart the consumers).
+(`aws-oncall.md` §1 — start it, then restart the consumers).
 
 ```bash
 az postgres flexible-server show -g $RG -n georag-pg-cc --query state -o tsv
@@ -178,7 +200,7 @@ az postgres flexible-server show -g $RG -n georag-pg-cc --query state -o tsv
 
 **Foundry.** One resource serves the LLM, Embed v4, Rerank v4 and Parse v5.
 Throttling, quota exhaustion or a bad key hits all of them, and a spike of
-`ClientErrors` explains a refusal spike on its own. `azure-oncall.md` §4
+`InvocationClientErrors` explains a refusal spike on its own. `aws-oncall.md` §4
 has the metric query and the false-positive caveat (a big scanned ingest
 sends one Parse call per page). If `ClientErrors` is clean, check
 `ServerErrors` the same way.
@@ -190,7 +212,7 @@ sends one Parse call per page). If `ClientErrors` is clean, check
   collection does not; the `qdrant-partial-loss` alert rule watches it.
   Retrieval then returns nothing for exactly the documents that are
   missing, which is a zero-evidence spike scoped to one project.
-- The optimizer is stuck on a full SMB share (`azure-oncall.md` §4,
+- The optimizer is stuck on a full share — a class that EFS removed (`aws-oncall.md` §4,
   `qdrant-cc-optimizer-stuck`). Searches still answer but slowly and
   incompletely.
 
@@ -272,7 +294,7 @@ GROUP BY 1, 2 ORDER BY 1 DESC, 3 DESC;
 ```
 
 `tesseract` where `cohere_parse` was expected is ADR-0019's fallback
-doing its job — see `azure-oncall.md` §4 for why Parse was down.
+doing its job — see `aws-oncall.md` §4 for why Parse was down.
 
 ---
 
@@ -295,7 +317,7 @@ az containerapp show -g $RG -n fastapi-cc --query "properties.template.container
 az containerapp revision list -g $RG -n fastapi-cc --query "[].{name:name,created:properties.createdTime,active:properties.active}" -o table
 ```
 
-If the spike began with a revision, `azure-oncall.md` §5 rolls the image
+If the spike began with a deploy, `aws-oncall.md` §5 rolls the task definition
 back; that is the one case where a rollback is the right response to a
 refusal spike. If the deployment changed underneath you, the golden set
 (§6) is how you decide whether the new model is acceptable.
@@ -373,10 +395,10 @@ when the alert stops emailing.
 
 ## Cross-references
 
-- `ops/runbooks/azure-oncall.md` — §1 Postgres, §3 worker consuming, §4 Foundry / Qdrant, §5 rollback, §6 reading logs.
+- `ops/runbooks/aws-oncall.md` — §1 Postgres, §3 worker consuming, §4 Bedrock / Qdrant, §5 rollback, §6 reading logs.
 - `ops/runbooks/secret-rotation.md` — §3 for the 401 storm a half-rotated key produces.
 - `app/hatchet_workflows/answer_quality_watch.py` — the watch, its thresholds and its sample gate.
 - `app/agent/hallucination/orchestrator_validators.py` — the four guards as built; `georag-architecture.html` §04i for the six-layer design they implement.
-- `deploy/azure/alerts/create-alerts.sh` — `answer-quality-regression`, `qdrant-partial-loss`, the Foundry rules. `qdrant-cc-optimizer-stuck` predates the script and lives only in the portal.
+- `deploy/aws/terraform/alerts.tf` — `answer-quality-regression`, `qdrant-partial-loss`, the Bedrock rules. The Azure `qdrant-cc-optimizer-stuck` rule has no successor: it watched a fixed storage-share quota, and EFS has none.
 - `src/fastapi/scripts/run_golden_benchmark.py`, `compare_benchmarks.py` — the correctness measurement this runbook cannot give you.
 - `_archived/refusal-rate-spike.md`, `_archived/retrieval-tuning.md` — compose-era; the reasoning holds, the commands do not.

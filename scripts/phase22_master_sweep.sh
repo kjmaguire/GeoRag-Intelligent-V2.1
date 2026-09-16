@@ -10,7 +10,6 @@ cd "$REPO"
 
 mapfile -t VERIFIERS < <(awk '/^    scripts\/phase[0-9]/{gsub(/^    /,""); gsub(/[[:space:]]*$/,""); print}' \
     "$REPO/scripts/phase19_master_sweep.sh")
-VERIFIERS+=("scripts/phase20_step1_verify.sh")
 VERIFIERS+=("scripts/phase21_step1_verify.sh")
 VERIFIERS+=("scripts/phase22_step1_verify.sh")
 

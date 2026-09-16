@@ -73,9 +73,13 @@ class StorageConfig:
     canonical/legacy env-var resolution logic stays in one place.
     """
 
-    endpoint_url: str
-    access_key: str
-    secret_key: str
+    #: ``None`` means "resolve the regional endpoint" (real AWS S3). A value
+    #: pins every call to that host (SeaweedFS, MinIO, or an S3 gateway).
+    endpoint_url: str | None
+    #: ``None`` on both means "use boto3's credential chain" — the task role
+    #: on ECS. They are set or unset together; see :meth:`from_env`.
+    access_key: str | None
+    secret_key: str | None
     region: str
     bucket_names: dict[Bucket, str] = field(default_factory=dict)
 
@@ -84,14 +88,29 @@ class StorageConfig:
 
     @classmethod
     def from_env(cls) -> StorageConfig:
+        # No default endpoint since 2026-09-08 (ADR-0022). It used to be
+        # `http://minio:8333`, which is right for compose and wrong for AWS:
+        # boto3 given an explicit endpoint_url talks to that host and nothing
+        # else, so an unset variable on an ECS task pointed every S3 call at
+        # a service name that does not resolve there. `None` means "let the
+        # SDK resolve the regional S3 endpoint", which is what real S3 needs
+        # — see build_boto3_client, which omits the kwarg entirely rather
+        # than passing None.
         endpoint_url = _resolve(
             "AWS_ENDPOINT_URL",
             "S3_ENDPOINT_URL",
             "S3_ENDPOINT",
             "MINIO_ENDPOINT",
             "SEAWEEDFS_S3_ENDPOINT",
-            default="http://minio:8333",
         )
+        # Optional since 2026-09-08. On ECS the task role supplies
+        # credentials through the container credential provider and boto3's
+        # default chain picks them up; there is no key to set, and requiring
+        # one made StorageConfig.from_env() raise before boto3 ever got the
+        # chance. When both are None the SDK does its own resolution — which
+        # also covers instance profiles, SSO and a developer's ~/.aws.
+        #
+        # Compose still sets them, so the dev path is unchanged.
         access_key = _resolve(
             "AWS_ACCESS_KEY_ID",
             "S3_ACCESS_KEY",
@@ -99,7 +118,6 @@ class StorageConfig:
             "MINIO_ACCESS_KEY",
             "SEAWEEDFS_ACCESS_KEY",
             "SEAWEEDFS_S3_ACCESS_KEY",
-            required=True,
         )
         secret_key = _resolve(
             "AWS_SECRET_ACCESS_KEY",
@@ -108,8 +126,17 @@ class StorageConfig:
             "MINIO_SECRET_KEY",
             "SEAWEEDFS_SECRET_KEY",
             "SEAWEEDFS_S3_SECRET_KEY",
-            required=True,
         )
+        if bool(access_key) != bool(secret_key):
+            # One without the other is always a mistake, and a silent one:
+            # boto3 would fall through to the credential chain and either
+            # succeed with different credentials than intended or fail with
+            # NoCredentialsError naming nothing.
+            raise ValueError(
+                "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set "
+                "together or not at all. Set neither to use the instance or "
+                "task role."
+            )
         # SEAWEEDFS_S3_REGION — found during the PR5b migration of
         # backup_seaweedfs.py, which reads a region override no other call
         # site did (every other file hardcodes "us-east-1" directly).

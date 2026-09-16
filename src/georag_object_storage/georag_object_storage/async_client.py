@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import aioboto3
-from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from georag_object_storage.buckets import Bucket
@@ -36,14 +35,14 @@ def async_client_kwargs(config: StorageConfig) -> dict:
 
         async with aioboto3.Session().client("s3", **async_client_kwargs(config)) as client:
             ...
+
+    Unset endpoint and credentials are omitted rather than passed as
+    ``None`` — see :func:`sync_client._client_kwargs` for why that
+    distinction decides whether an ECS task role is used at all.
     """
-    return {
-        "endpoint_url": config.endpoint_url,
-        "aws_access_key_id": config.access_key,
-        "aws_secret_access_key": config.secret_key,
-        "region_name": config.region,
-        "config": Config(signature_version="s3v4"),
-    }
+    from georag_object_storage.sync_client import _client_kwargs
+
+    return _client_kwargs(config)
 
 
 class AsyncS3CompatibleStorage:

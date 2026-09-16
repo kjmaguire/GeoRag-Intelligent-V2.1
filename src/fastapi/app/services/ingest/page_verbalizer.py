@@ -69,12 +69,20 @@ async def verbalize_pending_pages(
     if not vision.is_enabled():
         return result
     if not vision.is_configured():
-        # Loud, once per sweep — a flag that is on with no key would otherwise
-        # look identical to "nothing to do".
+        # Loud, once per sweep — a flag that is on with no model configured
+        # would otherwise look identical to "nothing to do".
+        #
+        # This named ENDPOINT_ENV/KEY_ENV until 2026-09-08. Bedrock
+        # authenticates from the task role, so there is no endpoint and no key
+        # left to be missing — only the model id, which has no default because
+        # Bedrock has no equivalent of the retired gpt-5-mini (ADR-0022).
+        # Those attributes no longer exist, so this branch raised
+        # AttributeError at exactly the moment it existed to report a
+        # misconfiguration. mypy caught it; no test covered it.
         log.error(
-            "page_verbalizer: %s is on but %s/%s are not set — no pages "
+            "page_verbalizer: %s is on but %s is not set — no pages "
             "will be described",
-            vision.ENABLED_ENV, vision.ENDPOINT_ENV, vision.KEY_ENV,
+            vision.ENABLED_ENV, vision.MODEL_ID_ENV,
         )
         return result
 

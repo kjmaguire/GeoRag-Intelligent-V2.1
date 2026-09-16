@@ -1,4 +1,4 @@
-"""RAG-quality audit 2026-08-14 — finding 5.
+"""RAG-quality audit 2026-08-14 — finding 5, and its 2026-09-08 sequel.
 
 The DB CHECK constraint on ``silver.answer_runs.backend_used`` and the
 FastAPI ``BackendLiteral`` are two independent sources of truth that have
@@ -7,6 +7,21 @@ it; 'azure' — the live default backend — was representable in neither).
 This test parses the migration's ``VALUES`` constant directly so any future
 edit to one side without the other fails CI immediately instead of
 resurfacing as a live persist-time CheckViolationError.
+
+That agreement check is necessary and was NOT sufficient. When ADR-0022
+made ``bedrock`` the default backend, the Literal and the CHECK still
+agreed perfectly — both were missing it — so this file stayed green while
+every answer run would have persisted ``backend_used = 'unknown'``. No
+constraint violation, no error, just the column quietly back to carrying no
+information: the same defect finding 5 fixed, through a different door.
+``test_configured_default_backend_is_representable`` closes that, by
+reading the default out of config.py rather than off either list.
+
+2026-09-15 (ADR-0023): ``cohere`` took the default from ``bedrock`` and was
+added to both sides in the same commit — the first time this did not need an
+audit to notice. The migration is now resolved by glob rather than by name,
+because a hardcoded filename means every NEW backend-check migration leaves
+this file parsing a superseded constraint.
 
 Run with:
     pytest tests/test_backend_enum_contract.py -v
@@ -20,12 +35,50 @@ from typing import get_args
 
 from app.models.answer_run import _KNOWN_BACKENDS, BackendLiteral, normalize_backend
 
-_MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "database"
-    / "migrations"
-    / "2026_08_14_010000_extend_answer_runs_backend_check.php"
-)
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "database" / "migrations"
+
+
+def _latest_backend_check_migration() -> Path:
+    """The migration that actually defines the CHECK after `migrate` runs.
+
+    Resolved by glob rather than named, which is a correction: this file
+    hardcoded ``..._for_bedrock.php`` and, when ADR-0023 added ``cohere`` in
+    a NEW migration, it went on parsing the superseded constraint. That is a
+    drift test that itself drifts — it would have reported disagreement
+    against a set the database had already moved past.
+
+    Laravel applies migrations in filename order and each of these drops and
+    recreates ``answer_runs_backend_valid`` outright, so the newest filename
+    is the constraint in force.
+    """
+    candidates = sorted(_MIGRATIONS_DIR.glob("*answer_runs_backend_check*.php"))
+    assert candidates, (
+        f"no *answer_runs_backend_check*.php migration under {_MIGRATIONS_DIR} "
+        "— the backend_used CHECK and BackendLiteral must be defined together"
+    )
+    return candidates[-1]
+
+
+_MIGRATION_PATH = _latest_backend_check_migration()
+
+_CONFIG_PATH = Path(__file__).resolve().parents[1] / "app" / "config.py"
+
+
+def _default_llm_backend() -> str:
+    """Read ``LLM_BACKEND``'s default out of config.py's source.
+
+    Parsed rather than imported on purpose. Importing ``app.config``
+    instantiates ``Settings()`` at module scope, which needs
+    FASTAPI_SERVICE_KEY and POSTGRES_PASSWORD in the environment — this
+    file is a pure source-agreement test and stays runnable without any.
+    It is the same technique the migration is read with, for the same
+    reason: the value under test is a literal in a file, and reading the
+    file is the most direct way to see it.
+    """
+    text = _CONFIG_PATH.read_text(encoding="utf-8")
+    match = re.search(r'^    LLM_BACKEND: str = "([^"]+)"', text, re.MULTILINE)
+    assert match, f"could not find the LLM_BACKEND default in {_CONFIG_PATH}"
+    return match.group(1)
 
 
 def _values_from_migration() -> set[str]:
@@ -74,3 +127,27 @@ def test_normalize_backend_falls_back_to_unknown() -> None:
     assert normalize_backend("") == "unknown"
     assert normalize_backend("ollama") == "unknown"  # dropped 2026_06_02_220000
     assert normalize_backend("some-future-backend") == "unknown"
+
+
+def test_configured_default_backend_is_representable() -> None:
+    """The DEFAULT backend must survive a round trip through persistence.
+
+    Reads ``LLM_BACKEND``'s default out of config.py — deliberately not off
+    either list under test, because a value missing from both is exactly
+    what the agreement test above cannot see. If someone changes the
+    default backend without extending the CHECK, this fails here rather
+    than showing up months later as a column full of 'unknown'.
+    """
+    default_backend = _default_llm_backend()
+
+    assert default_backend in _values_from_migration(), (
+        f"LLM_BACKEND defaults to {default_backend!r}, which the "
+        "answer_runs_backend_valid CHECK does not allow — add a migration "
+        "extending the set"
+    )
+    assert normalize_backend(default_backend) == default_backend, (
+        f"normalize_backend({default_backend!r}) returned "
+        f"{normalize_backend(default_backend)!r}: the default backend is "
+        "normalising away, so every answer run records the wrong value "
+        "without raising"
+    )

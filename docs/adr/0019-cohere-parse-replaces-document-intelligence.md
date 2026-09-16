@@ -126,7 +126,8 @@ one rendered page image per request. Azure Document Intelligence is
 
 ## Migration mechanics (for future reference)
 
-1. Run `ops/validation/cohere_parse_probe.sh` with live Foundry credentials
+1. Run `ops/validation/bedrock_probe.py` with live credentials (this said
+   `cohere_parse_probe.sh` and Foundry until ADR-0022 moved the host)
    and set `_PARSE_PATH`, `COHERE_PARSE_MAX_PIXELS` and the response
    adapter in `cohere_parse_client.py` from its report; commit scrubbed
    responses over the synthetic fixtures in

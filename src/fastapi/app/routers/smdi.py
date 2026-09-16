@@ -8,7 +8,8 @@ served from the local `public.smdi_deposits` table populated by the
 that table any more. This endpoint keeps serving whatever was last loaded —
 the data is frozen, not missing, which is the failure mode that looks fine
 until someone checks the dates. Re-point the refresh at a Hatchet cron (or
-restore Dagster) before treating this as live. See src/dagster/DORMANT.md.
+the `src/dagster` tree was deleted 2026-08-28, so restoring it is no longer
+an option) before treating this as live.
 
 The plan's original intent was to proxy + cache the paginated upstream
 ArcGIS REST response. Since Dagster already pulls upstream daily into
@@ -22,7 +23,8 @@ upstream paginated fetch — the response contract stays the same.
 
 See:
   - docs/handoffs/smdi_ingestion_2026_05_25.md — full plan reconciliation
-  - src/dagster/georag_dagster/assets/smdi_deposits.py — daily refresh
+  - the daily refresh lived in georag_dagster.assets.smdi_deposits, deleted
+    with the rest of src/dagster on 2026-08-28
 """
 
 from __future__ import annotations

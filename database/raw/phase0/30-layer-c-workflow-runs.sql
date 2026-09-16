@@ -1,10 +1,15 @@
 -- =============================================================================
 -- Phase 0 — Layer C — workflow.workflow_runs (partitioned) + workflow_run_events
 --
--- The unified per-run record across Hatchet, Activepieces (Phase 2+),
--- LangGraph (Phase 4+), Dagster, and Laravel Horizon. Every orchestrator
--- writes here at run start, updates at status changes, and stamps trace_id
--- so OpenTelemetry / Tempo can be cross-referenced.
+-- The unified per-run record across Hatchet, LangGraph (Phase 4+),
+-- Dagster, and Laravel Horizon. Every orchestrator writes here at run
+-- start, updates at status changes, and stamps trace_id.
+--
+-- The `engine` CHECK below is NOT authoritative: migration
+-- 2026_05_19_180000_drop_activepieces_from_workflow_engine_check reinstalls
+-- it, and the migration chain is what every cluster is built from. This
+-- file is kept byte-identical to the constraint that migration leaves
+-- behind so the two DDL layers cannot drift. Change both or neither.
 --
 -- Partitioned monthly by started_at to keep query latency bounded as runs
 -- accumulate over years.
@@ -15,7 +20,7 @@ CREATE TABLE IF NOT EXISTS workflow.workflow_runs (
     workspace_id        uuid        NULL,                                       -- no FK, high-volume time-partitioned
     workflow_kind       text        NOT NULL,                                   -- e.g. 'ingest_pdf', 'audit_ledger_verify'
     engine              text        NOT NULL
-        CHECK (engine IN ('hatchet','activepieces','langgraph','dagster','horizon','reverb')),
+        CHECK (engine IN ('hatchet','kestra','langgraph','dagster','horizon','reverb')),
     engine_run_id       text        NULL,                                       -- the orchestrator's native run id
     status              text        NOT NULL
         CHECK (status IN ('queued','running','success','failure','cancelled','timed_out')),
@@ -36,7 +41,7 @@ CREATE TABLE IF NOT EXISTS workflow.workflow_runs (
 COMMENT ON TABLE  workflow.workflow_runs IS
     'Unified workflow run record across all 5 orchestrators. Partitioned monthly by started_at.';
 COMMENT ON COLUMN workflow.workflow_runs.engine_run_id IS
-    'Native orchestrator id (Hatchet workflow run uuid, Activepieces flow run id, LangGraph thread id, etc.)';
+    'Native orchestrator id (Hatchet workflow run uuid, LangGraph thread id, etc.)';
 COMMENT ON COLUMN workflow.workflow_runs.trace_id IS
     'W3C Trace Context trace_id — same value appears in Tempo span tree and Langfuse trace metadata.';
 

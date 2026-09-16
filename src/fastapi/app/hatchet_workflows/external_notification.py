@@ -1,8 +1,8 @@
 """Phase 2 Step 5a — ``external_notification`` Hatchet workflow.
 
-Inbound webhook bridge. An external integration layer (Kestra flow,
-upstream SaaS webhook, etc.) authenticates the sender at its edge and
-forwards the normalised payload to
+Inbound webhook bridge. An external integration layer (an upstream
+SaaS webhook, a customer-side forwarder, etc.) authenticates the sender
+at its edge and forwards the normalised payload to
 ``/internal/v1/integrations/external_notification/trigger``.
 
 Shape: ``{notification_id, source, kind, payload, received_at}``.
@@ -56,7 +56,7 @@ RATE_LIMIT_WINDOW_SECONDS = 60  # token bucket refill window
 # IO models
 # =============================================================================
 class ExternalNotificationInput(BaseModel):
-    """Sent by an external integration layer (Kestra flow / upstream SaaS webhook).
+    """Sent by an external integration layer (upstream SaaS webhook, forwarder).
 
     The schema is intentionally generic — different external senders
     have different payload shapes. We keep ``payload`` as opaque dict
@@ -273,8 +273,10 @@ async def verify_hmac_signature_async(
 
 
 async def _flag_enabled(conn: asyncpg.Connection) -> bool:
-    # Phase 3 Step 3 — namespace `flows.<flow>.enabled` (legacy
-    # activepieces.* keys dropped at Phase 3 Step 7 sunset).
+    # Phase 3 Step 3 — namespace `flows.<flow>.enabled`. The default row
+    # is seeded by database/raw/phase4/20-flow-registry-table.sql and by
+    # migration 2026_08_17_050000; absent, the flag reads false and the
+    # workflow skips rather than recording the notification.
     row = await conn.fetchrow(
         """
         SELECT bool_value

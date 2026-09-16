@@ -232,7 +232,7 @@ async def test_mean_uncertainty_ignores_nulls(
         conn,
         workspace_id=synthetic_workspace,
         decision_type="workflow_enablement",
-        recommendation="Enable Activepieces flow X",
+        recommendation="Enable integration flow X",
         human_decision="accepted",
         decided_by_user_id=synthetic_user,
         uncertainty=0.50,

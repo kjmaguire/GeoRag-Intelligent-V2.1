@@ -15,10 +15,15 @@ WHAT THIS IS
                                         ReportController read
                                         silver.data_quality_flags
 
-    The only writer is ``src/dagster/georag_dagster/dq_writer.py``. Dagster
-    went dormant 2026-07-28 and has no container app in the Azure resource
-    group, so the table is empty in production and both surfaces render
+    The only writer was ``src/dagster/georag_dagster/dq_writer.py``. Dagster
+    went dormant 2026-07-28 and the whole ``src/dagster`` tree was DELETED on
+    2026-08-28, so the table is empty in production and both surfaces render
     against nothing.
+
+    Note the tense. When this file was written the finding was "the writer
+    exists but is not deployed"; it is now "no writer exists anywhere, on any
+    path, in any tree". That is a strictly worse position and the reason this
+    file did not become obsolete when the tree went away.
 
 WHY IT WAS WORSE THAN AN EMPTY PANEL
     ``DataQualityFlagsBadge`` returned null when ``open_total === 0``, with
@@ -68,9 +73,12 @@ _WRITE = ("INSERT INTO silver.data_quality_flags",
 def _live_writers() -> list[str]:
     """Files under the DEPLOYED trees that write the table.
 
-    src/dagster is excluded on purpose: it is the one place a writer does
-    exist, and it is dormant by explicit decision (see src/dagster/
-    DORMANT.md). Its presence is the whole point of this file.
+    These two roots used to be a narrowing — src/dagster held the one real
+    writer and was excluded on purpose, because a writer that exists but is
+    not deployed was the finding. Since that tree was deleted (2026-08-28)
+    the roots are no longer a narrowing at all: they are every tree the repo
+    still has, and the assertion below is now the stronger claim that
+    NOTHING writes this table.
     """
     found = []
     for root in (FASTAPI_APP, LARAVEL_APP):

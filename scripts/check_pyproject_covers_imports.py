@@ -51,13 +51,6 @@ MODULE_TO_DISTRIBUTION: dict[str, str] = {
     "jose": "python-jose",
     "magic": "python-magic",
     "google": "google-cloud-storage",  # heuristic; rarely needed
-    # `azure` is a namespace package spread across several dists (azure-core,
-    # azure-storage-blob, azure-identity, ...) — azure-core is the one that
-    # actually provides the `azure` top-level namespace, so map to it.
-    # (The fastapi service itself no longer imports `azure.*` since the
-    # Document Intelligence adapter was retired, ADR-0019; the object-storage
-    # package still does.)
-    "azure": "azure-core",
     "pkg_resources": "setuptools",
     "_pytest": "pytest",
     "tomllib": "<stdlib>",
@@ -105,6 +98,13 @@ ALLOWED_NON_PYPROJECT: set[str] = {
     # ML/data stack — guaranteed to be installed alongside their parents
     "PIL",           # via pillow → matplotlib, weasyprint, opencv
     "boto3",         # via aioboto3
+    # botocore is NOT declared explicitly on purpose: boto3 pins it to a
+    # tight range, so a second declaration here is a resolver conflict
+    # waiting to happen. It is imported directly (Config in
+    # services/_bedrock.py and agent/llm_bedrock.py, ClientError in the
+    # Bedrock adapters), which is why it needs saying rather than being
+    # left implicit.
+    "botocore",      # via boto3, which pins it
     "numpy",         # via torch, pandas, geopandas, xgboost, shap, ...
     "pandas",        # via geopandas, shap
     "starlette",     # via fastapi

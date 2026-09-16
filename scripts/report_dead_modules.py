@@ -43,7 +43,19 @@ APP = REPO / "src" / "fastapi" / "app"
 #: verified" while nothing dispatched to it. It was deleted 2026-08-28, which
 #: is the outcome this rule exists to produce. Counting a test as an importer
 #: would hide the next orphan whose tests make it look alive.
-APP_ROOTS = [APP, REPO / "src" / "fastapi" / "scripts"]
+#:
+#: ``ops/validation`` is a root for the same reason ``src/fastapi/scripts``
+#: is: an operator runs those files against a live deployment, so a module
+#: they import is reachable in production even though no request path
+#: touches it. Missing it was not theoretical — ``bedrock_probe.py`` imports
+#: ``app/services/bedrock_wire.py`` and this report called that module a
+#: 611-line orphan with passing tests, which is the exact false positive
+#: most likely to get a real module deleted.
+APP_ROOTS = [
+    APP,
+    REPO / "src" / "fastapi" / "scripts",
+    REPO / "ops" / "validation",
+]
 
 #: Searched separately, only to annotate an orphan as test-covered.
 TEST_ROOTS = [REPO / "src" / "fastapi" / "tests"]

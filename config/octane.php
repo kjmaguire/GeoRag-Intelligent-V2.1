@@ -1,6 +1,5 @@
 <?php
 
-use App\Services\Azure\RefreshExpiredAzureDisks;
 use App\Support\Uploads;
 use Laravel\Octane\Contracts\OperationTerminated;
 use Laravel\Octane\Events\RequestHandled;
@@ -115,14 +114,19 @@ return [
         RequestReceived::class => [
             ...Octane::prepareApplicationForNextOperation(),
             ...Octane::prepareApplicationForNextRequest(),
-            // Drop Azure blob disks whose managed-identity bearer token has
-            // expired. The SDK takes the token as a constructor string with
-            // no way to refresh it, and the FilesystemManager caches the
-            // built disk for the worker's whole life — so without this the
-            // worker serves 401s on every blob operation from token expiry
-            // until it recycles. A single integer comparison on the common
-            // path. See App\Services\Azure\AzureBlobDiskLifetime.
-            RefreshExpiredAzureDisks::class,
+            // RefreshExpiredAzureDisks lived here until 2026-09-08
+            // (ADR-0022). It existed because the Azure Blob SDK took a
+            // managed-identity bearer token as a constructor string with no
+            // way to refresh it, and Octane's FilesystemManager cached the
+            // built disk for the worker's whole life — so without it a
+            // worker served 401s on every blob operation from token expiry
+            // until it happened to recycle, which at OCTANE_MAX_REQUESTS=500
+            // on an app this quiet meant days.
+            //
+            // S3 has no equivalent problem: the AWS SDK refreshes task-role
+            // credentials itself, from the container credential provider, on
+            // whatever schedule they need. There is nothing to expire in a
+            // cached disk.
         ],
 
         RequestHandled::class => [

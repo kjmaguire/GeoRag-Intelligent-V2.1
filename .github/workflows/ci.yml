@@ -3,8 +3,50 @@ name: GeoRAG CI
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -521,24 +563,27 @@ jobs:
         run: python scripts/check_qwen_config_drift.py
 
   # ─── Nightly scheduler jobs ─────────────────────────────────────────
-  # shutdown-scheduler-cc and startup-scheduler-cc carry their bash as an
-  # inline `args` string on the Azure job resource, so the deployed body
-  # is a copy of a copy and neither this CI nor cd.yml applies it. Two
-  # things are therefore worth gating even though the apply is manual:
-  # that the reviewed .sh and the YAML copy have not diverged, and that
-  # the cron's UTC hours still resolve to the guard's target local hour.
+  # The two sweeps carry their bash as an inline command on the ECS task
+  # definition, so the deployed body is a copy of a copy and CD does not
+  # apply it. What is worth gating: that the sweeps still make the right
+  # decision at every failure point.
   #
-  # The second one is not theoretical. When the maintenance window moved
-  # from US-Eastern to US-Pacific on 2026-08-21, changing the guard
-  # without the cron would have left both jobs permanently skipping --
-  # and a skip exits 0 and looks exactly like a correct off-hour skip, so
-  # nothing downstream would have noticed the shutdown had stopped
-  # running. The tests below also pin the behaviour that makes a failed
-  # sweep visible at all (see the scripts' headers).
+  # The cron/guard agreement half of the old Azure check is GONE, and
+  # deliberately (ADR-0022). Container Apps Jobs schedule in UTC only, so
+  # each sweep fired at two candidate hours with an in-script DST guard
+  # exiting 0 on the wrong one, and this job verified the two still
+  # agreed — because changing the guard without the cron would have left
+  # both jobs permanently skipping, and a skip exits 0 and looks exactly
+  # like a correct off-hour skip. EventBridge Scheduler is timezone-aware:
+  # one schedule, one fire, no guard, nothing to disagree.
+  #
+  # The behavioural half is not gone and matters more than ever, because
+  # the sweeps now also cycle the Bedrock Marketplace endpoints and a
+  # failed recreate means no chat and no OCR at all.
   scheduler-jobs:
     name: Nightly scheduler jobs
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - name: Setup Python
@@ -546,14 +591,46 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Sweep script behaviour
-        run: bash deploy/azure/containerapps/scripts/tests/run.sh
-      # APP_KEY rotation on Container Apps, rehearsed against a fake az and
-      # a fake `php artisan`. There is no staging environment to rehearse it
-      # on for real; this pins the decisions the scripts make instead.
-      - name: APP_KEY rotation rehearsal
-        run: bash deploy/azure/containerapps/tests/rotate-app-key.test.sh
-      - name: Inline-args parity and cron/guard agreement
-        run: python scripts/check_scheduler_job_parity.py
+        run: bash deploy/aws/scheduler/tests/run.sh
+
+      # The APP_KEY rotation harness runs in the same job because it is the
+      # same kind of thing: a procedure that touches production, has no
+      # staging environment to rehearse against, and whose failure modes are
+      # silent. This one is sharper than the sweeps — a rotation that gets
+      # the key order backwards re-encrypts every audit row to the key it
+      # already had, exits 0, and looks exactly like success.
+      #
+      # ops/runbooks/secret-rotation.md §2 recorded the loss of the Azure
+      # harness as leaving those decisions "no longer pinned by anything".
+      # This is what pins them.
+      - name: APP_KEY rotation behaviour
+        run: bash deploy/aws/rotation/tests/run.sh
+
+  # ─── Infrastructure as code ──────────────────────────────────────────
+  # New with the AWS move. There was no Bicep, Terraform or ARM template
+  # for the Azure container apps at all, so ~55 environment variables per
+  # app were set by hand and drifted freely from .env.production.example —
+  # a known gap that was recorded and never closed (ADR-0022). Nothing
+  # running could be diffed against anything in the repository.
+  #
+  # `terraform validate` needs the provider schema, which needs the
+  # registry, which is why this runs here rather than being something a
+  # developer is trusted to have done.
+  terraform:
+    name: Terraform (fmt + validate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.3
+      - name: Formatting
+        run: terraform -chdir=deploy/aws/terraform fmt -check -diff
+      - name: Initialise without a backend
+        run: terraform -chdir=deploy/aws/terraform init -backend=false
+      - name: Validate against the provider schema
+        run: terraform -chdir=deploy/aws/terraform validate
 
   # ─── Deployment manifest invariants ───────────────────────────────────
   # Redis is deployed five different ways (Container Apps, Helm, and three
@@ -588,6 +665,75 @@ jobs:
         run: bash scripts/tests/redis_manifests_test.sh
       - name: Redis persistence and memory-headroom invariants
         run: python scripts/check_redis_manifests.py
+      # `terraform validate` passes on a task definition that injects no
+      # database password, no DATABASE_URL and no requirepass — every one of
+      # which was true of this deployment on 2026-09-15. Schema-valid and
+      # unbootable are different questions; this asks the second one.
+      - name: ECS secret keys match their operator documentation
+        run: python scripts/check-ecs-secret-keys.py
+      # An alarm attached to the wrong log group sits at zero and reads as
+      # healthy, which is indistinguishable from the failure not happening.
+      # BEDROCK_ENDPOINT_NOT_INSERVICE — described in alerts.tf as Sev 1,
+      # "NO chat and NO OCR" — was in exactly that state.
+      - name: Log-marker alarms watch the group their emitter writes to
+        run: python scripts/check-log-marker-alarms.py
+      # The docs-only paths-ignore filters save 28 billable minutes on a
+      # prose push. They also open one silent hole: two "documents" here are
+      # parsed as DATA (deploy/aws/README.md's key table, and the
+      # architecture doc's schema.table list). A filter that skipped either
+      # would let a real breakage merge green.
+      - name: CI path filters do not skip a doc that CI parses
+        run: python scripts/check-ci-path-filters.py
+      - name: Discrimination tests for that filter check
+        run: bash scripts/tests/ci_path_filter_test.sh
+      # The power flag's promise is that `power = "off"` destroys everything
+      # billed by the hour and keeps everything holding state. A new hourly
+      # resource added without the gate bills around the clock in a
+      # deployment its owner believes is switched off, and the only signal
+      # is the bill, a month late. The reverse is worse: gating S3 or the
+      # Secrets Manager secret makes a power cycle destroy the corpus or
+      # trip the 30-day recovery-window trap.
+      - name: AWS power flag still covers what it claims
+        run: python scripts/check-aws-power-flag.py
+      - name: Discrimination tests for the power-flag check
+        run: bash scripts/tests/aws_power_flag_test.sh
+      # ECR here is IMMUTABLE, so a floating tag cannot resolve. Every task
+      # definition pulled `:latest` until 2026-09-16 and nothing ever pushed
+      # it; the rotation task was the one nothing re-registers, so an APP_KEY
+      # rotation would have failed mid-runbook on an unpullable image.
+      - name: ECS task definitions take their image tag from a variable
+        run: python scripts/check-ecs-image-tags.py
+      - name: Discrimination tests for the image-tag check
+        run: bash scripts/tests/ecs_image_tags_test.sh
+      # cd.yml built three images and docker-build.yml built two, so martin
+      # reached production unbuilt — and its COPY source did not resolve
+      # against the context cd.yml uses. hadolint had linted the file all
+      # along; a linter never checks that a COPY source exists. An image is
+      # not deployable until CI has actually built it.
+      - name: CI builds every image CD deploys
+        run: python scripts/check-image-build-parity.py
+      # LARAVEL_INTERNAL_URL fell back to http://laravel.test for WEEKS on
+      # Azure, killing the whole real-time layer while every container stayed
+      # healthy. It was unset in this Terraform too, as was MARTIN_INTERNAL_URL
+      # (-> http://martin:3000, a compose-only name). A plausible fallback is
+      # harder to spot than an empty one.
+      - name: Service-to-service URLs resolve inside the VPC
+        run: python scripts/check-internal-urls.py
+      # hatchet-worker probed with wget on an image that only has curl, so the
+      # check could never pass — and essential=true means ECS replaces the task
+      # forever. A probe that always fails is worse than no probe: the symptom
+      # is a restarting worker, which looks like the hang it was added to catch.
+      - name: ECS health checks can actually pass
+        run: python scripts/check-ecs-healthchecks.py
+      # Compose gets its extensions from docker-entrypoint-initdb.d, which
+      # Postgres runs automatically. RDS has no equivalent — bootstrap.sql is
+      # run once, by hand — so nothing but this keeps the two lists in step.
+      # It also re-checks that pg_ivm and pg_stat_kcache still have no call
+      # sites, which is the whole reason they were dropped for RDS.
+      - name: Postgres extensions match between compose and RDS
+        run: python scripts/check-postgres-extensions.py
+      - name: Discrimination tests for the extension check
+        run: bash scripts/tests/postgres_extensions_test.sh
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.
@@ -652,6 +798,35 @@ jobs:
       # generic password matches no pattern and nothing looks at it.
       - name: Check for committed credentials
         run: php scripts/check-no-committed-secrets.php
+
+      # The check above is a claim about 3000+ files, so it is only worth the
+      # line it prints if it can still say no. On 2026-09-15 it reported clean
+      # while two tracked files carried a Redis password that had been
+      # publicly readable: `REDIS_PWD=` abbreviated past a name pattern
+      # matching PASSWORD|PASSWD, and `redis-cli -a '<value>'` is an argument
+      # rather than an assignment, which no pattern examined. Both shapes are
+      # now cases below, along with the interpolated forms that must NOT fire.
+      - name: Credential scanner discrimination tests
+        run: bash scripts/tests/committed_secrets_test.sh
+
+      # Third cheap disk read in the same job. ENABLE ROW LEVEL SECURITY does
+      # not apply to the table's OWNER — only FORCE does — and production
+      # migrates and applies database/raw/ as `georag`, which owns every table
+      # it creates. WorkspaceRlsCoverageTest already asserts zero
+      # ENABLE-without-FORCE, but only against the test cluster, which
+      # RefreshDatabase builds from database/migrations/ alone; no table that
+      # database/raw/ creates is visible to it. This reads both trees off disk.
+      #
+      # The 48 baselined entries are not open gaps — they are closed by the
+      # 2026_08_24_010000 catalog sweep, or live in raw files that
+      # database/raw/manifest.json never applies. The baseline exists because
+      # that sweep is a one-time migration: a NEW file in the old style would
+      # be closed by nothing.
+      - name: RLS force parity
+        run: php scripts/check-rls-force-parity.php
+
+      - name: Discrimination tests for that gate
+        run: bash scripts/tests/rls_force_parity_test.sh
 
   schema-and-qdrant-drift:
     name: Schema/Qdrant drift smoke gate
@@ -756,23 +931,33 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install FastAPI dependencies
-        working-directory: src/fastapi
-        run: uv sync --extra dev
-
       # The concrete check for the second live incident: init_qdrant.py IS
       # the bootstrap script, but nothing in this deployment's runtime path
       # ever calls it automatically — provisioning has always been a manual
       # step. Running it here against a fresh service Qdrant proves it still
       # actually creates georag_chunks/georag_reports at the right
       # dimension; its own internal verification exits non-zero on failure.
+      #
+      # `--no-project --with httpx` rather than `uv sync --extra dev`.
+      # init_qdrant.py imports stdlib and httpx, nothing else — no app
+      # modules — so syncing the project pulled torch, the full nvidia CUDA
+      # stack, polars and GDAL to run a script that speaks HTTP to Qdrant.
+      # On 2026-09-15 that install was still downloading nvidia-cublas when
+      # this job's 8-minute timeout killed it, and the gate never ran at all.
+      # A dependency tree measured in gigabytes is not a prerequisite for
+      # this check; it was just the nearest way to get an interpreter.
       - name: Bootstrap and verify Qdrant collections
         working-directory: src/fastapi
-        run: uv run python scripts/init_qdrant.py
+        run: uv run --no-project --with httpx python scripts/init_qdrant.py
         env:
           QDRANT_HOST: localhost
           QDRANT_PORT: "6333"
-          EMBEDDING_DIMENSION: "1024"
+          # Mirror production, which runs EMBEDDING_BACKEND=bedrock. The
+          # script picks the dimension variable by backend, so an
+          # EMBEDDING_DIMENSION set without a backend — which is what this
+          # job used to do — is read by nobody.
+          EMBEDDING_BACKEND: bedrock
+          BEDROCK_EMBED_DIMENSION: "1024"
 
   # ─── E2E money-path smoke (BLOCKING since 2026-08-21) ─────────────────
   # 2026-08-15 testing audit: the money path (upload -> parse -> OCR/native
@@ -874,11 +1059,22 @@ jobs:
       HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
       # Route both ingest-time and query-time dense embeddings, plus the
       # LLM synthesis call, at the stub backend started below.
-      EMBEDDING_BACKEND: foundry
-      AZURE_FOUNDRY_ENDPOINT: http://localhost:8899
-      AZURE_FOUNDRY_API_KEY: stub-key
-      AZURE_FOUNDRY_EMBED_DEPLOYMENT: stub-embed
-      AZURE_FOUNDRY_EMBED_DIMENSION: "1024"
+      #
+      # 2026-09-08 (ADR-0022): this used to select EMBEDDING_BACKEND=foundry
+      # and redirect AZURE_FOUNDRY_ENDPOINT at the stub. Bedrock, the
+      # production backend now, is reached with boto3/SigV4 and has no
+      # configurable base URL, so there is nothing to redirect — and
+      # `foundry` is a startup ERROR rather than an ignored value, so
+      # leaving it would have failed this job outright. The stub serves the
+      # embedding SIDECAR contract instead and the job selects that branch,
+      # which keeps the runner free of AWS credentials. What the retrieval
+      # assertions depend on — the marker-phrase encoder — is unchanged.
+      #
+      # EMBEDDING_BACKEND is `local` rather than unset because the code
+      # default is `bedrock`, which short-circuits before
+      # EMBEDDING_SERVICE_URL is consulted.
+      EMBEDDING_BACKEND: local
+      EMBEDDING_SERVICE_URL: http://localhost:8899
       LLM_BACKEND: vllm
       VLLM_URL: http://localhost:8899/v1
       # 2026-08-15: the query leg was hitting TIMEOUT_GATHER_S (default 8.0s,
@@ -1345,9 +1541,13 @@ jobs:
     #                                   through artisan.
     #    9  missingType.iterableValue —  broadcastWith() array shapes
     #    6  class.notFound            — MicrosoftAzure\Storage\Blob\
-    #                                   BlobRestProxy; the package is not
-    #                                   installed. Same root cause as the 5
-    #                                   AzureBlobDiskTest errors.
+    #                                   BlobRestProxy; the package was never
+    #                                   installed. GONE 2026-09-08 with the
+    #                                   Azure storage code and its tests
+    #                                   (ADR-0022). The census above predates
+    #                                   that and is not re-measured here;
+    #                                   read it as history, not a current
+    #                                   count.
     #    5  missingType.parameter, 4 return.type, 4 argument.templateType,
     #    and a 25-error tail across 9 more rules.
 

@@ -1,0 +1,674 @@
+# Application configuration (ADR-0022).
+#
+# This file is the answer to the gap the Azure README recorded under "What
+# is NOT here" and never closed (ADR-0022, Consequences): there was no
+# Bicep, Terraform or ARM template for the container apps, so ~55
+# environment variables per app were set by hand and drifted freely from
+# `.env.production.example`. Nothing in the running system could be diffed
+# against anything in the repository.
+#
+# So: every non-secret value is here, in code. Every secret is a Secrets
+# Manager reference injected by the execution role — its value never passes
+# through Terraform state, CI, or a person's terminal.
+
+resource "aws_secretsmanager_secret" "app" {
+  name        = "${local.name}/app"
+  description = "Application secrets, injected into every task by ARN"
+
+  # Long enough to actually recover from a bad rotation. The APP_KEY
+  # rotation runbook's whole design assumes the old value is retrievable
+  # if the in-replica half fails.
+  recovery_window_in_days = 30
+}
+
+# Deliberately NOT managed here. Terraform would put every value in state,
+# which is the thing a secret store exists to avoid. The keys this expects
+# are listed so the shape is reviewable even though the values are not:
+#
+#   APP_KEY                  Laravel encryption key (rotation: ops/runbooks)
+#   FASTAPI_SERVICE_KEY      the X-Service-Key both sides check on every
+#                            internal hop; rotation accepts the previous
+#                            value on both sides simultaneously
+#   FASTAPI_SERVICE_KEY_PREVIOUS
+#   QDRANT_API_KEY           one read-write key
+#   HATCHET_CLIENT_TOKEN
+#   REDIS_PASSWORD
+#   MARTIN_DATABASE_URL      connects as martin_readonly, which has EXECUTE
+#                            on the silver.pg_* tile functions and nothing
+#                            else
+#   FLOW_JWT_SECRET          signs and verifies the per-flow integration
+#                            JWTs (services/flow_jwt.py), for callers with
+#                            no per-flow key in workflow.flow_registry.
+#                            Renamed from KESTRA_FLOW_JWT_SECRET (ADR-0022)
+#   REVERB_APP_SECRET        signs requests to the Pusher events API.
+#                            laravel-octane and laravel-horizon sign with
+#                            it; laravel-reverb verifies. The paired
+#                            REVERB_APP_KEY is public by design
+#                            (config/reverb.php) and is a variable below,
+#                            not a secret — the browser receives it.
+#   COHERE_API_KEY           ONE key for two capabilities: Command A+ chat
+#                            (LLM_BACKEND=cohere) and Parse 5 OCR
+#                            (OCR_ENGINE=cohere_parse). Added by ADR-0023,
+#                            which makes this eleven keys, not ten.
+#
+# FLOW_JWT_SECRET was absent from this file until 2026-09-14, while
+# docker-compose.yml marked it `${VAR:?}` required — so dev could not start
+# without it and production ran without it entirely. app/config.py defaults
+# it to "", so FastAPI started either way and flow_jwt.py would have raised
+# 500 on the first verify that fell back to it. Inert only because nothing
+# calls the integrations bridge; a latent 500 rather than a visible
+# misconfiguration is exactly the shape this file exists to prevent.
+#
+# There is no Foundry key here and no storage account key. Both are gone:
+# Bedrock and S3 authenticate with the task role. COHERE_API_KEY is the one
+# long-lived credential in the model tier, and ADR-0023 records that as a
+# named cost of the route rather than an oversight — chat and OCR are the
+# two capabilities AWS could not serve at a workable price.
+resource "aws_secretsmanager_secret_version" "app_placeholder" {
+  secret_id     = aws_secretsmanager_secret.app.id
+  secret_string = jsonencode({ PLACEHOLDER = "set-these-out-of-band" })
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
+locals {
+  # Secrets injected into every task, by ARN. The execution role reads
+  # them; the container never sees the ARN, only the value.
+  _secret_ref = { for key in [
+    "APP_KEY",
+    "FASTAPI_SERVICE_KEY",
+    "QDRANT_API_KEY",
+    "HATCHET_CLIENT_TOKEN",
+    "REDIS_PASSWORD",
+    ] : key => "${aws_secretsmanager_secret.app.arn}:${key}::"
+  }
+
+  # Secrets only SOME application services read, so they are not in the
+  # common set above. FLOW_JWT_SECRET is an HS256 signing key: the two
+  # Python services import services/flow_jwt.py, and nothing else has any
+  # use for it. Handing it to laravel-*, the hatchet engine or the sparse
+  # model server would widen a signing secret's blast radius for nothing.
+  #
+  # Add to this map rather than to _secret_ref whenever a new secret has a
+  # named reader instead of a general one.
+  _extra_secret_ref = {
+    # COHERE_API_KEY has exactly two readers and they are these. fastapi
+    # calls Command A+ for chat; hatchet-worker calls Parse 5 for OCR, and
+    # it needs its OWN copy — the parser runs in the worker, not behind an
+    # API call to fastapi. A worker without it logs one CRITICAL and runs
+    # tesseract on every page, which extracts no tables and raises nothing.
+    #
+    # Not in _secret_ref because the laravel services have no use for it;
+    # they never reach a model directly.
+    fastapi        = ["FLOW_JWT_SECRET", "COHERE_API_KEY"]
+    hatchet-worker = ["FLOW_JWT_SECRET", "COHERE_API_KEY"]
+
+    # Only the three PHP services broadcast or serve WebSocket frames.
+    # fastapi streams SSE to Laravel, which re-broadcasts; it never signs
+    # a Pusher request itself.
+    laravel-octane  = ["REVERB_APP_SECRET"]
+    laravel-horizon = ["REVERB_APP_SECRET"]
+    laravel-reverb  = ["REVERB_APP_SECRET"]
+  }
+
+  # The database password, under the two names the two language stacks read
+  # it by. One secret, because it is one role.
+  #
+  # The application connects as georag_app, NOT as georag. georag is the RDS
+  # master and owns every table, and `ENABLE ROW LEVEL SECURITY` does not
+  # apply to a table's owner — only FORCE does. Connecting the app as the
+  # owner would leave every tenancy guarantee resting on FORCE having been
+  # applied to every table without exception, which is precisely the thing
+  # scripts/check-rls-force-parity.php exists because we cannot assume.
+  # georag_app is created NOSUPERUSER NOBYPASSRLS by
+  # database/raw/phase1/10-georag-app-role.sql.
+  #
+  # That file creates it with a placeholder password committed to this
+  # repository ('georag-app-dev-replace-via-alter-role'). The operator must
+  # ALTER ROLE it to the value written here — see deploy/aws/README.md.
+  _db_secret_ref = [
+    # Laravel: config/database.php pgsql.password
+    { name = "DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app.arn}:GEORAG_APP_PASSWORD::" },
+    # FastAPI and the Hatchet worker: app/config.py POSTGRES_PASSWORD, which
+    # is a required field with no default — an unset value is a startup
+    # ValidationError, not a degraded mode.
+    { name = "POSTGRES_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app.arn}:GEORAG_APP_PASSWORD::" },
+  ]
+
+  # Application services get the whole common set plus the database
+  # credential, plus anything named for them above. The third-party
+  # containers get only what they themselves read, under the names THEY
+  # expect — qdrant reads QDRANT__SERVICE__API_KEY, not QDRANT_API_KEY, and
+  # giving it the client-side name would leave auth off while looking
+  # configured. The same trap caught three more containers below; each entry
+  # here is the name that container's own image reads, not ours.
+  service_secrets = {
+    for name, _cfg in local.services : name => lookup({
+      qdrant = [{ name = "QDRANT__SERVICE__API_KEY", valueFrom = local._secret_ref["QDRANT_API_KEY"] }]
+
+      # The SERVER needs the password too, not just the clients. Without it
+      # redis-server runs with no `requirepass` while every client is
+      # configured to send AUTH, and Redis answers AUTH-with-no-password
+      # set with an error — so cache, sessions, queues, Horizon and the
+      # Reverb backplane all fail closed. See the command in services.tf.
+      redis = [{ name = "REDIS_PASSWORD", valueFrom = local._secret_ref["REDIS_PASSWORD"] }]
+
+      # docker/martin.Dockerfile deliberately gives DATABASE_URL no default
+      # ("an absent one fails at boot with an obvious one") and
+      # docker/martin/martin.yaml:39 reads `connection_string:
+      # '${DATABASE_URL}'`. Nothing was supplying it, so every MVT tile in
+      # the platform was one boot failure away.
+      martin = [{ name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.app.arn}:MARTIN_DATABASE_URL::" }]
+
+      # hatchet-lite keeps its own database, on the same instance. The role
+      # and database are created by deploy/aws/bootstrap.sql; this is the
+      # connection string for them.
+      hatchet = [{ name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.app.arn}:HATCHET_DATABASE_URL::" }]
+      }, name,
+      concat(
+        [for key, ref in local._secret_ref : { name = key, valueFrom = ref }],
+        local._db_secret_ref,
+        [for key in lookup(local._extra_secret_ref, name, []) : {
+          name      = key
+          valueFrom = "${aws_secretsmanager_secret.app.arn}:${key}::"
+        }],
+      )
+    )
+  }
+
+  # "" when powered off. Nothing reads it in that state — every task
+  # definition that would is gated too — but the local is evaluated
+  # regardless, so it has to survive the database not existing.
+  db_host = try(local.db.address, "")
+
+  # One number, three consumers — see EMBEDDING_DIMENSION below. 1024 is what
+  # georag_chunks is built at and what Cohere Embed v4 is asked for; changing
+  # it means re-embedding the corpus (scripts/reset_embeddings_for_reencode.py),
+  # not just editing this line.
+  embed_dimension = 1024
+
+  # Values every service shares.
+  common_environment = {
+    # Gates main.py::_assert_production_posture — the only thing in the
+    # system that reports a security control being off. Unset, it reports
+    # nothing and the deployment looks healthy.
+    GEORAG_ENV = "production"
+    LOG_LEVEL  = "info"
+
+    APP_ENV   = "production"
+    APP_DEBUG = "false"
+
+    # The public origin, and the thing a whole family of settings derives
+    # from. Unset, config/app.php:54 falls back to `http://localhost` and
+    # every absolute URL, signed URL and password-reset link points at the
+    # container. Sanctum's stateful list also ends with
+    # currentApplicationUrlWithPort() (config/sanctum.php:20), so this is
+    # what puts the real domain in it.
+    #
+    # CORS_ALLOWED_ORIGINS is deliberately NOT set: the Inertia app is
+    # same-origin and config/cors.php:39 already resolves an unset value to
+    # an empty allowlist in production, which is the safe reading of
+    # "nobody said". Add it only when a genuine cross-origin caller exists.
+    # local.public_url, not var.app_domain: with edge = "cloudfront" the
+    # hostname does not exist until the distribution does. Terraform resolves
+    # the ordering — the distribution has no dependency on ECS, so it is
+    # created first and the real value lands in the task definition.
+    APP_URL = local.public_url
+
+    # Without this, NOTHING from the load balancer is believed.
+    #
+    # ProxyTrust::proxies() fails closed in production: given no configured
+    # value it returns [], and with no trusted proxy Laravel honours no
+    # X-Forwarded-* header at all — including Proto. The ALB terminates TLS
+    # and forwards plain HTTP to the task, so `$request->isSecure()` would be
+    # FALSE on every request to an https:// site, and every URL Laravel
+    # generates from the request would come out http://.
+    #
+    # .env.production.example:96 has carried TRUSTED_PROXIES=CHANGE_ME_YOUR_PROXY_CIDR
+    # as a required value all along; nothing was supplying it here.
+    #
+    # The VPC CIDR rather than "*", which is what that file asks for ("real
+    # CIDR — not wildcard"). It is also tight: the tasks' security group only
+    # accepts ingress from the ALB's security group, so the only hop that can
+    # ever reach a task from outside is the ALB, and it is in this CIDR.
+    #
+    # NOTE: this does NOT by itself restore real client IPs. X-Forwarded-For
+    # is dropped separately by ProxyTrust::forwardedHeaders() unless
+    # TRUST_FORWARDED_FOR is set — see deploy/aws/README.md, which explains
+    # why that one is a deliberate decision for Kyle rather than a default.
+    TRUSTED_PROXIES = var.vpc_cidr
+
+    POSTGRES_HOST        = local.db_host
+    POSTGRES_DIRECT_HOST = local.db_host
+    POSTGRES_PORT        = 5432
+    POSTGRES_DB          = "georag"
+    # app/config.py defaults this to "georag", the OWNER. See the argument
+    # by _db_secret_ref above: the owner is not subject to plain ENABLE ROW
+    # LEVEL SECURITY, so the application must never connect as it.
+    POSTGRES_USER = "georag_app"
+    # PgBouncer is compose-only and was already absent on Azure. asyncpg
+    # runs statement_cache_size=0 regardless, so RDS Proxy drops in
+    # cleanly if connection counts ever justify it. Not day one.
+    DB_HOST = local.db_host
+    DB_PORT = 5432
+
+    # ── Laravel's own connection and drivers ────────────────────────
+    # Every one of these was missing, and Laravel's defaults are not
+    # "unconfigured" — they are wrong in a way that starts cleanly:
+    #
+    #   DB_CONNECTION    config/database.php:19 defaults to `sqlite`, so
+    #                    Octane, Horizon and Reverb would each run against
+    #                    a local file instead of RDS.
+    #   DB_DATABASE      defaults to `laravel`
+    #   DB_USERNAME      defaults to `root`
+    #   QUEUE_CONNECTION config/queue.php:15 defaults to `database`, which
+    #                    is the quiet one: Horizon only ever supervises
+    #                    REDIS queues, so with the database driver jobs are
+    #                    written to a table that nothing drains. Both
+    #                    supervisors would sit idle and healthy while no
+    #                    queued work ran at all.
+    #   CACHE_STORE      config/cache.php:17 defaults to `database`
+    #   SESSION_DRIVER   config/session.php:20 defaults to `database`
+    #   FILESYSTEM_DISK  config/filesystems.php:15 defaults to `local`,
+    #                    which puts uploads on a Fargate task's ephemeral
+    #                    disk — gone on the next nightly stop/start.
+    #
+    # Values are .env.production.example's, except DB_USERNAME: that file
+    # predates the georag_app split and still says `georag`.
+    DB_CONNECTION = "pgsql"
+    DB_DATABASE   = "georag"
+    DB_USERNAME   = "georag_app"
+
+    QUEUE_CONNECTION = "redis"
+    CACHE_STORE      = "redis"
+    SESSION_DRIVER   = "redis"
+    FILESYSTEM_DISK  = "s3"
+
+    REDIS_HOST = "redis.${aws_service_discovery_private_dns_namespace.this.name}"
+    REDIS_PORT = 6379
+
+    QDRANT_HOST = "qdrant.${aws_service_discovery_private_dns_namespace.this.name}"
+    QDRANT_PORT = 6333
+    # Plain HTTP inside the VPC. On Azure these were 443/true because
+    # clients reached Qdrant through the environment's internal ingress,
+    # which terminated TLS; Cloud Map hands out a task IP and there is no
+    # ingress in between.
+    QDRANT_HTTPS = "false"
+
+    HATCHET_CLIENT_HOST_PORT = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
+
+    # ── Object storage ──────────────────────────────────────────────
+    # No AWS_ACCESS_KEY_ID and no AWS_SECRET_ACCESS_KEY: the task role
+    # supplies credentials and georag_object_storage now omits the keys
+    # rather than passing None, so boto3's chain resolves them. No
+    # AWS_ENDPOINT_URL either — an explicit endpoint pins every call to
+    # that host, which is right for SeaweedFS and wrong for S3.
+    STORAGE_BACKEND    = "s3_compatible"
+    AWS_DEFAULT_REGION = var.region
+    # Laravel's `s3` disk reads AWS_BUCKET, and that disk is what
+    # StorageService::bronze() writes every upload through
+    # (UploadController:496). Unset, its bucket resolved to null while the
+    # disk is configured 'throw' => false — so the put() returned false, the
+    # request carried on, and a bronze.manifest row was written for an object
+    # that is not there. config/filesystems.php now falls back to
+    # AWS_BUCKET_BRONZE as well, but production states it rather than relying
+    # on the fallback.
+    AWS_BUCKET               = aws_s3_bucket.this["bronze"].id
+    AWS_BUCKET_BRONZE        = aws_s3_bucket.this["bronze"].id
+    AWS_BUCKET_BRONZE_RASTER = aws_s3_bucket.this["bronze-raster"].id
+    AWS_BUCKET_EXPORTS       = aws_s3_bucket.this["exports"].id
+    AWS_BUCKET_BACKUPS       = aws_s3_bucket.this["backups"].id
+
+    # ── Models ──────────────────────────────────────────────────────
+    # Set explicitly on every service even though each of these is also the
+    # code default. EMBEDDING_BACKEND in particular MUST match between the
+    # query path (fastapi) and the ingest path (hatchet-worker): a
+    # mismatch writes one vector space and queries another, which is
+    # ADR-0021's migration step 2 and the reason it is stated rather than
+    # inherited.
+    #
+    # The three backends no longer agree, and that is deliberate (ADR-0023).
+    # Embeddings and reranking stay on Bedrock, where IAM authenticates them
+    # and AWS credits pay for them. Chat and OCR moved to Cohere's own API,
+    # because Command A+ and Parse 5 are AWS *Marketplace* SageMaker
+    # packages — A100/H100 and ~$2.50/h respectively, billing whether or not
+    # anything calls them. BEDROCK_REGION still matters: two of the four
+    # capabilities are still Bedrock calls.
+    BEDROCK_REGION          = local.bedrock_region
+    LLM_BACKEND             = "cohere"
+    EMBEDDING_BACKEND       = "bedrock"
+    RERANKER_BACKEND        = "bedrock"
+    BEDROCK_EMBED_MODEL_ID  = var.bedrock_embed_model_id
+    BEDROCK_EMBED_DIMENSION = local.embed_dimension
+
+    # The same number, under the name the OTHER two readers use, so all
+    # three agree by construction rather than by all defaulting to 1024:
+    #
+    #   services/embedding.py:69   sizes the vectors it writes, from
+    #                              BEDROCK_EMBED_DIMENSION
+    #   scripts/init_qdrant.py     sizes the collection it creates
+    #   main.py:592                refuses to serve when the live collection
+    #                              disagrees with EMBEDDING_DIMENSION
+    #
+    # Cohere Embed v4 is Matryoshka — 256/512/1024/1536 are all selectable —
+    # so this is a knob someone can reach for. Left split, moving it would
+    # have moved the writer while the guard went on comparing against a
+    # hardcoded 1024 and passing.
+    EMBEDDING_DIMENSION     = local.embed_dimension
+    BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
+
+    # Chat and OCR, on Cohere's own API. Plain model names, not endpoint
+    # ARNs: there is no endpoint indirection on this host, which is most of
+    # the point. The key itself is a secret (see _extra_secret_ref) and is
+    # written to Secrets Manager out of band BEFORE the first apply — ECS
+    # refuses to start a task referencing a key that does not exist, and
+    # the failure presents as a task that never starts rather than as an
+    # application error.
+    COHERE_BASE_URL    = var.cohere_base_url
+    COHERE_CHAT_MODEL  = var.cohere_chat_model
+    COHERE_PARSE_MODEL = var.cohere_parse_model
+    OCR_ENGINE         = "cohere_parse"
+
+    # SPLADE++ has no managed equivalent anywhere. This is what makes the
+    # sparse leg of hybrid retrieval exist; unset, sparse_encoder falls
+    # back to loading the model in-process, once per uvicorn worker —
+    # the pattern that OOM-killed the container on 2026-06-24.
+    SPARSE_SERVICE_URL = "http://sparse.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+  }
+
+  # ── Reverb ──────────────────────────────────────────────────────────
+  # None of this may go in common_environment. config/broadcasting.php:23
+  # resolves the driver to `reverb` exactly when REVERB_APP_KEY is set, and
+  # its comment records why the blanket default was reverted: a bare
+  # `reverb` default fatals env-less artisan contexts, because
+  # Pusher::__construct(null) throws at boot. Handing REVERB_* to fastapi,
+  # the hatchet worker or the sparse server buys nothing and widens that.
+  #
+  # REVERB_APP_KEY is a variable rather than a secret on purpose. It is
+  # public by design — config/reverb.php:85 says so, the browser receives
+  # it, and it is baked into the JS bundle at build time. REVERB_APP_SECRET
+  # is the half that authorises publishing, and that one is in Secrets
+  # Manager (see _extra_secret_ref above).
+
+  # What laravel-octane and laravel-horizon need to PUBLISH an event.
+  reverb_client_environment = {
+    # Stated rather than inherited from the ternary in
+    # config/broadcasting.php:23. A deploy that dropped this once produced
+    # green health checks and a chat UI that hung on every query with no
+    # error anywhere (2026-08-11).
+    BROADCAST_CONNECTION = "reverb"
+
+    REVERB_APP_ID  = var.reverb_app_id
+    REVERB_APP_KEY = var.reverb_app_key
+
+    # Cloud Map, not the public domain. The publish is a server-to-server
+    # HTTP call inside the VPC; sending it to the ALB would hairpin out
+    # through the NAT and back in to reach a task two subnets away.
+    REVERB_HOST   = "laravel-reverb.${aws_service_discovery_private_dns_namespace.this.name}"
+    REVERB_PORT   = 8080
+    REVERB_SCHEME = "http"
+  }
+
+  # What laravel-reverb needs to SERVE the app.
+  reverb_server_environment = {
+    REVERB_SERVER_HOST = "0.0.0.0"
+    REVERB_SERVER_PORT = 8080
+
+    REVERB_APP_ID  = var.reverb_app_id
+    REVERB_APP_KEY = var.reverb_app_key
+
+    # The WebSocket origin allowlist. config/reverb.php:95 defaults to a
+    # localhost/georag.local list for dev and its comment says to set this
+    # explicitly in production — nothing did, so every upgrade from the
+    # real domain would have been rejected and no query would have
+    # streamed. Bare host, no scheme and no port: Reverb matches against
+    # the HOST parsed out of the Origin header.
+    REVERB_ALLOWED_ORIGINS = local.public_host
+
+    # REVERB_HOST is deliberately absent here. On the server it lands in
+    # config/reverb.php:34 as `hostname`, which is not the same knob as the
+    # client-side host above, and the browser arrives through the ALB with
+    # the public Host header. Left null so the server does not filter on a
+    # name it is not reached by.
+
+    # REQUIRED, and the reason is specific. Both default to 10000 bytes,
+    # far below a completed LLM answer frame, and Reverb silently rejects
+    # an oversized payload — so the `completed` frame carrying the answer
+    # text and its citations never arrives and the stream appears to stall
+    # on the last token. .env.example has carried both at 1000000 since the
+    # day that was diagnosed.
+    REVERB_MAX_REQUEST_SIZE     = 1000000
+    REVERB_APP_MAX_MESSAGE_SIZE = 1000000
+
+    # The Redis pub/sub backplane, and what makes desired = 2 correct in
+    # main.tf rather than quietly broken. Each task holds only the
+    # subscribers connected to IT, and Cloud Map's MULTIVALUE record hands
+    # a publisher one task at random — so with two tasks and no backplane
+    # roughly half of every query's frames would be published to a task
+    # with none of that query's subscribers and be dropped silently.
+    # Enabled and desired count move together; changing one alone is the
+    # bug.
+    #
+    # config/reverb.php:43-51 reads REDIS_HOST, REDIS_PORT and
+    # REDIS_PASSWORD directly rather than going through
+    # config/database.php, and all three are already on this task — the
+    # first two from common_environment, the password from _secret_ref.
+    # REDIS_DB is left at its default 0, shared with the queue and session
+    # connections: pub/sub channels are not part of the keyspace, so there
+    # is nothing to collide with.
+    REVERB_SCALING_ENABLED = "true"
+    REVERB_SCALING_CHANNEL = "reverb"
+  }
+
+  # Per-service additions. Everything not listed gets only the common set.
+  service_environment = {
+    for name, _cfg in local.services : name => merge(
+      local.common_environment,
+      lookup({
+        fastapi = {
+          FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # The 2026-08-18 incident, which cd.yml's header wrongly claimed
+          # could not recur here. It was never set on Azure either, so every
+          # callback fell back to app/services/laravel_bridge.py's
+          # `http://laravel.test` — the Herd local default — and died on DNS.
+          # The only symptom was a per-call `Name or service not known`, which
+          # reads like a network blip rather than a missing variable, so it went
+          # unread for WEEKS while the entire real-time layer was dead:
+          # ingestion progress, workspace-data-updated, report-build progress,
+          # the admin surfaces and the user inbox.
+          #
+          # Unset here it would have failed exactly the same way: Cloud Map
+          # publishes `laravel-octane.<namespace>`, and nothing makes a bare
+          # `laravel.test` resolve inside the VPC.
+          LARAVEL_INTERNAL_URL = "http://laravel-octane.${aws_service_discovery_private_dns_namespace.this.name}:80"
+        }
+        hatchet-worker = {
+          # `all` is what both compose and Azure ran. There is no separate
+          # ingestion or AI worker service, and WORKER_POOL exists mainly
+          # as the seam that would let the every-minute crons move to a
+          # small always-on pool if the nightly shutdown ever needs the
+          # big worker off for longer.
+          WORKER_POOL          = "all"
+          FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # The 2026-08-18 incident, which cd.yml's header wrongly claimed
+          # could not recur here. It was never set on Azure either, so every
+          # callback fell back to app/services/laravel_bridge.py's
+          # `http://laravel.test` — the Herd local default — and died on DNS.
+          # The only symptom was a per-call `Name or service not known`, which
+          # reads like a network blip rather than a missing variable, so it went
+          # unread for WEEKS while the entire real-time layer was dead:
+          # ingestion progress, workspace-data-updated, report-build progress,
+          # the admin surfaces and the user inbox.
+          #
+          # Unset here it would have failed exactly the same way: Cloud Map
+          # publishes `laravel-octane.<namespace>`, and nothing makes a bare
+          # `laravel.test` resolve inside the VPC.
+          LARAVEL_INTERNAL_URL = "http://laravel-octane.${aws_service_discovery_private_dns_namespace.this.name}:80"
+
+          # The SDK's own health server, and the reason the worker's
+          # container health check can detect a HANG rather than only a
+          # crash. It answers only while the event loop is turning, so a
+          # worker wedged holding queue leases — busy-looking, finishing
+          # nothing — fails the probe and gets replaced. compose greps
+          # /proc/1/cmdline instead, which proves the process exists and
+          # nothing more.
+          #
+          # The threshold is set EXPLICITLY. The SDK default is 5 seconds,
+          # which a large embed batch can exceed without anything being
+          # wrong — that would flap. 30 s is what Azure's probes.json used
+          # and what the Ch 12 §6 entry describes.
+          HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED                            = "true"
+          HATCHET_CLIENT_WORKER_HEALTHCHECK_PORT                               = "8001"
+          HATCHET_CLIENT_WORKER_HEALTHCHECK_EVENT_LOOP_BLOCK_THRESHOLD_SECONDS = "30"
+        }
+        sparse = {
+          # The sidecar serves the model; it must not also try to reach
+          # itself over SPARSE_SERVICE_URL.
+          SPARSE_SERVICE_URL = ""
+        }
+        laravel-octane = merge(local.reverb_client_environment, {
+          FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # Martin has no ALB target group and correctly needs none: the
+          # browser reaches tiles through Laravel's own /tiles/* routes, which
+          # sit behind auth:sanctum (routes/web.php) so a workspace's geometry
+          # is never served unauthenticated. TileProxyController is the only
+          # reader, which is why this is set on octane alone and not on
+          # horizon or reverb.
+          #
+          # Without it config/services.php falls back to `http://martin:3000`,
+          # the compose service name. That resolves on compose's shared docker
+          # network and nowhere else — an ECS task in awsvpc gets no search
+          # domain for the Cloud Map namespace, so a bare `martin` does not
+          # resolve and every map tile in the product fails.
+          MARTIN_INTERNAL_URL = "http://martin.${aws_service_discovery_private_dns_namespace.this.name}:3000"
+          # LOG_STACK=stderr, NOT the `single` default. On Azure the
+          # default routed the application log to a file inside a
+          # container nobody could read, and Ch 12 records that which
+          # LOG_STACK production actually ran is not known. On ECS only
+          # stdout/stderr reach CloudWatch, so this is stated.
+          LOG_STACK     = "stderr"
+          OCTANE_SERVER = "swoole"
+        })
+        # Horizon broadcasts too: the queued jobs behind a query dispatch
+        # QueryStreamEvent, so it needs the publish credentials as much as
+        # Octane does.
+        laravel-horizon = merge(local.reverb_client_environment, {
+          LOG_STACK = "stderr"
+        })
+        laravel-reverb = merge(local.reverb_server_environment, {
+          LOG_STACK = "stderr"
+        })
+        qdrant = {
+          # The API key arrives through `secrets`, under the name qdrant
+          # itself reads. Setting it here too would put it in the task
+          # definition in plaintext.
+          QDRANT__STORAGE__STORAGE_PATH = "/qdrant/storage"
+        }
+
+        # The Hatchet engine had NO configuration here at all — it got the
+        # common set and nothing else, and hatchet-lite reads none of that.
+        # It would have failed at boot on the missing DATABASE_URL (supplied
+        # through `secrets`), taking all 51 registered workflows with it:
+        # every ingestion path and every cron in the platform.
+        #
+        # These are docker-compose.yml's hatchet-lite values, with the two
+        # that cannot carry over corrected for ECS.
+        hatchet = {
+          SERVER_MSGQUEUE_KIND          = "postgres"
+          SERVER_DEFAULT_ENGINE_VERSION = "V1"
+          SERVER_GRPC_BIND_ADDRESS      = "0.0.0.0"
+          SERVER_GRPC_PORT              = "7077"
+
+          # gRPC stays plaintext, and the SG is what keeps it private: the
+          # engine is not in a target group, so nothing outside the VPC can
+          # reach 7077. Terminating TLS here would mean issuing and rotating
+          # an internal certificate for a port only sibling tasks dial.
+          SERVER_GRPC_INSECURE = "t"
+
+          # The two that compose sets to `localhost`. A worker connects to
+          # whatever the engine ADVERTISES here, so localhost would send
+          # every worker back to its own task and no workflow would ever be
+          # picked up. It has to be the Cloud Map name.
+          SERVER_GRPC_BROADCAST_ADDRESS                          = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
+          SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
+
+          SERVER_URL                  = local.public_url
+          SERVER_AUTH_COOKIE_DOMAIN   = local.public_host
+          SERVER_AUTH_COOKIE_INSECURE = "f"
+
+          SERVER_AUTH_SET_EMAIL_VERIFIED = "t"
+        }
+      }, name, {})
+    )
+  }
+}
+
+# Declared here rather than in variables.tf because this file is what
+# consumes them, and because the certificate and the name it certifies are
+# one fact stated twice if they live apart.
+
+variable "acm_certificate_arn" {
+  description = <<-EOT
+    ACM certificate for the public HTTPS listener.
+
+    Empty (the default) means dns.tf issues one for `app_domain` and validates
+    it through Route 53, which is the path that needs no console steps. Set
+    this only to bring a certificate issued elsewhere -- a wildcard you
+    already own, or one imported from an external CA.
+
+    Either way it must certify `app_domain`, and it must live in `region`:
+    an ALB cannot serve a certificate from another region.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "app_domain" {
+  description = <<-EOT
+    Public hostname the ALB serves, without scheme — e.g. georag.example.com.
+    Drives APP_URL and the Reverb WebSocket origin allowlist, and through
+    APP_URL, Sanctum's stateful domain list.
+
+    This is also the name the certificate is issued for, and — unless
+    `hosted_zone_name` says otherwise — the Route 53 zone the records are
+    written into. If you supply `acm_certificate_arn` yourself, that
+    certificate must certify this name.
+
+    EMPTY IS VALID, and is the default, because `edge = "cloudfront"` has no
+    domain at all: the public hostname is the distribution's own
+    *.cloudfront.net name, which does not exist until apply. A precondition on
+    the HTTPS listener fails the plan if edge = "alb" arrives without one,
+    rather than letting the apply reach ACM and stop there.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    # A scheme here would produce `https://https://…` in APP_URL and an
+    # origin entry that matches nothing, both of which fail at request time
+    # rather than at apply time.
+    condition     = !can(regex("://", var.app_domain)) && !can(regex("/", var.app_domain))
+    error_message = "app_domain must be a bare hostname: no scheme, no path."
+  }
+}
+
+variable "reverb_app_id" {
+  description = "Reverb application id. An identifier, not a credential."
+  type        = string
+  default     = "georag-app"
+}
+
+variable "reverb_app_key" {
+  description = <<-EOT
+    Reverb application key. Public by design (config/reverb.php): the
+    browser receives it and CD bakes it into the JS bundle as
+    VITE_REVERB_APP_KEY, which must carry the SAME value. The secret half
+    is REVERB_APP_SECRET in Secrets Manager.
+  EOT
+  type        = string
+}

@@ -19,8 +19,8 @@ Notification:
   - optional Slack webhook via env SLACK_NOTIFICATION_WEBHOOK_URL
 
 Per kickoff §Step 7 Finding 3, this is a borderline downgrade candidate.
-The notification leg may later be migrated onto Kestra (the integration-
-boundary owner post-Activepieces sunset).
+The notification leg has no integration-boundary owner today — both
+orchestrators that were going to own it have been retired.
 """
 
 from __future__ import annotations

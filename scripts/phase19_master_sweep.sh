@@ -12,19 +12,19 @@ set -uo pipefail
 REPO="${REPO:-/home/georag/projects/georag}"
 cd "$REPO"
 
+# THE LIST BELOW MUST MATCH DISK. The loop skips a verifier it cannot
+# find (`continue`, not a failure), so a stale entry does not break the
+# sweep — it quietly shrinks TOTAL_VERIFIERS, and "Verifiers: N / N green"
+# then reads as full coverage while the missing ones never ran. Nine such
+# entries were pruned on 2026-09-15; every later sweep parses this same
+# list with awk, so they inherit the correction.
 VERIFIERS=(
     scripts/phase0_step1_verify.sh
     scripts/phase0_step2_verify.sh
     scripts/phase0_step3_verify.sh
     scripts/phase0_step4_verify.sh
-    scripts/phase1_step1_verify.sh
     scripts/phase1_step2_verify.sh
-    scripts/phase1_step3_verify.sh
     scripts/phase1_step4_verify.sh
-    scripts/phase2_step1_verify.sh
-    scripts/phase2_step2_verify.sh
-    scripts/phase2_step3_verify.sh
-    scripts/phase2_step4_verify.sh
     scripts/phase3_step1_verify.sh
     scripts/phase3_step2_verify.sh
     scripts/phase3_step3_verify.sh
@@ -59,18 +59,15 @@ VERIFIERS=(
     scripts/phase11_step3_verify.sh
     scripts/phase11_step4_verify.sh
     scripts/phase12_step1_verify.sh
-    scripts/phase12_step2_verify.sh
     scripts/phase12_step3_verify.sh
     scripts/phase13_step1_verify.sh
     scripts/phase13_step2_verify.sh
     scripts/phase13_step3_verify.sh
     scripts/phase13_step4_verify.sh
-    scripts/phase14_step1_verify.sh
     scripts/phase14_step2_verify.sh
     scripts/phase14_step3_verify.sh
     scripts/phase15_step1_verify.sh
     scripts/phase15_step2_verify.sh
-    scripts/phase15_step3_verify.sh
     scripts/phase16_step1_verify.sh
     scripts/phase16_step2_verify.sh
     scripts/phase17_step1_verify.sh
@@ -82,7 +79,6 @@ VERIFIERS=(
     scripts/phase18_step4_verify.sh
     scripts/phase18_step5_verify.sh
     scripts/phase19_step1_verify.sh
-    scripts/phase19_step2_verify.sh
     scripts/phase19_step3_verify.sh
     scripts/phase19_step4_verify.sh
 )

@@ -3,6 +3,11 @@
 > **Reconciled 2026-09-07** for the stale-reference pass: writer attributions
 > that named Dagster assets, the `backend_used` CHECK, the Kestra loader for
 > public geoscience, the outbox fan-out targets and the Tempo join note.
+> **Re-reconciled 2026-09-15** for
+> [ADR-0023](../../adr/0023-cohere-chat-and-parse-move-to-coheres-own-api.md):
+> the same two items moved again. The `backend_used` CHECK gained `cohere`,
+> and the trace join — corrected off Tempo in September — was still pointing
+> at Azure Log Analytics two cloud moves later.
 > The schema definitions themselves were current and were not re-derived
 > column by column — `tests/Unit/ArchitectureDocSchemaParityTest.php` is
 > what actually gates `schema.table` names against the migration tree.
@@ -89,10 +94,10 @@ Key columns:
 - `fusion_method` — CHECK in `rrf|dbsf` (line 117).
 - `workspace_data_version_at_query` — captured at query time so the answer
   can be replayed against the workspace’s frozen state.
-- `backend_used` — CHECK in `vllm|anthropic|azure|unknown` ([2026_08_14_010000](../../../database/migrations/2026_08_14_010000_extend_answer_runs_backend_check.php)). The CHECK had been frozen at the vLLM-cutover set, and rows that did not write `backend_used` at all kept the violation latent.
+- `backend_used` — CHECK in `vllm|anthropic|azure|bedrock|cohere|unknown` ([2026_09_15_010000](../../../database/migrations/2026_09_15_010000_extend_answer_runs_backend_check_for_cohere.php), superseding [2026_09_08_010000](../../../database/migrations/2026_09_08_010000_extend_answer_runs_backend_check_for_bedrock.php) and [2026_08_14_010000](../../../database/migrations/2026_08_14_010000_extend_answer_runs_backend_check.php)). This CHECK has now frozen behind the default backend three times, and each time the symptom was the same non-symptom: `normalize_backend()` maps an unrecognised backend to `unknown` precisely so it cannot violate the constraint, so nothing raises — the column just stops carrying information. It froze at the vLLM-cutover set, then at `azure` when ADR-0022 made `bedrock` the default, then at `bedrock` when [ADR-0023](../../adr/0023-cohere-chat-and-parse-move-to-coheres-own-api.md) made `cohere` the default one week later. `azure` and `bedrock` are both kept as legal *stored* values — history stays readable — while `Settings` rejects `azure` as a *selectable* one.
 - `prompt_tokens`, `completion_tokens`, `total_tokens`.
 - `citation_lifecycle_state` (line 123).
-- `trace_id`, `root_span_id` — the W3C trace id, indexed. Tempo is gone; the join is now against `ContainerAppConsoleLogs_CL` in Log Analytics and against `silver.query_traces` ([Ch 12 §3](12-observability.md)).
+- `trace_id`, `root_span_id` — the W3C trace id, indexed. Tempo is gone; the join is now against the `/ecs/georag` CloudWatch log group ([services.tf:10](../../../deploy/aws/terraform/services.tf)) and against `silver.query_traces` ([Ch 12 §3](12-observability.md)). It was `ContainerAppConsoleLogs_CL` in Log Analytics until ADR-0022 moved production to AWS; Ch 12 still describes the Azure side and says so in its own header.
 
 Indexes: `(workspace_id)`, `(project_id)`, `(created_at DESC)`,
 partial `(trace_id) WHERE trace_id IS NOT NULL`, `(query_class)`.

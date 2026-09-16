@@ -158,7 +158,7 @@ async def post_ingestion_progress(
         else ever increments it, so a dropped POST means tile caches keep
         serving pre-ingest geometry indefinitely, not until some later sweep.
       * ``DebounceWorkspaceMvRefresh`` — the materialised-view refresh. The
-        only other trigger is the 03:00 UTC ``mv_refresh_silver`` cron, so
+        only other trigger is the 18:00 UTC ``mv_refresh_silver`` cron, so
         the data is missing from every MV-derived surface until tomorrow.
       * ``WorkspaceDataUpdated`` — the SPA's partial reload.
 

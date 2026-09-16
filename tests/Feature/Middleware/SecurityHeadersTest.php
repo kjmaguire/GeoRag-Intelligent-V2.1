@@ -8,6 +8,7 @@ use App\Http\Middleware\SecurityHeadersMiddleware;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\URL;
 use Tests\TestCase;
 
 /**
@@ -80,13 +81,13 @@ final class SecurityHeadersTest extends TestCase
      */
     public function test_csp_frame_src_allows_the_configured_object_store(): void
     {
-        config(['filesystems.disks.s3-bronze.endpoint' => 'https://acct.blob.core.windows.net']);
+        config(['filesystems.disks.s3-bronze.endpoint' => 'https://s3.us-east-1.amazonaws.com']);
 
         $csp = $this->get('/_test/security-headers/probe')
             ->headers->get('Content-Security-Policy');
 
         $this->assertMatchesRegularExpression('/(^|; )frame-src /', (string) $csp);
-        $this->assertStringContainsString('https://acct.blob.core.windows.net', (string) $csp);
+        $this->assertStringContainsString('https://s3.us-east-1.amazonaws.com', (string) $csp);
     }
 
     /**
@@ -120,126 +121,27 @@ final class SecurityHeadersTest extends TestCase
     }
 
     /**
-     * THE PRODUCTION SHAPE. Under STORAGE_BACKEND=azure_blob every one of
-     * these disks resolves to `driver => 'azure'` and takes its host from
-     * `account_name`, leaving `endpoint` and `url` unset. Deriving origins
-     * from the S3 keys alone therefore produced a frame-src containing only
-     * the unconditional s3.amazonaws.com fallback, and the Reports "Original"
-     * iframe stayed blocked on Azure even though the directive was present.
-     *
-     * The presigned host comes from AppServiceProvider's SAS callback:
-     * https://{account}.blob.core.windows.net/{container}/{path}?{token}
-     */
-    public function test_csp_frame_src_allows_the_azure_blob_account(): void
-    {
-        config([
-            'filesystems.disks.s3-bronze.endpoint' => null,
-            'filesystems.disks.s3-bronze.url' => null,
-            'filesystems.disks.s3-bronze.connection_string' => null,
-            'filesystems.disks.s3-bronze.account_name' => 'georagblobcc',
-        ]);
-
-        $csp = (string) $this->get('/_test/security-headers/probe')
-            ->headers->get('Content-Security-Policy');
-
-        $this->assertStringContainsString('https://georagblobcc.blob.core.windows.net', $csp);
-    }
-
-    /**
-     * `blob:` in frame-src is the blob: URI SCHEME, not the Azure
+     * `blob:` in frame-src is the blob: URI SCHEME, not an Azure
      * *.blob.core.windows.net host. Reading one as covering the other is what
-     * makes this bug look fixed when it is not, so pin that the real host is
-     * present rather than settling for the scheme token.
+     * made the original bug look fixed when it was not.
+     *
+     * The Azure reader this once exercised is gone — ADR-0022 retired
+     * STORAGE_BACKEND=azure_blob and `config/filesystems.php` resolves every
+     * disk to the `s3` driver, so no disk carries `account_name` or
+     * `connection_string` for it to read. This is now the ratchet in the
+     * other direction: no Azure blob host may appear in the CSP at all, with
+     * the disks configured exactly as production configures them.
      */
-    public function test_the_blob_scheme_token_is_not_mistaken_for_the_blob_host(): void
+    public function test_no_azure_blob_host_appears_in_the_csp(): void
     {
-        config([
-            'filesystems.disks.s3.account_name' => null,
-            'filesystems.disks.s3.connection_string' => null,
-            'filesystems.disks.s3-bronze.account_name' => null,
-            'filesystems.disks.s3-bronze.connection_string' => null,
-            'filesystems.disks.s3-exports.account_name' => null,
-            'filesystems.disks.s3-exports.connection_string' => null,
-        ]);
-
-        $frameSrc = $this->frameSrcDirective(
-            (new SecurityHeadersMiddleware)->buildCsp('production'),
-        );
-
-        // With no account configured there is no blob host to allow — and the
-        // scheme token must not be standing in for one.
-        $this->assertStringNotContainsString('blob.core.windows.net', $frameSrc);
-    }
-
-    /**
-     * A connection string may relocate the host outright — Azurite and
-     * private-endpoint deployments both do. BlobEndpoint wins over the
-     * account name rather than being ignored beside it.
-     */
-    public function test_csp_frame_src_honours_a_blob_endpoint_override(): void
-    {
-        config([
-            'filesystems.disks.s3-bronze.account_name' => 'ignoredaccount',
-            'filesystems.disks.s3-bronze.connection_string' => 'DefaultEndpointsProtocol=https;AccountName=ignoredaccount;'
-                .'BlobEndpoint=https://georag.privatelink.blob.core.windows.net;',
-        ]);
-
-        $frameSrc = $this->frameSrcDirective(
-            (new SecurityHeadersMiddleware)->buildCsp('production'),
-        );
-
-        $this->assertStringContainsString('https://georag.privatelink.blob.core.windows.net', $frameSrc);
-        $this->assertStringNotContainsString('ignoredaccount.blob.core.windows.net', $frameSrc);
-    }
-
-    /**
-     * A sovereign-cloud deployment moves the suffix, not the account.
-     */
-    public function test_csp_frame_src_follows_a_sovereign_endpoint_suffix(): void
-    {
-        config([
-            'filesystems.disks.s3-bronze.account_name' => 'govacct',
-            'filesystems.disks.s3-bronze.connection_string' => 'DefaultEndpointsProtocol=https;AccountName=govacct;EndpointSuffix=core.usgovcloudapi.net;',
-        ]);
-
         $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
 
-        $this->assertStringContainsString('https://govacct.blob.core.usgovcloudapi.net', $csp);
-    }
+        $this->assertStringNotContainsString('blob.core.windows.net', $csp);
+        $this->assertStringNotContainsString('blob.core.usgovcloudapi.net', $csp);
 
-    /**
-     * Widening what the app may EMBED must not widen who may embed the app —
-     * re-asserted here because the Azure origin is added by a different code
-     * path than the S3 one and could regress independently.
-     */
-    public function test_the_azure_origin_does_not_leak_into_frame_ancestors(): void
-    {
-        config(['filesystems.disks.s3-bronze.account_name' => 'georagblobcc']);
-
-        $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
-
-        $this->assertStringContainsString("frame-ancestors 'none'", $csp);
-        $this->assertStringNotContainsString(
-            'georagblobcc',
-            $this->directive($csp, 'frame-ancestors'),
-        );
-    }
-
-    private function frameSrcDirective(string $csp): string
-    {
-        return $this->directive($csp, 'frame-src');
-    }
-
-    private function directive(string $csp, string $name): string
-    {
-        foreach (explode(';', $csp) as $directive) {
-            $directive = trim($directive);
-            if (str_starts_with($directive, $name.' ')) {
-                return $directive;
-            }
-        }
-
-        return '';
+        // ...and the scheme token is still allowed where MapLibre needs it,
+        // so this passes for the right reason rather than by emptying the CSP.
+        $this->assertStringContainsString('blob:', $csp);
     }
 
     public function test_hsts_absent_on_http_request(): void
@@ -263,6 +165,40 @@ final class SecurityHeadersTest extends TestCase
         $this->assertIsString($hsts);
         $this->assertStringContainsString('max-age=31536000', $hsts);
         $this->assertStringContainsString('includeSubDomains', $hsts);
+    }
+
+    public function test_hsts_present_when_the_edge_terminated_tls_for_us(): void
+    {
+        // The `edge = "cloudfront"` shape (deploy/aws/terraform/edge.tf, the
+        // default): the browser is on https, CloudFront terminates it, and the
+        // load balancer behind it forwards plain HTTP — so the request Laravel
+        // sees is NOT secure, and isSecure() alone would drop HSTS entirely on
+        // the only edge mode that ships. AppServiceProvider forces the https
+        // scheme whenever APP_URL is https; the middleware has to follow it.
+        URL::forceScheme('https');
+
+        $request = Request::create('http://d111111abcdef8.cloudfront.net/_test/security-headers/probe', 'GET');
+        $this->assertFalse($request->isSecure(), 'precondition: the origin hop really is http');
+
+        $mw = new SecurityHeadersMiddleware;
+        $resp = $mw->handle($request, fn ($r) => response('ok'));
+
+        $hsts = $resp->headers->get('Strict-Transport-Security');
+        $this->assertIsString(
+            $hsts,
+            'HSTS must survive TLS terminating at CloudFront rather than at this process',
+        );
+        $this->assertStringContainsString('max-age=31536000', $hsts);
+    }
+
+    public function test_app_service_provider_forces_https_only_for_an_https_app_url(): void
+    {
+        // Guards the condition AppServiceProvider::boot() keys on. APP_URL is
+        // http in the test environment, so nothing is forced and http:// stays
+        // http:// — which is what keeps local development over plain HTTP, and
+        // test_hsts_absent_on_http_request above, working.
+        $this->assertStringStartsNotWith('https://', (string) config('app.url'));
+        $this->assertSame('http://', URL::formatScheme());
     }
 
     public function test_csp_omits_upgrade_insecure_in_local_env(): void

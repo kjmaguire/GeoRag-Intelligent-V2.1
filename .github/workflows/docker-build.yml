@@ -23,8 +23,50 @@ name: Docker Build (GHCR + Trivy + SBOM)
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      # Documentation that nothing in CI reads. A push touching ONLY these
+      # cannot fail any job here, so paying for 28 billable minutes to prove
+      # it is waste — and it was real waste: three of eight pushes on
+      # 2026-09-15 were documentation only and ran all 24 checks.
+      #
+      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
+      #                           key table, and aws-preflight.sh derives the
+      #                           go-live key list from it. Editing that table
+      #                           really can break the build.
+      #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
+      #                           fails when it names a schema.table no
+      #                           migration creates.
+      # Neither is matched below — `*.md` is root-level only, and the
+      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
+      # build if that ever stops being true.
+      - 'docs/**'
+      - 'ops/runbooks/**'
+      - '*.md'
+      - 'LICENSE'
 
 concurrency:
   # Deliberately NOT ci-${{ github.ref }} — concurrency groups are
@@ -88,7 +130,8 @@ jobs:
     # even before accounting for the Trivy scan + SBOM steps that run
     # after the build within the same budget. 45 gives real headroom.
     timeout-minutes: 45
-    # Matrix over the two images so each gets its own cache scope and SBOM.
+    # Matrix over the three images CD builds, so each gets its own cache
+    # scope and SBOM.
     # Failures in one image do not cancel the other. The dagster leg was
     # dropped 2026-08-05 — Dagster services were retired in Phase B2 and
     # nothing deploys this image anymore.
@@ -106,6 +149,20 @@ jobs:
           - service: laravel
             dockerfile: docker/laravel.Dockerfile
             context: .
+          # Added 2026-09-16. cd.yml has always built three images and this
+          # workflow built two, so martin reached production unbuilt: its
+          # `COPY martin/martin.yaml` could not resolve against cd.yml's
+          # repository-root context, and the first deploy would have been the
+          # first time anything tried. ci.yml lints it with hadolint, which
+          # checks syntax and never whether a COPY source exists.
+          #
+          # The rule this restores is simply that CI builds every image CD
+          # builds. It costs almost nothing here — martin is a FROM and a COPY
+          # over a pinned upstream digest, seconds rather than the fastapi
+          # leg's minutes.
+          - service: martin
+            dockerfile: docker/martin.Dockerfile
+            context: .
 
     # GITHUB_TOKEN must have packages:write to push to GHCR.
     # id-token:write is required by anchore/sbom-action attestation.
@@ -116,6 +173,52 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      # The fastapi leg ran the runner out of disk on 2026-09-15 —
+      # "write /usr/lib/x86_64-linux-gnu/libicudata.so.76.1: no space left on
+      # device" — while the laravel leg built fine on the same runner type
+      # minutes earlier. Nothing in that push touched a Dockerfile.
+      #
+      # It is the PR path that is tight, and `load: true` below is why: it
+      # exports the finished image into the local Docker daemon so Trivy can
+      # scan it, so at peak the fastapi layers exist TWICE — once in the
+      # buildkit cache, once in the daemon. That image carries torch,
+      # transformers, GDAL/rasterio and a from-source Tesseract, against a
+      # hosted runner that starts with roughly 14 GB free on /. The margin
+      # was always thin; it has now been crossed, and it will be crossed
+      # again as the image grows.
+      #
+      # Everything removed is a preinstalled toolchain for a language this
+      # repository never builds on the host — both images are built inside
+      # Docker, so the host needs docker and nothing else. Android alone is
+      # most of the ~25 GB this frees. CodeQL's toolcache goes too: it was
+      # only ever used by codeql.yml, which was deleted on 2026-09-15 (see
+      # Ch 07), and the runner image ships it regardless.
+      #
+      # Inline rather than a third-party "free disk space" action, on
+      # purpose. The Trivy step below was moved off a floating `@master` ref
+      # in the 2026-06-24 re-audit; taking a new supply-chain dependency to
+      # solve a disk problem would hand that back for no reason.
+      #
+      # Applied to both matrix legs rather than just fastapi. It costs the
+      # laravel leg a few seconds, and laravel's own margin shrinks with
+      # every base-image update — a guard that only covers the image that
+      # has already failed is a guard that gets added twice.
+      #
+      # `df -h` either side so the next failure is diagnosable from the log
+      # rather than guessed at. `|| true` so a path that disappears from a
+      # future runner image cannot fail the build.
+      - name: Free runner disk space
+        run: |
+          echo "--- disk before cleanup ---"
+          df -h /
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          echo "--- disk after cleanup ---"
+          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -177,6 +280,24 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL
+          # Trivy's own default is 5m, and the fastapi image sits right on it.
+          # It carries torch, the GDAL stack and the baked SPLADE++ weights
+          # (docker/fastapi.Dockerfile), and layer analysis takes very nearly
+          # the whole budget: on 2026-09-16 the scan ran 5m01s and died with
+          #
+          #   FATAL  run error: image scan error: ... failed to analyze layer
+          #          (sha256:3008d977...): walk error
+          #
+          # on a commit whose diff touched only Terraform, CI config and two
+          # scripts — nothing in the image at all. The same image had passed
+          # minutes earlier on the parent commit. A ceiling that a scan finishes
+          # just under is a coin flip, and losing it reads as a CRITICAL CVE gate
+          # failing rather than as a clock running out.
+          #
+          # 20m is a ceiling, not a delay: the laravel and martin scans finish
+          # in well under a minute and are unaffected. Raise it again rather
+          # than re-running the job if fastapi ever grows into this one too.
+          timeout: "20m"
 
       # SBOM generation via Syft (anchore/sbom-action). SPDX JSON format.
       # Artifact is uploaded and retained 90 days for supply-chain audits.

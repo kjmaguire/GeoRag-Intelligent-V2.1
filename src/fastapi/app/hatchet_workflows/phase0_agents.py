@@ -6,13 +6,19 @@ Each wrapper:
   - registers the agents.runtime so the @georag_agent decorator works
   - invokes the underlying agent and returns its summary
 
-Schedules per Phase 0 kickoff §Step 6:
+Schedules. The hours are NOT the Phase 0 kickoff §Step 6 ones any more:
+every fixed-hour slot moved on 2026-09-16, when the nightly shutdown
+window shrank to eight and a half hours a day (08:30-17:00 Pacific) and
+closed 00:00-16:30 UTC, the half hour to 17:00 being the startup sweep's
+own head start. The relative order and stagger are what the kickoff
+actually specified, and those survived intact.
 
-    tenant_isolation_audit          0 2  * * *    nightly 02:00 UTC
-    storage_tiering_run             0 3  * * *    daily   03:00 UTC
-    store_reconciliation_run        0 4  * * *    nightly 04:00 UTC
-    model_upgrade_watch_run         0 5  * * *    daily   05:00 UTC
-    model_cost_summary_run          0 6  * * *    daily   06:00 UTC
+    tenant_isolation_audit          0 17 * * *     nightly 17:00 UTC
+    graph_tenant_audit              30 17 * * *    nightly 17:30 UTC
+    storage_tiering_run             0 18 * * *     daily   18:00 UTC
+    store_reconciliation_run        0 19 * * *     nightly 19:00 UTC
+    model_upgrade_watch_run         0 20 * * *     daily   20:00 UTC
+    model_cost_summary_run          0 22 * * *     daily   22:00 UTC
     index_health_check              0 */6 * * *    every 6 h
 
 On-demand only (no cron — triggered via FastAPI route or manual run):
@@ -154,7 +160,7 @@ def _ctx_from(input: AgentRunInput, hctx: Context) -> AgentContext:
 
 
 # =============================================================================
-# 1. Tenant Isolation Auditor — nightly 02:00 UTC
+# 1. Tenant Isolation Auditor — nightly 17:00 UTC
 # =============================================================================
 class TenantIsolationAuditOutput(BaseModel):
     """Output schema for the tenant_isolation_audit workflow.
@@ -178,7 +184,7 @@ class TenantIsolationAuditOutput(BaseModel):
 
 tenant_isolation_audit = hatchet.workflow(
     name="tenant_isolation_audit",
-    on_crons=["0 2 * * *"],
+    on_crons=["0 17 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -193,15 +199,15 @@ async def _run_tenant_isolation(
 
 
 # =============================================================================
-# 1b. Graph Tenant Auditor — Z-roadmap Z.9, nightly 02:30 UTC
+# 1b. Graph Tenant Auditor — Z-roadmap Z.9, nightly 17:30 UTC
 #
-# Sibling to tenant_isolation_audit (PG-side, 02:00 UTC). Offset by 30
+# Sibling to tenant_isolation_audit (PG-side, 17:00 UTC). Offset by 30
 # minutes so the two auditors don't contend for the Hatchet ai-pool
 # slot or write to silver.tenant_isolation_audit at the same instant.
 # =============================================================================
 graph_tenant_audit = hatchet.workflow(
     name="graph_tenant_audit",
-    on_crons=["30 2 * * *"],
+    on_crons=["30 17 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -250,7 +256,7 @@ async def _run_lineage_walk(
 
 
 # =============================================================================
-# 3. Storage Tiering Agent — daily 03:00 UTC
+# 3. Storage Tiering Agent — daily 18:00 UTC
 # =============================================================================
 class StorageTieringRunOutput(BaseModel):
     """Output schema for the storage_tiering_run workflow.
@@ -271,7 +277,7 @@ class StorageTieringRunOutput(BaseModel):
 
 storage_tiering_run = hatchet.workflow(
     name="storage_tiering_run",
-    on_crons=["0 3 * * *"],
+    on_crons=["0 18 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -331,7 +337,7 @@ async def _run_index_health(
 
 
 # =============================================================================
-# 5. Store Reconciliation Agent — nightly 04:00 UTC
+# 5. Store Reconciliation Agent — nightly 19:00 UTC
 # =============================================================================
 class StoreReconciliationRunOutput(BaseModel):
     """Output schema for the store_reconciliation_run workflow.
@@ -349,7 +355,7 @@ class StoreReconciliationRunOutput(BaseModel):
 
 store_reconciliation_run = hatchet.workflow(
     name="store_reconciliation_run",
-    on_crons=["0 4 * * *"],
+    on_crons=["0 19 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -364,7 +370,7 @@ async def _run_store_recon(
 
 
 # =============================================================================
-# 6. Model Upgrade Watch Agent — daily 05:00 UTC
+# 6. Model Upgrade Watch Agent — daily 20:00 UTC
 # =============================================================================
 class ModelUpgradeWatchRunOutput(BaseModel):
     """Output schema for the model_upgrade_watch_run workflow.
@@ -384,7 +390,7 @@ class ModelUpgradeWatchRunOutput(BaseModel):
 
 model_upgrade_watch_run = hatchet.workflow(
     name="model_upgrade_watch_run",
-    on_crons=["0 5 * * *"],
+    on_crons=["0 20 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -399,7 +405,7 @@ async def _run_model_upgrade_watch(
 
 
 # =============================================================================
-# 8. Model Cost Summary Agent — daily 06:00 UTC
+# 8. Model Cost Summary Agent — daily 22:00 UTC
 # =============================================================================
 class ModelCostSummaryRunOutput(BaseModel):
     """Output schema for the model_cost_summary_run workflow.
@@ -419,12 +425,16 @@ class ModelCostSummaryRunOutput(BaseModel):
 
 model_cost_summary_run = hatchet.workflow(
     name="model_cost_summary_run",
-    # Moved 2026-08-21: 15:00 UTC — model_cost_summary_run; 06:00 was inside the window.
-    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
-    # scales hatchet-worker-cc to zero and both DST candidate hours of
-    # each sweep count as closed. See
-    # tests/test_crons_avoid_the_shutdown_window.py.
-    on_crons=["0 15 * * *"],
+    # Moved 2026-08-21 to 15:00 UTC; 06:00 was inside the window then, which
+    # ran 06:00-14:00 UTC and was closed by an Azure Container Apps sweep
+    # scaling hatchet-worker-cc to zero at both DST candidate hours. ADR-0022
+    # retired that on 2026-09-08 — one timezone-aware EventBridge schedule
+    # scaling every ECS service to --desired-count 0 — and on 2026-09-16 the
+    # window shrank to 08:30-17:00 Pacific, closing 00:00-16:30 UTC, which is
+    # what moved this to 22:00. See
+    # tests/test_crons_avoid_the_shutdown_window.py, which derives the span
+    # from the Terraform rather than from this comment.
+    on_crons=["0 22 * * *"],
     input_validator=AgentRunInput,
 )
 

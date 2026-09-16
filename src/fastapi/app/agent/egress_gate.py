@@ -1,9 +1,38 @@
 """Z.1 / Appendix C §5 — External-LLM egress profile gate.
 
-This module is the load-bearing pre-check for any LLM call that would
-leave the GeoRAG trust boundary (currently: Anthropic Messages API on
-the ``LLM_BACKEND=anthropic`` fallback path; other third-party providers
-would route through the same gate).
+SCOPE — read this before adding or removing a call site
+------------------------------------------------------
+This gate does NOT guard "every call that leaves the process". It guards
+calls to providers **outside the contracted set**, and the contracted set
+is a deployment policy decision rather than a property of the network.
+
+Today the contracted set is AWS (Bedrock: Embed v4, Rerank 3.5, and the
+optional ``LLM_BACKEND=bedrock`` chat path) and **Cohere's own API**
+(Command A+ chat and Parse 5 OCR, ADR-0023). Anthropic is outside it, so
+``_call_anthropic_llm`` is the one call site that checks.
+
+Decided 2026-09-15 by Kyle (SME), when ADR-0023 moved the primary chat
+path to ``api.cohere.com`` and raised the question directly: Cohere is
+already the model vendor for all four capabilities under a commercial
+agreement, so routing chat through Cohere's own API rather than through
+AWS's resale of it does not change who processes the data. Anthropic is a
+different vendor with a different agreement, and that is the distinction
+this flag is for.
+
+The alternative — treating any non-AWS host as external and calling this
+gate from ``llm_cohere.py`` — was considered and not taken. It would have
+meant defaulting ``allow_external_llm`` to true for every existing
+workspace in the same migration, because the gate is default-deny and the
+primary backend refusing every query is not a security posture, it is an
+outage. A flag that must be true everywhere to keep the product working
+stops carrying information.
+
+**What would change this.** A client contract requiring in-cloud or
+Canadian data residency takes Cohere out of the contracted set, and then
+this gate is the mechanism — ``assert_external_llm_allowed`` in
+``llm_cohere.py``, plus the same question for Parse in
+``cohere_parse_client``, which sends page IMAGES. ADR-0023's Consequences
+records the residency position this rests on.
 
 The gate reads the active workspace's ``allow_external_llm`` policy
 flag (stored in ``silver.workspace_settings.extra_payload`` as the
@@ -19,8 +48,8 @@ Contract
   explicit ``true`` in the workspace settings JSONB.
 - System-level calls with no workspace (``workspace_id is None``) are
   refused. The caller MUST provide a workspace_id for any path that
-  emits user/document text to Anthropic. (Internal admin scripts that
-  legitimately need to bypass should use the vLLM backend.)
+  emits user/document text to a non-contracted provider. (Internal admin
+  scripts that legitimately need to bypass should use the vLLM backend.)
 - The gate is purely Pythonic: no LLM SDK imports, no network beyond
   the one asyncpg call. It is safe to import from any module without
   pulling in the Anthropic dependency.

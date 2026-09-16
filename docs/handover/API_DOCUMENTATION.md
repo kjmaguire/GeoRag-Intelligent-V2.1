@@ -140,7 +140,7 @@ All routes under `auth:sanctum` except the auth group below. Inventory (verified
 | GET | `/api/v1/interpretations/{project_id}` | Interpretations. |
 | GET | `/api/v1/audit/{workspace_id}` | Workspace audit feed. |
 | GET | `/api/v1/usage/{workspace_id}` | Usage metrics. |
-| GET | `/api/v1/webhooks` | Webhook registry. CRUD lives in Kestra — flagged ([`HANDOVER_INDEX.md`](HANDOVER_INDEX.md) §5.3). |
+| GET | `/api/v1/webhooks` | **Admin only** (404 otherwise). Lists the `inbound-webhook` rows of `workflow.flow_registry`. Read-only: there is no subscribe/unsubscribe API — a flow is added by `INSERT INTO workflow.flow_registry`. (Corrected 2026-09-15: said CRUD lived in Kestra, which was removed 2026-07-28. Until the same date the endpoint returned 42703 on every call.) |
 
 ### 3.7 Public Geoscience (§10)
 

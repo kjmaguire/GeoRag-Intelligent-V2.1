@@ -3,10 +3,30 @@
 > **Reconciled 2026-09-07** against `config/horizon.php`, the three classes
 > in `app/Jobs/`, the `POOLS` registry in
 > `src/fastapi/app/hatchet_workflows/worker.py` (51 workflows), every
-> `on_crons=` declaration, the two trigger routers, the Azure scheduler
-> jobs under `deploy/azure/containerapps/`, the GitHub Actions schedules,
-> and `docs/hatchet_review_2026_08_21.md` for what Azure was observed to
-> do. Review findings are marked open or closed against today's code (§7).
+> `on_crons=` declaration, the two trigger routers, the then-current Azure
+> scheduler jobs, the GitHub Actions schedules, and
+> `docs/hatchet_review_2026_08_21.md` for what production was observed to
+> do. The scheduler half was re-reconciled against
+> `deploy/aws/terraform/scheduler.tf` on 2026-09-08. Review findings are marked open or closed against today's code (§7).
+>
+> **⚠️ 2026-09-08 — production moved from Azure Container Apps to AWS
+> ([ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md)).**
+> Every production reference below — Container Apps, Azure Blob, Azure AI
+> Foundry, Log Analytics, Flexible Server, the `-cc` app names — is now
+> HISTORY. What replaced each is in
+> [deploy/aws/README.md](../../../deploy/aws/README.md) and
+> [deploy/aws/MIGRATION-PLAN.md](../../../deploy/aws/MIGRATION-PLAN.md).
+> Everything this chapter says about the **dev stack** and about
+> **application behaviour** is unaffected and still accurate; only the
+> question of where production runs has changed.
+>
+> **§3.2, §4 and §5 were rewritten on 2026-09-08** rather than left under
+> this notice, because they are the tables an on-call reader consults for a
+> single fact — when is the platform down, what fires at 04:00, what alerts
+> on a failed sweep — and a dated warning at the top of a chapter does not
+> travel with the row someone scrolls to. The rest of the chapter is
+> narrative and is left as written.
+
 
 Hard rule 7: **no overlap.** Two orchestrators exist, and two schedulers
 outside the application.
@@ -15,8 +35,8 @@ outside the application.
 |---|---|---|
 | **Laravel Horizon** (Redis queues) | Three short, user-triggered jobs: query streaming, export generation, a debounced view refresh | `dispatch()` from three controllers |
 | **Hatchet** (`hatchet-lite` + one worker) | Everything durable: ingestion, embedding, every cron, the outbox, the Phase 0 agents, reports and training skeletons | FastAPI trigger endpoints, in-process `aio_run_no_wait`, 29 cron expressions |
-| GitHub Actions `schedule:` | Nightly eval gate, weekly coverage and CodeQL | cron on the runner |
-| Azure Container Apps Jobs | Nightly shutdown and morning startup of the production tier | cron, DST-guarded |
+| GitHub Actions `schedule:` | Nightly eval gate and weekly coverage | cron on the runner |
+| EventBridge Scheduler | Nightly shutdown and morning startup of the production tier | one timezone-aware cron each (§3.2) |
 
 There is **no Laravel scheduler**: `routes/console.php` registers only the
 `inspire` command, so nothing runs `schedule:run` and nothing can hide a
@@ -30,7 +50,7 @@ agent (2026-08-23), Activepieces (Phase 3).
 
 - **Process**: [docker/horizon-entrypoint.sh](../../../docker/horizon-entrypoint.sh)
   starts the HTTP health listener (`docker/horizon-health.php`, port 8080)
-  then `exec`s `php artisan horizon`. Azure's `laravel-horizon-cc` probes
+  then `exec`s `php artisan horizon`. The production `laravel-horizon` probes
   that listener; compose could use `horizon:status` but runs the same path.
 - **Supervisors** ([config/horizon.php](../../../config/horizon.php)):
 
@@ -65,18 +85,19 @@ agent (2026-08-23), Activepieces (Phase 3).
 
 ### 2.1 Engine and worker
 
-| | Dev (compose) | Azure |
+| | Dev (compose) | Production (ECS) |
 |---|---|---|
-| Engine | `hatchet-lite:v0.86.12`, ports 8889 → 8888 (UI/REST) and 7077 (gRPC), state in the `hatchet` DB on the stack's Postgres ([Ch 02 §6](02-data-stores.md#6-hatchet-engine-state)) | `hatchet-cc` running `hatchet-lite:v0.89.7` (version drift), 1 replica, TCP ingress 7077, state in the `hatchet` DB on `georag-pg-cc` |
-| Worker | `hatchet-worker`, `WORKER_POOL=all`, 20 slots, 6 CPU / 24 GiB + GPU, healthcheck greps `/proc/1/cmdline` | `hatchet-worker-cc`, `WORKER_POOL=all`, 20 slots, 4 vCPU / 8 GiB, **maxReplicas 1**, no ingress; liveness probe on the SDK health server (port 8001, event-loop block threshold 30 s) added by `apply-probes.sh` |
+| Engine | `hatchet-lite:v0.86.12`, ports 8889 → 8888 (UI/REST) and 7077 (gRPC), state in the `hatchet` DB on the stack's Postgres ([Ch 02 §6](02-data-stores.md#6-hatchet-engine-state)) | `hatchet` service, 1 task, reachable only over Cloud Map on 7077, state in the `hatchet` DB on RDS. The image tag is in `deploy/aws/terraform/services.tf` — read it rather than assuming dev parity |
+| Worker | `hatchet-worker`, `WORKER_POOL=all`, 20 slots, 6 CPU / 24 GiB + GPU, healthcheck greps `/proc/1/cmdline` | `hatchet-worker`, `WORKER_POOL=all`, 20 slots, 4 vCPU / 8 GiB, **desired 1** (several workflows are `max_runs=1` singletons — §7 records this as open, not as a free knob) |
 | SDK | `hatchet-sdk>=1.33` (`src/fastapi/pyproject.toml`) | same image |
-| Auth | `HATCHET_CLIENT_TOKEN` from `hatchet-admin token create`; gRPC insecure, cookie insecure (`HATCHET_*_INSECURE=t`) | flags flipped to `f` per `.env.production.example`; CD deploys the worker image but not the engine |
+| Auth | `HATCHET_CLIENT_TOKEN` from `hatchet-admin token create`; gRPC insecure, cookie insecure (`HATCHET_*_INSECURE=t`) | flags flipped to `f` per `.env.production.example`; the token is a Secrets Manager reference. CD deploys the worker image but not the engine |
 
 Token bootstrap and the engine's environment are in
 [Ch 01 §4](01-services.md#4-dev-data--domain-service-model-sidecars-stores-hatchet).
-The worker never scales to zero on Azure: it has no ingress for the default
-HTTP scaler and its every-minute crons keep it busy, so it is the one
-production app the nightly shutdown does not stop (§4).
+The worker DOES stop overnight now. On Azure it never scaled to zero — no
+ingress for the default HTTP scaler, and its every-minute crons kept it
+busy — so the largest single line item ran through every "shutdown". ECS
+`desired-count 0` is an off switch rather than a floor (§3.2).
 
 ### 2.2 The registry — 51 workflows
 
@@ -85,6 +106,19 @@ production app the nightly shutdown does not stop (§4).
 exists so the every-minute crons could one day move to a small always-on
 pool; today it is dormant. `python -m app.hatchet_workflows.worker --list`
 prints the names without connecting. Crons are UTC.
+
+Every fixed-hour slot below sits between 17:00 and 22:00 UTC. That is not a
+preference: since 2026-09-16 the EventBridge sweeps
+(`deploy/aws/terraform/scheduler.tf`) run the platform 08:30-17:00
+America/Vancouver, which closes 00:00-16:30 UTC once both sides of a DST
+boundary are taken as closed — and the half hour from 16:30 to 17:00 is the
+startup sweep's own head start, not open time, which is why 17:00 is the
+earliest slot anything uses. A cron outside that band does not run late, it
+does not run -- `src/fastapi/tests/test_crons_avoid_the_shutdown_window.py`
+derives the span from the Terraform and fails the build. The relative
+staggers (audit verify, then the shadow aggregate 15 minutes behind it, and
+so on) are the part that carries meaning; the absolute hours have moved
+three times and will move again.
 
 **Ingestion list (13)**
 
@@ -96,34 +130,34 @@ prints the names without connecting. Crons are UTC.
 | `ingest_zip_archive` | — | Extracts and fans out by extension |
 | `ingest_spatial`, `ingest_tabular`, `ingest_well_logs` | — | Vector, drill CSV/XLSX, LAS ingest ([Ch 04 §4](04-ingestion-flow.md#4-the-other-ingest-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
 | `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `started` past 15 min: completes finished-but-unmarked embeds, re-dispatches dead parses in-process, times out the rest |
-| `nightly_ingestion_integrity` | `0 2 * * *`, `0 4 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
+| `nightly_ingestion_integrity` | `0 17 * * *`, `0 19 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
 | `reliability_metrics_publisher` | `* * * * *` | Refreshes in-process Prometheus gauges that nothing scrapes in production ([Ch 12](12-observability.md)) |
-| `storage_tiering_run` | `0 3 * * *` | Phase 0 agent |
+| `storage_tiering_run` | `0 18 * * *` | Phase 0 agent |
 | `index_health_check` | `0 */6 * * *` | Phase 0 agent (hypopg what-ifs) |
-| `store_reconciliation_run` | `0 4 * * *` | Phase 0 agent; cross-store counts, consumes outbox dead-letters |
+| `store_reconciliation_run` | `0 19 * * *` | Phase 0 agent; cross-store counts, consumes outbox dead-letters |
 
 **AI list (38)**
 
 | Workflow | Cron | Role |
 |---|---|---|
-| `audit_ledger_verify` | `0 2 * * *` | Hash-chain verification of the previous 24 h |
-| `repair_shadow_aggregate` | `15 2 * * *` | Repair-loop shadow telemetry → `gold.repair_shadow_daily` |
-| `tenant_isolation_audit` | `0 2 * * *` | Phase 0 agent; writes outbox rows |
-| `graph_tenant_audit` | `30 2 * * *` | Phase 0 agent for a graph store that no longer exists; runs nightly regardless |
-| `mv_refresh_silver` | `0 3 * * *` | `REFRESH MATERIALIZED VIEW` on the silver fact-source views |
-| `public_geo_sync` | `30 3 * * 0` | Weekly ArcGIS refresh of `public_geo` (the live owner since the Dagster pull went) |
-| `flow_jwt_key_reaper` | `0 4 * * *` | Expires `workflow.flow_jwt_keys` rows |
-| `cold_tier_archive` | `0 4 * * *` | Writes-only cold-tier archive; pruning is operator-gated |
-| `idempotency_keys_cleanup`, `pg_partman_maintenance` | `15 4 * * *` | TTL purge of `workspace.idempotency_keys`; advance the monthly partitions |
-| `retention_sweep` | `45 4 * * *` | `audit.query_audit_log` 180 d, terminal `silver.ingest_progress` 90 d |
-| `model_upgrade_watch_run` | `0 5 * * *` | Phase 0 agent |
-| `embed_pending_passages` | `45 5 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`) |
+| `audit_ledger_verify` | `0 17 * * *` | Hash-chain verification of the previous 24 h |
+| `repair_shadow_aggregate` | `15 17 * * *` | Repair-loop shadow telemetry → `gold.repair_shadow_daily` |
+| `tenant_isolation_audit` | `0 17 * * *` | Phase 0 agent; writes outbox rows |
+| `graph_tenant_audit` | `30 17 * * *` | Phase 0 agent for a graph store that no longer exists; runs nightly regardless |
+| `mv_refresh_silver` | `0 18 * * *` | `REFRESH MATERIALIZED VIEW` on the silver fact-source views |
+| `public_geo_sync` | `30 18 * * 0` | Weekly ArcGIS refresh of `public_geo` (the live owner since the Dagster pull went) |
+| `flow_jwt_key_reaper` | `0 19 * * *` | Expires `workflow.flow_jwt_keys` rows |
+| `cold_tier_archive` | `0 19 * * *` | Writes-only cold-tier archive; pruning is operator-gated |
+| `idempotency_keys_cleanup`, `pg_partman_maintenance` | `15 19 * * *` | TTL purge of `workspace.idempotency_keys`; advance the monthly partitions |
+| `retention_sweep` | `45 19 * * *` | `audit.query_audit_log` 180 d, terminal `silver.ingest_progress` 90 d |
+| `model_upgrade_watch_run` | `0 20 * * *` | Phase 0 agent |
+| `embed_pending_passages` | `45 20 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`) |
 | `verbalize_page_images` | `20 * * * *` | Inert unless `IMAGE_VERBALIZATION_ENABLED`; returns before touching Postgres |
 | `qdrant_payload_audit` | `0 * * * *` | Guard 2 payload-shape audit; fail-open when Qdrant is unreachable (§7) |
-| `answer_quality_watch` | `30 14 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
-| `enrich_passage_context` | `45 14 * * *` | Contextual-retrieval headers (one LLM call per passage) |
-| `model_cost_summary_run` | `0 15 * * *` | Phase 0 agent |
-| `what_changed_weekly` | `0 17 * * 1` | Fans `what_changed_detector` across active workspaces (the inline comment still says "06:00 UTC") |
+| `answer_quality_watch` | `30 21 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
+| `enrich_passage_context` | `45 21 * * *` | Contextual-retrieval headers (one LLM call per passage) |
+| `model_cost_summary_run` | `0 22 * * *` | Phase 0 agent |
+| `what_changed_weekly` | `0 17 * * 1` | Fans `what_changed_detector` across active workspaces |
 | `cost_burn_watcher` | `*/5 * * * *` | Emits `cost.burn.alert` audit rows; suspends LLM activity at 2× the ceiling |
 | `promote_silver_to_gold` | — | Silver → gold visual tables; dispatched per project and by the nightly sweep |
 | `nl_summaries` | — | One retrievable passage per structured row (ADR-0012); registered, deliberately unscheduled |
@@ -199,8 +233,37 @@ its three attempts before dead-lettering.
 |---|---|---|
 | `eval-gate.yml` | `17 5 * * *` | Nightly golden-query and hallucination gate with LLM and embeddings stubbed ([Ch 14](14-status-matrix.md)) |
 | `coverage.yml` | `40 6 * * 0` | Weekly coverage; runner-only |
-| `codeql.yml` | `16 23 * * 1` | Weekly CodeQL (also on PRs) |
 | `perf-baseline.yml` | *(disabled)* | Its schedule is commented out; it had produced months of green runs against no target |
+
+`codeql.yml` (`16 23 * * 1`) was deleted on 2026-09-15. It did not fail on
+findings — it never got as far as querying. Every language failed at the
+upload step with `CodeQL job status was configuration error. Details: Code
+scanning is not enabled for this repository`, because code scanning is
+enabled by default on PUBLIC repositories and this one was switched to
+private on 2026-09-15. The repository's plan offers no Code scanning section
+under Settings -> Code security at all, so it cannot be turned on.
+
+**What went with it, stated plainly rather than left to be discovered:**
+static analysis for Python, JavaScript/TypeScript and Actions workflows,
+including the taint and injection queries nothing else here replaces. The
+workflow was deleted rather than left red or wrapped in
+`continue-on-error`, because a permanently-failing security scan trains
+everyone to ignore a red check, and a silenced one reads as coverage that
+does not exist. Neither is better than an honest absence.
+
+What still covers some of that ground: Trivy on both images
+(`docker-build.yml`), `scripts/check-no-committed-secrets.php`, ruff, mypy,
+phpstan at larastan level 6, ESLint in the Frontend job, and the tenant
+isolation auditor. None of them does interprocedural taint analysis.
+
+Restore it if the repository goes public again, or if the plan gains code
+scanning. `actionlint` and `bandit` are free and would cover part of the gap
+in the meantime; neither is wired up.
+
+The `permissions:` blocks in the remaining workflows stay. They were added
+because CodeQL's `actions/missing-workflow-permissions` query flagged their
+absence, and least privilege is correct whether or not the query that found
+it still runs.
 
 `chaos.yml` (`0 6 * * 1`) was deleted on 2026-09-07 with the one test it
 ran. Its header already recorded that `-m chaos` selected 1 of 2227
@@ -209,30 +272,73 @@ LLM-backend outage — those contracts remain unwritten. The workflow failed
 the job when the marker selected zero tests, so it could only have gone red
 weekly once that test was gone.
 
-### 3.2 Azure Container Apps Jobs
+### 3.2 EventBridge Scheduler (the nightly sweeps)
 
-`shutdown-scheduler-cc` fires at `0 6,7 * * *` and `startup-scheduler-cc`
-at `0 13,14 * * *` UTC; each has a DST guard that exits on the wrong hour,
-so the effective window is 23:00–06:00 US-Pacific. The bodies live in
-`deploy/azure/containerapps/scripts/` and are copied into the job YAML by
-`scripts/check_scheduler_job_parity.py`, which CI verifies. They run
-under the custom **GeoRAG Nightly Scheduler** role after two cron jobs
-with Contributor deleted the database on 2026-08-23.
+Two schedules, defined in
+[`deploy/aws/terraform/scheduler.tf`](../../../deploy/aws/terraform/scheduler.tf):
+
+| Schedule | Cron | Timezone | Runs |
+|---|---|---|---|
+| `georag-shutdown` | `cron(0 17 * * ? *)` | `America/Vancouver` | RunTask `georag-shutdown-sweep` |
+| `georag-startup` | `cron(30 8 * * ? *)` | `America/Vancouver` | RunTask `georag-startup-sweep` |
+
+**One fire each.** EventBridge Scheduler takes an IANA timezone, so the
+Azure-era mechanism — both candidate UTC hours, with an in-script DST guard
+exiting 0 on the wrong one — is gone, along with the class of incident where
+a skipped run was indistinguishable from a correct off-hour skip. The guard
+was itself subtly wrong for two days a year until 2026-08-21. The parity
+checker that kept cron and guard agreeing is gone too, and by construction:
+Terraform reads the reviewed script with `file()`, so there is one copy
+rather than a reviewed file and a pasted `args` block that can drift.
+
+The window is therefore **17:00–08:30 US/Canada Pacific**, which in UTC is
+00:00–15:30 (PDT) or 01:00–16:30 (PST). This paragraph and the table above
+described 23:00–06:00 `America/Los_Angeles` until 2026-09-16 — the schedule
+this chapter's §2.2 preamble had already been re-pointed off, so the chapter
+disagreed with itself about the one thing that decides whether any cron runs
+at all. `src/fastapi/tests/test_cron_doc_parity.py` now reads this table and
+the timezone beside it straight out of `variables.tf`, because neither of
+its other two checks could see a row shaped like this one.
+
+**The startup sweep firing is not the platform being up.** It starts RDS,
+waits for it, then brings tier 1 (including the Hatchet engine that creates
+cron runs) to `services-stable`. `startup_cron` sits at 08:30 rather than
+09:00 specifically to put thirty minutes between that fire and the 17:00 UTC
+crons, which in PST would otherwise share its exact instant; `variables.tf`
+carries the reasoning and the ~$5/month it costs.
+
+The scheduler task role is scoped to the actions the sweeps take; the Azure
+jobs held Contributor over the whole resource group until two cron runs
+deleted the database on 2026-08-23.
 
 What the window does to orchestration:
 
-- The Flexible Server is stopped, so `hatchet-cc` cannot poll its cron
-  table. **Crons that fall inside the window are not backfilled**; the
-  engine logs `could not poll cron schedules` and the worker retries its
-  heartbeat until the database returns.
-- Since the window moved (2026-08-21) the nightly block at 02:00–05:45
-  sits outside it. Still inside: `index_health_check` at 06:00 and 12:00,
-  seven ticks each of `qdrant_payload_audit` and `verbalize_page_images`,
-  and every tick of the minute-, 5-, 10- and 15-minute crons. The
-  shutdown-job header's list of "moved in" crons (enrich at 10:30, phase-0
-  at 06:00) is stale; those have since moved to 14:45 and 02:00–05:00.
-- `hatchet-worker-cc` keeps running through it (§2.1), so the largest
-  single line item is unaffected by the cost control.
+- The RDS instance is stopped, so `hatchet` cannot poll its cron table.
+  **Crons that fall inside the window are not backfilled**; the engine logs
+  `could not poll cron schedules` and the worker retries its heartbeat until
+  the database returns.
+- The fixed-hour block at 17:00–22:00 sits outside it. Still inside:
+  `index_health_check` at 06:00 and 12:00 (its 00:00 tick lands inside in PDT
+  and outside in PST, and its 18:00 tick is always outside), most ticks of
+  `qdrant_payload_audit` and `verbalize_page_images`, and every tick of the
+  minute-, 5-, 10- and 15-minute crons.
+- **`hatchet-worker` now genuinely stops** (`desired-count 0`). On Azure
+  `--min-replicas 0` was a floor rather than an off switch and the worker's
+  own crons meant it was never idle, so the largest single line item — 4
+  vCPU / 8 GiB — ran through every "shutdown".
+- **The model tier is not swept at all**, and that is a 2026-09-15 change.
+  Until ADR-0023 this window also deleted and recreated two SageMaker
+  endpoints: Cohere Command A+ and Parse are not in Bedrock's serverless
+  catalogue, so they ran on Marketplace endpoints that bill for as long as
+  they exist, and the only way not to pay was to delete them. A failed
+  recreate was not a degraded path — it was no chat and no OCR, invisible to
+  every invocation metric because there were no invocations to fail, which is
+  why it carried the `BEDROCK_ENDPOINT_NOT_INSERVICE` Sev 1.
+
+  Both models moved to Cohere's own API (per token, per page, nothing
+  accruing at rest), so there is nothing left to cycle and the alarm is gone.
+  Embeddings and reranking are still Bedrock but have always been
+  serverless. The sweeps now touch only ECS services and RDS.
 
 ---
 
@@ -246,37 +352,62 @@ What the window does to orchestration:
 | every 15 min | `stale_run_detector` |
 | :00 hourly | `qdrant_payload_audit`; `index_health_check` at 00/06/12/18 |
 | :20 hourly | `verbalize_page_images` (inert unless enabled) |
-| 02:00 | `audit_ledger_verify`, `nightly_ingestion_integrity` pass 1, `tenant_isolation_audit` |
-| 02:15 | `repair_shadow_aggregate` |
-| 02:30 | `graph_tenant_audit` |
-| 03:00 | `mv_refresh_silver`, `storage_tiering_run` |
-| 03:30 Sun | `public_geo_sync` |
-| 04:00 | `nightly_ingestion_integrity` pass 2, `flow_jwt_key_reaper`, `cold_tier_archive`, `store_reconciliation_run` |
-| 04:15 | `idempotency_keys_cleanup`, `pg_partman_maintenance` |
-| 04:45 | `retention_sweep` |
-| 05:00 | `model_upgrade_watch_run` |
+| 00:00 (PDT) / 01:00 (PST) | shutdown sweep — one fire, timezone-scheduled |
 | 05:17 | GitHub Actions `eval-gate` |
-| 05:45 | `embed_pending_passages` (daily) |
-| 06:00 / 07:00 | Azure shutdown job (one fires) |
 | 06:40 Sun | GitHub Actions `coverage` |
-| 13:00 / 14:00 | Azure startup job (one fires) |
-| 14:30 | `answer_quality_watch` |
-| 14:45 | `enrich_passage_context` |
-| 15:00 | `model_cost_summary_run` |
+| 15:30 (PDT) / 16:30 (PST) | startup sweep — one fire, timezone-scheduled |
+| 17:00 | `audit_ledger_verify`, `nightly_ingestion_integrity` pass 1, `tenant_isolation_audit` |
 | 17:00 Mon | `what_changed_weekly` |
-| 23:16 Mon | GitHub Actions `codeql` |
+| 17:15 | `repair_shadow_aggregate` |
+| 17:30 | `graph_tenant_audit` |
+| 18:00 | `mv_refresh_silver`, `storage_tiering_run` |
+| 18:30 Sun | `public_geo_sync` |
+| 19:00 | `nightly_ingestion_integrity` pass 2, `flow_jwt_key_reaper`, `cold_tier_archive`, `store_reconciliation_run` |
+| 19:15 | `idempotency_keys_cleanup`, `pg_partman_maintenance` |
+| 19:45 | `retention_sweep` |
+| 20:00 | `model_upgrade_watch_run` |
+| 20:45 | `embed_pending_passages` (daily) |
+| 21:30 | `answer_quality_watch` |
+| 21:45 | `enrich_passage_context` |
+| 22:00 | `model_cost_summary_run` |
+
+The two GitHub Actions rows are the only ones the window does not apply to:
+they run on GitHub's runners, not on the ECS platform, which is why they sit
+inside a span where nothing else can execute.
+
+Every Hatchet row above is checked against `on_crons=` by
+`src/fastapi/tests/test_cron_doc_parity.py`. This whole table was still the
+pre-2026-09-16 schedule for most of that day — the crons moved, the registry
+tables in §2.2 were re-pointed, and this one was missed because the guard
+only read rows whose first cell is a workflow name. It reads this shape too
+now.
 
 ---
 
 ## 5. Alerting on orchestration
 
-`deploy/azure/alerts/create-alerts.sh` defines the log-based rules:
-`scheduler-sweep-failed` and `scheduler-sweep-missing` (the Azure jobs),
+[`deploy/aws/terraform/alerts.tf`](../../../deploy/aws/terraform/alerts.tf)
+defines the log-based rules as CloudWatch metric filters plus alarms:
+`scheduler-sweep-failed` and `scheduler-sweep-missing` (the two sweeps),
 `answer-quality-regression` (reads `answer_quality_watch`'s log line), a
-cost-ceiling rule (reads `cost_burn_watcher`), and a Qdrant-missing-points
-rule. **Nothing alerts on a workflow raising, a lost worker heartbeat, or
-a run that started and never finished** — the three rules the review
-proposed are not in the script. Horizon has no alerting at all beyond its
+cost-ceiling rule (reads `cost_burn_watcher`), a Qdrant-missing-points rule,
+and two OCR rules — `cohere-parse-rejected` and
+`cohere-parse-unrecognised-response`.
+
+Those last two carry more weight than their names suggest. Since ADR-0023
+Parse runs on Cohere's own API, so **no AWS metric observes it at all** —
+CloudWatch cannot see a request that never went to AWS. A refused call and a
+200 the adapter cannot read are both invisible except through these log
+lines, and both degrade every scanned page to Tesseract without raising
+anything. `BEDROCK_ENDPOINT_NOT_INSERVICE` was removed in the same change;
+the endpoints it watched no longer exist.
+
+These match **marker log lines**, so changing a log string silently
+disables an alarm. That was true on Azure and is true here.
+
+**Nothing alerts on a workflow raising, a lost worker heartbeat, or a run
+that started and never finished** — the three rules the 2026-08-21 review
+proposed are still not written. Horizon has no alerting at all beyond its
 own dashboard. [Ch 12](12-observability.md) covers the rest.
 
 ---
@@ -323,12 +454,17 @@ Where each finding stands in the code on 2026-09-07:
 
 ## 8. Stale comments worth clearing
 
-- `worker.py` header: "registers two workflows".
+Cleared 2026-09-16: the `worker.py` "registers two workflows" header, the
+`what_changed_weekly.py` "Mondays at 06:00 UTC" annotation, the
+`embed_pending_passages.py` "Cron schedule omitted for now" docstring, and
+every schedule comment that still quoted a pre-move hour (`worker.py`'s
+registration list, `phase0_agents.py`'s header table and section banners,
+`audit_ledger_verify.py`, `repair_shadow_aggregate.py`, `laravel_bridge.py`,
+`public_geoscience_tool.py`, `ingest_pdf.py`). What remains:
+
 - `docker-compose.yml` hatchet headers and the shutdown-job header: "32
   registered crons", "Phase 0 only registers the synthetic workflow", the
   moved-in cron list.
-- `what_changed_weekly.py`: `0 17 * * 1` annotated "Mondays at 06:00 UTC".
-- `embed_pending_passages.py` docstring: "Cron schedule omitted for now".
 - `external_notification.py` and `public_geoscience_pull.py` docstrings:
   describe Kestra as the caller.
 - `docker-compose.yml` `HATCHET_PG_*` comment and `config/database.php`

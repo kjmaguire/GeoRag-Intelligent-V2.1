@@ -611,7 +611,7 @@ def _pages_for_range(
 # and paying for it three times over:
 #
 #   - a 1500-char window is ~375 tokens, so the retrieved evidence reaching
-#     the model was ~1,900 tokens against a MAX_CONTEXT_TOKENS_AZURE budget
+#     the model was ~1,900 tokens against a MAX_CONTEXT_TOKENS_BEDROCK budget
 #     of 100,000 (MAX_CONTEXT_DOC_CHUNKS is 5). The model was starved by two
 #     orders of magnitude;
 #   - a geological argument — a drill result, its QA/QC caveat, and the
@@ -2258,11 +2258,14 @@ _OCR_STATE_LOCK = threading.Lock()
 # document. Keyed per path, bounded FIFO of documents. The cross-run Prometheus counter (OCR_PAGES_TOTAL, one
 # label per engine) lives in the engine adapter itself.
 _OCR_PAGE_BUDGET_ENV = "OCR_MAX_PAGES_PER_DOC"
-#: Pre-2026-09-02 name. Read as a fallback with a one-time warning so a live
-#: worker env that still carries it keeps its cap instead of silently
-#: reverting to the default; dropped once the DI adapter is removed.
-_LEGACY_PAGE_BUDGET_ENV = "AZURE_DI_MAX_PAGES_PER_DOC"
-_LEGACY_BUDGET_ENV_WARNED = False
+# AZURE_DI_MAX_PAGES_PER_DOC was read as a fallback here, with a one-time
+# warning, so a live worker env still carrying the pre-2026-09-02 name kept
+# its cap instead of silently reverting to the default. Its own note said
+# "dropped once the DI adapter is removed", and that condition is met: ADR-0019
+# retired Document Intelligence on 2026-09-02 and ADR-0022 took the whole
+# deployment off Azure. Nothing in the Terraform, compose file or secret key
+# list sets the old name, and production is a fresh AWS deployment with no
+# legacy environment to inherit, so the fallback had no caller left.
 _OCR_PAGES_USED: dict[str, int] = {}
 _OCR_CAP_LOGGED: set[str] = set()
 
@@ -2288,17 +2291,7 @@ _OCR_BUDGET_REGISTRY_MAX = 32
 
 
 def _ocr_max_pages_per_doc() -> int:
-    global _LEGACY_BUDGET_ENV_WARNED
     raw = os.environ.get(_OCR_PAGE_BUDGET_ENV)
-    if raw is None and os.environ.get(_LEGACY_PAGE_BUDGET_ENV) is not None:
-        raw = os.environ.get(_LEGACY_PAGE_BUDGET_ENV)
-        if not _LEGACY_BUDGET_ENV_WARNED:
-            _LEGACY_BUDGET_ENV_WARNED = True
-            logger.warning(
-                "pdf_report: %s is the old name for %s — rename it in the "
-                "worker environment",
-                _LEGACY_PAGE_BUDGET_ENV, _OCR_PAGE_BUDGET_ENV,
-            )
     try:
         return int(raw if raw is not None else "300")
     except ValueError:
@@ -2483,8 +2476,10 @@ def _warn_engine_not_configured_once(detail: str) -> None:
     _ENGINE_NOT_CONFIGURED_WARNED = True
     logger.critical(
         "pdf_report: %s. EVERY page from now on falls back to tesseract, "
-        "which extracts no tables. Check the AZURE_FOUNDRY_PARSE_DEPLOYMENT / "
-        "foundry-key secret references on the worker.",
+        "which extracts no tables. Check the COHERE_API_KEY environment "
+        "variable on the worker — since ADR-0023 Parse is reached on "
+        "Cohere's own API with that key, not through a Bedrock endpoint "
+        "and a task role.",
         detail,
     )
 
@@ -2621,15 +2616,14 @@ def _ocr_single_page(
 
     engine_selected = _engine.is_engine_selected()
     if engine_selected and not _engine.is_configured():
-        # A configuration error, not a page that would not OCR: a rotated
-        # Foundry key or a missing deployment name must not silently
-        # downgrade the ENTIRE corpus to the fallback engine, losing every
-        # table. CRITICAL because CRITICAL pages (georag-fastapi-critical,
-        # 2026-08-21) — once per process, not once per page, and before the
-        # budget is charged for a request that will never be sent.
+        # A configuration error, not a page that would not OCR: a missing
+        # model id must not silently downgrade the ENTIRE corpus to the
+        # fallback engine, losing every table. CRITICAL because CRITICAL
+        # pages (georag-fastapi-critical, 2026-08-21) — once per process, not
+        # once per page, and before the budget is charged for a request that
+        # will never be sent.
         _warn_engine_not_configured_once(
-            "OCR_ENGINE selects Cohere Parse but AZURE_FOUNDRY_ENDPOINT / "
-            "AZURE_FOUNDRY_API_KEY / AZURE_FOUNDRY_PARSE_DEPLOYMENT are not all set"
+            "OCR_ENGINE selects Cohere Parse but COHERE_API_KEY is not set"
         )
         engine_selected = False
     # 2026-08-14 — per-document remote-OCR page budget (OCR_MAX_PAGES_PER_DOC,

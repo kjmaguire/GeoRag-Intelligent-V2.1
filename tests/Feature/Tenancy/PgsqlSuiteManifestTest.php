@@ -38,6 +38,14 @@ final class PgsqlSuiteManifestTest extends TestCase
         'skipIfSqlite',
         "getDriverName() !== 'pgsql'",
         'getDriverName() !== "pgsql"',
+        // 2026-09-15: the detector had the same shape of hole it was written
+        // to close. It knew the NEGATIVE spelling of the inline check but not
+        // the POSITIVE one, and `=== 'sqlite'` is the more natural way to
+        // write it — so two files gated that way were invisible to it and
+        // never got added to the config. One of them was the only test of the
+        // bronze provenance autofill trigger.
+        "getDriverName() === 'sqlite'",
+        'getDriverName() === "sqlite"',
     ];
 
     public function test_every_postgres_gated_feature_test_is_in_the_pgsql_suite(): void
@@ -106,6 +114,12 @@ final class PgsqlSuiteManifestTest extends TestCase
         $this->assertTrue($this->isPostgresGated($inline));
         $this->assertTrue($this->isPostgresGated('use Tests\Concerns\RequiresPostgres;'));
         $this->assertTrue($this->isPostgresGated('$this->skipIfSqlite();'));
+
+        // The positive spelling of the same gate. Missing this is what let
+        // BronzeProvenanceAutofillTriggerTest and
+        // ProjectUserPivotRlsExemptionTest sit outside the pgsql suite.
+        $positive = "if (DB::connection()->getDriverName() === 'sqlite') {";
+        $this->assertTrue($this->isPostgresGated($positive));
         $this->assertFalse($this->isPostgresGated('$this->markTestSkipped("No projects in DB.");'));
     }
 

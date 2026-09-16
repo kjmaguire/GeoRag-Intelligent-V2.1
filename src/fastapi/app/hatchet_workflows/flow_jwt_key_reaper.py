@@ -8,7 +8,7 @@ workflow calls the ``workflow.reap_expired_flow_jwt_keys`` SECURITY
 DEFINER function nightly, dropping any row whose ``valid_until`` is
 more than ``retention_days`` (default 7) in the past.
 
-Schedule: ``0 4 * * *`` UTC — runs 2h after audit_ledger_verify (02:00)
+Schedule: ``0 19 * * *`` UTC — runs 2h after audit_ledger_verify (17:00)
 so we don't pile rotation-related load.
 """
 
@@ -39,7 +39,7 @@ class FlowJwtKeyReaperOutput(BaseModel):
 
 flow_jwt_key_reaper = hatchet.workflow(
     name="flow_jwt_key_reaper",
-    on_crons=["0 4 * * *"],
+    on_crons=["0 19 * * *"],
     input_validator=FlowJwtKeyReaperInput,
 )
 

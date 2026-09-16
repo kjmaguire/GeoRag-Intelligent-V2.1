@@ -3,10 +3,10 @@
 NOT WIRED (measured 2026-08-21), and the table it targets has NO LIVE
 WRITER. Nothing under app/ calls this module.
 The five rule families it was written for (assay validation, collar
-validation, interval overlap, unit consistency, CRS consistency) live in
-the Dagster asset graph, which went dormant on 2026-07-28 and is not
-deployed to Azure — so `silver.data_quality_flags` has no writer on any
-live path, and a UI or report that joins it finds nothing.
+validation, interval overlap, unit consistency, CRS consistency) lived in
+the Dagster asset graph, which went dormant on 2026-07-28 and whose tree
+was deleted on 2026-08-28 — so `silver.data_quality_flags` has no writer
+on any path, in any tree, and a UI or report that joins it finds nothing.
 
 Kept rather than deleted because the helper itself is complete and
 correct, and the rules are a real roadmap item rather than abandoned
@@ -31,9 +31,15 @@ Key contract from the design (§ "Where flags are written"):
   * Severity is one of INFO / WARNING / ERROR (CHECK on the column).
   * record_type is one of the 14 CHECK-allowed values from the migration.
 
-Pure-async; no Dagster dependencies — designed to be importable from
-Dagster ops (`flag_writer.upsert_flag(...)`) AND from FastAPI tools
-(future: if/when a runtime validator surfaces a flag during a query).
+Pure-async, and now async-only. `upsert_flag_sync` / `upsert_flags_sync`
+were deleted 2026-09-15: they existed solely for Dagster assets holding a
+psycopg2 connection from `PostgresResource`, and that tree went on
+2026-08-28. psycopg2 is not a dependency of this service and never was
+(CLAUDE.md hard rule 2 is async-native drivers only), so those two
+functions could not have been called even by accident — a caller had no
+way to construct the connection they took. What remains is importable
+from FastAPI tools (future: if/when a runtime validator surfaces a flag
+during a query) and from a Hatchet workflow, both of which are asyncpg.
 
 Best-effort: any DB failure logs at WARNING + returns False; callers
 should treat the result as advisory (flag write failures should not
@@ -57,8 +63,6 @@ __all__ = [
     "DataQualityFlag",
     "upsert_flag",
     "upsert_flags",
-    "upsert_flag_sync",
-    "upsert_flags_sync",
     "ALLOWED_RECORD_TYPES",
     "ALLOWED_SEVERITIES",
 ]
@@ -277,122 +281,3 @@ def _payload_jsonb(payload: dict[str, Any] | None) -> str:
         return "{}"
     return _json.dumps(payload)
 
-
-# ---------------------------------------------------------------------------
-# Sync variants — Dagster path uses psycopg2 via PostgresResource
-# ---------------------------------------------------------------------------
-#
-# The async variants above are the canonical entry point for FastAPI
-# callers. Dagster assets use a `PostgresResource` that hands back
-# psycopg2 connections (see georag_dagster.resources). Rather than
-# force every rule family to maintain its own SQL, expose sync
-# variants that share the upsert string + validation logic.
-#
-# Same idempotency contract, same RLS GUC handling, same validation.
-# The only difference is the cursor API + parameter style.
-
-# psycopg2 uses %s placeholders, NOT $N. Build a parallel SQL constant
-# rather than substituting at call time so the SQL is auditable.
-_UPSERT_SQL_PSYCOPG2 = """
-    WITH upsert AS (
-        UPDATE silver.data_quality_flags
-        SET severity = %(severity)s,
-            description = %(description)s,
-            source_document_id = %(source_document_id)s,
-            source_page = %(source_page)s,
-            source_row_range = %(source_row_range)s,
-            rule_id = %(rule_id)s,
-            threshold_payload = %(threshold_payload)s::jsonb,
-            project_id = %(project_id)s,
-            flagged_at = NOW(),
-            reviewed_by_user_id = NULL,
-            reviewed_at = NULL,
-            resolved_at = NULL,
-            resolution = NULL,
-            resolution_notes = NULL
-        WHERE workspace_id = %(workspace_id)s::uuid
-          AND record_type = %(record_type)s
-          AND record_id = %(record_id)s
-          AND flag_type = %(flag_type)s
-          AND rule_version IS NOT DISTINCT FROM %(rule_version)s
-        RETURNING flag_id
-    )
-    INSERT INTO silver.data_quality_flags (
-        workspace_id, record_type, record_id, flag_type,
-        severity, description,
-        source_document_id, source_page, source_row_range,
-        rule_id, threshold_payload, project_id, rule_version,
-        flagged_at, flagged_by
-    )
-    SELECT %(workspace_id)s::uuid, %(record_type)s, %(record_id)s, %(flag_type)s,
-           %(severity)s, %(description)s,
-           %(source_document_id)s, %(source_page)s, %(source_row_range)s,
-           %(rule_id)s, %(threshold_payload)s::jsonb, %(project_id)s, %(rule_version)s,
-           NOW(), 'system'
-    WHERE NOT EXISTS (SELECT 1 FROM upsert)
-"""
-
-
-def upsert_flag_sync(conn: Any, flag: DataQualityFlag) -> bool:
-    """Synchronous variant for Dagster / psycopg2 callers.
-
-    Mirrors :func:`upsert_flag` exactly — same idempotency key, same
-    GUC handling, same validation. The only difference is sync
-    execution + psycopg2 cursor.
-
-    Args:
-        conn: a psycopg2 connection (typically from
-            ``PostgresResource.get_connection()``).
-        flag: the flag to write.
-
-    Returns:
-        True on success, False on DB-level error.
-    """
-    _validate(flag)
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT set_config('app.workspace_id', %s, true)",
-                (flag.workspace_id,),
-            )
-            cur.execute(_UPSERT_SQL_PSYCOPG2, {
-                "workspace_id": flag.workspace_id,
-                "record_type": flag.record_type,
-                "record_id": flag.record_id,
-                "flag_type": flag.flag_type,
-                "severity": flag.severity,
-                "description": flag.description,
-                "source_document_id": flag.source_document_id,
-                "source_page": flag.source_page,
-                "source_row_range": flag.source_row_range,
-                "rule_id": flag.rule_id,
-                "threshold_payload": _payload_jsonb(flag.threshold_payload),
-                "project_id": flag.project_id,
-                "rule_version": flag.rule_version,
-            })
-        return True
-    except Exception:
-        logger.warning(
-            "silver_dq_flag_writer.upsert_sync_failed workspace=%s record=%s/%s "
-            "flag_type=%s",
-            flag.workspace_id, flag.record_type, flag.record_id,
-            flag.flag_type, exc_info=True,
-        )
-        return False
-
-
-def upsert_flags_sync(conn: Any, flags: list[DataQualityFlag]) -> int:
-    """Batch sync variant — same semantics as :func:`upsert_flags`.
-
-    Uses a single transaction (psycopg2's autocommit=False default).
-    Caller is responsible for the final ``conn.commit()`` so a Dagster
-    asset can group flag-writes with the asset's own data writes in
-    one atomic operation.
-    """
-    if not flags:
-        return 0
-    written = 0
-    for flag in flags:
-        if upsert_flag_sync(conn, flag):
-            written += 1
-    return written

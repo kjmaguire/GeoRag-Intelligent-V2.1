@@ -84,7 +84,7 @@ VALUES
     (
         'phase2_smoke',
         'placeholder',
-        'Connectivity-debug echo workflow. Triggerable for ops smoke; not driven by any Kestra flow.',
+        'Connectivity-debug echo workflow. Triggerable for ops smoke; not driven by any external integration flow.',
         'app.hatchet_workflows.phase2_smoke',
         'phase2_smoke',
         'Phase2SmokeInput',

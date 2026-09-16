@@ -36,9 +36,18 @@ cleanup() {
         DELETE FROM workspace.agent_timeouts WHERE agent_name LIKE '${TEST_AGENT}%';
         DELETE FROM silver.workspaces WHERE workspace_id = '${WS_ID}';
     " >/dev/null
-    docker exec georag-redis redis-cli -a 'N2Wz3FdVExUkEs8AysiAmh4usppA8FZ' --no-auth-warning \
+    # Resolved once per cleanup, never written down: see lib/redis_password.sh.
+    # A missing credential skips the Redis half rather than deleting nothing
+    # quietly — the Postgres cleanup above has already run and is the part
+    # that matters for rerunnability.
+    local redis_pw
+    if ! redis_pw="$(redis_password)"; then
+        echo "phase0_wrapper_smoke: skipping circuit-breaker key cleanup (no Redis password)" >&2
+        return 0
+    fi
+    docker exec georag-redis redis-cli -a "$redis_pw" --no-auth-warning \
         --scan --pattern "georag:cb:${TEST_AGENT}*" 2>/dev/null \
-        | xargs -r docker exec georag-redis redis-cli -a 'N2Wz3FdVExUkEs8AysiAmh4usppA8FZ' --no-auth-warning DEL >/dev/null 2>&1 || true
+        | xargs -r docker exec georag-redis redis-cli -a "$redis_pw" --no-auth-warning DEL >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup  # start clean

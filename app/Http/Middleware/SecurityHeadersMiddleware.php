@@ -7,6 +7,7 @@ namespace App\Http\Middleware;
 use App\Support\BasemapAssets;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\URL;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -23,9 +24,12 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * Conditional headers
  * -------------------
- *   Strict-Transport-Security — only on HTTPS requests, 1-year max-age
- *                              with includeSubDomains. Skipped on http://
- *                              so local dev stays unbroken.
+ *   Strict-Transport-Security — only when the BROWSER reached us over https,
+ *                              1-year max-age with includeSubDomains. See
+ *                              servedOverHttps(): behind CloudFront the
+ *                              request itself arrives as http and
+ *                              $request->isSecure() is false. Skipped on
+ *                              real http:// so local dev stays unbroken.
  *
  * CSP scope
  * ---------
@@ -81,7 +85,7 @@ final class SecurityHeadersMiddleware
             }
         }
 
-        if ($request->isSecure() && ! $response->headers->has('Strict-Transport-Security')) {
+        if ($this->servedOverHttps($request) && ! $response->headers->has('Strict-Transport-Security')) {
             $response->headers->set(
                 'Strict-Transport-Security',
                 'max-age=31536000; includeSubDomains',
@@ -99,22 +103,47 @@ final class SecurityHeadersMiddleware
     }
 
     /**
+     * Whether the BROWSER reached this response over https, which is not the
+     * same question as whether this process did.
+     *
+     * `$request->isSecure()` reads X-Forwarded-Proto, and with
+     * `edge = "cloudfront"` (deploy/aws/terraform/edge.tf, the default) the
+     * load balancer is the last proxy and its listener is plain HTTP, so it
+     * truthfully reports `http` for a page the viewer loaded over https. HSTS
+     * gated on isSecure() alone therefore vanishes entirely on the edge mode
+     * that ships — silently, since every other header still appears.
+     *
+     * `URL::formatScheme()` is the scheme the application actually builds
+     * links with: the forced one when AppServiceProvider has forced it,
+     * otherwise the request's own. That is exactly the right question, and it
+     * keeps the decision in one place rather than re-deriving APP_URL here.
+     * Local development over http is unaffected — nothing forces a scheme
+     * there, so this stays false.
+     */
+    private function servedOverHttps(Request $request): bool
+    {
+        return $request->isSecure() || URL::formatScheme() === 'https://';
+    }
+
+    /**
      * scheme://host[:port] for every object-storage disk that can mint a
      * presigned URL the browser is asked to load.
      *
      * Reads the same disk config `StorageService` resolves through, so the
      * allowlist cannot drift from the endpoint actually in use.
      *
-     * BOTH drivers have to be read, not just one. `config/filesystems.php`
-     * resolves each of these disks to `driver => 'azure'` when
-     * STORAGE_BACKEND=azure_blob and to `'s3'` otherwise, and the two name
-     * their host in different keys: the S3 side in `endpoint`/`url`, the
-     * Azure side in `account_name` (or a `BlobEndpoint` inside the connection
-     * string). Reading only the S3 keys is how this first shipped a
-     * `frame-src` holding no real origin at all on the Azure deployment — the
-     * directive was present, so the header looked fixed, while the Reports
-     * "Original" iframe stayed blocked because the host it actually loads was
-     * never in the list.
+     * One driver now, not two. `config/filesystems.php` resolved these disks
+     * to `driver => 'azure'` when STORAGE_BACKEND=azure_blob until ADR-0022
+     * retired that backend on 2026-09-08; the blob-host reader that fed this
+     * list from `account_name`/`connection_string` went with it on
+     * 2026-09-16, because no disk carries either key any more.
+     *
+     * The lesson it was written for still applies to whatever is added next:
+     * this first shipped a `frame-src` holding no real origin at all, so the
+     * directive was present and the header looked fixed while the Reports
+     * "Original" iframe stayed blocked, because the host it actually loads
+     * was never in the list. A new driver that names its host in some other
+     * key has to be read here too.
      *
      * A disk with no configured endpoint (AWS's own hosts, where the SDK
      * derives the URL) contributes nothing here; `s3.amazonaws.com` is
@@ -131,11 +160,6 @@ final class SecurityHeadersMiddleware
             foreach (['endpoint', 'url'] as $key) {
                 $origins[] = self::originFromUrl(config("filesystems.disks.{$disk}.{$key}"));
             }
-
-            $origins[] = self::azureBlobOrigin(
-                config("filesystems.disks.{$disk}.account_name"),
-                config("filesystems.disks.{$disk}.connection_string"),
-            );
         }
 
         // Presigned S3 downloads resolve to the bucket's own host even when
@@ -169,46 +193,6 @@ final class SecurityHeadersMiddleware
         $port = isset($parts['port']) ? ':'.$parts['port'] : '';
 
         return "{$scheme}://{$host}{$port}";
-    }
-
-    /**
-     * The blob host an Azure-driver disk presigns against.
-     *
-     * `AppServiceProvider`'s SAS callback returns
-     * `https://{account}.blob.core.windows.net/{container}/{path}?{token}`,
-     * so that origin — not the container, not the path — is what the iframe
-     * loads and what `frame-src` has to allow.
-     *
-     * Two overrides are honoured because both are real deployments rather
-     * than hypotheticals: `BlobEndpoint` in the connection string replaces
-     * the host outright (Azurite, and private-endpoint deployments that
-     * resolve to a privatelink host), and `EndpointSuffix` moves it to a
-     * sovereign cloud. Managed-identity deployments set neither and carry no
-     * connection string at all, so `account_name` is then the only source —
-     * which is exactly the configuration this method was first written
-     * without, leaving production with an empty allowlist.
-     */
-    private static function azureBlobOrigin(mixed $accountName, mixed $connectionString): ?string
-    {
-        $connection = is_string($connectionString) ? $connectionString : '';
-
-        if (preg_match('/BlobEndpoint=([^;]+)/i', $connection, $matches) === 1) {
-            return self::originFromUrl(trim($matches[1]));
-        }
-
-        $account = is_string($accountName) && trim($accountName) !== '' ? trim($accountName) : null;
-        if ($account === null && preg_match('/AccountName=([^;]+)/i', $connection, $matches) === 1) {
-            $account = trim($matches[1]);
-        }
-        if ($account === null || $account === '') {
-            return null;
-        }
-
-        $suffix = preg_match('/EndpointSuffix=([^;]+)/i', $connection, $matches) === 1
-            ? trim($matches[1])
-            : 'core.windows.net';
-
-        return "https://{$account}.blob.{$suffix}";
     }
 
     /**

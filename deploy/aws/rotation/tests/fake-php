@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Stand-in for `php artisan`, used by run.sh to exercise
+# rotate-app-key-inside.sh without PHP, a database, or a key.
+#
+# It records the APP_KEY each artisan call was invoked WITH, which is the
+# single most important thing about the in-task half: the dump must run
+# under the key the task booted with, and the restore must run under
+# APP_KEY_NEXT. A rotation that gets that backwards re-encrypts every row
+# to the key it already had, exits 0, and looks exactly like success.
+#
+#   FAKE_PHP_DUMP_RC       exit code for `audit:dump-pii`            (0)
+#   FAKE_PHP_RESTORE_RC    exit code for `audit:restore-pii`         (0)
+#   FAKE_PHP_RESTORE_RC_2  exit code for the SECOND restore attempt,
+#                          which is how the retry path is tested
+#                          (defaults to FAKE_PHP_RESTORE_RC)
+set -uo pipefail
+
+LOG="${FAKE_PHP_LOG:?FAKE_PHP_LOG must be set}"
+
+arg_after() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+  return 1
+}
+
+# "<command> APP_KEY=<what this process actually booted with>"
+printf '%s APP_KEY=%s\n' "${2:-}" "${APP_KEY:-<unset>}" >> "$LOG"
+
+case "${2:-}" in
+  audit:dump-pii)
+    out="$(arg_after --output "$@")" || out=""
+    [ "${FAKE_PHP_DUMP_RC:-0}" = 0 ] || exit "${FAKE_PHP_DUMP_RC}"
+    # A real dump writes the file; the shred assertions depend on it
+    # existing, so write something.
+    [ -n "$out" ] && printf '{"audit_id":1,"query_text":"fake"}\n' > "$out"
+    exit 0
+    ;;
+  audit:restore-pii)
+    n=$(( $(cat "${LOG}.restores" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "${LOG}.restores"
+    if [ "$n" -ge 2 ]; then
+      exit "${FAKE_PHP_RESTORE_RC_2:-${FAKE_PHP_RESTORE_RC:-0}}"
+    fi
+    exit "${FAKE_PHP_RESTORE_RC:-0}"
+    ;;
+esac
+
+printf 'fake-php: unhandled artisan command: %s\n' "$*" >&2
+exit 251

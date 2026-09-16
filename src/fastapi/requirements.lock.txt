@@ -57,14 +57,6 @@ attrs==26.1.0
     #   rasterio
 authlib==1.7.2
     # via georag-fastapi
-azure-core==1.41.0
-    # via
-    #   azure-identity
-    #   azure-storage-blob
-azure-identity==1.25.3
-    # via georag-object-storage
-azure-storage-blob==12.30.0
-    # via georag-object-storage
 backoff==2.2.1
     # via langfuse
 boto3==1.40.61
@@ -121,13 +113,9 @@ contourpy==1.3.3
 cryptography==50.0.0
     # via
     #   authlib
-    #   azure-identity
-    #   azure-storage-blob
     #   georag-fastapi
     #   joserfc
-    #   msal
     #   pdfminer-six
-    #   pyjwt
 cssselect2==0.9.0
     # via weasyprint
 cycler==0.12.1
@@ -236,8 +224,6 @@ idna==3.11
     #   yarl
 importlib-metadata==8.7.1
     # via opentelemetry-api
-isodate==0.7.2
-    # via azure-storage-blob
 jinja2==3.1.6
     # via torch
 jiter==0.13.0
@@ -318,12 +304,6 @@ mplstereonet==0.6.3
     # via georag-fastapi
 mpmath==1.3.0
     # via sympy
-msal==1.37.0
-    # via
-    #   azure-identity
-    #   msal-extensions
-msal-extensions==1.3.1
-    # via azure-identity
 multidict==6.7.1
     # via
     #   aiobotocore
@@ -487,9 +467,7 @@ pydyf==0.12.1
 pygments==2.20.0
     # via rich
 pyjwt==2.13.0
-    # via
-    #   georag-fastapi
-    #   msal
+    # via georag-fastapi
 pyogrio==0.13.0
     # via
     #   geopandas
@@ -554,9 +532,7 @@ regex==2026.4.4
     #   transformers
 requests==2.33.1
     # via
-    #   azure-core
     #   langsmith
-    #   msal
     #   opentelemetry-exporter-otlp-proto-http
     #   requests-toolbelt
     #   tiktoken
@@ -654,9 +630,6 @@ typer==0.27.1
 typing-extensions==4.15.0
     # via
     #   anthropic
-    #   azure-core
-    #   azure-identity
-    #   azure-storage-blob
     #   ezdxf
     #   fastapi
     #   grpcio

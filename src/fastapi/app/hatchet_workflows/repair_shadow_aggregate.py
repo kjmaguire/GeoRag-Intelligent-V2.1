@@ -23,9 +23,10 @@ The workflow's value:
   3. Is workspace-scoped — uses ``set_config('app.workspace_id',
      ...)`` so RLS applies. The aggregator runs once per workspace.
 
-Schedule: ``15 2 * * *`` UTC (15 minutes after the audit-ledger
+Schedule: ``15 17 * * *`` UTC (15 minutes after the audit-ledger
 verify so the two cron jobs don't contend for the same DB
-connections).
+connections -- the offset is what matters, and it survived the
+2026-09-16 move of both into the shortened open window).
 
 Manually invokable via ``repair_shadow_aggregate.run({"workspace_id":
 "...", "for_date": "2026-05-27"})`` for backfills.
@@ -87,7 +88,7 @@ class RepairShadowAggregateOutput(BaseModel):
 
 repair_shadow_aggregate = hatchet.workflow(
     name="repair_shadow_aggregate",
-    on_crons=["15 2 * * *"],
+    on_crons=["15 17 * * *"],
     input_validator=RepairShadowAggregateInput,
 )
 

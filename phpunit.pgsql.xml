@@ -97,6 +97,11 @@
                  (and its regression, an empty items[] for the rightful owner)
                  is only observable under real Postgres. -->
             <file>tests/Feature/Api/V1/PublicApiControllerTargetsTest.php</file>
+            <!-- 2026-09-15: PublicApiController::webhooks() queried four
+                 columns workflow.flow_registry never had (42703 on every
+                 call) and had no admin gate. The table is provisioned by a
+                 pgsql-only migration, so the fix is only observable here. -->
+            <file>tests/Feature/Api/V1/PublicApiControllerWebhooksTest.php</file>
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>
@@ -128,6 +133,15 @@
                  database built from migrations alone, which is exactly what
                  Azure is and what a hand-provisioned dev cluster is not. -->
             <file>tests/Feature/Tenancy/AuditVerificationSchemaContractTest.php</file>
+            <!-- 2026-09-15: never registered, and the audit grep could not see
+                 it because it gates with the POSITIVE form of the inline check
+                 (`getDriverName() === 'sqlite'`) rather than the negative one
+                 PgsqlSuiteManifestTest knew about. So the bronze provenance
+                 autofill TRIGGER — real PL/pgSQL that ships to the database —
+                 had its only test run solely in the SQLite suite, where every
+                 case skips on its first line. Uses RefreshDatabase, so it
+                 belongs in this group. -->
+            <file>tests/Feature/Tenancy/BronzeProvenanceAutofillTriggerTest.php</file>
             <file>tests/Feature/Database/RepairShadowDailySchemaTest.php</file>
             <!-- 2026-08-21 tenancy review: three more Postgres-gated files
                  that were never added. Two of them guard with an INLINE
@@ -204,6 +218,12 @@
                  RefreshDatabase) and tears itself down; must run after the
                  RefreshDatabase group has populated the schema. -->
             <file>tests/Feature/Seeders/CgiVocabSeederTest.php</file>
+            <!-- 2026-09-15: records why public.project_user carries no RLS and
+                 why the obvious tenant_isolation policy would be an outage.
+                 Reads pg_class and the schema only, never writes, so it is
+                 safe here; it needs the RefreshDatabase group above to have
+                 built the schema first. -->
+            <file>tests/Feature/Tenancy/ProjectUserPivotRlsExemptionTest.php</file>
         </testsuite>
     </testsuites>
     <source>

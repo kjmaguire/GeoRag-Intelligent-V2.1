@@ -19,16 +19,38 @@
 # -----------------------------------------------------------------------------
 # Stage 1 — builder
 # Installs all build-time dependencies, Composer packages, and Node assets.
-# Nothing from this stage bloats the final image except the outputs we COPY.
+# Nothing from this stage reaches the final image except /app, and
+# node_modules is deleted before then — see the note above `rm -rf` below.
 # -----------------------------------------------------------------------------
-# 2026-07-30 re-pin: the 2026-06-03 digest (Debian 13.5) carried a
-# CRITICAL CVE (CVE-2026-53215, linux-libc-dev) that Trivy's CI gate
-# started failing the build on. Re-captured via `docker pull
-# php:8.5-cli` (Debian 13.6, same PHP 8.5 build). Re-pin the same way
-# after a future PHP 8.5.x patch. Both builder + runtime stages MUST
-# use the same digest so the PECL extensions compiled in builder match
-# the runtime PHP ABI byte-for-byte.
-FROM php:8.5-cli@sha256:54d82ff9be6bd198145e90c917fc9b2e24230b42e52def8deb3554baf61c451a AS builder
+# Both builder + runtime stages MUST use the same digest so the PECL
+# extensions compiled in builder match the runtime PHP ABI byte-for-byte.
+#
+# Pin history — each entry is a CVE the CI Trivy gate failed on:
+#
+#   2026-07-30  the 2026-06-03 digest (Debian 13.5) carried CVE-2026-53215
+#               (CRITICAL, linux-libc-dev). Re-captured via
+#               `docker pull php:8.5-cli` → Debian 13.6.
+#   2026-09-14  that Debian 13.6 digest carried CVE-2026-13221,
+#               CVE-2026-42496 and CVE-2026-8376 (all CRITICAL) against
+#               perl / perl-base / perl-modules-5.40 / libperl5.40 at
+#               5.40.1-6, fixed in 5.40.1-6+deb13u1. Re-pinned to the
+#               digest `php:8.5-cli` resolved to that day.
+#
+# The 2026-09-14 re-pin did NOT clear the perl CVEs: the digest it moved
+# to is built on a Debian 13.6 snapshot that predates the
+# 5.40.1-6+deb13u1 security upload, so there was no fixed base to reach.
+# The runtime stage's `apt-get upgrade` is what actually fixes them —
+# see the long note above that apt block, which also explains what this
+# pin does and does not guarantee any more. The re-pin is kept because
+# it is still the newer base, not because it solved anything.
+#
+# Lesson for the next re-pin: pull and scan locally first. The digest was
+# resolved from the Docker Hub registry API because that session had no
+# Docker daemon, so `trivy image php:8.5-cli` could not be run against it,
+# and a digest that does not clear the finding costs a full CI cycle to
+# discover. A base bump also moves the PHP patch version under the
+# application.
+FROM php:8.5-cli@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS builder
 
 # Build-time system dependencies.
 # libpq-dev      → pdo_pgsql / pgsql extensions
@@ -134,19 +156,67 @@ ENV VITE_REVERB_APP_KEY=$VITE_REVERB_APP_KEY \
     VITE_REVERB_SCHEME=$VITE_REVERB_SCHEME
 RUN npm run build
 
+# Drop node_modules before the runtime stage copies /app wholesale.
+#
+# `COPY --from=builder /app /app` below takes the whole directory, so until
+# 2026-09-14 the production image shipped the entire JS dependency tree —
+# roughly 1,900 packages that cannot execute there, because the runtime
+# stage installs no Node (see its apt block; nodejs is builder-only) and
+# the Dockerfile runs `npm run build`, not `build:ssr`, so there is no SSR
+# bundle to serve. The browser only ever loads `public/build/`, which Vite
+# has already written by this line.
+#
+# It was not merely dead weight. Trivy failed the CI gate on 2026-09-14
+# with CVE-2026-85061 (CRITICAL, XSS sanitizer bypass in MapLibre GL JS
+# `DOM.sanitize()`) against `node_modules/plotly.js/node_modules/
+# maplibre-gl` at 4.7.1 — a nested copy pulled by plotly.js's own
+# `^4.7.1` range, entirely separate from the `^5.23.0` this app imports,
+# and not present in any bundle Vite emits. Shipping build-time
+# dependencies into a runtime image turns every advisory against them
+# into a production finding. Deleting them removes the finding rather
+# than suppressing it, and the stage-1 header's claim that nothing here
+# bloats the final image becomes true.
+RUN rm -rf node_modules
+
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime
 # Lean image that contains only what is needed to run the application.
 # We re-install system packages and PHP extensions from scratch rather than
 # copying from builder; this keeps the runtime image clean and auditable.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli@sha256:54d82ff9be6bd198145e90c917fc9b2e24230b42e52def8deb3554baf61c451a AS runtime
+FROM php:8.5-cli@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"
 
 # Runtime system dependencies (same set as builder, minus build-only tools).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# `apt-get upgrade` is deliberate, and it is the reason the digest pin above
+# no longer fully determines this image's contents. Read both together.
+#
+# 2026-09-14: Trivy's CRITICAL gate failed on CVE-2026-13221, CVE-2026-42496
+# and CVE-2026-8376 against Debian's perl 5.40.1-6 (fixed 5.40.1-6+deb13u1).
+# Re-pinning php:8.5-cli to its then-current digest did NOT clear them — that
+# digest is built on a Debian 13.6 snapshot predating the security upload, so
+# there was no newer base to move to. `apt-get install` does not upgrade a
+# package that is already present, which is why the existing block left the
+# base's perl untouched. This line is what pulls the patched one.
+#
+# The trade-off, stated plainly: the digest pin now fixes the STARTING layer,
+# not the final package set, so two builds of the same commit on different
+# days can differ. That is the intended behaviour — a security patch should
+# land on the next rebuild without a commit — but it means "the digest
+# reproduces the image" is no longer true, and a package regression can
+# arrive without a diff. Chosen over a targeted `--only-upgrade` of the four
+# perl packages, which hardcodes the perl minor version in
+# `perl-modules-5.40` and breaks silently when the base moves to 5.42.
+#
+# Only the runtime stage needs this. The builder's packages never reach the
+# final image — only /app is copied from it — so upgrading there would cost
+# build time and change nothing that ships or gets scanned.
+#
+# hadolint ignore=DL3005
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     libpq-dev \
     libzip-dev \
     libpng-dev \
@@ -198,6 +268,8 @@ RUN echo "memory_limit=512M" > /usr/local/etc/php/conf.d/memory.ini
 WORKDIR /app
 
 # Copy application (vendor, built assets, and source) from builder.
+# This takes /app wholesale, which is why the builder deletes node_modules
+# first — nothing filters what lands here.
 COPY --from=builder /app /app
 
 # Create required runtime directories with correct ownership.

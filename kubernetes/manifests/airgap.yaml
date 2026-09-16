@@ -1210,7 +1210,7 @@ spec:
               # volatile-lru, not allkeys-lru: this instance holds Laravel
               # queue jobs (no TTL) alongside cache and sessions (TTL'd).
               # allkeys-lru would evict queued jobs silently. See
-              # deploy/azure/containerapps/redis.yaml for the full argument.
+              # deploy/aws/terraform/services.tf for the full argument.
               redis-server \
                 --requirepass "$REDIS_PASSWORD" \
                 --appendonly yes \

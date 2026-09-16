@@ -130,7 +130,7 @@ These are the architectural commitments the rest of the plan is built on:
 4. **Citations mandatory** — every RAG claim carries `source_chunk_id`; refusal otherwise.
 5. **Hallucination prevention §04i — six layers** apply to every code path touching the RAG pipeline.
 6. **Schemas in §04e are contracts** — don't invent fields.
-7. **No orchestration overlap** — Laravel queues = short user-triggered async work; Hatchet = ingestion, scheduled crons and anything needing durable retries. Dagster and Kestra are gone; there is no Laravel scheduler, so every recurrence is a Hatchet cron, a GitHub Actions cron or an Azure Container Apps Job.
+7. **No orchestration overlap** — Laravel queues = short user-triggered async work; Hatchet = ingestion, scheduled crons and anything needing durable retries. Dagster and Kestra are gone; there is no Laravel scheduler, so every recurrence is a Hatchet cron, a GitHub Actions cron or an EventBridge schedule.
 8. **MapLibre GL, not Mapbox GL** — licensing for on-prem.
 9. **No knowledge graph** — Neo4j was removed 2026-07-28 and the sync workflow deleted with it. Adding a graph store back needs an ADR that supersedes this.
 

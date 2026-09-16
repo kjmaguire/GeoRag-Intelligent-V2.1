@@ -226,8 +226,14 @@ class TestSilentFailuresLeaveTheMachine:
     ended as an audit_ledger row and an admin broadcast; the Qdrant
     partial-loss check ended as a `log.warning`; the answer-quality watch
     was the first to get an egress. The platform has exactly one outbound
-    route — a Log Analytics scheduled query rule feeding
-    `georag-alerts-ag` — and these tests pin that each detector is on it.
+    route — a CloudWatch metric filter over the marker line, alarmed to an
+    SNS topic with one email receiver — and these tests pin that each
+    detector is on it.
+
+    Repointed 2026-09-08 (ADR-0022) from the Azure scheduled-query rules to
+    deploy/aws/terraform/alerts.tf. The contract is unchanged and so is the
+    hazard: the marker and the rule live in different files and drift
+    silently.
 
     The partial-loss case is the sharpest. Qdrant drops points that
     silver.document_passages records as embedded; the collection is
@@ -244,8 +250,9 @@ class TestSilentFailuresLeaveTheMachine:
 
     @pytest.mark.parametrize(("module_name", "attr"), MARKERS)
     def test_the_marker_is_greppable(self, module_name: str, attr: str) -> None:
-        """Matched with `Log_s has '<marker>'`. A short or lower-case
-        marker matches ordinary log prose and the alert fires on noise."""
+        """Matched by a CloudWatch metric filter pattern. A short or
+        lower-case marker matches ordinary log prose and the alarm fires on
+        noise."""
         import importlib
 
         module = importlib.import_module(f"app.hatchet_workflows.{module_name}")
@@ -265,12 +272,12 @@ class TestSilentFailuresLeaveTheMachine:
         marker = getattr(module, attr)
 
         repo = Path(__file__).resolve().parents[3]
-        script = (
-            repo / "deploy" / "azure" / "alerts" / "create-alerts.sh"
+        alerts = (
+            repo / "deploy" / "aws" / "terraform" / "alerts.tf"
         ).read_text(encoding="utf-8")
 
-        assert marker in script, (
-            f"{module_name} logs {marker} and no scheduled query rule "
+        assert marker in alerts, (
+            f"{module_name} logs {marker} and no CloudWatch metric filter "
             "matches it, so the detection stays on the machine"
         )
 

@@ -1,34 +1,40 @@
 -- =============================================================================
--- Phase 3 Step 8 (retroactive, 2026-07-28) — Kestra sunset.
+-- Kestra sunset — retroactive (2026-07-28), retained as the cleanup path.
 --
 -- Mirrors 90-activepieces-sunset.sql. Kestra never had flows deployed
 -- (flow-source-loader.enabled: false, no CI push step) and KESTRA_URL was
--- unset in every environment, so escalation paths that POSTed to it
--- (src/fastapi/app/agents/phase0/{tenant_isolation_auditor,support_packet}.py,
--- app/services/dispatchers/kestra.py) were silently no-ops for months. The
--- compose service (and Caddy, which existed only to front it) were removed
--- in A7, 2026-07-28.
+-- set in no environment, so the escalation paths that were supposed to
+-- reach it were silently no-ops for months. It was removed wholesale
+-- along with its Caddy edge proxy, the Laravel SSO controllers and the
+-- compose service block.
 --
--- Unlike the Activepieces sunset, there are no `kestra.*.enabled` feature
--- flags to drop: the Phase 3 Step 3 flag rename (20-rename-flow-flags.sql)
--- moved flow gating to the orchestrator-neutral `flows.<flow>.enabled`
--- namespace before Kestra ever went live, so nothing was ever gated under a
--- kestra-specific flag name.
+-- Unlike the Activepieces sunset there are no `kestra.*.enabled` feature
+-- flags to drop: the flag namespace had already moved to the neutral
+-- `flows.*` before Kestra ever went live, so nothing was gated under a
+-- kestra-specific name.
 --
--- Pre-flight (operator before applying this migration):
---   1. The kestra docker container must already be stopped/removed — it no
---      longer has a compose service definition as of A7.
---   2. If any Kestra executions matter for audit purposes, take a final
---      logical pg_dump of the kestra DB before dropping it. Given it was
---      never in production use, this is expected to be a formality.
+-- WHY THIS FILE STILL EXISTS AFTER THE CREATOR IS GONE
 --
--- After this migration:
---   - The kestra logical DB is dropped (DROP DATABASE … WITH FORCE).
---   - The kestra role is dropped.
+-- `phase3/10-kestra-role-and-db.sql` created a LOGIN role with a hardcoded
+-- password plus a logical database. It was deleted during the AWS
+-- migration (ADR-0022) rather than left in the tree for an operator to
+-- apply by hand: a fresh RDS instance must never grow a login role for a
+-- service that does not exist. Deleting the creator does not clean a
+-- cluster where it was already applied — a dev laptop, or any long-lived
+-- Postgres from the Phase 3 era — and this file is what does that. It is
+-- a no-op on a cluster that never had it, which is every AWS cluster.
+--
+-- Pre-flight (operator, on a cluster that did have it):
+--   1. The kestra container must already be stopped/removed.
+--   2. If any Kestra executions matter for audit, take a final logical
+--      pg_dump of the kestra DB first. Given it was never live, this is
+--      almost certainly an empty schema.
 --
 -- Apply via psql against any DB on the cluster (the DROP commands run
--- outside any transaction). NOT idempotent on the DROP DATABASE step —
--- safe to re-run only after the DB is already gone.
+-- outside any transaction, and `\gexec` is not something `db:apply-raw`
+-- can run — which is why this file is not in database/raw/manifest.json).
+-- The verification block at the end RAISES unless both the role and the
+-- database are gone, so a partial run is reported, not assumed.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
