@@ -1908,16 +1908,37 @@ async def search_documents(
         # independent (different models, different executor threads) — gather
         # them instead of awaiting serially. Perf audit 2026-08-15: this was
         # dense-then-sparse back to back, needlessly stacking their latencies.
-        # GI-11: if SPLADE fails, this raises and the outer wait_for propagates
-        # the exception -- no silent dense-only fallback. asyncio.gather
-        # (default return_exceptions=False) still raises on the first
-        # failing task, preserving that contract.
-        from app.services.sparse_encoder import encode_sparse  # noqa: PLC0415
+        # GI-11: if SPLADE fails, this raises rather than falling back to a
+        # dense-only query. asyncio.gather (default return_exceptions=False)
+        # raises on the first failing task, preserving that half.
+        #
+        # It does NOT propagate out of search_documents. The `except Exception`
+        # around the wait_for below catches it and returns an empty result --
+        # this comment used to claim otherwise. So GI-11 holds in the sense
+        # that matters most (no answer is ever built from a dense-only query
+        # pretending to be hybrid) and not in the sense the comment promised
+        # (the caller is not told). The exception branch below now at least
+        # says which of the two happened, and emits a marker CloudWatch
+        # alarms on, because "sparse is down" and "nothing matched" produced
+        # byte-identical observable behaviour before it.
+        from app.services.sparse_encoder import (  # noqa: PLC0415
+            SparseEncoderUnavailable,
+            encode_sparse,
+        )
+
+        async def _sparse_leg() -> dict[int, float]:
+            try:
+                return await loop.run_in_executor(
+                    None, lambda: encode_sparse(_expanded_query)
+                )
+            except Exception as exc:  # noqa: BLE001 — re-raised, typed
+                raise SparseEncoderUnavailable(str(exc)) from exc
+
         query_vector: list[float]
         query_sparse: dict[int, float]
         query_vector, query_sparse = await asyncio.gather(
             loop.run_in_executor(None, _encode_query),
-            loop.run_in_executor(None, lambda: encode_sparse(_expanded_query)),
+            _sparse_leg(),
         )
 
         # _workspace_id was resolved (and the fail-closed refusal returned) in
@@ -2016,7 +2037,31 @@ async def search_documents(
             query_hash(query_text),
         )
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (timeout)")
-    except Exception:
+    except Exception as exc:
+        # SPARSE_ENCODER_UNAVAILABLE is a marker with a CloudWatch alarm on it
+        # (deploy/aws/terraform/alerts.tf). Without it a dead sparse sidecar is
+        # invisible: hybrid retrieval stops surfacing exact-token matches --
+        # hole IDs, sample numbers, NTS codes -- every answer still streams,
+        # and nothing anywhere reports it. `sparse` runs at desired=1 on
+        # Fargate Spot, so a reclamation produces exactly this window.
+        from app.services.sparse_encoder import (  # noqa: PLC0415
+            SparseEncoderUnavailable,
+        )
+
+        if isinstance(exc, SparseEncoderUnavailable):
+            logger.error(
+                "SPARSE_ENCODER_UNAVAILABLE search_documents lost the sparse leg "
+                "for project=%s: %s. Hybrid retrieval is degraded; this is NOT "
+                "an empty corpus.",
+                project_id,
+                exc,
+                exc_info=True,
+            )
+            return DocumentSearchResult(
+                chunks=[],
+                count=0,
+                data_source=f"Qdrant {_doc_collection} (sparse encoder unavailable)",
+            )
         logger.exception("search_documents failed for project=%s", project_id)
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (error)")
 

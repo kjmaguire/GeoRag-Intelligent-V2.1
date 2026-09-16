@@ -1022,6 +1022,43 @@ class Settings(BaseSettings):
                 f"frame. Raise TIMEOUT_GATHER_S or lower the inner budget."
             )
 
+        # The same invariant one level further in, and the level that was
+        # actually inverted. TIMEOUT_QDRANT_S does not wrap a Qdrant query:
+        # tools.py::_run_search gathers the embedding call and the sparse
+        # encode before querying, and both have their own budgets of 30s.
+        # Six seconds wrapped sixty, so the outer one always won — silently,
+        # by returning an empty result rather than raising.
+        #
+        # These two live in their own modules and are read straight from the
+        # environment there, so they are read the same way here rather than
+        # being promoted to Settings fields. Promoting them would move the
+        # defaults away from the code that documents why each is 30.
+        import os as _os  # noqa: PLC0415
+
+        nested = {
+            "BEDROCK_EMBED_TIMEOUT_S": float(
+                _os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30") or "30"
+            ),
+            "SPARSE_SERVICE_TIMEOUT_S": float(
+                _os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30"
+            ),
+        }
+        too_big = {
+            name: value for name, value in nested.items()
+            if value >= self.TIMEOUT_QDRANT_S
+        }
+        if too_big:
+            detail = ", ".join(f"{n}={v}" for n, v in sorted(too_big.items()))
+            raise ValueError(
+                f"TIMEOUT_QDRANT_S={self.TIMEOUT_QDRANT_S} wraps the embedding "
+                f"call and the sparse encode as well as the query itself, but it "
+                f"is not larger than {detail}. The outer budget fires first and "
+                f"search_documents returns an EMPTY result with `(timeout)` in "
+                f"data_source — which downstream cannot be told apart from "
+                f"'nothing matched', so retrieval fails silently rather than "
+                f"loudly. Raise TIMEOUT_QDRANT_S or lower the inner budget."
+            )
+
         return self
 
     @property
@@ -1094,8 +1131,33 @@ class Settings(BaseSettings):
     # (qdrant_conn.py) — a real TLS handshake plus the hybrid dense+sparse
     # query over that hop routinely exceeds 2s, so search_documents silently
     # timed out on every query post-cutover (empty results, not an error).
-    # 6.0s leaves headroom under TIMEOUT_GATHER_S=8.0 below.
-    TIMEOUT_QDRANT_S: float = 6.0
+    # 6.0s left headroom under a TIMEOUT_GATHER_S that was 8.0 at the time.
+    #
+    # 45.0 since 2026-09-16, because 6.0 had the same shape of bug the
+    # sentence above describes, one level further in. This budget does not
+    # wrap "the Qdrant query". tools.py::_run_search gathers the embedding
+    # call and the sparse encode FIRST and queries Qdrant with their results,
+    # and on AWS neither of those is local:
+    #
+    #   BEDROCK_EMBED_TIMEOUT_S   30  (services/embedding.py) — a Bedrock
+    #                                 round trip to Cohere Embed v4
+    #   SPARSE_SERVICE_TIMEOUT_S  30  (services/sparse_encoder.py) — an HTTP
+    #                                 call to the sparse sidecar, which runs
+    #                                 SPLADE++ on 0.5 vCPU with no GPU
+    #
+    # Two inner budgets of 30 inside an outer budget of 6. The outer one
+    # always wins, and it wins by returning an EMPTY DocumentSearchResult
+    # with `(timeout)` in data_source rather than by raising — which
+    # downstream is indistinguishable from "nothing matched". The nightly
+    # EventBridge shutdown makes every morning's first query a cold one, so
+    # this was not an edge case; it was the daily path.
+    #
+    # 45 is DERIVED, not measured: the two legs run concurrently under
+    # asyncio.gather, so the branch cannot finish before the slower of them
+    # (30), plus headroom for the hybrid query and RRF fusion. A timed cold
+    # start on real infrastructure should replace it. _validate_timeout_ordering
+    # below now fails startup if it ever drops back under the inner pair.
+    TIMEOUT_QDRANT_S: float = 45.0
     # Latency-fix follow-up — separate budget for the CPU-bound reranker.
     # Previously folded into TIMEOUT_QDRANT_S, which meant the bge-reranker
     # could blow the 2s budget and the wait_for would drop the entire

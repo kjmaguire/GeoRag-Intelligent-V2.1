@@ -103,13 +103,36 @@ SPARSE_MODEL_VERSION = "splade-cocondenser-ensembledistil@49cf4c7b"
 # ---------------------------------------------------------------------------
 # When SPARSE_SERVICE_URL is set, encode_sparse{,_batch} POST to the shared
 # SPLADE sidecar (app.sparse_service) over a localhost hop instead of loading a
-# per-process model. Set ONLY on the FastAPI service — NOT on the Dagster index
-# pipeline (bulk indexing keeps its own local model for throughput) and NOT on
-# the sidecar itself (which would proxy to itself). The sidecar runs THIS SAME
+# per-process model. NOT on the sidecar itself (which would proxy to itself).
+#
+# The original rule said "ONLY on the FastAPI service, NOT on the Dagster index
+# pipeline, which keeps its own local model for throughput". Dagster was
+# retired 2026-07-28 and its successor, the hatchet-worker, DOES get this URL
+# on AWS (deploy/aws/terraform/config.tf sets it in common_environment). That
+# is a live trade rather than an oversight: one shared 440 MB model instead of
+# a second copy resident in the worker, paid for with a network hop per
+# passage during bulk ingest. If ingest throughput ever becomes the
+# constraint, unsetting it on hatchet-worker is the lever. The sidecar runs THIS SAME
 # code with the URL unset, so the produced vectors are identical. Sibling of the
 # embedding sidecar (app/services/embedding.py). This block is part of the
 # KEEP-IN-SYNC contract above; it is inert wherever SPARSE_SERVICE_URL is unset.
 SPARSE_SERVICE_URL = (os.environ.get("SPARSE_SERVICE_URL") or "").strip()
+
+
+class SparseEncoderUnavailable(RuntimeError):
+    """The sparse leg of hybrid retrieval could not be computed.
+
+    Raised by callers that wrap encode_sparse, not by encode_sparse itself --
+    the underlying failures are httpx transport errors, HTTP statuses and
+    model-load errors, and flattening them here would lose the cause.
+
+    It exists so that "the sparse sidecar is unreachable" and "Qdrant
+    returned nothing" stop being the same observable event. Global Invariant
+    11 says a sparse failure must not degrade to a dense-only query, and that
+    half holds; what did not hold is anyone being TOLD. A reclaimed Spot task
+    (`sparse` runs desired=1) silently stopped hole IDs and sample numbers
+    matching, while every answer still streamed and nothing reported it.
+    """
 
 
 def _remote_encode_sparse(texts: list[str]) -> list[dict[int, float]]:
