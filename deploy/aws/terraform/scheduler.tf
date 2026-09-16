@@ -99,8 +99,8 @@ resource "aws_ecs_task_definition" "startup_sweep" {
 
 locals {
   # The maintenance window's length, derived from the two cron expressions
-  # rather than configured separately. `cron(0 23 * * ? *)` -> 23,
-  # `cron(0 6 * * ? *)` -> 6, so the window is (6 - 23 + 24) % 24 = 7 hours.
+  # rather than configured separately. `cron(0 17 * * ? *)` -> 17,
+  # `cron(0 9 * * ? *)` -> 9, so the window is (9 - 17 + 24) % 24 = 16 hours.
   #
   # Deriving it is the point. On Azure the window was spelled out in the
   # shutdown cron, the startup cron, the DST guard's target hour and the

@@ -140,7 +140,7 @@ class NightlyIntegritySweepOutput(BaseModel):
 
 nightly_ingestion_integrity = hatchet.workflow(
     name="nightly_ingestion_integrity",
-    on_crons=["0 2 * * *", "0 4 * * *"],
+    on_crons=["0 17 * * *", "0 19 * * *"],
     input_validator=NightlyIntegritySweepInput,
 )
 

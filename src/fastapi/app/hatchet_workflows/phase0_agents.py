@@ -178,7 +178,7 @@ class TenantIsolationAuditOutput(BaseModel):
 
 tenant_isolation_audit = hatchet.workflow(
     name="tenant_isolation_audit",
-    on_crons=["0 2 * * *"],
+    on_crons=["0 17 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -201,7 +201,7 @@ async def _run_tenant_isolation(
 # =============================================================================
 graph_tenant_audit = hatchet.workflow(
     name="graph_tenant_audit",
-    on_crons=["30 2 * * *"],
+    on_crons=["30 17 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -271,7 +271,7 @@ class StorageTieringRunOutput(BaseModel):
 
 storage_tiering_run = hatchet.workflow(
     name="storage_tiering_run",
-    on_crons=["0 3 * * *"],
+    on_crons=["0 18 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -349,7 +349,7 @@ class StoreReconciliationRunOutput(BaseModel):
 
 store_reconciliation_run = hatchet.workflow(
     name="store_reconciliation_run",
-    on_crons=["0 4 * * *"],
+    on_crons=["0 19 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -384,7 +384,7 @@ class ModelUpgradeWatchRunOutput(BaseModel):
 
 model_upgrade_watch_run = hatchet.workflow(
     name="model_upgrade_watch_run",
-    on_crons=["0 5 * * *"],
+    on_crons=["0 20 * * *"],
     input_validator=AgentRunInput,
 )
 
@@ -424,7 +424,7 @@ model_cost_summary_run = hatchet.workflow(
     # scales hatchet-worker-cc to zero and both DST candidate hours of
     # each sweep count as closed. See
     # tests/test_crons_avoid_the_shutdown_window.py.
-    on_crons=["0 15 * * *"],
+    on_crons=["0 22 * * *"],
     input_validator=AgentRunInput,
 )
 

@@ -87,7 +87,7 @@ class RepairShadowAggregateOutput(BaseModel):
 
 repair_shadow_aggregate = hatchet.workflow(
     name="repair_shadow_aggregate",
-    on_crons=["15 2 * * *"],
+    on_crons=["15 17 * * *"],
     input_validator=RepairShadowAggregateInput,
 )
 

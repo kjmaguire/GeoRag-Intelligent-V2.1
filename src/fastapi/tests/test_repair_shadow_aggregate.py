@@ -9,7 +9,8 @@ need a live database:
     concatenation of user input)
   - The Pydantic input/output models reject malformed input
   - The workflow is registered in the AI worker pool
-  - The default cron is 02:15 UTC (15 min after audit_ledger_verify)
+  - The cron stays 15 min after audit_ledger_verify (asserted as a
+    gap, not a fixed hour)
 """
 
 from __future__ import annotations
@@ -171,14 +172,38 @@ def test_workflow_name_is_repair_shadow_aggregate():
     assert name == "repair_shadow_aggregate"
 
 
-def test_workflow_cron_is_15_minutes_after_audit_ledger():
-    """Cron must be 02:15 UTC (15 min after audit_ledger_verify at
-    02:00) so the two cron jobs don't contend for connections."""
+def _single_cron_minutes(workflow) -> int:
+    """The workflow's one cron, as minutes past midnight UTC."""
     crons = (
-        getattr(repair_shadow_aggregate, "on_crons", None)
-        or getattr(repair_shadow_aggregate.config, "on_crons", None)
+        getattr(workflow, "on_crons", None)
+        or getattr(workflow.config, "on_crons", None)
     )
-    assert crons == ["15 2 * * *"]
+    assert crons and len(crons) == 1, f"expected exactly one cron, got {crons}"
+    minute, hour = crons[0].split()[:2]
+    return int(hour) * 60 + int(minute)
+
+
+def test_workflow_cron_is_15_minutes_after_audit_ledger():
+    """The gap to audit_ledger_verify is what matters, so assert the GAP.
+
+    This used to assert the literal ``["15 2 * * *"]``. On 2026-09-16 the
+    shutdown window shrank to eight hours a day and every fixed-hour cron
+    moved into 17:00-00:00 UTC -- a change that preserved this relationship
+    exactly and still broke the test, because the test was checking a
+    coordinate rather than the thing its own name describes.
+
+    Reading both crons means the next schedule move only fails here if the
+    fifteen-minute stagger actually changes, which is the only way these two
+    start contending for connections again.
+    """
+    from app.hatchet_workflows.audit_ledger_verify import (  # noqa: PLC0415
+        audit_ledger_verify,
+    )
+
+    gap = _single_cron_minutes(repair_shadow_aggregate) - _single_cron_minutes(
+        audit_ledger_verify
+    )
+    assert gap == 15, f"expected a 15-minute stagger, got {gap} minutes"
 
 
 def test_workflow_registered_in_ai_worker_pool():

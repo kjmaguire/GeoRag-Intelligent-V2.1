@@ -138,7 +138,8 @@ ordinary accounts. Acting on the alert is a human running
 
 With the power switch and Spot, $622 of credit buys roughly **1,266 task-hours
 -- about 7 hours a day, every day, for six months**, at the real production
-sizing.
+sizing. The shipped schedule is 8h/day, which is close enough to that
+ceiling to matter: see the table under "Turning the whole thing off".
 
 ## Fargate Spot
 
@@ -179,7 +180,8 @@ defaults (Fargate Spot, `db.t4g.small`):
 | --- | --- |
 | powered off | ~$13 |
 | 4h/day, weekdays only (a demo stack) | ~$39 |
-| 17h/day (what the nightly sweeps give you) | ~$190 |
+| **8h/day (what the nightly sweeps give you)** | **~$88** |
+| 17h/day (the pre-2026-09-16 default) | ~$173 |
 | 24/7 | ~$256 |
 
 $555 was the figure before Fargate Spot and `db.t4g.small` became the
@@ -217,8 +219,8 @@ and `terraform/power.tf` carries the full reasoning. The short version is that
   and it wakes up, bills a day of compute, and sleeps again, repeatedly, with
   nothing reporting it.
 
-The nightly sweeps are still the right tool for a seven-hour window. They are
-not an off switch for a week.
+The nightly sweeps are still the right tool for a sixteen-hour window. They
+are not an off switch for a week.
 
 **Your data survives.** Nothing holding state is gated: S3 (the corpus), EFS
 (the Qdrant index and Redis AOF), ECR, Secrets Manager and the CloudWatch log

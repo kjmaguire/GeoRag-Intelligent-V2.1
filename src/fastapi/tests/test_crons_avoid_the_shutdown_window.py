@@ -202,9 +202,23 @@ def test_the_window_is_scheduled_in_a_named_timezone() -> None:
         r'variable\s+"maintenance_timezone"\s*\{(.*?)\n\}', text, re.S
     )
     assert block, "no maintenance_timezone variable"
-    assert 'default     = "America/Los_Angeles"' in block.group(1), (
-        "the maintenance window's timezone changed; _PACIFIC_OFFSETS above "
-        "is derived from US-Pacific and must change with it"
+
+    # An ALLOW-LIST, not a single literal. _PACIFIC_OFFSETS above encodes
+    # UTC-7/UTC-8 and the North American DST transition dates, so what this
+    # has to assert is "the zone is Pacific", not "the zone is spelled
+    # America/Los_Angeles". Vancouver moved here on 2026-09-16 and is the
+    # same clock to the second: same offsets, same transitions, different
+    # name for where the operator actually is.
+    #
+    # Adding to this list is only safe for a zone that shares BOTH offsets
+    # AND both transition dates. America/Phoenix is the trap — it is
+    # nominally Mountain, never observes DST, and would silently make every
+    # offset above wrong for half the year.
+    pacific = ("America/Los_Angeles", "America/Vancouver", "America/Tijuana")
+    assert any(f'default     = "{z}"' in block.group(1) for z in pacific), (
+        "the maintenance window's timezone is not one of the US/Canada "
+        f"Pacific zones {pacific}; _PACIFIC_OFFSETS above is derived from "
+        "Pacific time and must change with it"
     )
 
 

@@ -10,8 +10,9 @@ operator decision, not something a cron should start on its own: raise
 the cap, or trigger the workflow directly with `max_passages: null`,
 once someone has agreed to the bill.
 
-Runs daily at 04:30 UTC (before embed_pending_passages at 05:45 UTC)
-to generate LLM context headers for un-enriched passages.
+Runs daily at 21:45 UTC to generate LLM context headers for un-enriched
+passages. This line said 04:30 long after the cron had moved to 14:45; see
+the schedule comment on the workflow itself for the full history.
 
 Contextual retrieval: Anthropic technique. Each chunk gets a 2-3 sentence
 context header summarising its place in the source document. The enriched
@@ -112,7 +113,7 @@ _dsn = build_dsn
 
 enrich_passage_context_wf = hatchet.workflow(
     name="enrich_passage_context",
-    # 14:45 UTC.
+    # 21:45 UTC.
     #
     # This has now been wrong twice, in opposite directions, and the
     # reasoning is worth keeping because the ground keeps moving:
@@ -126,14 +127,17 @@ enrich_passage_context_wf = hatchet.workflow(
     #   14:45  after the LATER of the two startup candidate hours, which
     #          is the only time a schedule can be sure of without knowing
     #          which side of a DST boundary it will run on.
+    #   21:45  on 2026-09-16 the window shrank to 09:00-17:00 Pacific —
+    #          eight hours a day, to fit the AWS credit inside $100/month —
+    #          which closes 00:00-17:00 UTC. 14:45 went back inside it.
     #
-    # Running after embed_pending_passages' 05:45 daily tick rather than
+    # Running after embed_pending_passages' 20:45 daily tick rather than
     # before it is fine: embed also runs */10, so enrichment written at
-    # 14:45 is picked up within ten minutes rather than waiting a day.
+    # 21:45 is picked up within ten minutes rather than waiting a day.
     #
     # tests/test_crons_avoid_the_shutdown_window.py reads the window from
     # the job YAML, so the next move is caught rather than reasoned about.
-    on_crons=["45 14 * * *"],
+    on_crons=["45 21 * * *"],
     input_validator=EnrichPassageContextInput,
     # 2026-08-21 — see verbalize_page_images.py for the full write-up. Short
     # version: a cron trigger sends no input, so `input.workspace_id` is an

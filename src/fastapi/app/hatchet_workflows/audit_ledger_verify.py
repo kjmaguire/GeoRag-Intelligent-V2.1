@@ -44,7 +44,7 @@ class AuditVerifyOutput(BaseModel):
 
 audit_ledger_verify = hatchet.workflow(
     name="audit_ledger_verify",
-    on_crons=["0 2 * * *"],
+    on_crons=["0 17 * * *"],
     input_validator=AuditVerifyInput,
 )
 

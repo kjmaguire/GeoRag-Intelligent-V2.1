@@ -1,7 +1,9 @@
 """§11.10 — nightly cold-tier archive of audit.audit_ledger rows.
 
-Schedule: ``0 4 * * *`` UTC (04:00 UTC — after the §11.1 backup
-window closes at 03:00).
+Schedule: ``0 19 * * *`` UTC. It was 04:00, placed "after the §11.1
+backup window closes at 03:00" — that window no longer exists, since the
+per-store ``backup_*`` workflows were deleted 2026-08-23 and production
+relies on RDS PITR. The constraint the old slot satisfied went with it.
 
 What this workflow does
 =======================
@@ -26,7 +28,7 @@ Defaults
 ========
 
 - `retention_days=90` per §11 kickoff (30d hot / 90d warm / indef cold).
-  At 04:00 UTC each night the cron archives everything older than 90
+  At 19:00 UTC each night the cron archives everything older than 90
   days. The same row may be archived multiple times across runs —
   the per-run object_key is timestamped, so cold-tier objects don't
   collide; the archive_window function's chunking writes a single
@@ -86,7 +88,7 @@ class ColdTierArchiveOutput(BaseModel):
 
 cold_tier_archive_workflow = hatchet.workflow(
     name="cold_tier_archive",
-    on_crons=["0 4 * * *"],
+    on_crons=["0 19 * * *"],
     input_validator=ColdTierArchiveInput,
 )
 

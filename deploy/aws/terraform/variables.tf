@@ -314,19 +314,46 @@ variable "maintenance_timezone" {
     a timezone and fires once.
   EOT
   type        = string
-  default     = "America/Los_Angeles"
+  default     = "America/Vancouver"
 }
 
 variable "shutdown_cron" {
-  description = "Local-time cron for the nightly shutdown sweep."
+  description = <<-EOT
+    Local-time cron for the shutdown sweep, in `maintenance_timezone`.
+
+    Paired with `startup_cron` this defines the ONLY cost lever that matters
+    at this scale. From the committed sizing, at Fargate Spot and
+    db.t4g.small, the difference is not marginal:
+
+      24h/day   ~$240/month
+      17h/day   ~$173/month     <- what this used to be
+       8h/day    ~$88/month     <- what it is now
+
+    against a $100/month promotional credit with no cash line behind it
+    (budget.tf). 17h/day overspent the credit by roughly 70% every month, for
+    a platform with no users yet. 8h/day fits inside it with headroom — the
+    break-even is about 9.4 hours a day.
+
+    Changing this changes nothing else by hand: the maintenance-window alarm
+    in alerts.tf derives its period from these two expressions, so the dead-air
+    suppression follows automatically.
+  EOT
   type        = string
-  default     = "cron(0 23 * * ? *)"
+  default     = "cron(0 17 * * ? *)"
 }
 
 variable "startup_cron" {
-  description = "Local-time cron for the morning startup sweep."
+  description = <<-EOT
+    Local-time cron for the startup sweep, in `maintenance_timezone`. See
+    `shutdown_cron` for what the window costs.
+
+    09:00-17:00 is a working day, chosen deliberately over the wider window
+    it replaces. The platform is DOWN outside it — not degraded, destroyed to
+    the power flag's keep-list — so pick hours you will actually be at the
+    keyboard. Coming back up takes about fifteen minutes.
+  EOT
   type        = string
-  default     = "cron(0 6 * * ? *)"
+  default     = "cron(0 9 * * ? *)"
 }
 
 # ---------------------------------------------------------------------------

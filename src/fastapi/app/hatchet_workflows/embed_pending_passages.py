@@ -129,15 +129,16 @@ _dsn = build_dsn
 
 embed_pending_passages_wf = hatchet.workflow(
     name="embed_pending_passages",
-    # Doc-phase 183 — daily embed sync at 05:45 UTC (after kg_sync at
-    # 05:30).
+    # Doc-phase 183 — daily embed sync at 20:45 UTC. The original slot was
+    # 05:45, chosen to land after kg_sync at 05:30; kg_sync went with Neo4j
+    # on 2026-07-28, so only the daily tick itself still matters.
     # 2026-05-22 — added an "every 10 minutes" safety-net cron so that
     # when the persist-side inline trigger races with a Hatchet retry
     # (BattleNorth bug), unembedded passages get picked up within ~10 min
     # instead of waiting a full day. The function is idempotent (passages
     # already with embedding_id get skipped) so frequent runs are cheap
     # when nothing is pending.
-    on_crons=["45 5 * * *", "*/10 * * * *"],
+    on_crons=["45 20 * * *", "*/10 * * * *"],
     input_validator=EmbedPendingPassagesInput,
     # Per-workspace singleton. The every-10-min safety-net cron + daily
     # cron + manual triggers all queue behind the in-flight run for the

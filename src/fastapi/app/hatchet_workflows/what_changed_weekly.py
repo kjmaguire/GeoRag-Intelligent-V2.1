@@ -87,7 +87,7 @@ what_changed_weekly = hatchet.workflow(
     # scales hatchet-worker-cc to zero and both DST candidate hours of
     # each sweep count as closed. See
     # tests/test_crons_avoid_the_shutdown_window.py.
-    on_crons=["0 17 * * 1"],  # Mondays at 06:00 UTC
+    on_crons=["0 17 * * 1"],  # Mondays at 17:00 UTC
 )
 
 
