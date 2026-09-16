@@ -162,18 +162,25 @@ assert "terraform: 820mb is outside the headroom boundary" fail \
   "is unreachable" "$d"
 
 # --- the checker must not silently stop reading -----------------------
+# These mutations match a RUN of spaces, not an exact column. `terraform fmt`
+# aligns a map's `=` to its longest key, so changing any ONE entry re-indents
+# every other -- which silently broke the healthcheck case on 2026-09-16 when
+# the hatchet-worker probe was shortened. Each pattern is disambiguated by
+# something meaningful instead: `$` for the entry whose `[` ends the line,
+# `["CMD-SHELL"` for the probe.
+#
 # If a manifest is restructured so a pattern no longer matches, that is a
 # failure, not a pass. This is the failure mode the first draft of this
 # checker actually had: it matched some other container's limits.
 d="$(fixture)"
-mutate "$d" "${TF_SIZING}" 's/redis          = { cpu = 512, memory = 1024/redis          = { cpu = 512, ram = 1024/'
+mutate "$d" "${TF_SIZING}" 's/redis  *= { cpu = 512, memory = 1024/redis = { cpu = 512, ram = 1024/'
 assert "terraform: an unreadable task memory fails rather than passing" fail \
   "no longer reading it" "$d"
 
 # And the same for the command itself: a restructured task definition must
 # fail loudly rather than reporting OK against a list it never found.
 d="$(fixture)"
-mutate "$d" "${TF}" 's/^    redis = \[/    redis_server = [/'
+mutate "$d" "${TF}" 's/^    redis  *= \[$/    redis_server = [/'
 assert "terraform: an unreadable command fails rather than passing" fail \
   "no longer reading it" "$d"
 
@@ -186,7 +193,7 @@ assert "terraform: an unreadable command fails rather than passing" fail \
 # Renaming ONLY the healthcheck entry must change nothing: the check does not
 # read it, and must not start.
 d="$(fixture)"
-mutate "$d" "${TF}" 's/^    redis           = \["CMD-SHELL"/    redis_probe     = ["CMD-SHELL"/'
+mutate "$d" "${TF}" 's/^    redis  *= \["CMD-SHELL"/    redis_probe = ["CMD-SHELL"/'
 assert "terraform: the healthcheck map is not mistaken for the command" ok \
   "All Redis manifests satisfy" "$d"
 
