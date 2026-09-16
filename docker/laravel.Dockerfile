@@ -50,7 +50,7 @@
 # and a digest that does not clear the finding costs a full CI cycle to
 # discover. A base bump also moves the PHP patch version under the
 # application.
-FROM php:8.5-cli@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS builder
+FROM php:8.5-cli@sha256:a39fb299e915914e5d587baaca6c9c7a782b00235375ad33abd16bb2df529975 AS builder
 
 # Build-time system dependencies.
 # libpq-dev      → pdo_pgsql / pgsql extensions
@@ -184,7 +184,7 @@ RUN rm -rf node_modules
 # We re-install system packages and PHP extensions from scratch rather than
 # copying from builder; this keeps the runtime image clean and auditable.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime
+FROM php:8.5-cli@sha256:a39fb299e915914e5d587baaca6c9c7a782b00235375ad33abd16bb2df529975 AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"
