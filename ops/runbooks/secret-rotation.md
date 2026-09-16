@@ -132,7 +132,7 @@ the window boots against no database and looks broken. Rotate outside it.
 | Sanctum tokens / sessions | Postgres / Redis | users | per-user | §13 |
 | GitHub: `AZURE_CLIENT_ID` etc. | Entra federated credential | cd.yml (OIDC) | n/a — identifiers, not secrets | §14 |
 | GitHub: `SOPS_AGE_PRIVATE_KEY`, operator age key | age keys | the `.env.production.enc` record | Yes | §14 |
-| `FLOW_JWT_SECRET` | fastapi-cc, hatchet-worker-ai | `services/flow_jwt.py` (no caller reaches it today) | Yes | §15 |
+| `FLOW_JWT_SECRET` | fastapi-cc, hatchet-worker | `services/flow_jwt.py` (no caller reaches it today) | Yes | §15 |
 
 Cadence (Appendix C §9, unchanged): `APP_KEY` annual; `FASTAPI_SERVICE_KEY`,
 Foundry key quarterly; Postgres, Redis, Qdrant, storage keys annual;

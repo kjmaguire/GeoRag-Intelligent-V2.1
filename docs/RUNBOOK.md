@@ -875,7 +875,7 @@ serve as a failover target when the primary is Anthropic.
 |---|---|---|
 | `LLM_BACKEND` | `vllm` | GPU inference via the `vllm` container (Ollama cutover complete) |
 | `LLM_PRIMARY_URL` | `http://vllm:8000/v1` | OpenAI-compat endpoint |
-| `LLM_PRIMARY_MODEL` | `Qwen/Qwen3-14B-AWQ` | Qwen 3 14B dense AWQ (reverted from Qwen3-30B-A3B MoE in 2026-05 to free A4500 VRAM for hatchet-worker-ai embed/rerank/sparse models). Stays resident via vLLM. |
+| `LLM_PRIMARY_MODEL` | `Qwen/Qwen3-14B-AWQ` | Qwen 3 14B dense AWQ (reverted from Qwen3-30B-A3B MoE in 2026-05 to free A4500 VRAM for the merged `hatchet-worker` (`WORKER_POOL=all`) embed/rerank/sparse models). Stays resident via vLLM. |
 | `VLLM_MODEL` | `Qwen/Qwen3-14B-AWQ` | The value actually sent to the OpenAI-compat API by FastAPI when `LLM_BACKEND=vllm` — must match `served-model-name` on the container. |
 | `OLLAMA_NUM_CTX` | _(unused)_ | Ollama is deprecated; legacy Modelfiles archived under `docker/_deprecated/ollama/`. |
 | `ANTHROPIC_API_KEY` | empty | Set + flip `LLM_BACKEND=anthropic` to activate |
@@ -913,8 +913,9 @@ vLLM is the canonical inference path for both dev and prod (Ollama
 cutover complete — see `docs/model_migration.md`). The dev workstation
 (RTX A4500, 20 GB) serves `Qwen/Qwen3-14B-AWQ` with `awq_marlin` kernels
 at `--max-model-len=8192` and `--gpu-memory-utilization=0.80` (leaves
-VRAM headroom for the co-tenant hatchet-worker-ai embed/rerank/sparse
-models); prod hardware sizes are set by the production-readiness doc.
+VRAM headroom for the co-tenant `hatchet-worker` (`WORKER_POOL=all`)
+embed/rerank/sparse models); prod hardware sizes are set by the
+production-readiness doc.
 
 ```bash
 # 1. Confirm AWQ Qwen3-14B fits + serves at acceptable throughput

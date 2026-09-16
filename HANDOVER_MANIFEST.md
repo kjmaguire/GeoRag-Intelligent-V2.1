@@ -256,7 +256,7 @@ Intent labels (`src/fastapi/app/agent/agentic_retrieval/intent_classifier.py`):
 
 ## 4. Hatchet workflows (src/fastapi/app/hatchet_workflows/)
 
-### 4a. Worker pool: `ingestion` (compose svc: hatchet-worker-ingestion)
+### 4a. Worker pool: `ingestion` (compose svc: hatchet-worker, `WORKER_POOL=ingestion`)
 
 Core workflows:
 - `outbox_dispatcher`
@@ -274,7 +274,7 @@ Plus `INGESTION_AGENT_WORKFLOWS` (phase0 agents wrapped as workflows):
 - `index_health_check`
 - `store_reconciliation_run`
 
-### 4b. Worker pool: `ai` (compose svc: hatchet-worker-ai)
+### 4b. Worker pool: `ai` (compose svc: hatchet-worker, `WORKER_POOL=ai`)
 
 Core workflows:
 - `audit_ledger_verify`
@@ -790,8 +790,7 @@ Config: `docker/martin/martin.yaml`. Schema target: `public_geo` (canonical rena
 - `dagster-daemon`
 - `dagster-webserver`
 - `hatchet-lite`
-- `hatchet-worker-ingestion`
-- `hatchet-worker-ai`
+- `hatchet-worker` (`WORKER_POOL=all`)
 - `kestra`
 - `caddy`
 - `otel-collector`
@@ -1375,8 +1374,7 @@ Total .tsx files: 96
 - Laravel (server-side broadcast() calls)
 
 ### 22d. Inbound to Hatchet engine (hatchet-lite:7077 gRPC, :8889 API)
-- hatchet-worker-ingestion (gRPC)
-- hatchet-worker-ai (gRPC)
+- hatchet-worker (gRPC, `WORKER_POOL=all`)
 - Operator UI on :8889
 - FastAPI workflow-trigger HTTP calls
 

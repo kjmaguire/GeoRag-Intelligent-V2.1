@@ -23,7 +23,7 @@ manually. Fix: move to `init/` and renumber so it runs after
 
 <a id="project_gpu_acceleration_2026_05_22"></a>
 ### project_gpu_acceleration_2026_05_22
-A4500 wired to `hatchet-worker-ai`. bge-small CPU 3-4 chunks/s → GPU 144
+A4500 wired to `hatchet-worker`. bge-small CPU 3-4 chunks/s → GPU 144
 chunks/s. Requires `VLLM_GPU_MEM_UTIL ≤ 0.80` to leave ~1.6 GB VRAM headroom.
 
 <a id="project_upload_size_stack_2026_05_21"></a>

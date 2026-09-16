@@ -11,7 +11,7 @@
 > Marlin kernels) served by vLLM.
 >
 > **Why the revert:** the dev workstation A4500 (20 GB VRAM) is co-tenanted
-> with `hatchet-worker-ai`, which runs `bge-small-en-v1.5` + `bge-reranker-base`
+> with `hatchet-worker`, which runs `bge-small-en-v1.5` + `bge-reranker-base`
 > + SPLADE++ on the same GPU. Holding Qwen3-30B-A3B (~17 GB AWQ) alongside
 > those models forced the embed/rerank stack off-GPU and collapsed
 > embedding throughput from ~144 chunks/sec to 3-4 chunks/sec. The 14B AWQ
