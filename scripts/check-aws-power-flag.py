@@ -112,10 +112,44 @@ MUST_NOT_GATE = {
     # to catch is "the platform is running when I believed it was off" — a
     # state in which a gated budget would already have been destroyed.
     "aws_budgets_budget",
+    # A public ACM certificate costs nothing to hold and is slow to replace:
+    # gating it would put DNS validation on the critical path of every
+    # power-on, for no saving. The record that ALIASES the ALB is a different
+    # question and is answered per-address below.
+    "aws_acm_certificate",
+    "aws_acm_certificate_validation",
+}
+
+#: Per-ADDRESS decisions, checked BEFORE the type tables above.
+#:
+#: `aws_route53_record` is the first type to land legitimately on both sides,
+#: which the type-level model could not express. The two records in dns.tf want
+#: opposite answers, and getting either backwards is a real failure:
+#:
+#:   * the ALIAS record points at the ALB, which power=off destroys. Left
+#:     ungated it dangles at a load balancer that no longer exists.
+#:   * the VALIDATION records are what ACM re-reads to renew the certificate
+#:     for as long as it lives. Gating them means a power cycle deletes them,
+#:     and renewal fails silently months later.
+#:
+#: A route53 record at any OTHER address matches neither table and is reported
+#: as unknown, so the next one is decided deliberately too.
+ADDRESS_MUST_GATE = {
+    "aws_route53_record.app",
+}
+
+ADDRESS_MUST_NOT_GATE = {
+    "aws_route53_record.cert_validation",
 }
 
 BLOCK = re.compile(r'^resource\s+"([a-z0-9_]+)"\s+"([a-z0-9_]+)"\s*\{', re.M)
-GATED = re.compile(r"count\s*=\s*local\.on\b|for_each\s*=\s*local\.on\s*==\s*1\s*\?")
+#: Any `count` expression that MENTIONS local.on is gated, not only one that
+#: starts with it. `count = local.dns * local.on` is as gated as `count =
+#: local.on`, and the previous anchored pattern read it as ungated — which
+#: would have reported a correctly gated resource as a billing leak.
+GATED = re.compile(
+    r"count\s*=\s*[^\n]*\blocal\.on\b|for_each\s*=\s*local\.on\s*==\s*1\s*\?"
+)
 
 #: Attributes that stop the provider destroying the resource they sit on, and
 #: what makes each one safe. Checked on GATED resources only — on an ungated
@@ -220,7 +254,14 @@ def main() -> int:
     for fname, rtype, rname, body in blocks():
         addr = f"{rtype}.{rname}  ({fname})"
         gated = bool(GATED.search(body))
-        if rtype in MUST_GATE:
+        key = f"{rtype}.{rname}"
+        if key in ADDRESS_MUST_GATE:
+            if not gated:
+                ungated.append(addr)
+        elif key in ADDRESS_MUST_NOT_GATE:
+            if gated:
+                wrongly_gated.append(addr)
+        elif rtype in MUST_GATE:
             if not gated:
                 ungated.append(addr)
         elif rtype in MUST_NOT_GATE:

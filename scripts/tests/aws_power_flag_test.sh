@@ -153,6 +153,75 @@ resource "aws_lb" "this" {
 }
 TF
 
+# --- dns.tf: one type, two opposite answers (2026-09-16) -------------------
+# aws_route53_record is the first type to land legitimately on both sides of
+# the gate. Both directions are asserted, because getting either backwards
+# fails silently -- a dangling alias resolves to nothing, and deleted
+# validation records break certificate RENEWAL months later, not today.
+
+run 0 "the ALB alias record gated on dns*on passes" <<'TF'
+resource "aws_route53_record" "app" {
+  count   = local.dns * local.on
+  zone_id = "Z1"
+}
+TF
+
+run 1 "the ALB alias record UNGATED fails -- it would dangle at a dead ALB" <<'TF'
+resource "aws_route53_record" "app" {
+  zone_id = "Z1"
+}
+TF
+
+run 0 "ungated cert validation records pass -- ACM re-reads them to renew" <<'TF'
+resource "aws_route53_record" "cert_validation" {
+  for_each = local.dvo
+  zone_id  = "Z1"
+}
+TF
+
+run 1 "GATED cert validation records fail -- renewal breaks on the next cycle" <<'TF'
+resource "aws_route53_record" "cert_validation" {
+  count   = local.on
+  zone_id = "Z1"
+}
+TF
+
+run 1 "a route53 record at a THIRD address is unknown, not silently allowed" <<'TF'
+resource "aws_route53_record" "mail" {
+  zone_id = "Z1"
+}
+TF
+
+run 0 "an ungated ACM certificate passes -- free, and slow to revalidate" <<'TF'
+resource "aws_acm_certificate" "this" {
+  domain_name = "x.example.com"
+}
+TF
+
+run 1 "a GATED ACM certificate fails -- it would revalidate every power-on" <<'TF'
+resource "aws_acm_certificate" "this" {
+  count       = local.on
+  domain_name = "x.example.com"
+}
+TF
+
+# The gate regex used to be anchored at the start of the count expression, so
+# a product read as UNGATED and a correctly gated resource was reported as a
+# billing leak. Assert the widening did not also make it match anything.
+run 0 "local.on as the SECOND operand still counts as gated" <<'TF'
+resource "aws_lb" "this" {
+  count = local.dns * local.on
+  name  = "x"
+}
+TF
+
+run 1 "a count mentioning some OTHER local is still ungated" <<'TF'
+resource "aws_lb" "this" {
+  count = local.dns
+  name  = "x"
+}
+TF
+
 run 0 "the committed tree passes" <<'TF'
 TF
 python3 "$CHECK" >/dev/null 2>&1 \

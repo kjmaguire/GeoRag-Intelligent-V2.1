@@ -67,6 +67,48 @@ is why `required_version` says so.
 `backend.hcl` is gitignored, along with `*.tfstate` and `*.tfvars`. Nothing in
 `backend.hcl` is secret, but it sits where something secret would get pasted.
 
+## The domain
+
+`app_domain` is a hard prerequisite, not a nicety: `aws_lb_listener.https` is
+the only listener that serves the application, and it cannot be created
+without a certificate. There is no HTTP-only mode, deliberately — the
+alternative is plaintext session cookies and `ws://` answer streams.
+
+Since 2026-09-16 the rest is declarative. `dns.tf` issues the ACM
+certificate, writes its own DNS validation records, waits for ACM to report
+ISSUED, and aliases `app_domain` at the load balancer. Register the domain,
+set `app_domain`, apply.
+
+**Register through Route 53** and the hosted zone is created for you, with its
+nameservers already written into the registration. That is the only reason the
+chain can be fully automatic: Terraform needs write access to the zone that
+the registrar actually points at.
+
+Note that `dns.tf` *looks the zone up* and never creates one. A second hosted
+zone for a name that already has one is legal, gets a different set of
+nameservers, and resolves for nobody — while Terraform reports success and the
+records look right in the console.
+
+Deploying to a subdomain of a zone you already own works too: set
+`app_domain = "georag.example.com"` and `hosted_zone_name = "example.com"`.
+The zone cannot be derived by chopping a label off the domain, because where
+the cut falls is not a function of the string — `example.co.uk` is
+registrable and `co.uk` is not.
+
+**If the domain is hosted somewhere Terraform cannot write** — Cloudflare,
+Namecheap — set `manage_dns = false`. Nothing in `dns.tf` is created,
+`acm_certificate_arn` becomes required again, and the validation CNAMEs and
+the record pointing at the ALB are pasted in by hand at the registrar
+(`terraform output alb_dns_name` is what that record targets). A
+precondition on the listener fails the plan if `manage_dns = false` arrives
+without a certificate, because `acm_certificate_arn` having a default now
+means `aws-preflight.sh` A-01 no longer catches it.
+
+The certificate is **not** gated on the power switch, though the alias record
+is. Public ACM certificates are free, and re-validating one on every power-on
+would add minutes to a fifteen-minute restart for nothing. The alias has to go
+with the ALB, or it dangles at a load balancer that no longer exists.
+
 ## The budget this runs under
 
 AWS promotional credit: **$100/month for six months**, plus a one-off $100 for
@@ -250,8 +292,8 @@ terraform plan -var-file=production.tfvars
 ```
 
 `production.tfvars` is not in the repository. The variables with no default
-are the five a deployment must decide: `acm_certificate_arn`, `app_domain`,
-`reverb_app_key`, `alert_email` and `image_tag`.
+are the four a deployment must decide: `app_domain`, `reverb_app_key`,
+`alert_email` and `image_tag`.
 
 `image_tag` is new on 2026-09-16 and replaces a hardcoded `:latest` that could
 never have worked. Every ECR repository here sets
@@ -287,10 +329,13 @@ The Cohere equivalents (`cohere_chat_model`, `cohere_parse_model`,
 `cohere_base_url`) all have working defaults, and the credential is a secret,
 not a tfvar: a tfvar would put it in Terraform state.
 
-`app_domain` is the bare public hostname — no scheme, no path — and must be
-a name on `acm_certificate_arn`. It drives `APP_URL`, and through it
-Sanctum's stateful-domain list, and it is the Reverb WebSocket origin
-allowlist.
+`app_domain` is the bare public hostname — no scheme, no path. It drives
+`APP_URL`, and through it Sanctum's stateful-domain list, and it is the
+Reverb WebSocket origin allowlist. It is also the name the certificate is
+issued for and the Route 53 zone the records are written into.
+
+`acm_certificate_arn` was a fifth until 2026-09-16, when `dns.tf` took over
+issuing the certificate and managing DNS. See **The domain** below.
 
 `reverb_app_key` needs saying once, because it is one value that has to be
 set identically in two unrelated places:

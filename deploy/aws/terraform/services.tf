@@ -103,11 +103,30 @@ resource "aws_lb_listener" "https" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = var.acm_certificate_arn
+
+  # local.certificate_arn, not var.acm_certificate_arn: with manage_dns on,
+  # this resolves through aws_acm_certificate_validation, so the listener is
+  # not created until ACM reports the certificate ISSUED. Referencing the
+  # certificate directly would let the attach race validation.
+  certificate_arn = local.certificate_arn
 
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.octane[0].arn
+  }
+
+  # `acm_certificate_arn` has a default now, so aws-preflight.sh A-01 — which
+  # reports variables with no default and no value — no longer covers it. That
+  # is correct for the normal path, where dns.tf issues the certificate and
+  # there is nothing for an operator to supply. It leaves exactly one hole:
+  # manage_dns = false with no certificate brought in its place, where
+  # local.certificate_arn is null and the attach fails at apply, after the
+  # VPC, the RDS instance and the ALB already exist.
+  lifecycle {
+    precondition {
+      condition     = var.manage_dns || var.acm_certificate_arn != ""
+      error_message = "manage_dns is false, so Terraform issues no certificate — set acm_certificate_arn to one that certifies app_domain and lives in var.region, or set manage_dns = true to have Route 53 issue it."
+    }
   }
 }
 

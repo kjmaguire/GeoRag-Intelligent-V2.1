@@ -1,5 +1,10 @@
 output "alb_dns_name" {
-  description = "Point the application's DNS record at this."
+  description = <<-EOT
+    The load balancer's own hostname. With `manage_dns = true` (the default)
+    nothing needs to be pointed at this by hand -- dns.tf aliases app_domain
+    at it. It stays useful for reaching the stack before DNS propagates, and
+    it is what you paste at an external registrar when manage_dns is false.
+  EOT
   value       = try(one(aws_lb.this).dns_name, null)
 }
 

@@ -609,16 +609,31 @@ locals {
 # one fact stated twice if they live apart.
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate for the public HTTPS listener."
+  description = <<-EOT
+    ACM certificate for the public HTTPS listener.
+
+    Empty (the default) means dns.tf issues one for `app_domain` and validates
+    it through Route 53, which is the path that needs no console steps. Set
+    this only to bring a certificate issued elsewhere -- a wildcard you
+    already own, or one imported from an external CA.
+
+    Either way it must certify `app_domain`, and it must live in `region`:
+    an ALB cannot serve a certificate from another region.
+  EOT
   type        = string
+  default     = ""
 }
 
 variable "app_domain" {
   description = <<-EOT
     Public hostname the ALB serves, without scheme — e.g. georag.example.com.
-    Must match a name on acm_certificate_arn. Drives APP_URL and the Reverb
-    WebSocket origin allowlist, and through APP_URL, Sanctum's stateful
-    domain list.
+    Drives APP_URL and the Reverb WebSocket origin allowlist, and through
+    APP_URL, Sanctum's stateful domain list.
+
+    This is also the name the certificate is issued for, and — unless
+    `hosted_zone_name` says otherwise — the Route 53 zone the records are
+    written into. If you supply `acm_certificate_arn` yourself, that
+    certificate must certify this name.
   EOT
   type        = string
 
