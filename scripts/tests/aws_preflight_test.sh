@@ -23,6 +23,28 @@ ok()   { printf '\033[32m  ✓ %s\033[0m\n' "$*"; PASS=$((PASS+1)); }
 bad()  { printf '\033[31m  ✗ %s\033[0m\n' "$*"; FAIL=$((FAIL+1)); }
 case_() { printf '\033[34m%s\033[0m\n' "$*"; }
 
+# A probe report in the shape ops/validation/_probe_verdict.py writes.
+# `probe_report <name>`            -> a run that verified something
+# `probe_report <name> nothing`    -> a well-formed run that verified NOTHING,
+#                                     which is what a probe writes when every
+#                                     call 401s. It still exits 0 and still
+#                                     leaves a file behind.
+# `probe_report <name> no_verdict` -> written by a probe older than 2026-09-15
+probe_report() {
+  local name="$1" kind="${2:-verified}"
+  case "$kind" in
+    nothing)
+      printf '{"probe":"%s","verdict":{"verified_anything":false,"sections_ok":[],"authentication_failed":true,"summary":"could not authenticate; nothing was observed."}}\n' "$name"
+      ;;
+    no_verdict)
+      printf '{"probe":"%s","chat":{"model":"x"}}\n' "$name"
+      ;;
+    *)
+      printf '{"probe":"%s","verdict":{"verified_anything":true,"sections_ok":["chat"],"authentication_failed":false,"summary":"verified 1/1 sections."}}\n' "$name"
+      ;;
+  esac
+}
+
 # Build a minimal fixture repo that the gate passes cleanly, so each test can
 # introduce exactly one defect and attribute the failure to it.
 make_fixture() {
@@ -76,9 +98,12 @@ sys.exit(0)
 PY
 
   # BOTH probes, because ADR-0023 split the model tier across two vendors'
-  # auth and A-11 now wants a report from each.
-  echo '{}' >"$d/ops/validation/reports/bedrock_probe_20260915T000000Z.json"
-  echo '{}' >"$d/ops/validation/reports/cohere_probe_20260915T000000Z.json"
+  # auth and A-11 now wants a report from each -- and each must VERIFY
+  # something. These used to be `{}`, and the baseline case below asserted
+  # A-11 passed on them, which is precisely the defect the check now
+  # rejects: a file on disk that carries no evidence.
+  probe_report bedrock >"$d/ops/validation/reports/bedrock_probe_20260915T000000Z.json"
+  probe_report cohere  >"$d/ops/validation/reports/cohere_probe_20260915T000000Z.json"
 
   git -C "$d" init -q
   git -C "$d" config user.email t@t.t
@@ -104,7 +129,7 @@ OUT=$(run_gate "$D" | strip_ansi)
 if grep -qE '^✓ A-01' <<<"$OUT"; then ok "A-01 passes when TF_VAR_ supplies the value"; else bad "A-01 should pass; got: $(grep A-01 <<<"$OUT" | head -1)"; fi
 if grep -qE '^✓ A-03' <<<"$OUT"; then ok "A-03 passes with GEORAG_ENV=production"; else bad "A-03 should pass"; fi
 if grep -qE '^✓ A-05' <<<"$OUT"; then ok "A-05 passes with nothing sensitive tracked"; else bad "A-05 should pass"; fi
-if grep -qE '^✓ A-11' <<<"$OUT"; then ok "A-11 passes with a probe report present"; else bad "A-11 should pass"; fi
+if grep -qE '^✓ A-11' <<<"$OUT"; then ok "A-11 passes when both reports verified something"; else bad "A-11 should pass; got: $(grep A-11 <<<"$OUT" | head -2 | tr '\n' ' ')"; fi
 if grep -qE '^✓ A-13' <<<"$OUT"; then ok "A-13 passes with an S3 backend and backend.hcl"; else bad "A-13 should pass"; fi
 if ! grep -qE '^✗' <<<"$OUT"; then ok "no failures on a clean fixture"; else bad "clean fixture produced: $(grep '^✗' <<<"$OUT" | tr '\n' ' ')"; fi
 rm -rf "$D"
@@ -212,6 +237,55 @@ for present in bedrock cohere; do
   fi
   rm -rf "$D"
 done
+
+# ---------------------------------------------------------------------------
+case_ "A-11 — a report that verified NOTHING is not evidence"
+# The failure this whole file is modelled on, one level up. Both probes
+# degrade instead of raising, so a run where every call 401'd still writes a
+# well-formed JSON file and still exits 0. ops/validation/_probe_verdict.py
+# opens by saying so, and the probe prints "DO NOT commit this report as
+# evidence" -- but until 2026-09-16 the gate only globbed for the filename,
+# so committing it anyway turned A-11 green over a report of nothing but
+# auth failures. The adapters would still have been [UNVERIFIED] and the
+# operator would have had no way to know.
+for broken in bedrock cohere; do
+  D=$(make_fixture)
+  probe_report "$broken" nothing >"$D/ops/validation/reports/${broken}_probe_20260916T000000Z.json"
+  OUT=$(run_gate "$D" | strip_ansi)
+  if grep -qE '^✗ A-11' <<<"$OUT" && grep -q "VERIFIED NOTHING:${broken}" <<<"$OUT"; then
+    ok "rejects a ${broken} report whose verdict verified nothing, and names it"
+  else
+    bad "A-11 passed on a ${broken} report that verified nothing: $(grep A-11 <<<"$OUT" | head -2 | tr '\n' ' ')"
+  fi
+  rm -rf "$D"
+done
+
+# ---------------------------------------------------------------------------
+case_ "A-11 — a report with no verdict block cannot answer the question"
+# Written by a probe from before 2026-09-15, when compute_verdict was
+# extracted. It carries observations but no judgement about them, so reading
+# it as evidence is reading a shrug as a yes.
+D=$(make_fixture)
+probe_report cohere no_verdict >"$D/ops/validation/reports/cohere_probe_20260916T000000Z.json"
+OUT=$(run_gate "$D" | strip_ansi)
+if grep -qE '^✗ A-11' <<<"$OUT" && grep -q 'no verdict block' <<<"$OUT"; then
+  ok "rejects a pre-verdict report and says why"
+else
+  bad "A-11 accepted a report with no verdict block"
+fi
+rm -rf "$D"
+
+# ---------------------------------------------------------------------------
+case_ "A-11 — an unparseable report is not a passing one"
+D=$(make_fixture)
+printf 'not json at all\n' >"$D/ops/validation/reports/bedrock_probe_20260916T000000Z.json"
+OUT=$(run_gate "$D" | strip_ansi)
+if grep -qE '^✗ A-11' <<<"$OUT"; then
+  ok "rejects a report that is not valid JSON"
+else
+  bad "A-11 accepted an unparseable report"
+fi
+rm -rf "$D"
 
 # ---------------------------------------------------------------------------
 case_ "A-10 — go-live key derivation excludes APP_KEY_NEXT"
