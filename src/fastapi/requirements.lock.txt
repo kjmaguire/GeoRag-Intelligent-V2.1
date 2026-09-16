@@ -679,7 +679,7 @@ uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'c
     # via uvicorn
 watchfiles==1.2.0
     # via uvicorn
-weasyprint==69.0
+weasyprint==70.0
     # via georag-fastapi
 webencodings==0.6.1
     # via
