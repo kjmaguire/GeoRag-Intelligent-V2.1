@@ -712,6 +712,13 @@ jobs:
       # not deployable until CI has actually built it.
       - name: CI builds every image CD deploys
         run: python scripts/check-image-build-parity.py
+      # LARAVEL_INTERNAL_URL fell back to http://laravel.test for WEEKS on
+      # Azure, killing the whole real-time layer while every container stayed
+      # healthy. It was unset in this Terraform too, as was MARTIN_INTERNAL_URL
+      # (-> http://martin:3000, a compose-only name). A plausible fallback is
+      # harder to spot than an empty one.
+      - name: Service-to-service URLs resolve inside the VPC
+        run: python scripts/check-internal-urls.py
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.

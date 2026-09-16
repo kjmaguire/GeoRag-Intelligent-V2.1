@@ -465,6 +465,21 @@ locals {
       lookup({
         fastapi = {
           FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # The 2026-08-18 incident, which cd.yml's header wrongly claimed
+          # could not recur here. It was never set on Azure either, so every
+          # callback fell back to app/services/laravel_bridge.py's
+          # `http://laravel.test` — the Herd local default — and died on DNS.
+          # The only symptom was a per-call `Name or service not known`, which
+          # reads like a network blip rather than a missing variable, so it went
+          # unread for WEEKS while the entire real-time layer was dead:
+          # ingestion progress, workspace-data-updated, report-build progress,
+          # the admin surfaces and the user inbox.
+          #
+          # Unset here it would have failed exactly the same way: Cloud Map
+          # publishes `laravel-octane.<namespace>`, and nothing makes a bare
+          # `laravel.test` resolve inside the VPC.
+          LARAVEL_INTERNAL_URL = "http://laravel-octane.${aws_service_discovery_private_dns_namespace.this.name}:80"
         }
         hatchet-worker = {
           # `all` is what both compose and Azure ran. There is no separate
@@ -474,6 +489,21 @@ locals {
           # big worker off for longer.
           WORKER_POOL          = "all"
           FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # The 2026-08-18 incident, which cd.yml's header wrongly claimed
+          # could not recur here. It was never set on Azure either, so every
+          # callback fell back to app/services/laravel_bridge.py's
+          # `http://laravel.test` — the Herd local default — and died on DNS.
+          # The only symptom was a per-call `Name or service not known`, which
+          # reads like a network blip rather than a missing variable, so it went
+          # unread for WEEKS while the entire real-time layer was dead:
+          # ingestion progress, workspace-data-updated, report-build progress,
+          # the admin surfaces and the user inbox.
+          #
+          # Unset here it would have failed exactly the same way: Cloud Map
+          # publishes `laravel-octane.<namespace>`, and nothing makes a bare
+          # `laravel.test` resolve inside the VPC.
+          LARAVEL_INTERNAL_URL = "http://laravel-octane.${aws_service_discovery_private_dns_namespace.this.name}:80"
 
           # The SDK's own health server, and the reason the worker's
           # container health check can detect a HANG rather than only a
@@ -498,6 +528,20 @@ locals {
         }
         laravel-octane = merge(local.reverb_client_environment, {
           FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # Martin has no ALB target group and correctly needs none: the
+          # browser reaches tiles through Laravel's own /tiles/* routes, which
+          # sit behind auth:sanctum (routes/web.php) so a workspace's geometry
+          # is never served unauthenticated. TileProxyController is the only
+          # reader, which is why this is set on octane alone and not on
+          # horizon or reverb.
+          #
+          # Without it config/services.php falls back to `http://martin:3000`,
+          # the compose service name. That resolves on compose's shared docker
+          # network and nowhere else — an ECS task in awsvpc gets no search
+          # domain for the Cloud Map namespace, so a bare `martin` does not
+          # resolve and every map tile in the product fails.
+          MARTIN_INTERNAL_URL = "http://martin.${aws_service_discovery_private_dns_namespace.this.name}:3000"
           # LOG_STACK=stderr, NOT the `single` default. On Azure the
           # default routed the application log to a file inside a
           # container nobody could read, and Ch 12 records that which
