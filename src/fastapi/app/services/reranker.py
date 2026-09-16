@@ -193,6 +193,26 @@ QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
 # 3.5-scored runs stay separable after the fact (see
 # tests/test_backend_selection.py), and pick the floor from the observed 3.5
 # score distribution against refusal outcomes.
+#
+# AUTO-DISCOVERY (Kyle, 2026-09-16). Being pinned to 3.5 should not mean
+# staying pinned to 3.5 forever once AWS adds v4 to Bedrock's catalogue —
+# that would be a second silent regression sitting on top of the first one.
+# So when the operator has NOT set BEDROCK_RERANK_MODEL_ID explicitly (it is
+# unset, using the 3.5 default below), get_reranker_or_none() calls
+# app.services._bedrock.discover_cohere_rerank_v4_model_id() — a cached,
+# fail-safe ListFoundationModels probe on the `bedrock` control-plane client
+# — and prefers whatever v4 id it finds over the hardcoded 3.5 default.
+# Finding one logs a WARNING (not INFO): it means
+# RERANKER_SCORE_THRESHOLD_HOSTED is *re-becoming correct* (it was measured
+# against v4 originally) but that is a claim, not a fact, until someone
+# actually re-measures it against the live v4 score distribution — see the
+# block above. An operator who sets BEDROCK_RERANK_MODEL_ID explicitly
+# (to 3.5, to a v4 id once they know it, or to anything else) is always
+# respected as-is and discovery is skipped entirely for that process — an
+# explicit setting is not something this module second-guesses.
+_BEDROCK_RERANK_MODEL_ID_EXPLICIT = bool(
+    (os.environ.get("BEDROCK_RERANK_MODEL_ID") or "").strip()
+)
 BEDROCK_RERANK_MODEL_ID = (
     os.environ.get("BEDROCK_RERANK_MODEL_ID") or "cohere.rerank-v3-5:0"
 ).strip()
@@ -263,6 +283,14 @@ def active_reranker_version() -> str:
         # version, which matters more than usual right now: this is where a
         # v4-scored run and a 3.5-scored run become distinguishable after the
         # fact, and the threshold re-measurement (ADR-0022) needs that.
+        #
+        # BEDROCK_RERANK_MODEL_ID is a plain module global here (not
+        # _ACTIVE_VERSION), so a caller before the first get_reranker_or_none()
+        # call sees the pre-discovery default rather than a discovered v4 id
+        # — same "pre-load guess" caveat as the local backends above, not a
+        # new one. get_reranker_or_none() overwrites this global in place the
+        # moment discovery finds v4, so every call after the reranker has
+        # actually been requested once reports the model that was really used.
         return f"cohere-bedrock:{BEDROCK_RERANK_MODEL_ID or 'unset'}"
     if _ACTIVE_VERSION is not None:
         return _ACTIVE_VERSION
@@ -678,7 +706,16 @@ def get_reranker_or_none() -> (
     right answer for a reranker that is misconfigured by accident, and the
     wrong one for a deployment that was never repointed off Foundry — that
     should stop, not quietly serve worse answers (ADR-0022 gotcha 3).
+
+    Cohere Rerank v4 auto-discovery: when BEDROCK_RERANK_MODEL_ID was not set
+    explicitly, this also asks app.services._bedrock whether Bedrock's
+    catalogue now serves a v4 model and prefers it over the pinned 3.5
+    default if so (2026-09-16, Kyle). The check itself is cached for the
+    process lifetime and fails safe to "not found" on any error, so it costs
+    at most one extra AWS call per worker and never risks the reranker path.
     """
+    global BEDROCK_RERANK_MODEL_ID
+
     from app.services._bedrock import reject_retired_backend  # noqa: PLC0415
 
     reject_retired_backend(RERANKER_BACKEND, setting="RERANKER_BACKEND")
@@ -687,9 +724,37 @@ def get_reranker_or_none() -> (
     if RERANKER_BACKEND == "bedrock":
         from app.services._bedrock import (  # noqa: PLC0415
             assert_no_retired_foundry_env,
+            discover_cohere_rerank_v4_model_id,
         )
 
         assert_no_retired_foundry_env(context="RERANKER_BACKEND=bedrock")
+
+        if not _BEDROCK_RERANK_MODEL_ID_EXPLICIT:
+            try:
+                discovered_v4 = discover_cohere_rerank_v4_model_id()
+            except Exception:  # noqa: BLE001 — discovery is advisory, never fatal
+                logger.exception(
+                    "reranker: Cohere Rerank v4 discovery raised unexpectedly "
+                    "-- staying on %s",
+                    BEDROCK_RERANK_MODEL_ID,
+                )
+                discovered_v4 = None
+            if discovered_v4 and discovered_v4 != BEDROCK_RERANK_MODEL_ID:
+                previous_model_id = BEDROCK_RERANK_MODEL_ID
+                BEDROCK_RERANK_MODEL_ID = discovered_v4
+                logger.warning(
+                    "reranker: Bedrock's catalogue now serves Cohere Rerank "
+                    "v4 (%s) -- switching off the pinned 3.5 default (%s). "
+                    "RERANKER_SCORE_THRESHOLD_HOSTED (0.2) was originally "
+                    "measured against v4 on 2026-08-15 and has been carried "
+                    "over UNVALIDATED to 3.5 since ADR-0022 -- now that v4 is "
+                    "back, that threshold is presumptively correct again but "
+                    "MUST be RE-VALIDATED against the live v4 score "
+                    "distribution, not assumed. Set BEDROCK_RERANK_MODEL_ID "
+                    "explicitly to pin a version and skip this auto-switch.",
+                    discovered_v4, previous_model_id,
+                )
+
         if not BEDROCK_RERANK_MODEL_ID:
             logger.error(
                 "reranker: RERANKER_BACKEND=bedrock but BEDROCK_RERANK_MODEL_ID "
