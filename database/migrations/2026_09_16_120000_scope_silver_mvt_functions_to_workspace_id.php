@@ -133,7 +133,7 @@ return new class extends Migration
                 z integer,
                 x integer,
                 y integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -217,7 +217,7 @@ return new class extends Migration
                 z integer,
                 x integer,
                 y integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -305,7 +305,7 @@ return new class extends Migration
                 z integer,
                 x integer,
                 y integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -395,7 +395,7 @@ return new class extends Migration
                 z            integer,
                 x            integer,
                 y            integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -483,7 +483,7 @@ return new class extends Migration
                 z            integer,
                 x            integer,
                 y            integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -573,7 +573,7 @@ return new class extends Migration
                 z            integer,
                 x            integer,
                 y            integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -656,7 +656,7 @@ return new class extends Migration
                 z            integer,
                 x            integer,
                 y            integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -738,7 +738,7 @@ return new class extends Migration
                 z            integer,
                 x            integer,
                 y            integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
@@ -874,7 +874,7 @@ return new class extends Migration
                 z integer,
                 x integer,
                 y integer,
-                query_params json DEFAULT '{}'::json
+                query_params json
             )
             RETURNS TABLE (mvt bytea, etag_hash text)
             LANGUAGE plpgsql
