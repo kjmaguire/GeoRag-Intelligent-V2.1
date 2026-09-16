@@ -84,7 +84,7 @@ resource "aws_ecs_task_definition" "app_key_rotation" {
   container_definitions = jsonencode([{
     name       = "app-key-rotation"
     essential  = true
-    image      = "${aws_ecr_repository.this["laravel"].repository_url}:latest"
+    image      = "${aws_ecr_repository.this["laravel"].repository_url}:${var.image_tag}"
     entryPoint = ["/bin/sh", "-c"]
 
     # The script itself arrives as a containerOverrides command from

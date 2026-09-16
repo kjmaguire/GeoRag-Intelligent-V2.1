@@ -697,6 +697,14 @@ jobs:
         run: python scripts/check-aws-power-flag.py
       - name: Discrimination tests for the power-flag check
         run: bash scripts/tests/aws_power_flag_test.sh
+      # ECR here is IMMUTABLE, so a floating tag cannot resolve. Every task
+      # definition pulled `:latest` until 2026-09-16 and nothing ever pushed
+      # it; the rotation task was the one nothing re-registers, so an APP_KEY
+      # rotation would have failed mid-runbook on an unpullable image.
+      - name: ECS task definitions take their image tag from a variable
+        run: python scripts/check-ecs-image-tags.py
+      - name: Discrimination tests for the image-tag check
+        run: bash scripts/tests/ecs_image_tags_test.sh
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.

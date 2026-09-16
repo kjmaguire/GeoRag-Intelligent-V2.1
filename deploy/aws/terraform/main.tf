@@ -307,12 +307,26 @@ resource "aws_ecs_cluster" "this" {
   name = local.name
 
   setting {
-    # The only source of per-service CPU/memory metrics. Azure got
-    # Container Apps platform metrics for free and built eight restart
-    # alarms on them; this is the equivalent, and it is not free — it is
-    # the price of the alarms in alerts.tf having anything to read.
+    # WAS "enhanced", justified by a comment claiming it was "the price of the
+    # alarms in alerts.tf having anything to read". That claim was false. Every
+    # alarm in alerts.tf reads AWS/ApplicationELB (2), AWS/RDS (2), AWS/Bedrock
+    # (3) or the custom GeoRAG/Markers namespace (8). Not one reads
+    # ECS/ContainerInsights, so the enhanced tier was collecting a paid,
+    # per-observation metric stream with no consumer anywhere in the repository.
+    #
+    # WHAT IS NOT LOST BY TURNING IT OFF. Service-level CPUUtilization and
+    # MemoryUtilization are published to the AWS/ECS namespace by ECS itself,
+    # free, with or without Container Insights. What the paid tiers add is
+    # per-TASK and per-CONTAINER granularity and the curated dashboards —
+    # useful while sizing a new deployment, and nothing here depends on them.
+    #
+    # Turn it back on deliberately, for a sizing exercise, and turn it off
+    # again afterwards. It is a variable so that is one flag rather than an
+    # edit. See var.container_insights for the observability gap this leaves
+    # open — it is real, and it was open while the enhanced tier was paying
+    # for metrics nobody alarmed on.
     name  = "containerInsights"
-    value = "enhanced"
+    value = var.container_insights
   }
 }
 

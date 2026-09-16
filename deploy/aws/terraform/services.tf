@@ -320,7 +320,7 @@ resource "aws_ecs_task_definition" "this" {
         image = lookup(
           local.external_image,
           each.key,
-          "${aws_ecr_repository.this[lookup(local.service_image, each.key, "fastapi")].repository_url}:latest",
+          "${aws_ecr_repository.this[lookup(local.service_image, each.key, "fastapi")].repository_url}:${var.image_tag}",
         )
         environment = [
           for k, v in local.service_environment[each.key] : { name = k, value = tostring(v) }
@@ -485,7 +485,7 @@ resource "aws_ecs_task_definition" "migrate" {
   container_definitions = jsonencode([{
     name       = "migrate"
     essential  = true
-    image      = "${aws_ecr_repository.this["laravel"].repository_url}:latest"
+    image      = "${aws_ecr_repository.this["laravel"].repository_url}:${var.image_tag}"
     entryPoint = ["/bin/sh", "-c"]
     command = [
       "php artisan migrate --force && php artisan db:apply-raw --database=pgsql_migrations",

@@ -27,6 +27,53 @@ variable "name_prefix" {
   default     = "georag"
 }
 
+variable "image_tag" {
+  description = <<-EOT
+    The tag every task definition pulls from ECR.
+
+    THIS HAS NO DEFAULT ON PURPOSE. It used to be a hardcoded `:latest`,
+    inherited from docker-compose.yml where `georag/laravel:latest` is what a
+    local `docker build` leaves behind. That convention cannot survive the trip
+    to ECR, because `aws_ecr_repository.this` sets
+    `image_tag_mutability = "IMMUTABLE"`: a tag can be written once and never
+    moved, so `latest` could never track anything. Nothing ever pushed it
+    either — cd.yml pushes `:<short-sha>` and only that, and docker-build.yml
+    pushes to GHCR, not here. Every task definition in this tree named a tag
+    that did not exist and never would.
+
+    What that cost, by resource:
+
+      * the ten services and `georag-migrate` recovered, because cd.yml
+        re-registers each one with `:<short-sha>` before it rolls. The damage
+        was confined to the window between the first apply and the first
+        deploy, where every task fails `CannotPullContainerError`, the
+        deployment circuit breaker trips with no previous revision to roll
+        back to, and the ALB alarms fire on a stack that looks applied.
+      * `georag-app-key-rotation` did NOT recover. Nothing re-registers it —
+        rotate-app-key.sh overrides `command` only, and ECS RunTask cannot
+        override an image at all — so the APP_KEY rotation would have failed
+        on an unpullable image the first time anyone ran it, in the middle of
+        a procedure that has already taken the platform down.
+
+    Pass the short SHA of an image cd.yml has pushed. On the very first apply
+    of a fresh account no image exists yet, so pass anything (`bootstrap` is
+    the conventional placeholder) and expect the services to stay down until
+    the first deploy — then re-apply with a real SHA so the rotation task
+    points at something pullable.
+  EOT
+  type        = string
+
+  validation {
+    condition     = var.image_tag != "latest"
+    error_message = "image_tag must not be \"latest\": ECR repositories here are IMMUTABLE, nothing pushes that tag, and a task definition naming it can never start. Pass a short SHA that cd.yml has pushed."
+  }
+
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$", var.image_tag))
+    error_message = "image_tag must be a valid OCI tag: alphanumerics, dots, underscores and hyphens, not starting with a separator."
+  }
+}
+
 variable "vpc_cidr" {
   type    = string
   default = "10.40.0.0/16"
@@ -259,6 +306,44 @@ variable "startup_cron" {
   description = "Local-time cron for the morning startup sweep."
   type        = string
   default     = "cron(0 6 * * ? *)"
+}
+
+# ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+
+variable "container_insights" {
+  description = <<-EOT
+    CloudWatch Container Insights on the ECS cluster: "disabled", "enabled" or
+    "enhanced".
+
+    Defaults to DISABLED, changed from "enhanced" on 2026-09-16. The enhanced
+    tier bills per observation and nothing consumed it: all fifteen alarms in
+    alerts.tf read AWS/ApplicationELB, AWS/RDS, AWS/Bedrock or the custom
+    GeoRAG/Markers namespace, and none reads ECS/ContainerInsights. The exact
+    monthly figure is not recorded here because it has never been observed on
+    this account — check Cost Explorer under CloudWatch after a day of running
+    rather than trusting a number nobody measured.
+
+    THE GAP THIS LEAVES, stated plainly, because it was equally open before:
+    nothing alarms on an ECS task that is crash-looping or wedged. Container
+    health checks (services.tf) detect it and ECS replaces the task, but no
+    human is told. `HealthyHostCount` covers laravel-octane and laravel-reverb
+    only — the two behind the ALB — so a hatchet-worker OOM-restarting every
+    four minutes is silent, which is the exact shape Ch 12 §6 flags as
+    "ingestion has stopped moving" and sends you to the logs for.
+
+    Closing it does NOT require this setting: AWS/ECS carries per-service
+    CPUUtilization and MemoryUtilization for free. That is a deliberate
+    follow-up, not a silent omission.
+  EOT
+  type        = string
+  default     = "disabled"
+
+  validation {
+    condition     = contains(["disabled", "enabled", "enhanced"], var.container_insights)
+    error_message = "container_insights must be \"disabled\", \"enabled\" or \"enhanced\"."
+  }
 }
 
 # ---------------------------------------------------------------------------

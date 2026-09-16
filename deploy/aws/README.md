@@ -250,8 +250,34 @@ terraform plan -var-file=production.tfvars
 ```
 
 `production.tfvars` is not in the repository. The variables with no default
-are the four a deployment must decide: `acm_certificate_arn`, `app_domain`,
-`reverb_app_key` and `alert_email`.
+are the five a deployment must decide: `acm_certificate_arn`, `app_domain`,
+`reverb_app_key`, `alert_email` and `image_tag`.
+
+`image_tag` is new on 2026-09-16 and replaces a hardcoded `:latest` that could
+never have worked. Every ECR repository here sets
+`image_tag_mutability = "IMMUTABLE"`, so a tag is written once and never
+moved — and nothing pushed `latest` in any case, because cd.yml pushes
+`:<short-sha>` and only that. The tag came across from docker-compose.yml,
+where `georag/laravel:latest` is just what the last local build left behind.
+
+Pass the short SHA of an image cd.yml has pushed. Two consequences worth
+knowing before the first apply:
+
+* **On a brand-new account no image exists yet**, so there is nothing valid to
+  pass. Use `bootstrap` and expect every task to fail
+  `CannotPullContainerError` until the first deploy — the services recover on
+  their own when cd.yml re-registers each task definition with a real SHA.
+  Terraform does not wait for steady state, so that first apply reports
+  success over a stack that is not running. That is expected here; it is not
+  expected later.
+* **Re-apply with a real SHA once CD has run.** `georag-app-key-rotation` is
+  the reason. Nothing re-registers it — `rotate-app-key.sh` overrides
+  `command`, and ECS RunTask cannot override an image at all — so it keeps
+  whatever tag the last apply gave it. Leave it on `bootstrap` and the APP_KEY
+  rotation fails on an unpullable image partway through the runbook, with the
+  platform already down.
+
+`scripts/check-ecs-image-tags.py` fails CI if a literal tag comes back.
 
 It was six until 2026-09-15. `bedrock_chat_endpoint_name` and
 `bedrock_parse_endpoint_name` went with ADR-0023, which moved chat and OCR
