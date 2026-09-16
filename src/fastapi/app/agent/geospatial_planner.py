@@ -44,10 +44,13 @@ Supported target tables (verified workspace-scoped):
   * ``public.smdi_deposits``    — public SMDI mineral occurrences
                                     (NOT workspace-scoped; tenant filter
                                     is implicit via the public schema)
-  * ``gold.h3_density``         — H3-aggregated data density
+
+``gold.h3_density`` was listed here until 2026-09-16. It is gone because the
+table it named does not exist and the real one carries no geometry — see the
+note where its entry used to be, in SPATIAL_TARGETS below.
 
 Each target carries:
-  - The geometry column name (e.g. ``collar_geom``).
+  - The geometry column name (e.g. ``geom_4326``).
   - Whether it carries a ``workspace_id`` column (most do; SMDI doesn't).
   - The CRS the column is stored in (defaults to ``EPSG:4326`` =
     WGS84 / GeoJSON-compatible).
@@ -115,7 +118,26 @@ class SpatialTarget:
 SPATIAL_TARGETS: dict[str, SpatialTarget] = {
     "silver.collars": SpatialTarget(
         table="silver.collars",
-        geom_column="collar_geom",
+        # `geom_4326`, not `collar_geom` and not `geom`.
+        #
+        # collar_geom exists nowhere in database/ -- checked across every
+        # migration and raw file. So every plan built against this target
+        # raised UndefinedColumn, which tools_geospatial swallows into a
+        # None result: the tool reported nothing found rather than nothing
+        # working, and a user asking a spatial question got a confident
+        # empty answer.
+        #
+        # The obvious repair is the trap. silver.collars.geom is EPSG:32613
+        # (2026_04_09_180100 creates it with AddGeometryColumn(..., 32613)),
+        # so renaming this to `geom` while leaving crs_epsg=4326 below would
+        # turn a loud-but-swallowed UndefinedColumn into a silent wrong
+        # answer -- the guard at plan time compares spec.crs_epsg against
+        # THIS declared value, so it would wave a 4326 spec through onto
+        # UTM metres and every predicate would be evaluated in the wrong
+        # units. geom_4326 is the WGS84 twin added by 2026_08_19_010000,
+        # and it is what the eleven other production paths already read,
+        # including tools.py's spatial retrieval and the agentic nodes.
+        geom_column="geom_4326",
         crs_epsg=4326,
         workspace_scoped=True,
         select_columns=(
@@ -152,17 +174,28 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
             "jurisdiction_code",
         ),
     ),
-    "gold.h3_density": SpatialTarget(
-        table="gold.h3_density",
-        geom_column="h3_cell_geom",
-        crs_epsg=4326,
-        workspace_scoped=True,
-        select_columns=(
-            "h3_index",
-            "h3_resolution",
-            "record_count",
-        ),
-    ),
+    # gold.h3_density was here, and could not be repaired in place.
+    #
+    # There is no such table. The real one is gold.h3_density_mineral
+    # (database/raw/phase0/104-section6-h3-density-table.sql), and it has NO
+    # GEOMETRY COLUMN -- location is an `h3index`, alongside resolution,
+    # commodity_code and two counts. The declared `h3_cell_geom` exists
+    # nowhere, and the declared select_columns were wrong too
+    # (`h3_resolution` and `record_count` for what are actually `resolution`,
+    # `occurrence_count` and `drillhole_count`).
+    #
+    # A spatial target needs a geometry to build a predicate against, and an
+    # h3index is not one without going through a cell-to-boundary function.
+    # So this is not a typo to correct; it is a target that cannot exist in
+    # this shape, and leaving it declared only invited someone to "fix" the
+    # column name onto a table that has no geometry either.
+    #
+    # It was unreachable regardless: 104-section6 is not listed in
+    # database/raw/manifest.json, which is an explicit list rather than a
+    # glob, so db:apply-raw never applies it and the table does not exist on
+    # AWS at all. Its keyword route in tools_geospatial.py is removed with
+    # it -- an unmatched keyword yields no target hint, which the caller
+    # already treats as "no confident signal".
 }
 
 

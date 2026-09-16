@@ -95,7 +95,15 @@ def test_extract_spatial_intent_keywords_operation_and_buffer(
     ("SMDI occurrences near the property", "public.smdi_deposits"),
     ("mineral occurrences in the corridor", "public.smdi_deposits"),
     ("spatial features in the corridor outline", "silver.spatial_features"),
-    ("h3 density grid for the area", "gold.h3_density"),
+    # "h3 density grid" routed to gold.h3_density until 2026-09-16. That
+    # target is gone -- the table it named does not exist and the real one
+    # (gold.h3_density_mineral) has no geometry column to build a predicate
+    # against. A route to a missing target raises KeyError inside
+    # plan_spatial_query, which is swallowed exactly like the UndefinedColumn
+    # was, so the user saw a confident answer with no spatial data in it.
+    # No target hint is the honest outcome: the caller already treats None
+    # as "no confident signal".
+    ("h3 density grid for the area", None),
     ("just a random question", None),
 ])
 def test_extract_spatial_intent_keywords_target(text, expected_target):

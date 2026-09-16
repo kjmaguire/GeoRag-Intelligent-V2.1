@@ -27,12 +27,11 @@ def test_spatial_targets_table_covers_four_known_targets():
         "silver.collars",
         "silver.spatial_features",
         "public.smdi_deposits",
-        "gold.h3_density",
     }
 
 
 def test_silver_targets_are_workspace_scoped():
-    for key in ("silver.collars", "silver.spatial_features", "gold.h3_density"):
+    for key in ("silver.collars", "silver.spatial_features"):
         target = SPATIAL_TARGETS[key]
         assert target.workspace_scoped is True, (
             f"{key} must be workspace-scoped (RLS invariant)"
@@ -67,7 +66,7 @@ def test_intersects_plan_emits_ST_Intersects():
     )
     plan = plan_spatial_query(spec)
     assert isinstance(plan, SpatialPlan)
-    assert "ST_Intersects(collar_geom" in plan.sql
+    assert "ST_Intersects(geom_4326" in plan.sql
     assert "ST_GeomFromText" in plan.sql
     assert plan.params[0] == spec.geometry_wkt
     assert plan.target.table == "silver.collars"
@@ -91,7 +90,7 @@ def test_within_plan_emits_ST_Within():
         geometry_wkt="POLYGON((-105 39, -104 39, -104 40, -105 40, -105 39))",
     )
     plan = plan_spatial_query(spec)
-    assert "ST_Within(collar_geom" in plan.sql
+    assert "ST_Within(geom_4326" in plan.sql
 
 
 def test_dwithin_plan_emits_ST_DWithin_with_buffer_param():
@@ -102,7 +101,7 @@ def test_dwithin_plan_emits_ST_DWithin_with_buffer_param():
         buffer_m=1500.0,
     )
     plan = plan_spatial_query(spec)
-    assert "ST_DWithin(collar_geom::geography" in plan.sql
+    assert "ST_DWithin(geom_4326::geography" in plan.sql
     # Buffer becomes the second parameter (after geometry WKT).
     assert plan.params == ("POINT(-104.5 39.5)", 1500.0)
     # The casts are present — geography for accurate distance in metres.
@@ -117,7 +116,7 @@ def test_distance_plan_emits_ORDER_BY_ST_Distance():
         geometry_wkt="POINT(-104.5 39.5)",
     )
     plan = plan_spatial_query(spec)
-    assert "ORDER BY ST_Distance(collar_geom" in plan.sql
+    assert "ORDER BY ST_Distance(geom_4326" in plan.sql
     # 'distance' op has no WHERE for the spatial predicate; just the
     # workspace clause when applicable.
     assert "ST_Intersects" not in plan.sql
