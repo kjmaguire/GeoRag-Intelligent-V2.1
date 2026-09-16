@@ -672,12 +672,30 @@ class StreamQueryFromFastApi implements ShouldQueue
         // running to completion so it can return cleanly. If Reverb is
         // unreachable, the frontend's timeout watchdog (P0.2) will fire
         // its own terminal error UI.
+
+        // `failed`, not `error`. The SSE vocabulary this job relays is
+        // status / bind / delta / citation / completed / failed -- FastAPI
+        // never emits `error`, this class's own docblock does not list it,
+        // and failed()'s docblock says in so many words "Broadcasts
+        // event: 'failed' (not 'error')". This method was the one place
+        // producing a frame name outside the contract.
+        //
+        // It worked only because Chat.tsx happens to accept
+        // `eventType === 'failed' || eventType === 'error'`. That tolerance
+        // was the single thing standing between this path and a permanent
+        // spinner: tighten the frontend to the documented vocabulary -- a
+        // reasonable tidy-up for anyone reading the three docblocks -- and
+        // every FastAPI 4xx/5xx becomes a chat that never terminates.
+        //
+        // Safe to change now rather than later precisely because the
+        // frontend accepts both, and reads `event.error ?? event.message`,
+        // so this is behaviourally identical today and correct afterwards.
         try {
             broadcast(new QueryStreamEvent(
                 $this->channel,
-                'error',
+                'failed',
                 [
-                    'event' => 'error',
+                    'event' => 'failed',
                     'query_id' => $this->queryId,
                     'code' => $code,
                     'message' => $message,

@@ -588,10 +588,24 @@ async def _agent_rag_stream(
                     },
                 )
                 return
-            elif kind == "error":
+            elif kind in ("error", "quota_exceeded"):
                 # Re-raise so the _guarded_stream wrapper in post_query()
                 # can classify and emit a `failed` event with a proper
                 # error code rather than a generic timeout.
+                #
+                # `quota_exceeded` was produced above and handled by NOTHING.
+                # There was no branch for it and no else, so control fell back
+                # to `await status_queue.get()` on a queue whose only producer
+                # had already returned -- the generator blocked forever, no
+                # terminal frame was ever emitted, and the request held one of
+                # five supervisor-llm slots for its full 270s while the user
+                # watched a spinner and then got the frontend's two-minute
+                # watchdog blaming the realtime channel. The one thing they
+                # were never told is the true and simple reason: the
+                # workspace is out of budget.
+                #
+                # classify_error maps it to QUOTA_EXCEEDED, so the message
+                # says that rather than "an unexpected error occurred".
                 raise payload
     finally:
         # Ensure the background task is always awaited so its exceptions
