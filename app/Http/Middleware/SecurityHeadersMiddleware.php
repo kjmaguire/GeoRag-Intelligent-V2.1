@@ -168,7 +168,6 @@ final class SecurityHeadersMiddleware
         return "{$scheme}://{$host}{$port}";
     }
 
-
     /**
      * Build the CSP string. Kept as a method (not constant) so the
      * `upgrade-insecure-requests` directive can be conditional on the
