@@ -150,8 +150,6 @@ metadata:
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
     app.kubernetes.io/managed-by: Helm
-    # component label on the Service itself — templates/servicemonitor.yaml
-    # selects Services (not pods) by it.
     app.kubernetes.io/component: fastapi
 spec:
   type: ClusterIP
@@ -202,8 +200,6 @@ metadata:
     app.kubernetes.io/instance: georag
     app.kubernetes.io/version: "v1.0.0"
     app.kubernetes.io/managed-by: Helm
-    # component label on the Service itself — templates/servicemonitor.yaml
-    # selects Services (not pods) by it.
     app.kubernetes.io/component: laravel-octane
 spec:
   type: ClusterIP
@@ -487,10 +483,21 @@ spec:
             periodSeconds: 30
 ---
 # Source: georag/templates/hatchet.yaml
+# One merged worker Deployment, matching docker-compose.yml's
+# `hatchet-worker` service and the AWS ECS Terraform: no `--pool` flag,
+# the registered workflow set is selected entirely by the WORKER_POOL
+# env var (ingestion | ai | all — default all). This used to be two
+# Deployments (hatchet-worker-ai / hatchet-worker-ingestion) gated by
+# `--pool`; that was the pre-merge architecture and has been collapsed
+# to match. `hatchet.worker.pool` stays chart-configurable for an
+# on-prem operator who wants to split pools across nodes for resource
+# reasons (e.g. GPU nodes for `ai`) — do that by installing this chart
+# twice, once per pool, under distinct release names, not by
+# reintroducing a second Deployment template here.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: georag-hatchet-worker-ai
+  name: georag-hatchet-worker
   namespace: georag
   labels:
     helm.sh/chart: georag-0.2.0
@@ -499,29 +506,31 @@ metadata:
     app.kubernetes.io/version: "v1.0.0"
     app.kubernetes.io/managed-by: Helm
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: georag
       app.kubernetes.io/instance: georag
-      app.kubernetes.io/component: hatchet-worker-ai
+      app.kubernetes.io/component: hatchet-worker
   template:
     metadata:
       labels:
         app.kubernetes.io/name: georag
         app.kubernetes.io/instance: georag
-        app.kubernetes.io/component: hatchet-worker-ai
+        app.kubernetes.io/component: hatchet-worker
     spec:
-      
+
       containers:
         - name: worker
           image: ghcr.io/anthropics/georag/fastapi:v1.0.0
           imagePullPolicy: IfNotPresent
-          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ai"]
+          command: ["python", "-m", "app.hatchet_workflows.worker"]
           envFrom:
             - secretRef:
                 name: georag-secrets
           env:
+            - name: WORKER_POOL
+              value: "all"
             - name: HATCHET_CLIENT_HOST
               value: "georag-hatchet:7077"
             - name: POSTGRES_HOST
@@ -536,58 +545,6 @@ spec:
               value: georag-redis
             - name: QDRANT_HOST
               value: georag-qdrant
-          resources:
-            limits:
-              cpu: "2"
-              memory: 4Gi
-            requests:
-              cpu: 500m
-              memory: 1Gi
----
-# Source: georag/templates/hatchet.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: georag-hatchet-worker-ingestion
-  namespace: georag
-  labels:
-    helm.sh/chart: georag-0.2.0
-    app.kubernetes.io/name: georag
-    app.kubernetes.io/instance: georag
-    app.kubernetes.io/version: "v1.0.0"
-    app.kubernetes.io/managed-by: Helm
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: georag
-      app.kubernetes.io/instance: georag
-      app.kubernetes.io/component: hatchet-worker-ingestion
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: georag
-        app.kubernetes.io/instance: georag
-        app.kubernetes.io/component: hatchet-worker-ingestion
-    spec:
-      
-      containers:
-        - name: worker
-          image: ghcr.io/anthropics/georag/fastapi:v1.0.0
-          imagePullPolicy: IfNotPresent
-          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ingestion"]
-          envFrom:
-            - secretRef:
-                name: georag-secrets
-          env:
-            - name: HATCHET_CLIENT_HOST
-              value: "georag-hatchet:7077"
-            - name: POSTGRES_HOST
-              value: georag-pgbouncer
-            - name: POSTGRES_PORT
-              value: "6432"
-            - name: REDIS_HOST
-              value: georag-redis
           resources:
             limits:
               cpu: "2"
