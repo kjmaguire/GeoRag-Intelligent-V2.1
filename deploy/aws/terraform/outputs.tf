@@ -1,9 +1,29 @@
+output "public_url" {
+  description = <<-EOT
+    The address to open in a browser. THE ONLY PLACE IT IS WRITTEN DOWN when
+    `edge = "cloudfront"`: the hostname is the distribution's own
+    *.cloudfront.net name, which does not exist until apply, is not in any
+    tfvars file, and changes if the deployment is powered off and back on.
+    With `edge = "alb"` it is just https://app_domain.
+
+    Null when `power = "off"`, because then there is nothing serving.
+  EOT
+  value       = local.public_host == "" ? null : local.public_url
+}
+
 output "alb_dns_name" {
   description = <<-EOT
-    The load balancer's own hostname. With `manage_dns = true` (the default)
-    nothing needs to be pointed at this by hand -- dns.tf aliases app_domain
-    at it. It stays useful for reaching the stack before DNS propagates, and
-    it is what you paste at an external registrar when manage_dns is false.
+    The load balancer's own hostname.
+
+    NOT the public address in the default edge mode: with `edge =
+    "cloudfront"` the load balancer listens on plain HTTP and its security
+    group admits only CloudFront's edges, so reaching this directly times out
+    (and is meant to). Use `public_url`.
+
+    With `edge = "alb"` this is the public edge, and `manage_dns = true`
+    aliases app_domain at it so nothing needs pointing by hand. It stays
+    useful for reaching the stack before DNS propagates, and it is what you
+    paste at an external registrar when manage_dns is false.
   EOT
   value       = try(one(aws_lb.this).dns_name, null)
 }

@@ -129,7 +129,22 @@ false in local development.
 **Switching to a real domain later** is `-var edge=alb` plus `app_domain`, at
 which point dns.tf takes over and the section below applies. A precondition on
 the HTTPS listener fails the plan if `edge = "alb"` arrives without a domain,
-since `app_domain` now has a default and A-01 no longer covers it.
+since `app_domain` now has a default and A-01 no longer covers it. The
+distribution carries the mirror image: setting `app_domain` while `edge` is
+still `cloudfront` fails the plan too, because in that mode it is inert —
+no certificate, no DNS record, and a hostname you did not choose. The pairing
+has to be deliberate in both directions, and an `edge = "alb"` deployment that
+re-applies without setting `edge` would otherwise be migrated off its own
+domain silently.
+
+**Two things this mode gives up quietly**, beyond the unbrandable hostname:
+TLS 1.0 and 1.1 stay negotiable, because CloudFront pins the security policy
+to `TLSv1` for its own `*.cloudfront.net` certificate and offers no knob (the
+`alb` edge serves `ELBSecurityPolicy-TLS13-1-2-2021-06`); and the
+CloudFront-to-load-balancer hop is plain HTTP **across the public internet**,
+not inside the VPC — the security group narrows who may open that connection,
+it does not encrypt it. Both are pre-launch-acceptable and neither is
+acceptable in front of a customer.
 
 ## The domain (edge = "alb")
 
@@ -245,7 +260,7 @@ defaults (Fargate Spot, `db.t4g.small`):
 | 4h/day, weekdays only (a demo stack) | ~$39 |
 | **8h/day (what the nightly sweeps give you)** | **~$88** |
 | 17h/day (the pre-2026-09-16 default) | ~$173 |
-| 24/7 | ~$256 |
+| 24/7 | ~$240 |
 
 $555 was the figure before Fargate Spot and `db.t4g.small` became the
 defaults; it is what on-demand at the original sizing would cost. The model

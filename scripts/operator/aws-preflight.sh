@@ -218,15 +218,38 @@ fi
 # can front this application from their own distribution and their own domain.
 # A warning, not a failure — an empty value is a defensible choice while there
 # are no users, and edge.tf says so.
-EDGE_MODE="$(sed -n '/variable "edge"/,/^}/p' "$TF_DIR/edge.tf" 2>/dev/null |
-  sed -n 's/^  default *= *"\([a-z]*\)"/\1/p' | head -1)"
+# Both values are read the way A-01 reads everything else — TF_VAR_* first,
+# then *.tfvars, then the variable's own default. Reading the default alone
+# would report "not applicable" for an operator who selected edge = "alb" in
+# tfvars, and — the expensive direction — would report the secret as UNSET for
+# one who supplied it as TF_VAR_cloudfront_origin_secret, which is the normal
+# way to pass a value marked `sensitive` and the only way that keeps it out of
+# a file at all. A warning that fires when nothing is wrong is a warning that
+# gets ignored when something is.
+tf_value() { # tf_value <variable> <file-declaring-it>
+  local var="$1" file="$2" env_name="TF_VAR_$1" found
+  if [ -n "${!env_name:-}" ]; then
+    printf '%s' "${!env_name}"
+    return 0
+  fi
+  found="$(grep -hE "^[[:space:]]*${var}[[:space:]]*=" "$TF_DIR"/*.tfvars 2>/dev/null |
+    head -1 | sed -E 's/^[^=]*=[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+  if [ -z "$found" ]; then
+    found="$(sed -n "/variable \"${var}\"/,/^}/p" "$file" 2>/dev/null |
+      sed -n 's/^  default *= *"\(.*\)"/\1/p' | head -1)"
+  fi
+  printf '%s' "$found"
+}
+
+EDGE_MODE="$(tf_value edge "$TF_DIR/edge.tf")"
+ORIGIN_SECRET="$(tf_value cloudfront_origin_secret "$TF_DIR/edge.tf")"
 if [ "${EDGE_MODE:-cloudfront}" != "cloudfront" ]; then
-  check "A-14" "CloudFront origin secret set" ok "edge is not cloudfront; not applicable"
-elif grep -qE '^\s*cloudfront_origin_secret\s*=\s*"[^"]+"' "$TF_DIR"/*.tfvars 2>/dev/null; then
+  check "A-14" "CloudFront origin secret set" ok "edge is \"${EDGE_MODE}\"; not applicable"
+elif [ -n "$ORIGIN_SECRET" ]; then
   check "A-14" "CloudFront origin secret set" ok
 else
   check "A-14" "CloudFront origin secret set" warn \
-    "unset — the ALB accepts any CloudFront distribution, not just yours. openssl rand -hex 32, then set cloudfront_origin_secret"
+    "unset — the ALB accepts any CloudFront distribution, not just yours. openssl rand -hex 32, then set cloudfront_origin_secret (tfvars or TF_VAR_cloudfront_origin_secret)"
 fi
 
 # ---------------------------------------------------------------------------

@@ -419,11 +419,15 @@ class ModelCostSummaryRunOutput(BaseModel):
 
 model_cost_summary_run = hatchet.workflow(
     name="model_cost_summary_run",
-    # Moved 2026-08-21: 15:00 UTC — model_cost_summary_run; 06:00 was inside the window.
-    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
-    # scales hatchet-worker-cc to zero and both DST candidate hours of
-    # each sweep count as closed. See
-    # tests/test_crons_avoid_the_shutdown_window.py.
+    # Moved 2026-08-21 to 15:00 UTC; 06:00 was inside the window then, which
+    # ran 06:00-14:00 UTC and was closed by an Azure Container Apps sweep
+    # scaling hatchet-worker-cc to zero at both DST candidate hours. ADR-0022
+    # retired that on 2026-09-08 — one timezone-aware EventBridge schedule
+    # scaling every ECS service to --desired-count 0 — and on 2026-09-16 the
+    # window shrank to 09:00-17:00 Pacific, closing 00:00-17:00 UTC, which is
+    # what moved this to 22:00. See
+    # tests/test_crons_avoid_the_shutdown_window.py, which derives the span
+    # from the Terraform rather than from this comment.
     on_crons=["0 22 * * *"],
     input_validator=AgentRunInput,
 )

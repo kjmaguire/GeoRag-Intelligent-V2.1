@@ -7,6 +7,7 @@ namespace App\Http\Middleware;
 use App\Support\BasemapAssets;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\URL;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -23,9 +24,12 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * Conditional headers
  * -------------------
- *   Strict-Transport-Security — only on HTTPS requests, 1-year max-age
- *                              with includeSubDomains. Skipped on http://
- *                              so local dev stays unbroken.
+ *   Strict-Transport-Security — only when the BROWSER reached us over https,
+ *                              1-year max-age with includeSubDomains. See
+ *                              servedOverHttps(): behind CloudFront the
+ *                              request itself arrives as http and
+ *                              $request->isSecure() is false. Skipped on
+ *                              real http:// so local dev stays unbroken.
  *
  * CSP scope
  * ---------
@@ -81,7 +85,7 @@ final class SecurityHeadersMiddleware
             }
         }
 
-        if ($request->isSecure() && ! $response->headers->has('Strict-Transport-Security')) {
+        if ($this->servedOverHttps($request) && ! $response->headers->has('Strict-Transport-Security')) {
             $response->headers->set(
                 'Strict-Transport-Security',
                 'max-age=31536000; includeSubDomains',
@@ -96,6 +100,29 @@ final class SecurityHeadersMiddleware
         }
 
         return $response;
+    }
+
+    /**
+     * Whether the BROWSER reached this response over https, which is not the
+     * same question as whether this process did.
+     *
+     * `$request->isSecure()` reads X-Forwarded-Proto, and with
+     * `edge = "cloudfront"` (deploy/aws/terraform/edge.tf, the default) the
+     * load balancer is the last proxy and its listener is plain HTTP, so it
+     * truthfully reports `http` for a page the viewer loaded over https. HSTS
+     * gated on isSecure() alone therefore vanishes entirely on the edge mode
+     * that ships — silently, since every other header still appears.
+     *
+     * `URL::formatScheme()` is the scheme the application actually builds
+     * links with: the forced one when AppServiceProvider has forced it,
+     * otherwise the request's own. That is exactly the right question, and it
+     * keeps the decision in one place rather than re-deriving APP_URL here.
+     * Local development over http is unaffected — nothing forces a scheme
+     * there, so this stays false.
+     */
+    private function servedOverHttps(Request $request): bool
+    {
+        return $request->isSecure() || URL::formatScheme() === 'https://';
     }
 
     /**

@@ -8,6 +8,7 @@ use App\Http\Middleware\SecurityHeadersMiddleware;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\URL;
 use Tests\TestCase;
 
 /**
@@ -164,6 +165,40 @@ final class SecurityHeadersTest extends TestCase
         $this->assertIsString($hsts);
         $this->assertStringContainsString('max-age=31536000', $hsts);
         $this->assertStringContainsString('includeSubDomains', $hsts);
+    }
+
+    public function test_hsts_present_when_the_edge_terminated_tls_for_us(): void
+    {
+        // The `edge = "cloudfront"` shape (deploy/aws/terraform/edge.tf, the
+        // default): the browser is on https, CloudFront terminates it, and the
+        // load balancer behind it forwards plain HTTP — so the request Laravel
+        // sees is NOT secure, and isSecure() alone would drop HSTS entirely on
+        // the only edge mode that ships. AppServiceProvider forces the https
+        // scheme whenever APP_URL is https; the middleware has to follow it.
+        URL::forceScheme('https');
+
+        $request = Request::create('http://d111111abcdef8.cloudfront.net/_test/security-headers/probe', 'GET');
+        $this->assertFalse($request->isSecure(), 'precondition: the origin hop really is http');
+
+        $mw = new SecurityHeadersMiddleware;
+        $resp = $mw->handle($request, fn ($r) => response('ok'));
+
+        $hsts = $resp->headers->get('Strict-Transport-Security');
+        $this->assertIsString(
+            $hsts,
+            'HSTS must survive TLS terminating at CloudFront rather than at this process',
+        );
+        $this->assertStringContainsString('max-age=31536000', $hsts);
+    }
+
+    public function test_app_service_provider_forces_https_only_for_an_https_app_url(): void
+    {
+        // Guards the condition AppServiceProvider::boot() keys on. APP_URL is
+        // http in the test environment, so nothing is forced and http:// stays
+        // http:// — which is what keeps local development over plain HTTP, and
+        // test_hsts_absent_on_http_request above, working.
+        $this->assertStringStartsNotWith('https://', (string) config('app.url'));
+        $this->assertSame('http://', URL::formatScheme());
     }
 
     public function test_csp_omits_upgrade_insecure_in_local_env(): void

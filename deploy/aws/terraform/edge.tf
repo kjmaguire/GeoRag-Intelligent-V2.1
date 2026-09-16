@@ -24,6 +24,17 @@
 # wider cookie (SESSION_DOMAIN is unset, which makes the session cookie
 # host-only), but a future subdomain split would need a real domain.
 #
+# The hostname is also NOT STABLE across a power cycle. The distribution is
+# gated on `local.on` (it bills per request and per GB for as long as it
+# exists), so `power = "off"` destroys it and the next power-on mints a
+# different *.cloudfront.net name -- which then lands in APP_URL,
+# REVERB_ALLOWED_ORIGINS and Hatchet's cookie domain, and invalidates every
+# link anybody saved. Expect the cycle to take considerably longer than the
+# fifteen minutes the nightly sweeps need, too: disabling and deleting a
+# distribution is a propagation, not an API call, and `wait_for_deployment`
+# defaults to true. The nightly sweeps do not touch it -- they scale ECS and
+# stop RDS -- so this is a `power = "off"` concern only.
+#
 # Switch to `edge = "alb"` the day a domain exists and dns.tf takes over.
 
 variable "edge" {
@@ -97,7 +108,17 @@ locals {
   # The hostname the browser actually uses. In CloudFront mode it is not known
   # until the distribution exists, which is why APP_URL and the Reverb origin
   # allowlist read this rather than var.app_domain.
-  public_host = var.edge == "cloudfront" ? one(aws_cloudfront_distribution.this[*].domain_name) : var.app_domain
+  #
+  # The null guard is not decoration. The distribution is gated on local.on, so
+  # with `power = "off"` its count is zero and `one([])` is null — and Terraform
+  # refuses to put a null in a string template ("Invalid template interpolation
+  # value"). Locals are evaluated whether or not the resources referencing them
+  # expand, so without this the ENTIRE plan fails in the default edge mode the
+  # moment the power flag is turned off, which is the one state it exists for.
+  # An unknown value (the first apply, before the distribution exists) passes
+  # through the conditional as unknown and lands as "known after apply".
+  _cf_host    = one(aws_cloudfront_distribution.this[*].domain_name)
+  public_host = var.edge == "cloudfront" ? (local._cf_host == null ? "" : local._cf_host) : var.app_domain
   public_url  = "https://${local.public_host}"
 }
 
@@ -135,15 +156,26 @@ resource "aws_cloudfront_distribution" "this" {
       http_port  = 80
       https_port = 443
       # HTTP to the origin because the load balancer has no certificate in
-      # this mode -- it has no domain to have one for. The hop is inside the
-      # VPC's public subnets rather than across the internet, and the load
-      # balancer accepts nothing but CloudFront.
+      # this mode -- it has no domain to have one for, and CloudFront will not
+      # speak HTTPS to an origin presenting an untrusted one.
+      #
+      # BE HONEST ABOUT WHAT THIS COSTS. A CloudFront edge is NOT inside this
+      # VPC: the edge-to-origin hop crosses the public internet, so on this
+      # leg every session cookie, every uploaded byte and every answer travels
+      # in cleartext. The security group narrows WHO may open that connection;
+      # it does not encrypt it. The only fix is a domain and a certificate on
+      # the load balancer, which is `edge = "alb"`. Until then, treat this mode
+      # as pre-launch only -- which is the same conclusion the *.cloudfront.net
+      # hostname forces for its own reasons.
       origin_protocol_policy = "http-only"
       origin_ssl_protocols   = ["TLSv1.2"]
       # Reverb holds WebSockets open; the ALB's own idle_timeout is 300 for
       # the same reason. 60 is CloudFront's maximum for a read timeout on a
-      # custom origin, and the WebSocket itself is not subject to it once
-      # upgraded.
+      # custom origin without a quota increase, and the WebSocket itself is not
+      # subject to it once upgraded. It IS a ceiling on ordinary requests,
+      # though: GEORAG_MAX_UPLOAD_BYTES admits 512 MB through the Laravel web
+      # tier, and any upload whose response takes longer than 60s to begin
+      # becomes a CloudFront 504 that the load balancer never saw a reason for.
       origin_read_timeout      = 60
       origin_keepalive_timeout = 60
     }
@@ -172,6 +204,14 @@ resource "aws_cloudfront_distribution" "this" {
     # AWS's own certificate for *.cloudfront.net. This is the whole point of
     # the mode: a browser-trusted certificate with no domain to own and
     # nothing to renew.
+    #
+    # It also PINS the TLS floor, and downwards. CloudFront forces
+    # minimum_protocol_version to TLSv1 for the default certificate and
+    # refuses to let it be set -- the security-policy knob only exists for a
+    # certificate you bring. `edge = "alb"` serves
+    # ELBSecurityPolicy-TLS13-1-2-2021-06, so switching modes moves the floor
+    # from TLS 1.2 to TLS 1.0 without saying so anywhere else. One more thing
+    # that is fine before launch and wrong in front of a customer.
     cloudfront_default_certificate = true
   }
 
@@ -182,4 +222,19 @@ resource "aws_cloudfront_distribution" "this" {
   }
 
   tags = var.tags
+
+  lifecycle {
+    # `app_domain` is INERT in this mode: dns.tf is skipped entirely, no
+    # certificate is issued, no Route 53 record is written, and the browser
+    # reaches a *.cloudfront.net name instead. Since `edge` now defaults to
+    # "cloudfront", an operator who supplies app_domain the way every version
+    # of this tree before 2026-09-16 required would otherwise get silence --
+    # and an existing `edge = "alb"` deployment that re-applies without
+    # setting `edge` would be migrated off its own domain, destroying the
+    # HTTPS listener, the ACM certificate and the alias record on the way.
+    precondition {
+      condition     = var.app_domain == ""
+      error_message = "app_domain is set but edge is \"cloudfront\", which serves the distribution's own *.cloudfront.net name and ignores app_domain, DNS and ACM completely. Set edge = \"alb\" to serve that domain, or clear app_domain to say the CloudFront hostname is intended."
+    }
+  }
 }
