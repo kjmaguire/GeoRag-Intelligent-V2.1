@@ -265,6 +265,24 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL
+          # Trivy's own default is 5m, and the fastapi image sits right on it.
+          # It carries torch, the GDAL stack and the baked SPLADE++ weights
+          # (docker/fastapi.Dockerfile), and layer analysis takes very nearly
+          # the whole budget: on 2026-09-16 the scan ran 5m01s and died with
+          #
+          #   FATAL  run error: image scan error: ... failed to analyze layer
+          #          (sha256:3008d977...): walk error
+          #
+          # on a commit whose diff touched only Terraform, CI config and two
+          # scripts — nothing in the image at all. The same image had passed
+          # minutes earlier on the parent commit. A ceiling that a scan finishes
+          # just under is a coin flip, and losing it reads as a CRITICAL CVE gate
+          # failing rather than as a clock running out.
+          #
+          # 20m is a ceiling, not a delay: the laravel and martin scans finish
+          # in well under a minute and are unaffected. Raise it again rather
+          # than re-running the job if fastapi ever grows into this one too.
+          timeout: "20m"
 
       # SBOM generation via Syft (anchore/sbom-action). SPDX JSON format.
       # Artifact is uploaded and retained 90 days for supply-chain audits.
