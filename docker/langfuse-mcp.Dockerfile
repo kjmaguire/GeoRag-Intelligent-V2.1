@@ -32,7 +32,7 @@
 # second independent capture). Bump on security advisories or pyproject change.
 # =============================================================================
 
-FROM python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 LABEL org.opencontainers.image.title="GeoRAG Langfuse MCP"
 LABEL org.opencontainers.image.description="Langfuse MCP server (avivsinai/langfuse-mcp) packaged for Docker MCP / Claude Code stdio."
