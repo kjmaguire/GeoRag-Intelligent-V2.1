@@ -61,7 +61,12 @@ echo "bucket:  ${BUCKET}  (${REGION})"
 echo
 
 echo "== bootstrap-state.sh =="
-bash "$(dirname "${BASH_SOURCE[0]}")/bootstrap-state.sh" "$BUCKET" "$REGION"
+# Already cd'd to this script's own directory above, so bootstrap-state.sh is
+# a plain sibling from here. Re-deriving the directory from BASH_SOURCE again
+# (as an earlier version of this script did) double-joins it onto the cwd we
+# just changed into (deploy/aws/terraform/deploy/aws/terraform/...) and fails
+# with "No such file or directory" — BASH_SOURCE doesn't change when you cd.
+bash ./bootstrap-state.sh "$BUCKET" "$REGION"
 echo
 
 echo "== writing backend.hcl =="
