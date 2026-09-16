@@ -278,7 +278,7 @@ See [Ch 16 §1](../manual/16-algorithmic-spines.md).
 | **Qwen/Qwen3-Embedding-0.6B (1024-dim)** | BAAI/bge-small-en-v1.5 (384) | fastapi / embedding sidecar | CPU/GPU | dense FT path |
 | **Qwen/Qwen3-Reranker-0.6B** (via `RERANKER_MODEL_PATH`) | BAAI/bge-reranker-base@2cfc18c9 | fastapi / reranker sidecar | CPU | LoRA/full FT (dormant — ADR-0011) |
 | Qwen/Qwen2.5-VL-7B-Instruct (V2 default) | same; V3=Qwen3-VL-8B gated (ADR-0015) | vllm-vl sidecar | GPU | No |
-| naver/splade-cocondenser-ensembledistil (sparse) | same | hatchet-worker-ai | GPU | No |
+| naver/splade-cocondenser-ensembledistil (sparse) | same | hatchet-worker (`WORKER_POOL=all`) | GPU | No |
 | PaddleOCR PP-OCRv5 (paddleocr 3.7) | — | both workers | CPU/GPU | No (ADR-0016) |
 | Tesseract 5.5.2 (from source) | — | both workers | CPU | No (ADR-0017) |
 | Anthropic Claude (Haiku/Sonnet/Opus) | same | Anthropic API | — | No |

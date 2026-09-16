@@ -29,8 +29,7 @@ about its healthcheck."
 | laravel-horizon | `georag/laravel:latest` | default | Horizon `horizon:status` — accurate | pgbouncer · redis | `php artisan horizon:status`; queues backed up = redis pressure |
 | laravel-reverb | `georag/laravel:latest` | default | WebSocket ping — accurate | redis | `wscat -c ws://localhost:8080` from host |
 | fastapi | `georag/fastapi:latest` | default | `curl /health` (image installs curl) — accurate | pgbouncer · redis · qdrant · neo4j · vllm · seaweedfs · hatchet-lite | `curl :8000/health`; check uvicorn child-process death loop in logs |
-| hatchet-worker-ingestion | `georag/fastapi:latest` | default | `grep app.hatchet_workflows.worker /proc/1/cmdline` — accurate | hatchet-lite · pgbouncer · qdrant · neo4j · seaweedfs | `docker compose logs hatchet-worker-ingestion`; check WORKER_POOL=ingestion |
-| hatchet-worker-ai | `georag/fastapi:latest` | default | same as above | hatchet-lite · pgbouncer · qdrant · neo4j · seaweedfs | same; WORKER_POOL=ai |
+| hatchet-worker | `georag/fastapi:latest` | default | `grep app.hatchet_workflows.worker /proc/1/cmdline` — accurate | hatchet-lite · pgbouncer · qdrant · neo4j · seaweedfs | `docker compose logs hatchet-worker`; check `WORKER_POOL` (default `all`) |
 | kestra | `kestra/kestra:v1.2.18` | default | Java HTTP probe — flaky during boot, accurate once running | postgresql | `docker compose logs kestra`; Java apps take 60-90s to boot |
 | hatchet-lite | `ghcr.io/hatchet-dev/hatchet/hatchet-lite:latest` | default | Hatchet engine HTTP probe — accurate | postgresql (own DB) | Hatchet engine UI at `http://localhost:7070` |
 

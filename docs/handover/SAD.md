@@ -90,8 +90,7 @@ flowchart TD
     subgraph Orch["Orchestration"]
         Dagster[Dagster<br/>daemon + webserver]
         HatchetLite[hatchet-lite engine]
-        HIngest[hatchet-worker-ingestion]
-        HAI[hatchet-worker-ai]
+        HWorker[hatchet-worker<br/>WORKER_POOL=all]
         Kestra[Kestra :8086]
         Caddy[Caddy → Kestra SSO]
     end
@@ -150,11 +149,10 @@ flowchart TD
     Dagster --> Qdrant
     Dagster --> Neo4j
     Dagster --> Object
-    HatchetLite --> HIngest
-    HatchetLite --> HAI
-    HIngest --> PgBouncer
-    HIngest --> Object
-    HAI --> Qdrant
+    HatchetLite --> HWorker
+    HWorker --> PgBouncer
+    HWorker --> Object
+    HWorker --> Qdrant
     Caddy -- "forward-auth" --> Internal
     Kestra -. webhook .-> External((External))
 
@@ -638,7 +636,7 @@ SeaweedFS as the S3-compatible object store. Buckets: `bronze`, `bronze-raster`,
 - **Laravel feature flags** in `.env.example`: `MULTI_TENANT_ENFORCEMENT_ENABLED`, `SINGLE_TENANT_MODE`, `LLM_FALLBACK_ENABLED`, `CITATION_SPAN_RESOLVER_ENABLED`, `PDF_PARSER_DOCLING_ENABLED`, `DOCLING_OCR_ENABLED`, `PDF_PARSER_TESSERACT_FALLBACK_ENABLED`, `DOCLING_GPU_ENABLED`, `P04P_DUAL_WRITE_ENABLED`, `OCR_QUALITY_AGENT_ENABLED`.
 - **Prod env deltas** vs dev: `APP_DEBUG=false`, `APP_PORT=80`, `LOG_LEVEL=info`, `OCTANE_WORKERS=6` / `OCTANE_TASK_WORKERS=8`, `SESSION_SECURE_COOKIE=true`, `MULTI_TENANT_ENFORCEMENT_ENABLED=true`/`SINGLE_TENANT_MODE=false`, `POSTGRES_SHARED_BUFFERS=16GB` / `POSTGRES_EFFECTIVE_CACHE_SIZE=48GB` / `POSTGRES_WORK_MEM=256MB`, `HORIZON_LLM_MAX_PROCESSES=4`, `REVERB_SCHEME=https` / `VITE_REVERB_SCHEME=wss`, `MAIL_MAILER=smtp`.
 - **PostgreSQL tuning** via compose `command:` `-c` flags (`shared_buffers`, `effective_cache_size`, `work_mem`, `maintenance_work_mem`, `io_method=worker`, `random_page_cost=1.1`, `max_connections=200`, `checkpoint_completion_target=0.9`, `wal_buffers=64MB`, `effective_io_concurrency`, `max_worker_processes`, `max_parallel_workers`, `max_parallel_workers_per_gather`, `max_parallel_maintenance_workers`). Plus `ALTER SYSTEM` persistence via `docker/postgresql/init/Z_activate_threadripper_tuning.sql`. Container limit 6 CPU / 16 GiB.
-- **vLLM launch** (`docker-compose.yml::vllm::command`, list form) — 17 args incl. `--model Qwen/Qwen3-14B-AWQ`, `--served-model-name`, `--quantization awq_marlin`, `--max-model-len 16384`, `--gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.93}`, `--kv-cache-dtype fp8`, `--max-num-batched-tokens 8192`, `--max-num-seqs 12`, `--enable-prefix-caching`, `--enable-chunked-prefill`, `--speculative-config` (n-gram, 2 spec tokens, lookup 2–4), `--compilation-config` (CUDA-graph capture set `[1,2,4,8,12]`). Env `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0`. **Co-tenancy ceiling**: when `hatchet-worker-ai` co-tenants the dev A4500 (bge-small + bge-reranker + SPLADE++), reduce `VLLM_GPU_MEM_UTIL` to ≤ 0.80 to leave VRAM headroom (compose comment line 2316; see [GPU acceleration 2026-05-22] memory).
+- **vLLM launch** (`docker-compose.yml::vllm::command`, list form) — 17 args incl. `--model Qwen/Qwen3-14B-AWQ`, `--served-model-name`, `--quantization awq_marlin`, `--max-model-len 16384`, `--gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.93}`, `--kv-cache-dtype fp8`, `--max-num-batched-tokens 8192`, `--max-num-seqs 12`, `--enable-prefix-caching`, `--enable-chunked-prefill`, `--speculative-config` (n-gram, 2 spec tokens, lookup 2–4), `--compilation-config` (CUDA-graph capture set `[1,2,4,8,12]`). Env `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0`. **Co-tenancy ceiling**: when the merged `hatchet-worker` (`WORKER_POOL=all`) co-tenants the dev A4500 (bge-small + bge-reranker + SPLADE++), reduce `VLLM_GPU_MEM_UTIL` to ≤ 0.80 to leave VRAM headroom (compose comment line 2316; see [GPU acceleration 2026-05-22] memory).
 - **Redis runtime** — 17 compose flags incl. AOF mandatory, 5 `lazyfree-*`, `slowlog 1ms`, `databases 4`, `--requirepass`. Logical DBs: `default` (0), `cache` (1), `queue` (0; `REDIS_QUEUE_HOST` ready for 3-instance rollout), `sessions` (0). Per-DB host/port env scaffolding present.
 - **PgBouncer** — `POOL_MODE=transaction`, `AUTH_TYPE=scram-sha-256`, `DEFAULT_POOL_SIZE=50`, `MAX_CLIENT_CONN=1000`, `SERVER_IDLE_TIMEOUT=600`, `QUERY_WAIT_TIMEOUT=120`.
 - **Octane** — `OCTANE_SERVER=swoole` (env override; framework default `roadrunner`). `OCTANE_WORKERS`, `OCTANE_TASK_WORKERS`, `OCTANE_MAX_REQUESTS=500`. Swoole `package_max_length` + `socket_buffer_size` default 2 GiB each. Compose `command:` injects PHP `upload_max_filesize=2G` + `post_max_size=2G`.
