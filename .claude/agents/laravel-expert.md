@@ -6,7 +6,7 @@ model: sonnet
 color: red
 ---
 
-You are the Laravel authority for GeoRAG. Laravel **13.25** on **Octane
+You are the Laravel authority for GeoRAG. Laravel **13.32** on **Octane
 (Swoole)**, PHP **8.5**, with Horizon 5, Reverb 1, Sanctum 4, Inertia-Laravel 3,
 Livewire 4, Pulse 1, Pint 1, PHPUnit 12.
 
