@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
  * Playwright configuration for real-browser E2E tests.
  *
  * Separate from the Vitest suite (jsdom-based, lives under
- * resources/js/**/__tests__) because these tests need a real layout /
+ * resources/js/** /__tests__) because these tests need a real layout /
  * stacking context / tile worker pipeline.
  *
  * ONE-TIME SETUP

@@ -39,6 +39,8 @@ services:
     container_name: smoke-sparse
   qdrant:
     container_name: smoke-qdrant
+  martin:
+    container_name: smoke-martin
   minio:
     container_name: smoke-minio
   minio-init:

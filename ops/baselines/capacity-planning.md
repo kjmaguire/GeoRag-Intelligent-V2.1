@@ -6,7 +6,7 @@
 > as the record of why MoE was attractive on a 20 GB A4500, but the
 > running configuration is now: vLLM serving Qwen3-14B AWQ at
 > `VLLM_GPU_MEM_UTIL=0.80` with the freed VRAM allocated to
-> `hatchet-worker-ai` (bge-small + bge-reranker-base + SPLADE++).
+> `hatchet-worker` (bge-small + bge-reranker-base + SPLADE++).
 > See `docs/model_migration.md` (Current State header) for full
 > rationale.
 

@@ -91,10 +91,14 @@ class StreamQueryFromFastApiTest extends TestCase
 
         $this->makeJob('Service unavailable', 503)->handle();
 
-        // Non-2xx response triggers broadcastError() with event='error'
+        // Non-2xx response triggers broadcastError(), which emits `failed` --
+        // the documented SSE vocabulary. It emitted `error` until 2026-09-16,
+        // a name FastAPI never produces and no docblock lists; the frontend
+        // tolerated it, which is what kept the path alive rather than what
+        // made it correct.
         // and code=statusCode.
         Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e) {
-            return ($e->eventType ?? null) === 'error'
+            return ($e->eventType ?? null) === 'failed'
                 && (($e->payload['code'] ?? null) === 503);
         });
     }

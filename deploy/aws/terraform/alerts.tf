@@ -66,7 +66,7 @@ locals {
     answer-quality-regression = {
       log_group   = "services"
       pattern     = "ANSWER_QUALITY_REGRESSION"
-      description = "answer_quality_watch (30 14 * * *): refusal, guard-fire or zero-evidence rate moved 15pp against the trailing week, or mean confidence dropped 0.15. A window under the 20-answer sample floor reports insufficient_sample and is deliberately NOT an alert."
+      description = "answer_quality_watch (30 21 * * * UTC): refusal, guard-fire or zero-evidence rate moved 15pp against the trailing week, or mean confidence dropped 0.15. A window under the 20-answer sample floor reports insufficient_sample and is deliberately NOT an alert."
     }
     cost-burn-threshold-exceeded = {
       log_group   = "services"
@@ -85,6 +85,29 @@ locals {
       log_group   = "services"
       pattern     = "COHERE_PARSE_UNRECOGNISED_RESPONSE"
       description = "Cohere Parse returned HTTP 200 with a body the response adapter does not recognise, so the page fell back to tesseract and extracted no tables. Parse's wire shape has never been verified empirically on any host (ADR-0019/0022/0023), making this the most likely way the model tier is wrong. No invocation-error metric can see it — the call SUCCEEDED. Sustained firing means the adapter disagrees with the API: run the probe and correct it from the report."
+    }
+    sparse-encoder-unavailable = {
+      # Emitted by src/fastapi/app/agent/tools.py::search_documents, which
+      # runs in the fastapi service — the services group.
+      #
+      # This is the one degradation in the retrieval path that produces NO
+      # other signal anywhere. Global Invariant 11 says a sparse failure must
+      # not fall back to a dense-only query, and it does not — but the
+      # exception is caught and turned into an empty DocumentSearchResult,
+      # so what the rest of the pipeline sees is "nothing matched". The
+      # answer still streams, the container stays healthy, and hybrid
+      # retrieval has quietly stopped matching the things only the sparse
+      # leg matches: hole IDs, sample numbers, NTS codes, anything where the
+      # exact token IS the query.
+      #
+      # `sparse` runs desired=1 on Fargate Spot (main.tf, spot.tf), so a Spot
+      # reclamation produces exactly this window as a matter of routine
+      # rather than as an outage. SPLADE++ has no hosted equivalent on any
+      # cloud, so there is nothing to fail over to — which makes knowing
+      # about it the entire mitigation.
+      log_group   = "services"
+      pattern     = "SPARSE_ENCODER_UNAVAILABLE"
+      description = "The sparse leg of hybrid retrieval is failing, so every document search is returning empty and reading downstream as an empty corpus. Usually the `sparse` service: reclaimed by Spot, still loading SPLADE++ (it 503s until resident), or unreachable. Check that service before concluding anything about the corpus or the reranker — a query that returns nothing here looks identical to one whose answer genuinely is not in the data."
     }
     cohere-parse-rejected = {
       # Same emitter, same services group. Separate from the marker above

@@ -1,0 +1,70 @@
+# deploy/aws/terraform/production.tfvars.example
+#
+# Copy to production.tfvars and fill in. That filename is gitignored
+# (.gitignore:26); this template is tracked by the negation at :46.
+#
+# NAMES ONLY. Nothing in this file is a secret and nothing in it should
+# become one — every real credential this deployment uses lives in Secrets
+# Manager under georag/app, listed exhaustively in deploy/aws/README.md
+# Step 3. If you find yourself pasting a password here, it belongs there.
+#
+# ── PASS IT EXPLICITLY ──────────────────────────────────────────────────
+# Terraform auto-loads only `terraform.tfvars` and `*.auto.tfvars`. A file
+# named production.tfvars is inert unless you name it:
+#
+#   terraform plan  -var-file=production.tfvars
+#   terraform apply -var-file=production.tfvars
+#
+# Forget the flag and Terraform prompts for the three required variables as
+# though the file were not there. Rename it production.auto.tfvars if you
+# would rather it loaded unconditionally.
+
+# ── The three with no default ───────────────────────────────────────────
+# Everything else in variables.tf has a default that is correct for a first
+# deployment. aws-preflight.sh A-01 derives this list from the .tf files
+# rather than from this comment, so A-01 is the authority if they drift.
+
+# The image tag every ECS task definition pulls. On a FIRST apply into an
+# empty account there is nothing in ECR yet: use the literal string
+# `bootstrap`, expect every task to fail CannotPullContainerError, let
+# cd.yml push a real image, then apply again with its short SHA.
+# `latest` is rejected at plan time — the repositories are IMMUTABLE and
+# nothing ever pushes that tag.
+image_tag = "bootstrap"
+
+# Becomes an SNS email subscription AND an AWS Budgets subscriber. Use a
+# mailbox you will actually open: the SNS subscription needs a confirmation
+# click before any alarm can reach you, and nothing reports that it is
+# still pending.
+alert_email = "you@example.com"
+
+# The PUBLIC half of the Reverb credential pair. Opaque random string —
+# `openssl rand -hex 16` is fine. The secret half is REVERB_APP_SECRET in
+# Secrets Manager, not here.
+#
+# THIS VALUE MUST EQUAL the GitHub repository variable VITE_REVERB_APP_KEY.
+# The frontend bakes that one into the bundle at image build time and the
+# server reads this one at runtime; nothing compares them. If they differ,
+# the browser connects to nothing, no server-side log records it, and the
+# chat shows a two-minute watchdog message blaming the realtime channel.
+reverb_app_key = "set-me-and-set-VITE_REVERB_APP_KEY-to-the-same-string"
+
+# ── Worth setting deliberately, though they have defaults ───────────────
+
+# Without it the ALB accepts a request from ANY CloudFront distribution,
+# not only yours. `openssl rand -hex 32`. aws-preflight.sh A-14 warns while
+# it is empty.
+# cloudfront_origin_secret = ""
+
+# Defaults to the stack region. Set it explicitly if that region does not
+# carry Cohere Embed v4 and Rerank 3.5 — availability is per-region and per
+# provider, and a region can serve nineteen foundation models and zero
+# Cohere ones. Take the exact modelIds from:
+#   aws bedrock list-foundation-models --region <r> \
+#     --query 'modelSummaries[?providerName==`Cohere`].[modelId,modelName]'
+# bedrock_region = ""
+
+# Leave EMPTY on the default edge = "cloudfront" path — edge.tf carries a
+# precondition that fails the plan if it is set. It is for edge = "alb",
+# where you bring your own domain and ACM certificate.
+# app_domain = ""

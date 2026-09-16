@@ -286,6 +286,22 @@ locals {
     SESSION_DRIVER   = "redis"
     FILESYSTEM_DISK  = "s3"
 
+    # config/pulse.php defaults `enabled` to TRUE, and nothing here said
+    # otherwise — so Pulse was about to run in production, against CLAUDE.md's
+    # own description of it as local-only.
+    #
+    # Two costs, one of them constant. Its storage driver is `database` and
+    # its ingest driver is `storage`, which means a synchronous Postgres write
+    # at the end of every request, on all three Laravel services, against a
+    # db.t4g.small with no connection pooler in front of it. That is a
+    # burstable instance spending CPU credits on telemetry nobody is reading.
+    #
+    # The other is that `/pulse`'s authorization would rest entirely on
+    # Pulse's own built-in default: there is no Gate::define('viewPulse') and
+    # no Pulse::auth() anywhere in this application. Off is the answer to both
+    # questions at once, and it is the posture the project already documents.
+    PULSE_ENABLED = "false"
+
     REDIS_HOST = "redis.${aws_service_discovery_private_dns_namespace.this.name}"
     REDIS_PORT = 6379
 
@@ -298,6 +314,25 @@ locals {
     QDRANT_HTTPS = "false"
 
     HATCHET_CLIENT_HOST_PORT = "hatchet.${aws_service_discovery_private_dns_namespace.this.name}:7077"
+
+    # The engine below runs SERVER_GRPC_INSECURE = "t" — plaintext gRPC, the
+    # same as compose. The SDK does NOT default to matching it: hatchet_sdk's
+    # ClientTLSConfig defaults `strategy` to "tls", which selects
+    # ssl_channel_credentials() and a secure_channel. Against a plaintext
+    # listener that is not a warning, it is UNAVAILABLE at registration.
+    #
+    # compose sets this on both fastapi and hatchet-worker and Terraform was
+    # the only topology that did not. The worker raises out of
+    # admin.put_workflow before its SDK health server on :8001 ever binds, so
+    # the container health check cannot pass and ECS replaces the task
+    # forever — 51 workflows and every cron simply do not exist, while
+    # nothing in alerts.tf watches for it.
+    #
+    # In common_environment rather than on the two clients: it is inert
+    # anywhere that has no Hatchet client, and this is exactly the class of
+    # variable that gets forgotten when a new service starts talking to the
+    # engine.
+    HATCHET_CLIENT_TLS_STRATEGY = "none"
 
     # ── Object storage ──────────────────────────────────────────────
     # No AWS_ACCESS_KEY_ID and no AWS_SECRET_ACCESS_KEY: the task role
@@ -559,6 +594,23 @@ locals {
         # Octane does.
         laravel-horizon = merge(local.reverb_client_environment, {
           LOG_STACK = "stderr"
+
+          # The 2026-08-18 incident again, in the other direction, and this
+          # time it was live here. Every one of the three Horizon jobs this
+          # platform has reads config('services.fastapi.internal_url'):
+          # StreamQueryFromFastApi (the chat), and DebounceWorkspaceMvRefresh
+          # twice. config/services.php falls back to `http://fastapi:8000` —
+          # a compose hostname — and nothing makes a bare `fastapi` resolve in
+          # an awsvpc task.
+          #
+          # It was set on fastapi, hatchet-worker and laravel-octane, and
+          # missed here, which is the worst place to miss it: the queued job
+          # IS the chat. Octane only dispatches. So every question would have
+          # been accepted, queued, and died in the worker on
+          # `Name or service not known` — surfacing to the user as a stream
+          # that never produces a token and then a two-minute client-side
+          # watchdog blaming the realtime channel.
+          FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
         })
         laravel-reverb = merge(local.reverb_server_environment, {
           LOG_STACK = "stderr"

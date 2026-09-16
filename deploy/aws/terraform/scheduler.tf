@@ -36,9 +36,14 @@ resource "aws_ecs_task_definition" "shutdown_sweep" {
   task_role_arn            = aws_iam_role.scheduler_task.arn
 
   container_definitions = jsonencode([{
-    name       = "sweep"
-    essential  = true
-    image      = "public.ecr.aws/aws-cli/aws-cli:latest"
+    name      = "sweep"
+    essential = true
+    # Pinned 2026-09-16: verified via the public.ecr.aws registry API that
+    # tag 2.36.46 resolves to the identical manifest list digest as :latest
+    # at pin time (amd64 sha256:696ad2e7f8aac020bbbeaa511713cc844131ce593b275fdb101285ab02f6cbca,
+    # arm64 sha256:b6934b9f6091ede7ed37e016b7dceaecc9246ede87c974d27db66da5e394d8ea).
+    # Re-verify against public.ecr.aws/aws-cli/aws-cli before bumping.
+    image      = "public.ecr.aws/aws-cli/aws-cli:2.36.46"
     entryPoint = ["/bin/bash", "-c"]
     command    = [file("${path.module}/../scheduler/shutdown-sweep.sh")]
     # SWEEP_BEDROCK_ENDPOINTS is gone (ADR-0023). The sweep deleted
@@ -71,9 +76,10 @@ resource "aws_ecs_task_definition" "startup_sweep" {
   task_role_arn            = aws_iam_role.scheduler_task.arn
 
   container_definitions = jsonencode([{
-    name       = "sweep"
-    essential  = true
-    image      = "public.ecr.aws/aws-cli/aws-cli:latest"
+    name      = "sweep"
+    essential = true
+    # Pinned 2026-09-16: see shutdown_sweep above for how this tag was verified.
+    image      = "public.ecr.aws/aws-cli/aws-cli:2.36.46"
     entryPoint = ["/bin/bash", "-c"]
     command    = [file("${path.module}/../scheduler/startup-sweep.sh")]
     # SWEEP_BEDROCK_ENDPOINTS is gone (ADR-0023), and with it the

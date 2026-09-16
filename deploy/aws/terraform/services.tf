@@ -401,6 +401,24 @@ locals {
     laravel-octane  = 60
     laravel-horizon = 60
     laravel-reverb  = 60
+
+    # Both of these were absent, so `lookup(..., 30)` below gave them 30s —
+    # a 2x and 4x cut from the only numbers anyone has measured, on the two
+    # services with the slowest honest starts.
+    #
+    # martin answers /health only once its sources are loaded and validated,
+    # which on this config means after it has resolved all 19 PostGIS tile
+    # functions. compose allows 60s and says why.
+    #
+    # sparse force-loads SPLADE++ on /health and 503s until it is in memory.
+    # compose allows 120s. The weights are baked into the image, so this is
+    # load time and not download time — but 30s of grace plus 3 failed 30s
+    # intervals is ~120s to the kill, i.e. the measured time is the deadline
+    # rather than comfortably inside it. A restart loop here presents as
+    # retrieval quietly returning nothing, which is the hardest failure in
+    # this system to attribute.
+    martin = 60
+    sparse = 120
   }
 }
 

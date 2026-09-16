@@ -7,18 +7,75 @@ Max 100 plan (minimal Opus usage, Sonnet workhorse, Haiku for boilerplate).
 
 ## What's in here
 
+There are two families of agent here, and the split is deliberate.
+
+**Layer agents** own a slice of the stack and write code in it. **Domain
+experts** own a body of knowledge and are the ones to ask whether something is
+*right*. When both could apply, the layer agent writes and the expert reviews.
+
 ```
-georag-agents/
+.claude/agents/
 ├── README.md                    # This file
+│
+│  ── layer agents: write the code ──────────────────────────────────
 ├── senior-reviewer.md           # Opus — milestone gate reviews (read-only)
-├── backend-laravel.md           # Sonnet — Laravel + Octane + Horizon + Reverb
-├── backend-fastapi.md           # Sonnet — FastAPI + Pydantic AI + RAG
-├── data-engineer.md             # Sonnet — Hatchet ingestion + PostGIS + formats
-├── frontend-engineer.md         # Sonnet — React + Inertia + shadcn/ui + viz
-├── devops-engineer.md           # Sonnet — Docker Compose + deployment + tuning
+├── backend-laravel.md           # Sonnet — routine Laravel feature work
+├── backend-fastapi.md           # Sonnet — routine FastAPI work
+├── data-engineer.md             # Sonnet — ingestion + PostGIS implementation
+├── frontend-engineer.md         # Sonnet — routine React components
+├── devops-engineer.md           # Sonnet — docker-compose + Helm + tuning
 ├── test-engineer.md             # Sonnet — all testing + golden queries
-└── boilerplate-writer.md        # Haiku — migrations + docstrings + scaffolding
+├── boilerplate-writer.md        # Haiku — migrations + docstrings + scaffolding
+│
+│  ── domain experts: know it cold, judge whether it is right ───────
+├── rag-expert.md                # retrieval quality, citations, the six layers
+├── agentic-ai-expert.md         # the LangGraph loop, guards, tool dispatch
+├── chat-expert.md               # SSE → Reverb → Echo → React, end to end
+├── cohere-expert.md             # Command A+, Parse 5, Embed v4, Rerank 3.5
+├── aws-expert.md                # ECS/RDS/Terraform, cost, the power switch
+├── hatchet-expert.md            # 51 workflows, crons, durable retries
+├── postgres-gis-expert.md       # schemas, RLS, GIST, PgBouncer, RDS
+├── gis-expert.md                # CRS, datums, dip/azimuth, desurveying
+├── ingestion-gis-expert.md      # parsers, PDF/OCR, medallion, provenance
+├── laravel-expert.md            # Octane safety, Horizon, framework judgement
+├── react-expert.md              # React 19 + Inertia v3 depth
+└── stack-inventory-auditor.md   # every language/package/vendor, doc-vs-code drift
 ```
+
+## Which agent for which question
+
+| If the question is… | Ask |
+|---|---|
+| "Does this answer correctly, with real citations?" | `rag-expert` |
+| "Why did the agent choose that tool / skip that guard?" | `agentic-ai-expert` |
+| "The chat hangs / never finishes / doesn't stream" | `chat-expert` |
+| "What does this model actually return?" | `cohere-expert` |
+| "Will this deploy come up? What will it cost?" | `aws-expert` |
+| "Why didn't that cron run?" | `hatchet-expert` |
+| "Is this query/schema/RLS right?" | `postgres-gis-expert` |
+| "Is this in the right place, on the right datum?" | `gis-expert` |
+| "This file won't ingest / ingested wrong" | `ingestion-gis-expert` |
+| "Is this Octane-safe?" | `laravel-expert` |
+| "Why does this component re-render?" | `react-expert` |
+| "What's actually in this stack? Has a doc gone stale?" | `stack-inventory-auditor` |
+
+Boundaries worth remembering, because they overlap by design:
+
+- `rag-expert` judges **answer quality**; `agentic-ai-expert` owns the **control
+  flow** that produced it; `backend-fastapi` **writes** the Python.
+- `gis-expert` owns **spatial semantics**; `postgres-gis-expert` owns the
+  **database**; `ingestion-gis-expert` owns the **parsers**.
+- `aws-expert` owns **production**; `devops-engineer` still owns
+  **docker-compose and the Helm chart**.
+- `laravel-expert` / `react-expert` are for **judgement and review**;
+  `backend-laravel` / `frontend-engineer` are for **routine feature work**.
+- `stack-inventory-auditor` inventories and flags drift; it never decides
+  whether a technology choice is *right* — that's the relevant domain expert
+  (`aws-expert` for AWS choices, `cohere-expert` for model/host choices, etc).
+
+Every domain expert is written against *this* repository — file paths, line
+numbers, the decisions in the ADRs, and the traps that have already bitten.
+They are not generic framework primers. When the code moves, update them.
 
 ## Installation
 
@@ -89,8 +146,16 @@ This setup assumes Max 100 plan with shared usage. Model assignments are:
 | Model | Agents | Usage Frequency |
 |---|---|---|
 | **Opus** | `senior-reviewer` only | Rare — milestone gates only |
-| **Sonnet** | 7 specialized builders | Primary workhorse |
+| **Sonnet** | 7 layer builders + all 11 domain experts | Primary workhorse |
 | **Haiku** | `boilerplate-writer` | Aggressive for pattern-matching tasks |
+
+The domain experts are Sonnet on purpose. They are knowledge-dense by
+construction — the expertise is in the brief, not in the model tier — so
+running one costs no more than any other specialist. Four of them —
+`rag-expert`, `agentic-ai-expert`, `chat-expert`, and `stack-inventory-auditor`
+— are **read-only** (`Read, Grep, Glob, Bash`), because their job is judging
+or inventorying, and that verdict should not be entangled with editing the
+thing being judged. The other eight can write.
 
 ### When to invoke senior-reviewer
 

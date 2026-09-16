@@ -409,6 +409,47 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
+[tool.uv]
+# Added 2026-09-16 during the safe-scope (minor/patch-only, current-major-
+# only) lock refresh. Several deps above have no upper bound in their
+# constraint string (redis>=7.0, mypy>=1.15, sentence-transformers>=5.0,
+# anthropic>=0.100) and several more are transitive with no pin at all
+# (openai via langfuse/pydantic-ai-slim[openai], gunicorn/setuptools via
+# grpcio-tools+torch, websockets/xxhash via langgraph-sdk/langsmith, affine
+# via rasterio, logfire-api via pydantic-graph). Without this table,
+# `uv lock --upgrade` freely crossed a major version on each of them
+# (e.g. redis 7->8, mypy 1->2, openai 2->3, sentence-transformers 5->6,
+# anthropic 0->1) even though every one of those ranges was satisfied —
+# i.e. "safe" per the constraint string but not per semver. This table
+# narrows resolution only; it does not change any dependency's declared
+# version constraint above. It must stay in place for `uv.lock` to remain
+# reproducible from this file — removing it makes the next `uv sync` /
+# `uv lock --upgrade` silently re-cross these majors. Revisit each ceiling
+# deliberately (and bump it) when a genuine major upgrade is evaluated.
+constraint-dependencies = [
+    "anthropic<1.0",
+    "gunicorn<26.0",
+    "setuptools<82.0",
+    "websockets<16.0",
+    "xxhash<4.0",
+    "affine<3.0",
+    "logfire-api<5.0",
+    "redis<8.0",
+    "mypy<2.0",
+    "openai<3.0",
+    "sentence-transformers<6.0",
+    # torch: `>=2.13,<3.0` freely resolves 2.14.0 on plain PyPI, but the
+    # Dockerfile installs torch from a SEPARATE CPU-only index
+    # (download.pytorch.org/whl/cpu, see ARG TORCH_VERSION below) and this
+    # sandbox could not reach that host to confirm a matching 2.14.0 +cpu
+    # wheel is published there. Held at the already-verified 2.13.0 for this
+    # refresh rather than risk a Dockerfile ARG bump nobody could validate;
+    # bumping torch is a deliberate follow-up once wheel availability is
+    # confirmed (and ARG TORCH_VERSION updated in the same change, per
+    # scripts/check_fastapi_lock_export.py's enforced pairing).
+    "torch==2.13.0",
+]
+
 [tool.uv.sources]
 # editable = false (the default) deliberately: this Dockerfile's builder
 # stage copies only /usr/local/lib/python3.13/site-packages into the

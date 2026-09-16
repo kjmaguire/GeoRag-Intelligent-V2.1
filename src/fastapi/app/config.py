@@ -281,8 +281,12 @@ class Settings(BaseSettings):
     # place: an unset value must select a host that is actually running, not
     # one that only exists on paper. "bedrock" stays selectable for an
     # operator who does subscribe and deploy the endpoint — the adapter is
-    # unchanged and `_validate_chat_backend_credentials` below makes the
-    # missing model id a startup error rather than a first-query one.
+    # unchanged. This comment used to promise that
+    # `_validate_chat_backend_credentials` below "makes the missing model id a
+    # startup error rather than a first-query one". There is no such
+    # validator, here or anywhere: a blank COHERE_API_KEY starts a healthy
+    # FastAPI task that fails on the first query. aws-preflight.sh A-08 is
+    # what actually catches it, and only from a shell with AWS access.
     #
     # Bedrock has NOT left the system: embeddings (Cohere Embed v4) and
     # reranking (Cohere Rerank 3.5) still go there under EMBEDDING_BACKEND
@@ -956,9 +960,14 @@ class Settings(BaseSettings):
         if self.LLM_BACKEND == "azure":
             raise ValueError(
                 "LLM_BACKEND=azure selects Azure AI Foundry, retired "
-                "2026-09-08 (ADR-0022). Set LLM_BACKEND=bedrock and "
-                "BEDROCK_CHAT_MODEL_ID to the Bedrock Marketplace endpoint "
-                "ARN serving Cohere Command A+."
+                "2026-09-08 (ADR-0022). Set LLM_BACKEND=cohere, which is the "
+                "default and reaches Cohere Command A+ on Cohere's own API "
+                "with COHERE_API_KEY. This message used to say bedrock; "
+                "ADR-0023 moved chat off Bedrock one week later because "
+                "Command A+ is a SageMaker Marketplace package that bills "
+                "whether or not anything calls it, and iam.tf deliberately "
+                "dropped the bedrock:Converse grant — so following the old "
+                "advice now ends in AccessDenied."
             )
         stale = [
             name
@@ -1020,6 +1029,66 @@ class Settings(BaseSettings):
                 f"deadline, but it is not larger than {detail}. The outer "
                 f"deadline fires first and every query dies with a `timeout` "
                 f"frame. Raise TIMEOUT_GATHER_S or lower the inner budget."
+            )
+
+        # The same invariant one level further in, and the level that was
+        # actually inverted. TIMEOUT_QDRANT_S does not wrap a Qdrant query:
+        # tools.py::_run_search gathers the embedding call and the sparse
+        # encode before querying, and both have their own budgets of 30s.
+        # Six seconds wrapped sixty, so the outer one always won — silently,
+        # by returning an empty result rather than raising.
+        #
+        # These two live in their own modules and are read straight from the
+        # environment there, so they are read the same way here rather than
+        # being promoted to Settings fields. Promoting them would move the
+        # defaults away from the code that documents why each is 30.
+        #
+        # ONLY the budgets actually in the code path are checked. A budget
+        # that no call reaches cannot expire, and demanding it be consistent
+        # anyway is how a check starts failing environments it has nothing to
+        # say about: the E2E smoke job runs a stubbed local embedder and an
+        # in-process sparse encoder, so neither 30s value is reachable there,
+        # and an unconditional check would have blocked the app from booting
+        # over two numbers that were never going to be read.
+        import os as _os  # noqa: PLC0415
+
+        nested: dict[str, float] = {}
+
+        # The Bedrock budget bites only on the hosted path — which is
+        # production, and is where this was found.
+        # Read from the environment with the same default services/embedding.py
+        # uses -- it is not a Settings field, and an unset value selects the
+        # hosted backend rather than a model host that does not exist in
+        # production.
+        if (
+            _os.environ.get("EMBEDDING_BACKEND") or "bedrock"
+        ).strip().lower() == "bedrock":
+            nested["BEDROCK_EMBED_TIMEOUT_S"] = float(
+                _os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30") or "30"
+            )
+
+        # SPARSE_SERVICE_TIMEOUT_S is the HTTP client timeout for the sidecar
+        # hop. With SPARSE_SERVICE_URL unset the encode runs in-process and
+        # that value is never consulted.
+        if (_os.environ.get("SPARSE_SERVICE_URL") or "").strip():
+            nested["SPARSE_SERVICE_TIMEOUT_S"] = float(
+                _os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30"
+            )
+
+        too_big = {
+            name: value for name, value in nested.items()
+            if value >= self.TIMEOUT_QDRANT_S
+        }
+        if too_big:
+            detail = ", ".join(f"{n}={v}" for n, v in sorted(too_big.items()))
+            raise ValueError(
+                f"TIMEOUT_QDRANT_S={self.TIMEOUT_QDRANT_S} wraps the embedding "
+                f"call and the sparse encode as well as the query itself, but it "
+                f"is not larger than {detail}. The outer budget fires first and "
+                f"search_documents returns an EMPTY result with `(timeout)` in "
+                f"data_source — which downstream cannot be told apart from "
+                f"'nothing matched', so retrieval fails silently rather than "
+                f"loudly. Raise TIMEOUT_QDRANT_S or lower the inner budget."
             )
 
         return self
@@ -1094,8 +1163,33 @@ class Settings(BaseSettings):
     # (qdrant_conn.py) — a real TLS handshake plus the hybrid dense+sparse
     # query over that hop routinely exceeds 2s, so search_documents silently
     # timed out on every query post-cutover (empty results, not an error).
-    # 6.0s leaves headroom under TIMEOUT_GATHER_S=8.0 below.
-    TIMEOUT_QDRANT_S: float = 6.0
+    # 6.0s left headroom under a TIMEOUT_GATHER_S that was 8.0 at the time.
+    #
+    # 45.0 since 2026-09-16, because 6.0 had the same shape of bug the
+    # sentence above describes, one level further in. This budget does not
+    # wrap "the Qdrant query". tools.py::_run_search gathers the embedding
+    # call and the sparse encode FIRST and queries Qdrant with their results,
+    # and on AWS neither of those is local:
+    #
+    #   BEDROCK_EMBED_TIMEOUT_S   30  (services/embedding.py) — a Bedrock
+    #                                 round trip to Cohere Embed v4
+    #   SPARSE_SERVICE_TIMEOUT_S  30  (services/sparse_encoder.py) — an HTTP
+    #                                 call to the sparse sidecar, which runs
+    #                                 SPLADE++ on 0.5 vCPU with no GPU
+    #
+    # Two inner budgets of 30 inside an outer budget of 6. The outer one
+    # always wins, and it wins by returning an EMPTY DocumentSearchResult
+    # with `(timeout)` in data_source rather than by raising — which
+    # downstream is indistinguishable from "nothing matched". The nightly
+    # EventBridge shutdown makes every morning's first query a cold one, so
+    # this was not an edge case; it was the daily path.
+    #
+    # 45 is DERIVED, not measured: the two legs run concurrently under
+    # asyncio.gather, so the branch cannot finish before the slower of them
+    # (30), plus headroom for the hybrid query and RRF fusion. A timed cold
+    # start on real infrastructure should replace it. _validate_timeout_ordering
+    # below now fails startup if it ever drops back under the inner pair.
+    TIMEOUT_QDRANT_S: float = 45.0
     # Latency-fix follow-up — separate budget for the CPU-bound reranker.
     # Previously folded into TIMEOUT_QDRANT_S, which meant the bge-reranker
     # could blow the 2s budget and the wait_for would drop the entire

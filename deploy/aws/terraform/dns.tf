@@ -149,8 +149,14 @@ resource "aws_route53_record" "app" {
   }
 }
 
+# Only meaningful on the `edge = "alb"` path, which is the only path where
+# app_domain is set. On the default `edge = "cloudfront"` path app_domain is
+# "" by precondition, and interpolating it produced the bare string
+# "https://" — an output an operator would reasonably paste into a browser.
+# outputs.tf's `public_url` is the one that is correct in both modes; this
+# now says so rather than quietly returning a scheme with no host.
 output "app_url" {
-  description = "The URL the application is served on, once DNS propagates."
-  value       = "https://${var.app_domain}"
+  description = "The URL the application is served on, once DNS propagates. Empty unless edge = \"alb\" — use `public_url` for the mode-independent answer."
+  value       = var.app_domain == "" ? "" : "https://${var.app_domain}"
 }
 

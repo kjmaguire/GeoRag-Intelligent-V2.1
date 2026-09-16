@@ -217,7 +217,7 @@ class ReingestProject extends Command
 
         $this->info("Done. triggered={$triggered} failed={$failed}");
         $this->line('Workflows run asynchronously in Hatchet. Watch progress in the /ingestion-runs UI or:');
-        $this->line('  docker logs -f georag-hatchet-worker-ingestion');
+        $this->line('  docker logs -f georag-hatchet-worker');
 
         return $failed === 0 ? self::SUCCESS : self::FAILURE;
     }

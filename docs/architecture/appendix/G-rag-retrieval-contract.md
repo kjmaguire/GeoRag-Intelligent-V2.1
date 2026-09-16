@@ -28,7 +28,7 @@ passage UUID into the payload before embedding.
 - Batch size at index time: 32 (constrained by GPU mem with reranker
   co-resident).
 - Batch size at query time: 1 (single user query).
-- Device: GPU (`hatchet-worker-ai`) when present, CPU fallback otherwise.
+- Device: GPU (`hatchet-worker`, `WORKER_POOL=all`) when present, CPU fallback otherwise.
 
 Version pinning: `EMBED_MODEL_VERSION` env var = exact HF revision. Stored
 on every passage row as `silver.document_passages.embedding_model_version`

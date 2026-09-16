@@ -311,9 +311,9 @@ All `artisan migrate` in CD must pass `--database=pgsql_migrations`. **`cd.yml` 
 
 ### 6.3 Hatchet worker-pool selection + engine compose env
 
-Workers boot via `python -m app.hatchet_workflows.worker` with `WORKER_POOL` env (`ingestion | ai | all`):
-- `hatchet-worker-ingestion` → `WORKER_POOL=ingestion`.
-- `hatchet-worker-ai` → `WORKER_POOL=ai`.
+Workers boot via `python -m app.hatchet_workflows.worker` with `WORKER_POOL` env (`ingestion | ai | all`). There is a single `hatchet-worker` compose service; `WORKER_POOL` selects which workflows it registers and defaults to `all`:
+- `WORKER_POOL=ingestion` registers the ingestion-pool workflows only.
+- `WORKER_POOL=ai` registers the ai-pool workflows only.
 
 Pass `--list` at boot to print registered workflow names without engine connection (useful for CI smoke).
 

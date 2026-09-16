@@ -49,18 +49,21 @@ helm install georag charts/georag/ \
 | laravel-octane| Deployment × 2-6  | —     | HPA on CPU |
 | laravel-horizon | Deployment × 2  | —     | queue workers |
 | laravel-reverb  | Deployment × 1  | —     | WebSocket server |
-| hatchet       | StatefulSet × 1 + 2 worker pools | 5Gi | workflow engine |
+| hatchet       | StatefulSet × 1 + Deployment × 1 (worker) | 5Gi | workflow engine — one merged worker (`WORKER_POOL`, default `all`), matching docker-compose.yml and the AWS ECS Terraform |
 | martin        | Deployment × 2    | —     | MVT tile server |
 | pg-init Job   | post-install hook | —     | idempotent SQL migrations |
 | audit-verify  | CronJob nightly   | —     | hash-chain integrity verifier |
 | PDB × 5       | policy/v1         | —     | fastapi, laravel-octane, laravel-horizon, pgbouncer, martin — only while ≥2 replicas |
 | NetworkPolicy | opt-in            | —     | default-deny + one allow policy per component (`networkPolicy.enabled`) |
-| ServiceMonitor| opt-in            | —     | FastAPI `/metrics` for the Prometheus Operator (`serviceMonitor.enabled`) |
 
 ## Hardening (chart 0.2.0, 2026-09-06)
 
-Three templates ported from the retired `ops/charts` skeleton and rewritten
-for this chart's components. None of them changes a workload.
+Two templates ported from the retired `ops/charts` skeleton and rewritten
+for this chart's components. Neither changes a workload. (A third,
+ServiceMonitor, was ported alongside these but removed 2026-09-16: this
+repo has no Prometheus Operator CRDs and no scrape config anywhere —
+production and dev observability are CloudWatch/marker-log alarms and
+Laravel Pulse. See `docs/architecture/manual/12-observability.md`.)
 
 **PodDisruptionBudget** — on by default. One `minAvailable: 1` budget per
 horizontally scaled component, emitted only while that component runs at
@@ -81,19 +84,13 @@ on vanilla clusters you need a CNI that does (Calico, Cilium). Turn it on
 only after a first install works without it — a wrong ingress-controller
 selector blackholes the web app silently.
 
-**ServiceMonitor** — off by default (`serviceMonitor.enabled=true`).
-Requires the Prometheus Operator CRDs from `kube-prometheus-stack`;
-`helm install` fails without them. Scrapes FastAPI `/metrics` (which is
-unauthenticated inside the cluster). The Laravel target
-(`serviceMonitor.laravel.enabled`) stays off because its `/metrics`
-requires the `X-Service-Key` header and the operator has no per-endpoint
-header field.
-
 ## What's NOT included (§11.6 v2)
 
-Observability stack — install separately via upstream charts:
-- `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager; also
-  provides the CRDs the opt-in ServiceMonitor needs)
+Observability stack — none of this is templated by this chart or present
+anywhere else in the repo (no ServiceMonitor, no scrape config). Install
+separately via upstream charts if you want it:
+- `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager + the
+  Prometheus Operator CRDs, including ServiceMonitor)
 - `loki` + `promtail` (log aggregation)
 - `tempo` + `opentelemetry-collector` (distributed tracing)
 - `minio` (legacy object store — SeaweedFS is the §11-v2 default)

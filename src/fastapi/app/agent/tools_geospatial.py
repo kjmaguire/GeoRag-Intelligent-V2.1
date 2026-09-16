@@ -138,7 +138,6 @@ _BUFFER_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
 _TARGET_KEYWORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:collar|drillhole|borehole|drill\s+hole)s?\b", re.IGNORECASE), "silver.collars"),
     (re.compile(r"\b(?:smdi|mineral\s+occurrence|deposit\s+occurrence)s?\b", re.IGNORECASE), "public.smdi_deposits"),
-    (re.compile(r"\b(?:h3|density\s+grid|data\s+density)\b", re.IGNORECASE), "gold.h3_density"),
     (re.compile(r"\b(?:spatial\s+feature|gis\s+layer|polygon|outline)s?\b", re.IGNORECASE), "silver.spatial_features"),
 )
 

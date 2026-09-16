@@ -9,7 +9,8 @@
 #     of Secrets Manager. That is why Step 3 has the operator write the secret
 #     values by hand and why Terraform deliberately creates `georag/app` empty
 #     (deploy/aws/README.md) — committing state would undo that whole design.
-#   * tfvars. The six variables with no default are supplied here, and a file
+#   * tfvars. The variables with no default are supplied here (three as of
+#     2026-09-16 — it was six), and a file
 #     an operator fills in under time pressure is exactly where a password
 #     gets pasted by mistake.
 #

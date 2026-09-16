@@ -671,6 +671,16 @@ jobs:
       # unbootable are different questions; this asks the second one.
       - name: ECS secret keys match their operator documentation
         run: python scripts/check-ecs-secret-keys.py
+      # Postgres splits "has grants" from "may connect", and the second half
+      # fails as FATAL at container start rather than as a permissions error.
+      # On 2026-09-16 three roles the platform connects as -- georag_app,
+      # martin_readonly and hatchet -- were all NOLOGIN on a fresh account.
+      # Compose creates them differently and CI migrates as the owner, so
+      # every environment that runs today would have stayed green.
+      - name: Checker rejects the role shapes that shipped
+        run: bash scripts/tests/bootstrap_roles_test.sh
+      - name: Every role the platform connects as can log in
+        run: python scripts/check-bootstrap-roles.py
       # An alarm attached to the wrong log group sits at zero and reads as
       # healthy, which is indistinguishable from the failure not happening.
       # BEDROCK_ENDPOINT_NOT_INSERVICE — described in alerts.tf as Sev 1,
@@ -1093,6 +1103,16 @@ jobs:
       RERANKER_TORCH_THREADS: "4"
       TIMEOUT_GATHER_S: "25"
       TIMEOUT_RERANKER_S: "22"
+      # Same reasoning, third budget. TIMEOUT_QDRANT_S defaults to 45 because
+      # on AWS it wraps a Bedrock embedding call and an HTTP hop to a SPLADE++
+      # sidecar, each with its own 30s budget. Neither exists here: this job
+      # runs a stubbed local embedder (EMBEDDING_BACKEND=local) and an
+      # in-process sparse encoder (no SPARSE_SERVICE_URL), so the only thing
+      # left inside the budget is the Qdrant query itself. 45 would not fit
+      # inside the 25s gather above and the config validator rejects that
+      # pairing outright — correctly, because an inner budget larger than the
+      # deadline wrapping it can only ever fire second.
+      TIMEOUT_QDRANT_S: "20"
 
     steps:
       - uses: actions/checkout@v7

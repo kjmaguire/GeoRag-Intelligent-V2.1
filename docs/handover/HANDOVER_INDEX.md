@@ -201,7 +201,7 @@ Items flagged by code inspection or by drift between code and canonical spec. No
 ### 5.7 LLM + ML
 - **Repair-loop production posture** — 4 `REPAIR_LOOP_*_ENABLED` flags default false. Staging order: SHADOW → TERMINAL → LOWCOST → FULL.
 - **vLLM `--max-num-seqs` ceiling** on prod GPU.
-- **vLLM `VLLM_GPU_MEM_UTIL` cohort policy** — compose default 0.93, but ≤ 0.80 required when hatchet-worker-ai co-tenants the dev A4500 (compose comment + memory note). Production GPU sizing decision needed.
+- **vLLM `VLLM_GPU_MEM_UTIL` cohort policy** — compose default 0.93, but ≤ 0.80 required when the merged `hatchet-worker` (`WORKER_POOL=all`) co-tenants the dev A4500 (compose comment + memory note). Production GPU sizing decision needed.
 - **`P04P_DUAL_WRITE_ENABLED`** live state per environment.
 - **`ANTHROPIC_MODEL=claude-opus-4-8`** — internal capability-tier vs literal Anthropic id? (Model ID swept 4-7→4-8 and sonnet 4-5→4-6 in the 2026-06 version audit; this item is about the *naming convention*, not the concrete value.)
 - **Anthropic prompt-cache** prod TTL.

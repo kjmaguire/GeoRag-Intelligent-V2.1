@@ -87,7 +87,7 @@ bench_results/*.json
 
 # ADR-0008 — bge-small domain FT model files. 1.8 GB binary; lives at
 # src/fastapi/models/ (bind-mounted as /app/models/ in both fastapi and
-# hatchet-worker-ai containers). The canonical copy is persisted inside
+# hatchet-worker containers). The canonical copy is persisted inside
 # the container bind-mount; git is not the right place for model weights.
 src/fastapi/models/
 

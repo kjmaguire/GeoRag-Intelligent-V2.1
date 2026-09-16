@@ -88,7 +88,7 @@ check_file "charts/georag/templates/_helpers.tpl"
 # ----------------------------------------------------------------------------
 echo
 echo "-- §11.6 service templates --"
-for svc in postgresql pgbouncer qdrant redis seaweedfs fastapi laravel hatchet martin ingress jobs namespace secrets networkpolicy pdb servicemonitor; do
+for svc in postgresql pgbouncer qdrant redis seaweedfs fastapi laravel hatchet martin ingress jobs namespace secrets networkpolicy pdb; do
     check_file "charts/georag/templates/$svc.yaml"
 done
 

@@ -6,14 +6,19 @@ These three files are pre-rendered from the Helm chart at
 
 | File           | Source values            | Resources | Use case |
 |----------------|--------------------------|-----------|----------|
-| `k3s.yaml`     | `values-k3s.yaml`        | 33        | Single-node K3s install |
-| `vanilla.yaml` | `values-vanilla.yaml`    | 35        | EKS / GKE / kubeadm / OpenShift (with adjustments) |
-| `airgap.yaml`  | `values-airgap.yaml`     | 35        | Customer-side air-gap install (consumed by `airgap/install.sh`) |
+| `k3s.yaml`     | `values-k3s.yaml`        | 32        | Single-node K3s install |
+| `vanilla.yaml` | `values-vanilla.yaml`    | 34        | EKS / GKE / kubeadm / OpenShift (with adjustments) |
+| `airgap.yaml`  | `values-airgap.yaml`     | 34        | Customer-side air-gap install (consumed by `airgap/install.sh`) |
 
 Counts are with the chart defaults: PodDisruptionBudgets included,
-NetworkPolicy and ServiceMonitor off (both are opt-in values — see
-`charts/georag/values.yaml`, "Hardening"). Enable them through Helm rather
-than by hand-editing these files.
+NetworkPolicy off (an opt-in value — see `charts/georag/values.yaml`,
+"Hardening"). Enable it through Helm rather than by hand-editing these
+files. There is no ServiceMonitor here, on, or off — the chart has never
+deployed Prometheus Operator CRDs or scrape config of any kind; production
+and dev observability are CloudWatch/marker-log alarms and Laravel Pulse
+(see `docs/architecture/manual/12-observability.md`). Hatchet ships as one
+merged `hatchet-worker` Deployment (`WORKER_POOL=all`), not separate
+`-ai` / `-ingestion` pools.
 
 ## CRITICAL — Rotate secrets before applying
 

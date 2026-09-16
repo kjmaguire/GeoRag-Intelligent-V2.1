@@ -20,7 +20,7 @@ docker compose --profile gpu-llm up -d       # vLLM (when chatting)
 docker compose --profile dev-monitor up -d   # Grafana/Prometheus (optional)
 
 # One-time bootstrap:
-docker exec -u 0 georag-hatchet-worker-ingestion chown -R 33:33 /tmp/rapidocr_models
+docker exec -u 0 georag-hatchet-worker chown -R 33:33 /tmp/rapidocr_models
 docker exec georag-laravel-octane php artisan migrate --database=pgsql_migrations
 docker exec georag-laravel-octane php artisan db:seed --class=AcceptanceWorkspaceSeeder
 
@@ -28,7 +28,7 @@ docker exec georag-laravel-octane php artisan db:seed --class=AcceptanceWorkspac
 docker exec georag-hatchet /hatchet-admin --config /config token create \
     --name georag-worker --tenant-id $(docker exec georag-postgresql psql -U hatchet -d hatchet -tA -c "SELECT id FROM \"Tenant\" WHERE slug='default'")
 # paste the JWT into HATCHET_CLIENT_TOKEN in .env, then:
-docker compose restart hatchet-worker-ingestion hatchet-worker-ai fastapi
+docker compose restart hatchet-worker fastapi
 ```
 
 Verify:
@@ -111,7 +111,7 @@ DOCLING_OCR_ENABLED=false            # falls back to tesseract
 PADDLEOCR_USE_GPU=false
 ```
 Don't start the `gpu-llm` profile. Embedding throughput drops 50× — use
-`hatchet-worker-ai` with a high HATCHET_WORKER_SLOTS and accept the
+`hatchet-worker` with a high HATCHET_WORKER_SLOTS and accept the
 hit, or move embeddings off-line.
 
 ## 6. `.env` matrix (canonical envs by container)
@@ -127,8 +127,8 @@ hit, or move embeddings off-line.
 | `QDRANT_API_KEY` | qdrant + clients (prod) | ✅ | random 32-byte |
 | `FASTAPI_SERVICE_KEY` | laravel + fastapi + hatchet + dagster | ✅ | random 64-byte |
 | `FLOW_JWT_SECRET` | fastapi + hatchet-worker | ✅ compose + AWS (`_extra_secret_ref`, these two services only) | random 64-byte |
-| `EXTERNAL_NOTIFICATION_HMAC_SECRET` | hatchet-worker-ai + senders | ✅ | random 64-byte |
-| `AUDIT_ENCRYPTION_KEY` | fastapi + hatchet-worker-ai | ✅ | random 32-byte (rotation is hard — see [Appendix C §9](C-security-posture.md#9-secret-rotation)) |
+| `EXTERNAL_NOTIFICATION_HMAC_SECRET` | hatchet-worker + senders | ✅ | random 64-byte |
+| `AUDIT_ENCRYPTION_KEY` | fastapi + hatchet-worker | ✅ | random 32-byte (rotation is hard — see [Appendix C §9](C-security-posture.md#9-secret-rotation)) |
 | `HATCHET_CLIENT_TOKEN` | hatchet-lite + workers + fastapi | ✅ | from `hatchet-admin token create` |
 | `HATCHET_DB_PASSWORD` | postgresql init + hatchet-lite | ✅ | random |
 | `KESTRA_PG_PASSWORD` | postgresql init + kestra + laravel-octane | ✅ | random |
@@ -228,8 +228,7 @@ Named volumes (see `volumes:` in [docker-compose.yml](../../../docker-compose.ym
 | Bottleneck | First lever | Then |
 |---|---|---|
 | Chat p95 | Increase `UVICORN_WORKERS` on fastapi | Add a second `fastapi` container behind a load balancer |
-| Ingest throughput | Increase `HATCHET_WORKER_SLOTS` | Add `hatchet-worker-ingestion` replicas |
-| Embedding throughput | Add `hatchet-worker-ai` replicas (each grabs a GPU slice) | Promote bge-small to a dedicated GPU pool |
+| Ingest / embedding throughput | Increase `HATCHET_WORKER_SLOTS` on the single `hatchet-worker` (`WORKER_POOL=all`; Helm: `hatchet.worker.pool`) | Add `hatchet-worker` replicas (each grabs a GPU slice); promote bge-small to a dedicated GPU pool |
 | Query latency on Postgres | Tune `work_mem` / `shared_buffers` | Add a read replica (Hot Standby) |
 | Tile latency | Increase Martin `pool_size` / `cache_size_mb` | Add a Martin replica behind a CDN |
 | Vector latency | Increase Qdrant `ef` for the hot collection | Add a Qdrant replica |

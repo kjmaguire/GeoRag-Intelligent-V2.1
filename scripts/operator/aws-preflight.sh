@@ -20,7 +20,8 @@
 #   A-08  a placeholder credential      — the task STARTS, then every query and
 #                                         every scanned page fails at runtime
 #   A-10  a missing secret key          — the task never starts; not an app error
-#   A-11  no probe report               — every model wire shape is assumed
+#   A-11  a probe report that verified   — every model wire shape is assumed,
+#         nothing, or none at all           and the gate reads green anyway
 #   A-13  state kept locally            — lose the file, orphan every resource
 #
 # Checks that need AWS report `warn`, not `fail`, when the CLI or credentials
@@ -99,21 +100,53 @@ if [ -z "$NO_DEFAULT" ]; then
   check "A-01" "Terraform variables without defaults are supplied" warn \
     "could not parse ${TF_DIR}/*.tf — check ${PYTHON} is available"
 else
+  # Terraform AUTO-LOADS only terraform.tfvars, terraform.tfvars.json and
+  # *.auto.tfvars{,.json}. Everything else needs -var-file on the command
+  # line, and this check used to glob *.tfvars without that distinction --
+  # so a value sitting in production.tfvars (which is what README and
+  # .gitignore both name) satisfied A-01 while a bare `terraform apply`
+  # went right on prompting for it. Reported as supplied, because it is,
+  # but the detail line now names the flag it needs.
   missing=""
   found=""
+  needs_flag=""
   for v in $NO_DEFAULT; do
     env_name="TF_VAR_${v}"
     if [ -n "${!env_name:-}" ]; then
       found="${found} ${v}(env)"
-    elif ls "$TF_DIR"/*.tfvars "$TF_DIR"/*.tfvars.json >/dev/null 2>&1 \
-      && grep -rqE "^[[:space:]]*\"?${v}\"?[[:space:]]*[=:]" "$TF_DIR"/*.tfvars "$TF_DIR"/*.tfvars.json 2>/dev/null; then
-      found="${found} ${v}(tfvars)"
-    else
-      missing="${missing} ${v}"
+      continue
     fi
+
+    hit_file=""
+    for f in "$TF_DIR"/*.tfvars "$TF_DIR"/*.tfvars.json; do
+      [ -f "$f" ] || continue
+      case "$f" in *.tfvars.example|*.tfvars.json.example) continue ;; esac
+      if grep -qE "^[[:space:]]*\"?${v}\"?[[:space:]]*[=:]" "$f" 2>/dev/null; then
+        hit_file="$f"
+        break
+      fi
+    done
+
+    if [ -z "$hit_file" ]; then
+      missing="${missing} ${v}"
+      continue
+    fi
+
+    base="$(basename "$hit_file")"
+    case "$base" in
+      terraform.tfvars|terraform.tfvars.json|*.auto.tfvars|*.auto.tfvars.json)
+        found="${found} ${v}(${base})" ;;
+      *)
+        found="${found} ${v}(${base})"
+        case "$needs_flag" in *"$base"*) ;; *) needs_flag="${needs_flag} ${base}" ;; esac ;;
+    esac
   done
   if [ -z "$missing" ]; then
-    check "A-01" "all no-default Terraform variables supplied" ok "${found# }"
+    detail="${found# }"
+    if [ -n "$needs_flag" ]; then
+      detail="${detail} — NOT auto-loaded:${needs_flag}. Terraform reads only terraform.tfvars and *.auto.tfvars by itself, so pass -var-file=<file> on plan AND apply, or rename it *.auto.tfvars"
+    fi
+    check "A-01" "all no-default Terraform variables supplied" ok "$detail"
   else
     check "A-01" "all no-default Terraform variables supplied" fail \
       "unset:${missing} — apply will prompt or fail; see ${README}"
@@ -428,24 +461,69 @@ fi
 # 5. A single report satisfying this check would leave half the tier assumed
 # while the gate read green — which is the shape of defect this whole file
 # exists for.
+# A PRESENT REPORT IS NOT A PASSING ONE, and until 2026-09-16 this check
+# could not tell the difference: it globbed for a filename and counted it.
+#
+# Both probes degrade rather than raise, so a run where every call 401'd
+# still writes a well-formed JSON file — ops/validation/_probe_verdict.py
+# opens by saying exactly that, and the probes print "DO NOT commit this
+# report as evidence" on the way out. Nothing enforced it. An operator who
+# committed the file anyway, or who never read stderr, got a green A-11
+# over a report that verified nothing.
+#
+# That is the same absence-as-success shape one level up: _probe_verdict.py
+# was extracted to stop a section of 403s counting as an observation, and
+# this gate went on counting a report of nothing but 403s as evidence. The
+# test fixture proved it — scripts/tests/aws_preflight_test.sh seeded the
+# reports with `{}` and the baseline case asserted A-11 PASSED on them.
+#
+# So read the verdict the probe already computes. `verified_anything` is
+# false when no section produced an observation; a report with no verdict
+# block at all predates 2026-09-15 and cannot answer the question either.
 probe_missing=""
+probe_worthless=""
 probe_found=""
 
 for probe in bedrock cohere; do
-  count=$(ls "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$count" != "0" ]; then
-    newest=$(ls -t "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | head -1)
+  newest=$(ls -t "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | head -1)
+  if [ -z "$newest" ]; then
+    probe_missing="${probe_missing}${probe} "
+    continue
+  fi
+  # Prints "ok", or a short reason the report is not evidence.
+  reason=$("$PYTHON" - "$newest" <<'PY' 2>/dev/null || echo "unreadable"
+import json, sys
+try:
+    report = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("not valid JSON"); raise SystemExit(0)
+if not isinstance(report, dict):
+    print("not a probe report"); raise SystemExit(0)
+verdict = report.get("verdict")
+if not isinstance(verdict, dict):
+    print("no verdict block (probe older than 2026-09-15)"); raise SystemExit(0)
+if not verdict.get("verified_anything"):
+    summary = str(verdict.get("summary") or "verified nothing").rstrip(".")
+    print(summary[:120])
+    raise SystemExit(0)
+print("ok")
+PY
+)
+  if [ "$reason" = "ok" ]; then
     probe_found="${probe_found}${newest} "
   else
-    probe_missing="${probe_missing}${probe} "
+    probe_worthless="${probe_worthless}${probe}(${reason}) "
   fi
 done
 
-if [ -z "$probe_missing" ]; then
-  check "A-11" "wire-contract probe reports present (bedrock + cohere)" ok "$probe_found"
+if [ -n "$probe_missing" ] || [ -n "$probe_worthless" ]; then
+  detail=""
+  [ -n "$probe_missing" ] && detail="MISSING:${probe_missing}"
+  [ -n "$probe_worthless" ] && detail="${detail}VERIFIED NOTHING:${probe_worthless}"
+  check "A-11" "wire-contract probe reports verify something (bedrock + cohere)" fail \
+    "${detail}— run ops/validation/bedrock_probe.sh and ops/validation/cohere_probe.sh. A report on file is not evidence; until both VERIFY, that half of the model tier is ASSUMED"
 else
-  check "A-11" "wire-contract probe reports present (bedrock + cohere)" fail \
-    "MISSING:${probe_missing}— run ops/validation/bedrock_probe.sh and ops/validation/cohere_probe.sh. Until both land, that half of the model tier is ASSUMED"
+  check "A-11" "wire-contract probe reports verify something (bedrock + cohere)" ok "$probe_found"
 fi
 
 # ---------------------------------------------------------------------------

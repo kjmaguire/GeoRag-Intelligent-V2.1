@@ -981,7 +981,12 @@ services:
       # Cross-database timeouts (Section 06e)
       TIMEOUT_POSTGIS_S: ${TIMEOUT_POSTGIS_S:-5}
       TIMEOUT_NEO4J_S: ${TIMEOUT_NEO4J_S:-3}
-      TIMEOUT_QDRANT_S: ${TIMEOUT_QDRANT_S:-2}
+      # 2 was tuned when this wrapped a same-host Qdrant query and nothing
+      # else. It wraps the dense embed and the sparse encode too, and the
+      # sparse one here is an HTTP hop to the sidecar whose own client
+      # timeout is 30s (services/sparse_encoder.py) -- thirty inside two.
+      # 45 matches the code default; TIMEOUT_GATHER_S is 180, so it fits.
+      TIMEOUT_QDRANT_S: ${TIMEOUT_QDRANT_S:-45}
       TIMEOUT_REDIS_MS: ${TIMEOUT_REDIS_MS:-500}
       TIMEOUT_GATHER_S: ${TIMEOUT_GATHER_S:-180}
       RETRIEVAL_QUALITY_THRESHOLD: ${RETRIEVAL_QUALITY_THRESHOLD:-0.5}
@@ -1124,7 +1129,7 @@ services:
           # operations the embedding model + reranker run on CPU. Previously
           # shared with the local vllm container (removed 2026-07-30, Azure
           # AI Foundry cutover) — the GPU is now free for training whenever
-          # hatchet-worker-ai's embed/rerank load allows.
+          # hatchet-worker's embed/rerank load allows.
           devices:
             - driver: nvidia
               count: 1
@@ -1345,7 +1350,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # QDRANT v1.17 — vector database
-  # HNSW m=16, ef_construct=200 tuned for geological embedding retrieval.
+  # HNSW m=32, ef_construct=256 tuned for geological embedding retrieval.
   # Payload indices on filter fields (project_id, document_type, etc.) are
   # configured at collection creation time by the FastAPI service on startup.
   # ---------------------------------------------------------------------------

@@ -85,9 +85,9 @@ doc names a `schema.table` no migration creates.
 ## Technology snapshot
 
 - **Frontend**: React 19 + Inertia.js v3, shadcn/ui + Tailwind v4, MapLibre GL 5, Plotly (`react-plotly.js`). React Flow (`@xyflow/react`) was removed 2026-08-28; no graph view exists.
-- **Application**: Laravel 13.25 on Octane (Swoole), Horizon (two supervisors: `default` + `llm`), Reverb, Sanctum, Pulse (local-only — no `viewPulse` gate). Three Horizon jobs total; everything else is Hatchet.
+- **Application**: Laravel 13.32 on Octane (Swoole), Horizon (two supervisors: `default` + `llm`), Reverb, Sanctum, Pulse (local-only — no `viewPulse` gate). Three Horizon jobs total; everything else is Hatchet.
 - **Domain Service**: FastAPI 0.141 (floor 0.136) on Python 3.13, LangGraph 1.x, Pydantic AI 2.x (vestigial), asyncpg, redis.asyncio, async Qdrant client. Streaming is SSE (`status/bind/delta/citation/completed/failed`) from `POST /internal/queries`; Laravel re-broadcasts frames as `QueryStreamEvent` on Reverb.
-- **Data Stores**: PostgreSQL 18 + PostGIS 3.6 (`postgis/postgis:18-3.6-alpine`, no patch pin; RDS for PostgreSQL 18 in production) behind PgBouncer edoburu 1.25.1 (transaction mode), Qdrant v1.17.1 (`georag_chunks`, 1024-dim dense + SPLADE++ sparse), Redis 8.6.4 (8.10 in production, on EFS with AOF on since ADR-0022), SeaweedFS 4.35 in compose / AWS S3 in production, both through `STORAGE_BACKEND=s3_compatible` — the only value left; `azure_blob` is a loud error since ADR-0022 (ADR-0001 covers the compose half; ADR-0022 supersedes ADR-0020), Martin 1.11.0 for MVT tiles. Gold is plain tables written by `promote_silver_to_gold`; the only materialized view is `silver.mv_collar_summary`. Eight core silver tables (`projects`, `collars`, `surveys`, `lithology_logs`, `samples`, `reports`, `spatial_features`, `well_log_curves`) have no versioned CREATE.
+- **Data Stores**: PostgreSQL 18 + PostGIS 3.6 (`postgis/postgis:18-3.6-alpine`, no patch pin; RDS for PostgreSQL 18 in production) behind PgBouncer edoburu 1.25.1 (transaction mode), Qdrant v1.17.1 (`georag_chunks`, 1024-dim dense + SPLADE++ sparse), Redis 8.6.4 (8.10 in production, on EFS with AOF on since ADR-0022), SeaweedFS 4.35 in compose / AWS S3 in production, both through `STORAGE_BACKEND=s3_compatible` — the only value left; `azure_blob` is a loud error since ADR-0022 (ADR-0001 covers the compose half; ADR-0022 supersedes ADR-0020), Martin 1.11.0 for MVT tiles. Gold is plain tables written by `promote_silver_to_gold`; the only materialized view is `silver.mv_collar_summary`. PgBouncer is the compose topology only — **the AWS deployment has no pooler**, so transaction-mode constraints do not apply in production and the RLS session GUC survives. A line here used to say eight core silver tables (`projects`, `collars`, `surveys`, `lithology_logs`, `samples`, `reports`, `spatial_features`, `well_log_curves`) have no versioned CREATE; that was checked on 2026-09-16 and is false — all eight are created by `database/migrations/2026_04_09_1800*` and `2026_04_10_1201*`, and a fresh database gets them from `php artisan migrate` alone.
 - **Workflow**: one merged `hatchet-worker` (`WORKER_POOL=all`, 51 registered workflows, inventoried in §07b) on `hatchet-lite` with a Postgres-backed queue. No `hatchet-worker-ingestion` / `hatchet-worker-ai` services exist. Per-store `backup_*` workflows were deleted 2026-08-23; production relies on RDS PITR (35 days) for Postgres and S3 versioning for object storage.
 - **Ingestion**: Hatchet workflows `ingest_pdf` / `ingest_tabular` / `ingest_spatial` / `ingest_well_logs` / `tiff_normalize` / `ingest_zip_archive`, dispatched through `POST /internal/v1/shadow/{workflow}/trigger`. Parsers live in the local `georag_geoparsers` package (Polars, GDAL via pyogrio/GeoPandas/rasterio, pyproj, lasio, openpyxl/xlrd, ezdxf, mdbtools, rapidfuzz — no DuckDB, segyio or obspy). In-process PDF stack (§04p — replaces RAGFlow per ADR-0002; scanned-page OCR is Cohere Parse 5 (`parse-v5.0`), on **Cohere's own API** since ADR-0023 — `POST {COHERE_BASE_URL}/v2/parse`, keyed by `COHERE_API_KEY` (ADR-0019 chose the model, 2026-09-02; ADR-0022 briefly put it on a Bedrock Marketplace endpoint), Tesseract 5.5.2 from source as last resort — Azure Document Intelligence, PaddleOCR, docling and PyMuPDF are gone). Upload cap is 512 MB (`GEORAG_MAX_UPLOAD_BYTES`). Dagster was retired 2026-07-28 and its tree deleted 2026-08-28.
 - **Deployment**: `docker-compose.yml` (16 services behind `dev-data` / `dev-full` profiles) for dev; **Amazon ECS Fargate** for production since 2026-09-08 (ADR-0022): ten services, no GPU, nightly stop/start via EventBridge Scheduler, alerts to one SNS email receiver. All of it is Terraform in `deploy/aws/terraform/` — unlike Azure, which had no IaC at all. Caddy, Kestra, Prometheus, Grafana, Loki and Tempo are defined nowhere in the repo. Helm: `charts/georag/` only (the stale `ops/charts/georag/` skeleton, which still provisioned Neo4j, was deleted 2026-09-06).
@@ -97,20 +97,49 @@ doc names a `schema.table` no migration creates.
 - **No Marketplace endpoints, deliberately** — they bill while they exist, with no idle state, which is why ADR-0023 moved chat and OCR to Cohere's API. The nightly sweeps now touch only ECS and RDS; `BEDROCK_ENDPOINT_NOT_INSERVICE` and its Sev 1 alarm are gone. Embed v4 and Rerank 3.5 stay on Bedrock and are serverless — nothing accrues at rest. `aws-preflight.sh` A-09 fails if any SageMaker endpoint is found running.
 - **The egress gate covers non-contracted providers, not every external host.** `app/agent/egress_gate.py` is default-deny on `allow_external_llm` and only `_call_anthropic_llm` calls it. **Kyle decided on 2026-09-15 (ADR-0023) that Cohere is inside the contracted set**, like Bedrock — same vendor, same commercial agreement, reached directly instead of through AWS's resale. So workspace text and page images DO leave AWS on the normal path, ungated, and that rests on no client contract requiring data residency. Do not wire the gate onto `llm_cohere.py` on general principle; if residency ever becomes a requirement, that is the mechanism, and it needs a migration defaulting the flag to true or every query refuses.
 - **SPLADE++ has no hosted equivalent anywhere** — not on Bedrock, not on Cohere's own API. It runs as the `sparse` service in production, which is new: without it the sparse leg of hybrid retrieval does not exist.
+- **Also present, worth knowing about (found by the 2026-09-16 stack audit, not previously documented here):**
+  `livewire/livewire` v4 is a real installed composer dependency, transitive via `laravel/pulse`'s own dashboard — nothing in `resources/js` uses it, the frontend is still React + Inertia only. `kubernetes/manifests/` holds three raw K8s YAML files (`airgap.yaml`, `k3s.yaml`, `vanilla.yaml`, regenerated by `scripts/regenerate_k8s_manifests.sh`) as a second, lower-level on-prem deployment artifact alongside `charts/georag/` — the Helm chart is still the primary on-prem path. `scripts/operator/bootstrap-secrets.sh` + `preflight.sh` carry SOPS 3.9.4 + age encryption for the pre-ADR-0022 SSH-host/on-prem deploy model; it is not the AWS cutover gate (`aws-preflight.sh` is) and is kept because `charts/georag/` still targets on-prem/k3s. `tests/load_k6/*.k6.js` are Grafana k6 load-test scripts — the only plain `.js` in an otherwise all-TypeScript frontend. `src/fastapi/app/services/public_geo/registry.py` polls live provincial/federal government ArcGIS + WFS open-data endpoints (BC, SK, plus AB/MB/Federal license references) weekly via the `public_geo_sync` Hatchet cron — a real external vendor surface, not covered by the egress gate (government open data, not an LLM call). A `.codex/` directory (OpenAI Codex CLI config, mirroring several `openspec-*` skills) coexists with `.claude/`; it is inert to Claude Code and left as-is.
 
 ## Agent delegation
 
 This project has specialized Claude Code subagents in `.claude/agents/`. Use
-them for focused work — each has its own context window and domain expertise:
+them for focused work — each has its own context window and domain expertise.
+There are two families and the split matters: **layer agents write the code,
+domain experts judge whether it is right.** When both apply, the layer agent
+writes and the expert reviews.
+
+**Layer agents**
 
 - **`senior-reviewer`** (Opus) — architectural review at milestone gates ONLY. Read-only. Sparingly.
-- **`backend-laravel`** (Sonnet) — all Laravel work
-- **`backend-fastapi`** (Sonnet) — all FastAPI + Pydantic AI work
+- **`backend-laravel`** (Sonnet) — routine Laravel feature work
+- **`backend-fastapi`** (Sonnet) — routine FastAPI work
 - **`data-engineer`** (Sonnet) — ingestion pipeline, PostGIS schemas, format parsers
-- **`frontend-engineer`** (Sonnet) — React + Inertia + shadcn/ui + visualizations
-- **`devops-engineer`** (Sonnet) — Docker Compose, deployment, database tuning
-- **`test-engineer`** (Sonnet) — all test writing, golden query sets, snapshot tests
+- **`frontend-engineer`** (Sonnet) — routine React components
+- **`devops-engineer`** (Sonnet) — docker-compose, the Helm chart, database tuning
+- **`test-engineer`** (Sonnet) — all test writing, golden query sets
 - **`boilerplate-writer`** (Haiku) — migrations, scaffolding, docstrings, simple docs
+
+**Domain experts** (all Sonnet — the expertise is in the brief, not the tier)
+
+- **`rag-expert`** — retrieval quality, citations, the six hallucination layers, refusals. *Read-only.*
+- **`agentic-ai-expert`** — the LangGraph loop, guard chain, tool dispatch, budgets. *Read-only.*
+- **`chat-expert`** — SSE → Reverb → Echo → React, every terminal path. *Read-only.*
+- **`cohere-expert`** — Command A+, Parse 5, Embed v4, Rerank 3.5, and which host serves which
+- **`aws-expert`** — ECS/RDS/Terraform, the power switch, the nightly sweeps, cost
+- **`hatchet-expert`** — the 51 workflows, `on_crons`, durable retries, idempotency
+- **`postgres-gis-expert`** — schemas, RLS and tenant isolation, GIST, PgBouncer, RDS
+- **`gis-expert`** — CRS and datums, dip/azimuth, desurveying, Martin/MapLibre
+- **`ingestion-gis-expert`** — the parsers, the PDF/OCR stack, medallion, provenance
+- **`laravel-expert`** — Octane safety, Horizon, framework judgement calls
+- **`react-expert`** — React 19 + Inertia v3 depth, streaming render performance
+- **`stack-inventory-auditor`** — every language, package, base image,
+  infrastructure resource, and external vendor call actually present in the
+  repo, checked against what CLAUDE.md/the architecture doc/manual claim.
+  *Read-only.* Inventories and flags drift; does not judge whether a
+  technology choice is right.
+
+`.claude/agents/README.md` has the full "which agent for which question" table
+and the boundary rules where two agents overlap.
 
 Claude Code will auto-delegate based on agent descriptions. You can also
 invoke explicitly with `@agent-name` in a prompt.
@@ -190,7 +219,7 @@ This application is a Laravel application and its main Laravel ecosystems packag
 - laravel/sanctum (SANCTUM) - v4
 - livewire/livewire (LIVEWIRE) - v4
 - laravel/boost (BOOST) - v2
-- laravel/mcp (MCP) - v0
+- laravel/mcp (MCP) - v1
 - laravel/pail (PAIL) - v1
 - laravel/pint (PINT) - v1
 - phpunit/phpunit (PHPUNIT) - v12

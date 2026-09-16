@@ -1346,6 +1346,31 @@ def guard_tolerances(query_class: str | None = None) -> dict[str, int]:
         ),
     }
 
+    # NOTE BEFORE CHANGING THIS, and before "fixing" the fact that
+    # validate_node does not pass query_class at all.
+    #
+    # The combination is `max`, so an override can only ever LOOSEN. Against
+    # the shipped globals (GUARD_TOLERANCE_* = 2/2/2, config.py) the table
+    # above resolves to:
+    #
+    #   None           numeric 2  entity 2  completeness 2
+    #   factual        numeric 2  entity 2  completeness 2   <- identical
+    #   computational  numeric 3  entity 2  completeness 2   <- looser
+    #   exploratory    numeric 2  entity 2  completeness 3   <- looser
+    #   comparison     numeric 2  entity 2  completeness 2   <- identical
+    #   trend          numeric 2  entity 2  completeness 2   <- identical
+    #
+    # Every 0 in the table is dominated. So threading query_class through
+    # from validate_node -- which reads like an obvious one-line omission,
+    # and was reported to me as "restores the intended factual strictness"
+    # -- would tighten nothing and loosen two guards. CLAUDE.md rule 5 is
+    # explicit that weakening the four is not welcome, and this is the
+    # shape of change that does it while looking like the opposite.
+    #
+    # The table's intent (factual tolerates ZERO uncited sentences) needs
+    # `override` to win outright rather than `max`, which is a real change
+    # to refusal behaviour and wants a corpus to measure against before it
+    # ships. Left as-is deliberately; not left as-is silently.
     override = _PER_CLASS_TOLERANCE_OVERRIDES.get(query_class or "")
     if override is not None:
         tolerances = {k: max(tolerances[k], override[k]) for k in tolerances}
