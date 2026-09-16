@@ -38,7 +38,8 @@ experts** own a body of knowledge and are the ones to ask whether something is
 ├── gis-expert.md                # CRS, datums, dip/azimuth, desurveying
 ├── ingestion-gis-expert.md      # parsers, PDF/OCR, medallion, provenance
 ├── laravel-expert.md            # Octane safety, Horizon, framework judgement
-└── react-expert.md              # React 19 + Inertia v3 depth
+├── react-expert.md              # React 19 + Inertia v3 depth
+└── stack-inventory-auditor.md   # every language/package/vendor, doc-vs-code drift
 ```
 
 ## Which agent for which question
@@ -56,6 +57,7 @@ experts** own a body of knowledge and are the ones to ask whether something is
 | "This file won't ingest / ingested wrong" | `ingestion-gis-expert` |
 | "Is this Octane-safe?" | `laravel-expert` |
 | "Why does this component re-render?" | `react-expert` |
+| "What's actually in this stack? Has a doc gone stale?" | `stack-inventory-auditor` |
 
 Boundaries worth remembering, because they overlap by design:
 
@@ -67,6 +69,9 @@ Boundaries worth remembering, because they overlap by design:
   **docker-compose and the Helm chart**.
 - `laravel-expert` / `react-expert` are for **judgement and review**;
   `backend-laravel` / `frontend-engineer` are for **routine feature work**.
+- `stack-inventory-auditor` inventories and flags drift; it never decides
+  whether a technology choice is *right* — that's the relevant domain expert
+  (`aws-expert` for AWS choices, `cohere-expert` for model/host choices, etc).
 
 Every domain expert is written against *this* repository — file paths, line
 numbers, the decisions in the ADRs, and the traps that have already bitten.
@@ -146,10 +151,10 @@ This setup assumes Max 100 plan with shared usage. Model assignments are:
 
 The domain experts are Sonnet on purpose. They are knowledge-dense by
 construction — the expertise is in the brief, not in the model tier — so
-running one costs no more than any other specialist. Three of them —
-`rag-expert`, `agentic-ai-expert` and `chat-expert` — are **read-only**
-(`Read, Grep, Glob, Bash`), because their job is judging whether the system
-answers correctly and that verdict should not be entangled with editing the
+running one costs no more than any other specialist. Four of them —
+`rag-expert`, `agentic-ai-expert`, `chat-expert`, and `stack-inventory-auditor`
+— are **read-only** (`Read, Grep, Glob, Bash`), because their job is judging
+or inventorying, and that verdict should not be entangled with editing the
 thing being judged. The other eight can write.
 
 ### When to invoke senior-reviewer

@@ -130,6 +130,11 @@ writes and the expert reviews.
 - **`ingestion-gis-expert`** — the parsers, the PDF/OCR stack, medallion, provenance
 - **`laravel-expert`** — Octane safety, Horizon, framework judgement calls
 - **`react-expert`** — React 19 + Inertia v3 depth, streaming render performance
+- **`stack-inventory-auditor`** — every language, package, base image,
+  infrastructure resource, and external vendor call actually present in the
+  repo, checked against what CLAUDE.md/the architecture doc/manual claim.
+  *Read-only.* Inventories and flags drift; does not judge whether a
+  technology choice is right.
 
 `.claude/agents/README.md` has the full "which agent for which question" table
 and the boundary rules where two agents overlap.
