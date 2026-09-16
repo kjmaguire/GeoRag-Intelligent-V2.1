@@ -379,8 +379,16 @@ terraform plan -var-file=production.tfvars
 ```
 
 `production.tfvars` is not in the repository. The variables with no default
-are the four a deployment must decide: `app_domain`, `reverb_app_key`,
-`alert_email` and `image_tag`.
+are the three a deployment must decide: `reverb_app_key`, `alert_email` and
+`image_tag`.
+
+`app_domain` used to be a fourth. It now defaults to `""`, and on the default
+`edge = "cloudfront"` path `edge.tf` carries a precondition that it **must**
+stay empty — so an operator following the older sentence and setting it got a
+plan-time failure. Loud rather than silent, but a trip hazard on deploy night.
+`scripts/operator/aws-preflight.sh` derives this list from the `.tf` files
+rather than from this paragraph, so A-01 is the authority if the two ever
+disagree again.
 
 `image_tag` is new on 2026-09-16 and replaces a hardcoded `:latest` that could
 never have worked. Every ECR repository here sets
@@ -719,20 +727,67 @@ never starts rather than an application error. Write every go-live key above
 before the first apply.
 
 `HATCHET_CLIENT_TOKEN` is the awkward one, because the Hatchet engine mints
-it and the engine is not up yet. Write a placeholder for it with the rest, so
-the tasks that reference it can start at all, then replace it:
+it and the engine is not up yet. So it gets a placeholder — but **not any
+placeholder**.
+
+`hatchet_sdk`'s `ClientConfig` rejects a token that does not start `ey` and
+does not decode as three dot-separated JWT parts carrying `sub`, `server_url`
+and `grpc_broadcast_address`. `Hatchet()` is constructed at **module import**
+in `app/hatchet_workflows/__init__.py`, and `app/routers/shadow_trigger.py`
+imports that package — so this is on the FastAPI boot path too, not only the
+worker's. A literal string like `set-these-out-of-band` does not "let the
+tasks start at all"; it crash-loops **both** Python services with a
+`ValidationError` before either serves a request.
+
+Use a syntactically valid unsigned JWT. This exact value is already in
+`.github/workflows/ci.yml` and is not a secret — it carries no signature and
+no real tenant, and the engine will reject it the moment it is used. It exists
+only to get past the SDK's constructor:
+
+```
+eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
+```
+
+**Minting the real one.** The obvious command is `aws ecs execute-command`,
+and it does not work here: ECS Exec is not enabled on this cluster — there is
+no `enable_execute_command` on any service and no `ssmmessages` grant in
+`iam.tf` — and `rotation.tf` records that as a deliberate posture rather than
+an oversight. The engine also has no load balancer and no exposed UI port, so
+there is no second route in.
+
+Use a one-off `run-task` with a command override instead, the same shape the
+`migrate` task already uses. It borrows no standing capability: the task runs,
+prints, and exits.
 
 ```bash
-# after the first apply, once the hatchet service is running
-aws ecs execute-command --cluster georag --task <hatchet-task> \
-  --container hatchet --interactive \
-  --command "/hatchet-admin token create --name ecs --tenant-id <tenant>"
-# write the real value into georag/app, then:
-aws ecs update-service --cluster georag --service georag-fastapi --force-new-deployment
-aws ecs update-service --cluster georag --service georag-hatchet-worker --force-new-deployment
-aws ecs update-service --cluster georag --service georag-laravel-octane --force-new-deployment
-aws ecs update-service --cluster georag --service georag-laravel-horizon --force-new-deployment
-aws ecs update-service --cluster georag --service georag-laravel-reverb --force-new-deployment
+CLUSTER=georag
+SUBNETS=$(terraform -chdir=deploy/aws/terraform output -raw private_subnet_ids)
+SG=$(terraform -chdir=deploy/aws/terraform output -raw task_security_group_id)
+
+TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" \
+  --task-definition georag-hatchet \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+  --overrides '{"containerOverrides":[{"name":"hatchet","command":["/hatchet-admin","token","create","--name","ecs","--tenant-id","<tenant>"]}]}' \
+  --query 'tasks[0].taskArn' --output text)
+
+aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+# the token is the last line the container printed:
+aws logs tail /ecs/georag --since 5m --filter-pattern hatchet
+```
+
+The token reaches you through CloudWatch Logs, so treat that log stream as
+carrying a credential: read it, write the value into `georag/app`, and do not
+leave the stream more widely readable than the secret it just carried.
+
+Then restart the five services that hold the token. **The ECS service names
+are bare**, not prefixed — `services.tf` sets `name = each.key`, which is what
+`deploy/aws/scheduler/startup-sweep.sh` and `cd.yml` both use:
+
+```bash
+for svc in fastapi hatchet-worker laravel-octane laravel-horizon laravel-reverb; do
+  aws ecs update-service --cluster georag --service "$svc" --force-new-deployment
+done
 ```
 
 Until that swap the engine is healthy and every worker and client is not,

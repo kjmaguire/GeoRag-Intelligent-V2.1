@@ -28,13 +28,14 @@ transaction mode**.
 is `silver.mv_collar_summary`. If someone describes gold as a set of MVs, they
 are describing a design that was not built.
 
-**Eight core silver tables have no versioned CREATE**: `projects`, `collars`,
-`surveys`, `lithology_logs`, `samples`, `reports`, `spatial_features`,
-`well_log_curves`. They exist in running databases but no migration creates
-them. That is a real gap — a fresh AWS deploy needs
-`deploy/aws/bootstrap.sql` to have put them there, and nothing in the
-migration chain will do it for you. Treat "does the fresh database actually
-have these eight tables" as a first-class deploy question.
+**The eight core silver tables DO have versioned CREATEs.** `projects`,
+`collars`, `surveys`, `lithology_logs`, `samples`, `reports`,
+`spatial_features` and `well_log_curves` are created by
+`database/migrations/2026_04_09_1800*` and `2026_04_10_1201*`, and a fresh
+database gets all eight from `php artisan migrate` alone. CLAUDE.md said the
+opposite until 2026-09-16; it was wrong, and it sent people hunting in
+`bootstrap.sql` for tables the migration chain already creates. If you see
+that claim repeated anywhere, it is stale.
 
 ## Row-level security is a hard rule
 
@@ -71,7 +72,26 @@ Rules:
   `ST_Distance < x` on 4326 degrees, which measures in degrees and is wrong by
   a factor that varies with latitude.
 
-## PgBouncer transaction mode — the production-only failure class
+## PgBouncer transaction mode — compose only, NOT the AWS deployment
+
+Check this before reasoning from it: there is **no PgBouncer in
+`deploy/aws/terraform/`**. `config.tf` points `POSTGRES_HOST` and
+`POSTGRES_DIRECT_HOST` at the same RDS endpoint on 5432, and the ten ECS
+services do not include a pooler. So on AWS the transaction-mode failure
+class below does not apply, and the session-scoped `set_config('app.workspace_id', ..., false)`
+that RLS depends on survives for the life of the connection.
+
+It applies in compose, and it applies again the day anyone introduces RDS
+Proxy — which `config.tf` names as the option "if connection counts ever
+justify it". Note that `BindWorkspaceRlsContext::assertNotPooled()` detects a
+pooler by the literal port 6432, and RDS Proxy listens on 5432, so that guard
+would not fire. In a multi-tenant app that turns a protection into a no-op
+that looks like a protection.
+
+Without a pooler, every connection lands directly on `db.t4g.small`: FastAPI
+alone is 4 uvicorn workers x max_size 12 = 48 per task, plus Laravel x3,
+hatchet-worker and martin. Worth checking against `max_connections` before
+any load.
 
 Transaction mode returns the server connection to the pool at COMMIT. That
 breaks anything session-scoped:

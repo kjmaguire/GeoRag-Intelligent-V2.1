@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
@@ -693,5 +693,5 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
         runs_skipped_alive=runs_skipped_alive,
         recovery_runs_dispatched=recovery_runs_dispatched,
         broadcasts_emitted=broadcasts_emitted,
-        sampled_at=datetime.utcnow(),
+        sampled_at=datetime.now(UTC),
     )

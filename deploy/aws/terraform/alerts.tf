@@ -66,7 +66,7 @@ locals {
     answer-quality-regression = {
       log_group   = "services"
       pattern     = "ANSWER_QUALITY_REGRESSION"
-      description = "answer_quality_watch (30 14 * * *): refusal, guard-fire or zero-evidence rate moved 15pp against the trailing week, or mean confidence dropped 0.15. A window under the 20-answer sample floor reports insufficient_sample and is deliberately NOT an alert."
+      description = "answer_quality_watch (30 21 * * * UTC): refusal, guard-fire or zero-evidence rate moved 15pp against the trailing week, or mean confidence dropped 0.15. A window under the 20-answer sample floor reports insufficient_sample and is deliberately NOT an alert."
     }
     cost-burn-threshold-exceeded = {
       log_group   = "services"

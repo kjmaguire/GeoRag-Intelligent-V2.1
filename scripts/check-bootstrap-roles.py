@@ -175,6 +175,27 @@ def main() -> int:
                         f"worked."
                     )
 
+    # 6 — every `terraform output -raw NAME` the runbook tells the operator to
+    # run is an output that exists. Same shape as assertion 5: the command
+    # fails with "Output ... not found", which mid-procedure reads like a
+    # broken deployment rather than a typo in the instructions.
+    outputs_tf = REPO / "deploy" / "aws" / "terraform" / "outputs.tf"
+    if outputs_tf.is_file() and readme.is_file():
+        declared = set(
+            re.findall(r'^output "([a-z_][a-z0-9_]*)"', outputs_tf.read_text(encoding="utf-8"), re.M)
+        )
+        readme_body = readme.read_text(encoding="utf-8")
+        for m in re.finditer(r"output -raw ([a-z_][a-z0-9_]*)", readme_body):
+            if m.group(1) in declared:
+                continue
+            line = readme_body[: m.start()].count("\n") + 1
+            fail(
+                f"deploy/aws/README.md:{line}: tells the operator to run "
+                f"`terraform output -raw {m.group(1)}`, but outputs.tf declares no "
+                f"such output. The command fails mid-procedure with "
+                f'"Output \"{m.group(1)}\" not found".'
+            )
+
     # 4 — the coupling assertion 1's fix depends on.
     if NOLOGIN_MIGRATION.is_file():
         mig = NOLOGIN_MIGRATION.read_text(encoding="utf-8")
@@ -203,6 +224,7 @@ def main() -> int:
     print("✓ each is repaired unconditionally, not only on creation")
     print("✓ no psql :'var' inside a dollar-quoted block in deploy/**/*.sql")
     print("✓ every secret key the operator is told to read is one that exists")
+    print("✓ every terraform output the runbook names is one that is declared")
     return 0
 
 

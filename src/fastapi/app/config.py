@@ -281,8 +281,12 @@ class Settings(BaseSettings):
     # place: an unset value must select a host that is actually running, not
     # one that only exists on paper. "bedrock" stays selectable for an
     # operator who does subscribe and deploy the endpoint — the adapter is
-    # unchanged and `_validate_chat_backend_credentials` below makes the
-    # missing model id a startup error rather than a first-query one.
+    # unchanged. This comment used to promise that
+    # `_validate_chat_backend_credentials` below "makes the missing model id a
+    # startup error rather than a first-query one". There is no such
+    # validator, here or anywhere: a blank COHERE_API_KEY starts a healthy
+    # FastAPI task that fails on the first query. aws-preflight.sh A-08 is
+    # what actually catches it, and only from a shell with AWS access.
     #
     # Bedrock has NOT left the system: embeddings (Cohere Embed v4) and
     # reranking (Cohere Rerank 3.5) still go there under EMBEDDING_BACKEND
@@ -956,9 +960,14 @@ class Settings(BaseSettings):
         if self.LLM_BACKEND == "azure":
             raise ValueError(
                 "LLM_BACKEND=azure selects Azure AI Foundry, retired "
-                "2026-09-08 (ADR-0022). Set LLM_BACKEND=bedrock and "
-                "BEDROCK_CHAT_MODEL_ID to the Bedrock Marketplace endpoint "
-                "ARN serving Cohere Command A+."
+                "2026-09-08 (ADR-0022). Set LLM_BACKEND=cohere, which is the "
+                "default and reaches Cohere Command A+ on Cohere's own API "
+                "with COHERE_API_KEY. This message used to say bedrock; "
+                "ADR-0023 moved chat off Bedrock one week later because "
+                "Command A+ is a SageMaker Marketplace package that bills "
+                "whether or not anything calls it, and iam.tf deliberately "
+                "dropped the bedrock:Converse grant — so following the old "
+                "advice now ends in AccessDenied."
             )
         stale = [
             name

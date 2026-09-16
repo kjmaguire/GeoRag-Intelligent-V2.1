@@ -156,12 +156,30 @@ END $$;
 -- Nothing anywhere granted it LOGIN. Repo-wide, martin_readonly appears 40x
 -- as a GRANT target and exactly once as a role definition -- the NOLOGIN one.
 -- So the martin task got `FATAL: role "martin_readonly" is not permitted to
--- log in`, failed its health check (services.tf:371), and every MVT layer
--- served nothing: a blank map, on a platform whose whole subject is where
--- things are.
+-- log in` and failed its health check (services.tf:371).
 --
 -- Compose hid it. docker-compose.yml:1993 connects martin as georag_app, so
 -- dev worked and only production would have broken.
+--
+-- THIS IS NECESSARY AND NOT SUFFICIENT, and the second half is not fixed
+-- here because it is a decision rather than a defect. The tile functions are
+-- SECURITY INVOKER and set no GUC, so once this role CAN connect it runs as
+-- itself: non-superuser, NOBYPASSRLS, with app.workspace_id unset. The
+-- tenant policy is
+--
+--   USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
+--
+-- and against an unset GUC that predicate is NULL, so it filters every row.
+-- Verified on PostgreSQL 16: same role, same table, 0 rows with the GUC
+-- unset and the correct rows with it set. So the map is blank either way --
+-- this changes WHICH failure, from "cannot connect" to "connects and is
+-- shown nothing", and the second one is at least diagnosable.
+--
+-- Closing it needs a call on how workspace context reaches Martin, which
+-- connects to Postgres directly and never sees the session that authorised
+-- the request. docs/architecture/appendix/C-security-posture.md already
+-- records that fence as Open. Do not resolve it by granting BYPASSRLS here:
+-- that turns a blank map into a cross-tenant one.
 --
 -- Created here, BEFORE the migration chain runs, so the migration's
 -- IF NOT EXISTS guard finds it present and leaves it alone. The ALTER also
