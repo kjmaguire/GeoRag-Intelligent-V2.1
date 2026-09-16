@@ -725,6 +725,15 @@ jobs:
       # is a restarting worker, which looks like the hang it was added to catch.
       - name: ECS health checks can actually pass
         run: python scripts/check-ecs-healthchecks.py
+      # Compose gets its extensions from docker-entrypoint-initdb.d, which
+      # Postgres runs automatically. RDS has no equivalent — bootstrap.sql is
+      # run once, by hand — so nothing but this keeps the two lists in step.
+      # It also re-checks that pg_ivm and pg_stat_kcache still have no call
+      # sites, which is the whole reason they were dropped for RDS.
+      - name: Postgres extensions match between compose and RDS
+        run: python scripts/check-postgres-extensions.py
+      - name: Discrimination tests for the extension check
+        run: bash scripts/tests/postgres_extensions_test.sh
       # coverage.yml runs weekly, so its merger would otherwise only be
       # exercised once a week -- and a wrong merge prints a plausible
       # percentage rather than failing.
