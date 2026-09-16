@@ -1350,7 +1350,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # QDRANT v1.17 — vector database
-  # HNSW m=16, ef_construct=200 tuned for geological embedding retrieval.
+  # HNSW m=32, ef_construct=256 tuned for geological embedding retrieval.
   # Payload indices on filter fields (project_id, document_type, etc.) are
   # configured at collection creation time by the FastAPI service on startup.
   # ---------------------------------------------------------------------------
