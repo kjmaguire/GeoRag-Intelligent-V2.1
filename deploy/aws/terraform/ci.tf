@@ -60,10 +60,24 @@ data "aws_iam_policy_document" "github_actions_assume" {
     }
     # Any ref/event in this specific repo. Deliberately not narrowed to
     # ref:refs/heads/main — see file header.
+    #
+    # Verified live via CloudTrail on 2026-09-17 during the go-live
+    # rehearsal: this org has GitHub's "include repository and organization
+    # IDs in the JWT" setting enabled (Settings > Actions > General), which
+    # changes the sub claim from `repo:OWNER/REPO:...` to
+    # `repo:OWNER@OWNER_ID/REPO@REPO_ID:...`. The un-suffixed pattern below
+    # silently never matched, so every workflow run failed at "Configure AWS
+    # credentials" with a generic AccessDenied that looked identical to a
+    # missing/wrong AWS_DEPLOY_ROLE_ARN secret — CloudTrail's userIdentity on
+    # the denied AssumeRoleWithWebIdentity call is what actually distinguishes
+    # the two. var.github_repository stays "owner/repo" (matches the output's
+    # doc comment and every other reference to it); the ID suffixes are
+    # inlined here instead of parameterized, since they're this AWS account's
+    # fixed GitHub identity, not something an operator sets per deploy.
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:*"]
+      values   = ["repo:kjmaguire@79488174/GeoRag-Intelligent-V2.1@1252963201:*"]
     }
   }
 }
