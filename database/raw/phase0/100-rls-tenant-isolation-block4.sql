@@ -78,10 +78,13 @@ BEGIN
             ('silver', 'ingest_extractions'),
             ('silver', 'ingest_layouts'),
             ('silver', 'ingest_ocr_results'),
-            ('silver', 'kg_formation_aliases'),
-            ('silver', 'kg_mineral_aliases'),
-            ('silver', 'kg_report_aliases'),
-            ('silver', 'kg_sample_aliases'),
+            -- kg_formation_aliases/kg_mineral_aliases/kg_report_aliases/
+            -- kg_sample_aliases deliberately absent: same reason as
+            -- block2 (97-rls-tenant-isolation-block2.sql) -- dangling
+            -- references to tables the removed knowledge graph (2026-07-28,
+            -- CLAUDE.md rule 9) never actually created. The ::regclass cast
+            -- a few lines below errors on a nonexistent relation before the
+            -- ALTER TABLE would even run.
             ('silver', 'lithology_logs'),
             ('silver', 'low_confidence_page_reviews'),
             ('silver', 'message_feedback'),

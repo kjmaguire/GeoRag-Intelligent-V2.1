@@ -37,8 +37,14 @@ DECLARE
     t text;
     tier_b_tables text[] := ARRAY[
         'projects',
-        'kg_formation_aliases', 'kg_mineral_aliases',
-        'kg_report_aliases',    'kg_sample_aliases',
+        -- kg_formation_aliases/kg_mineral_aliases/kg_report_aliases/
+        -- kg_sample_aliases deliberately absent: Neo4j and its knowledge
+        -- graph were removed 2026-07-28 (CLAUDE.md hard rule 9) and no
+        -- migration or raw SQL file has ever created these tables --
+        -- verified via full git history search on a go-live rehearsal
+        -- (2026-09-18). They were dangling references from before that
+        -- removal; ALTER TABLE on a nonexistent relation fails loudly
+        -- ("relation does not exist"), which is what a real deploy hit.
         'geological_formations', 'historic_workings', 'project_boundaries',
         'collaboration_audit_log',  'collaboration_comments',
         'collaboration_mentions',   'collaboration_review_requests',
