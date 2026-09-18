@@ -291,6 +291,19 @@ WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'hatchet')\gexec
 
 ALTER ROLE hatchet LOGIN PASSWORD :'hatchet_password';
 
+-- Since PostgreSQL 16, CREATE DATABASE ... OWNER <role> (and ALTER ... OWNER
+-- TO) requires the CALLER to be able to SET ROLE to the target owner --
+-- before 16, CREATEDB alone was enough to own a database as any role.
+-- georag just created `hatchet` above but is not a member of it, so without
+-- this grant the next statement fails live with `must be able to SET ROLE
+-- "hatchet"` -- verified on a go-live rehearsal (2026-09-18), the first real
+-- run of this file against RDS PG 18. Compose never caught it because the
+-- dev Postgres superuser bypasses the SET ROLE check entirely. Left granted
+-- rather than revoked afterward: bootstrap.sql is meant to be safely
+-- re-run, and an un-membered georag would just fail the same way next time
+-- the database doesn't yet exist (a restore, a fresh account).
+GRANT hatchet TO georag;
+
 SELECT 'CREATE DATABASE hatchet OWNER hatchet'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'hatchet')\gexec
 
