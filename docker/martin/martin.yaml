@@ -254,14 +254,36 @@ postgres:
       maxzoom: 22
 
     # ── §6.13 — density choropleth (h3 aggregate of mineral data) ────
-    # Reads gold.h3_density_mineral. Zoom-adaptive resolution picker
-    # inside the SQL function: z≤5→res 5, z≤10→res 7, else→res 9.
-    # Optional ?commodity= URL filter (e.g. /density_choropleth_h3/3/2/1?commodity=au)
-    density_choropleth_h3:
-      schema: silver
-      function: density_choropleth_h3
-      minzoom: 0
-      maxzoom: 22
+    # REMOVED 2026-09-18, verified live on a go-live rehearsal: publishing
+    # a source whose function does not exist is FATAL to Martin, not a
+    # warning it serves around. Martin 1.11 logs
+    #
+    #   Unable to configure source density_choropleth_h3 because function
+    #   'density_choropleth_h3' was not found
+    #   ERROR martin: warnings issued during tile source resolution
+    #
+    # and exits non-zero, so the container never passes its health check and
+    # ECS's circuit breaker fails the whole deployment. Every OTHER source in
+    # this file resolved; this one entry took the tile server down with it.
+    #
+    # silver.density_choropleth_h3 has never existed in any environment:
+    # database/raw/phase0/105-section6-density-mvt-function.sql creates it,
+    # and that file is not in database/raw/manifest.json, which is the
+    # explicit list db:apply-raw actually applies (95/96/97/98/99 only). Nor
+    # is 104-section6-h3-density-table.sql, which creates the
+    # gold.h3_density_mineral table it reads.
+    #
+    # Wiring both into the manifest was considered and rejected: 105's body
+    # calls silver.h3_cell_to_boundary_geometry(), which is defined NOWHERE
+    # in this repository -- so the function would resolve at boot and then
+    # fail on every tile request instead. It also grants EXECUTE only to
+    # georag_app, never to martin_readonly, which is the role Martin
+    # connects as. Nothing consumes this layer either: `density_choropleth`
+    # appears in no frontend or application code.
+    #
+    # Restoring it means implementing §6.13 for real -- the helper function,
+    # the grant, both files in the manifest, and a client that asks for the
+    # tiles -- at which point this entry comes back in one line.
 
   # ── Public Geoscience (plan §09a) ────────────────────────────────────
   # Views over the canonical pg_* tables. Martin wraps each view's `geom`
