@@ -44,7 +44,7 @@ refuses to report a pass.
 | `teardown_multitenant_corpus.sql` | Deletes exactly the seeded ids — not a `LIKE 'rehearsal-%'` sweep — then asserts nothing is left. |
 | `run_against_deployment.sh` | Runs any of the above as a one-off ECS task on `georag-fastapi`. |
 | `run_step5.sh` | Step 5: `ingest` a document, poll `status`, then `query`. |
-| `make_cloudshell_bundle.sh` | Emits a repo-free seed+ingest script (step 5), built from the sources above. |
+| `make_cloudshell_bundle.sh` | Emits a repo-free step-5 script — seed, ingest, status, query — built from the sources above. |
 | `make_step6_bundle.sh` | Emits a repo-free seed+verify script (step 6), likewise. |
 
 None of the three SQL files contains a psql meta-command. They are executed
@@ -188,12 +188,23 @@ repo with it. `make_cloudshell_bundle.sh` (step 5, seed+ingest) and
 no checkout:
 
 ```bash
-bash ops/rehearsal/make_cloudshell_bundle.sh > /tmp/bundle.sh   # step 5
-bash ops/rehearsal/make_step6_bundle.sh      > /tmp/step6.sh    # step 6
-# upload via CloudShell Actions -> Upload file
-bash bundle.sh
-bash step6.sh
+bash ops/rehearsal/make_cloudshell_bundle.sh > /tmp/step5.sh   # step 5
+bash ops/rehearsal/make_step6_bundle.sh      > /tmp/step6.sh   # step 6
+# upload both via CloudShell Actions -> Upload file, then:
+bash step5.sh ingest    # seed the corpus + dispatch ingest_pdf
+bash step5.sh status    # poll until the passages carry embedding_id
+bash step5.sh query     # the step-5 assertion
+bash step6.sh           # seed + verify the tenant fence
 ```
+
+The step-5 bundle covers **all four phases**. An earlier version emitted
+seed+ingest only and left `status` and `query` to `run_step5.sh`, which needs
+the checkout the bundle exists because you do not have — so step 5 was not
+actually runnable end to end in the one environment it was built for. Its seed
+also travelled as a `sed`-extracted `BEGIN;`…`COMMIT;`, which dropped
+everything after `COMMIT` — now the `[SEED-OK]` assertion — so a half-landed
+corpus passed here while failing through `run_against_deployment.sh`. Both
+bundles now use the same gzip+base64 asyncpg driver.
 
 It is a generator rather than a committed standalone script on purpose. The
 obvious version — paste the SQL into a second file and commit it — creates a
