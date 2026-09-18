@@ -135,10 +135,19 @@ data "aws_iam_policy_document" "github_deploy" {
   }
 
   statement {
-    sid       = "PassTaskRoles"
-    effect    = "Allow"
-    actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.execution.arn, aws_iam_role.task.arn]
+    sid     = "PassTaskRoles"
+    effect  = "Allow"
+    actions = ["iam:PassRole"]
+    # Verified live on a go-live rehearsal (2026-09-18): qdrant, redis,
+    # martin and hatchet use aws_iam_role.stores (georag-ecs-task-stores),
+    # not aws_iam_role.task -- see iam.tf's comment on why they stopped
+    # sharing aws_iam_role.task. Missing it here isn't a build-time error;
+    # RegisterTaskDefinition succeeds fine without PassRole and only fails
+    # the moment it's actually asked to attach a role the caller can't
+    # pass, so this was never caught by terraform plan/apply or by the
+    # earlier build jobs -- only by a real RegisterTaskDefinition call for
+    # one of those four services during "Deploy services".
+    resources = [aws_iam_role.execution.arn, aws_iam_role.task.arn, aws_iam_role.stores.arn]
   }
 
   statement {
