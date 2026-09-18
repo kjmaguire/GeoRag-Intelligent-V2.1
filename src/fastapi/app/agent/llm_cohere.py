@@ -259,12 +259,49 @@ def _sse_events(line: str) -> dict[str, Any] | None:
     return event if isinstance(event, dict) else None
 
 
+def _shape_fingerprint(value: Any, *, _depth: int = 0) -> Any:
+    """Describe a value's STRUCTURE — keys and types, never contents.
+
+    Exists so that "the stream produced no text" carries the evidence needed
+    to fix it. The 2026-09-18 rehearsal hit exactly that error against the
+    live deployment and the adapter threw away the events it had just seen,
+    so the only way forward was a separate credentialed probe run — on an API
+    this sandbox cannot reach. One self-describing failure beats a second
+    round trip.
+
+    VALUES ARE NEVER INCLUDED. The deltas carry workspace text, and an
+    operator reading CloudWatch to debug a wire shape must not thereby read a
+    tenant's geology. Strings collapse to ``str(len)``, numbers to their type
+    name. That is enough to tell ``delta.message.content.text`` from
+    ``delta.message.content[].text`` while disclosing nothing.
+    """
+    if _depth > 6:
+        return "..."
+    if isinstance(value, dict):
+        return {k: _shape_fingerprint(v, _depth=_depth + 1) for k, v in list(value.items())[:12]}
+    if isinstance(value, list):
+        # One representative element: a 400-delta stream must not print 400
+        # identical fingerprints.
+        head = _shape_fingerprint(value[0], _depth=_depth + 1) if value else None
+        return [head, f"...x{len(value)}"] if len(value) > 1 else [head]
+    if isinstance(value, str):
+        return f"str({len(value)})"
+    return type(value).__name__
+
+
 def _delta_text(event: dict[str, Any]) -> str | None:
     """Text carried by one streaming event, if any.
 
     Tolerant across the documented nesting
     (``delta.message.content.text``) and the flatter spellings, because the
     shape is [UNVERIFIED] and a missed delta is a silently truncated answer.
+
+    ``content`` as a LIST of typed blocks is handled here because
+    ``_extract_content`` — the non-streaming sibling twenty lines down —
+    already handles exactly that, and has since it was written. The two
+    parsers disagreeing about the same field on the same API was an
+    asymmetry, not a decision: whichever shape the host actually sends, only
+    one of the two paths would have worked.
     """
     delta = event.get("delta")
     if isinstance(delta, dict):
@@ -275,8 +312,18 @@ def _delta_text(event: dict[str, Any]) -> str | None:
                 nested = content.get("text")
                 if isinstance(nested, str):
                     return nested
+            if isinstance(content, list):
+                parts = [
+                    block["text"] for block in content if isinstance(block, dict) and isinstance(block.get("text"), str)
+                ]
+                if parts:
+                    return "".join(parts)
             if isinstance(content, str):
                 return content
+            # Some hosts put the assistant turn under `text` beside `content`.
+            message_text = message.get("text")
+            if isinstance(message_text, str):
+                return message_text
         flat = delta.get("text")
         if isinstance(flat, str):
             return flat
@@ -354,6 +401,10 @@ async def call_cohere_llm(
                     input_tokens, output_tokens = _extract_usage(payload)
                 else:
                     chunks: list[str] = []
+                    # Kept for the error path only — see _shape_fingerprint.
+                    seen_types: list[str] = []
+                    seen_shapes: list[Any] = []
+                    saw_any_event = False
                     async with client.stream("POST", url, headers=_headers(), json=body) as response:
                         if response.status_code in _PRE_STREAM_RETRYABLE_STATUS:
                             raise CoherePreStreamError(f"HTTP {response.status_code} from Cohere before any output")
@@ -362,6 +413,12 @@ async def call_cohere_llm(
                             event = _sse_events(line)
                             if event is None:
                                 continue
+                            saw_any_event = True
+                            if len(seen_shapes) < 3:
+                                seen_shapes.append(_shape_fingerprint(event))
+                            event_type = event.get("type")
+                            if isinstance(event_type, str) and event_type not in seen_types:
+                                seen_types.append(event_type)
                             piece = _delta_text(event)
                             if piece:
                                 chunks.append(piece)
@@ -381,10 +438,29 @@ async def call_cohere_llm(
                     if not content:
                         # A stream that yielded no text at all is the
                         # streaming face of an unrecognised shape. Loud, for
-                        # the same reason _extract_content is.
+                        # the same reason _extract_content is — but loud WITH
+                        # the evidence, so the shape can be corrected from
+                        # this one failure instead of a second probe run.
+                        if not saw_any_event:
+                            detail = (
+                                "no SSE `data:` frame was parsed at all. Either the response "
+                                "was not an event stream (check that `stream` survived into the "
+                                "request body) or it frames events differently."
+                            )
+                        else:
+                            detail = (
+                                f"event types seen: {seen_types or '(none had a `type`)'}; "
+                                f"structure of the first {len(seen_shapes)} "
+                                f"(keys and types only, no content): {seen_shapes}"
+                            )
+                        logger.error(
+                            "cohere chat: stream produced no text — %s",
+                            detail,
+                            extra={"cohere_event_types": seen_types, "cohere_event_shapes": seen_shapes},
+                        )
                         raise CohereResponseShapeError(
                             "the Cohere stream produced no text. The event shape is "
-                            "UNVERIFIED — run the probe and correct _delta_text."
+                            f"UNVERIFIED — correct _delta_text to match. {detail}"
                         )
             break
         except Exception as exc:  # noqa: BLE001 — re-raised unless retryable
