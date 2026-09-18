@@ -57,7 +57,15 @@ CREATE EXTENSION IF NOT EXISTS hypopg;
 CREATE EXTENSION IF NOT EXISTS pg_repack;
 
 CREATE EXTENSION IF NOT EXISTS postgis;
-CREATE EXTENSION IF NOT EXISTS postgis_topology;
+-- postgis_topology deliberately absent: ADR-0022's extension table claimed
+-- RDS PG 18 supports it ("yes" / "keep"), but a real go-live rehearsal
+-- (2026-09-18) ran this file against the live instance and RDS rejected it
+-- outright — "extension \"postgis_topology\" is not available". Zero call
+-- sites in this repository (no topology.* function, no TopoGeometry column
+-- anywhere in app code, migrations, or raw SQL), so this is the same shape
+-- as the pg_ivm/pg_stat_kcache exclusion above: dropped, not gated behind a
+-- capability flag, because nothing reads it.
+--
 -- Required BY h3_postgis, which is why it is here even though no code in
 -- this repository reads a raster.
 CREATE EXTENSION IF NOT EXISTS postgis_raster;

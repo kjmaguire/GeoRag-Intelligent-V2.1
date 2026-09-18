@@ -112,7 +112,8 @@ sites in this repository found:
 
 | Extension | RDS PG 18 | Call sites | Verdict |
 |---|---|---|---|
-| `postgis`, `postgis_topology`, `postgis_raster` | yes | schema-wide | keep |
+| `postgis`, `postgis_raster` | yes | schema-wide; raster required by `h3_postgis` | keep |
+| `postgis_topology` | **no** (corrected 2026-09-18 — see below) | **none** | **drop** |
 | `h3`, `h3_postgis` | yes (h3-pg added for PG 18) | `gold.h3_density_mineral.h3_index` | keep |
 | `pg_partman` | yes | `audit.*` monthly partitions | keep |
 | `pg_trgm`, `pg_stat_statements`, `uuid-ossp` | yes | indexes, `index_health` | keep |
@@ -121,6 +122,19 @@ sites in this repository found:
 | `auto_explain` | parameter, not extension | **none** | parameter group |
 | `pg_ivm` | **no** | **none** | **drop** |
 | `pg_stat_kcache` | **no** | **none** | **drop** |
+
+**Corrected 2026-09-18:** the row above originally claimed `postgis_topology`
+was supported ("yes" / "keep"), grouped with `postgis`/`postgis_raster`. That
+was never verified against a real RDS instance — the audit that produced
+this table was a code/docs review, not a live `CREATE EXTENSION` call. A real
+go-live rehearsal ran `deploy/aws/bootstrap.sql` against the live account and
+RDS rejected `postgis_topology` outright: "extension \"postgis_topology\" is
+not available". It has zero call sites in this repository regardless (no
+`topology.*` function, no `TopoGeometry` column anywhere in app code,
+migrations, or raw SQL), so the fix is the same as `pg_ivm`/`pg_stat_kcache`:
+drop it from `bootstrap.sql`, not gate it behind a capability flag.
+`postgis_raster` is unaffected — it installed successfully and `h3_postgis`
+genuinely needs it.
 
 Both extensions RDS lacks have zero readers. `pg_ivm` is consistent with Ch 02:
 the only materialised view in the schema is `silver.mv_collar_summary`, and
