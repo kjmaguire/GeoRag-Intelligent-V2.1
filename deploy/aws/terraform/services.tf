@@ -631,7 +631,19 @@ resource "aws_ecs_task_definition" "migrate" {
     image      = "${aws_ecr_repository.this["laravel"].repository_url}:${var.image_tag}"
     entryPoint = ["/bin/sh", "-c"]
     command = [
-      "php artisan migrate --force && php artisan db:apply-raw --database=pgsql_migrations",
+      # --database=pgsql_migrations on BOTH commands, not just db:apply-raw.
+      # Verified live on a go-live rehearsal (2026-09-18): MIGRATE_DB_CONNECTION
+      # below does NOT do what its own comment says. Laravel's
+      # MigrationServiceProvider reads config('database.migrations') only for
+      # the ['table'] key (vendor/laravel/framework/.../MigrationServiceProvider.php);
+      # it never looks at ['connection']. MigrateCommand separately resolves
+      # its connection from $this->option('database') — the --database CLI
+      # flag — not from config at all. So `php artisan migrate --force` alone
+      # ran on the default `pgsql` connection as georag_app and failed with
+      # "permission denied for schema public" trying to create the
+      # `migrations` tracking table, exactly the failure mode the comment
+      # below anticipated but the config it points at cannot prevent.
+      "php artisan migrate --force --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations",
     ]
     environment = [
       for k, v in merge(local.service_environment["laravel-octane"], {
