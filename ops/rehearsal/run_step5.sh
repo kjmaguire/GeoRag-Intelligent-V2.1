@@ -49,30 +49,51 @@ run_task() {  # run_task <name> <json containerOverrides>
 
 case "$ACTION" in
   ingest)
-    # The fixture PDF ships in the image at /app/tests/fixtures/ocr/, so it is
-    # uploaded from inside the task rather than from here — no local copy, and
-    # no dependency on this shell having the repo checked out.
-    OVR=$(jq -n --arg pid "$PROJECT_ID" --arg wid "$WORKSPACE_ID" '{
+    # The PDF is uploaded from HERE, not from inside the task.
+    #
+    # An earlier version did boto3.upload_file("/app/tests/fixtures/ocr/...")
+    # inside the container, commented "the fixture PDF ships in the image".
+    # It does not. docker/fastapi.Dockerfile.dockerignore excludes
+    # **/tests/fixtures, so the file is not even in the build context — the
+    # live run on 2026-09-18 died with FileNotFoundError. Uploading from the
+    # shell needs no image change and no CD cycle.
+    PDF="${PDF:-src/fastapi/tests/fixtures/ocr/PLS-2024-Technical-Report.pdf}"
+    if [ ! -f "$PDF" ]; then
+      echo "PDF not found: $PDF (set PDF=/path/to/file.pdf)" >&2
+      exit 1
+    fi
+
+    BUCKET=$(aws ecs describe-task-definition --task-definition georag-fastapi \
+      --query 'taskDefinition.containerDefinitions[0].environment[?name==`AWS_BUCKET_BRONZE`].value | [0]' \
+      --output text)
+    if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+      echo "could not read AWS_BUCKET_BRONZE from the georag-fastapi task definition" >&2
+      exit 1
+    fi
+    KEY="reports/${PROJECT_ID}/rehearsal-$(date +%s)-$$.pdf"
+    SIZE=$(stat -c%s "$PDF")
+    echo "uploading $PDF ($SIZE bytes) -> s3://$BUCKET/$KEY" >&2
+    aws s3 cp "$PDF" "s3://$BUCKET/$KEY" >/dev/null
+
+    OVR=$(jq -n --arg pid "$PROJECT_ID" --arg wid "$WORKSPACE_ID" \
+                --arg k "$KEY" --arg sz "$SIZE" '{
       containerOverrides: [{
         name: "fastapi",
         command: ["python3","-c", ("
-import json,os,urllib.request,uuid,boto3
-pid, wid = \"" + $pid + "\", \"" + $wid + "\"
-src = \"/app/tests/fixtures/ocr/PLS-2024-Technical-Report.pdf\"
-key = f\"reports/{pid}/rehearsal-{uuid.uuid4()}.pdf\"
-bucket = os.environ[\"AWS_BUCKET_BRONZE\"]
-boto3.client(\"s3\").upload_file(src, bucket, key)
-size = os.path.getsize(src)
-print(f\"uploaded s3://{bucket}/{key} ({size} bytes)\")
-body = json.dumps({\"workspace_id\": wid, \"project_id\": pid, \"minio_key\": key,
-                   \"file_size\": size, \"correlation_token\": str(uuid.uuid4())}).encode()
+import json,os,urllib.request,uuid
+body = json.dumps({\"workspace_id\": \"" + $wid + "\", \"project_id\": \"" + $pid + "\",
+                   \"minio_key\": os.environ[\"REHEARSAL_S3_KEY\"],
+                   \"file_size\": int(os.environ[\"REHEARSAL_FILE_SIZE\"]),
+                   \"correlation_token\": str(uuid.uuid4())}).encode()
 req = urllib.request.Request(
     os.environ[\"FASTAPI_INTERNAL_URL\"].rstrip(\"/\") + \"/internal/v1/shadow/ingest_pdf/trigger\",
     data=body, headers={\"Content-Type\":\"application/json\",
                         \"X-Service-Key\": os.environ[\"FASTAPI_SERVICE_KEY\"]})
 with urllib.request.urlopen(req, timeout=60) as r:
     print(\"trigger:\", r.status, r.read().decode()[:300])
-")]}]}')
+")],
+        environment: [{name:"REHEARSAL_S3_KEY",value:$k},
+                      {name:"REHEARSAL_FILE_SIZE",value:$sz}]}]}')
     run_task ingest "$OVR"
     echo
     echo "Ingestion DISPATCHED, not finished. Hatchet now parses, chunks," >&2

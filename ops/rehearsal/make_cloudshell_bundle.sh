@@ -13,7 +13,7 @@
 #
 #   bash ops/rehearsal/make_cloudshell_bundle.sh > /tmp/step5.sh
 #   # upload /tmp/step5.sh to CloudShell, then:
-#   bash step5.sh ingest    # seed the corpus + dispatch the PDF ingest
+#   bash step5.sh ingest    # seed the corpus + upload and dispatch the PDF
 #   bash step5.sh status    # poll until the passages are embedded
 #   bash step5.sh query     # the actual step-5 assertion
 #
@@ -123,18 +123,22 @@ if len(acks) != 1:
 print("seed_multitenant_corpus.sql OK", flush=True)
 SEEDEOF
 
-# ── the ingest: the fixture PDF ships in the image, so it is uploaded from
-#    inside the task rather than from here ───────────────────────────────────
+# ── the ingest TRIGGER only. The PDF is uploaded from CloudShell, not from
+#    inside the task.
+#
+#    The first version did boto3.upload_file("/app/tests/fixtures/ocr/..."),
+#    on the stated grounds that the fixture "ships in the image". It does not:
+#    docker/fastapi.Dockerfile.dockerignore excludes **/tests/fixtures, so
+#    the file is not even in the build context. The live run failed with
+#    FileNotFoundError. Uploading from the shell needs no image change and no
+#    ~25-minute CD cycle. ────────────────────────────────────────────────────
 read -r -d '' INGEST_PY <<'INGESTEOF' || true
-import json, os, urllib.request, uuid, boto3
+import json, os, urllib.request, uuid
 
 pid, wid = "${PID}", "${WID}"
-src = "/app/tests/fixtures/ocr/PLS-2024-Technical-Report.pdf"
-key = f"reports/{pid}/rehearsal-{uuid.uuid4()}.pdf"
-bucket = os.environ["AWS_BUCKET_BRONZE"]
-boto3.client("s3").upload_file(src, bucket, key)
-size = os.path.getsize(src)
-print(f"uploaded s3://{bucket}/{key} ({size} bytes)", flush=True)
+key  = os.environ["REHEARSAL_S3_KEY"]
+size = int(os.environ["REHEARSAL_FILE_SIZE"])
+print(f"triggering ingest_pdf for s3 key {key} ({size} bytes)", flush=True)
 
 body = json.dumps({"workspace_id": wid, "project_id": pid, "minio_key": key,
                    "file_size": size, "correlation_token": str(uuid.uuid4())}).encode()
@@ -181,6 +185,17 @@ STATUSEOF
 
 case "\$ACTION" in
   ingest)
+    # Checked BEFORE seeding: discovering the PDF is missing after the seed has
+    # already run wastes a task and leaves the corpus half-set-up.
+    PDF="\${PDF:-./PLS-2024-Technical-Report.pdf}"
+    if [ ! -f "\$PDF" ]; then
+      echo "PDF not found: \$PDF" >&2
+      echo "Upload it via CloudShell Actions -> Upload file, or set PDF=/path/to/file.pdf." >&2
+      echo "It is NOT in the container image: docker/fastapi.Dockerfile.dockerignore" >&2
+      echo "excludes **/tests/fixtures, so the fixture never reaches the build context." >&2
+      exit 1
+    fi
+
     echo "=== 1/2  seed the two-tenant corpus ============================="
     OVR=\$(jq -n --arg py "\$SEED_PY" '{containerOverrides:[{name:"fastapi",command:["python3","-c",\$py]}]}')
     CODE=\$(run_task seed "\$OVR")
@@ -191,8 +206,29 @@ case "\$ACTION" in
     [ "\$CODE" = "0" ] || { echo "SEED FAILED - not running ingest"; exit 1; }
 
     echo
-    echo "=== 2/2  upload the fixture PDF and trigger ingest_pdf =========="
-    OVR=\$(jq -n --arg py "\$INGEST_PY" '{containerOverrides:[{name:"fastapi",command:["python3","-c",\$py]}]}')
+    echo "=== 2/2  upload the PDF and trigger ingest_pdf =================="
+    # The bucket name is read from the deployed task definition rather than
+    # hardcoded: AWS_BUCKET_BRONZE lives in common_environment
+    # (deploy/aws/terraform/config.tf) and this way the bundle cannot drift
+    # from what the services actually use.
+    BUCKET=\$(aws ecs describe-task-definition --task-definition georag-fastapi \\
+      --query 'taskDefinition.containerDefinitions[0].environment[?name==\`AWS_BUCKET_BRONZE\`].value | [0]' \\
+      --output text)
+    if [ -z "\$BUCKET" ] || [ "\$BUCKET" = "None" ]; then
+      echo "could not read AWS_BUCKET_BRONZE from the georag-fastapi task definition" >&2
+      exit 1
+    fi
+    KEY="reports/\$PID/rehearsal-\$(date +%s)-\$\$.pdf"
+    SIZE=\$(stat -c%s "\$PDF")
+    echo "uploading \$PDF (\$SIZE bytes) -> s3://\$BUCKET/\$KEY"
+    aws s3 cp "\$PDF" "s3://\$BUCKET/\$KEY" >/dev/null || { echo "UPLOAD FAILED"; exit 1; }
+
+    OVR=\$(jq -n --arg py "\$INGEST_PY" --arg k "\$KEY" --arg s "\$SIZE" '{
+      containerOverrides:[{
+        name:"fastapi",
+        command:["python3","-c",\$py],
+        environment:[{name:"REHEARSAL_S3_KEY",value:\$k},
+                     {name:"REHEARSAL_FILE_SIZE",value:\$s}]}]}')
     CODE=\$(run_task ingest "\$OVR")
     echo "ingest exit: \$CODE"
     [ "\$CODE" = "0" ] || { echo "INGEST DISPATCH FAILED"; exit 1; }

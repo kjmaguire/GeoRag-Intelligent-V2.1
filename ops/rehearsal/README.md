@@ -191,11 +191,18 @@ no checkout:
 bash ops/rehearsal/make_cloudshell_bundle.sh > /tmp/step5.sh   # step 5
 bash ops/rehearsal/make_step6_bundle.sh      > /tmp/step6.sh   # step 6
 # upload both via CloudShell Actions -> Upload file, then:
-bash step5.sh ingest    # seed the corpus + dispatch ingest_pdf
+bash step5.sh ingest    # seed the corpus + upload the PDF + dispatch ingest_pdf
 bash step5.sh status    # poll until the passages carry embedding_id
 bash step5.sh query     # the step-5 assertion
 bash step6.sh           # seed + verify the tenant fence
 ```
+
+`ingest` needs the PDF **in the shell you run it from** — upload it alongside
+the bundle, or pass `PDF=/path/to/file.pdf`. It is deliberately not taken from
+the image: `docker/fastapi.Dockerfile.dockerignore` excludes
+`**/tests/fixtures`, so the fixture never reaches the build context. An earlier
+version uploaded it from inside the task on the stated grounds that it "ships
+in the image", and the live run on 2026-09-18 died with `FileNotFoundError`.
 
 The step-5 bundle covers **all four phases**. An earlier version emitted
 seed+ingest only and left `status` and `query` to `run_step5.sh`, which needs
