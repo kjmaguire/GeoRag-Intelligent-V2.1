@@ -60,6 +60,7 @@ cat <<BUNDLE
 #   bash step5.sh ingest    seed the two-tenant corpus, then dispatch ingest_pdf
 #   bash step5.sh status    poll until the passages carry embedding_id
 #   bash step5.sh query     the step-5 assertion
+#   bash step5.sh logs      what the fastapi SERVICE said when query failed
 #
 # ingest and query are separate commands because they have different shapes.
 # ingest kicks off a Hatchet workflow and returns immediately; the
@@ -291,6 +292,37 @@ case "\$ACTION" in
     echo "STEP 5 OK - the answer streamed, cited a real chunk, and terminated cleanly."
     ;;
 
-  *) echo "usage: bash step5.sh {ingest|status|query}" >&2; exit 2 ;;
+  logs)
+    # Why this phase exists at all: the query phase asks the DEPLOYED fastapi
+    # service over the service-discovery name, so when the answer comes back
+    # INTERNAL_ERROR the evidence lives in that service's log streams. The
+    # step5 task's own stream holds only the client side of the conversation -
+    # it can report that a failed frame arrived, never why. The 2026-09-18
+    # rehearsal spent two round trips reading the wrong stream.
+    #
+    # The user-facing frame is deliberately generic; that is not a defect to
+    # route around. This reads the service's own account instead.
+    MINS="\${2:-30}"
+    SINCE=\$(( (\$(date +%s) - MINS * 60) * 1000 ))
+    echo "scanning /ecs/georag fastapi streams, last \$MINS minutes"
+    echo "-- cohere event-shape diagnostic -----------------------------"
+    aws logs filter-log-events --log-group-name /ecs/georag \\
+      --log-stream-name-prefix fastapi/fastapi/ --start-time "\$SINCE" \\
+      --filter-pattern '"produced no text"' \\
+      --query 'events[].message' --output text | tr '\\t' '\\n'
+    echo "-- errors and tracebacks ------------------------------------"
+    aws logs filter-log-events --log-group-name /ecs/georag \\
+      --log-stream-name-prefix fastapi/fastapi/ --start-time "\$SINCE" \\
+      --filter-pattern '?ERROR ?Traceback ?CohereResponseShapeError' \\
+      --query 'events[].message' --output text | tr '\\t' '\\n'
+    echo "-------------------------------------------------------------"
+    echo
+    echo "The shape diagnostic names the event types Cohere actually sent and"
+    echo "the key structure of the first few, values redacted to str(<len>)."
+    echo "That line IS the fix - paste it back. If both sections came back"
+    echo "empty the failure is not the chat adapter, and the traceback is."
+    ;;
+
+  *) echo "usage: bash step5.sh {ingest|status|query|logs [minutes]}" >&2; exit 2 ;;
 esac
 BUNDLE
