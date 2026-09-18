@@ -40,11 +40,31 @@ refuses to report a pass.
 | file | |
 |---|---|
 | `seed_multitenant_corpus.sql` | Two workspaces, two projects, six interleaved collars. Idempotent, deterministic ids. |
-| `verify_tenant_fence.sql` | Four sections; every check RAISEs, so psql's exit code is the verdict. |
-| `teardown_multitenant_corpus.sql` | Deletes exactly the seeded ids — not a `LIKE 'rehearsal-%'` sweep. |
-| `run_against_deployment.sh` | Runs any of the above as a one-off ECS task on `georag-migrate`. |
+| `verify_tenant_fence.sql` | Five sections; every check RAISEs and every section acknowledges, so the exit code AND the acknowledgement count are the verdict. |
+| `teardown_multitenant_corpus.sql` | Deletes exactly the seeded ids — not a `LIKE 'rehearsal-%'` sweep — then asserts nothing is left. |
+| `run_against_deployment.sh` | Runs any of the above as a one-off ECS task on `georag-fastapi`. |
 | `run_step5.sh` | Step 5: `ingest` a document, poll `status`, then `query`. |
-| `make_cloudshell_bundle.sh` | Emits a repo-free seed+ingest script, built from the sources above. |
+| `make_cloudshell_bundle.sh` | Emits a repo-free seed+ingest script (step 5), built from the sources above. |
+| `make_step6_bundle.sh` | Emits a repo-free seed+verify script (step 6), likewise. |
+
+None of the three SQL files contains a psql meta-command. They are executed
+over **asyncpg**, because the fastapi image is the only one in this deployment
+that can reach Postgres at all: the laravel/migrate image installs `libpq-dev`
+for PHP's `pdo_pgsql` but no `psql` binary, its task definition has no
+`DATABASE_URL`, and its `entryPoint = ["/bin/sh","-c"]` turns a command
+override into a no-op that exits 0. `psql -f` still runs all three correctly.
+
+**Every section raises a tagged acknowledgement** (`[SEED-OK]`,
+`[CHECK-OK 0]`…`[CHECK-OK 4]`, `[TEARDOWN-OK]`) and the runner requires all of
+them before reporting a pass. A driver that executes nothing scores 0/5 and
+fails, rather than exiting 0 and being read as a clean run — which is what the
+previous `georag-migrate` version would have done, and is the same
+absence-as-success shape this rehearsal produced three times elsewhere.
+
+The SQL travels to the task gzip+base64: ECS `RunTask` caps the whole
+`overrides` structure at 8192 characters, and `verify_tenant_fence.sql`
+serialised to 8316 uncompressed. The runner checks the payload size itself and
+refuses with the number rather than letting the AWS API reject it.
 
 `src/fastapi/scripts/ops/step5_answer_path.py` is the step-5 assertion
 itself. It lives under `src/fastapi/` rather than here because cd.yml builds
@@ -56,6 +76,14 @@ the image.
 bash ops/rehearsal/run_against_deployment.sh seed
 bash ops/rehearsal/run_against_deployment.sh verify
 bash ops/rehearsal/run_against_deployment.sh teardown
+```
+
+Or, with no checkout at all:
+
+```bash
+bash ops/rehearsal/make_step6_bundle.sh > /tmp/step6.sh
+# upload /tmp/step6.sh via CloudShell Actions -> Upload file
+bash step6.sh
 ```
 
 ## What the verification asserts
@@ -89,10 +117,19 @@ body extracted from the migration, with a mutation matrix:
 | none (healthy) | exit 0, VERIFIED |
 | `p.workspace_id` guard removed | FENCE BYPASS, 0 bytes |
 | both guards removed | DISCLOSURE, 445 bytes of the other tenant's features |
-| missing-`workspace_id` RAISE removed | caught by section 4 |
+| pre-fence definition deployed | section 0 refuses to proceed |
 | tenants separated + both guards removed | section 1 refuses to pass |
+| SQL replaced with a no-op that exits 0 | **0/5 acknowledged — fails** |
+| SQL truncated after section 1 | **2/5 acknowledged — fails** |
 
-That last row is the point of the whole design.
+The last three rows are the point of the whole design. A broken fence must not
+pass because the tenants happen to be far apart; and a runner that executed
+nothing must not pass because nothing complained.
+
+Re-run on 2026-09-18 after the runner moved to asyncpg, through the generated
+CloudShell bundle's own embedded drivers rather than a hand-written copy, so
+what was tested is what ships: seed on an empty database, verify, idempotent
+re-seed, teardown, plus every mutation above.
 
 ## Scope
 
@@ -146,13 +183,16 @@ not for the absence of a crash.
 
 CloudShell's home directory does not survive a session recycle, which
 happened three times during the 2026-09-18 rehearsal, each time taking the
-repo with it. `make_cloudshell_bundle.sh` emits a standalone seed+ingest
-script that needs no checkout:
+repo with it. `make_cloudshell_bundle.sh` (step 5, seed+ingest) and
+`make_step6_bundle.sh` (step 6, seed+verify) emit standalone scripts that need
+no checkout:
 
 ```bash
-bash ops/rehearsal/make_cloudshell_bundle.sh > /tmp/bundle.sh
-# upload /tmp/bundle.sh via CloudShell Actions -> Upload file
+bash ops/rehearsal/make_cloudshell_bundle.sh > /tmp/bundle.sh   # step 5
+bash ops/rehearsal/make_step6_bundle.sh      > /tmp/step6.sh    # step 6
+# upload via CloudShell Actions -> Upload file
 bash bundle.sh
+bash step6.sh
 ```
 
 It is a generator rather than a committed standalone script on purpose. The

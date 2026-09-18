@@ -15,10 +15,26 @@
 -- and a silent pass is impossible.
 --
 -- Run ops/rehearsal/seed_multitenant_corpus.sql first.
+--
+-- NO psql META-COMMANDS IN THIS FILE, deliberately. It is executed against the
+-- live deployment through asyncpg: ops/rehearsal/run_against_deployment.sh runs
+-- on the fastapi task definition, the only image in this deployment with a
+-- Postgres driver at all. The laravel/migrate image installs libpq-dev for
+-- PHP's pdo_pgsql but no psql binary, and its task definition has no
+-- DATABASE_URL — only martin and hatchet get one (deploy/aws/terraform/
+-- config.tf). asyncpg cannot run psql frontend meta-commands, and rather than
+-- have the runner translate this file — a translation layer is itself code
+-- that can be wrong — every banner and acknowledgement is a RAISE NOTICE,
+-- which both drivers carry natively. `psql -f` still runs this file correctly.
+--
+-- EVERY SECTION ENDS BY RAISING A CHECK-OK ACKNOWLEDGEMENT. The runner
+-- requires all five before it reports a pass, so a driver that executed
+-- nothing — the failure this rehearsal has already produced three times, most
+-- recently the ECS entryPoint mangling documented in
+-- run_against_deployment.sh — cannot be mistaken for a clean run. Silence is
+-- not success.
 
-\set ON_ERROR_STOP on
-
-\echo '== 0. precondition: the fence migration is actually deployed here =='
+DO $$ BEGIN RAISE NOTICE '== 0. precondition: the fence migration is actually deployed here =='; END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -43,10 +59,10 @@ BEGIN
             'silver.pg_collars_by_project exists but is the PRE-FENCE definition — '
             'migration 2026_09_16_120000 has not been applied to this database';
     END IF;
+    RAISE NOTICE '[CHECK-OK 0] post-fence definition present';
 END $$;
-\echo '   ok: post-fence definition present'
 
-\echo '== 1. precondition: the two tenants are CO-LOCATED =='
+DO $$ BEGIN RAISE NOTICE '== 1. precondition: the two tenants are CO-LOCATED =='; END $$;
 -- Without this the cross-tenant assertions below are vacuous: if the tenants
 -- sit in different regions, a tile scoped to one simply cannot contain the
 -- other's rows and every denial passes for the wrong reason. Asserted rather
@@ -68,10 +84,10 @@ BEGIN
             'the two rehearsal tenants are not co-located — every cross-tenant '
             'assertion below would pass vacuously. Re-seed with interleaved coordinates.';
     END IF;
-    RAISE NOTICE '   ok: % co-located cross-tenant collar pairs within 2 km', n_shared;
+    RAISE NOTICE '[CHECK-OK 1] % co-located cross-tenant collar pairs within 2 km', n_shared;
 END $$;
 
-\echo '== 2. positive controls: each tenant sees its own data =='
+DO $$ BEGIN RAISE NOTICE '== 2. positive controls: each tenant sees its own data =='; END $$;
 DO $$
 DECLARE
     mvt_a bytea;
@@ -90,11 +106,11 @@ BEGIN
     IF mvt_b IS NULL THEN
         RAISE EXCEPTION 'Cascade cannot see its OWN collars — the fence is over-filtering';
     END IF;
-    RAISE NOTICE '   ok: both tenants see their own tiles (% / % bytes)',
+    RAISE NOTICE '[CHECK-OK 2] both tenants see their own tiles (% / % bytes)',
         octet_length(mvt_a), octet_length(mvt_b);
 END $$;
 
-\echo '== 3. cross-tenant denial, BOTH directions =='
+DO $$ BEGIN RAISE NOTICE '== 3. cross-tenant denial, BOTH directions =='; END $$;
 -- pgTAP test 74 covers one direction only (B's id against A's project). A
 -- fence that were asymmetric for any reason would pass there and leak here,
 -- so both orderings are asserted.
@@ -142,10 +158,10 @@ BEGIN
                 'on any table whose own workspace_id is NULL.', n;
         END IF;
     END LOOP;
-    RAISE NOTICE '   ok: cross-tenant pairing denied in both directions';
+    RAISE NOTICE '[CHECK-OK 3] cross-tenant pairing denied in both directions';
 END $$;
 
-\echo '== 4. a missing or malformed workspace_id RAISES, not blank-tiles =='
+DO $$ BEGIN RAISE NOTICE '== 4. a missing or malformed workspace_id RAISES, not blank-tiles =='; END $$;
 -- A blank tile is indistinguishable from "no data here", which is how a
 -- filtering failure hides in plain sight on a map.
 DO $$
@@ -168,8 +184,7 @@ BEGIN
     EXCEPTION WHEN sqlstate 'P0001' THEN
         IF SQLERRM LIKE '%did NOT raise%' THEN RAISE; END IF;
     END;
-    RAISE NOTICE '   ok: missing and malformed workspace_id both raise';
+    RAISE NOTICE '[CHECK-OK 4] missing and malformed workspace_id both raise';
 END $$;
 
-\echo ''
-\echo 'TENANT FENCE VERIFIED on this database.'
+DO $$ BEGIN RAISE NOTICE 'All five checks executed. TENANT FENCE VERIFIED on this database.'; END $$;

@@ -82,12 +82,46 @@ ON CONFLICT (collar_id) DO UPDATE SET
 
 COMMIT;
 
-\echo ''
-\echo 'Seeded. Tenants, projects and interleaved collars:'
-SELECT w.slug AS workspace, p.slug AS project, c.hole_id,
-       c.easting, c.northing
-FROM silver.collars c
-JOIN silver.projects p   ON p.project_id   = c.project_id
-JOIN silver.workspaces w ON w.workspace_id = p.workspace_id
-WHERE w.slug IN ('rehearsal-meridian', 'rehearsal-cascade')
-ORDER BY c.easting;
+-- Report through RAISE NOTICE rather than a bare SELECT, and assert the count.
+--
+-- Two reasons. First, no psql meta-commands: this file is also executed over
+-- asyncpg by ops/rehearsal/run_against_deployment.sh, which cannot run `\echo`
+-- (see the header of verify_tenant_fence.sql for why that runner is not psql).
+-- Second, a reporting SELECT cannot fail. If an ON CONFLICT clause were ever
+-- edited wrongly, or a workspace_id predicate on silver.collars silently
+-- filtered the readback, the old version printed a short table and exited 0 —
+-- and the verification that follows would then fail at section 1 blaming
+-- co-location for what was really a seed that did not land. Asserting the
+-- expected six rows here puts the error where the cause is.
+DO $$
+DECLARE
+    r record;
+    n int;
+BEGIN
+    FOR r IN
+        SELECT w.slug AS workspace, p.slug AS project, c.hole_id,
+               c.easting, c.northing
+        FROM silver.collars c
+        JOIN silver.projects p   ON p.project_id   = c.project_id
+        JOIN silver.workspaces w ON w.workspace_id = p.workspace_id
+        WHERE w.slug IN ('rehearsal-meridian', 'rehearsal-cascade')
+        ORDER BY c.easting
+    LOOP
+        RAISE NOTICE '  % | % | % | E% N%',
+            rpad(r.workspace, 18), rpad(r.project, 25), r.hole_id, r.easting, r.northing;
+    END LOOP;
+
+    SELECT count(*) INTO n
+    FROM silver.collars c
+    JOIN silver.projects p   ON p.project_id   = c.project_id
+    JOIN silver.workspaces w ON w.workspace_id = p.workspace_id
+    WHERE w.slug IN ('rehearsal-meridian', 'rehearsal-cascade');
+
+    IF n <> 6 THEN
+        RAISE EXCEPTION
+            'seed landed % collars across the two rehearsal tenants, expected 6 — '
+            'the corpus is incomplete and verify_tenant_fence.sql would misattribute '
+            'the failure to co-location', n;
+    END IF;
+    RAISE NOTICE '[SEED-OK] 6 interleaved collars across 2 tenants';
+END $$;

@@ -26,14 +26,27 @@ DELETE FROM silver.workspaces WHERE workspace_id IN (
 
 COMMIT;
 
-\echo 'Rehearsal corpus removed. Remaining rows with these ids (expect 0):'
-SELECT
-    (SELECT count(*) FROM silver.workspaces
-      WHERE workspace_id IN ('11111111-aaaa-4aaa-8aaa-111111111111',
-                             '22222222-bbbb-4bbb-8bbb-222222222222')) AS workspaces,
-    (SELECT count(*) FROM silver.projects
-      WHERE project_id IN ('aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa',
-                           'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb')) AS projects,
-    (SELECT count(*) FROM silver.collars
-      WHERE workspace_id IN ('11111111-aaaa-4aaa-8aaa-111111111111',
-                             '22222222-bbbb-4bbb-8bbb-222222222222')) AS collars;
+-- No psql meta-commands, and the readback ASSERTS rather than prints: this
+-- file also runs over asyncpg (see verify_tenant_fence.sql's header). A
+-- teardown that reports leftovers in a table nobody reads is a teardown that
+-- silently half-worked.
+DO $$
+DECLARE
+    n_ws int; n_pr int; n_co int;
+BEGIN
+    SELECT count(*) INTO n_ws FROM silver.workspaces
+     WHERE workspace_id IN ('11111111-aaaa-4aaa-8aaa-111111111111',
+                            '22222222-bbbb-4bbb-8bbb-222222222222');
+    SELECT count(*) INTO n_pr FROM silver.projects
+     WHERE project_id IN ('aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa',
+                          'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb');
+    SELECT count(*) INTO n_co FROM silver.collars
+     WHERE workspace_id IN ('11111111-aaaa-4aaa-8aaa-111111111111',
+                            '22222222-bbbb-4bbb-8bbb-222222222222');
+
+    IF n_ws + n_pr + n_co <> 0 THEN
+        RAISE EXCEPTION
+            'teardown left rows behind: % workspaces, % projects, % collars', n_ws, n_pr, n_co;
+    END IF;
+    RAISE NOTICE '[TEARDOWN-OK] rehearsal corpus removed; 0 workspaces, 0 projects, 0 collars remain';
+END $$;
