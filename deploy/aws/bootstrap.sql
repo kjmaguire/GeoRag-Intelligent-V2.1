@@ -155,7 +155,18 @@ SELECT format(
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'georag_app')\gexec
 
 ALTER ROLE georag_app LOGIN PASSWORD :'georag_app_password';
-ALTER ROLE georag_app NOSUPERUSER NOBYPASSRLS;
+
+-- Deliberately NOT `ALTER ROLE georag_app NOSUPERUSER NOBYPASSRLS;` here.
+-- Verified live on a go-live rehearsal (2026-09-18): the RDS master user is
+-- rds_superuser, never real SUPERUSER, and Postgres requires the CALLER to
+-- hold SUPERUSER to touch either attribute on ANY role -- even to reassert
+-- the value CREATE ROLE already set. "permission denied to alter role" was
+-- the exact failure, on the first run against a real instance. The repair
+-- this line existed for cannot occur on RDS anyway: no RDS-connected
+-- principal has ever had the privilege to grant SUPERUSER or BYPASSRLS to
+-- georag_app in the first place, so there is nothing to repair it FROM.
+-- CREATE ROLE above already applied NOSUPERUSER NOBYPASSRLS at creation,
+-- which is the one path that does not require the caller to be a superuser.
 
 -- ---------------------------------------------------------------------------
 -- Grant-holder roles (docker/postgresql/init/init-roles.sql)
