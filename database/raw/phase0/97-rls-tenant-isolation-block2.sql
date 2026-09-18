@@ -63,6 +63,21 @@ DECLARE
     ];
 BEGIN
     FOREACH t IN ARRAY tier_b_tables LOOP
+        -- Defensive existence guard, not a substitute for the removals
+        -- above: verified live on a go-live rehearsal (2026-09-18) that
+        -- silver.alterations -- which DOES have a real, unconditional
+        -- migration (2026_04_09_180400_create_alterations_table.php,
+        -- confirmed DONE in the same rehearsal's migrate phase) -- was
+        -- still reported missing here on a later re-run. Root cause not
+        -- established (not a dangling reference like the entries removed
+        -- above); skipping with a loud NOTICE beats a hard failure that
+        -- blocks every OTHER table in the array, but a skip here is a
+        -- real coverage gap to chase down, not a clean bill of health.
+        IF to_regclass('silver.' || t) IS NULL THEN
+            RAISE NOTICE 'Tier B: silver.% does not exist -- skipping RLS for it, not a known-dead reference', t;
+            CONTINUE;
+        END IF;
+
         -- Enable + force RLS
         EXECUTE format('ALTER TABLE silver.%I ENABLE  ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE silver.%I FORCE   ROW LEVEL SECURITY', t);
@@ -125,6 +140,12 @@ DECLARE
     has_fk  boolean;
 BEGIN
     FOREACH t IN ARRAY tier_c_tables LOOP
+        -- Same defensive guard as Tier B above -- see that comment.
+        IF to_regclass('silver.' || t) IS NULL THEN
+            RAISE NOTICE 'Tier C: silver.% does not exist -- skipping RLS for it, not a known-dead reference', t;
+            CONTINUE;
+        END IF;
+
         -- 1. Add column if missing
         EXECUTE format('SELECT 1 FROM information_schema.columns '
                        'WHERE table_schema = ''silver'' AND table_name = %L '
