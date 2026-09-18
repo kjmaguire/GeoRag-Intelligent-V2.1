@@ -44,6 +44,7 @@ refuses to report a pass.
 | `teardown_multitenant_corpus.sql` | Deletes exactly the seeded ids — not a `LIKE 'rehearsal-%'` sweep. |
 | `run_against_deployment.sh` | Runs any of the above as a one-off ECS task on `georag-migrate`. |
 | `run_step5.sh` | Step 5: `ingest` a document, poll `status`, then `query`. |
+| `make_cloudshell_bundle.sh` | Emits a repo-free seed+ingest script, built from the sources above. |
 
 `src/fastapi/scripts/ops/step5_answer_path.py` is the step-5 assertion
 itself. It lives under `src/fastapi/` rather than here because cd.yml builds
@@ -139,3 +140,23 @@ a compound `georag_reports:<id>:section=<n>:chunk=<uuid>` trace string, and
 A refusal with no citation is *correct behaviour* on an unindexed corpus —
 and still fails this gate, which is right: step 5 asks for a cited answer,
 not for the absence of a crash.
+
+
+## When CloudShell has no checkout
+
+CloudShell's home directory does not survive a session recycle, which
+happened three times during the 2026-09-18 rehearsal, each time taking the
+repo with it. `make_cloudshell_bundle.sh` emits a standalone seed+ingest
+script that needs no checkout:
+
+```bash
+bash ops/rehearsal/make_cloudshell_bundle.sh > /tmp/bundle.sh
+# upload /tmp/bundle.sh via CloudShell Actions -> Upload file
+bash bundle.sh
+```
+
+It is a generator rather than a committed standalone script on purpose. The
+obvious version — paste the SQL into a second file and commit it — creates a
+copy of `seed_multitenant_corpus.sql` that drifts the first time someone
+edits one and not the other. Generating means the bundle cannot disagree
+with the source it came from.
