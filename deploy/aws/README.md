@@ -768,26 +768,84 @@ Use a one-off `run-task` with a command override instead, the same shape the
 `migrate` task already uses. It borrows no standing capability: the task runs,
 prints, and exits.
 
+**Two flags are load-bearing and neither is obvious.** The command below was
+run for real on 2026-09-18; the version that omitted them failed twice, each
+time with an error that names a subsystem rather than the missing flag.
+
+  * **`--config /config` goes BEFORE the subcommand**, not after. Without it
+    `hatchet-admin` looks for the keyset somewhere else, finds nothing, and
+    exits `could not load encryption service: encryption is required`. The
+    engine writes its keyset to `/config` on first boot, and `data.tf` backs
+    that path with an EFS access point precisely so the admin CLI can read
+    what the server wrote. **The engine must have booted at least once with
+    that volume attached** or there is no keyset to load and no token to be
+    had — see the note in `data.tf` for what the missing volume cost.
+  * **`SERVER_AUTH_COOKIE_SECRETS` must be set**, even though nothing here
+    serves a cookie. `hatchet-admin` builds the full server session store
+    before it runs any subcommand, so an unset value stops it at
+    `could not create session store: at least one cookie secret must be
+    provided`. Any two space-separated values satisfy it; they are discarded
+    with the process.
+
+The tenant id is not guessable — read it from the engine's own database:
+
+```sql
+SELECT id FROM "Tenant" WHERE slug = 'default';
+```
+
 ```bash
 CLUSTER=georag
+TENANT=<the uuid from the query above>
+
+# From terraform if you have an initialised working directory:
 SUBNETS=$(terraform -chdir=deploy/aws/terraform output -raw private_subnet_ids)
 SG=$(terraform -chdir=deploy/aws/terraform output -raw task_security_group_id)
+
+# ...or straight from a running service, which needs no terraform at all.
+# Worth knowing: the 2026-09-18 rehearsal found that no operator terraform
+# environment existed anywhere, and building one was its own half-hour.
+NET=$(aws ecs describe-services --cluster "$CLUSTER" --services fastapi \
+        --query 'services[0].networkConfiguration.awsvpcConfiguration')
+SUBNETS=$(echo "$NET" | jq -r '.subnets|join(",")')
+SG=$(echo "$NET" | jq -r '.securityGroups|join(",")')
 
 TASK_ARN=$(aws ecs run-task --cluster "$CLUSTER" \
   --task-definition georag-hatchet \
   --launch-type FARGATE \
   --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
-  --overrides '{"containerOverrides":[{"name":"hatchet","command":["/hatchet-admin","token","create","--name","ecs","--tenant-id","<tenant>"]}]}' \
+  --overrides '{"containerOverrides":[{"name":"hatchet",
+    "command":["/hatchet-admin","--config","/config","token","create",
+               "--name","ecs","--tenant-id","'"$TENANT"'"],
+    "environment":[{"name":"SERVER_AUTH_COOKIE_SECRETS","value":"mint mint"}]}]}' \
   --query 'tasks[0].taskArn' --output text)
 
 aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
-# the token is the last line the container printed:
-aws logs tail /ecs/georag --since 5m --filter-pattern hatchet
+
+# Read the one stream this task wrote, not a time window over the whole
+# group: `logs tail --filter-pattern hatchet` also matches the ENGINE's
+# chatter, which is continuous, and the token is one unlabelled line in it.
+aws logs get-log-events --log-group-name /ecs/georag \
+  --log-stream-name "hatchet/hatchet/${TASK_ARN##*/}" \
+  --query 'events[].message' --output text | tr '\t' '\n'
 ```
 
 The token reaches you through CloudWatch Logs, so treat that log stream as
 carrying a credential: read it, write the value into `georag/app`, and do not
 leave the stream more widely readable than the secret it just carried.
+
+**Write it in one command.** Splitting "edit the JSON" from `put-secret-value`
+is how the 2026-09-18 rehearsal silently wrote the placeholder back: the edit
+step failed its own assertion and exited, the upload step ran anyway from the
+unmodified file, and AWS returned a new version id over identical content —
+which looks exactly like success. Chain the read, the edit and the write with
+`&&`, then read the secret back and confirm the value is no longer the
+placeholder before moving on.
+
+**The token expires.** `exp - iat` on the minted JWT is 7776000 seconds — 90
+days. Nothing in this deployment renews it and nothing alarms on it; a token
+minted at go-live simply stops working one quiet morning about three months
+later, and the symptom is every worker and client failing auth at once while
+the engine looks healthy. Note the date when you mint it.
 
 Then restart the five services that hold the token. **The ECS service names
 are bare**, not prefixed — `services.tf` sets `name = each.key`, which is what
