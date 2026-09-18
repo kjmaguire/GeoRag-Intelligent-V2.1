@@ -46,8 +46,19 @@ DECLARE
         -- removal; ALTER TABLE on a nonexistent relation fails loudly
         -- ("relation does not exist"), which is what a real deploy hit.
         'geological_formations', 'historic_workings', 'project_boundaries',
-        'collaboration_audit_log',  'collaboration_comments',
-        'collaboration_mentions',   'collaboration_review_requests',
+        -- collaboration_audit_log/collaboration_comments/collaboration_
+        -- mentions/collaboration_review_requests deliberately absent, same
+        -- reason as the kg_* entries above: verified live on the same
+        -- go-live rehearsal (2026-09-18) that this ARRAY reached
+        -- collaboration_audit_log next and failed identically ("relation
+        -- does not exist"). No table under any of these four names has
+        -- ever existed. The real collaboration tables are silver.
+        -- collab_anchors and silver.collab_comments (created by
+        -- 2026_05_16_120200_create_collab_anchors_and_comments.php) and
+        -- both already have workspace RLS from
+        -- 2026_05_19_180100_enable_rls_on_uncovered_workspace_tables.php —
+        -- this array's four entries were never that migration's tables
+        -- under a different name, just dead references.
         'drill_traces', 'review_queue'
     ];
 BEGIN
@@ -93,15 +104,22 @@ DECLARE
         'alterations', 'structures', 'surveys',
         'decision_evidence_links', 'decision_lessons_learned',
         'decision_outcomes',
-        'agent_conversation_messages', 'agent_conversations',
+        -- agent_conversation_messages/agent_conversations/pdf_coordinates/
+        -- pdf_layout_regions/pdf_ocr_results/pdf_table_cells/pdf_text_blocks/
+        -- mineral_claims deliberately absent: verified live on a go-live
+        -- rehearsal (2026-09-18), same reason as the Tier B removals above
+        -- -- no CREATE TABLE for any of them anywhere in this repository,
+        -- not even in database/raw/_archive/. mineral_claims exists ONLY as
+        -- a SQLite mirror for tests (2026_06_29_020000_provision_project_
+        -- delete_tables_for_test_db.php, sqlite-only), never as a real
+        -- Postgres table. pdf_vl_summaries IS real (created elsewhere) and
+        -- stays.
         'exports',
-        'pdf_coordinates',     'pdf_layout_regions',
-        'pdf_ocr_results',     'pdf_table_cells',
-        'pdf_text_blocks',     'pdf_vl_summaries',
+        'pdf_vl_summaries',
         'raster_layers',       'seismic_surveys',
         'structured_record_lineage',
         'source_trust_features',
-        'mineral_claims',      'review_audit_log'
+        'review_audit_log'
     ];
     has_col boolean;
     has_fk  boolean;

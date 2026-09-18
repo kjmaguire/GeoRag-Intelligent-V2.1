@@ -53,10 +53,13 @@ BEGIN
             ('silver', 'answer_runs'),
             ('silver', 'assay_events'),
             ('silver', 'assay_results'),
-            ('silver', 'collaboration_audit_log'),
-            ('silver', 'collaboration_comments'),
-            ('silver', 'collaboration_mentions'),
-            ('silver', 'collaboration_review_requests'),
+            -- collaboration_audit_log/collaboration_comments/collaboration_
+            -- mentions/collaboration_review_requests deliberately absent,
+            -- same reason as block2 -- no table under any of these four
+            -- names has ever existed. The real tables are silver.
+            -- collab_anchors and silver.collab_comments, already FK'd and
+            -- RLS'd by 2026_05_19_180100_enable_rls_on_uncovered_workspace_
+            -- tables.php.
             ('silver', 'collars'),
             ('silver', 'corpus_health_findings'),
             ('silver', 'decision_evidence_links'),
