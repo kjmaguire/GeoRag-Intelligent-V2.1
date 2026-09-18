@@ -289,6 +289,51 @@ def check_answer_path() -> None:
         )
         return
     key = os.environ.get("FASTAPI_SERVICE_KEY", "")
+    if not key:
+        _report("answer-path", False, "FASTAPI_SERVICE_KEY is UNSET")
+        return
+
+    # X-Service-Key ALONE IS NOT ENOUGH, and this check used to send only
+    # that. app/services/auth.py closed the graceful-rollout window where it
+    # was (Module 9 Chunk 9.4 / A1-02): /internal/queries is not in
+    # _AUTH_OPTIONAL_PATH_PREFIXES, so a request with no `Authorization`
+    # header is refused with 401 "Authorization header required" before any
+    # of the answer path runs.
+    #
+    # That made this check unable to pass. It went unnoticed because it only
+    # runs when PROD_SMOKE_PROJECT_ID is set and nobody had set it — so the
+    # first person to enable it would have read a 401 as "the answer path is
+    # broken" when the truth was "the gate never learned to authenticate".
+    # Same shape as the loopback defect in check_fastapi_self above: written
+    # against an older contract, never exercised since, could only fail.
+    #
+    # Mirrors app/Services/FastApiJwtMinter.php exactly — HS256 over
+    # FASTAPI_SERVICE_KEY, iss georag-laravel, aud georag-fastapi, 60 s TTL,
+    # and the `kid` header FastAPI maps back to a signing key.
+    try:
+        import jwt  # noqa: PLC0415 — present in the fastapi image
+    except ImportError:
+        _report("answer-path", False, "PyJWT missing — cannot mint the service JWT")
+        return
+
+    now = int(time.time())
+    claims = {
+        "iss": "georag-laravel",
+        "aud": "georag-fastapi",
+        "sub": "0",
+        "project_id": project_id,
+        "roles": [],
+        "iat": now,
+        "exp": now + 60,
+    }
+    workspace_id = os.environ.get("PROD_SMOKE_WORKSPACE_ID", "")
+    if workspace_id:
+        claims["workspace_id"] = workspace_id
+    bearer = jwt.encode(
+        claims, key, algorithm="HS256",
+        headers={"kid": os.environ.get("FASTAPI_SERVICE_KEY_KID", "primary")},
+    )
+
     body = json.dumps({
         "query": "What does this project contain?",
         "project_id": project_id,
@@ -308,7 +353,11 @@ def check_answer_path() -> None:
     req = urllib.request.Request(
         base.rstrip("/") + "/internal/queries",
         data=body,
-        headers={"Content-Type": "application/json", "X-Service-Key": key},
+        headers={
+            "Content-Type": "application/json",
+            "X-Service-Key": key,
+            "Authorization": f"Bearer {bearer}",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=90) as r:

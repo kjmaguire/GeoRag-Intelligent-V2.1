@@ -43,6 +43,13 @@ refuses to report a pass.
 | `verify_tenant_fence.sql` | Four sections; every check RAISEs, so psql's exit code is the verdict. |
 | `teardown_multitenant_corpus.sql` | Deletes exactly the seeded ids — not a `LIKE 'rehearsal-%'` sweep. |
 | `run_against_deployment.sh` | Runs any of the above as a one-off ECS task on `georag-migrate`. |
+| `run_step5.sh` | Step 5: `ingest` a document, poll `status`, then `query`. |
+
+`src/fastapi/scripts/ops/step5_answer_path.py` is the step-5 assertion
+itself. It lives under `src/fastapi/` rather than here because cd.yml builds
+the fastapi image with `context: ./src` and `COPY fastapi/ .` — anything
+under `ops/` is outside the build context and would be silently absent from
+the image.
 
 ```bash
 bash ops/rehearsal/run_against_deployment.sh seed
@@ -91,3 +98,44 @@ That last row is the point of the whole design.
 Rehearsal tooling, not part of the deploy path. Nothing in CD calls it. It
 writes to a live database and `teardown_multitenant_corpus.sql` is the way
 back out — read it before pointing this at anything holding real tenant data.
+
+
+## Step 5 — the answer path
+
+```bash
+bash ops/rehearsal/run_step5.sh ingest   # upload the fixture PDF + trigger Hatchet
+bash ops/rehearsal/run_step5.sh status   # poll until it prints READY
+bash ops/rehearsal/run_step5.sh query    # the assertion
+```
+
+`ingest` dispatches and returns — Hatchet then parses, chunks, embeds and
+indexes for some minutes. The phases are separate commands precisely so
+nobody has to guess a sleep; a guessed sleep produces a red run that only
+means "not finished yet".
+
+**What `query` asserts, and why each one is not the obvious version:**
+
+* **streamed** — at least *two* delta frames. A non-streaming implementation
+  that emitted the whole answer in one frame would satisfy `>= 1`.
+* **terminated** — `completed` is the *last* frame. A stream that emits
+  `completed` and then keeps talking, or simply stops, both show up in the
+  chat UI as a hung message.
+* **cited** — a citation frame carrying a non-null `source_chunk_id`.
+* **citation-resolves** — that id names a chunk that really exists. This is
+  the one that matters. Hard rule 4 says every claim carries a
+  `source_chunk_id` or is rejected; a gate that checks only for the
+  *presence* of a citation cannot tell a real provenance chain from a
+  well-formed fabrication, which is the exact failure §04i exists to prevent.
+
+Resolution delegates to `validate_chunk_provenance` — the platform's own
+§04i Layer 5 check — rather than a lookup written here. The first draft did
+write its own, against `silver.document_passages.passage_id`, and would have
+been wrong in the worst direction, reporting genuine citations as
+fabricated: ids resolve in **Qdrant**, the collection depends on
+`RETRIEVAL_USE_DOCUMENT_PASSAGES`, a `source_chunk_id` may be a bare UUID or
+a compound `georag_reports:<id>:section=<n>:chunk=<uuid>` trace string, and
+`corpus='public_geo'` citations are not Qdrant points at all.
+
+A refusal with no citation is *correct behaviour* on an unindexed corpus —
+and still fails this gate, which is right: step 5 asks for a cited answer,
+not for the absence of a crash.
