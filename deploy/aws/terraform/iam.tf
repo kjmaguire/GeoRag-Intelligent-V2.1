@@ -112,6 +112,25 @@ data "aws_iam_policy_document" "task" {
   }
 
   statement {
+    sid    = "BedrockModelDiscovery"
+    effect = "Allow"
+    # Read-only catalogue listing so app.services._bedrock.discover_cohere_rerank_v4_model_id()
+    # can notice the moment Bedrock adds Cohere Rerank v4, without an
+    # operator having to know to go check. Deliberately its own statement,
+    # not folded into BedrockServerless above: ListFoundationModels is a
+    # list-the-account's-whole-catalogue action, not a per-model one, and
+    # AWS does not support resource-level scoping for it — it only accepts
+    # "*". Grants no invoke capability of its own; a compromised task can
+    # see what models exist, not call any of them (that is still gated by
+    # the two ARNs above). Absence of this permission is not a failure mode
+    # either — discovery is fail-safe to "not found" if the call is denied.
+    actions = [
+      "bedrock:ListFoundationModels",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
     sid    = "OwnLogs"
     effect = "Allow"
     actions = [

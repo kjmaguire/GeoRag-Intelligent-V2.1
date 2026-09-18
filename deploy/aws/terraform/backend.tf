@@ -19,14 +19,19 @@
 # Terraform >= 1.10, which is why required_version moved up in main.tf.
 #
 # PARTIAL CONFIGURATION. The bucket is account-specific and S3 bucket names are
-# globally unique, so it is not hardcoded here. Supply it at init:
+# globally unique, so it is not hardcoded here. Supply it at init.
 #
-#   cp backend.hcl.example backend.hcl     # fill in your bucket
-#   terraform init -backend-config=backend.hcl
+# Recommended: one command, resolves your account ID and does everything below
+# (create/verify the bucket, write backend.hcl, run init):
 #
-# Create the bucket first — it cannot be managed by the state it holds:
+#   bash deploy/aws/terraform/init-backend.sh
+#
+# Manual alternative — use this if you want to name the bucket yourself rather
+# than accept the auto-generated georag-tfstate-<account-id>:
 #
 #   bash deploy/aws/terraform/bootstrap-state.sh <bucket-name> <region>
+#   cp backend.hcl.example backend.hcl     # fill in your bucket
+#   terraform init -backend-config=backend.hcl
 #
 # backend.hcl is gitignored. The values in it are not secret, but the file sits
 # exactly where someone would paste something that is.

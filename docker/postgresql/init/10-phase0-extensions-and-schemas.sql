@@ -74,6 +74,27 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_kcache;
 CREATE SCHEMA IF NOT EXISTS partman;
 CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
 
+-- pg_cron drives pg_partman's maintenance, not pg_partman_bgw: added
+-- 2026-09-16 alongside deploy/aws/bootstrap.sql and
+-- deploy/aws/terraform/data.tf, which needed pg_cron because RDS rejects
+-- pg_partman_bgw in shared_preload_libraries outright. This
+-- shared_preload_libraries here never carried pg_partman_bgw either
+-- (docker-compose.yml's postgres command line), so partition maintenance
+-- had never actually run on a schedule in compose any more than it had in
+-- production -- partman.create_parent() below configures partitioning,
+-- but nothing called partman.run_maintenance_proc() to act on it. Using
+-- the same pg_cron-driven mechanism here as production keeps both
+-- environments on identical scheduling, not just parity of which
+-- extensions are installed.
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
+SELECT cron.schedule(
+    'partman-maintenance',
+    '0 3 * * *',
+    $$CALL partman.run_maintenance_proc()$$
+);
+
 -- pg_repack: online table reorg without exclusive locks. No upfront work
 -- here — pg_repack is invoked on-demand from cron/Hatchet when bloat
 -- accumulates on a hot table.

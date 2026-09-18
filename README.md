@@ -67,7 +67,7 @@ Optional profiles:
 ### 3. Run migrations and seed data
 
 ```bash
-docker exec georag-laravel-octane php artisan migrate
+docker exec georag-laravel-octane php artisan migrate --database=pgsql_migrations
 docker exec georag-laravel-octane php artisan db:seed
 ```
 

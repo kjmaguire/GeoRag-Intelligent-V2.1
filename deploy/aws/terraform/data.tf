@@ -45,9 +45,37 @@ resource "aws_db_parameter_group" "this" {
   # not a CREATE EXTENSION — the init scripts' `CREATE EXTENSION
   # auto_explain` has no RDS equivalent and no reader in this repository
   # either way.
+  #
+  # pg_cron, not pg_partman_bgw: found live, on a real first apply into an
+  # empty account (2026-09-16) — ModifyDBParameterGroup rejected
+  # pg_partman_bgw outright. "Invalid parameter value ... allowed values
+  # are: auto_explain,orafce,pgaudit,pglogical,pg_bigm,pg_cron,
+  # pg_hint_plan,pg_overexplain,pg_prewarm,pg_similarity,pg_stat_monitor,
+  # pg_stat_statements,pg_tle,pg_transport,plprofiler" — RDS does not run
+  # third-party background workers at all, not "supports fewer than
+  # compose does". pg_partman itself (CREATE EXTENSION pg_partman,
+  # deploy/aws/bootstrap.sql) still works fine as a plain extension; only
+  # its own scheduler is unavailable. cron.database_name below plus
+  # bootstrap.sql's `SELECT cron.schedule(...)` call is AWS's own
+  # documented substitute: pg_cron drives partman.run_maintenance_proc()
+  # instead of pg_partman_bgw doing it itself. Without this, the three
+  # partman.create_parent() tables (audit.audit_ledger, workflow.workflow_runs,
+  # usage.usage_events) would silently stop growing new partitions months
+  # after go-live — not a boot-time failure, an inserts-fail-later one.
   parameter {
     name         = "shared_preload_libraries"
-    value        = "pg_stat_statements,pg_partman_bgw,auto_explain"
+    value        = "pg_stat_statements,pg_cron,auto_explain"
+    apply_method = "pending-reboot"
+  }
+
+  # pg_cron on RDS runs its scheduler against ONE database per instance;
+  # this tells it which one. CREATE EXTENSION pg_cron and cron.schedule(...)
+  # both have to run inside that same database (georag, matching
+  # aws_db_instance.this.db_name below and bootstrap.sql's -d georag), not
+  # in the RDS convention of installing it into the postgres maintenance DB.
+  parameter {
+    name         = "cron.database_name"
+    value        = "georag"
     apply_method = "pending-reboot"
   }
 
@@ -228,6 +256,55 @@ resource "aws_efs_access_point" "redis" {
   }
 
   tags = { Name = "${local.name}-redis" }
+}
+
+# The hatchet engine generates its own config on first boot -- including the
+# encryption keyset that signs and validates every client token -- and writes
+# it to /config. docker-compose.yml backs that with a named volume
+# (`hatchet_config:/config`), which is why its documented bootstrap command is
+# `/hatchet-admin --config /config token create ...`: the admin CLI reads the
+# keys the server wrote.
+#
+# ECS had no volume here at all, and the consequences were not subtle. Verified
+# live on a go-live rehearsal (2026-09-18): /config does not exist in the image
+# (a one-off `ls -ldn /config` returned "No such file or directory"), so the
+# entrypoint creates it in the container layer on every boot, generates a FRESH
+# keyset into it, and loses it when the task stops. That means:
+#
+#   * any client token stops validating the next time the engine restarts, and
+#     this deployment restarts it nightly on the EventBridge power sweep;
+#   * whatever the engine encrypted into its Postgres database is unreadable
+#     afterwards, because the key that encrypted it is gone;
+#   * a token could not be minted AT ALL. The keys live only inside the running
+#     container, ECS Exec is off by deliberate posture (rotation.tf), and a
+#     one-off `hatchet-admin token create` task gets its own empty /config --
+#     which is exactly the "could not load encryption service: encryption is
+#     required" the rehearsal hit.
+#
+# All 51 workflows and every cron sit on top of that, so this is the store that
+# looked stateless and was not.
+#
+# posix_user is root because the image runs as root: the same one-off task
+# reported `uid=0(root) gid=0(root)`. Not assumed from the other two access
+# points above, which are 1000 and 999 precisely because each image differs.
+resource "aws_efs_access_point" "hatchet" {
+  file_system_id = aws_efs_file_system.this.id
+
+  posix_user {
+    uid = 0
+    gid = 0
+  }
+
+  root_directory {
+    path = "/hatchet"
+    creation_info {
+      owner_uid   = 0
+      owner_gid   = 0
+      permissions = "0755"
+    }
+  }
+
+  tags = { Name = "${local.name}-hatchet" }
 }
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Post-deploy smoke — runs INSIDE fastapi-cc, called from cd.yml.
+"""Post-deploy smoke — a one-off ECS task in the VPC, called from cd.yml.
 
 Why this exists
 ---------------
@@ -23,7 +23,7 @@ throughout, so the deploy gate was green the entire time.
 
 What it checks
 --------------
-1. FastAPI actually answers on its own port (not just "a process exists").
+1. FastAPI answers on its Cloud Map address (not just "a process exists").
 2. The FastAPI -> Laravel bridge resolves AND returns 200 — the exact
    2026-08-18 failure.
 3. Postgres is reachable and queryable with the app's own settings.
@@ -42,21 +42,34 @@ answer path was not exercised rather than implying it passed.
 
 How it is invoked
 -----------------
-cd.yml runs it with a SINGLE `az containerapp exec` call, by path:
+cd.yml registers a `georag-smoke` task definition cloned from
+`georag-fastapi` — same image, same VPC, same task role, same environment
+— overriding only the container command:
 
-    az containerapp exec -g georag -n fastapi-cc         --command "python3 /app/scripts/ops/post_deploy_smoke.py"
+    python3 /app/scripts/ops/post_deploy_smoke.py
 
-It has to be one call, and it has to be by path. Two measured limits from
-2026-08-21 forced that shape:
+then runs it once with `aws ecs run-task` and reads the container's exit
+code. That override is the fact this file has to be written around: THE
+APP DOES NOT RUN IN THIS CONTAINER. uvicorn is replaced by this script,
+so every check must address its target over the network, by its
+in-environment name, exactly as a real caller would. Nothing here may
+dial loopback. check_fastapi_self did until 2026-09-18 and could only
+ever fail; see its comment.
 
-  * The exec command travels in a URL query parameter and the gateway caps
-    it near 2048 characters — 1800 succeeds, 2400 returns an IIS 404
-    handshake failure. This file is 8.4 KB, 4.4 KB even zlib+base64'd, so
-    it cannot be passed inline.
-  * Repeated exec calls are rate-limited: staging the payload in six
-    chunks earned `Handshake status 429 Too Many Requests` with
-    `retry-after: 600`. A deploy gate that can be throttled into failing
-    is worse than no gate.
+Inheriting fastapi's environment is what makes that workable —
+FASTAPI_INTERNAL_URL, LARAVEL_INTERNAL_URL, QDRANT_HOST and the database
+settings all arrive with the task definition rather than being
+reconstructed here, so the check exercises the values production uses.
+
+It was `az containerapp exec` until the ECS port (2026-09-08, ADR-0022).
+Two limits of that mechanism shaped this file and no longer bind: the
+command travelled in a URL query parameter capped near 2048 characters,
+so it had to be invoked by path rather than inlined, and repeated exec
+calls were rate-limited into `429 ... retry-after: 600`. RunTask has
+neither limit. It also has no PTY, which is the point — `exec` called
+tty.setcbreak() and died on a CI runner's non-terminal stdin, and on
+2026-08-23 that crash was misread as a failed smoke and rolled back a
+healthy deployment.
 
 The image build context is `src` (cd.yml's build-fastapi job), and
 `COPY fastapi/ .` lands this at /app/scripts/ops/ — which is also why the
@@ -65,10 +78,13 @@ build context and silently absent from the image.
 
 Exit contract
 -------------
-`az containerapp exec` returns 0 for a successful CONNECTION regardless of
-what the command did, so the caller cannot use the exit code. Print
-`SMOKE_OK` on the last line only when every check passed; the caller greps
-for it. Anything else — including a traceback — is a failure.
+The process exit code is the verdict: 0 when every check passed, 1
+otherwise. `az containerapp exec` returned 0 for a successful CONNECTION
+regardless of what the command did, which is why this file used to print
+`SMOKE_OK` for the caller to grep; RunTask reports the container's real
+exit code, so cd.yml reads that instead. The `SMOKE_OK` / `SMOKE_FAILED`
+lines are kept as the human-readable summary in CloudWatch, which cd.yml
+prints on failure.
 """
 from __future__ import annotations
 
@@ -90,56 +106,71 @@ def _report(name: str, ok: bool, detail: str) -> None:
         failures.append(name)
 
 
-#: Where this process's own app is listening.
+#: Where the FastAPI service actually answers, reached the way every
+#: other component reaches it.
 #:
-#: What is MEASURED, inside a live replica: `localhost` resolves to both
-#: 127.0.0.1 and ::1, with the IPv4 address first; at rest, GET /health
-#: on either returns 200. So a plain name lookup is not, by itself, the
-#: bug -- and the tidy "localhost picks ::1 and ::1 is dead" story does
-#: not survive that measurement. Do not repeat it as the cause.
+#: This USED to be `http://127.0.0.1:8000/health`, and that was correct
+#: under Azure: cd.yml ran this file with `az containerapp exec` INSIDE a
+#: live fastapi-cc replica, so loopback was the app's own listening
+#: socket. The ECS port (2026-09-08) runs it as a standalone RunTask that
+#: overrides the container command to `python3 .../post_deploy_smoke.py`
+#: — so uvicorn never starts in this container and nothing binds :8000.
+#: Loopback here could only ever fail, and on 2026-09-18 it did, taking
+#: a deployment whose seven services had all reached steady state with
+#: it. The check was measuring the smoke container, not the product.
 #:
-#: What is KNOWN about the failure: on 2026-08-23 this check raised
-#: `[Errno 99] Cannot assign requested address` seconds after the
-#: rollout, while the other three checks in this same script -- Laravel,
-#: Postgres, Qdrant -- all passed from the same container at the same
-#: moment. So container networking was up; the LOOPBACK specifically was
-#: not usable yet. EADDRNOTAVAIL is "that address is not assignable",
-#: not the ECONNREFUSED a closed port gives, which fits an interface
-#: still being configured rather than an app not yet listening.
+#: Reading FASTAPI_INTERNAL_URL is not merely the repair, it is a
+#: stronger check than the original. Loopback proved "a socket in this
+#: container answers". This proves the service is registered in Cloud
+#: Map, the name resolves, the security group permits the hop, and the
+#: app answers — which is what every caller in the platform depends on
+#: and what a rollout can actually break.
 #:
-#: The retry below is therefore the load-bearing fix. The literal is
-#: defence in depth: it removes a resolution step and a second address
-#: family from a path that has already produced this error once, and
-#: costs nothing.
-#:
-#: 8000 is fastapi-cc's ingress `targetPort`. Not read from a PORT
-#: variable: there isn't one in this container (verified inside a live
-#: replica), so an env lookup would be a derivation from nothing that
-#: silently redirects the check the day somebody sets PORT for an
-#: unrelated reason. If targetPort ever moves, this check fails loudly,
-#: which is the correct outcome -- the app would not be answering where
-#: the ingress sends traffic either.
-SELF_URL = "http://127.0.0.1:8000/health"
+#: Unset must FAIL, for the same reason check_laravel_bridge treats an
+#: unset LARAVEL_INTERNAL_URL as a failure: a gate that invents a
+#: fallback address stops testing the deployment and starts testing its
+#: own default. config.tf sets this on the fastapi task definition, and
+#: the smoke task is registered from that definition, so it is present
+#: unless someone removes it — in which case the product is broken too.
 
-#: This runs seconds after the rollout reports the revision healthy, at
-#: which point the process may be listening but not yet serving. One
-#: attempt makes the gate a coin toss on startup timing, and its failure
-#: mode is a full rollback of five apps -- so retry, briefly, and only
-#: for the connection.
+#: The old loopback diagnosis, kept because it must not be re-derived:
+#: on 2026-08-23 the in-replica check raised `[Errno 99] Cannot assign
+#: requested address` seconds after a rollout while Laravel, Postgres and
+#: Qdrant all passed from the same container. That was measured, and the
+#: tidy "localhost picks ::1 and ::1 is dead" story does not survive the
+#: measurement — at rest both 127.0.0.1 and ::1 answered 200. It is
+#: history now rather than a live concern, since nothing dials loopback,
+#: but it is why the retry below exists and the retry is still needed:
+#: this runs seconds after ECS reports steady state, when a task may be
+#: registered in Cloud Map without yet serving.
 SELF_ATTEMPTS = 6
 SELF_BACKOFF = 5
 
 
 def check_fastapi_self() -> None:
+    base = os.environ.get("FASTAPI_INTERNAL_URL", "")
+    if not base:
+        _report("fastapi-self", False, "FASTAPI_INTERNAL_URL is UNSET")
+        return
+    if "localhost" in base or "127.0.0.1" in base:
+        _report(
+            "fastapi-self", False,
+            f"FASTAPI_INTERNAL_URL={base} points at loopback. This task runs "
+            "the smoke script INSTEAD of uvicorn, so nothing listens here — "
+            "it must address the fastapi service, not this container.",
+        )
+        return
+
+    url = base.rstrip("/") + "/health"
     last = ""
     for attempt in range(1, SELF_ATTEMPTS + 1):
         try:
-            with urllib.request.urlopen(SELF_URL, timeout=TIMEOUT) as r:
+            with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
                 body = r.read().decode()[:200]
             _report(
                 "fastapi-self",
                 r.status == 200,
-                f"HTTP {r.status} {body}"
+                f"{url} -> HTTP {r.status} {body}"
                 + (f" (attempt {attempt})" if attempt > 1 else ""),
             )
             return
@@ -152,7 +183,7 @@ def check_fastapi_self() -> None:
     _report(
         "fastapi-self", False,
         f"{last} (after {SELF_ATTEMPTS} attempts over "
-        f"{SELF_BACKOFF * (SELF_ATTEMPTS - 1)}s against {SELF_URL})",
+        f"{SELF_BACKOFF * (SELF_ATTEMPTS - 1)}s against {url})",
     )
 
 
@@ -258,15 +289,75 @@ def check_answer_path() -> None:
         )
         return
     key = os.environ.get("FASTAPI_SERVICE_KEY", "")
+    if not key:
+        _report("answer-path", False, "FASTAPI_SERVICE_KEY is UNSET")
+        return
+
+    # X-Service-Key ALONE IS NOT ENOUGH, and this check used to send only
+    # that. app/services/auth.py closed the graceful-rollout window where it
+    # was (Module 9 Chunk 9.4 / A1-02): /internal/queries is not in
+    # _AUTH_OPTIONAL_PATH_PREFIXES, so a request with no `Authorization`
+    # header is refused with 401 "Authorization header required" before any
+    # of the answer path runs.
+    #
+    # That made this check unable to pass. It went unnoticed because it only
+    # runs when PROD_SMOKE_PROJECT_ID is set and nobody had set it — so the
+    # first person to enable it would have read a 401 as "the answer path is
+    # broken" when the truth was "the gate never learned to authenticate".
+    # Same shape as the loopback defect in check_fastapi_self above: written
+    # against an older contract, never exercised since, could only fail.
+    #
+    # Mirrors app/Services/FastApiJwtMinter.php exactly — HS256 over
+    # FASTAPI_SERVICE_KEY, iss georag-laravel, aud georag-fastapi, 60 s TTL,
+    # and the `kid` header FastAPI maps back to a signing key.
+    try:
+        import jwt  # noqa: PLC0415 — present in the fastapi image
+    except ImportError:
+        _report("answer-path", False, "PyJWT missing — cannot mint the service JWT")
+        return
+
+    now = int(time.time())
+    claims = {
+        "iss": "georag-laravel",
+        "aud": "georag-fastapi",
+        "sub": "0",
+        "project_id": project_id,
+        "roles": [],
+        "iat": now,
+        "exp": now + 60,
+    }
+    workspace_id = os.environ.get("PROD_SMOKE_WORKSPACE_ID", "")
+    if workspace_id:
+        claims["workspace_id"] = workspace_id
+    bearer = jwt.encode(
+        claims, key, algorithm="HS256",
+        headers={"kid": os.environ.get("FASTAPI_SERVICE_KEY_KID", "primary")},
+    )
+
     body = json.dumps({
         "query": "What does this project contain?",
         "project_id": project_id,
         "workspace_id": os.environ.get("PROD_SMOKE_WORKSPACE_ID", ""),
     }).encode()
+    # Same correction as check_fastapi_self: loopback is not this
+    # container's app under the RunTask harness. Guarded rather than
+    # assumed — this check is opt-in and would otherwise fail for a
+    # reason that has nothing to do with the answer path.
+    base = os.environ.get("FASTAPI_INTERNAL_URL", "")
+    if not base or "localhost" in base or "127.0.0.1" in base:
+        _report(
+            "answer-path", False,
+            f"FASTAPI_INTERNAL_URL={base or 'UNSET'} is not an in-VPC address",
+        )
+        return
     req = urllib.request.Request(
-        "http://localhost:8000/internal/queries",
+        base.rstrip("/") + "/internal/queries",
         data=body,
-        headers={"Content-Type": "application/json", "X-Service-Key": key},
+        headers={
+            "Content-Type": "application/json",
+            "X-Service-Key": key,
+            "Authorization": f"Bearer {bearer}",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=90) as r:

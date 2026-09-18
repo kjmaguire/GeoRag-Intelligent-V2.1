@@ -484,3 +484,131 @@ def test_the_module_still_says_its_wire_shape_is_unverified() -> None:
     """
     assert llm_cohere.__doc__ is not None
     assert "[UNVERIFIED]" in llm_cohere.__doc__
+
+
+# ---------------------------------------------------------------------------
+# The live-failure shapes (2026-09-18)
+#
+# The rehearsal's first real query against the deployment died with
+# CohereResponseShapeError: "the Cohere stream produced no text". The adapter
+# passed every test above and still could not read the host it talks to,
+# because the fake in ops/validation/tests/fake_cohere.py emits the same shape
+# _delta_text expects — it encodes our assumption, not Cohere's behaviour.
+#
+# These tests cover the two things that can be fixed without knowing the real
+# shape: parse the spellings our own non-streaming parser already accepts, and
+# make the failure carry the evidence needed to identify the shape from ONE
+# occurrence rather than a second credentialed probe run.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_content_list_of_blocks_streams(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_extract_content` has always accepted `content` as a list of typed
+    blocks. `_delta_text` did not, so whichever spelling the host actually
+    sends, only one of the two paths could have worked."""
+    _install(
+        monkeypatch,
+        _sse(
+            json.dumps({"type": "content-delta", "delta": {"message": {"content": [{"type": "text", "text": "Hel"}]}}}),
+            json.dumps({"type": "content-delta", "delta": {"message": {"content": [{"type": "text", "text": "lo"}]}}}),
+            "[DONE]",
+        ),
+    )
+    deltas: list[str] = []
+    answer = await call_cohere_llm("q", 0.2, token_callback=await _collect(deltas))
+    assert deltas == ["Hel", "lo"]
+    assert answer == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_message_text_beside_content_streams(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(
+        monkeypatch,
+        _sse(json.dumps({"type": "content-delta", "delta": {"message": {"text": "Hi"}}}), "[DONE]"),
+    )
+    deltas: list[str] = []
+    assert await call_cohere_llm("q", 0.2, token_callback=await _collect(deltas)) == "Hi"
+    assert deltas == ["Hi"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_stream_reports_the_event_types_it_saw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure must identify the shape. Without this the only next step is
+    another run against a credentialed host — which is exactly where the
+    2026-09-18 rehearsal stalled."""
+    _install(
+        monkeypatch,
+        _sse(
+            json.dumps({"type": "content-start", "index": 0}),
+            json.dumps({"type": "some-unknown-delta", "payload": {"chunk": "Hello"}}),
+            "[DONE]",
+        ),
+    )
+    with pytest.raises(CohereResponseShapeError) as excinfo:
+        await call_cohere_llm("q", 0.2, token_callback=await _collect([]))
+
+    message = str(excinfo.value)
+    assert "content-start" in message
+    assert "some-unknown-delta" in message
+    # The path that would fix it must be visible.
+    assert "payload" in message and "chunk" in message
+
+
+@pytest.mark.asyncio
+async def test_the_failure_report_never_discloses_delta_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deltas carry workspace text. An operator debugging a wire shape in
+    CloudWatch must not thereby read a tenant's geology, so the fingerprint
+    is keys and types only."""
+    secret = "HIGHLY-CONFIDENTIAL-ASSAY-14.7-g-t-Au"
+    _install(
+        monkeypatch,
+        _sse(json.dumps({"type": "mystery", "payload": {"chunk": secret}}), "[DONE]"),
+    )
+    with pytest.raises(CohereResponseShapeError) as excinfo:
+        await call_cohere_llm("q", 0.2, token_callback=await _collect([]))
+
+    message = str(excinfo.value)
+    assert secret not in message
+    assert "14.7" not in message
+    # The LENGTH is reported, which is what distinguishes an empty delta from
+    # a full one without disclosing either.
+    assert f"str({len(secret)})" in message
+
+
+@pytest.mark.asyncio
+async def test_a_response_that_is_not_an_event_stream_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Distinguished from "unknown shape" because the fix is different: this
+    one means `stream` did not survive into the request, or the host framed
+    the reply some other way."""
+
+    def _plain_json(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": [{"type": "text", "text": "hi"}]}})
+
+    _install(monkeypatch, _plain_json)
+    with pytest.raises(CohereResponseShapeError) as excinfo:
+        await call_cohere_llm("q", 0.2, token_callback=await _collect([]))
+
+    assert "no SSE `data:` frame was parsed at all" in str(excinfo.value)
+
+
+def test_the_shape_fingerprint_describes_structure_without_values() -> None:
+    fingerprint = llm_cohere._shape_fingerprint(
+        {"type": "content-delta", "delta": {"message": {"content": [{"text": "secret words here"}]}}}
+    )
+    assert fingerprint == {
+        "type": "str(13)",
+        "delta": {"message": {"content": [{"text": "str(17)"}]}},
+    }
+
+
+def test_the_shape_fingerprint_collapses_long_lists() -> None:
+    """A 400-delta stream must not print 400 identical fingerprints."""
+    got = llm_cohere._shape_fingerprint({"blocks": [{"text": "a"}] * 400})
+    assert got == {"blocks": [{"text": "str(1)"}, "...x400"]}

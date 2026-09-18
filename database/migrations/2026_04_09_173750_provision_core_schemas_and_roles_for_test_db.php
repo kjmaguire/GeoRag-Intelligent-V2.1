@@ -54,7 +54,13 @@ return new class extends Migration
         DB::statement('CREATE SCHEMA IF NOT EXISTS index');
 
         DB::statement('CREATE EXTENSION IF NOT EXISTS postgis');
-        DB::statement('CREATE EXTENSION IF NOT EXISTS postgis_topology');
+        // postgis_topology deliberately absent: RDS for PG 18 rejects it
+        // outright ("extension is not available"), verified live on a
+        // go-live rehearsal (2026-09-18) when this migration ran against
+        // the real RDS instance via the pgsql_migrations connection — see
+        // deploy/aws/bootstrap.sql and ADR-0022 for the full story. Zero
+        // call sites in this repository either way (ST_SimplifyPreserve
+        // Topology, the only "Topology" match, is core postgis).
         DB::statement('CREATE EXTENSION IF NOT EXISTS pg_trgm');
         DB::statement('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
 

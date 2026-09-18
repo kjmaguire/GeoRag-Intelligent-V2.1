@@ -72,9 +72,14 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_collars_workspace_id
     ON silver.collars (workspace_id);
 
--- Drop the legacy project-scoped policy that allowed-when-NULL.
-DROP POLICY IF EXISTS collars_project_scope ON silver.collars;
-DROP POLICY IF EXISTS collars_owner_access  ON silver.collars;
+-- Drop the legacy project-scoped policy that allowed-when-NULL, and the
+-- workspace_isolation policy itself so a re-run (db:apply-raw runs every
+-- deploy, unconditionally) doesn't fail with "policy already exists" —
+-- verified live on a go-live rehearsal (2026-09-18): the DROP below was
+-- missing and a second run of this file failed exactly that way.
+DROP POLICY IF EXISTS collars_project_scope    ON silver.collars;
+DROP POLICY IF EXISTS collars_owner_access     ON silver.collars;
+DROP POLICY IF EXISTS collars_workspace_isolation ON silver.collars;
 
 ALTER TABLE silver.collars ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.collars FORCE  ROW LEVEL SECURITY;
@@ -121,8 +126,9 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_reports_workspace_id
     ON silver.reports (workspace_id);
 
-DROP POLICY IF EXISTS reports_project_scope ON silver.reports;
-DROP POLICY IF EXISTS reports_owner_access  ON silver.reports;
+DROP POLICY IF EXISTS reports_project_scope    ON silver.reports;
+DROP POLICY IF EXISTS reports_owner_access     ON silver.reports;
+DROP POLICY IF EXISTS reports_workspace_isolation ON silver.reports;
 
 ALTER TABLE silver.reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.reports FORCE  ROW LEVEL SECURITY;
@@ -171,7 +177,8 @@ CREATE INDEX IF NOT EXISTS idx_well_log_curves_workspace_id
 ALTER TABLE silver.well_log_curves ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.well_log_curves FORCE  ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS well_log_curves_project_scope ON silver.well_log_curves;
+DROP POLICY IF EXISTS well_log_curves_project_scope     ON silver.well_log_curves;
+DROP POLICY IF EXISTS well_log_curves_workspace_isolation ON silver.well_log_curves;
 
 CREATE POLICY well_log_curves_workspace_isolation ON silver.well_log_curves
     USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
@@ -256,6 +263,8 @@ CREATE INDEX IF NOT EXISTS idx_spatial_features_workspace_id
 
 ALTER TABLE silver.spatial_features ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.spatial_features FORCE  ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS spatial_features_workspace_isolation ON silver.spatial_features;
 
 CREATE POLICY spatial_features_workspace_isolation ON silver.spatial_features
     USING (workspace_id = current_setting('app.workspace_id', true)::uuid)

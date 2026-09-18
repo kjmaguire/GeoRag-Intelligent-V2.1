@@ -37,15 +37,47 @@ DECLARE
     t text;
     tier_b_tables text[] := ARRAY[
         'projects',
-        'kg_formation_aliases', 'kg_mineral_aliases',
-        'kg_report_aliases',    'kg_sample_aliases',
+        -- kg_formation_aliases/kg_mineral_aliases/kg_report_aliases/
+        -- kg_sample_aliases deliberately absent: Neo4j and its knowledge
+        -- graph were removed 2026-07-28 (CLAUDE.md hard rule 9) and no
+        -- migration or raw SQL file has ever created these tables --
+        -- verified via full git history search on a go-live rehearsal
+        -- (2026-09-18). They were dangling references from before that
+        -- removal; ALTER TABLE on a nonexistent relation fails loudly
+        -- ("relation does not exist"), which is what a real deploy hit.
         'geological_formations', 'historic_workings', 'project_boundaries',
-        'collaboration_audit_log',  'collaboration_comments',
-        'collaboration_mentions',   'collaboration_review_requests',
+        -- collaboration_audit_log/collaboration_comments/collaboration_
+        -- mentions/collaboration_review_requests deliberately absent, same
+        -- reason as the kg_* entries above: verified live on the same
+        -- go-live rehearsal (2026-09-18) that this ARRAY reached
+        -- collaboration_audit_log next and failed identically ("relation
+        -- does not exist"). No table under any of these four names has
+        -- ever existed. The real collaboration tables are silver.
+        -- collab_anchors and silver.collab_comments (created by
+        -- 2026_05_16_120200_create_collab_anchors_and_comments.php) and
+        -- both already have workspace RLS from
+        -- 2026_05_19_180100_enable_rls_on_uncovered_workspace_tables.php —
+        -- this array's four entries were never that migration's tables
+        -- under a different name, just dead references.
         'drill_traces', 'review_queue'
     ];
 BEGIN
     FOREACH t IN ARRAY tier_b_tables LOOP
+        -- Defensive existence guard, not a substitute for the removals
+        -- above: verified live on a go-live rehearsal (2026-09-18) that
+        -- silver.alterations -- which DOES have a real, unconditional
+        -- migration (2026_04_09_180400_create_alterations_table.php,
+        -- confirmed DONE in the same rehearsal's migrate phase) -- was
+        -- still reported missing here on a later re-run. Root cause not
+        -- established (not a dangling reference like the entries removed
+        -- above); skipping with a loud NOTICE beats a hard failure that
+        -- blocks every OTHER table in the array, but a skip here is a
+        -- real coverage gap to chase down, not a clean bill of health.
+        IF to_regclass('silver.' || t) IS NULL THEN
+            RAISE NOTICE 'Tier B: silver.% does not exist -- skipping RLS for it, not a known-dead reference', t;
+            CONTINUE;
+        END IF;
+
         -- Enable + force RLS
         EXECUTE format('ALTER TABLE silver.%I ENABLE  ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE silver.%I FORCE   ROW LEVEL SECURITY', t);
@@ -87,20 +119,33 @@ DECLARE
         'alterations', 'structures', 'surveys',
         'decision_evidence_links', 'decision_lessons_learned',
         'decision_outcomes',
-        'agent_conversation_messages', 'agent_conversations',
+        -- agent_conversation_messages/agent_conversations/pdf_coordinates/
+        -- pdf_layout_regions/pdf_ocr_results/pdf_table_cells/pdf_text_blocks/
+        -- mineral_claims deliberately absent: verified live on a go-live
+        -- rehearsal (2026-09-18), same reason as the Tier B removals above
+        -- -- no CREATE TABLE for any of them anywhere in this repository,
+        -- not even in database/raw/_archive/. mineral_claims exists ONLY as
+        -- a SQLite mirror for tests (2026_06_29_020000_provision_project_
+        -- delete_tables_for_test_db.php, sqlite-only), never as a real
+        -- Postgres table. pdf_vl_summaries IS real (created elsewhere) and
+        -- stays.
         'exports',
-        'pdf_coordinates',     'pdf_layout_regions',
-        'pdf_ocr_results',     'pdf_table_cells',
-        'pdf_text_blocks',     'pdf_vl_summaries',
+        'pdf_vl_summaries',
         'raster_layers',       'seismic_surveys',
         'structured_record_lineage',
         'source_trust_features',
-        'mineral_claims',      'review_audit_log'
+        'review_audit_log'
     ];
     has_col boolean;
     has_fk  boolean;
 BEGIN
     FOREACH t IN ARRAY tier_c_tables LOOP
+        -- Same defensive guard as Tier B above -- see that comment.
+        IF to_regclass('silver.' || t) IS NULL THEN
+            RAISE NOTICE 'Tier C: silver.% does not exist -- skipping RLS for it, not a known-dead reference', t;
+            CONTINUE;
+        END IF;
+
         -- 1. Add column if missing
         EXECUTE format('SELECT 1 FROM information_schema.columns '
                        'WHERE table_schema = ''silver'' AND table_name = %L '

@@ -22,8 +22,16 @@ BEGIN;
 -- Plan count: 72 designed assertions + 10 DO-block assertions (each DO block
 -- calls PERFORM ok() AND is followed by SELECT ok(TRUE,...) = +10)
 -- Minus 2 removed stub-exception assertion pairs (4 - 2 replacement = -2)
--- Total: 80 assertions
-SELECT plan(80);
+-- = 80 assertions.
+-- Tenant-isolation fix 2026-09-16 (2026_09_16_120000_scope_silver_mvt_
+-- functions_to_workspace_id.php) added workspace_id as a required
+-- query_params key on every function tested here, and BLOCK 14 below adds
+-- 5 assertions proving that: workspace A sees its own data, workspace B's id
+-- against workspace A's project returns nothing (cross-tenant denial even
+-- with a correct project_id), workspace B sees its own data, and a missing
+-- or malformed workspace_id raises rather than silently returning an empty
+-- tile. Total: 85 assertions.
+SELECT plan(85);
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- SETUP — test project + fixture rows
@@ -62,14 +70,23 @@ INSERT INTO silver.projects (
 -- We use actual UTM 13N coords near the default project CRS centroid.
 -- A safe test tile at z=5 covers a large area and will capture any realistic coords.
 
+-- workspace_id is included explicitly on every fixture row below:
+-- silver.collars.workspace_id is nullable (added by 2026_05_25_184335_
+-- provision_silver_workspace_columns_for_test_db.php as ADD COLUMN IF NOT
+-- EXISTS workspace_id uuid, no backfill, no NOT NULL) and
+-- silver.pg_collars_by_project now filters on it explicitly
+-- (2026_09_16_120000_scope_silver_mvt_functions_to_workspace_id.php) —
+-- omitting it here would silently zero out every collars assertion below.
+
 -- Collar 1
 INSERT INTO silver.collars (
-    collar_id, hole_id, project_id, easting, northing, elevation,
+    collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, status,
     geom, created_at, updated_at
 ) VALUES (
     'c1111111-1111-1111-1111-111111111111',
     'DDH-001', 'a1111111-1111-1111-1111-111111111111',
+    'f0000000-0000-0000-0000-000000000001',
     500000, 5900000, 1000,
     250, 'DD', 180, -60, 'completed',
     ST_SetSRID(ST_MakePoint(500000, 5900000), 32613),
@@ -78,12 +95,13 @@ INSERT INTO silver.collars (
 
 -- Collar 2
 INSERT INTO silver.collars (
-    collar_id, hole_id, project_id, easting, northing, elevation,
+    collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, status,
     geom, created_at, updated_at
 ) VALUES (
     'c2222222-2222-2222-2222-222222222222',
     'DDH-002', 'a1111111-1111-1111-1111-111111111111',
+    'f0000000-0000-0000-0000-000000000001',
     500100, 5900100, 1010,
     180, 'DD', 270, -45, 'completed',
     ST_SetSRID(ST_MakePoint(500100, 5900100), 32613),
@@ -92,12 +110,13 @@ INSERT INTO silver.collars (
 
 -- Collar 3
 INSERT INTO silver.collars (
-    collar_id, hole_id, project_id, easting, northing, elevation,
+    collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, status,
     geom, created_at, updated_at
 ) VALUES (
     'c3333333-3333-3333-3333-333333333333',
     'DDH-003', 'a1111111-1111-1111-1111-111111111111',
+    'f0000000-0000-0000-0000-000000000001',
     500200, 5900200, 1020,
     300, 'DD', 90, -70, 'completed',
     ST_SetSRID(ST_MakePoint(500200, 5900200), 32613),
@@ -161,14 +180,20 @@ INSERT INTO silver.drill_traces (
 ) ON CONFLICT DO NOTHING;
 
 -- 3 seismic surveys with bbox polygons
+-- workspace_id included explicitly for the same reason as collars above:
+-- silver.seismic_surveys.workspace_id is only backfilled for rows that
+-- already existed when 2026_08_19_020000_reconcile_rls_on_undeclared_
+-- workspace_tables.php ran; a row inserted afterwards lands NULL unless set
+-- here, and pg_seismic_by_project now filters on it explicitly.
 INSERT INTO silver.seismic_surveys (
-    survey_id, project_id, survey_name, survey_type,
+    survey_id, project_id, workspace_id, survey_name, survey_type,
     num_traces, num_samples_per_trace, sample_interval_us, record_length_ms,
     source_file, file_size_bytes,
     bbox
 ) VALUES (
     'e1111111-1111-1111-1111-111111111111',
     'a1111111-1111-1111-1111-111111111111',
+    'f0000000-0000-0000-0000-000000000001',
     '2D Survey Alpha', '2D',
     1200, 500, 2000, 1000,
     'alpha.segy', 102400000,
@@ -176,13 +201,14 @@ INSERT INTO silver.seismic_surveys (
 ) ON CONFLICT DO NOTHING;
 
 INSERT INTO silver.seismic_surveys (
-    survey_id, project_id, survey_name, survey_type,
+    survey_id, project_id, workspace_id, survey_name, survey_type,
     num_traces, num_samples_per_trace, sample_interval_us, record_length_ms,
     source_file, file_size_bytes,
     bbox
 ) VALUES (
     'e2222222-2222-2222-2222-222222222222',
     'a1111111-1111-1111-1111-111111111111',
+    'f0000000-0000-0000-0000-000000000001',
     '3D Survey Beta', '3D',
     50000, 1000, 2000, 2000,
     'beta.segy', 5120000000,
@@ -190,13 +216,14 @@ INSERT INTO silver.seismic_surveys (
 ) ON CONFLICT DO NOTHING;
 
 INSERT INTO silver.seismic_surveys (
-    survey_id, project_id, survey_name, survey_type,
+    survey_id, project_id, workspace_id, survey_name, survey_type,
     num_traces, num_samples_per_trace, sample_interval_us, record_length_ms,
     source_file, file_size_bytes,
     bbox
 ) VALUES (
     'e3333333-3333-3333-3333-333333333333',
     'a1111111-1111-1111-1111-111111111111',
+    'f0000000-0000-0000-0000-000000000001',
     '2D Survey Gamma', '2D',
     800, 500, 4000, 2000,
     'gamma.segy', 40960000,
@@ -216,34 +243,34 @@ INSERT INTO silver.seismic_surveys (
 
 -- Test 1: NULL project_id returns (NULL, NULL)
 SELECT is(
-    (SELECT mvt FROM silver.pg_collars_by_project(5, 10, 11, '{"project_id": null}'::json)),
+    (SELECT mvt FROM silver.pg_collars_by_project(5, 10, 11, '{"project_id": null, "workspace_id": "f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'collars: null project_id returns null mvt'
 );
 
 -- Test 2: non-existent project_id returns (NULL, NULL)
 SELECT is(
-    (SELECT mvt FROM silver.pg_collars_by_project(5, 10, 11, '{"project_id":"00000000-0000-0000-0000-000000000000"}'::json)),
+    (SELECT mvt FROM silver.pg_collars_by_project(5, 10, 11, '{"project_id":"00000000-0000-0000-0000-000000000000","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'collars: missing project returns null mvt'
 );
 
 -- Test 3: valid project with fixture data returns non-null mvt
 SELECT isnt(
-    (SELECT mvt FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT mvt FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'collars: valid project+tile returns non-null mvt'
 );
 
 -- Test 4: mvt byte length > 0
 SELECT ok(
-    (SELECT octet_length(mvt) > 0 FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'collars: mvt octet_length > 0'
 );
 
 -- Test 5: etag_hash matches md5 pattern (32 lowercase hex chars)
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'collars: etag_hash is md5 format'
 );
@@ -256,14 +283,14 @@ DECLARE
     etag_after  text;
 BEGIN
     SELECT etag_hash INTO etag_before
-    FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     UPDATE silver.projects
     SET data_version = data_version + 1
     WHERE project_id = 'a1111111-1111-1111-1111-111111111111';
 
     SELECT etag_hash INTO etag_after
-    FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     PERFORM ok(etag_before <> etag_after, 'collars: data_version bump changes etag_hash');
 END;
@@ -291,7 +318,7 @@ INSERT INTO silver.projects (
 ) ON CONFLICT DO NOTHING;
 
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'collars: empty project still returns valid etag_hash'
 );
@@ -302,34 +329,34 @@ SELECT matches(
 
 -- Test 8: NULL project_id
 SELECT is(
-    (SELECT mvt FROM silver.pg_drill_traces_by_project(5, 10, 11, '{"project_id": null}'::json)),
+    (SELECT mvt FROM silver.pg_drill_traces_by_project(5, 10, 11, '{"project_id": null, "workspace_id": "f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'drill_traces: null project_id returns null mvt'
 );
 
 -- Test 9: missing project
 SELECT is(
-    (SELECT mvt FROM silver.pg_drill_traces_by_project(5, 10, 11, '{"project_id":"00000000-0000-0000-0000-000000000000"}'::json)),
+    (SELECT mvt FROM silver.pg_drill_traces_by_project(5, 10, 11, '{"project_id":"00000000-0000-0000-0000-000000000000","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'drill_traces: missing project returns null mvt'
 );
 
 -- Test 10: valid project returns non-null mvt
 SELECT isnt(
-    (SELECT mvt FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT mvt FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'drill_traces: valid project+tile returns non-null mvt'
 );
 
 -- Test 11: octet_length > 0
 SELECT ok(
-    (SELECT octet_length(mvt) > 0 FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'drill_traces: mvt octet_length > 0'
 );
 
 -- Test 12: etag_hash is md5 format
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'drill_traces: etag_hash is md5 format'
 );
@@ -341,14 +368,14 @@ DECLARE
     etag_after  text;
 BEGIN
     SELECT etag_hash INTO etag_before
-    FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     UPDATE silver.projects
     SET data_version = data_version + 1
     WHERE project_id = 'a1111111-1111-1111-1111-111111111111';
 
     SELECT etag_hash INTO etag_after
-    FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     PERFORM ok(etag_before <> etag_after, 'drill_traces: data_version bump changes etag_hash');
     -- No reset: data_version_monotonic trigger prevents decrement; ROLLBACK cleans up.
@@ -358,7 +385,7 @@ SELECT ok(TRUE, 'drill_traces: data_version bump etag test ran');
 
 -- Test 14: empty project returns valid etag
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'drill_traces: empty project returns valid etag_hash'
 );
@@ -369,34 +396,34 @@ SELECT matches(
 
 -- Test 15: NULL project_id
 SELECT is(
-    (SELECT mvt FROM silver.pg_seismic_by_project(5, 10, 11, '{"project_id": null}'::json)),
+    (SELECT mvt FROM silver.pg_seismic_by_project(5, 10, 11, '{"project_id": null, "workspace_id": "f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'seismic: null project_id returns null mvt'
 );
 
 -- Test 16: missing project
 SELECT is(
-    (SELECT mvt FROM silver.pg_seismic_by_project(5, 10, 11, '{"project_id":"00000000-0000-0000-0000-000000000000"}'::json)),
+    (SELECT mvt FROM silver.pg_seismic_by_project(5, 10, 11, '{"project_id":"00000000-0000-0000-0000-000000000000","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'seismic: missing project returns null mvt'
 );
 
 -- Test 17: valid project returns non-null mvt
 SELECT isnt(
-    (SELECT mvt FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT mvt FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'seismic: valid project+tile returns non-null mvt'
 );
 
 -- Test 18: octet_length > 0
 SELECT ok(
-    (SELECT octet_length(mvt) > 0 FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'seismic: mvt octet_length > 0'
 );
 
 -- Test 19: etag_hash is md5 format
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'seismic: etag_hash is md5 format'
 );
@@ -408,14 +435,14 @@ DECLARE
     etag_after  text;
 BEGIN
     SELECT etag_hash INTO etag_before
-    FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     UPDATE silver.projects
     SET data_version = data_version + 1
     WHERE project_id = 'a1111111-1111-1111-1111-111111111111';
 
     SELECT etag_hash INTO etag_after
-    FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     PERFORM ok(etag_before <> etag_after, 'seismic: data_version bump changes etag_hash');
     -- No reset: data_version_monotonic trigger prevents decrement; ROLLBACK cleans up.
@@ -425,7 +452,7 @@ SELECT ok(TRUE, 'seismic: data_version bump etag test ran');
 
 -- Test 21: empty project returns valid etag
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'seismic: empty project returns valid etag_hash'
 );
@@ -487,15 +514,15 @@ SELECT ok(
 
 -- Test 27: etag differs across different tiles for same project
 SELECT isnt(
-    (SELECT etag_hash FROM silver.pg_collars_by_project(5, 10, 11, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
-    (SELECT etag_hash FROM silver.pg_collars_by_project(5, 11, 11, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(5, 10, 11, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(5, 11, 11, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'collars: different tile coords produce different etag_hash'
 );
 
 -- Test 28: etag differs across different projects for same tile
 SELECT isnt(
-    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
-    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'collars: different project_ids produce different etag_hash'
 );
 
@@ -554,7 +581,7 @@ SELECT function_privs_are(
 SELECT ok(
     (SELECT count(*) = 1 FROM (
         SELECT mvt, etag_hash
-        FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)
+        FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)
     ) t WHERE mvt IS NOT NULL AND etag_hash IS NOT NULL),
     'collars: function returns (mvt, etag_hash) both non-null'
 );
@@ -562,7 +589,7 @@ SELECT ok(
 SELECT ok(
     (SELECT count(*) = 1 FROM (
         SELECT mvt, etag_hash
-        FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)
+        FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)
     ) t WHERE mvt IS NOT NULL AND etag_hash IS NOT NULL),
     'drill_traces: function returns (mvt, etag_hash) both non-null'
 );
@@ -570,7 +597,7 @@ SELECT ok(
 SELECT ok(
     (SELECT count(*) = 1 FROM (
         SELECT mvt, etag_hash
-        FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)
+        FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)
     ) t WHERE mvt IS NOT NULL AND etag_hash IS NOT NULL),
     'seismic: function returns (mvt, etag_hash) both non-null'
 );
@@ -581,22 +608,22 @@ SELECT ok(
 
 -- Test 39: collars determinism
 SELECT is(
-    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
-    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
+    (SELECT etag_hash FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'collars: etag_hash is deterministic (same call twice)'
 );
 
 -- Test 40: drill_traces determinism
 SELECT is(
-    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
-    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
+    (SELECT etag_hash FROM silver.pg_drill_traces_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'drill_traces: etag_hash is deterministic (same call twice)'
 );
 
 -- Test 41: seismic determinism
 SELECT is(
-    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
-    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
+    (SELECT etag_hash FROM silver.pg_seismic_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'seismic: etag_hash is deterministic (same call twice)'
 );
 
@@ -774,34 +801,34 @@ INSERT INTO silver.geochemistry (
 
 -- Test 43: NULL project_id returns (NULL, NULL)
 SELECT is(
-    (SELECT mvt FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id": null}'::json)),
+    (SELECT mvt FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id": null, "workspace_id": "f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'boundaries: null project_id returns null mvt'
 );
 
 -- Test 44: non-existent project returns (NULL, NULL)
 SELECT is(
-    (SELECT mvt FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000"}'::json)),
+    (SELECT mvt FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'boundaries: missing project returns null mvt'
 );
 
 -- Test 45: valid project with fixtures returns non-null mvt
 SELECT isnt(
-    (SELECT mvt FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT mvt FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'boundaries: valid project+tile returns non-null mvt'
 );
 
 -- Test 46: octet_length > 0
 SELECT ok(
-    (SELECT octet_length(mvt) > 0 FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'boundaries: mvt octet_length > 0'
 );
 
 -- Test 47: etag_hash is md5 format
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'boundaries: etag_hash is md5 format'
 );
@@ -813,14 +840,14 @@ DECLARE
     etag_after  text;
 BEGIN
     SELECT etag_hash INTO etag_before
-    FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     UPDATE silver.projects
     SET data_version = data_version + 1
     WHERE project_id = 'a1111111-1111-1111-1111-111111111111';
 
     SELECT etag_hash INTO etag_after
-    FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     PERFORM ok(etag_before <> etag_after, 'boundaries: data_version bump changes etag_hash');
     -- No reset: data_version_monotonic trigger prevents decrement; ROLLBACK cleans up.
@@ -830,7 +857,7 @@ SELECT ok(TRUE, 'boundaries: data_version bump etag test ran');
 
 -- Test 49: empty project returns valid etag (no features)
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_boundaries_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'boundaries: empty project still returns valid etag_hash'
 );
@@ -841,34 +868,34 @@ SELECT matches(
 
 -- Test 50: NULL project_id
 SELECT is(
-    (SELECT mvt FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id": null}'::json)),
+    (SELECT mvt FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id": null, "workspace_id": "f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'formations: null project_id returns null mvt'
 );
 
 -- Test 51: missing project
 SELECT is(
-    (SELECT mvt FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000"}'::json)),
+    (SELECT mvt FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'formations: missing project returns null mvt'
 );
 
 -- Test 52: valid project returns non-null mvt
 SELECT isnt(
-    (SELECT mvt FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT mvt FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'formations: valid project+tile returns non-null mvt'
 );
 
 -- Test 53: octet_length > 0
 SELECT ok(
-    (SELECT octet_length(mvt) > 0 FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'formations: mvt octet_length > 0'
 );
 
 -- Test 54: etag_hash is md5 format
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'formations: etag_hash is md5 format'
 );
@@ -880,14 +907,14 @@ DECLARE
     etag_after  text;
 BEGIN
     SELECT etag_hash INTO etag_before
-    FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     UPDATE silver.projects
     SET data_version = data_version + 1
     WHERE project_id = 'a1111111-1111-1111-1111-111111111111';
 
     SELECT etag_hash INTO etag_after
-    FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     PERFORM ok(etag_before <> etag_after, 'formations: data_version bump changes etag_hash');
     -- No reset: data_version_monotonic trigger prevents decrement; ROLLBACK cleans up.
@@ -897,7 +924,7 @@ SELECT ok(TRUE, 'formations: data_version bump etag test ran');
 
 -- Test 56: empty project returns valid etag
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_formations_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'formations: empty project returns valid etag_hash'
 );
@@ -908,34 +935,34 @@ SELECT matches(
 
 -- Test 57: NULL project_id
 SELECT is(
-    (SELECT mvt FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id": null}'::json)),
+    (SELECT mvt FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id": null, "workspace_id": "f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'historic_workings: null project_id returns null mvt'
 );
 
 -- Test 58: missing project
 SELECT is(
-    (SELECT mvt FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000"}'::json)),
+    (SELECT mvt FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'historic_workings: missing project returns null mvt'
 );
 
 -- Test 59: valid project returns non-null mvt
 SELECT isnt(
-    (SELECT mvt FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT mvt FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'historic_workings: valid project+tile returns non-null mvt'
 );
 
 -- Test 60: octet_length > 0
 SELECT ok(
-    (SELECT octet_length(mvt) > 0 FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'historic_workings: mvt octet_length > 0'
 );
 
 -- Test 61: etag_hash is md5 format
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'historic_workings: etag_hash is md5 format'
 );
@@ -947,14 +974,14 @@ DECLARE
     etag_after  text;
 BEGIN
     SELECT etag_hash INTO etag_before
-    FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     UPDATE silver.projects
     SET data_version = data_version + 1
     WHERE project_id = 'a1111111-1111-1111-1111-111111111111';
 
     SELECT etag_hash INTO etag_after
-    FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     PERFORM ok(etag_before <> etag_after, 'historic_workings: data_version bump changes etag_hash');
     -- No reset: data_version_monotonic trigger prevents decrement; ROLLBACK cleans up.
@@ -964,7 +991,7 @@ SELECT ok(TRUE, 'historic_workings: data_version bump etag test ran');
 
 -- Test 63: empty project returns valid etag
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_historic_workings_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'historic_workings: empty project returns valid etag_hash'
 );
@@ -975,34 +1002,34 @@ SELECT matches(
 
 -- Test 64: NULL project_id
 SELECT is(
-    (SELECT mvt FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id": null}'::json)),
+    (SELECT mvt FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id": null, "workspace_id": "f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'geochem: null project_id returns null mvt'
 );
 
 -- Test 65: missing project
 SELECT is(
-    (SELECT mvt FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000"}'::json)),
+    (SELECT mvt FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"00000000-0000-0000-0000-000000000000","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'geochem: missing project returns null mvt'
 );
 
 -- Test 66: valid project returns non-null mvt (fixture rows have geom)
 SELECT isnt(
-    (SELECT mvt FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT mvt FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     NULL::bytea,
     'geochem: valid project+tile returns non-null mvt'
 );
 
 -- Test 67: octet_length > 0
 SELECT ok(
-    (SELECT octet_length(mvt) > 0 FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     'geochem: mvt octet_length > 0'
 );
 
 -- Test 68: etag_hash is md5 format
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)),
+    (SELECT etag_hash FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'geochem: etag_hash is md5 format'
 );
@@ -1014,14 +1041,14 @@ DECLARE
     etag_after  text;
 BEGIN
     SELECT etag_hash INTO etag_before
-    FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     UPDATE silver.projects
     SET data_version = data_version + 1
     WHERE project_id = 'a1111111-1111-1111-1111-111111111111';
 
     SELECT etag_hash INTO etag_after
-    FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json);
+    FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json);
 
     PERFORM ok(etag_before <> etag_after, 'geochem: data_version bump changes etag_hash');
     -- No reset: data_version_monotonic trigger prevents decrement; ROLLBACK cleans up.
@@ -1031,7 +1058,7 @@ SELECT ok(TRUE, 'geochem: data_version bump etag test ran');
 
 -- Test 70: empty project returns valid etag
 SELECT matches(
-    (SELECT etag_hash FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222"}'::json)),
+    (SELECT etag_hash FROM silver.pg_geochem_by_project(1, 0, 0, '{"project_id":"b2222222-2222-2222-2222-222222222222","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
     '^[a-f0-9]{32}$',
     'geochem: empty project returns valid etag_hash'
 );
@@ -1055,8 +1082,99 @@ SELECT ok(
 );
 
 -- ══════════════════════════════════════════════════════════════════════════════
+-- BLOCK 14 — Tenant isolation (2026_09_16_120000_scope_silver_mvt_functions_
+-- to_workspace_id.php): workspace_id required on the Martin URL, arms
+-- app.workspace_id via set_config, AND filters explicitly on the table's own
+-- workspace_id column so tenant isolation holds independent of whichever RLS
+-- policy shape (or absence of the out-of-band database/raw/phase0/9[5-9]-
+-- rls-*.sql layer) a given cluster happens to have installed on silver.collars.
+--
+-- Second workspace + project + collar, disjoint from the workspace A fixture
+-- above, so a cross-tenant read is a non-vacuous assertion (there is really
+-- something there to leak).
+-- ══════════════════════════════════════════════════════════════════════════════
+
+INSERT INTO silver.workspaces (workspace_id, name, slug, created_at, updated_at)
+VALUES (
+    'f0000000-0000-0000-0000-000000000002',
+    'pgTAP Test Workspace B',
+    'pgtap-test-workspace-b',
+    NOW(), NOW()
+) ON CONFLICT DO NOTHING;
+
+INSERT INTO silver.projects (
+    project_id, project_name, crs_datum, orientation_reference,
+    status, slug, workspace_id, data_version
+) VALUES (
+    'a9999999-9999-9999-9999-999999999999',
+    'pgTAP Test Project B',
+    'EPSG:32613', 'magnetic', 'active',
+    'pgtap-test-project-b',
+    'f0000000-0000-0000-0000-000000000002',
+    1
+) ON CONFLICT (project_id) DO UPDATE SET data_version = 1;
+
+INSERT INTO silver.collars (
+    collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
+    total_depth, hole_type, azimuth, dip, status,
+    geom, created_at, updated_at
+) VALUES (
+    'c9999999-9999-9999-9999-999999999999',
+    'DDH-B01', 'a9999999-9999-9999-9999-999999999999',
+    'f0000000-0000-0000-0000-000000000002',
+    500000, 5900000, 1000,
+    150, 'DD', 45, -55, 'completed',
+    ST_SetSRID(ST_MakePoint(500000, 5900000), 32613),
+    NOW(), NOW()
+) ON CONFLICT DO NOTHING;
+
+-- Test 73: workspace A + project A (its own data) returns a non-null mvt.
+SELECT isnt(
+    (SELECT mvt FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000001"}'::json)),
+    NULL::bytea,
+    'collars: workspace A + its own project returns non-null mvt'
+);
+
+-- Test 74: workspace B's id claimed against workspace A's project_id must
+-- return nothing — the p.workspace_id = v_wsid guard on the silver.projects
+-- lookup treats the pairing as "project not found", not as workspace A's
+-- data leaking to a caller claiming to be workspace B.
+SELECT is(
+    (SELECT mvt FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"f0000000-0000-0000-0000-000000000002"}'::json)),
+    NULL::bytea,
+    'collars: workspace B id against workspace A project_id denies (cross-tenant pairing)'
+);
+
+-- Test 75: workspace B + its own project returns its own (different) data.
+SELECT isnt(
+    (SELECT mvt FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a9999999-9999-9999-9999-999999999999","workspace_id":"f0000000-0000-0000-0000-000000000002"}'::json)),
+    NULL::bytea,
+    'collars: workspace B + its own project returns non-null mvt'
+);
+
+-- Test 76: omitting workspace_id raises rather than silently returning an
+-- empty tile — the caller must be told it is filtering nothing.
+SELECT throws_ok(
+    $$SELECT * FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111"}'::json)$$,
+    NULL,
+    'collars: missing workspace_id raises'
+);
+
+-- Test 77: a malformed (non-UUID) workspace_id raises a clear error rather
+-- than an opaque cast failure.
+SELECT throws_ok(
+    $$SELECT * FROM silver.pg_collars_by_project(1, 0, 0, '{"project_id":"a1111111-1111-1111-1111-111111111111","workspace_id":"not-a-uuid"}'::json)$$,
+    NULL,
+    'collars: malformed workspace_id raises'
+);
+
+-- ══════════════════════════════════════════════════════════════════════════════
 -- TEARDOWN
 -- ══════════════════════════════════════════════════════════════════════════════
+
+DELETE FROM silver.collars WHERE collar_id = 'c9999999-9999-9999-9999-999999999999';
+DELETE FROM silver.projects WHERE project_id = 'a9999999-9999-9999-9999-999999999999';
+DELETE FROM silver.workspaces WHERE workspace_id = 'f0000000-0000-0000-0000-000000000002';
 
 DELETE FROM silver.drill_traces WHERE trace_id IN (
     'd1111111-1111-1111-1111-111111111111',

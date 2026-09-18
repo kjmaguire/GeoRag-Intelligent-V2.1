@@ -258,19 +258,33 @@ def check_terraform(problems: list) -> None:
     # --- rule 1: persistence requires a durable path -------------------
     rdb_active = save is not None and save != ""
     persists = (appendonly == "yes") or rdb_active
-    # The EFS volume is attached by a `dynamic "volume"` block gated on the
-    # service name, and mounted at /data for redis specifically. BOTH halves
-    # are required: a volume that is not mounted at the data directory is
-    # the same non-persistence in a different costume.
-    # Anchored on `for_each =` specifically. The same contains() gate
-    # appears twice — once attaching the EFS volume, once adding the
-    # mountPoints — and matching either would let a mount that points at
-    # no volume read as durable. Two different facts; the loose pattern
-    # conflated them.
+    # The EFS volume is attached by a `dynamic "volume"` block, and the
+    # mountPoints are added by a second gate; both are keyed off
+    # local.efs_mount_path, and the access point backing the volume comes
+    # from local.efs_access_point_id.
+    #
+    # Every one of these is checked separately, because ANY of them alone
+    # can be true while the data directory is still ephemeral: a volume
+    # attached but not mounted, a mount path with no volume behind it, or
+    # a map entry that nothing reads. A volume that is not mounted at the
+    # data directory is the same non-persistence in a different costume.
+    #
+    # These patterns were literals (`contains(["qdrant", "redis"], ...)` and
+    # `each.key == "qdrant" ? "/qdrant/storage" : "/data"`) until 2026-09-18,
+    # when adding a third EFS-backed service (hatchet, for the encryption
+    # keyset it had been regenerating on every boot) turned those two-way
+    # ternaries into maps. The rule is unchanged and now covers one more
+    # link in the chain than it did.
     attaches = re.search(
-        r'for_each\s*=\s*contains\(\["qdrant", ?"redis"\], ?each\.key\)', services)
-    mounts = re.search(r'each\.key == "qdrant" \? "/qdrant/storage" : "/data"', services)
-    has_volume = bool(attaches and mounts)
+        r'for_each\s*=\s*contains\(keys\(local\.efs_mount_path\),\s*each\.key\)', services)
+    mount_gate = re.search(
+        r'contains\(keys\(local\.efs_mount_path\),\s*each\.key\)\s*\?\s*\{\s*\n\s*mountPoints',
+        services)
+    reads_map = re.search(
+        r'containerPath\s*=\s*local\.efs_mount_path\[each\.key\]', services)
+    mounts = re.search(r'redis\s*=\s*"/data"', services)
+    backed = re.search(r'redis\s*=\s*aws_efs_access_point\.redis\.id', services)
+    has_volume = bool(attaches and mount_gate and reads_map and mounts and backed)
 
     if persists and not has_volume:
         why = []

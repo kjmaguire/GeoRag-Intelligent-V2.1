@@ -121,10 +121,21 @@ return [
         //   MIGRATE_DB_PASSWORD = <same as POSTGRES_PASSWORD>
         //   MIGRATE_DB_CONNECTION = pgsql_migrations
         //
-        // The bottom env (MIGRATE_DB_CONNECTION) flips the
-        // `migrations.connection` resolver below to this entry. Without
-        // it set, migrations run on `pgsql` (i.e. the legacy path) — so
-        // this connection is opt-in and zero-impact when unset.
+        // Corrected 2026-09-18, verified on a real go-live rehearsal: the
+        // `migrations.connection` config value below does NOT select this
+        // connection by itself. Illuminate\Database\MigrationServiceProvider
+        // reads config('database.migrations') only for its ['table'] key;
+        // it never looks at ['connection']. MigrateCommand separately
+        // resolves its connection from the --database CLI option, not from
+        // config at all. The only thing that actually routes `artisan
+        // migrate` here is passing `--database=pgsql_migrations` on the
+        // command line (see deploy/aws/terraform/services.tf's migrate task
+        // and docker-compose.yml). MIGRATE_DB_CONNECTION being set or unset
+        // changes nothing on its own — it was wrongly documented as the
+        // switch. Omitting the --database flag silently runs migrations on
+        // `pgsql` as georag_app instead, which lacks CREATE on `public` and
+        // fails loudly with "permission denied for schema public" on the
+        // very first migration (`migrate:install`'s `migrations` table).
         //
         // Direct (not pgbouncer): pgbouncer's transaction-mode pooling
         // breaks DDL operations that depend on session-level state
@@ -203,9 +214,16 @@ return [
     */
 
     'migrations' => [
-        // Opt-in via MIGRATE_DB_CONNECTION=pgsql_migrations to run
-        // migrations as the phase0 owner role. Unset = legacy behaviour
-        // (uses the default `pgsql` connection / `georag_app` role).
+        // 'connection' here is inert: Illuminate\Database\MigrationServiceProvider
+        // reads this array only for ['table'], never ['connection'] (verified
+        // against vendor/laravel/framework on a real go-live rehearsal,
+        // 2026-09-18). What actually selects the owner-role connection is
+        // `--database=pgsql_migrations` on the `artisan migrate` command line
+        // itself (deploy/aws/terraform/services.tf's migrate task,
+        // composer.json's setup script, README.md). Kept here anyway because
+        // 'pgsql_migrations' still has to be a real connection name below for
+        // that --database flag to resolve, and because MIGRATE_DB_CONNECTION
+        // remains a useful signal for the value operators pass.
         'connection' => env('MIGRATE_DB_CONNECTION'),
         'table' => 'migrations',
         'update_date_on_publish' => true,
