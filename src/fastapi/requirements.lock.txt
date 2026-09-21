@@ -283,7 +283,7 @@ llvmlite==0.49.0
     #   georag-fastapi
     #   numba
     #   shap
-logfire-api==4.41.0
+logfire-api==5.1.0
     # via pydantic-graph
 lxml==6.1.3
     # via
