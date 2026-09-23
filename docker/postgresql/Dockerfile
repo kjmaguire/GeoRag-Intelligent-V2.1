@@ -2,7 +2,7 @@
 # =============================================================================
 # Custom Postgres 18 image for GeoRAG Phase 0
 #
-# Builds on postgis/postgis:18-3.6-alpine and adds the seven extensions the
+# Builds on postgis/postgis:18-3.6-alpine and adds the eight extensions the
 # Phase 0 kickoff Step 1 requires beyond what the base image ships:
 #
 #   auto_explain    core contrib  (ships with base; activated via shared_preload_libraries)
@@ -10,6 +10,10 @@
 #   hypopg          main          (hypothetical indexes for Index Health Agent planner what-ifs)
 #   pg_stat_kcache  main          (kernel-level per-query CPU/IO stats)
 #   pg_partman      main          (declarative partition maintenance for audit_ledger + workflow_runs)
+#   pg_cron         main          (schedules partman.run_maintenance_proc() -- see note at step 6.
+#                                  Added 2026-09-16: RDS rejects pg_partman_bgw outright, and until
+#                                  this, compose didn't schedule partition maintenance either --
+#                                  neither environment had ever actually run it.)
 #   pg_repack       main          (online table reorganize without exclusive locks)
 #   pg_ivm          main          (incremental view maintenance for materialized views)
 #
@@ -129,7 +133,30 @@ RUN git clone --depth=1 --branch v5.4.3 https://github.com/pgpartman/pg_partman.
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf pg_partman
 
-# ---- 6. pg_repack -----------------------------------------------------------
+# ---- 6. pg_cron --------------------------------------------------------------
+# Added 2026-09-16, alongside deploy/aws/terraform/data.tf and
+# deploy/aws/bootstrap.sql. RDS rejects pg_partman_bgw in
+# shared_preload_libraries outright (found on a real go-live rehearsal),
+# so production drives partman.run_maintenance_proc() with pg_cron
+# instead. Compose's shared_preload_libraries never included
+# pg_partman_bgw either -- partition maintenance had never actually run
+# on a schedule in EITHER environment, only been configured via
+# partman.create_parent(). Building it here and scheduling it in
+# docker/postgresql/init/ (not just bootstrap.sql) closes that gap for
+# real, in dev, not only satisfies the dev/prod extension-parity check
+# that this same oversight tripped (scripts/check-postgres-extensions.py).
+#
+# v1.6.7: PG 18 support landed in 1.6.6; 1.6.7 additionally fixes a
+# compile error under newer GCC. No GitHub Releases changelog issue
+# affecting a from-source PGXS build has surfaced against this tag --
+# the one open PG18 issue on record is a Fedora PGDG package path
+# problem, not a build one.
+RUN git clone --depth=1 --branch v1.6.7 https://github.com/citusdata/pg_cron.git \
+ && cd pg_cron \
+ && make with_llvm=no && make with_llvm=no install \
+ && cd .. && rm -rf pg_cron
+
+# ---- 7. pg_repack -----------------------------------------------------------
 # pg_repack ships both a server-side extension and a client binary — both
 # end up under /usr/local/{lib,bin}/postgresql which is already on PATH.
 # 2026-06-03 sweep: pinned to ver_1.5.3 (tag prefix is `ver_` per upstream
@@ -141,7 +168,7 @@ RUN git clone --depth=1 --branch ver_1.5.3 https://github.com/reorg/pg_repack.gi
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf pg_repack
 
-# ---- 7. pg_ivm --------------------------------------------------------------
+# ---- 8. pg_ivm --------------------------------------------------------------
 # 2026-06-03 sweep: pinned to v1.14. README explicitly lists PG 13/14/15/16/17/18
 # as compatible — PG 18 confirmed. Phase 0 install only (no IMMVs created
 # yet); installed-not-used surface area worth keeping pinned so the
@@ -151,7 +178,7 @@ RUN git clone --depth=1 --branch v1.14 https://github.com/sraoss/pg_ivm.git \
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf pg_ivm
 
-# ---- 8. auto_explain extension registration --------------------------------
+# ---- 9. auto_explain extension registration --------------------------------
 # auto_explain.so ships with the base postgis-alpine image, but the upstream
 # extension registration files (.control + .sql) are stripped. Without them
 # `CREATE EXTENSION auto_explain` errors with "extension is not available",

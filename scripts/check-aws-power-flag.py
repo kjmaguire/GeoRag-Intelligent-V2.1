@@ -112,6 +112,11 @@ MUST_NOT_GATE = {
     "aws_iam_role",
     "aws_iam_role_policy",
     "aws_iam_role_policy_attachment",
+    # Free identity/trust configuration, not hourly-billed infrastructure --
+    # same category as the IAM roles above. Gating it would also break CD:
+    # the GitHub Actions deploy role (ci.tf) needs to exist and authenticate
+    # BEFORE a power=on apply can run, not be created by one.
+    "aws_iam_openid_connect_provider",
     # The spend guard must outlive the thing it guards. The failure it exists
     # to catch is "the platform is running when I believed it was off" — a
     # state in which a gated budget would already have been destroyed.

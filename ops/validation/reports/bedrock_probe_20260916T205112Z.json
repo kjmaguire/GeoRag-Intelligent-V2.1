@@ -1,0 +1,135 @@
+{
+  "probed_at": "2026-09-16T20:51:05.481660+00:00",
+  "region": "us-east-1",
+  "availability": {
+    "cohere_serverless": [
+      "cohere.embed-english-v3",
+      "cohere.embed-english-v3:0:512",
+      "cohere.embed-multilingual-v3",
+      "cohere.embed-multilingual-v3:0:512",
+      "cohere.embed-v4:0",
+      "cohere.rerank-v3-5:0"
+    ],
+    "marketplace_endpoints": {
+      "chat": {
+        "configured": false
+      },
+      "parse": {
+        "configured": false
+      }
+    }
+  },
+  "chat": {
+    "skipped": "BEDROCK_CHAT_MODEL_ID unset"
+  },
+  "chat_stream": {
+    "skipped": "BEDROCK_CHAT_MODEL_ID unset"
+  },
+  "embed": {
+    "model_id": "cohere.embed-v4:0",
+    "latency_s": 0.584,
+    "top_level_keys": [
+      "embeddings",
+      "id",
+      "response_type",
+      "texts"
+    ],
+    "dimension": 1024,
+    "dimension_honoured": true
+  },
+  "rerank": {
+    "model_id": "cohere.rerank-v3-5:0",
+    "latency_s": 0.759,
+    "result_keys": [
+      "index",
+      "relevanceScore"
+    ],
+    "scores_by_index": {
+      "0": 0.7476348280906677,
+      "1": 0.026619814336299896,
+      "2": 0.016903584823012352,
+      "3": 0.0063543301075696945
+    },
+    "min": 0.0063543301075696945,
+    "max": 0.7476348280906677,
+    "relevant_doc_score": 0.7476348280906677,
+    "irrelevant_doc_scores": [
+      0.026619814336299896,
+      0.0063543301075696945
+    ],
+    "current_threshold": 0.2
+  },
+  "parse": {
+    "skipped": "BEDROCK_PARSE_MODEL_ID unset"
+  },
+  "latency": {
+    "samples": 5,
+    "p50_s": 0.734,
+    "p95_s": 0.801,
+    "reranker_budget_s": 8.0
+  },
+  "verdict": {
+    "verified_anything": true,
+    "sections_ok": [
+      "embed",
+      "rerank",
+      "latency"
+    ],
+    "sections_failed": [],
+    "sections_skipped": [
+      "chat",
+      "chat_stream",
+      "parse"
+    ],
+    "sections_missing": [],
+    "authentication_failed": false,
+    "summary": "verified 3/6 sections (ok=embed,rerank,latency; failed=-; skipped=chat,chat_stream,parse)."
+  },
+  "contract_diff": {
+    "calls": {
+      "chat_converse": {
+        "status": "not_observed",
+        "reason": "BEDROCK_CHAT_MODEL_ID unset"
+      },
+      "chat_converse_stream": {
+        "status": "not_observed",
+        "reason": "BEDROCK_CHAT_MODEL_ID unset"
+      },
+      "embed_text": {
+        "status": "not_observed",
+        "confirmed": [],
+        "contradicted": [],
+        "not_observed": [],
+        "undeclared": [],
+        "required_missing": []
+      },
+      "embed_image": {
+        "status": "not_observed",
+        "confirmed": [],
+        "contradicted": [],
+        "not_observed": [],
+        "undeclared": [],
+        "required_missing": []
+      },
+      "rerank": {
+        "status": "not_observed",
+        "confirmed": [],
+        "contradicted": [],
+        "not_observed": [],
+        "undeclared": [],
+        "required_missing": []
+      }
+    },
+    "calls_observed": [],
+    "calls_not_observed": [
+      "chat_converse",
+      "chat_converse_stream",
+      "embed_image",
+      "embed_text",
+      "rerank"
+    ],
+    "required_fields_missing": {},
+    "undeclared_fields": {},
+    "contract_holds": false
+  }
+}

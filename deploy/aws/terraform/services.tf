@@ -269,6 +269,26 @@ locals {
     martin          = "martin"
   }
 
+  # The services with state that has to outlive a task, and where each one
+  # keeps it. A map rather than the pair of `each.key == "qdrant" ? ... : ...`
+  # ternaries this replaced: those were correct for exactly two entries and
+  # silently wrong for a third, which is how `hatchet` would have been given
+  # redis's access point and mount path.
+  #
+  # hatchet is here because the engine writes its generated encryption keyset
+  # to /config -- see the access point in data.tf for what losing it costs.
+  efs_mount_path = {
+    qdrant  = "/qdrant/storage"
+    redis   = "/data"
+    hatchet = "/config"
+  }
+
+  efs_access_point_id = {
+    qdrant  = aws_efs_access_point.qdrant.id
+    redis   = aws_efs_access_point.redis.id
+    hatchet = aws_efs_access_point.hatchet.id
+  }
+
   # Services running a third-party image rather than one of ours.
   external_image = {
     hatchet = "ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12"
@@ -434,14 +454,14 @@ resource "aws_ecs_task_definition" "this" {
   task_role_arn            = local.task_role_for[each.key]
 
   dynamic "volume" {
-    for_each = contains(["qdrant", "redis"], each.key) ? [each.key] : []
+    for_each = contains(keys(local.efs_mount_path), each.key) ? [each.key] : []
     content {
       name = volume.value
       efs_volume_configuration {
         file_system_id     = aws_efs_file_system.this.id
         transit_encryption = "ENABLED"
         authorization_config {
-          access_point_id = volume.value == "qdrant" ? aws_efs_access_point.qdrant.id : aws_efs_access_point.redis.id
+          access_point_id = local.efs_access_point_id[volume.value]
           iam             = "ENABLED"
         }
       }
@@ -480,10 +500,10 @@ resource "aws_ecs_task_definition" "this" {
           protocol      = "tcp"
         }]
       } : {},
-      contains(["qdrant", "redis"], each.key) ? {
+      contains(keys(local.efs_mount_path), each.key) ? {
         mountPoints = [{
           sourceVolume  = each.key
-          containerPath = each.key == "qdrant" ? "/qdrant/storage" : "/data"
+          containerPath = local.efs_mount_path[each.key]
           readOnly      = false
         }]
       } : {},
@@ -631,7 +651,19 @@ resource "aws_ecs_task_definition" "migrate" {
     image      = "${aws_ecr_repository.this["laravel"].repository_url}:${var.image_tag}"
     entryPoint = ["/bin/sh", "-c"]
     command = [
-      "php artisan migrate --force && php artisan db:apply-raw --database=pgsql_migrations",
+      # --database=pgsql_migrations on BOTH commands, not just db:apply-raw.
+      # Verified live on a go-live rehearsal (2026-09-18): MIGRATE_DB_CONNECTION
+      # below does NOT do what its own comment says. Laravel's
+      # MigrationServiceProvider reads config('database.migrations') only for
+      # the ['table'] key (vendor/laravel/framework/.../MigrationServiceProvider.php);
+      # it never looks at ['connection']. MigrateCommand separately resolves
+      # its connection from $this->option('database') — the --database CLI
+      # flag — not from config at all. So `php artisan migrate --force` alone
+      # ran on the default `pgsql` connection as georag_app and failed with
+      # "permission denied for schema public" trying to create the
+      # `migrations` tracking table, exactly the failure mode the comment
+      # below anticipated but the config it points at cannot prevent.
+      "php artisan migrate --force --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations",
     ]
     environment = [
       for k, v in merge(local.service_environment["laravel-octane"], {

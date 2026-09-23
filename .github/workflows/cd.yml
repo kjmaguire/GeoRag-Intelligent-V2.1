@@ -484,6 +484,28 @@ jobs:
             echo "post-deploy smoke passed"
             exit 0
           fi
+
+          # Print what the gate actually found. Without this the step
+          # reports "exit 1" and nothing else, so every smoke failure costs
+          # a manual CloudWatch dig before anyone knows WHICH of the four
+          # checks failed — and on 2026-09-18 that turned a one-line defect
+          # into a round trip. The script prints a PASS/FAIL line per check
+          # and a SMOKE_FAILED summary; all of it is already in the log
+          # group, and this job already holds credentials to read it.
+          #
+          # The stream name is not guessed: the smoke task definition is a
+          # clone of georag-fastapi, so it keeps that container's name
+          # (`fastapi`) and awslogs-stream-prefix (`fastapi`), and awslogs
+          # composes <prefix>/<container>/<taskId>. Best-effort — a missing
+          # log must not change the verdict the exit code already gave.
+          echo "── smoke task log ──────────────────────────────────────"
+          aws logs get-log-events \
+            --log-group-name /ecs/georag \
+            --log-stream-name "fastapi/fastapi/${TASK_ARN##*/}" \
+            --query 'events[].message' --output text 2>&1 \
+            | tr '\t' '\n' || echo "(could not read the smoke task log)"
+          echo "────────────────────────────────────────────────────────"
+
           if [ "$EXIT_CODE" = "None" ] || [ -z "$EXIT_CODE" ]; then
             echo "::error::smoke task produced no exit code — the gate did not run"
             touch /tmp/rollback/smoke-inconclusive

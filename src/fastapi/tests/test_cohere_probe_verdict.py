@@ -224,3 +224,122 @@ def test_a_section_with_one_good_call_among_failures_still_counts(probe_module: 
 
     v = module.verdict(report)
     assert "chat" in v["sections_ok"]
+
+
+@pytest.mark.parametrize("probe_module", ["bedrock_probe", "cohere_probe"])
+def test_a_section_whose_variants_are_grouped_is_still_judged(probe_module: str) -> None:
+    """The same defect, one level deeper than the fix that created the module.
+
+    `probe_chat` puts its variants directly on the section, so a one-level
+    scan found them. `probe_parse` GROUPS its variants -- `formats` and
+    `pixel_ladder` -- and neither group is itself a result or looks like
+    one, so that scan found nothing, fell through to "ok", and reported a
+    section in which every call had failed as verified.
+
+    This is not hypothetical and not a fixture: it is the exact shape the
+    2026-09-18 go-live rehearsal produced when the sandbox's egress proxy
+    refused every request to api.cohere.com. The probe printed "verified
+    1/4 sections (ok=parse)" and "COMMIT THIS REPORT" over a report whose
+    every single call was a 403 -- flipping the one instruction that
+    protects ADR-0023's evidence gate.
+    """
+    import importlib
+
+    module = importlib.import_module(probe_module)
+    report = {name: {"observed": True} for name in module._EVIDENCE_SECTIONS}
+    report["parse"] = {
+        "model": "parse-v5.0",
+        "formats": {
+            "blocks": {"error": {"type": "ProxyError", "message": "403 Forbidden"}},
+            "markdown": {"error": {"type": "ProxyError", "message": "403 Forbidden"}},
+        },
+        "pixel_ladder": {
+            "1900000": {"error": {"type": "ProxyError", "message": "403 Forbidden"}},
+        },
+    }
+
+    v = module.verdict(report)
+    assert "parse" in v["sections_failed"]
+    assert "parse" not in v["sections_ok"]
+
+
+@pytest.mark.parametrize("probe_module", ["bedrock_probe", "cohere_probe"])
+def test_a_grouped_section_with_a_real_observation_still_passes(probe_module: str) -> None:
+    """Recursing must not overshoot into marking healthy sections failed."""
+    import importlib
+
+    module = importlib.import_module(probe_module)
+    report = {name: {"observed": True} for name in module._EVIDENCE_SECTIONS}
+    report["parse"] = {
+        "model": "parse-v5.0",
+        "formats": {
+            "blocks": {"page0_keys": ["text", "bbox"], "status": 200},
+            "markdown": {"error": {"type": "ProxyError", "message": "403 Forbidden"}},
+        },
+    }
+
+    v = module.verdict(report)
+    assert "parse" in v["sections_ok"]
+
+
+@pytest.mark.parametrize("probe_module", ["bedrock_probe", "cohere_probe"])
+def test_a_section_carrying_only_config_is_not_mistaken_for_failure(
+    probe_module: str,
+) -> None:
+    """A nested dict that recorded no call at all must stay neutral.
+
+    The conservative half of `_looks_like_a_result`, asserted now that the
+    scan recurses: being wrong here would mark a healthy section failed and
+    block a deploy on a metadata block.
+    """
+    import importlib
+
+    module = importlib.import_module(probe_module)
+    report = {name: {"observed": True} for name in module._EVIDENCE_SECTIONS}
+    report["parse"] = {
+        "model": "parse-v5.0",
+        "settings": {"limits": {"max_pixels": 1900000}},
+        "observed": True,
+    }
+
+    v = module.verdict(report)
+    assert "parse" in v["sections_ok"]
+
+
+class TestAParseLadderRungIsJudgedByWhyItWasRefused:
+    """The pixel ladder records rejections on purpose: a rung refused for
+    SIZE is the observation it exists to make. A rung refused for the
+    CREDENTIALS observes nothing, and once counted as evidence."""
+
+    def test_an_auth_refused_rung_is_not_an_observation(self) -> None:
+        refused = {"error": {"code": "AuthenticationError", "status": 401}}
+        v = verdict(
+            _report(
+                parse={
+                    "model": "parse-v5.0",
+                    "formats": {"blocks": refused, "markdown": refused},
+                    "pixel_ladder": {
+                        "1900000": {"png_bytes": 1, "status": 401, "accepted": False, "code": "AuthenticationError"}
+                    },
+                },
+                chat={"error": {"code": "AuthenticationError"}},
+                chat_stream={"error": {"code": "AuthenticationError"}},
+                latency={"error": {"code": "AuthenticationError"}},
+            )
+        )
+        assert v["verified_anything"] is False, v["summary"]
+        assert "parse" in v["sections_failed"]
+
+    def test_a_rung_refused_for_size_is_still_an_observation(self) -> None:
+        v = verdict(
+            _report(
+                parse={
+                    "model": "parse-v5.0",
+                    "pixel_ladder": {
+                        "1900000": {"png_bytes": 1, "status": 200, "accepted": True},
+                        "4000000": {"png_bytes": 2, "status": 413, "accepted": False, "code": "PayloadTooLarge"},
+                    },
+                }
+            )
+        )
+        assert "parse" in v["sections_ok"]

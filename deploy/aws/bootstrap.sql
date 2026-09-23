@@ -57,7 +57,15 @@ CREATE EXTENSION IF NOT EXISTS hypopg;
 CREATE EXTENSION IF NOT EXISTS pg_repack;
 
 CREATE EXTENSION IF NOT EXISTS postgis;
-CREATE EXTENSION IF NOT EXISTS postgis_topology;
+-- postgis_topology deliberately absent: ADR-0022's extension table claimed
+-- RDS PG 18 supports it ("yes" / "keep"), but a real go-live rehearsal
+-- (2026-09-18) ran this file against the live instance and RDS rejected it
+-- outright — "extension \"postgis_topology\" is not available". Zero call
+-- sites in this repository (no topology.* function, no TopoGeometry column
+-- anywhere in app code, migrations, or raw SQL), so this is the same shape
+-- as the pg_ivm/pg_stat_kcache exclusion above: dropped, not gated behind a
+-- capability flag, because nothing reads it.
+--
 -- Required BY h3_postgis, which is why it is here even though no code in
 -- this repository reads a raster.
 CREATE EXTENSION IF NOT EXISTS postgis_raster;
@@ -73,6 +81,37 @@ CREATE EXTENSION IF NOT EXISTS h3_postgis;
 
 CREATE SCHEMA IF NOT EXISTS partman;
 CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+
+-- pg_cron drives pg_partman's maintenance here, not pg_partman_bgw: found on
+-- a real first apply (2026-09-16) that RDS rejects pg_partman_bgw in
+-- shared_preload_libraries outright (not in its allow-list at all -- RDS
+-- does not run third-party background workers). pg_cron IS on that
+-- allow-list, and deploy/aws/terraform/data.tf now sets
+-- shared_preload_libraries=pg_stat_statements,pg_cron,auto_explain plus
+-- cron.database_name=georag so pg_cron's scheduler runs against this
+-- database. CREATE EXTENSION pg_cron and cron.schedule(...) both have to
+-- run here, in the cron.database_name target, per RDS's documented pg_cron
+-- setup -- not in the postgres maintenance DB the self-managed convention
+-- uses.
+--
+-- Without this, partman.create_parent() (audit.audit_ledger,
+-- workflow.workflow_runs, usage.usage_events -- see database/raw/phase0/
+-- 20/30/60-layer-*.sql) configures partitioning but nothing ever calls
+-- partman.run_maintenance_proc() to act on it: no new partitions get
+-- created and none of the configured retention actually drops old ones.
+-- Not a boot-time failure -- an inserts-start-failing-months-later one,
+-- the day the last pre-created partition runs out.
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+-- Idempotent: cron.schedule() upserts by job name as of pg_cron 1.4+, but
+-- unschedule-then-schedule works across the version range and reads
+-- unambiguously on a second run of this file.
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
+SELECT cron.schedule(
+    'partman-maintenance',
+    '0 3 * * *',
+    $$CALL partman.run_maintenance_proc()$$
+);
 
 -- ---------------------------------------------------------------------------
 -- georag_app -- the role every application container connects as
@@ -116,7 +155,18 @@ SELECT format(
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'georag_app')\gexec
 
 ALTER ROLE georag_app LOGIN PASSWORD :'georag_app_password';
-ALTER ROLE georag_app NOSUPERUSER NOBYPASSRLS;
+
+-- Deliberately NOT `ALTER ROLE georag_app NOSUPERUSER NOBYPASSRLS;` here.
+-- Verified live on a go-live rehearsal (2026-09-18): the RDS master user is
+-- rds_superuser, never real SUPERUSER, and Postgres requires the CALLER to
+-- hold SUPERUSER to touch either attribute on ANY role -- even to reassert
+-- the value CREATE ROLE already set. "permission denied to alter role" was
+-- the exact failure, on the first run against a real instance. The repair
+-- this line existed for cannot occur on RDS anyway: no RDS-connected
+-- principal has ever had the privilege to grant SUPERUSER or BYPASSRLS to
+-- georag_app in the first place, so there is nothing to repair it FROM.
+-- CREATE ROLE above already applied NOSUPERUSER NOBYPASSRLS at creation,
+-- which is the one path that does not require the caller to be a superuser.
 
 -- ---------------------------------------------------------------------------
 -- Grant-holder roles (docker/postgresql/init/init-roles.sql)
@@ -240,6 +290,19 @@ SELECT format('CREATE ROLE hatchet LOGIN PASSWORD %L', :'hatchet_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'hatchet')\gexec
 
 ALTER ROLE hatchet LOGIN PASSWORD :'hatchet_password';
+
+-- Since PostgreSQL 16, CREATE DATABASE ... OWNER <role> (and ALTER ... OWNER
+-- TO) requires the CALLER to be able to SET ROLE to the target owner --
+-- before 16, CREATEDB alone was enough to own a database as any role.
+-- georag just created `hatchet` above but is not a member of it, so without
+-- this grant the next statement fails live with `must be able to SET ROLE
+-- "hatchet"` -- verified on a go-live rehearsal (2026-09-18), the first real
+-- run of this file against RDS PG 18. Compose never caught it because the
+-- dev Postgres superuser bypasses the SET ROLE check entirely. Left granted
+-- rather than revoked afterward: bootstrap.sql is meant to be safely
+-- re-run, and an un-membered georag would just fail the same way next time
+-- the database doesn't yet exist (a restore, a fresh account).
+GRANT hatchet TO georag;
 
 SELECT 'CREATE DATABASE hatchet OWNER hatchet'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'hatchet')\gexec

@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
+from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -215,6 +217,78 @@ def attempts_within_budget(budget_s: float | None, *, floor: int = 1, ceiling: i
     return max(floor, min(ceiling, int(budget_s // 2)))
 
 
+# ---------------------------------------------------------------------------
+# Cohere Rerank v4 discovery (control plane) — Kyle, 2026-09-16
+# ---------------------------------------------------------------------------
+# Bedrock's catalogue serves Rerank 3.5, not v4 (see reranker.py's "VERSION
+# REGRESSION" block). That regression should not be permanent-by-inertia: the
+# moment AWS adds v4 to the catalogue, the deployment should notice and prefer
+# it again, without an operator having to know to go check. This is that
+# check.
+#
+# [UNVERIFIED, same caveat as everything else in this module] There is no
+# API specific to "rerank models" — ``ListFoundationModels``'s
+# ``byOutputModality`` filter only takes TEXT / IMAGE / EMBEDDING (confirmed
+# from botocore's own bedrock-2023-04-20 service model, not vendor docs), so
+# rerank models are not filterable by modality at all. ``byProvider="Cohere"``
+# is the most targeted filter available; matching a v4 rerank model id out of
+# that list is a pattern match against ``FoundationModelSummary.modelId``,
+# which is a guess at what AWS will name it — nobody has seen that catalogue
+# entry yet. If AWS's naming does not match ``_RERANK_V4_ID_PATTERN``,
+# discovery returns None and the deployment stays on 3.5, which is the same
+# safe-by-default outcome as every other failure mode below.
+_RERANK_V4_ID_PATTERN = re.compile(r"rerank.*v4", re.IGNORECASE)
+
+
+@lru_cache(maxsize=1)
+def discover_cohere_rerank_v4_model_id() -> str | None:
+    """Return a Cohere Rerank v4 model id if Bedrock's catalogue now has one.
+
+    Cached for the process lifetime — at most one ``bedrock:ListFoundationModels``
+    call per worker, not per query. Deliberately on the ``bedrock``
+    control-plane client, never ``bedrock-runtime``/``bedrock-agent-runtime``
+    (the data-plane clients the reranker/embedder actually call).
+
+    Fail-safe by construction: a missing ``bedrock:ListFoundationModels``
+    grant, no network route, a malformed response, or any other exception
+    all resolve to ``None`` — "not found, stay on the configured default" —
+    logged and never raised. A broken discovery call must never take
+    reranking down; that is the entire point of it being advisory.
+    """
+    try:
+        client = get_client("bedrock", max_attempts=1, read_timeout_s=5.0)
+        response = client.list_foundation_models(byProvider="Cohere")
+    except Exception as exc:  # noqa: BLE001 — discovery is advisory, never fatal
+        logger.info(
+            "bedrock: Cohere Rerank v4 discovery skipped (%s: %s) -- staying "
+            "on the configured rerank model. Expected until AWS ships v4 on "
+            "Bedrock, and harmless if the task role lacks "
+            "bedrock:ListFoundationModels.",
+            type(exc).__name__, exc,
+        )
+        return None
+
+    try:
+        summaries = response.get("modelSummaries") or []
+        for summary in summaries:
+            model_id = str(summary.get("modelId") or "")
+            if _RERANK_V4_ID_PATTERN.search(model_id):
+                logger.info(
+                    "bedrock: discovered a Cohere Rerank v4 model in the "
+                    "catalogue: %s",
+                    model_id,
+                )
+                return model_id
+    except Exception as exc:  # noqa: BLE001 — a malformed response is "not found"
+        logger.warning(
+            "bedrock: Cohere Rerank v4 discovery response could not be "
+            "parsed (%s: %s) -- staying on the configured rerank model.",
+            type(exc).__name__, exc,
+        )
+        return None
+    return None
+
+
 __all__ = [
     "DEFAULT_REGION",
     "RETIRED_BACKEND_VALUES",
@@ -222,6 +296,7 @@ __all__ = [
     "assert_no_retired_foundry_env",
     "attempts_within_budget",
     "bedrock_region",
+    "discover_cohere_rerank_v4_model_id",
     "get_client",
     "reject_retired_backend",
     "reset_client_cache",

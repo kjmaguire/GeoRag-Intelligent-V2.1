@@ -1,4 +1,11 @@
-# Copy to backend.hcl and fill in, then:
+# Recommended: skip this file and run
+#   bash deploy/aws/terraform/init-backend.sh
+# instead — it resolves your account ID, creates/verifies the bucket, writes
+# backend.hcl for you, and runs `terraform init`.
+#
+# Use this file directly only if you want to name the bucket yourself rather
+# than accept the auto-generated georag-tfstate-<account-id>. Copy to
+# backend.hcl and fill in, then:
 #   terraform init -backend-config=backend.hcl
 #
 # Create the bucket first (it cannot be managed by the state it holds):

@@ -57,6 +57,17 @@ ALLOWED_OMISSIONS: dict[str, tuple[str, tuple[str, ...]]] = {
         "not offered by RDS for PG 18, and no call sites (ADR-0022)",
         ("pg_stat_kcache",),
     ),
+    "postgis_topology": (
+        "not offered by RDS for PG 18 -- verified live on a go-live rehearsal "
+        "(2026-09-18): CREATE EXTENSION postgis_topology failed with "
+        "\"extension is not available\", contradicting ADR-0022's original "
+        "audit table, which had never been checked against a real instance. "
+        "No call sites either -- ST_SimplifyPreserveTopology, which two MVT "
+        "function migrations use, is core postgis, not this extension; an "
+        "earlier version of this symbol list ('topology.') false-positived on "
+        "that function name's own doc comments ending a sentence in a period.",
+        ("topology.CreateTopology", "topology.AddTopoGeometry", "TopoGeometry"),
+    ),
 }
 
 #: Where a real call site could live. The init scripts and bootstrap.sql are

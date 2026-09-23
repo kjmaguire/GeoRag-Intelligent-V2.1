@@ -93,20 +93,21 @@ assert "unmodified tree passes" ok "All Redis manifests satisfy" "$d"
 # deleted 2026-09-08 — see git history), and the AWS deployment fixes it. Losing the mount must therefore break the check —
 # otherwise nothing stands between the fix and a silent regression to it.
 d="$(fixture)"
-mutate "$d" "${TF}" 's|: "/data"|: "/var/lib/nothing"|'
+mutate "$d" "${TF}" 's|redis  *= "/data"|redis   = "/var/lib/nothing"|'
 assert "terraform: appendonly yes with no /data mount is rejected" fail \
   "cost without durability" "$d"
 
-# The volume must be ATTACHED as well as mounted. Dropping redis from the
-# dynamic block leaves a mountPoint pointing at nothing.
+# The volume must be ATTACHED as well as mounted. Removing redis from
+# local.efs_access_point_id leaves the mount path in place with no access
+# point behind it, which is a mountPoint pointing at nothing.
 d="$(fixture)"
-mutate "$d" "${TF}" 's/for_each = contains(\["qdrant", "redis"\], each.key)/for_each = contains(["qdrant"], each.key)/'
+mutate "$d" "${TF}" 's|redis  *= aws_efs_access_point\.redis\.id||'
 assert "terraform: a mount with no attached volume is rejected" fail \
   "cost without durability" "$d"
 
 # The same rule has to catch RDB, not just AOF.
 d="$(fixture)"
-mutate "$d" "${TF}" 's|"--save", "",|"--save", "3600 1",|' 's|: "/data"|: "/var/lib/nothing"|'
+mutate "$d" "${TF}" 's|"--save", "",|"--save", "3600 1",|' 's|redis  *= "/data"|redis   = "/var/lib/nothing"|'
 assert "terraform: an active save policy with no volume is rejected" fail \
   "cost without durability" "$d"
 

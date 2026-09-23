@@ -57,15 +57,61 @@ def section_outcome(section: Any) -> str:
     if "skipped" in section:
         return "skipped"
 
-    results = [
-        value
-        for value in section.values()
-        if isinstance(value, dict)
-        and ("error" in value or "skipped" in value or _looks_like_a_result(value))
-    ]
-    if results and all("error" in v or "skipped" in v for v in results):
-        return "failed" if any("error" in v for v in results) else "skipped"
+    results = _collect_results(section)
+    if results and all(_failed(v) or "skipped" in v for v in results):
+        return "failed" if any(_failed(v) for v in results) else "skipped"
     return "ok"
+
+
+def _failed(result: dict) -> bool:
+    """Whether one per-call result recorded a failure.
+
+    An ``error`` key is the usual spelling. A call the host refused for its
+    CREDENTIALS is the other: a rejection can be a legitimate observation (a
+    Parse pixel-ladder rung refused for size is exactly what that ladder is
+    for), but a 401/403 observes nothing about the model -- and a report
+    that counted one as evidence once read "ok=parse" for a key Cohere had
+    refused outright.
+    """
+    return "error" in result or result.get("code") == "AuthenticationError"
+
+
+def _collect_results(section: dict) -> list[dict]:
+    """Every per-call result a section recorded, at WHATEVER depth.
+
+    The 2026-09-15 version of this looked exactly one level down, which was
+    enough for `probe_chat` -- its variants sit directly on the section:
+
+        {"without_response_format": {"error": ...}, ...}
+
+    `probe_parse` groups its variants one level deeper:
+
+        {"model": "parse-v5.0",
+         "formats":      {"blocks": {"error": ...}, "markdown": {"error": ...}},
+         "pixel_ladder": {"1900000": {"error": ...}}}
+
+    `formats` and `pixel_ladder` are not results themselves and do not look
+    like one, so a one-level scan found NO results, fell through to "ok",
+    and reported a section in which every single call had failed as
+    verified. On 2026-09-18 a real run proved it: every Cohere call was
+    refused with a 403 and the probe printed "verified 1/4 sections
+    (ok=parse)" and "COMMIT THIS REPORT" -- the precise outcome this module
+    was extracted to make impossible, one more level down than the fix that
+    created it.
+
+    Recursing costs nothing: a group that holds no results contributes
+    none, exactly as before, so a section carrying only config is still
+    judged "ok" on its own keys rather than wrongly failed.
+    """
+    found: list[dict] = []
+    for value in section.values():
+        if not isinstance(value, dict):
+            continue
+        if "error" in value or "skipped" in value or _looks_like_a_result(value):
+            found.append(value)
+        else:
+            found.extend(_collect_results(value))
+    return found
 
 
 def _looks_like_a_result(value: dict) -> bool:

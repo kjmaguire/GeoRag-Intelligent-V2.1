@@ -46,6 +46,7 @@ CONTAINER="georag-postgresql"
 PG_USER="georag"
 PG_DB="georag"
 PROJECT_ID="00000000-0000-0000-0000-deadbeefcafe"
+WORKSPACE_ID="a0000000-0000-0000-0000-000000000001"  # GoldenFixture workspace, see seed_golden_fixture.sql
 TILE_Z=3
 TILE_X=1
 TILE_Y=2
@@ -120,7 +121,7 @@ for LAYER in "${FUNCTION_ORDER[@]}"; do
         "psql -t -A -U ${PG_USER} -d ${PG_DB} -c \
         \"SELECT etag_hash || '|' || md5(mvt) || '|' || octet_length(mvt)::text \
           FROM silver.${FUNC_NAME}(${TILE_Z}, ${TILE_X}, ${TILE_Y}, \
-          '{\\\"project_id\\\": \\\"${PROJECT_ID}\\\"}' ::json) \
+          '{\\\"project_id\\\": \\\"${PROJECT_ID}\\\", \\\"workspace_id\\\": \\\"${WORKSPACE_ID}\\\"}' ::json) \
           WHERE mvt IS NOT NULL;\"" 2>&1 | tr -d ' \r')
 
     if [[ -z "${RESULT}" ]]; then
@@ -139,7 +140,7 @@ for LAYER in "${FUNCTION_ORDER[@]}"; do
     docker exec "${CONTAINER}" bash -c \
         "psql -U ${PG_USER} -d ${PG_DB} -c \
         \"\\\\copy (SELECT mvt FROM silver.${FUNC_NAME}(${TILE_Z}, ${TILE_X}, ${TILE_Y}, \
-          '{\\\"project_id\\\": \\\"${PROJECT_ID}\\\"}' ::json) WHERE mvt IS NOT NULL) \
+          '{\\\"project_id\\\": \\\"${PROJECT_ID}\\\", \\\"workspace_id\\\": \\\"${WORKSPACE_ID}\\\"}' ::json) WHERE mvt IS NOT NULL) \
           TO '/tmp/golden_${LAYER}.mvt' (FORMAT binary);\"" >/dev/null 2>&1 || true
 
     # Pull .mvt file from container (best-effort; not required for test assertions)
@@ -165,7 +166,7 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     echo "  \"project_id\": \"${PROJECT_ID}\","
     echo "  \"tile\": {\"z\": ${TILE_Z}, \"x\": ${TILE_X}, \"y\": ${TILE_Y}},"
     echo "  \"tile_coverage\": \"lon -135 to -90, lat ~41 to ~67 (WGS84)\","
-    echo "  \"note\": \"All etag_hash values are identical because they share md5(data_version|z|x|y|project_id). This is correct.\","
+    echo "  \"note\": \"etag_hash formula is md5(data_version|z|x|y|project_id|workspace_id) as of the 2026-09-16 tenant-isolation fix; values are identical across layers only when project_id/workspace_id/tile are held constant.\","
     echo "  \"layers\": {"
     FIRST=1
     for LAYER in "${FUNCTION_ORDER[@]}"; do

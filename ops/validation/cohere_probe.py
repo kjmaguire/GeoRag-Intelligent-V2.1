@@ -669,6 +669,17 @@ def probe_parse(pdf: Path | None, pages: list[int]) -> dict[str, Any]:
             body = _parse_body(model, png, "blocks")
             try:
                 response = client.post(url, content=json.dumps(body).encode())
+                if response.status_code >= 300 and response.status_code not in _SIZE_REJECTION_STATUS:
+                    # Refused for a reason that says nothing about render size
+                    # -- a bad key, a wrong model name, a rate limit, a server
+                    # fault. Recording it as a rung (status + accepted=False,
+                    # no `error`) made it read as an observation: a run whose
+                    # every Parse call was a 401 reported "ok=parse" and
+                    # "verified", found by running this probe through
+                    # ops/rehearsal/run_cohere_probe.sh against a fake that
+                    # 401s everything.
+                    out["pixel_ladder"][str(pixels)] = {"error": _http_err(response)}
+                    break
                 out["pixel_ladder"][str(pixels)] = {
                     "png_bytes": len(png),
                     "status": response.status_code,
@@ -684,6 +695,12 @@ def probe_parse(pdf: Path | None, pages: list[int]) -> dict[str, Any]:
                 break
 
     return out
+
+
+# Statuses by which Parse can refuse a render for being too large. Only these
+# make a rejected ladder rung an observation of the pixel limit; any other
+# refusal is an ordinary failed call.
+_SIZE_REJECTION_STATUS = frozenset({400, 413, 422})
 
 
 def _parse_body(model: str, png: bytes, output_format: str) -> dict[str, Any]:
