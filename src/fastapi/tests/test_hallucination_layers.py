@@ -287,6 +287,14 @@ class TestLayer6MultiNumberSentences:
         # Positive dip convention is a reporting choice, not an error.
         "The hole was collared at a dip of 60 degrees (positive convention) "
         "[DATA-1].",
+        # Contained metal beside a grade -- both sentences from the answer
+        # the 2026-09-23 rehearsal floored to 0.2 confidence: 174 and 71
+        # attached to the U3O8 keyword and were tested as % grades.
+        "Indicated resources are 2.5 million tonnes at 2.10% U3O8, containing "
+        "approximately 174 million pounds of uranium [NI-1].",
+        "Inferred resources are 3.8 million tonnes at 0.85% U3O8, containing "
+        "about 71 million pounds of uranium [NI-2].",
+        "The Au resource is 1.2 Mt at 3.1 g/t Au for 120 koz of gold [NI-3].",
     ]
 
     VIOLATIONS = [
@@ -296,6 +304,15 @@ class TestLayer6MultiNumberSentences:
         ("The hole was drilled at an azimuth of 450 degrees [DATA-1].", "azimuth_range"),
         ("U3O8 grade of 92% was intersected [DATA-1].", "grade_uranium_max_pct"),
         ("The hole has a dip of -140 degrees [DATA-1].", "dip_range"),
+        # A contained-metal quantity in the same sentence must not hide a
+        # genuinely impossible grade.
+        (
+            "The intercept graded 75% U3O8, containing 5 million pounds of uranium [DATA-1].",
+            "grade_uranium_max_pct",
+        ),
+        # "oz/t" is a grade unit (scaled x31.1 to ppm), not the mass unit
+        # "oz": 40 oz/t is 1244 ppm, over the 1000 ppm ceiling.
+        ("The vein assayed 40 oz/t Au [DATA-1].", "grade_gold_max_ppm"),
     ]
 
     @pytest.mark.parametrize("text", CLEAN)
@@ -515,6 +532,55 @@ class TestLayer4OrchestratorExpanded:
             )
         # Au is in the tool result text ("Au grade") — should not be flagged.
         assert not any("'Au'" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "chunk_text",
+        [
+            # Verbatim shape from the 2026-09-23 rehearsal: PDF extraction
+            # puts the formula's subscripts on their own line.
+            "Indicated resources are 2.5 million tonnes at 2.10% U3\r\nO8\r\n, containing",
+            "grades of 1.2% U₃O₈ across the zone",
+        ],
+        ids=["split_across_lines", "unicode_subscripts"],
+    )
+    async def test_a_formula_in_extracted_form_grounds_the_commodity(self, chunk_text: str) -> None:
+        """The first live rehearsal warned "Commodity 'U3O8' mentioned but not
+        found in any tool result" on an answer citing twelve chunks of a
+        uranium report, every one of which carried the formula as "U3 O8"."""
+        from app.agent.hallucination.orchestrator_validators import verify_entities
+
+        with patch("app.agent.hallucination.orchestrator_validators.settings") as ms:
+            ms.ENTITY_RESOLUTION_ENABLED = True
+            ms.TIMEOUT_POSTGIS_S = 5.0
+            ms.TIMEOUT_NEO4J_S = 3.0
+            warnings = await verify_entities(
+                "The deposit grades 2.10% U3O8. [NI43:1]",
+                "proj-uuid",
+                None,
+                None,
+                tool_results=[("search_documents", {"text": chunk_text})],
+            )
+        assert not any("'U3O8'" in w for w in warnings), warnings
+
+    @pytest.mark.asyncio
+    async def test_a_formula_absent_from_the_evidence_still_warns(self) -> None:
+        """Joining split fragments must not ground a formula that is not
+        there: "uranium" and a stray "U3" are not U3O8."""
+        from app.agent.hallucination.orchestrator_validators import verify_entities
+
+        with patch("app.agent.hallucination.orchestrator_validators.settings") as ms:
+            ms.ENTITY_RESOLUTION_ENABLED = True
+            ms.TIMEOUT_POSTGIS_S = 5.0
+            ms.TIMEOUT_NEO4J_S = 3.0
+            warnings = await verify_entities(
+                "The deposit grades 2.10% U3O8. [NI43:1]",
+                "proj-uuid",
+                None,
+                None,
+                tool_results=[("search_documents", {"text": "uranium in zone U3, see table O"})],
+            )
+        assert any("'U3O8'" in w for w in warnings), warnings
 
     @pytest.mark.asyncio
     async def test_disabled_returns_empty(self) -> None:
