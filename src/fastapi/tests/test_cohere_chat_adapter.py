@@ -612,3 +612,97 @@ def test_the_shape_fingerprint_collapses_long_lists() -> None:
     """A 400-delta stream must not print 400 identical fingerprints."""
     got = llm_cohere._shape_fingerprint({"blocks": [{"text": "a"}] * 400})
     assert got == {"blocks": [{"text": "str(1)"}, "...x400"]}
+
+
+# ---------------------------------------------------------------------------
+# Reasoning ("thinking") content
+#
+# The Cohere SDK (cohere 7.1.1, v2 types) documents reasoning as on by default
+# for models that support it, and types content-delta as
+# ``delta.message.content = {"text": ..., "thinking": ...}``. A reasoning model
+# can therefore spend all of max_tokens thinking and emit no text. That is a
+# budget outcome, and call_cohere_llm already has handling for it — it must not
+# be misreported as an unrecognised wire shape.
+# ---------------------------------------------------------------------------
+
+
+def _thinking(text: str) -> str:
+    return json.dumps({"type": "content-delta", "delta": {"message": {"content": {"thinking": text}}}})
+
+
+def _text(text: str) -> str:
+    return json.dumps({"type": "content-delta", "delta": {"message": {"content": {"text": text}}}})
+
+
+@pytest.mark.asyncio
+async def test_reasoning_deltas_are_not_forwarded_as_the_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reasoning is the model's scratch work, not a cited answer — streaming it
+    to the user would put uncited claims on screen past every guard."""
+    _install(
+        monkeypatch,
+        _sse(
+            json.dumps({"type": "content-start", "index": 0, "delta": {"message": {"content": {"type": "thinking"}}}}),
+            _thinking("Let me weigh the Cu assays against"),
+            _thinking(" the collar survey first."),
+            json.dumps({"type": "content-end", "index": 0}),
+            _text("Hole DDH-01 intersected"),
+            _text(" 2.1% Cu."),
+            json.dumps({"type": "message-end", "delta": {"finish_reason": "COMPLETE"}}),
+        ),
+    )
+    deltas: list[str] = []
+    answer = await call_cohere_llm("q", 0.2, token_callback=await _collect(deltas))
+
+    assert deltas == ["Hole DDH-01 intersected", " 2.1% Cu."]
+    assert answer == "Hole DDH-01 intersected 2.1% Cu."
+
+
+@pytest.mark.asyncio
+async def test_a_stream_of_only_reasoning_is_budget_exhaustion_not_a_shape_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure the 2026-09-18 rehearsal could not see into: all of
+    max_tokens spent thinking used to raise CohereResponseShapeError, telling
+    the operator to re-probe a wire shape that was never wrong."""
+    _install(
+        monkeypatch,
+        _sse(
+            _thinking("A long chain of reasoning"),
+            _thinking(" that runs out of room"),
+            json.dumps({"type": "message-end", "delta": {"finish_reason": "MAX_TOKENS"}}),
+        ),
+    )
+    deltas: list[str] = []
+    answer = await call_cohere_llm("q", 0.2, token_callback=await _collect(deltas))
+
+    assert deltas == []
+    assert answer == llm_cohere.BUDGET_EXHAUSTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_a_unary_reply_of_only_reasoning_is_budget_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = {"message": {"content": [{"type": "thinking", "thinking": "Reasoning that never finished"}]}}
+    _install(monkeypatch, lambda _request: httpx.Response(200, json=body))
+
+    assert await call_cohere_llm("q", 0.2) == llm_cohere.BUDGET_EXHAUSTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_a_unary_reply_drops_reasoning_and_keeps_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = {
+        "message": {
+            "content": [
+                {"type": "thinking", "thinking": "Scratch work."},
+                {"type": "text", "text": "The answer."},
+            ]
+        }
+    }
+    _install(monkeypatch, lambda _request: httpx.Response(200, json=body))
+
+    assert await call_cohere_llm("q", 0.2) == "The answer."

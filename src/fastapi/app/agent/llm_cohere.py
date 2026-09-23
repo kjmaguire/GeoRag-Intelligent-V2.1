@@ -191,6 +191,14 @@ def _extract_content(payload: Any) -> str:
         # Plausible neighbour: content as a bare string.
         if isinstance(content, str) and content:
             return content
+        # Reasoning blocks and no text: the model spent max_tokens thinking.
+        # That is a budget outcome with its own handling in call_cohere_llm
+        # (BUDGET_EXHAUSTED_FALLBACK), not an unrecognised shape, so it must
+        # not raise the error that tells an operator to re-probe the wire.
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and isinstance(block.get("thinking"), str) for block in content
+        ):
+            return ""
 
     # Pre-v2 spelling, still worth accepting rather than failing a live call
     # over a field name.
@@ -333,6 +341,31 @@ def _delta_text(event: dict[str, Any]) -> str | None:
     return None
 
 
+def _delta_thinking(event: dict[str, Any]) -> str | None:
+    """Reasoning text carried by one streaming event, if any.
+
+    The Cohere SDK types ``content-delta`` as
+    ``delta.message.content = {"text": str | None, "thinking": str | None}``,
+    and reasoning is on by default for models that support it — so a
+    reasoning model streams ``thinking`` deltas before any ``text``. They are
+    never forwarded to the user; they are counted so that a stream made of
+    nothing else is recognised as the budget running out mid-thought rather
+    than misreported as an unrecognised wire shape.
+    """
+    delta = event.get("delta")
+    if not isinstance(delta, dict):
+        return None
+    message = delta.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if isinstance(content, dict):
+        thinking = content.get("thinking")
+        if isinstance(thinking, str):
+            return thinking
+    return None
+
+
 async def call_cohere_llm(
     user_message: str,
     temperature: float,
@@ -405,6 +438,8 @@ async def call_cohere_llm(
                     seen_types: list[str] = []
                     seen_shapes: list[Any] = []
                     saw_any_event = False
+                    thinking_chars = 0
+                    finish_reason: str | None = None
                     async with client.stream("POST", url, headers=_headers(), json=body) as response:
                         if response.status_code in _PRE_STREAM_RETRYABLE_STATUS:
                             raise CoherePreStreamError(f"HTTP {response.status_code} from Cohere before any output")
@@ -428,14 +463,32 @@ async def call_cohere_llm(
                                 await token_callback(piece)  # type: ignore[misc]
                                 sent_any_token = True
                                 continue
+                            thought = _delta_thinking(event)
+                            if thought:
+                                thinking_chars += len(thought)
+                                continue
                             if event.get("type") == "message-end" or "usage" in event:
+                                end_delta = event.get("delta")
+                                if isinstance(end_delta, dict) and isinstance(end_delta.get("finish_reason"), str):
+                                    finish_reason = end_delta["finish_reason"]
                                 got_in, got_out = _extract_usage(
                                     event.get("delta") if isinstance(event.get("delta"), dict) else event
                                 )
                                 input_tokens = got_in or input_tokens
                                 output_tokens = got_out or output_tokens
                     content = "".join(chunks)
-                    if not content:
+                    if not content and thinking_chars:
+                        # Not a shape problem: the model reasoned and never
+                        # reached its answer. Fall through to the
+                        # budget_exhausted_by_thinking handling below.
+                        logger.warning(
+                            "cohere chat: stream carried %d chars of reasoning and no answer text "
+                            "(finish_reason=%s, max_tokens=%d)",
+                            thinking_chars,
+                            finish_reason,
+                            max_output,
+                        )
+                    elif not content:
                         # A stream that yielded no text at all is the
                         # streaming face of an unrecognised shape. Loud, for
                         # the same reason _extract_content is — but loud WITH
