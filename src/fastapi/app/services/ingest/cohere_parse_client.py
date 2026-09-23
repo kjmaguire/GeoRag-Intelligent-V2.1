@@ -30,10 +30,23 @@ Wire shape
     Authorization: Bearer $COHERE_API_KEY
     {"model": "parse-v5.0",
      "document": {"type": "image_url",
-                  "image_url": {"url": "data:image/png;base64,..."}},
+                  "image_url": "data:image/png;base64,..."},
      "output_format": "blocks" | "markdown"}
-    -> {"pages": [{"blocks": [{"type": "text"|"table"|"image", ...}]}]}
-       or {"pages": [{"markdown": "..." | {"content": "...", "images": [...]}}]}
+    -> {"id": ..., "pages": [{"type": "blocks", "index": 0, "blocks": [
+            {"type": "text",  "text":  {"content": "..."}},
+            {"type": "table", "table": {"html": "<table>...", "title": ...}},
+            {"type": "image", "image": {"description": "...", ...}}]}]}
+       or {"pages": [{"type": "markdown", "index": 0,
+                      "markdown": {"content": "...", "images": [...]}}]}
+
+``document.image_url`` is a STRING. The first live call from this codebase
+(2026-09-23, from inside the VPC) was refused with HTTP 400 "parameter
+'document.image_url' is of type object but should be of type string": every
+page this client had ever sent was the chat-style ``{"url": ...}`` object,
+so every scanned page fell back to tesseract. The response shape above is
+the Cohere Python SDK's (``cohere`` 7.1.1, ``types/parse_*.py``), where each
+block nests its payload under a key named by its ``type``; no successful
+call has confirmed it yet, so the flat spellings stay tolerated below.
 
 ``model`` is back in the body. On Bedrock it had moved out to ``modelId``;
 here the request is Cohere's own again, which is the shape ADR-0019 first
@@ -530,7 +543,9 @@ def _request_body(png_bytes: bytes) -> dict[str, Any]:
     """Cohere's own parse body. ``model`` is added by ``_invoke``."""
     data_uri = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
     return {
-        "document": {"type": "image_url", "image_url": {"url": data_uri}},
+        # A bare string, not chat's {"url": ...} object — Cohere 400s the
+        # object form (live call, 2026-09-23). See the module docstring.
+        "document": {"type": "image_url", "image_url": data_uri},
         "output_format": output_format(),
     }
 
@@ -616,6 +631,35 @@ def _first(mapping: Any, *keys: str) -> Any:
     return None
 
 
+def _first_str(mapping: Any, *keys: str) -> str | None:
+    """Like ``_first``, but only a non-empty STRING counts.
+
+    ``_first`` returns whatever is there, and a block's ``text`` is an
+    OBJECT in the SDK's shape (``{"content": ...}``) — ``str()`` of it put
+    ``{'content': '...'}`` into the page text instead of the text.
+    """
+    if not isinstance(mapping, dict):
+        return None
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _block_fields(block: dict[str, Any], kind: str) -> dict[str, Any]:
+    """The dict a block's content fields live in.
+
+    The SDK nests them under a key named by the block's type —
+    ``{"type": "text", "text": {"content": ...}}``, ``{"type": "table",
+    "table": {"html": ...}}``. The flat spelling (fields on the block
+    itself) is what this adapter assumed before 2026-09-23 and stays
+    accepted: neither has been confirmed by a successful live call.
+    """
+    nested = block.get(kind)
+    return nested if isinstance(nested, dict) else block
+
+
 def _table_markdown(grid: list[list[str]]) -> str:
     from .pdf_report import _table_to_markdown  # noqa: PLC0415 — lazy, avoids a cycle
 
@@ -670,7 +714,7 @@ def _page_from_payload(payload: Any) -> PageOcrResult:
     logger.error(
         "COHERE_PARSE_UNRECOGNISED_RESPONSE: no recognisable page in the "
         "Parse body (keys=%s). Falling back to tesseract, which extracts no "
-        "tables. Run ops/validation/bedrock_probe.py and correct the response "
+        "tables. Run ops/validation/cohere_probe.py and correct the response "
         "adapter from its report.",
         sorted(inspected)[:10] if isinstance(inspected, dict) else type(inspected).__name__,
     )
@@ -692,30 +736,31 @@ def _page_from_blocks(blocks: list[Any]) -> PageOcrResult:
         if not isinstance(block, dict):
             continue
         kind = str(block.get("type") or "text").strip().lower()
+        fields = _block_fields(block, kind)
         if kind == "table":
-            html_fragment = _first(block, "html", "content", "text")
-            grid = html_table_to_grid(str(html_fragment)) if html_fragment else []
+            html_fragment = _first_str(fields, "html", "content", "text")
+            grid = html_table_to_grid(html_fragment) if html_fragment else []
             if grid:
                 tables.append(grid)
                 parts.append(_table_markdown(grid))
             elif html_fragment:
-                parts.append(str(html_fragment).strip())
+                parts.append(html_fragment.strip())
         elif kind in {"image", "figure", "picture"}:
             if describe_images:
-                description = _first(block, "description", "caption", "text")
+                description = _first_str(fields, "description", "caption", "text")
                 if description:
-                    parts.append(f"[Figure: {str(description).strip()}]")
+                    parts.append(f"[Figure: {description.strip()}]")
         else:
-            text = _first(block, "text", "content", "markdown")
+            text = _first_str(fields, "content", "text", "markdown")
             if text:
-                parts.append(str(text).strip())
+                parts.append(text.strip())
 
     text = "\n\n".join(part for part in parts if part).strip()
     return _result(text, tables)
 
 
 def _page_from_markdown(markdown: Any) -> PageOcrResult:
-    content = _first(markdown, "content", "text", "markdown") if isinstance(markdown, dict) else markdown
+    content = _first_str(markdown, "content", "text", "markdown") if isinstance(markdown, dict) else markdown
     if not isinstance(content, str) or not content.strip():
         return PageOcrResult("", 0.0, confidence_reported=False)
 

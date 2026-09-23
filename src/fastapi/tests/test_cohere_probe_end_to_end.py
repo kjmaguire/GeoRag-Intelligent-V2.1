@@ -152,6 +152,58 @@ class TestItCatchesTheFailuresItExistsFor:
         assert v["authentication_failed"] is True
 
 
+class TestTheFirstLiveRunsFalseGreens:
+    """Each of these read "ok" in the first run from inside the VPC
+    (2026-09-23), whose verdict said "verified 4/4 sections" while the stream
+    had parsed nothing and every Parse call had been refused."""
+
+    def test_a_stream_with_no_readable_event_fails_the_section(self, probe) -> None:
+        report = probe("unreadable_stream")
+        stream = report["chat_stream"]
+        assert stream["event_types"] == {}
+        assert stream["error"]["type"] == "NoStreamEvents"
+        assert stream["content_type"] == "application/octet-stream"
+        assert stream["line_kinds"] == {"other": 1}
+        assert "chat_stream" in report["verdict"]["sections_failed"]
+
+    @pytest.mark.parametrize("mode", ["ndjson_stream", "whole_body_stream"])
+    def test_other_framings_are_read_through_the_real_adapter(self, probe, mode) -> None:
+        stream = probe(mode)["chat_stream"]
+        assert "error" not in stream, stream.get("error")
+        assert stream["text_chars"] > 0
+        assert stream["adapter_read_any_delta"] is True
+
+    def test_a_stream_is_requested_as_an_event_stream(self, probe) -> None:
+        stream = probe()["chat_stream"]
+        assert stream["content_type"] == "text/event-stream"
+        assert stream["line_kinds"]["event"] == stream["line_kinds"]["data"] - 1  # [DONE] has no event line
+
+    def test_the_object_form_of_image_url_fails_parse(self, probe, monkeypatch) -> None:
+        """What the probe sent before the fix. The fake refuses it exactly as
+        Cohere did, and the section must say failed, not ok."""
+        if not FIXTURE_PDF.exists():
+            pytest.skip("OCR fixture PDF not present")
+        real = cohere_probe._parse_body
+
+        def _object_form(model, png, output_format):
+            body = real(model, png, output_format)
+            body["document"]["image_url"] = {"url": body["document"]["image_url"]}
+            return body
+
+        monkeypatch.setattr(cohere_probe, "_parse_body", _object_form)
+        report = probe(pdf=FIXTURE_PDF)
+        assert "should be of type string" in report["parse"]["formats"]["blocks"]["error"]["message"]
+        assert "parse" in report["verdict"]["sections_failed"], report["verdict"]["summary"]
+
+    def test_the_parse_blocks_are_read_in_the_sdk_shape(self, probe) -> None:
+        if not FIXTURE_PDF.exists():
+            pytest.skip("OCR fixture PDF not present")
+        blocks = probe(pdf=FIXTURE_PDF)["parse"]["formats"]["blocks"]
+        assert blocks["block_keys"] == ["table", "text", "type"]
+        assert "content" in blocks["block_payload_keys"]
+        assert blocks["adapter_page_ok"]["chars"] > 0
+
+
 class TestTheContractDiffIsWiredUp:
     def test_the_diff_resolves_and_observes_the_calls_it_reached(self, probe) -> None:
         diff = probe()["contract_diff"]

@@ -75,9 +75,12 @@ def _configured(monkeypatch):
     monkeypatch.setattr(cpc, "_render_page", lambda _path, page: b"\x89PNG-fake-" + str(page).encode())
 
 
-@pytest.fixture
-def blocks_payload():
-    return json.loads((FIXTURES / "blocks_page.json").read_text())
+@pytest.fixture(params=["blocks_page.json", "blocks_page_sdk.json"], ids=["flat", "sdk_nested"])
+def blocks_payload(request):
+    """Both block spellings: fields on the block (this adapter's first
+    guess) and nested under ``block[type]`` (the Cohere SDK's types). Same
+    page content, so every assertion holds for either."""
+    return json.loads((FIXTURES / request.param).read_text())
 
 
 @pytest.fixture
@@ -208,7 +211,11 @@ class TestWireShape:
         body = calls[0]["body"]
         assert set(body) == {"document", "output_format"}
         assert body["document"]["type"] == "image_url"
-        assert body["document"]["image_url"]["url"].startswith("data:image/png;base64,")
+        # A bare string: Cohere 400s the chat-style {"url": ...} object
+        # ("parameter 'document.image_url' is of type object but should be of
+        # type string" — the first live call, 2026-09-23).
+        assert isinstance(body["document"]["image_url"], str)
+        assert body["document"]["image_url"].startswith("data:image/png;base64,")
         assert body["output_format"] == "blocks"
 
     def test_output_format_env_reaches_the_body_and_invalid_falls_back(
@@ -248,6 +255,41 @@ class TestResponseAdapter:
         assert "Inferred" in result.text and "7.5" in result.text
         # Image descriptions stay out by default.
         assert "Plan view map" not in result.text
+
+    def test_a_nested_text_object_is_read_not_stringified(self, monkeypatch) -> None:
+        """The SDK's text block is ``{"text": {"content": ...}}``. Reading
+        ``text`` with a take-whatever-is-there helper put the dict's repr
+        into the page text — ``{'content': 'DDH-24-001'}`` — which chunks,
+        embeds and cites like real text while being corrupt."""
+        _capture_invoke(
+            monkeypatch,
+            [
+                _body(
+                    {
+                        "pages": [
+                            {
+                                "type": "blocks",
+                                "index": 0,
+                                "blocks": [{"type": "text", "text": {"content": "DDH-24-001"}}],
+                            }
+                        ]
+                    }
+                )
+            ],
+        )
+
+        result = cpc.ocr_page_sync("/x.pdf", 1)
+
+        assert result.request_succeeded
+        assert result.text == "DDH-24-001"
+
+    def test_markdown_page_in_the_sdk_shape(self, monkeypatch) -> None:
+        _capture_invoke(
+            monkeypatch,
+            [_body({"pages": [{"type": "markdown", "index": 0, "markdown": {"content": "# Collars", "images": []}}]})],
+        )
+
+        assert cpc.ocr_page_sync("/x.pdf", 1).text == "# Collars"
 
     def test_image_descriptions_are_opt_in(self, monkeypatch, blocks_payload) -> None:
         _capture_invoke(monkeypatch, [_body(blocks_payload)])
@@ -452,7 +494,7 @@ class TestPageGroups:
 
         def fake_invoke(model, body):
             # The fake PNG carries the page number, so the body tells us which page this is.
-            uri = body["document"]["image_url"]["url"]
+            uri = body["document"]["image_url"]
             import base64
 
             page = int(base64.b64decode(uri.split(",", 1)[1]).rsplit(b"-", 1)[1])

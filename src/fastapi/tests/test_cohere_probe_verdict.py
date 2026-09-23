@@ -343,3 +343,23 @@ class TestAParseLadderRungIsJudgedByWhyItWasRefused:
             )
         )
         assert "parse" in v["sections_ok"]
+
+    def test_a_ladder_of_only_rejections_is_not_an_observation(self) -> None:
+        """The 2026-09-23 run, verbatim in shape: both formats refused with
+        a 400 and the one ladder rung ``{"status": 400, "accepted": False}``.
+        That rung is a rejection but carries no ``error``, and the section
+        read "ok" -- "verified 4/4" over a Parse that never once worked. A
+        refused rung means "too big" only beside one that was accepted."""
+        bad_request = {"error": {"type": "HTTPStatusError", "status": 400, "code": "ClientError"}}
+        v = verdict(
+            _report(
+                parse={
+                    "model": "parse-v5.0",
+                    "formats": {"blocks": bad_request, "markdown": bad_request},
+                    "pixel_ladder": {
+                        "1900000": {"png_bytes": 85903, "status": 400, "accepted": False, "code": "ClientError"}
+                    },
+                }
+            )
+        )
+        assert "parse" in v["sections_failed"], v["summary"]

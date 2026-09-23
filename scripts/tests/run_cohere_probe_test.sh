@@ -139,6 +139,9 @@ report="$(find "$WORK/reports" -name 'cohere_probe_*.json' | head -1)"
 check "the report is the probe's own JSON, verdict intact" \
     "$(jq -e '.verdict.verified_anything == true and (.chat|type) == "object"' "$report" >/dev/null 2>&1; echo $?)" \
     "$(head -c 400 "$report" 2>/dev/null)"
+check "every section verified, stream and Parse included" \
+    "$(jq -e '.verdict.sections_ok == ["chat","chat_stream","parse","latency"]' "$report" >/dev/null 2>&1; echo $?)" \
+    "$(jq -c '.verdict' "$report" 2>/dev/null)"
 check "the in-task import of the deployed adapter worked" \
     "$(jq -e '[.. | strings | select(test("NOTHING <-- adapter is wrong|ModuleNotFoundError"))] | length == 0' "$report" >/dev/null 2>&1; echo $?)"
 check "the key never appears in what reached the logs" \

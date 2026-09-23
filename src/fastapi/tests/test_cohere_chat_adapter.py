@@ -586,16 +586,113 @@ async def test_a_response_that_is_not_an_event_stream_says_so(
 ) -> None:
     """Distinguished from "unknown shape" because the fix is different: this
     one means `stream` did not survive into the request, or the host framed
-    the reply some other way."""
+    the reply some other way. The message carries the content type and the
+    framing of the first line -- the evidence the 2026-09-23 live failure
+    did not leave behind -- and never the line itself."""
 
-    def _plain_json(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"message": {"content": [{"type": "text", "text": "hi"}]}})
+    def _opaque(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=b"secret answer words\n", headers={"content-type": "application/octet-stream"}
+        )
 
-    _install(monkeypatch, _plain_json)
+    _install(monkeypatch, _opaque)
     with pytest.raises(CohereResponseShapeError) as excinfo:
         await call_cohere_llm("q", 0.2, token_callback=await _collect([]))
 
-    assert "no SSE `data:` frame was parsed at all" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "no event was parsed at all" in message
+    assert "application/octet-stream" in message
+    assert "alnum…(19)" in message
+    assert "secret" not in message
+
+
+@pytest.mark.asyncio
+async def test_a_stream_asks_for_an_event_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first live run sent `Accept: application/json` on the streaming
+    call and parsed zero `data:` frames from the 200 it got back."""
+    accepts: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        accepts.append(request.headers.get("accept", ""))
+        if json.loads(request.content).get("stream"):
+            return _sse(json.dumps({"type": "content-delta", "delta": {"message": {"content": {"text": "hi"}}}}))(
+                request
+            )
+        return _ok()(request)
+
+    _install(monkeypatch, _handler)
+    await call_cohere_llm("q", 0.2, token_callback=await _collect([]))
+    await call_cohere_llm("q", 0.2)
+
+    assert accepts == ["text/event-stream", "application/json"]
+
+
+@pytest.mark.asyncio
+async def test_newline_delimited_json_events_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = [
+        {"type": "content-delta", "delta": {"message": {"content": {"text": "one "}}}},
+        {"type": "content-delta", "delta": {"message": {"content": {"text": "two"}}}},
+        {"type": "message-end", "delta": {"usage": {"tokens": {"input_tokens": 4, "output_tokens": 2}}}},
+    ]
+
+    def _ndjson(_request: httpx.Request) -> httpx.Response:
+        body = "".join(json.dumps(f) + "\n" for f in frames).encode()
+        return httpx.Response(200, content=body, headers={"content-type": "application/stream+json"})
+
+    _install(monkeypatch, _ndjson)
+    seen: list[str] = []
+    answer = await call_cohere_llm("q", 0.2, token_callback=await _collect(seen))
+
+    assert answer == "one two"
+    assert seen == ["one ", "two"]
+
+
+@pytest.mark.parametrize("indent", [None, 2], ids=["one_line", "pretty_printed"])
+@pytest.mark.asyncio
+async def test_a_whole_reply_to_a_streaming_call_is_read(monkeypatch: pytest.MonkeyPatch, indent) -> None:
+    """A host that ignored `stream` and answered in one piece. That is an
+    answer, and treating it as an unreadable shape turned a working call into
+    INTERNAL_ERROR."""
+    reply = {
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "hm"}, {"type": "text", "text": "hi"}],
+        },
+        "usage": {"tokens": {"input_tokens": 3, "output_tokens": 1}},
+    }
+
+    def _plain_json(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=json.dumps(reply, indent=indent).encode(), headers={"content-type": "application/json"}
+        )
+
+    _install(monkeypatch, _plain_json)
+    seen: list[str] = []
+    answer = await call_cohere_llm("q", 0.2, token_callback=await _collect(seen))
+
+    assert answer == "hi"
+    assert seen == ["hi"]
+
+
+@pytest.mark.asyncio
+async def test_sse_with_event_lines_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Full SSE framing, `event:` lines included, as the Cohere SDK's decoder
+    expects it; thinking deltas first, then text."""
+    frames = [
+        {"type": "message-start", "delta": {"message": {"role": "assistant"}}},
+        {"type": "content-delta", "delta": {"message": {"content": {"thinking": "Count."}}}},
+        {"type": "content-delta", "delta": {"message": {"content": {"text": "one"}}}},
+    ]
+
+    def _sse_with_events(_request: httpx.Request) -> httpx.Response:
+        body = "".join(f"event: {f['type']}\ndata: {json.dumps(f)}\n\n" for f in frames).encode()
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    _install(monkeypatch, _sse_with_events)
+    seen: list[str] = []
+
+    assert await call_cohere_llm("q", 0.2, token_callback=await _collect(seen)) == "one"
+    assert seen == ["one"]
 
 
 def test_the_shape_fingerprint_describes_structure_without_values() -> None:

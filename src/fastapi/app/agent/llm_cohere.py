@@ -115,7 +115,7 @@ def _base_url() -> str:
     return (settings.COHERE_BASE_URL or "https://api.cohere.com").rstrip("/")
 
 
-def _headers() -> dict[str, str]:
+def _headers(*, stream: bool = False) -> dict[str, str]:
     key = (settings.COHERE_API_KEY or "").strip()
     if not key:
         raise RuntimeError(
@@ -127,7 +127,12 @@ def _headers() -> dict[str, str]:
     return {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        # A stream asks for an event stream. The first live run (2026-09-23)
+        # sent `application/json` on the streaming call too and parsed ZERO
+        # `data:` frames from a 200; Cohere's own SDK sends no Accept header
+        # and reads SSE. The reader below also takes the other framings, so
+        # this is the likely cause rather than the only defence.
+        "Accept": "text/event-stream" if stream else "application/json",
     }
 
 
@@ -251,10 +256,20 @@ def _extract_usage(payload: Any) -> tuple[int, int]:
 
 
 def _sse_events(line: str) -> dict[str, Any] | None:
-    """Parse one SSE ``data:`` line into a dict, or None if it is not one."""
-    if not line.startswith("data:"):
+    """Parse one streamed line into an event dict, or None if it is not one.
+
+    An SSE ``data:`` line is the documented framing. A line that is itself a
+    JSON object is newline-delimited JSON — how Cohere's v1 API streamed, and
+    one candidate for what the 2026-09-23 run received when it parsed no
+    ``data:`` frame at all. ``event:``/``id:``/comment lines carry nothing
+    this reader needs (the type is inside the JSON) and return None.
+    """
+    if line.startswith("data:"):
+        raw = line[5:].strip()
+    elif line.lstrip().startswith("{"):
+        raw = line.strip()
+    else:
         return None
-    raw = line[5:].strip()
     if not raw or raw == "[DONE]":
         return None
     try:
@@ -295,6 +310,48 @@ def _shape_fingerprint(value: Any, *, _depth: int = 0) -> Any:
     if isinstance(value, str):
         return f"str({len(value)})"
     return type(value).__name__
+
+
+#: How much unframed body the stream reader keeps for the whole-body
+#: fallback and the error message. A real reply to one question is far
+#: below this; anything larger is not a reply this path should buffer.
+_UNFRAMED_LIMIT = 2_000_000
+
+
+def _is_whole_reply(event: dict[str, Any]) -> bool:
+    """A complete non-streaming reply, rather than a stream event.
+
+    Stream events carry a ``type`` and put their payload under ``delta``; a
+    v2 reply has neither and carries ``message`` at the top level.
+    """
+    return "type" not in event and "delta" not in event and isinstance(event.get("message"), dict)
+
+
+def _whole_body_reply(text: str) -> dict[str, Any] | None:
+    """The body as one JSON reply, if that is what it is."""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        # Expected when the body is not one JSON document; the caller then
+        # raises with the framing evidence, which is the useful message.
+        logger.debug("cohere: unframed stream body is not a single JSON reply", exc_info=True)
+        return None
+    return payload if isinstance(payload, dict) and _is_whole_reply(payload) else None
+
+
+def _line_shape(line: str) -> str:
+    """Name a line's framing without quoting it — it may carry answer text.
+
+    An SSE field name (``event``, ``id``, ``retry``) is safe to print and is
+    exactly the evidence needed; anything else is described by its first
+    character's class and its length.
+    """
+    field, sep, _ = line.partition(":")
+    if sep and field.isidentifier() and len(field) <= 16:
+        return f"{field}:…({len(line)})"
+    head = line[:1]
+    kind = "brace" if head in "{[" else "alnum" if head.isalnum() else "punct" if head else "empty"
+    return f"{kind}…({len(line)})"
 
 
 def _delta_text(event: dict[str, Any]) -> str | None:
@@ -440,13 +497,24 @@ async def call_cohere_llm(
                     saw_any_event = False
                     thinking_chars = 0
                     finish_reason: str | None = None
-                    async with client.stream("POST", url, headers=_headers(), json=body) as response:
+                    # Lines that were not events, kept (bounded) in case the
+                    # whole body is one pretty-printed JSON reply — a host
+                    # that ignored `stream`. Also the evidence if nothing
+                    # was readable at all.
+                    unframed: list[str] = []
+                    unframed_chars = 0
+                    content_type = ""
+                    async with client.stream("POST", url, headers=_headers(stream=True), json=body) as response:
                         if response.status_code in _PRE_STREAM_RETRYABLE_STATUS:
                             raise CoherePreStreamError(f"HTTP {response.status_code} from Cohere before any output")
                         response.raise_for_status()
+                        content_type = response.headers.get("content-type", "")
                         async for line in response.aiter_lines():
                             event = _sse_events(line)
                             if event is None:
+                                if line.strip() and unframed_chars < _UNFRAMED_LIMIT:
+                                    unframed.append(line)
+                                    unframed_chars += len(line)
                                 continue
                             saw_any_event = True
                             if len(seen_shapes) < 3:
@@ -455,6 +523,10 @@ async def call_cohere_llm(
                             if isinstance(event_type, str) and event_type not in seen_types:
                                 seen_types.append(event_type)
                             piece = _delta_text(event)
+                            if piece is None and _is_whole_reply(event):
+                                # A complete non-streaming reply on one line.
+                                piece = _extract_content(event)
+                                input_tokens, output_tokens = _extract_usage(event)
                             if piece:
                                 chunks.append(piece)
                                 # Forward BEFORE recording, so a callback that
@@ -476,6 +548,16 @@ async def call_cohere_llm(
                                 )
                                 input_tokens = got_in or input_tokens
                                 output_tokens = got_out or output_tokens
+                    if not saw_any_event and unframed and unframed_chars < _UNFRAMED_LIMIT:
+                        whole = _whole_body_reply("\n".join(unframed))
+                        if whole is not None:
+                            saw_any_event = True
+                            piece = _extract_content(whole)
+                            input_tokens, output_tokens = _extract_usage(whole)
+                            if piece:
+                                chunks.append(piece)
+                                await token_callback(piece)  # type: ignore[misc]
+                                sent_any_token = True
                     content = "".join(chunks)
                     if not content and thinking_chars:
                         # Not a shape problem: the model reasoned and never
@@ -496,9 +578,12 @@ async def call_cohere_llm(
                         # this one failure instead of a second probe run.
                         if not saw_any_event:
                             detail = (
-                                "no SSE `data:` frame was parsed at all. Either the response "
-                                "was not an event stream (check that `stream` survived into the "
-                                "request body) or it frames events differently."
+                                "no event was parsed at all (content-type "
+                                f"{content_type or '(none)'!r}; {len(unframed)} non-empty "
+                                f"unparsed line(s), first shaped {_line_shape(unframed[0]) if unframed else '-'}). "
+                                "Either the response was not an event stream (check that "
+                                "`stream` survived into the request body) or it frames "
+                                "events differently."
                             )
                         else:
                             detail = (
