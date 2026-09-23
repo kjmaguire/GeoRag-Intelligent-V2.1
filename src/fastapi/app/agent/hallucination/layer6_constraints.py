@@ -126,6 +126,17 @@ class GeologicalConstraint:
 
         Unit arithmetic only. The BOUNDS remain an SME decision and are not
         touched by this: 1000 ppm is still 1000 ppm.
+    foreign_units:
+        Unit tokens that, written immediately after a number, say it is a
+        DIFFERENT quantity from the one this constraint bounds, so it is not
+        checked here at all. A grade constraint's keywords name a commodity
+        ("U3O8", "uranium"), and resource sentences put contained-metal
+        quantities right beside the grade: "3.8 Mt at 0.85% U3O8, containing
+        about 71 million pounds of uranium". 71 attached to the U3O8 keyword
+        just before it and was tested as a 71 % grade, which floored a
+        correct answer's confidence to 0.2 under a fabrication banner
+        (first live rehearsal, 2026-09-23). "million pounds" is a mass, not a
+        grade; there is no bound here for it to break.
     """
 
     name: str
@@ -138,6 +149,7 @@ class GeologicalConstraint:
     unit_scales: Mapping[str, float] = field(default_factory=dict)
     lookahead_chars: int = 15
     absolute_value: bool = False
+    foreign_units: Sequence[str] = ()
 
 
 # Phase 12 Step 3 (R-P11-l6-config) — SME-editable constraint table.
@@ -176,6 +188,7 @@ def _load_constraints_from_json() -> list[GeologicalConstraint]:
                     str(k): float(v)
                     for k, v in (entry.get("unit_scales") or {}).items()
                 },
+                foreign_units=tuple(entry.get("foreign_units", ())),
             )
         )
     return out
@@ -249,6 +262,19 @@ def _governing_constraint(
     return best[1], best[2]
 
 
+def _unit_follows(text: str, number_end: int, token: str) -> bool:
+    """Whether ``token`` is the unit written immediately after the number.
+
+    The next character must not continue the word, so "ppm" does not match
+    the "pp" of a longer token and "t" does not match "tonnes" or "oz/t".
+    """
+    tail = text[number_end:number_end + 16].lstrip()
+    if not tail.lower().startswith(token.lower()):
+        return False
+    rest = tail[len(token):]
+    return not rest or not (rest[0].isalnum() or rest[0] == "/")
+
+
 def _unit_scale(
     text: str, number_end: int, constraint: GeologicalConstraint,
 ) -> float:
@@ -267,14 +293,9 @@ def _unit_scale(
     if not constraint.unit_scales:
         return 1.0
 
-    tail = text[number_end:number_end + 12].lstrip()
     for token, scale in constraint.unit_scales.items():
-        if tail.lower().startswith(token.lower()):
-            # Guard against "ppm" matching the "pp" of a longer token: the
-            # next character must not continue the word.
-            rest = tail[len(token):]
-            if not rest or not (rest[0].isalnum() or rest[0] == "/"):
-                return scale
+        if _unit_follows(text, number_end, token):
+            return scale
     return 1.0
 
 
@@ -302,6 +323,9 @@ def _check_value_against_constraint(
             for nk in constraint.negative_keywords
         ):
             return False
+
+    if any(_unit_follows(text, number_end, unit) for unit in constraint.foreign_units):
+        return False
 
     compared = abs(value) if constraint.absolute_value else value
     compared *= _unit_scale(text, number_end, constraint)

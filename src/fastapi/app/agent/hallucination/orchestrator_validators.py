@@ -802,6 +802,31 @@ def _collect_value_strings(obj: Any) -> list[str]:
     return out
 
 
+_SUBSCRIPT_DIGITS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+
+# Two or more element-and-count fragments separated only by whitespace:
+# "U3 O8", "Fe2\nO3". PDF text extraction puts a formula's subscripts on
+# their own baseline, so "U3O8" in a report arrives as "U3\r\nO8".
+_SPLIT_FORMULA_RE = re.compile(r"\b[A-Z][a-z]?\d+(?:\s+[A-Z][a-z]?\d+)+\b")
+
+
+def _formula_tokens(value: str) -> set[str]:
+    """Chemical formulas in ``value`` as the answer would write them.
+
+    Covers the two ways a formula stops matching its plain spelling in
+    extracted text: Unicode subscripts ("U₃O₈") and subscripts split onto
+    their own line ("U3\r\nO8"). The first live rehearsal (2026-09-23)
+    warned "Commodity 'U3O8' mentioned but not found in any tool result"
+    on an answer citing twelve chunks of a uranium report, every one of
+    which carried the formula in the split form. Only element-and-count
+    fragments are joined, so ordinary prose cannot assemble a formula.
+    """
+    text = value.translate(_SUBSCRIPT_DIGITS)
+    return {re.sub(r"\s+", "", m.group(0)).lower() for m in _SPLIT_FORMULA_RE.finditer(text)} | {
+        tok.lower() for tok in re.findall(r"\b(?:[A-Z][a-z]?\d+){2,}\b", text)
+    }
+
+
 def _extract_entities_from_tool_results(
     tool_results: list[tuple[str, Any]],
 ) -> set[str]:
@@ -843,6 +868,7 @@ def _extract_entities_from_tool_results(
                 # as standalone tokens.
                 for tok in re.findall(r"\b[UWV]\b", value):
                     entity_tokens.add(tok.lower())
+                entity_tokens.update(_formula_tokens(value))
         except Exception:
             continue
     return entity_tokens

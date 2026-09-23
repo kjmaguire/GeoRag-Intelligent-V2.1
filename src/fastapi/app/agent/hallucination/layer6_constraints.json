@@ -1,6 +1,6 @@
 {
-  "_doc": "Phase 12 Step 3 (R-P11-l6-config) - SME-editable Layer 6 constraints. Adjusting limits here is a config change, not a code change; reload requires restarting the fastapi container or hot-reloading the module. Each entry maps 1:1 onto the GeologicalConstraint dataclass in layer6_constraints.py. `keywords` and `negative_keywords` are Python regex patterns; remember to escape backslashes per JSON rules. A number is attached to the constraint whose keyword is NEAREST to it - `context_chars` is how far back to look (English names the quantity before the value: 'a dip of -60'), `lookahead_chars` how far forward (for trailing units: '1.85 g/t Au'). Keep both tight; a wide window attaches a number to the neighbouring clause's keyword and flags a correct value against the wrong constraint. Set `absolute_value` when the sign is a reporting convention rather than information. `unit_scales` (added 2026-08-21) maps a unit token written after the number onto a multiplier into the unit the bounds use — 1020 ppb Au was being compared against a 1000 ppm ceiling and reported as impossible, and 2 % Au (20 000 ppm) passed. It is unit arithmetic, not a limit change; the bounds are still yours.",
-  "_version": "0.4.0",
+  "_doc": "Phase 12 Step 3 (R-P11-l6-config) - SME-editable Layer 6 constraints. Adjusting limits here is a config change, not a code change; reload requires restarting the fastapi container or hot-reloading the module. Each entry maps 1:1 onto the GeologicalConstraint dataclass in layer6_constraints.py. `keywords` and `negative_keywords` are Python regex patterns; remember to escape backslashes per JSON rules. A number is attached to the constraint whose keyword is NEAREST to it - `context_chars` is how far back to look (English names the quantity before the value: 'a dip of -60'), `lookahead_chars` how far forward (for trailing units: '1.85 g/t Au'). Keep both tight; a wide window attaches a number to the neighbouring clause's keyword and flags a correct value against the wrong constraint. Set `absolute_value` when the sign is a reporting convention rather than information. `unit_scales` (added 2026-08-21) maps a unit token written after the number onto a multiplier into the unit the bounds use — 1020 ppb Au was being compared against a 1000 ppm ceiling and reported as impossible, and 2 % Au (20 000 ppm) passed. It is unit arithmetic, not a limit change; the bounds are still yours. `foreign_units` (added 2026-09-23) lists unit tokens that, written right after a number, mark it as a different quantity (contained metal, tonnage) so it is not checked against this constraint at all - '71 million pounds of uranium' was being tested as a 71 % U3O8 grade. Like unit_scales it is unit reading, not a limit change.",
+  "_version": "0.5.0",
   "constraints": [
     {
       "name": "depth_max_m",
@@ -53,7 +53,26 @@
         "wt%": 10000.0,
         "oz/t": 31.1035
       },
-      "_note": "negative_keywords added 2026-08-21. 'ppm' and 'g/t' are UNITS, not commodities, and _governing_constraint attaches a number to the keyword NEAREST it - so 'Uranium grades reach 4200 ppm U3O8' attached 4200 to the GOLD ceiling, because the unit sits adjacent to the number and the commodity one token further along. A normal high-grade uranium value was reported as a geological impossibility. A sentence naming another commodity is not a gold claim, and skipping is the right answer here: a wrong flag on a correct value is what teaches a reader to ignore this layer entirely."
+      "_note": "negative_keywords added 2026-08-21. 'ppm' and 'g/t' are UNITS, not commodities, and _governing_constraint attaches a number to the keyword NEAREST it - so 'Uranium grades reach 4200 ppm U3O8' attached 4200 to the GOLD ceiling, because the unit sits adjacent to the number and the commodity one token further along. A normal high-grade uranium value was reported as a geological impossibility. A sentence naming another commodity is not a gold claim, and skipping is the right answer here: a wrong flag on a correct value is what teaches a reader to ignore this layer entirely.",
+      "foreign_units": [
+        "million",
+        "billion",
+        "thousand",
+        "Mlbs",
+        "Mlb",
+        "lbs",
+        "lb",
+        "pounds",
+        "tonnes",
+        "tons",
+        "t",
+        "Mt",
+        "kt",
+        "oz",
+        "ounces",
+        "koz",
+        "Moz"
+      ]
     },
     {
       "name": "grade_uranium_max_pct",
@@ -72,7 +91,27 @@
       "unit_scales": {
         "ppm": 0.0001,
         "ppb": 1e-07
-      }
+      },
+      "foreign_units": [
+        "million",
+        "billion",
+        "thousand",
+        "Mlbs",
+        "Mlb",
+        "lbs",
+        "lb",
+        "pounds",
+        "tonnes",
+        "tons",
+        "t",
+        "Mt",
+        "kt",
+        "oz",
+        "ounces",
+        "koz",
+        "Moz"
+      ],
+      "_note": "foreign_units added 2026-09-23. Resource statements put contained metal beside the grade - '0.85% U3O8, containing about 71 million pounds of uranium' - and 71 attached to the U3O8 keyword and was tested as a 71% grade on a correct answer. A number followed by a magnitude word or a mass or tonnage unit is a quantity, not a grade, and is not checked against this bound. The bound itself is unchanged."
     },
     {
       "name": "recovery_max_pct",
