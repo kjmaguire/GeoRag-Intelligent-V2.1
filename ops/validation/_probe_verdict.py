@@ -58,9 +58,22 @@ def section_outcome(section: Any) -> str:
         return "skipped"
 
     results = _collect_results(section)
-    if results and all("error" in v or "skipped" in v for v in results):
-        return "failed" if any("error" in v for v in results) else "skipped"
+    if results and all(_failed(v) or "skipped" in v for v in results):
+        return "failed" if any(_failed(v) for v in results) else "skipped"
     return "ok"
+
+
+def _failed(result: dict) -> bool:
+    """Whether one per-call result recorded a failure.
+
+    An ``error`` key is the usual spelling. A call the host refused for its
+    CREDENTIALS is the other: a rejection can be a legitimate observation (a
+    Parse pixel-ladder rung refused for size is exactly what that ladder is
+    for), but a 401/403 observes nothing about the model -- and a report
+    that counted one as evidence once read "ok=parse" for a key Cohere had
+    refused outright.
+    """
+    return "error" in result or result.get("code") == "AuthenticationError"
 
 
 def _collect_results(section: dict) -> list[dict]:

@@ -138,6 +138,19 @@ class TestItCatchesTheFailuresItExistsFor:
         assert v["authentication_failed"] is True
         assert "COHERE_API_KEY" in v["summary"]
 
+    def test_an_unauthorized_key_verifies_nothing_even_with_a_pdf(self, probe) -> None:
+        """The test above passes no PDF, so Parse is skipped -- and that gap
+        hid a real one. With a PDF, the pixel ladder recorded each 401 as a
+        rung (``status``/``accepted: False``, no ``error``), the verdict read
+        the rung as an observation, and a key Cohere refused outright came
+        back "ok=parse", "verified". Found by running the probe through
+        ops/rehearsal/run_cohere_probe.sh against this same fake."""
+        report = probe("unauthorized", pdf=FIXTURE_PDF)
+        v = report["verdict"]
+        assert v["verified_anything"] is False, v["summary"]
+        assert "parse" in v["sections_failed"]
+        assert v["authentication_failed"] is True
+
 
 class TestTheContractDiffIsWiredUp:
     def test_the_diff_resolves_and_observes_the_calls_it_reached(self, probe) -> None:

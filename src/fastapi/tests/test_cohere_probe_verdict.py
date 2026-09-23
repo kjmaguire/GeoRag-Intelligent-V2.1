@@ -304,3 +304,42 @@ def test_a_section_carrying_only_config_is_not_mistaken_for_failure(
 
     v = module.verdict(report)
     assert "parse" in v["sections_ok"]
+
+
+class TestAParseLadderRungIsJudgedByWhyItWasRefused:
+    """The pixel ladder records rejections on purpose: a rung refused for
+    SIZE is the observation it exists to make. A rung refused for the
+    CREDENTIALS observes nothing, and once counted as evidence."""
+
+    def test_an_auth_refused_rung_is_not_an_observation(self) -> None:
+        refused = {"error": {"code": "AuthenticationError", "status": 401}}
+        v = verdict(
+            _report(
+                parse={
+                    "model": "parse-v5.0",
+                    "formats": {"blocks": refused, "markdown": refused},
+                    "pixel_ladder": {
+                        "1900000": {"png_bytes": 1, "status": 401, "accepted": False, "code": "AuthenticationError"}
+                    },
+                },
+                chat={"error": {"code": "AuthenticationError"}},
+                chat_stream={"error": {"code": "AuthenticationError"}},
+                latency={"error": {"code": "AuthenticationError"}},
+            )
+        )
+        assert v["verified_anything"] is False, v["summary"]
+        assert "parse" in v["sections_failed"]
+
+    def test_a_rung_refused_for_size_is_still_an_observation(self) -> None:
+        v = verdict(
+            _report(
+                parse={
+                    "model": "parse-v5.0",
+                    "pixel_ladder": {
+                        "1900000": {"png_bytes": 1, "status": 200, "accepted": True},
+                        "4000000": {"png_bytes": 2, "status": 413, "accepted": False, "code": "PayloadTooLarge"},
+                    },
+                }
+            )
+        )
+        assert "parse" in v["sections_ok"]
