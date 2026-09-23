@@ -166,6 +166,18 @@ check "a lost chunk exits non-zero" "$([ "$code" -ne 0 ]; echo $?)" "$out"
 check "and names the problem" "$(printf '%s' "$out" | grep -q 'incomplete' ; echo $?)" "$out"
 check "and writes nothing" "$([ "$(reports_written)" -eq 0 ]; echo $?)" "$(ls "$WORK/reports")"
 
+# ── 4. The CloudShell bundle. It must carry and run the SAME runner, with no
+#      checkout: generate it, run it from an empty directory, and expect the
+#      report where the bundle says it puts it.
+start_fake_cohere honest
+bash "$REPO_ROOT/ops/rehearsal/make_probe_bundle.sh" > "$WORK/probe.sh"
+mkdir -p "$WORK/home" "$WORK/elsewhere"
+out="$(cd "$WORK/elsewhere" && env -u PROBE_REPORTS_DIR HOME="$WORK/home" bash "$WORK/probe.sh" 2>&1)"; code=$?
+check "the bundle runs from outside any checkout" "$code" "$out"
+check "and leaves a verified report in ~/cohere-probe-reports" \
+    "$(ls "$WORK/home/cohere-probe-reports"/cohere_probe_*.json >/dev/null 2>&1; echo $?)" "$out"
+check "and prints the report for copying" "$(printf '%s' "$out" | grep -q '"verified_anything": true'; echo $?)" "$out"
+
 echo
 echo "run_cohere_probe: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

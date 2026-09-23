@@ -47,6 +47,7 @@ refuses to report a pass.
 | `make_cloudshell_bundle.sh` | Emits a repo-free step-5 script — seed, ingest, status, query — built from the sources above. |
 | `make_step6_bundle.sh` | Emits a repo-free seed+verify script (step 6), likewise. |
 | `run_cohere_probe.sh` | Runs `ops/validation/cohere_probe.py` as a one-off task inside the VPC, using the deployed service's own `COHERE_API_KEY` and egress, and writes the report to `ops/validation/reports/` only if it verified something (aws-preflight A-11). Tested end to end without AWS or a key by `scripts/tests/run_cohere_probe_test.sh`. |
+| `make_probe_bundle.sh` | Emits a repo-free CloudShell script carrying `run_cohere_probe.sh`, the probe and the fixture PDF; the report lands in `~/cohere-probe-reports/` and is printed for copying. Exercised by the same test. |
 
 None of the three SQL files contains a psql meta-command. They are executed
 over **asyncpg**, because the fastapi image is the only one in this deployment
