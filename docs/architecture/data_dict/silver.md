@@ -30,7 +30,8 @@ See [Ch 03 §§ 2-4](../manual/03-schemas.md) for the curated reference.
 | `silver.collars` | [2026_04_09_180100](../../../database/migrations/2026_04_09_180100_create_collars_table.php); spatial uncertainty in [2026_05_23_050000](../../../database/migrations/2026_05_23_050000_add_spatial_uncertainty_to_collars_and_spatial_features.php) | Live |
 | `silver.assays_v2`, `silver.lithology` | [2026_05_20_060300](../../../database/migrations/2026_05_20_060300_create_silver_assays_v2_and_lithology.php) | Live (canonical) |
 | `silver.assays`, `silver.lithology_logs` | original Apr-09 batch | Live (legacy; coexist with `_v2` / `lithology`) |
-| `silver.samples`, `silver.geochemistry`, `silver.structures`, `silver.alterations`, `silver.surveys` | Apr-09 batch | Live |
+| `silver.samples`, `silver.geochemistry`, `silver.surveys` | Apr-09 batch | Live |
+| `silver.structures`, `silver.alterations` | Apr-09 batch | **Dropped** by `2026_05_20_060400` (empty at the time); replaced by the singular `silver.structure` / `silver.alteration` |
 | `silver.well_log_curves` | [2026_04_10_120000](../../../database/migrations/2026_04_10_120000_create_well_log_curves_table.php) | Live |
 | `silver.spatial_features` | [2026_04_10_120100](../../../database/migrations/2026_04_10_120100_create_spatial_features_table.php); extended [2026_05_22_010000](../../../database/migrations/2026_05_22_010000_extend_silver_spatial_features.php) | Live |
 | `silver.seismic_surveys` | [2026_04_10_120200](../../../database/migrations/2026_04_10_120200_create_seismic_surveys_table.php) | Live |
@@ -84,7 +85,7 @@ in [2026_05_12_180000…180007](../../../database/migrations/) batch. Live.
 - `silver.entities` — never created. Use `workspace.entities`.
 - `silver.lithology_intervals` — never created. Use `silver.lithology` (new) or `silver.lithology_logs` (legacy).
 - `silver.section_lines` — never created (verified live 2026-07-02). Its DDL lived only in the per-interval cross-section rewrite, archived to [\_archive/phase5-20-cross-section-panels.sql](../../../database/raw/_archive/phase5-20-cross-section-panels.sql). Section geometry lives in `gold.cross_section_panels.section_line_geom`; geologist-drawn lines in `interpretation.interpretation_section_lines`.
-- `silver.structure_measurements` — never created (verified live 2026-07-02 and 2026-07-03). Its only DDL lived in the never-applied Phase-H4 file, archived 2026-07-03 to [\_archive/phase5-30-structure-measurements-visual.sql](../../../database/raw/_archive/phase5-30-structure-measurements-visual.sql). Structural data lives in `silver.structures` / `gold.structure_measurements_visual`.
+- `silver.structure_measurements` — never created (verified live 2026-07-02 and 2026-07-03). Its only DDL lived in the never-applied Phase-H4 file, archived 2026-07-03 to [\_archive/phase5-30-structure-measurements-visual.sql](../../../database/raw/_archive/phase5-30-structure-measurements-visual.sql). Structural data lives in `silver.structure` / `gold.structure_measurements_visual`.
 
 ## Triggers
 

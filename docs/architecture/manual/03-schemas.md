@@ -175,12 +175,18 @@ PK `id UUID`. `rock_code`, `rock_name`, `description`, `colour`, `grain_size`,
 `texture`, `weathering`, `hardness`, `logged_by`/`logged_date`. GIN tsvector
 on `description` (line 98). Coexists with legacy `silver.lithology_logs`.
 
-### silver.samples, silver.geochemistry, silver.structures, silver.alterations, silver.surveys, silver.well_log_curves, silver.seismic_surveys, silver.spatial_features
+### silver.samples, silver.geochemistry, silver.surveys, silver.well_log_curves, silver.seismic_surveys, silver.spatial_features
 
 All created in the April 2026 batch
 ([2026_04_09_180200..180800](../../../database/migrations/),
 [2026_04_10_120000..120200](../../../database/migrations/)) and progressively
 extended.
+
+`silver.structures` and `silver.alterations` were created in the same batch but
+dropped (empty) by
+[2026_05_20_060400](../../../database/migrations/2026_05_20_060400_create_silver_geological_singulars.php),
+which replaces them with the singular spec tables `silver.structure` and
+`silver.alteration`; RLS for those comes from `2026_05_20_060800`.
 
 ### silver.reports
 

@@ -35,7 +35,7 @@ configs, and the remaining docs.
 
 | Model | Source table |
 |---|---|
-| `Alteration` | `silver.alterations` |
+| `Alteration` | `silver.alteration` |
 | `ChatConversation` / `ChatMessage` | `silver.chat_conversations` / `silver.chat_messages` |
 | `Collar` | `silver.collars` |
 | `ColumnMapping` | `silver.column_mappings` (CSV header → canonical) |
@@ -47,7 +47,7 @@ configs, and the remaining docs.
 | `Report` | `silver.reports` |
 | `Sample` | `silver.samples` |
 | `SavedMapView` | `silver.saved_map_views` |
-| `Structure` | `silver.structures` |
+| `Structure` | `silver.structure` |
 | `Survey` | `silver.surveys` |
 | `User` | `public.users` (Sanctum-bound) |
 | `VendorProfile` | `silver.vendor_profiles` |

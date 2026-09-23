@@ -64,15 +64,9 @@ DECLARE
 BEGIN
     FOREACH t IN ARRAY tier_b_tables LOOP
         -- Defensive existence guard, not a substitute for the removals
-        -- above: verified live on a go-live rehearsal (2026-09-18) that
-        -- silver.alterations -- which DOES have a real, unconditional
-        -- migration (2026_04_09_180400_create_alterations_table.php,
-        -- confirmed DONE in the same rehearsal's migrate phase) -- was
-        -- still reported missing here on a later re-run. Root cause not
-        -- established (not a dangling reference like the entries removed
-        -- above); skipping with a loud NOTICE beats a hard failure that
-        -- blocks every OTHER table in the array, but a skip here is a
-        -- real coverage gap to chase down, not a clean bill of health.
+        -- above. A skip here is a coverage gap to chase down, not a clean
+        -- bill of health: every NOTICE it raises should end in either a
+        -- removal from the array or a missing CREATE TABLE being added.
         IF to_regclass('silver.' || t) IS NULL THEN
             RAISE NOTICE 'Tier B: silver.% does not exist -- skipping RLS for it, not a known-dead reference', t;
             CONTINUE;
@@ -116,7 +110,15 @@ DO $$
 DECLARE
     t text;
     tier_c_tables text[] := ARRAY[
-        'alterations', 'structures', 'surveys',
+        -- alterations/structures deliberately absent: the 2026-09-18
+        -- go-live rehearsal saw silver.alterations exist on one CD attempt
+        -- and vanish on the next. Not data loss -- migration
+        -- 2026_05_20_060400_create_silver_geological_singulars.php drops
+        -- both empty plurals by design and replaces them with the singular
+        -- spec tables silver.alteration / silver.structure, which get
+        -- their RLS from 2026_05_20_060800_enable_rls_on_drillhole_tables.
+        -- The first attempt had failed before reaching 060400.
+        'surveys',
         'decision_evidence_links', 'decision_lessons_learned',
         'decision_outcomes',
         -- agent_conversation_messages/agent_conversations/pdf_coordinates/
