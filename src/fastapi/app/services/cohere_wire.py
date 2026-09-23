@@ -64,11 +64,17 @@ PARSE = WireContract(
         ),
         Field("document.type", Status.ASSUMED, True, "Literal 'image_url'."),
         Field(
-            "document.image_url.url",
+            "document.image_url",
             Status.ASSUMED,
             True,
-            "One page as a data: URI. Oversized plan sheets are DOWNSCALED, "
-            "not tiled — Parse returns no word polygons to stitch tiles with.",
+            "One page as a data: URI, as a bare STRING. Until 2026-09-23 this "
+            "was declared as `document.image_url.url` — chat's image object — "
+            'and the first live call was refused with HTTP 400 "parameter '
+            "'document.image_url' is of type object but should be of type "
+            'string". That rejection is the only live evidence: ASSUMED, '
+            "not observed, until a string-form call succeeds. Oversized plan "
+            "sheets are DOWNSCALED, not tiled — "
+            "Parse returns no word polygons to stitch tiles with.",
         ),
         Field("output_format", Status.ASSUMED, True, "'blocks' or 'markdown'."),
     ),
@@ -79,9 +85,49 @@ PARSE = WireContract(
     # that no run could confirm or contradict. Fixed here rather than
     # carried, because a contract nothing can check is the thing this file's
     # sibling docstring warns about.
-    evidence_paths=("formats.*.page0_keys", "formats.*.block_keys"),
+    evidence_paths=("formats.*.page0_keys", "formats.*.block_keys", "formats.*.block_payload_keys"),
     response=(
         Field("pages[]", Status.ASSUMED, True, "One entry; only pages[0] is read."),
+        Field(
+            "pages[].index",
+            Status.ASSUMED,
+            False,
+            "Zero-based page index, per the Cohere SDK's ParsePage. Nothing reads it: one request is one page.",
+            evidence_key="index",
+        ),
+        Field(
+            "pages[].blocks[].table",
+            Status.ASSUMED,
+            False,
+            "The Cohere SDK (7.1.1, types/parse_block.py) nests each block's "
+            'fields under a key named by its type: {"type": "text", '
+            '"text": {"content": ...}}. _block_fields reads there first '
+            "and falls back to the flat spelling below. This field is the "
+            "table payload ({html, title, description, bounding boxes}).",
+            evidence_key="table",
+        ),
+        Field(
+            "pages[].blocks[].image",
+            Status.ASSUMED,
+            False,
+            "Image block payload (description, category, bounding boxes).",
+            evidence_key="image",
+        ),
+        Field(
+            "pages[].blocks[].*.bounding_box",
+            Status.TOLERATED,
+            False,
+            "Block geometry in the SDK shape. Nothing reads it; declared so "
+            "an observed field is not a fresh discovery on every run.",
+            evidence_key="bounding_box",
+        ),
+        Field(
+            "pages[].blocks[].*.bounding_box_normalized",
+            Status.TOLERATED,
+            False,
+            "The same geometry in 0..1 page units. Nothing reads it.",
+            evidence_key="bounding_box_normalized",
+        ),
         Field(
             "blocks[]",
             Status.TOLERATED,
@@ -107,14 +153,16 @@ PARSE = WireContract(
             "pages[].blocks[].text",
             Status.ASSUMED,
             False,
-            "Text block content — first spelling tried.",
+            "In the SDK shape, the text block's payload OBJECT; in the flat "
+            "one, the text itself. _first_str takes only a string, so the "
+            "object's repr can never become page text again.",
             evidence_key="text",
         ),
         Field(
-            "pages[].blocks[].content",
-            Status.TOLERATED,
+            "pages[].blocks[].text.content",
+            Status.ASSUMED,
             False,
-            "Second spelling.",
+            "The text, in the SDK shape — first spelling tried.",
             evidence_key="content",
         ),
         Field(
@@ -284,11 +332,24 @@ CHAT_V2 = WireContract(
             "Pre-v2 top-level spelling. Worth accepting rather than failing a live call over a field name.",
         ),
         Field(
-            "reasoning_content",
+            "message.content[].thinking",
             Status.ASSUMED,
             False,
-            "The Foundry-era sibling field. Not assumed to appear here.",
-            evidence_key="reasoning_content",
+            "Where reasoning lands on this host — question (2) above. The "
+            "2026-09-23 run from inside the VPC saw content blocks keyed "
+            "{type, text, thinking} and no `reasoning_content` sibling (which "
+            "this field used to declare, and which that run reported as "
+            "contradicted). Reasoning is on by default and counts against "
+            "max_tokens; a reply that is all thinking is a budget outcome "
+            '(_extract_content returns ""), not an unreadable shape.',
+            evidence_key="thinking",
+        ),
+        Field(
+            "message.role",
+            Status.ASSUMED,
+            False,
+            "'assistant'. Nothing reads it; declared because the same run reported it as undeclared.",
+            evidence_key="role",
         ),
         Field("usage.tokens.input_tokens", Status.ASSUMED, False, "v2 nests real counts under `tokens`."),
         Field("usage.tokens.output_tokens", Status.ASSUMED, False, "Same."),
@@ -305,6 +366,13 @@ CHAT_V2 = WireContract(
         "usage on `message-end`. _delta_text is tolerant across the nested "
         "and flat spellings because a missed delta is a silently truncated "
         "answer, not an error.",
+        "The 2026-09-23 live run parsed ZERO `data:` frames from a 200 "
+        "streaming response, while sending `Accept: application/json`; "
+        "Cohere's own SDK sends no Accept header and reads the body as SSE. "
+        "Streaming requests now send `Accept: text/event-stream`, and the "
+        "reader also takes newline-delimited JSON and a whole-body JSON "
+        "reply, so whichever framing that was, it is read rather than "
+        "raised as an unrecognised shape.",
         "Where tolerance runs out the adapter RAISES CohereResponseShapeError "
         "rather than returning an empty string. An empty string is "
         "indistinguishable from a model that had nothing to say, and that "

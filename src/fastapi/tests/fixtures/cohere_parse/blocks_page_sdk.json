@@ -1,0 +1,69 @@
+{
+  "_note": "SYNTHETIC in the Cohere Python SDK's shape (cohere 7.1.1, types/parse_page.py + parse_block.py): each block nests its payload under a key named by its type. Same content as blocks_page.json. Replace with a scrubbed live response once a Parse call has succeeded.",
+  "id": "00000000-0000-0000-0000-000000000000",
+  "pages": [
+    {
+      "type": "blocks",
+      "index": 0,
+      "blocks": [
+        {
+          "type": "text",
+          "text": {
+            "content": "# 14 MINERAL RESOURCE ESTIMATES\n\nThe resource estimate for the Madison deposit is summarised below."
+          }
+        },
+        {
+          "type": "table",
+          "table": {
+            "type": "html",
+            "html": "<table><thead><tr><th rowspan=\"2\">Category</th><th rowspan=\"2\">Tonnes (Mt)</th><th colspan=\"2\">Grade</th></tr><tr><th>Au (g/t)</th><th>Ag (g/t)</th></tr></thead><tbody><tr><td>Measured</td><td>1.2</td><td>2.4</td><td>12.1</td></tr><tr><td>Indicated</td><td>3.4</td><td>1.9</td><td>9.8</td></tr><tr><td>Inferred</td><td>0.8</td><td>1.1</td><td>7.5</td></tr></tbody></table>",
+            "description": "Mineral resource estimate by category with tonnes and gold and silver grades.",
+            "bounding_box": {
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1
+            },
+            "bounding_box_normalized": {
+              "x": 0.0,
+              "y": 0.0,
+              "width": 1.0,
+              "height": 1.0
+            }
+          }
+        },
+        {
+          "type": "image",
+          "image": {
+            "id": "img-0",
+            "description": "Plan view map of the Madison deposit showing drill collars.",
+            "category": "map",
+            "bounding_box": {
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1
+            },
+            "bounding_box_normalized": {
+              "x": 0.0,
+              "y": 0.0,
+              "width": 1.0,
+              "height": 1.0
+            }
+          }
+        },
+        {
+          "type": "text",
+          "text": {
+            "content": "Notes: Mineral resources are not mineral reserves."
+          }
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "billed_units": {
+      "images": 1
+    }
+  }
+}

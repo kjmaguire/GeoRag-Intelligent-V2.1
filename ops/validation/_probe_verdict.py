@@ -49,6 +49,15 @@ def section_outcome(section: Any) -> str:
     So: if a section contains nested per-call results and EVERY one of them
     failed or skipped, the section failed. A section with no nested results
     (``latency`` is flat) is judged on its own keys, as before.
+
+    And one more level of the same thing, found by the first run from inside
+    the VPC (2026-09-23): a section needs at least one call that SUCCEEDED.
+    Both Parse formats were refused with a 400 and the pixel ladder's only
+    rung recorded ``{"status": 400, "accepted": False}`` — a rejection, but
+    not an ``error`` — so the section read "ok" and the run printed
+    "verified 4/4" over a Parse that had never once worked. A refused rung
+    is an observation of the size limit only beside a rung that was
+    accepted; alone, it is one more failed call.
     """
     if not isinstance(section, dict):
         return "failed" if section is None else "ok"
@@ -58,9 +67,14 @@ def section_outcome(section: Any) -> str:
         return "skipped"
 
     results = _collect_results(section)
-    if results and all(_failed(v) or "skipped" in v for v in results):
-        return "failed" if any(_failed(v) for v in results) else "skipped"
+    if results and not any(_succeeded(v) for v in results):
+        return "skipped" if all("skipped" in v for v in results) else "failed"
     return "ok"
+
+
+def _succeeded(result: dict) -> bool:
+    """Whether one per-call result was a call the host actually served."""
+    return not _failed(result) and "skipped" not in result and result.get("accepted") is not False
 
 
 def _failed(result: dict) -> bool:

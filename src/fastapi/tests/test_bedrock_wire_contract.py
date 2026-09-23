@@ -394,7 +394,7 @@ def test_parse_request_matches_the_contract() -> None:
 
     body = {"model": parse.parse_model(), **parse._request_body(b"\x89PNG fake")}
     _assert_request_matches(PARSE, body)
-    assert body["document"]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert body["document"]["image_url"].startswith("data:image/png;base64,")
     assert body["model"] == "parse-v5.0"
 
 

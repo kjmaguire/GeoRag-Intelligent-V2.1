@@ -413,7 +413,10 @@ def _probe_system_placement(client: Any, url: str, model: str) -> dict[str, Any]
             {"role": "user", "content": "What is the capital of France?"},
         ],
         "temperature": 0.0,
-        "max_tokens": 32,
+        # Reasoning is on by default and spends from this budget first. At
+        # 32 the 2026-09-23 run got an all-thinking reply with no answer and
+        # reported that as "system prompt ignored".
+        "max_tokens": 1024,
         "stream": False,
     }
     try:
@@ -429,6 +432,18 @@ def _probe_system_placement(client: Any, url: str, model: str) -> dict[str, Any]
 
     shape = _read_message(payload)
     answer = (shape.get("text_head") or "").strip()
+    if not answer:
+        # No answer text says nothing about where the system prompt went.
+        # Reporting False here accused a correct request of the silent
+        # failure below, over a reply that was all reasoning.
+        return {
+            "role_system_accepted": True,
+            "answer_head": "",
+            "obeyed_the_system_prompt": None,
+            "note": "inconclusive: the reply carried no answer text (content "
+            f"block keys {shape.get('content_block_keys')}), so it cannot show "
+            "whether role:'system' was applied.",
+        }
     obeyed = answer.upper().startswith("GROUNDED")
     return {
         "role_system_accepted": True,
@@ -459,15 +474,20 @@ def probe_chat_stream() -> dict[str, Any]:
         "model": _chat_model(),
         "messages": [{"role": "user", "content": "Count from one to five in words."}],
         "temperature": 0.0,
-        "max_tokens": 128,
+        # Reasoning is on by default and spends from this budget before any
+        # answer text; 128 could end a stream with nothing but thinking.
+        "max_tokens": 1024,
         "stream": True,
     }
     out: dict[str, Any] = {"model": _chat_model()}
     event_types: dict[str, int] = {}
     delta_shapes: set[str] = set()
+    line_kinds: dict[str, int] = {}
     first_text_at: float | None = None
     pieces: list[str] = []
     usage_event: dict[str, Any] | None = None
+    content_type = ""
+    unparsed: list[str] = []
     _, adapter_unavailable = _load_adapter("_delta_text")
 
     try:
@@ -475,26 +495,25 @@ def probe_chat_stream() -> dict[str, Any]:
         with (
             _client() as client,
             client.stream(
-                "POST", f"{_base_url()}/v2/chat", content=json.dumps(body).encode()
+                "POST",
+                f"{_base_url()}/v2/chat",
+                content=json.dumps(body).encode(),
+                # What llm_cohere._headers(stream=True) sends. The first live
+                # run sent application/json here and parsed no event at all.
+                headers={"Accept": "text/event-stream"},
             ) as response,
         ):
             if response.status_code >= 300:
                 response.read()
                 return {"error": _http_err(response)}
+            content_type = response.headers.get("content-type", "")
             for line in response.iter_lines():
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw or raw == "[DONE]":
-                    continue
-                try:
-                    event = json.loads(raw)
-                except ValueError:
-                    event_types["<unparseable>"] = (
-                        event_types.get("<unparseable>", 0) + 1
-                    )
-                    continue
-                if not isinstance(event, dict):
+                kind_of_line = _line_kind(line)
+                line_kinds[kind_of_line] = line_kinds.get(kind_of_line, 0) + 1
+                event = _stream_event(line)
+                if event is None:
+                    if line.strip() and len(unparsed) < 10_000:
+                        unparsed.append(line)
                     continue
                 kind = str(event.get("type") or "<untyped>")
                 event_types[kind] = event_types.get(kind, 0) + 1
@@ -508,6 +527,17 @@ def probe_chat_stream() -> dict[str, Any]:
                     isinstance(event.get("delta"), dict) and "usage" in event["delta"]
                 ):
                     usage_event = {"type": kind, "keys": sorted(event)}
+            if not event_types and unparsed:
+                # The adapter's last resort: the whole body as one reply.
+                whole_reply, _ = _load_adapter("_whole_body_reply")
+                extract, _ = _load_adapter("_extract_content")
+                whole = whole_reply("\n".join(unparsed)) if whole_reply else None
+                if whole is not None and extract is not None:
+                    event_types["<whole-reply>"] = 1
+                    piece = extract(whole)
+                    if piece:
+                        first_text_at = time.monotonic() - started
+                        pieces.append(piece)
         elapsed = time.monotonic() - started
     except Exception as exc:  # noqa: BLE001
         return {"error": _err(exc)}
@@ -516,6 +546,10 @@ def probe_chat_stream() -> dict[str, Any]:
     out.update(
         {
             "total_s": round(elapsed, 3),
+            "content_type": content_type,
+            # Framing, by line: `data`, `event`, `json` (a bare JSON object),
+            # `blank`, `other`. Never the lines themselves.
+            "line_kinds": dict(sorted(line_kinds.items())),
             "first_text_s": round(first_text_at, 3)
             if first_text_at is not None
             else None,
@@ -537,7 +571,55 @@ def probe_chat_stream() -> dict[str, Any]:
             "adapter_unavailable": adapter_unavailable,
         }
     )
+    if not event_types:
+        # A 200 that yielded no event observed nothing about the stream. The
+        # 2026-09-23 run reported this section "ok" with `event_types: {}` --
+        # verified, over a stream nothing could read. Say it failed, with
+        # the framing evidence beside it.
+        out["error"] = {
+            "type": "NoStreamEvents",
+            "message": (
+                f"HTTP {response.status_code}, content-type {content_type or '(none)'!r}, "
+                f"line kinds {out['line_kinds']}: no line parsed as an event."
+            ),
+        }
     return out
+
+
+def _line_kind(line: str) -> str:
+    if not line.strip():
+        return "blank"
+    if line.startswith("data:"):
+        return "data"
+    if line.lstrip().startswith("{"):
+        return "json"
+    field, sep, _ = line.partition(":")
+    if sep and field in {"event", "id", "retry"}:
+        return field
+    if line.startswith(":"):
+        return "comment"
+    return "other"
+
+
+def _stream_event(line: str) -> dict[str, Any] | None:
+    """Delegate framing to the REAL adapter, like `_stream_text` does for
+    text. A probe with its own line parser measured its own parser: the
+    2026-09-23 run parsed nothing, and that said nothing about whether the
+    adapter would have. Falls back to `data:` lines only when the adapter
+    cannot be imported, which the report already flags."""
+    parse_line, _ = _load_adapter("_sse_events")
+    if parse_line is not None:
+        return parse_line(line)
+    if not line.startswith("data:"):
+        return None
+    raw = line[5:].strip()
+    if not raw or raw == "[DONE]":
+        return None
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
 
 
 def _delta_shape(event: dict[str, Any]) -> str:
@@ -713,7 +795,9 @@ def _parse_body(model: str, png: bytes, output_format: str) -> dict[str, Any]:
     uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
     return {
         "model": model,
-        "document": {"type": "image_url", "image_url": {"url": uri}},
+        # A bare string. The object form was refused with a 400 on the
+        # first live run (2026-09-23), and every ladder rung with it.
+        "document": {"type": "image_url", "image_url": uri},
         "output_format": output_format,
     }
 
@@ -737,6 +821,19 @@ def _read_parse(payload: Any) -> dict[str, Any]:
         # which table/image spellings. Collapsing these is what a committed
         # report buys — delete the losers rather than carrying all of them.
         "block_keys": sorted({k for b in block_list for k in b}),
+        # The Cohere SDK nests a block's fields under a key named by its
+        # type ({"type": "text", "text": {"content": ...}}). Without these,
+        # the diff can see that `text` arrived but not whether it held the
+        # text or an object holding it -- which is the difference between a
+        # page read correctly and one whose text is a dict's repr.
+        "block_payload_keys": sorted(
+            {
+                k
+                for b in block_list
+                if isinstance(b.get(str(b.get("type"))), dict)
+                for k in b[str(b.get("type"))]
+            }
+        ),
         "block_types": sorted(
             {str(b.get("type")) for b in block_list if b.get("type")}
         ),
@@ -992,7 +1089,13 @@ def _report_headlines(report: dict) -> None:
         obeyed = system["obeyed_the_system_prompt"]
         lines.append(
             f"  role:'system' honoured:    {obeyed}"
-            + ("" if obeyed else "   <-- SILENT failure: grounding rules never applied")
+            + (
+                "   (inconclusive: no answer text)"
+                if obeyed is None
+                else ""
+                if obeyed
+                else "   <-- SILENT failure: grounding rules never applied"
+            )
         )
     if "delta_shapes_seen" in stream:
         lines.append(
