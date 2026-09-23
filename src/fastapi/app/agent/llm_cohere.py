@@ -332,6 +332,9 @@ def _whole_body_reply(text: str) -> dict[str, Any] | None:
     try:
         payload = json.loads(text)
     except ValueError:
+        # Expected when the body is not one JSON document; the caller then
+        # raises with the framing evidence, which is the useful message.
+        logger.debug("cohere: unframed stream body is not a single JSON reply", exc_info=True)
         return None
     return payload if isinstance(payload, dict) and _is_whole_reply(payload) else None
 
