@@ -1,0 +1,309 @@
+{
+  "probed_at": "2026-09-24T06:04:15.819377+00:00",
+  "base_url": "https://api.cohere.com",
+  "reachability": {
+    "base_url": "https://api.cohere.com",
+    "key_length": 40,
+    "chat_model": "command-a-plus-05-2026",
+    "parse_model": "parse-v5.0",
+    "models_endpoint": {
+      "status": 200,
+      "count": 20
+    },
+    "models_visible": [
+      "c4ai-aya-expanse-32b",
+      "c4ai-aya-vision-32b",
+      "cohere-transcribe-03-2026",
+      "command-a-03-2025",
+      "command-a-plus-05-2026",
+      "command-a-reasoning-08-2025",
+      "command-a-translate-08-2025",
+      "command-a-vision-07-2025",
+      "command-r-08-2024",
+      "command-r-plus-08-2024",
+      "command-r7b-12-2024",
+      "command-r7b-arabic-02-2025",
+      "embed-english-light-v3.0",
+      "embed-english-light-v3.0-image",
+      "embed-english-v3.0",
+      "embed-english-v3.0-image",
+      "embed-multilingual-light-v3.0",
+      "embed-multilingual-light-v3.0-image",
+      "embed-multilingual-v3.0",
+      "embed-multilingual-v3.0-image"
+    ],
+    "chat_model_listed": true,
+    "parse_model_listed": false
+  },
+  "chat": {
+    "model": "command-a-plus-05-2026",
+    "without_response_format": {
+      "latency_s": 0.597,
+      "top_level_keys": [
+        "finish_reason",
+        "id",
+        "message",
+        "usage"
+      ],
+      "content_kind": "list",
+      "content_block_keys": [
+        "text",
+        "thinking",
+        "type"
+      ],
+      "message_sibling_keys": [
+        "role"
+      ],
+      "usage_keys": [
+        "billed_units",
+        "cached_tokens",
+        "tokens"
+      ],
+      "usage_tokens_keys": [
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens"
+      ],
+      "sentinels_present": [],
+      "text_head": "{\"ok\": true, \"unit\": \"ppm\"}",
+      "parses_as_json": true,
+      "adapter_extract_ok": {
+        "ok": true,
+        "chars": 27
+      }
+    },
+    "with_response_format": {
+      "latency_s": 0.939,
+      "top_level_keys": [
+        "finish_reason",
+        "id",
+        "message",
+        "usage"
+      ],
+      "content_kind": "list",
+      "content_block_keys": [
+        "text",
+        "thinking",
+        "type"
+      ],
+      "message_sibling_keys": [
+        "role"
+      ],
+      "usage_keys": [
+        "billed_units",
+        "cached_tokens",
+        "tokens"
+      ],
+      "usage_tokens_keys": [
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens"
+      ],
+      "sentinels_present": [],
+      "text_head": "{\"ok\": true, \"unit\": \"ppm\"}",
+      "parses_as_json": true,
+      "adapter_extract_ok": {
+        "ok": true,
+        "chars": 27
+      }
+    },
+    "system_is_a_message": {
+      "role_system_accepted": true,
+      "answer_head": "GROUNDED",
+      "obeyed_the_system_prompt": true,
+      "note": "role:'system' is honoured; llm_cohere._build_request is right."
+    }
+  },
+  "chat_stream": {
+    "model": "command-a-plus-05-2026",
+    "total_s": 0.296,
+    "content_type": "text/event-stream",
+    "line_kinds": {
+      "blank": 58,
+      "data": 58,
+      "event": 57
+    },
+    "first_text_s": 0.257,
+    "event_types": {
+      "content-delta": 51,
+      "content-end": 2,
+      "content-start": 2,
+      "message-end": 1,
+      "message-start": 1
+    },
+    "delta_shapes_seen": [
+      "delta.message.content.text"
+    ],
+    "usage_event": {
+      "type": "message-end",
+      "keys": [
+        "delta",
+        "type"
+      ]
+    },
+    "text_chars": 31,
+    "text_head": "One  \nTwo  \nThree  \nFour  \nFive",
+    "adapter_read_any_delta": true,
+    "adapter_unavailable": null
+  },
+  "parse": {
+    "model": "parse-v5.0",
+    "formats": {
+      "blocks": {
+        "latency_s": 1.656,
+        "top_level_keys": [
+          "id",
+          "meta",
+          "pages"
+        ],
+        "page0_keys": [
+          "blocks",
+          "index",
+          "type"
+        ],
+        "block_count": 1,
+        "block_keys": [
+          "text",
+          "type"
+        ],
+        "block_payload_keys": [
+          "content"
+        ],
+        "block_types": [
+          "text"
+        ],
+        "adapter_page_ok": {
+          "ok": true,
+          "chars": 275,
+          "tables": 0,
+          "error": null
+        }
+      },
+      "markdown": {
+        "latency_s": 1.586,
+        "top_level_keys": [
+          "id",
+          "meta",
+          "pages"
+        ],
+        "page0_keys": [
+          "index",
+          "markdown",
+          "type"
+        ],
+        "block_count": 0,
+        "block_keys": [],
+        "block_payload_keys": [],
+        "block_types": [],
+        "adapter_page_ok": {
+          "ok": true,
+          "chars": 275,
+          "tables": 0,
+          "error": null
+        }
+      }
+    },
+    "pixel_ladder": {
+      "1900000": {
+        "png_bytes": 114267,
+        "pixels": 1898848,
+        "status": 200,
+        "accepted": true
+      },
+      "4000000": {
+        "png_bytes": 177498,
+        "pixels": 3999450,
+        "status": 200,
+        "accepted": true
+      },
+      "8000000": {
+        "png_bytes": 266935,
+        "pixels": 7997462,
+        "status": 200,
+        "accepted": true
+      },
+      "12000000": {
+        "png_bytes": 336940,
+        "pixels": 11997300,
+        "status": 200,
+        "accepted": true
+      },
+      "20000000": {
+        "png_bytes": 448863,
+        "pixels": 19996997,
+        "status": 200,
+        "accepted": true
+      }
+    }
+  },
+  "latency": {
+    "samples": 5,
+    "min_s": 0.126,
+    "median_s": 0.14,
+    "max_s": 0.207,
+    "errors": []
+  },
+  "verdict": {
+    "verified_anything": true,
+    "sections_ok": [
+      "chat",
+      "chat_stream",
+      "parse",
+      "latency"
+    ],
+    "sections_failed": [],
+    "sections_skipped": [],
+    "sections_missing": [],
+    "authentication_failed": false,
+    "summary": "verified 4/4 sections (ok=chat,chat_stream,parse,latency; failed=-; skipped=-)."
+  },
+  "contract_diff": {
+    "calls": {
+      "chat_v2": {
+        "status": "observed",
+        "confirmed": [
+          "role",
+          "text",
+          "thinking",
+          "type"
+        ],
+        "contradicted": [],
+        "not_observed": [],
+        "undeclared": [],
+        "required_missing": []
+      },
+      "parse": {
+        "status": "observed",
+        "confirmed": [
+          "blocks",
+          "content",
+          "index",
+          "markdown",
+          "text",
+          "type"
+        ],
+        "contradicted": [
+          "bbox",
+          "bounding_box",
+          "bounding_box_normalized",
+          "caption",
+          "description",
+          "html",
+          "image",
+          "table"
+        ],
+        "not_observed": [],
+        "undeclared": [],
+        "required_missing": []
+      }
+    },
+    "calls_observed": [
+      "chat_v2",
+      "parse"
+    ],
+    "calls_not_observed": [],
+    "required_fields_missing": {},
+    "undeclared_fields": {},
+    "contract_holds": true
+  }
+}
