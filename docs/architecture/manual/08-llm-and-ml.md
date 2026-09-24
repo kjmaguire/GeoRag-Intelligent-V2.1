@@ -57,6 +57,16 @@ is in `app/services/reranker.py`: once there is traffic, pick the floor from
 the `answer_runs` score distribution, which `reranker_version` keeps
 separable by model version.
 
+*Corrected 2026-09-24:* building that route found two things wrong with it.
+Nothing writes `answer_runs.reranker_version`: the persist node's INSERT
+omits the column, so every row is NULL. And `answer_retrieval_items` stores
+only chunks that passed the floor, so the harvest cannot show what lowering
+it would recover. `ops/validation/rerank_threshold_probe.py` runs the harvest
+with both limits stated. Its primary method needs no traffic: inverse-cloze
+pairs from the indexed corpus, scored through the deployed adapter in-VPC
+(`ops/rehearsal/run_rerank_threshold_probe.sh`). No report exists yet, and
+0.2 is still unvalidated.
+
 ⚠️ **Page-image verbalization has no replacement.** `gpt-5-mini` was an
 Azure OpenAI model on the Foundry resource, and unlike everything else in
 this table it was never a Cohere model — so "keep the model, change the
