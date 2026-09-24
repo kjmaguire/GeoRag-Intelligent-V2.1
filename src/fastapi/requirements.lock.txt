@@ -179,7 +179,7 @@ h11==0.16.0
     #   uvicorn
 h2==4.4.1
     # via httpx
-hatchet-sdk==1.40.1
+hatchet-sdk==1.40.3
     # via georag-fastapi
 hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via huggingface-hub
@@ -386,7 +386,7 @@ packaging==25.0
     #   pytesseract
     #   shap
     #   transformers
-pandas==3.0.5
+pandas==3.0.6
     # via
     #   geopandas
     #   shap
@@ -473,7 +473,7 @@ pyogrio==0.13.0
     # via
     #   geopandas
     #   georag-geoparsers
-pyparsing==3.3.2
+pyparsing==3.3.3
     # via
     #   ezdxf
     #   matplotlib
