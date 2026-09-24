@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\V1\AnswerRunFeedbackController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\ChatConversationController;
 use App\Http\Controllers\Api\V1\CitationController;
@@ -152,6 +153,16 @@ Route::prefix('v1')->group(function () {
         Route::get(
             'answer-runs/{id}/trust-summary',
             [TrustController::class, 'trustSummary'],
+        )->where('id', '[0-9a-fA-F-]{36}');
+
+        // §10p Answer feedback — 👍/👎 + optional taxonomy category + note.
+        // Proxies to FastAPI's POST /v1/answer_runs/{id}/feedback, which
+        // writes silver.message_feedback. Built 2026-09-24 — the writer
+        // existed with no Laravel caller (see AnswerRunFeedbackController
+        // docblock).
+        Route::post(
+            'answer-runs/{id}/feedback',
+            [AnswerRunFeedbackController::class, 'store'],
         )->where('id', '[0-9a-fA-F-]{36}');
 
         // §3.3 Public REST API breadth — 8 endpoint groups + self-describing index.
