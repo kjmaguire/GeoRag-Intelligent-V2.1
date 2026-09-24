@@ -110,9 +110,14 @@ updates:
       prefix: "chore(actions)"
       include: "scope"
 
-  # Every Dockerfile is under /docker, including the four in their own
-  # subdirectories (backup-agent, neo4j-exporter, postgresql). The glob
-  # covers both levels; "/" covered neither.
+  # Every Dockerfile is under /docker: four at the top level and one in its
+  # own subdirectory (postgresql/; the backup-agent and neo4j-exporter ones
+  # are gone). The glob covers both levels; "/" covered neither.
+  #
+  # Not covered: images pinned outside a Dockerfile — docker-compose.yml,
+  # the CI service containers and external_image in
+  # deploy/aws/terraform/services.tf (hatchet-lite, qdrant, redis). Those
+  # are bumped by hand.
   - package-ecosystem: "docker"
     directories:
       - "/docker"
