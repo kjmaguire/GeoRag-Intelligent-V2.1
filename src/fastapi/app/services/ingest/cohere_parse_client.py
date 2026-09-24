@@ -128,11 +128,12 @@ _DEFAULT_TIMEOUT_S = 120.0
 # page_image._MAX_DPI (200) binds first on anything up to ~tabloid, so the
 # cap only matters for plan sheets: at 20 MP an A1 sheet renders at ~158 DPI
 # and an A0 at ~112 DPI, where the old 4 MP default gave A0 ~50 DPI — below
-# the downscale warning. Raised 2026-09-24 after the live probe accepted every
-# rung it sent; that run's 12 and 20 MP rungs were clamped to ~7.8 MP by the
-# probe's own render scale (since fixed), so re-run the probe to confirm the
-# top of the ladder. A request over the vendor's cap fails as a 4xx and the
-# page falls back to tesseract, so a too-high value is loud, not silent.
+# the downscale warning. Confirmed live 2026-09-24
+# (ops/validation/reports/cohere_probe_20260924T060435Z.json): Parse accepted
+# a 19,996,997-pixel page, the top of the probe's ladder, so 20 MP is measured
+# rather than guessed; the vendor's real ceiling may be higher. A request over
+# it fails as a 4xx and the page falls back to tesseract, so a too-high value
+# is loud, not silent.
 _MAX_PIXELS_ENV = "COHERE_PARSE_MAX_PIXELS"
 _DEFAULT_MAX_PIXELS = 20_000_000
 #: Below this DPI the render has visibly lost text a scanner captured.
