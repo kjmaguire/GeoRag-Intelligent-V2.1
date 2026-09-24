@@ -210,6 +210,12 @@ QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
 # ops/rehearsal/run_rerank_threshold_probe.sh or its CloudShell bundle; see
 # ops/rehearsal/README.md, "Rerank threshold".
 #
+# (1) is fixed the same day: persist_node now writes the column from what
+# the run USED (agentic_retrieval/nodes.py::_reranker_version_for_run), and
+# a run whose searches all fell back to RRF order records "degraded:rrf",
+# not the configured model. Rows before 2026-09-24 are still NULL, so the
+# harvest keeps attributing those by date window.
+#
 # AUTO-DISCOVERY (Kyle, 2026-09-16). Being pinned to 3.5 should not mean
 # staying pinned to 3.5 forever once AWS adds v4 to Bedrock's catalogue —
 # that would be a second silent regression sitting on top of the first one.

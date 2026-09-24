@@ -67,6 +67,11 @@ pairs from the indexed corpus, scored through the deployed adapter in-VPC
 (`ops/rehearsal/run_rerank_threshold_probe.sh`). No report exists yet, and
 0.2 is still unvalidated.
 
+The first of those is fixed (2026-09-24): `persist_node` writes
+`reranker_version` from what the run actually used, and a run whose document
+searches all fell back to RRF order records `degraded:rrf` rather than the
+configured model. Rows written before the fix stay NULL.
+
 ⚠️ **Page-image verbalization has no replacement.** `gpt-5-mini` was an
 Azure OpenAI model on the Foundry resource, and unlike everything else in
 this table it was never a Cohere model — so "keep the model, change the
