@@ -7,6 +7,7 @@ namespace Tests\Feature\Api\V1;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -230,7 +231,7 @@ final class AnswerRunFeedbackControllerTest extends TestCase
     public function test_fastapi_unreachable_returns_502(): void
     {
         Http::fake(function () {
-            throw new \Illuminate\Http\Client\ConnectionException('connection refused');
+            throw new ConnectionException('connection refused');
         });
 
         $response = $this->actingAs($this->user, 'sanctum')
