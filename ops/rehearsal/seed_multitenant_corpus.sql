@@ -46,7 +46,10 @@ INSERT INTO silver.projects (
      'active', 'rehearsal-meridian-kesler', '11111111-aaaa-4aaa-8aaa-111111111111', 1),
     ('bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb', 'Cascade — Kesler Creek',  'EPSG:32613', 'magnetic',
      'active', 'rehearsal-cascade-kesler',  '22222222-bbbb-4bbb-8bbb-222222222222', 1)
-ON CONFLICT (project_id) DO UPDATE SET data_version = 1;
+-- Never lower data_version on a re-run: an ingest into the project bumps it,
+-- and silver.enforce_data_version_monotonic() rejects a decrement.
+ON CONFLICT (project_id) DO UPDATE
+    SET data_version = GREATEST(silver.projects.data_version, EXCLUDED.data_version);
 
 -- ── Collars, INTERLEAVED ─────────────────────────────────────────────────
 -- Same northing, eastings 100 m apart, alternating tenant. Deliberately the
