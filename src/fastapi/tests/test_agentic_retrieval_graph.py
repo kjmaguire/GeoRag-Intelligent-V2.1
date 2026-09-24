@@ -1072,6 +1072,234 @@ async def test_validate_node_fails_closed_on_validation_exception(monkeypatch) -
 
 
 # ---------------------------------------------------------------------------
+# Restoration 2026-09-24 — Layer 1 (retrieval gate) + Layer 5 (provenance
+# gate) wired into the live agentic path per CLAUDE.md hard rule 5.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_refuses_before_calling_llm_on_zero_evidence(
+    monkeypatch,
+) -> None:
+    """Layer 1 hard gate: when NOTHING was retrieved from any store,
+    assemble_node must short-circuit to a typed refusal WITHOUT calling
+    the LLM at all."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    llm_called = False
+
+    async def fake_call_llm(*args, **kwargs):
+        nonlocal llm_called
+        llm_called = True
+        return "should never reach here"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps())
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [],
+    })
+    update = await assemble_node(state)
+
+    assert llm_called is False
+    response = update["response"]
+    assert response.citations  # GeoRAGResponse invariant still holds
+    assert "i don't have" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_calls_llm_when_document_search_ran_but_structured_data_grounds_it(
+    monkeypatch,
+) -> None:
+    """Regression guard against over-refusal: a real (empty)
+    DocumentSearchResult plus a structured tool that DID return data must
+    NOT trip the Layer 1 hard gate."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+    from app.agent.tools import DocumentSearchResult
+
+    llm_called = False
+
+    async def fake_call_llm(*args, **kwargs):
+        nonlocal llm_called
+        llm_called = True
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    class _StructuredHit:
+        count = 3
+
+    empty_docs = DocumentSearchResult(chunks=[], count=0, data_source="qdrant (reranked)")
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps())
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [
+            ("search_documents", empty_docs),
+            ("query_spatial_collars", _StructuredHit()),
+        ],
+    })
+    await assemble_node(state)
+
+    assert llm_called is True
+
+
+@pytest.mark.asyncio
+async def test_validate_node_layer5_gate_rejects_unretrieved_chunk_citation(
+    monkeypatch,
+) -> None:
+    """Layer 5 (gate half): a citation naming a chunk that was NOT part of
+    this query's retrieved set is dropped, its marker stripped from the
+    text by Layer 2's second pass, and should_retry is forced True even
+    though run_post_assembly_validation itself found nothing wrong."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+    from app.agent.tools import DocumentChunk, DocumentSearchResult
+    from app.models.rag import Citation, GeoRAGResponse
+
+    bad_citation = Citation(
+        citation_id="[NI43-1]",
+        citation_type="NI43",
+        source_chunk_id="georag_reports:report-1:section=14.1:chunk=not-retrieved",
+        document_title="Technical Report",
+        relevance_score=0.7,
+    )
+    response = GeoRAGResponse(
+        text="The grade is 1.85 g/t Au. [NI43-1]",
+        citations=[bad_citation],
+        confidence=0.85,
+        sources_used=["georag_reports:report-1:section=14.1:chunk=not-retrieved"],
+    )
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False  # nothing wrong per Layer 3/4/6
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    async def fake_enrich(resp, pg_pool):
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    retrieved = DocumentSearchResult(
+        chunks=[
+            DocumentChunk(
+                chunk_id="a-different-chunk",
+                text="unrelated passage",
+                source_document_id="report-1",
+                document_title="Technical Report",
+                section_number="14.1",
+                section_title="Mineral Resource Estimate",
+                section="14.1",
+                page=112,
+                document_type="NI43",
+                report_id="report-1",
+                relevance_score=0.7,
+            )
+        ],
+        count=1,
+        data_source="qdrant (reranked)",
+    )
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=None))
+    state = state.model_copy(update={
+        "response": response,
+        "tool_results": [("search_documents", retrieved)],
+    })
+    result = await validate_node(state)
+
+    updated = result["response"]
+    # The fabricated/stale citation is gone.
+    assert "not-retrieved" not in [c.source_chunk_id for c in updated.citations]
+    # Its marker no longer appears in the ORIGINAL answer text (Layer 2's
+    # second pass) — the warning banner prepended by should_retry legitimately
+    # quotes "[NI43-1]" as part of explaining WHY, so check the answer
+    # portion specifically (banner + "\n\n" + original text).
+    original_answer_portion = updated.text.split("\n\n")[-1]
+    assert "[NI43-1]" not in original_answer_portion
+    # should_retry forced True by the Layer 5 rejection alone -> banner + floor.
+    assert updated.confidence <= 0.2
+    assert "automated fact-checking flagged" in updated.text.lower()
+    assert any("Layer 5" in w for w in result["validation_warnings"])
+
+
+@pytest.mark.asyncio
+async def test_validate_node_layer5_gate_keeps_citation_for_retrieved_chunk(
+    monkeypatch,
+) -> None:
+    """Sanity/regression guard: a citation for a chunk that WAS retrieved
+    must survive the gate untouched, with should_retry staying False."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+    from app.agent.tools import DocumentChunk, DocumentSearchResult
+    from app.models.rag import Citation, GeoRAGResponse
+
+    good_citation = Citation(
+        citation_id="[NI43-1]",
+        citation_type="NI43",
+        source_chunk_id="georag_reports:report-1:section=14.1:chunk=c1",
+        document_title="Technical Report",
+        relevance_score=0.7,
+    )
+    response = GeoRAGResponse(
+        text="The grade is 1.85 g/t Au. [NI43-1]",
+        citations=[good_citation],
+        confidence=0.85,
+        sources_used=["georag_reports:report-1:section=14.1:chunk=c1"],
+    )
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    async def fake_enrich(resp, pg_pool):
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    retrieved = DocumentSearchResult(
+        chunks=[
+            DocumentChunk(
+                chunk_id="c1",
+                text="Hole PLS-22-08 returned 1.85 g/t Au over 12.5 m.",
+                source_document_id="report-1",
+                document_title="Technical Report",
+                section_number="14.1",
+                section_title="Mineral Resource Estimate",
+                section="14.1",
+                page=112,
+                document_type="NI43",
+                report_id="report-1",
+                relevance_score=0.7,
+            )
+        ],
+        count=1,
+        data_source="qdrant (reranked)",
+    )
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=None))
+    state = state.model_copy(update={
+        "response": response,
+        "tool_results": [("search_documents", retrieved)],
+    })
+    result = await validate_node(state)
+
+    updated = result["response"]
+    assert len(updated.citations) == 1
+    assert updated.citations[0].source_chunk_id == good_citation.source_chunk_id
+    assert "[NI43-1]" in updated.text
+    assert updated.confidence > 0.2
+
+
+# ---------------------------------------------------------------------------
 # Regression — dispatcher passes the args every legacy tool actually declares
 # ---------------------------------------------------------------------------
 

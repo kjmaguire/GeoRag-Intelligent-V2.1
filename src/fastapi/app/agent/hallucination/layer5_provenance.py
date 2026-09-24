@@ -30,6 +30,27 @@ Usage
 -----
     from app.agent.hallucination.layer5_provenance import enrich_provenance
     response = await enrich_provenance(response, pg_pool)
+
+Gate half (restored 2026-09-24)
+--------------------------------
+``enrich_provenance`` above never rejects a citation — CLAUDE.md hard rule
+5 records that as the gap: "provenance is enrichment, not a gate."
+:func:`gate_citation_provenance` is the gate. It runs BEFORE enrichment
+(and before Layer 2's second pass — see ``validate_node``) and REJECTS a
+document-chunk citation outright when its ``source_chunk_id`` does not
+resolve to a chunk actually retrieved for THIS query, or carries no
+document id. A rejected citation is dropped from the response, not
+silently kept: its marker becomes an orphan in the text, which Layer 2's
+existing orphan-marker stripping then removes on its second pass — no
+new text-editing logic needed. Scoped to ``georag_reports:...``
+(document-chunk) citations only, same scope ``enrich_provenance`` already
+uses; structured ``silver.*`` citations have no per-row source-file
+linkage to check against (see the module docstring above).
+
+Usage
+-----
+    from app.agent.hallucination.layer5_provenance import gate_citation_provenance
+    response, warnings = gate_citation_provenance(response, tool_results)
 """
 
 from __future__ import annotations
@@ -40,9 +61,136 @@ import re
 from typing import Any
 
 from app.config import settings
-from app.models.rag import GeoRAGResponse
+from app.models.rag import Citation, GeoRAGResponse
 
 logger = logging.getLogger(__name__)
+
+# Parses the format app.agent.response_assembler._source_chunk_id_for_doc_chunk
+# emits for every document-chunk citation:
+#   georag_reports:<report_id>:section=<section|unknown>:chunk=<chunk_id>
+# chunk_id is a Qdrant point id (UUID or int) and never contains ":", so a
+# greedy tail match is safe.
+_DOC_CHUNK_SOURCE_RE = re.compile(
+    r"^georag_reports:(?P<report_id>[^:]*):section=(?P<section>[^:]*):chunk=(?P<chunk_id>.+)$"
+)
+
+#: report_id placeholders that mean "no real document id" rather than a
+#: genuine UUID — see _source_chunk_id_for_doc_chunk / DocumentChunk.report_id.
+_NO_REPORT_ID_PLACEHOLDERS: frozenset[str] = frozenset({"", "empty", "unknown", "none"})
+
+
+def gate_citation_provenance(
+    response: GeoRAGResponse,
+    tool_results: list[tuple[str, Any]],
+) -> tuple[GeoRAGResponse, list[str]]:
+    """Layer 5 (gate half): reject citations whose chunk was not retrieved.
+
+    For every Citation whose ``source_chunk_id`` matches the document-chunk
+    format (``georag_reports:<report_id>:section=..:chunk=<chunk_id>``),
+    checks two things:
+
+      1. ``report_id`` is present and not a known "no document" placeholder
+         — a citation with no document id has no provenance to speak of.
+      2. ``chunk_id`` is a member of the chunk ids ACTUALLY retrieved for
+         this query (every ``DocumentChunk.chunk_id`` across every
+         ``DocumentSearchResult`` in ``tool_results``). Retrieval is
+         already workspace-scoped server-side
+         (``app.agent.tools.search_documents`` resolves and filters on
+         ``workspace_id`` before querying Qdrant — the GI-9 mandatory
+         tenant filter), so membership in this set proves BOTH "this chunk
+         was really retrieved for this query" and, transitively, "this
+         chunk belongs to the caller's workspace." A citation naming a
+         chunk id outside that set could only arise from a bug (stale
+         citations reused across a retry/reissue) or an adversarial
+         marker the LLM invented that happens to collide with a real
+         chunk id from elsewhere — either way, it must not ship.
+
+    Non-document-chunk citations (DATA, PGEO, ``no-tool-call``, the
+    zero-row sentinels) are left untouched — "chunk provenance" does not
+    apply to them; see the module docstring for why ``enrich_provenance``
+    already draws the same line.
+
+    Returns ``(response, warnings)``. ``warnings`` is empty and ``response``
+    is returned UNCHANGED (same object) when nothing was rejected. Never
+    raises — pure computation over already-fetched objects, no I/O.
+    """
+    if not settings.CHUNK_PROVENANCE_GATE_ENABLED:
+        return response, []
+    if not response.citations:
+        return response, []
+
+    from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
+
+    retrieved_chunk_ids: set[str] = {
+        str(chunk.chunk_id)
+        for _name, result in tool_results
+        if isinstance(result, DocumentSearchResult)
+        for chunk in result.chunks
+    }
+
+    kept: list[Citation] = []
+    warnings: list[str] = []
+    for citation in response.citations:
+        match = _DOC_CHUNK_SOURCE_RE.match(citation.source_chunk_id or "")
+        if match is None:
+            kept.append(citation)
+            continue
+
+        report_id = match.group("report_id")
+        chunk_id = match.group("chunk_id")
+
+        if report_id.lower() in _NO_REPORT_ID_PLACEHOLDERS:
+            warnings.append(
+                f"Layer 5: citation {citation.citation_id} carries no "
+                f"document id (source_chunk_id={citation.source_chunk_id!r}) "
+                f"— rejected"
+            )
+            continue
+
+        if chunk_id not in retrieved_chunk_ids:
+            warnings.append(
+                f"Layer 5: citation {citation.citation_id} references chunk "
+                f"{chunk_id!r}, which was not retrieved for this query "
+                f"(stale or cross-tenant citation) — rejected"
+            )
+            continue
+
+        kept.append(citation)
+
+    if not warnings:
+        return response, []
+
+    if not kept:
+        # GeoRAGResponse.citations requires >= 1 entry. Same placeholder
+        # shape response_assembler.assemble_response uses when no tool was
+        # called — honest about the gap rather than inventing a source.
+        kept.append(
+            Citation(
+                citation_id="[DATA-1]",
+                citation_type="DATA",
+                source_chunk_id="provenance-rejected",
+                document_title="No citation passed the provenance gate",
+                section=None,
+                page=None,
+                relevance_score=0.0,
+            )
+        )
+
+    logger.warning(
+        "layer5_provenance: rejected %d/%d citation(s) on the provenance "
+        "gate: %s",
+        len(warnings),
+        len(response.citations),
+        warnings,
+    )
+    try:
+        from app.metrics import CHUNK_PROVENANCE_REJECTED_TOTAL  # noqa: PLC0415
+
+        CHUNK_PROVENANCE_REJECTED_TOTAL.inc(len(warnings))
+    except Exception:  # noqa: BLE001 — metrics must never break the gate
+        pass
+
+    return response.model_copy(update={"citations": kept}), warnings
 
 # Parse the source_chunk_id to determine which silver table is cited.
 # Patterns:
