@@ -31,7 +31,7 @@ The full ship-readiness checklist lives at
 - **Frontend**: React + Inertia.js, shadcn/ui + Tailwind, MapLibre GL, React Flow, Plotly
 - **Application**: Laravel 13 on Octane (Swoole/RoadRunner), Horizon, Reverb, Sanctum, Pulse
 - **Domain Service**: FastAPI 0.135.x on Python 3.13, Pydantic AI, asyncpg, aioredis
-- **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (PgBouncer edoburu 1.25), Neo4j Community 2026.03, Qdrant v1.17, Redis 8.6, SeaweedFS (S3-compatible)
+- **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (PgBouncer edoburu 1.25), Neo4j Community 2026.03, Qdrant v1.19, Redis 8.6, SeaweedFS (S3-compatible)
 - **Ingestion**: Dagster, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, RAGFlow
 - **LLM**: Ollama + DeepSeek distills (dev), vLLM + DeepSeek V3 (prod), Claude/GPT-4 API (optional fallback)
 

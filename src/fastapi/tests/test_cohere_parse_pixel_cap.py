@@ -82,4 +82,13 @@ class TestClientRendering:
         monkeypatch.setenv("COHERE_PARSE_MAX_PIXELS", "10")
         assert cpc.max_pixels() == 100_000
         monkeypatch.setenv("COHERE_PARSE_MAX_PIXELS", "not-a-number")
-        assert cpc.max_pixels() == 4_000_000
+        assert cpc.max_pixels() == 20_000_000
+
+    def test_default_cap_keeps_an_a0_sheet_above_the_downscale_warning(
+        self, monkeypatch
+    ) -> None:
+        # The reason the default is 20 MP: at the old 4 MP an A0 plan sheet
+        # rendered at ~50 DPI, under the 100 DPI warning line.
+        monkeypatch.delenv("COHERE_PARSE_MAX_PIXELS", raising=False)
+        dpi = dpi_for_page(*A0, max_pixels=cpc.max_pixels())
+        assert dpi >= cpc._DOWNSCALE_WARN_DPI

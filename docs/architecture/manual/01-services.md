@@ -49,7 +49,7 @@ each store, [Ch 07](07-orchestration.md) for the two orchestrators,
 | Model sidecars | `reranker` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Rerank on Bedrock (**3.5**, not the v4 Foundry served) |
 | Model sidecars | `embedding` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Embed v4 on Bedrock |
 | Model sidecars | `sparse` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | **`sparse`** — SPLADE++ has no managed equivalent on any cloud, so it is a Fargate task (ADR-0022 decision 4) |
-| Data (profile) | `qdrant` | `dev-data`, `dev-full` | `qdrant/qdrant:v1.17.1` | `6333`, `6334` | `qdrant` (EFS — elastic and IAM-authorised, unlike the fixed-quota key-mounted Azure Files share) |
+| Data (profile) | `qdrant` | `dev-data`, `dev-full` | `qdrant/qdrant:v1.19.1` | `6333`, `6334` | `qdrant` (EFS — elastic and IAM-authorised, unlike the fixed-quota key-mounted Azure Files share) |
 | Data (profile) | `minio` (SeaweedFS) | `dev-data`, `dev-full` | `chrislusf/seaweedfs:4.35` | `8333` (S3), `8888` (filer) | none — S3, `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset so boto3 resolves the region and the task role (ADR-0022) |
 | Data (profile) | `minio-init` | `dev-data`, `dev-full` | `minio/mc:RELEASE.2025-08-13T08-35-41Z` | none | none |
 | Orchestration | `hatchet-lite` | `dev-data`, `dev-full` | `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2` | `8889` → 8888, `7077` | `hatchet` |
@@ -375,7 +375,7 @@ honoured by both for A/B parity.
 
 ### qdrant ([docker-compose.yml:1320](../../../docker-compose.yml))
 
-- **Image** `qdrant/qdrant:v1.17.1` (digest-pinned).
+- **Image** `qdrant/qdrant:v1.19.1` (digest-pinned).
 - **Ports** `${QDRANT_PORT:-6333}:6333` HTTP, `${QDRANT_GRPC_PORT:-6334}:6334`.
 - **Cluster-level config** HNSW `m=32`, `ef_construct=256`, `ef=200`,
   `max_indexing_threads=4`; WAL capacity 256 MiB per collection. These
@@ -475,7 +475,7 @@ honoured by both for A/B parity.
   adapter's NotConfigured error loudly — unset means every page runs
   Tesseract with no table structure and no error) — plus
   `COHERE_PARSE_MODEL=parse-v5.0`, `COHERE_PARSE_TIMEOUT_S=120`,
-  `COHERE_PARSE_MAX_PIXELS=4000000`, `COHERE_PARSE_OUTPUT_FORMAT=blocks`,
+  `COHERE_PARSE_MAX_PIXELS=20000000`, `COHERE_PARSE_OUTPUT_FORMAT=blocks`,
   `PDF_PARSER_TESSERACT_FALLBACK_ENABLED=true`, `OCR_PAGES_PER_BATCH=8`,
   `OCR_MAX_PAGES_PER_DOC=300`, `PDF_PARSE_PAGE_WORKERS=4`,
   `PARSE_SUBPROCESS_MAX_WORKERS` (empty → `min(cpu_count, 4)`),

@@ -192,7 +192,7 @@ From [docker-compose.yml:2039-2065](../../../docker-compose.yml):
 | `OCR_ENGINE` | tesseract (compose: `cohere_parse`) | Selects the remote OCR engine. Retired values (`azure_document_intelligence`) log CRITICAL and run Tesseract — the engine never silently selects something else. |
 | `COHERE_API_KEY` | unset | The Cohere API key, shared with `LLM_BACKEND=cohere`. **Unset means every page runs Tesseract** after one CRITICAL line — no table structure, no error |
 | `COHERE_PARSE_MODEL` | `parse-v5.0` | Cohere's own model name. A plain name, not an endpoint ARN — there is no endpoint indirection on this host (ADR-0023) |
-| `COHERE_PARSE_MAX_PIXELS` | 4000000 | Pixel cap for the rendered page image; oversized sheets are downscaled (no tiling) |
+| `COHERE_PARSE_MAX_PIXELS` | 20000000 | Pixel cap for the rendered page image; oversized sheets are downscaled (no tiling). Binds only above ~tabloid, where the 200 DPI ceiling stops applying: A0 renders at ~112 DPI. Raised from 4000000 on 2026-09-24 |
 | `COHERE_PARSE_TIMEOUT_S` / `_OUTPUT_FORMAT` / `_INCLUDE_IMAGE_DESCRIPTIONS` | 120 / blocks / 0 | Per-request timeout, response shape, and whether Parse's figure descriptions enter the retrievable text |
 | `OCR_PAGES_PER_BATCH` | 8 | Pages rendered together and posted concurrently as one group (in-flight requests capped by `PDF_OCR_PAGE_CONCURRENCY`) |
 | `OCR_MAX_PAGES_PER_DOC` | 300 | Per-document cap on pages sent to the remote engine; the rest go to Tesseract and the parse carries an `ocr_page_budget_exhausted` warning |

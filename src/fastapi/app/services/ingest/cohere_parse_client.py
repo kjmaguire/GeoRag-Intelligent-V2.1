@@ -124,13 +124,17 @@ OCR_METHOD = "cohere_parse"
 _TIMEOUT_ENV = "COHERE_PARSE_TIMEOUT_S"
 _DEFAULT_TIMEOUT_S = 120.0
 
-# Pixel ceiling for the rendered page. Parse takes a single page image; the
-# 4 MP default renders a US Letter page at ~210 DPI (comfortably OCR
-# resolution) and an A0 plan sheet at ~55 DPI. Set from the probe once the
-# live limit is known — a request over the vendor's cap fails as a 4xx and
-# the page falls back to tesseract, so a too-high value is loud, not silent.
+# Pixel ceiling for the rendered page. Parse takes a single page image.
+# page_image._MAX_DPI (200) binds first on anything up to ~tabloid, so the
+# cap only matters for plan sheets: at 20 MP an A1 sheet renders at ~158 DPI
+# and an A0 at ~112 DPI, where the old 4 MP default gave A0 ~50 DPI — below
+# the downscale warning. Raised 2026-09-24 after the live probe accepted every
+# rung it sent; that run's 12 and 20 MP rungs were clamped to ~7.8 MP by the
+# probe's own render scale (since fixed), so re-run the probe to confirm the
+# top of the ladder. A request over the vendor's cap fails as a 4xx and the
+# page falls back to tesseract, so a too-high value is loud, not silent.
 _MAX_PIXELS_ENV = "COHERE_PARSE_MAX_PIXELS"
-_DEFAULT_MAX_PIXELS = 4_000_000
+_DEFAULT_MAX_PIXELS = 20_000_000
 #: Below this DPI the render has visibly lost text a scanner captured.
 _DOWNSCALE_WARN_DPI = 100.0
 

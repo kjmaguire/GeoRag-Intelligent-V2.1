@@ -1350,7 +1350,7 @@ services:
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
-  # QDRANT v1.17 — vector database
+  # QDRANT v1.19 — vector database
   # HNSW m=32, ef_construct=256 tuned for geological embedding retrieval.
   # Payload indices on filter fields (project_id, document_type, etc.) are
   # configured at collection creation time by the FastAPI service on startup.
@@ -1362,7 +1362,7 @@ services:
     # Digest is identical — the floating v1.17 tag had already been
     # promoted to v1.17.1's content upstream — but the explicit tag-text
     # update makes the "we're on the patched release" intent visible.
-    image: qdrant/qdrant:v1.17.1@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     container_name: georag-qdrant
     restart: unless-stopped
     ports:
@@ -1804,7 +1804,7 @@ services:
       COHERE_BASE_URL: ${COHERE_BASE_URL:-https://api.cohere.com}
       COHERE_PARSE_MODEL: ${COHERE_PARSE_MODEL:-parse-v5.0}
       COHERE_PARSE_TIMEOUT_S: ${COHERE_PARSE_TIMEOUT_S:-120}
-      COHERE_PARSE_MAX_PIXELS: ${COHERE_PARSE_MAX_PIXELS:-4000000}
+      COHERE_PARSE_MAX_PIXELS: ${COHERE_PARSE_MAX_PIXELS:-20000000}
       COHERE_PARSE_OUTPUT_FORMAT: ${COHERE_PARSE_OUTPUT_FORMAT:-blocks}
       COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS: ${COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS:-0}
       OCR_PAGES_PER_BATCH: ${OCR_PAGES_PER_BATCH:-8}

@@ -195,6 +195,19 @@ class TestTheFirstLiveRunsFalseGreens:
         assert "should be of type string" in report["parse"]["formats"]["blocks"]["error"]["message"]
         assert "parse" in report["verdict"]["sections_failed"], report["verdict"]["summary"]
 
+    def test_every_ladder_rung_sends_the_size_it_is_named_for(self, probe) -> None:
+        """The first live run's 8, 12 and 20 MP rungs sent one identical
+        ~7.8 MP image (a 4.0 render-scale ceiling), so "accepted at 20 MP"
+        was never observed. Each rung must carry its real pixel count."""
+        pytest.importorskip("pypdfium2")
+        if not FIXTURE_PDF.exists():
+            pytest.skip("OCR fixture PDF not present")
+        ladder = probe(pdf=FIXTURE_PDF)["parse"]["pixel_ladder"]
+        assert set(ladder) == {str(p) for p in cohere_probe.PIXEL_LADDER}
+        for target, rung in ladder.items():
+            assert rung["accepted"] is True, rung
+            assert 0.95 * int(target) <= rung["pixels"] <= int(target), (target, rung)
+
     def test_the_parse_blocks_are_read_in_the_sdk_shape(self, probe) -> None:
         if not FIXTURE_PDF.exists():
             pytest.skip("OCR fixture PDF not present")

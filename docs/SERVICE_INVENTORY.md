@@ -40,7 +40,7 @@ about its healthcheck."
 | postgresql | `georag/postgres:18-ext` | default | `pg_isready` — accurate | (foundational) | `psql -U georag` inside; check `pg_stat_activity` for stuck queries |
 | pgbouncer | `edoburu/pgbouncer:1.25.1-p0` | default | `pg_isready` against the pool — accurate | postgresql | `psql -p 6432 -U pgbouncer pgbouncer` then `SHOW POOLS` |
 | neo4j | `neo4j:2026-community` | default | `cypher-shell RETURN 1` — accurate | (none upstream) | Neo4j Browser at `http://localhost:7474` |
-| qdrant | `qdrant/qdrant:v1.17` | default | `/readyz` — accurate | (none upstream) | `curl :6333/collections` from host |
+| qdrant | `qdrant/qdrant:v1.19.1` | default | `/readyz` — accurate | (none upstream) | `curl :6333/collections` from host |
 | redis | `redis:8.6.3-alpine` | default | `redis-cli ping` — accurate | (foundational) | `redis-cli -a $REDIS_PASSWORD ping` |
 | clickhouse | `clickhouse/clickhouse-server:24.10-alpine` | default | `wget /ping` — accurate | (Langfuse backend) | `docker compose logs clickhouse`; Langfuse depends on it |
 | minio | `chrislusf/seaweedfs:4.20` | default | `curl /cluster/healthz` — accurate (S3 gateway) | (foundational) | Despite the container name being `minio`, this is SeaweedFS per ADR-0001 |
