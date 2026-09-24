@@ -23,6 +23,8 @@
 #   A-11  a probe report that verified   — every model wire shape is assumed,
 #         nothing, or none at all           and the gate reads green anyway
 #   A-13  state kept locally            — lose the file, orphan every resource
+#   A-15  an invalid Hatchet admin      — the engine is healthy and has no
+#         password                        tenant to mint a client token for
 #
 # Checks that need AWS report `warn`, not `fail`, when the CLI or credentials
 # are absent: an unanswerable question is not a passed one. Run this from a
@@ -443,6 +445,56 @@ else
   n=$(printf '%s' "$GOLIVE_KEYS" | wc -w | tr -d ' ')
   check "A-10" "go-live secret keys present in ${SECRET_ID}" warn \
     "needs AWS access — ${n} keys expected, per ${README} Step 3"
+fi
+
+# ---------------------------------------------------------------------------
+# A-15 — HATCHET_ADMIN_PASSWORD meets Hatchet's own password rule
+#
+# The engine's boot-time seed validates ADMIN_PASSWORD before anything else
+# (8-64 characters, an upper, a lower and a digit: pkg/validator at v0.91.2),
+# and a value that fails aborts the seed BEFORE it creates the default
+# tenant. The entrypoint ignores the seed's exit status, so the engine still
+# comes up healthy, but with no tenant there is nothing to mint
+# HATCHET_CLIENT_TOKEN for. A-10 cannot see this: the key is present.
+#
+# The value is never printed — only which part of the rule it misses.
+# ---------------------------------------------------------------------------
+if [ "$AWS_USABLE" = "1" ]; then
+  admin_state=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ID" \
+    --query SecretString --output text 2>/dev/null | "$PYTHON" -c '
+import json, sys
+try:
+    v = json.load(sys.stdin).get("HATCHET_ADMIN_PASSWORD")
+except Exception:
+    print("UNREADABLE"); raise SystemExit
+if v is None:
+    print("ABSENT"); raise SystemExit
+v = str(v)
+miss = []
+if not 8 <= len(v) <= 64: miss.append("length %d not in 8-64" % len(v))
+if not any(c.isupper() for c in v): miss.append("no uppercase letter")
+if not any(c.islower() for c in v): miss.append("no lowercase letter")
+if not any(c.isdigit() for c in v): miss.append("no digit")
+print("BAD " + "; ".join(miss) if miss else "OK len=%d" % len(v))
+' 2>/dev/null || echo "UNREADABLE")
+  case "$admin_state" in
+    OK*)
+      check "A-15" "HATCHET_ADMIN_PASSWORD meets Hatchet's password rule" ok "$admin_state"
+      ;;
+    ABSENT)
+      check "A-15" "HATCHET_ADMIN_PASSWORD meets Hatchet's password rule" fail \
+        "absent — ${README} \"The Hatchet admin\""
+      ;;
+    BAD*)
+      check "A-15" "HATCHET_ADMIN_PASSWORD meets Hatchet's password rule" fail \
+        "${admin_state#BAD } — the seed would abort before creating the default tenant"
+      ;;
+    *)
+      check "A-15" "HATCHET_ADMIN_PASSWORD meets Hatchet's password rule" warn "secret unreadable"
+      ;;
+  esac
+else
+  check "A-15" "HATCHET_ADMIN_PASSWORD meets Hatchet's password rule" warn "needs AWS access"
 fi
 
 # ---------------------------------------------------------------------------

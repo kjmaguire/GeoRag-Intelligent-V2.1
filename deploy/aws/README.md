@@ -723,6 +723,7 @@ this table names one nothing reads.
 | `REDIS_PASSWORD` | every application service, and redis | The server sets `requirepass` from it; the clients authenticate with it. Both halves or neither. |
 | `MARTIN_DATABASE_URL` | martin | Full connection string, as `martin_readonly`. |
 | `HATCHET_DATABASE_URL` | hatchet | Full connection string for the `hatchet` role and database that `bootstrap.sql` creates. |
+| `HATCHET_ADMIN_PASSWORD` | hatchet | Injected as `ADMIN_PASSWORD`: the password the engine's boot-time seed gives the dashboard admin (`admin@example.com`) when it creates that account. Unset, the seed uses Hatchet's published default. 8–64 characters with an upper, a lower and a digit, or the seed aborts before it creates the default tenant, and a fresh engine then has no tenant to mint `HATCHET_CLIENT_TOKEN` for; `aws-preflight.sh` A-15 checks the rule. It only applies when the account is **created**; see "The Hatchet admin" below. |
 | `FLOW_JWT_SECRET` | fastapi, hatchet-worker | HS256 signing key for per-flow integration JWTs. |
 | `REVERB_APP_SECRET` | the three Laravel services | Signs requests to the Pusher events API. The paired `REVERB_APP_KEY` is public and is a tfvar, not a secret. |
 | `COHERE_API_KEY` | fastapi, hatchet-worker | One key, two capabilities: Command A+ chat (`LLM_BACKEND=cohere`) and Parse 5 OCR (`OCR_ENGINE=cohere_parse`), per ADR-0023. The worker needs its own copy — the parser runs there, not behind a call to fastapi. Confirm the key's plan covers **both** models; a key entitled to chat but not Parse starts everything cleanly and then sends every scanned page to tesseract. |
@@ -860,6 +861,48 @@ done
 Until that swap the engine is healthy and every worker and client is not,
 which reads like a Hatchet fault and is not one. `terraform apply` does not
 wait for steady state, so it will report success while this is still true.
+
+To rotate the token later, use `deploy/aws/rotation/rotate-hatchet-token.sh`
+rather than repeating this by hand; `ops/runbooks/secret-rotation.md` §9 has
+the procedure.
+
+### The Hatchet admin
+
+hatchet-lite's entrypoint runs `hatchet-admin quickstart` on every boot, and
+its seed creates a dashboard user, `admin@example.com`, whenever that email is
+absent. The password is `ADMIN_PASSWORD`, and when that is unset it is
+Hatchet's **published default** (`pkg/config/database/config.go`). Until
+2026-09-24 nothing here set it. Terraform now injects `HATCHET_ADMIN_PASSWORD`
+as `ADMIN_PASSWORD`, so write the key before the apply that carries that
+change, or the next engine task Terraform starts will not start. Generate it
+in the shell and never echo it:
+
+```bash
+PW=$(python3 -c 'import secrets, string
+a = string.ascii_letters + string.digits
+while True:
+    p = "".join(secrets.choice(a) for _ in range(40))
+    if any(c.isupper() for c in p) and any(c.islower() for c in p) and any(c.isdigit() for c in p):
+        print(p); break')
+aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text \
+  | PW="$PW" jq -c '.HATCHET_ADMIN_PASSWORD = env.PW' \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text \
+  && unset PW \
+  && aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text \
+     | jq -r '.HATCHET_ADMIN_PASSWORD | length'     # expect 40
+```
+
+**This does not change an account that already exists.** The seed only
+creates; it never updates a password (`cmd/hatchet-admin/cli/seed/seed.go`).
+An engine whose database was seeded before this change, which includes the
+production engine first booted on 2026-09-18, still has the default password
+on `admin@example.com` after the apply. The exposure is inside the VPC only:
+the dashboard port (8888) is in no target group, and the task security group
+admits only sibling tasks. Closing it on an existing database means changing
+that account's password in the dashboard itself (Settings → Profile), which
+needs a way to reach port 8888. Nothing in this deployment provides one, and
+opening one is a decision for the owner rather than a step in this README.
 
 ## Step 4: create the Qdrant collections, once
 

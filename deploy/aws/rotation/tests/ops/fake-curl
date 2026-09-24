@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Stand-in for `curl -s -o /dev/null -w '%{http_code}' https://<dist>/up`.
+# Answers the way the real edge would: 200 when the value the distribution
+# sends is one the forwarding rule accepts, the listener's fixed 403 when it
+# is not. FAKE_SITE_DOWN=1 makes CloudFront unreachable (000).
+set -uo pipefail
+ST="${FAKE_STATE:?}"
+[ "${FAKE_SITE_DOWN:-0}" = 1 ] && { printf '000'; exit 7; }
+sent=$(jq -r '[.DistributionConfig.Origins.Items[] | (.CustomHeaders.Items // [])[]
+         | select(.HeaderName == "X-Origin-Verify") | .HeaderValue] | first // ""' "$ST/dist.json")
+if jq -e --arg v "$sent" '[.[] | select(.Priority == "20") | .Conditions[]
+      | select(.Field == "http-header") | .HttpHeaderConfig.Values[]] | index($v) != null' \
+      "$ST/rules.json" >/dev/null; then
+  printf '200'
+else
+  printf '403'
+fi

@@ -6,7 +6,7 @@
 # exists to reject, and asserts the gate rejects it -- and names the live
 # failure that shape produces.
 #
-# The AWS-side checks (A-06..A-10, A-12) are not exercised: they need a real
+# The AWS-side checks (A-06..A-10, A-12, A-15) are not exercised: they need a real
 # account. What IS asserted about them is the property that matters when no
 # account is reachable -- that they report unverified rather than passing.
 #
@@ -398,7 +398,7 @@ case_ "unanswerable AWS checks report unverified, never pass"
 # The property that matters off-account: silence is not assurance.
 D=$(make_fixture)
 OUT=$(run_gate "$D" | strip_ansi)
-for id in A-06 A-07 A-08 A-09 A-10; do
+for id in A-06 A-07 A-08 A-09 A-10 A-15; do
   if grep -qE "^⚠ ${id}" <<<"$OUT"; then
     ok "${id} reports unverified without AWS"
   elif grep -qE "^✓ ${id}" <<<"$OUT"; then

@@ -32,6 +32,8 @@ resource "aws_secretsmanager_secret" "app" {
 #   FASTAPI_SERVICE_KEY_PREVIOUS
 #   QDRANT_API_KEY           one read-write key
 #   HATCHET_CLIENT_TOKEN
+#   HATCHET_ADMIN_PASSWORD   the seeded Hatchet dashboard admin's password;
+#                            the engine reads it as ADMIN_PASSWORD
 #   REDIS_PASSWORD
 #   MARTIN_DATABASE_URL      connects as martin_readonly, which has EXECUTE
 #                            on the silver.pg_* tile functions and nothing
@@ -165,7 +167,24 @@ locals {
       # hatchet-lite keeps its own database, on the same instance. The role
       # and database are created by deploy/aws/bootstrap.sql; this is the
       # connection string for them.
-      hatchet = [{ name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.app.arn}:HATCHET_DATABASE_URL::" }]
+      #
+      # ADMIN_PASSWORD, because hatchet-lite's entrypoint runs
+      # `hatchet-admin quickstart` on every boot and its seed creates a
+      # dashboard admin (admin@example.com) whenever that email is absent,
+      # with Hatchet's published default password unless this is set
+      # (pkg/config/database/config.go, v0.91.2). The seed validates the
+      # value first, 8-64 chars with an upper, a lower and a digit, and an
+      # invalid one aborts the seed BEFORE it creates the default tenant, so
+      # a fresh engine would have no tenant to mint HATCHET_CLIENT_TOKEN
+      # for. aws-preflight.sh A-15 checks the rule without printing the value.
+      #
+      # It only matters when the seed CREATES the user. The seed never
+      # updates an existing password, so on a database whose admin already
+      # exists this changes nothing; see deploy/aws/README.md Step 3.
+      hatchet = [
+        { name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.app.arn}:HATCHET_DATABASE_URL::" },
+        { name = "ADMIN_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app.arn}:HATCHET_ADMIN_PASSWORD::" },
+      ]
       }, name,
       concat(
         [for key, ref in local._secret_ref : { name = key, valueFrom = ref }],

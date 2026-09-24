@@ -606,6 +606,17 @@ jobs:
       - name: APP_KEY rotation behaviour
         run: bash deploy/aws/rotation/tests/run.sh
 
+      # The other two production rotations and the two image upgrades, which
+      # started life as one-off CloudShell scripts during the 2026-09-24
+      # go-live and are the documented procedure now. Same reason as above:
+      # each one's failure mode is quiet (a token for the wrong tenant, a
+      # 403 for the length of a CloudFront deploy, a Qdrant storage migration
+      # that skips a minor version).
+      - name: Token and origin-secret rotation behaviour
+        run: bash deploy/aws/rotation/tests/ops/run.sh
+      - name: Image upgrade behaviour
+        run: bash deploy/aws/upgrade/tests/run.sh
+
   # ─── Infrastructure as code ──────────────────────────────────────────
   # New with the AWS move. There was no Bicep, Terraform or ARM template
   # for the Azure container apps at all, so ~55 environment variables per

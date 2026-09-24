@@ -27,117 +27,170 @@
 > this file is kept rather than deleted.
 
 **Scope.** Every credential the production deployment holds, where it
-lives, which apps read it, and the exact sequence that rotates it without
-leaving a consumer on the old value. Written 2026-09-06 for the Azure
-Container Apps posture; the compose-era version of this runbook is in
-`_archived/` and none of its commands apply here.
+lives, which services read it, and the exact sequence that rotates it
+without leaving a consumer on the old value. Ported to AWS on 2026-09-24;
+the Azure Container Apps version this replaced is in git history
+(`git log -- ops/runbooks/secret-rotation.md`), and the compose-era
+version is in `_archived/` — neither's commands apply here.
 
 The two procedures that touch encrypted data — `APP_KEY` and
 `FASTAPI_SERVICE_KEY` — are owned by `docs/RUNBOOK.md`. This runbook says
-how to *execute* them on Container Apps and what to roll afterwards; it
-does not restate their internals.
+how to *execute* them on ECS Fargate and what to roll afterwards; it does
+not restate their internals.
 
 ```bash
-az account set --subscription d314ab40-b5b7-4e3e-8308-86023fb7638a
-RG=georag
+CLUSTER=georag
 ```
+
+Every command below assumes the shell already has AWS credentials for the
+production account (`AWS_REGION` / `AWS_PROFILE`, or an assumed role) —
+the same posture `scripts/operator/aws-preflight.sh` and
+`deploy/aws/README.md` assume, and never AWS credentials pasted into chat.
 
 ---
 
 ## 0. How secrets are held here, and the three traps
 
-**There is no Key Vault and no Bicep.** Each Container App carries its own
-`secrets:` list, and an env var reads one as `secretRef:`. The values were
-set by hand at the Azure lift and drift freely from
-`.env.production.example`, which is a *template*, not the deployed state.
-`.env.production.enc` (SOPS + age) is the operator's encrypted record of
-what was chosen; **CD does not read it** — `cd.yml` authenticates with
-OIDC, pushes images and runs `laravel-migrate-job`, nothing else. Keep the
-record in sync after every rotation or it stops being one.
+**There is no Key Vault, no Bicep, and no per-app secret list.** One
+Secrets Manager secret, `georag/app`, holds a single JSON object; the
+execution role reads individual keys out of it by ARN
+(`<arn>:<KEY_NAME>::`) and hands each task definition only the keys it
+names (`deploy/aws/terraform/config.tf`, `_secret_ref` / `_extra_secret_ref`
+/ `service_secrets`). The container never sees the ARN or the rest of the
+JSON, only the value it was handed. `production.tfvars` is the record of
+every *non-secret* value; `config.tf`'s top-of-file comment is the record
+of every key `georag/app` is expected to hold, and
+`scripts/check-ecs-secret-keys.py` fails CI if a key is referenced that is
+undocumented, or documented and unreferenced.
 
-Discover, never assume. Before rotating anything, find out which apps
-actually reference it:
+Discover, never assume. Before rotating anything, find out which
+*standing services* actually reference a key — a one-off task definition
+(`georag-migrate`, `georag-app-key-rotation`) is not returned by
+`list-services` and does not need restarting, because it reads the secret
+fresh on every run rather than holding a task that was started earlier:
 
 ```bash
-for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc fastapi-cc hatchet-cc hatchet-worker-cc qdrant-cc redis-cc martin-cc; do
-  echo "== $app"
-  az containerapp show -g $RG -n "$app" \
-    --query "properties.template.containers[0].env[?secretRef!=null].{env:name,secret:secretRef}" -o table
+for svc in $(aws ecs list-services --cluster "$CLUSTER" --query 'serviceArns[]' --output text | tr '\t' '\n'); do
+  td=$(aws ecs describe-services --cluster "$CLUSTER" --services "$svc" --query 'services[0].taskDefinition' --output text)
+  echo "== ${svc##*/}"
+  aws ecs describe-task-definition --task-definition "$td" \
+    --query 'taskDefinition.containerDefinitions[].secrets[].{env:name,key:valueFrom}' --output table
 done
-az containerapp job show -g $RG -n laravel-migrate-job \
-  --query "properties.template.containers[0].env[?secretRef!=null].{env:name,secret:secretRef}" -o table
 ```
+
+`deploy/aws/rotation/rotate-hatchet-token.sh`'s `consumers()` function is
+this exact loop, filtered to one key name — the reference implementation
+of "discover, don't list from memory."
 
 The three traps, each of which has already bitten this deployment:
 
-1. **A secret change does not restart anything.** `az containerapp secret
-   set` updates the store; running replicas keep the old value until a new
-   revision starts. Always follow a secret change with
-   `az containerapp update --revision-suffix <unique>`. Do **not** use
-   `revision restart`: with more than one revision marked active it
-   restarts the wrong one, and a revision in `ActivationFailed` does not
-   come back (measured 2026-08-25 on Container Apps; the script that measured it went with `deploy/azure/`).
-2. **Never `--yaml` an app with a `secrets:` block in the file.** Sending
-   `redis.yaml` verbatim sets the live `redis-password` to the literal
-   `REPLACE_AT_DEPLOY_TIME` and every client fails auth. Use
-   `apply-redis.sh`, which strips the block.
-3. **Never put a secret value on a command line.** `--secrets name=value`
-   is unavoidable for `az`, so build the value in a shell variable, run
-   with `set +x`, and clear it afterwards. Never `echo` it, never paste it
-   into a chat, never `psql --set`. `rotate-martin-credential.sh` is the
-   reference implementation of doing this right.
-
-The generic cycle, used by every section below:
+1. **A secret change does not restart anything.** `put-secret-value`
+   updates the store; a running task keeps the old value for its entire
+   life, because ECS resolves a task's secrets once, at `RunTask`, and
+   never again. Always follow a secret change with
+   `aws ecs update-service --cluster georag --service <svc> --force-new-deployment`
+   on every service the discovery loop names. There is no ECS equivalent
+   of a stray "restart the wrong revision" — `force-new-deployment` always
+   replaces the *running* tasks of that one service — but there is a
+   slower failure in its place: a service mid-rollout when the secret
+   changes can end up with old and new tasks both serving until the
+   rollout finishes, which is the window every zero-downtime section below
+   is written around.
+2. **Never split "edit the JSON" from `put-secret-value`.** The
+   2026-09-18 Hatchet-token rehearsal (`deploy/aws/README.md`, "Minting
+   the real one") did exactly this: the edit step failed its own assertion
+   and exited, the upload step ran anyway from the unmodified file, and
+   AWS returned a new version id over identical content — which looks
+   exactly like success with nothing to distinguish it from a real
+   rotation. Chain the read, the edit and the write with a pipe (`jq ... |
+   aws secretsmanager put-secret-value ...`), and read the value back
+   before moving on.
+3. **Never put a secret value on a command line.** Any value that lands in
+   `argv` is readable by every other process on the machine for the
+   life of the command (`ps`), and if the command is itself constructed
+   from a variable, a stray `set -x` prints it to whatever the shell's
+   `PS4` destination is. Build the new value in a shell variable, pipe it
+   into `jq` through the **environment**, not `--arg` — `--arg` still
+   copies the value into the process's argv on some shells' `jq` builds,
+   `env` never does — and pipe `jq`'s output into
+   `put-secret-value --secret-string file:///dev/stdin`. Never `echo` a
+   secret, never paste one into chat, never `psql --set`. The generic
+   shape, used by every section below:
 
 ```bash
 set +x
 NEW="$(openssl rand -base64 48 | tr -d '\n')"          # or the service's own generator
-az containerapp secret set -g $RG -n <app> --secrets <secret-name>="$NEW" --output none
-az containerapp update -g $RG -n <app> --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
+V="$NEW" jq -c '.SOME_KEY = env.V' \
+  <(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text) \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
 unset NEW
-LATEST=$(az containerapp show -g $RG -n <app> --query properties.latestRevisionName -o tsv)
-az containerapp revision show -g $RG -n <app> --revision "$LATEST" --query "{health:properties.healthState,running:properties.runningState}" -o table
+for svc in <the services the discovery loop named>; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$svc" --force-new-deployment --query 'service.serviceName' --output text
+done
+aws ecs wait services-stable --cluster "$CLUSTER" --services <same list>
 ```
 
-`Healthy` is the only acceptable end state. `ActivationFailed` means the
-new revision could not start on the new value — read
-`az containerapp logs show -g $RG -n <app> --tail 50` and roll back the
-secret before anything else.
+`Stable` (every task `RUNNING` and passing its health check, per
+`aws ecs describe-services`) is the only acceptable end state. A service
+stuck below its desired count means the new task could not start on the
+new value — read
+`aws logs tail /ecs/georag --since 10m --filter-pattern <service-name>`
+and roll the secret back (put the old value, force-new-deployment again)
+before anything else.
 
-**Maintenance window.** Postgres is stopped roughly 06:00–14:00 UTC by the
-nightly saver (`aws-oncall.md` §0). Nothing in this runbook that touches
-a database role works while it is `Stopped`, and a revision rolled during
-the window boots against no database and looks broken. Rotate outside it.
+**Maintenance window.** RDS is stopped roughly 17:00–08:30
+America/Vancouver by the nightly sweep (`ops/runbooks/aws-oncall.md` §0,
+`deploy/aws/scheduler/`). Nothing in this runbook that touches a database
+role works while the instance is stopped, and a service rolled during the
+window boots against no database and looks broken. Rotate outside it.
 
 ---
 
 ## 1. Inventory
 
-| Credential | Holder of truth | Read by | Zero-downtime? | Section |
-| --- | --- | --- | --- | --- |
-| `APP_KEY` | the `APP_KEY` key of the `georag/app` secret | laravel-octane, laravel-horizon, laravel-reverb (and the migrate + rotation tasks) | No — `laravel-octane` and `laravel-horizon` are scaled to **zero** while `query_audit_log` is re-encrypted; scripted (`deploy/aws/rotation/rotate-app-key.sh`) | §2 |
-| `FASTAPI_SERVICE_KEY` (+ `_KID`, `_PREVIOUS`, `_PREVIOUS_KID`) | fastapi-cc secret | fastapi-cc (verify), laravel-octane-cc / laravel-horizon-cc (mint), hatchet-worker-cc (X-Service-Key to Laravel) | Yes, both directions (since 2026-09-06) — see §3 | §3 |
-| Postgres admin (`georag_admin`) | Flexible Server | operators, `rotate-martin-credential.sh` | Yes | §4 |
-| Postgres app roles (`georag_app`, `georag`) | Flexible Server role | laravel-*, laravel-migrate-job, fastapi-cc, hatchet-worker-cc, hatchet-cc (its own `hatchet` database) | Brief 28P01 on each consumer until rolled | §4 |
-| `martin_readonly` | Flexible Server role | martin-cc | Yes (scripted) | §4 |
-| `REDIS_PASSWORD` | redis-cc `redis-password` secret | laravel-*, fastapi-cc, hatchet-worker-cc | Yes, via live ACL | §5 |
-| `QDRANT_API_KEY` | qdrant-cc `QDRANT__SERVICE__API_KEY` | fastapi-cc, hatchet-worker-cc | No — Qdrant holds one key | §6 |
-| `AZURE_FOUNDRY_API_KEY` | `georag-foundry-cc` key1 / key2 | fastapi-cc, hatchet-worker-cc | Yes, two keys | §7 |
-| Storage account key / `AZURE_STORAGE_CONNECTION_STRING` | `georagblobcc` key1 / key2 | laravel-* (SAS signing); fastapi-cc / hatchet-worker-cc only if not on managed identity | Yes, two keys | §8 |
-| `HATCHET_CLIENT_TOKEN` | minted by hatchet-cc | fastapi-cc, hatchet-worker-cc | Yes — old token stays valid until revoked | §9 |
-| `REVERB_APP_KEY` / `REVERB_APP_SECRET` | laravel-reverb-cc | laravel-octane-cc, laravel-horizon-cc, laravel-reverb-cc, **the Vite bundle** | Key: needs an image rebuild | §10 |
-| `AUDIT_ENCRYPTION_KEY` | fastapi-cc / hatchet-worker-cc | per-flow JWT keys in `workflow.flow_jwt_keys` | No — re-issue every per-flow key | §11 |
-| `EXTERNAL_NOTIFICATION_HMAC_SECRET` | hatchet-worker-cc | external senders | Coordinated re-issue | §11 |
-| `ANTHROPIC_API_KEY` | fastapi-cc | fastapi-cc | Yes | §12 |
-| Sanctum tokens / sessions | Postgres / Redis | users | per-user | §13 |
-| GitHub: `AZURE_CLIENT_ID` etc. | Entra federated credential | cd.yml (OIDC) | n/a — identifiers, not secrets | §14 |
-| GitHub: `SOPS_AGE_PRIVATE_KEY`, operator age key | age keys | the `.env.production.enc` record | Yes | §14 |
-| `FLOW_JWT_SECRET` | fastapi-cc, hatchet-worker | `services/flow_jwt.py` (no caller reaches it today) | Yes | §15 |
+Key names below are exactly `deploy/aws/terraform/config.tf`'s and
+`deploy/aws/README.md`'s "Step 3" table — the list `scripts/check-ecs-secret-keys.py`
+enforces as exhaustive. "Read by" names the bare ECS service names
+(`services.tf` sets `name = each.key`, unprefixed) whose task definition
+actually injects the key, per `config.tf`'s `service_secrets` map — not
+which service's application code happens to use it. That distinction
+matters once, for `APP_KEY`: `_secret_ref` hands the five common keys to
+every service in the *default* branch of `service_secrets` — the six
+application-image services — regardless of whether that service's own
+code reads the value, because `fastapi`, `hatchet-worker` and `sparse`
+share one Pydantic `Settings` class with the two Python readers that do.
 
-Cadence (Appendix C §9, unchanged): `APP_KEY` annual; `FASTAPI_SERVICE_KEY`,
-Foundry key quarterly; Postgres, Redis, Qdrant, storage keys annual;
-everything else on compromise. Whatever the calendar says, rotate on
-suspected exposure immediately.
+| Credential | Holder of truth | Read by (task definition) | Zero-downtime? | Section |
+| --- | --- | --- | --- | --- |
+| `APP_KEY` | `APP_KEY` key of `georag/app` | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse (+ `georag-migrate`, `georag-app-key-rotation`); consumed only by the three laravel-* services | No — laravel-octane and laravel-horizon scaled to **zero** while `query_audit_log` is re-encrypted; scripted (`deploy/aws/rotation/rotate-app-key.sh`) | §2 |
+| `FASTAPI_SERVICE_KEY` (+ `_KID`) | `georag/app` | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse | Not currently — see §3 for the gap | §3 |
+| `FASTAPI_SERVICE_KEY_PREVIOUS` (+ `_KID`) | documented in `config.tf`'s comment; **not wired into any ECS secret reference** | nobody, on AWS, today | n/a — see §3 | §3 |
+| `GEORAG_APP_PASSWORD` | `georag/app` (role: `georag_app`) | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse (as `DB_PASSWORD` / `POSTGRES_PASSWORD`) | Brief `28P01` on each consumer until rolled | §4 |
+| RDS master password (`georag`) | AWS-managed Secrets Manager secret (`manage_master_user_password = true`, `data.tf:137`) — never in `georag/app` | operators only; no application connects as it | Yes — nothing to roll | §4 |
+| `martin_readonly` password | embedded in `MARTIN_DATABASE_URL` | martin | Yes (order matters — see §4) | §4 |
+| `hatchet` DB role password | embedded in `HATCHET_DATABASE_URL` | hatchet | No — the engine holds one long-lived connection | §4 |
+| `REDIS_PASSWORD` | `georag/app` | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse, redis (server) | Yes, via live ACL — see §5 for how without ECS Exec | §5 |
+| `QDRANT_API_KEY` | `georag/app` (injected into qdrant as `QDRANT__SERVICE__API_KEY`) | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse, qdrant | No — Qdrant holds one read-write key | §6 |
+| ~~`AZURE_FOUNDRY_API_KEY`~~ | retired, ADR-0022 | — | — | §7 |
+| ~~storage account key~~ | retired, ADR-0022 | — | — | §7 |
+| `COHERE_API_KEY` | `georag/app` | fastapi, hatchet-worker | Not fully — see §8 | §8 |
+| `HATCHET_CLIENT_TOKEN` | minted by the hatchet engine, stored in `georag/app` | fastapi, hatchet-worker, laravel-octane, laravel-horizon, laravel-reverb | Yes — old token stays valid until its own 90-day expiry (not revoked) | §9 |
+| `HATCHET_ADMIN_PASSWORD` | `georag/app` (injected into hatchet as `ADMIN_PASSWORD`) | hatchet (only at first-boot seed time) | n/a — only applies when the seed *creates* the account | §10 |
+| CloudFront origin secret (`X-Origin-Verify`) | operator-chosen Terraform input; mirrored into its own secret, `georag/cloudfront-origin-secret` | the ALB listener rules (not an ECS task) | Yes, scripted — see §11 | §11 |
+| `REVERB_APP_SECRET` | `georag/app` | laravel-octane, laravel-horizon, laravel-reverb | Yes | §12 |
+| `REVERB_APP_KEY` | `var.reverb_app_key` (Terraform variable, public by design) | laravel-octane, laravel-horizon, laravel-reverb, **the Vite bundle** | Key: needs an image rebuild | §12 |
+| `AUDIT_ENCRYPTION_KEY` | not currently in `georag/app` | nobody — see §13 | n/a | §13 |
+| `EXTERNAL_NOTIFICATION_HMAC_SECRET` | not currently in `georag/app` | nobody — see §13 | n/a | §13 |
+| `ANTHROPIC_API_KEY` | not currently in `georag/app` | nobody — see §14 | n/a | §14 |
+| Sanctum tokens / sessions | RDS / Redis | users | per-user | §15 |
+| GitHub: `AWS_DEPLOY_ROLE_ARN`, `AWS_PRIVATE_SUBNET_IDS`, `AWS_TASK_SECURITY_GROUP_ID` | OIDC federated role + repo secrets | `cd.yml` | n/a — identifiers/config, not secrets, except the role trust itself | §16 |
+| `FLOW_JWT_SECRET` | `georag/app` | fastapi, hatchet-worker | Yes | §17 |
+
+Cadence (unchanged): `APP_KEY` annual; `FASTAPI_SERVICE_KEY`, `COHERE_API_KEY`
+quarterly; Postgres, Redis, Qdrant keys annual; everything else on
+compromise. Whatever the calendar says, rotate on suspected exposure
+immediately.
 
 ---
 
@@ -305,454 +358,833 @@ produced each is named above; 5 is corrected above.
 
 ---
 
-## 3. `FASTAPI_SERVICE_KEY` — the shared Laravel ↔ FastAPI key
+## 3. `FASTAPI_SERVICE_KEY` — the shared Laravel ↔ FastAPI key, and a real gap
 
 One value does three jobs (`docs/RUNBOOK.md` § "Key separation note"):
 the `X-Service-Key` header, the HS256 signing key for the 60-second JWTs
 Laravel mints, and the HMAC for `log_safe.query_hash`.
 
-**Zero-downtime in both directions since 2026-09-06.** Every internal
-call carries two credentials and both now overlap. The JWT path keeps a
-`kid → secret` map; the `X-Service-Key` path accepts
-`FASTAPI_SERVICE_KEY_PREVIOUS` as well as the primary on *both* sides —
-`app/services/auth.py::service_key_matches` for calls into FastAPI, and
-`app/Http/Middleware/VerifyServiceKey.php` (`services.fastapi.service_key_previous`)
-for Hatchet's `/internal/v1/*` bridge calls and FastAPI's callbacks into
-Laravel. Before that day the header was compared against the primary alone
-on each side, and this rotation was a 401 storm from the first restart to
-the last. The rule that makes it clean now: **every verifier learns the
-new key with the old one kept as `PREVIOUS`, before any caller starts
-sending the new key.** fastapi-cc and the Laravel apps are both verifiers
-and both callers, so they get the `PREVIOUS` treatment; hatchet-worker-cc
-only calls, so it just gets the new value. The same env var name carries
-the previous key on every app. Laravel never mints with it.
+**The application code fully supports zero-downtime overlap; Terraform
+does not wire it up.** `service_key_matches` (`src/fastapi/app/services/auth.py:49`)
+accepts `FASTAPI_SERVICE_KEY_PREVIOUS` alongside the primary, and the
+mirror-image check lives in `app/Http/Middleware/VerifyServiceKey.php`
+(`services.fastapi.service_key_previous`) for Hatchet's `/internal/v1/*`
+bridge calls and FastAPI's callbacks into Laravel. But
+`deploy/aws/terraform/config.tf`'s `_secret_ref` map — the thing that
+decides which Secrets Manager keys an ECS task definition is handed —
+lists only `APP_KEY`, `FASTAPI_SERVICE_KEY`, `QDRANT_API_KEY`,
+`HATCHET_CLIENT_TOKEN` and `REDIS_PASSWORD`. `FASTAPI_SERVICE_KEY_PREVIOUS`
+and `FASTAPI_SERVICE_KEY_KID` are named in the file's own top comment as
+expected keys and injected into **nothing** — confirmed by grepping every
+`.tf` file in `deploy/aws/terraform/` for the string, which matches only
+that one comment. There is no `deploy/aws/rotation/rotate-service-key.sh`,
+either — unlike `APP_KEY`, `HATCHET_CLIENT_TOKEN` and the CloudFront
+secret, this one has no script at all on AWS.
+
+**What that means in practice: rotating `FASTAPI_SERVICE_KEY` on this
+deployment today is a hard cutover, not the zero-downtime rotation the
+application code was built for.** Writing the new value and
+force-deploying every reader at once means every in-flight request signed
+with the old key — and every task still rolling from the previous
+revision — gets a 401 until its own task is replaced. On a service with
+`desired = 2` (laravel-octane, laravel-reverb) that window is short but
+real; on the `desired = 1` services (laravel-horizon, fastapi,
+hatchet-worker) it is the time for one task to stop and a new one to pass
+its health check.
+
+Two ways to close the gap, in order of preference:
+
+- **Wire `FASTAPI_SERVICE_KEY_PREVIOUS` / `_KID` into `config.tf`**, the
+  same shape `_secret_ref` already uses, and let a normal `terraform
+  apply` carry it. This is a code change, not a rotation step, and belongs
+  in its own PR before the next scheduled rotation — do not improvise it
+  live.
+- **A manual out-of-band task-definition revision**, mirroring
+  `cd.yml`'s smoke-test pattern (`.github/workflows/cd.yml:450-459`):
+  `describe-task-definition`, add the extra `secrets` entries with `jq`,
+  `register-task-definition`, `update-service --task-definition <new-rev>`.
+  This works, but **the next `terraform apply` silently reverts it** —
+  Terraform owns `aws_ecs_task_definition.this` and will re-register the
+  revision it computes from `config.tf`, which does not have the extra
+  keys. Anyone taking this path must finish the rotation and drop the
+  overlap keys *before* the next apply, the same discipline the CloudFront
+  script's tfvars warning enforces (§11).
+
+Until one of those lands, treat this as a hard cutover and schedule it
+for the lowest-traffic window available, same as any other change that
+briefly 401s live traffic.
 
 Generate (≥ 32 bytes is enforced on both sides at startup):
 
 ```bash
 set +x
 NEW="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
-KID="$(date -u +%Y-q%q 2>/dev/null || date -u +%Y-%m)"   # any short label distinct from the current kid
 ```
 
-Discover the current kid and which secret names hold the key (§0 loop),
-then rotate **verifier first, callers immediately after**:
+Rotate (hard cutover — every reader at once):
 
 ```bash
-# 1. fastapi-cc: new key primary, old key kept as PREVIOUS (JWT kid map and
-#    the X-Service-Key header both honour it).
-OLD="$(az containerapp secret show -g $RG -n fastapi-cc --secret-name fastapi-service-key --query value -o tsv)"
-az containerapp secret set -g $RG -n fastapi-cc --secrets fastapi-service-key="$NEW" fastapi-service-key-previous="$OLD" --output none
-az containerapp update -g $RG -n fastapi-cc \
-  --set-env-vars "FASTAPI_SERVICE_KEY_KID=$KID" "FASTAPI_SERVICE_KEY_PREVIOUS=secretref:fastapi-service-key-previous" "FASTAPI_SERVICE_KEY_PREVIOUS_KID=primary" \
-  --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-
-# 2. The Laravel apps: new key primary, old key as PREVIOUS so the calls
-#    hatchet-worker-cc and fastapi-cc still make with the old value keep
-#    authenticating until step 3.
-for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
-  az containerapp secret set -g $RG -n "$app" --secrets fastapi-service-key="$NEW" fastapi-service-key-previous="$OLD" --output none
-  az containerapp update -g $RG -n "$app" \
-    --set-env-vars "FASTAPI_SERVICE_KEY_KID=$KID" "FASTAPI_SERVICE_KEY_PREVIOUS=secretref:fastapi-service-key-previous" \
-    --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
+V="$NEW" jq -c '.FASTAPI_SERVICE_KEY = env.V' \
+  <(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text) \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
+unset NEW
+for svc in laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$svc" --force-new-deployment --query 'service.serviceName' --output text
 done
-
-# 3. The pure caller.
-az containerapp secret set -g $RG -n hatchet-worker-cc --secrets fastapi-service-key="$NEW" --output none
-az containerapp update -g $RG -n hatchet-worker-cc --set-env-vars "FASTAPI_SERVICE_KEY_KID=$KID" \
-  --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-unset NEW OLD
+aws ecs wait services-stable --cluster "$CLUSTER" --services laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker
 ```
 
-Include laravel-reverb-cc only if its env carries the key; the §0 loop
-tells you.
+`sparse` is intentionally excluded from the restart list: its task
+definition carries the key (the shared `Settings` class requires it to be
+present), but `sparse_service.py` never calls `verify_service_key`, so
+restarting it buys nothing and only widens the window other services are
+already open for.
 
-Replace `primary` in step 1 with whatever kid the *old* key was minted
-under if it was not the default. Rolling laravel-horizon-cc restarts the
-supervisors, which is what you want: a job mid-flight with a JWT under
-the old key is re-queued rather than failing on a 401. fastapi-cc and each
-Laravel app log one warning the first time a request authenticates with
-the previous key; seeing it a day later means a consumer was missed.
-
-Verify from inside the cluster — the same probe CD runs after a deploy:
+Verify with the same smoke check CD runs, as a one-off task rather than an
+`exec` — ECS Exec is not enabled on this cluster
+(`deploy/aws/terraform/rotation.tf`'s header explains why, and it applies
+here too):
 
 ```bash
-az containerapp exec -g $RG -n fastapi-cc --command 'python3 /app/scripts/ops/post_deploy_smoke.py'
+def=$(aws ecs describe-task-definition --task-definition georag-fastapi --query taskDefinition)
+new=$(echo "$def" | jq '
+  .family = "georag-smoke"
+  | .containerDefinitions[0].command = ["python3","/app/scripts/ops/post_deploy_smoke.py"]
+  | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+rev=$(aws ecs register-task-definition --cli-input-json "$new" --query 'taskDefinition.taskDefinitionArn' --output text)
+NET=$(aws ecs describe-services --cluster "$CLUSTER" --services fastapi --query 'services[0].networkConfiguration.awsvpcConfiguration')
+TASK=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$rev" --launch-type FARGATE \
+  --network-configuration "$(jq -c '{awsvpcConfiguration:.}' <<<"$NET")" --query 'tasks[0].taskArn' --output text)
+aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" --query 'tasks[0].containers[0].exitCode'
 ```
 
-`laravel-bridge` and `fastapi-self` must both pass. Then watch for stragglers:
-
-```kusto
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(30m)
-| where ContainerAppName_s in ("fastapi-cc", "laravel-octane-cc", "laravel-horizon-cc", "hatchet-worker-cc")
-| where Log_s has "401" and (Log_s has "X-Service-Key" or Log_s has "Unknown JWT kid" or Log_s has "service.key")
-| summarize n = count() by ContainerAppName_s, bin(TimeGenerated, 5m)
-```
-
-A steady stream after all four revisions are `Healthy` means one consumer
-still has the old value — re-run the discovery loop. After an hour clean,
-drop the overlap:
+`fastapi-self` and `laravel-bridge` must both pass (exit 0 and the log
+stream, `/ecs/georag`, `smoke/.../<task-id>`, carries no `[FAIL]` line).
+Then watch for stragglers with CloudWatch Logs Insights:
 
 ```bash
-az containerapp update -g $RG -n fastapi-cc --remove-env-vars FASTAPI_SERVICE_KEY_PREVIOUS FASTAPI_SERVICE_KEY_PREVIOUS_KID \
-  --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-az containerapp secret remove -g $RG -n fastapi-cc --secret-names fastapi-service-key-previous --output none
-for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
-  az containerapp update -g $RG -n "$app" --remove-env-vars FASTAPI_SERVICE_KEY_PREVIOUS \
-    --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-  az containerapp secret remove -g $RG -n "$app" --secret-names fastapi-service-key-previous --output none
-done
+aws logs start-query --log-group-name /ecs/georag \
+  --start-time "$(date -u -d '30 minutes ago' +%s)" --end-time "$(date -u +%s)" \
+  --query-string 'fields @timestamp, @logStream, @message
+| filter @message like /401/ and (@message like /X-Service-Key/ or @message like /Unknown JWT kid/ or @message like /service.key/)
+| stats count() by bin(5m), @logStream'
 ```
 
-`PROD_SMOKE_PROJECT_ID` on fastapi-cc makes the smoke probe also run a
-real query; it is unset today, so the answer path is verified by a user,
-not the probe.
+A steady stream after every service is `stable` means one consumer still
+has the old value — re-run the discovery loop (§0).
+
+`PROD_SMOKE_PROJECT_ID` is not set in `config.tf`'s `common_environment`,
+so the answer-path check is skipped and the real query path is verified
+by a user, not the probe.
 
 ---
 
-## 4. Postgres — admin, application roles, `martin_readonly`
+## 4. Postgres — master, `georag_app`, `martin_readonly`, `hatchet`
 
-`georag-pg-cc` is an Azure Flexible Server; there is no PgBouncer. Roles
-and who uses them:
+`data.tf:103` provisions one RDS instance (`georag-pg`), single-AZ, with
+`manage_master_user_password = true`. There is no PgBouncer in this
+topology (CLAUDE.md's own inventory: "the AWS deployment has no pooler"),
+so every connection is direct. Roles and who uses them (`deploy/aws/bootstrap.sql`):
 
-| Role | Used by |
-| --- | --- |
-| `georag_admin` | operators, `rotate-martin-credential.sh`, anything needing `ALTER ROLE` |
-| `georag_app` (RLS user) | fastapi-cc, hatchet-worker-cc, laravel-migrate-job — and, if its env says so, the Laravel apps |
-| `georag` | whichever apps carry `DB_USERNAME=georag` / `POSTGRES_USER=georag` — check the env |
-| `hatchet` | hatchet-cc, for its own `hatchet` database |
-| `martin_readonly` | martin-cc only |
+| Role | LOGIN | Used by |
+| --- | --- | --- |
+| `georag` | yes | RDS master; owns every table; operators only, via `georag-migrate`'s `MIGRATE_DB_*` env and by hand |
+| `georag_app` | yes | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, `georag-migrate` |
+| `martin_readonly` | yes | martin only |
+| `hatchet` | yes | hatchet (its own `hatchet` database, `SERVER_MSGQUEUE_KIND=postgres`) |
+| `georag_read` / `georag_write` / `georag_audit` | **no** | grant-holders only; nothing connects as them |
 
-**Admin password** — server-side, no consumer to roll:
+**RDS master password — nothing to roll.** `manage_master_user_password`
+means AWS generates and stores it in its own Secrets Manager secret
+(`db_master_secret_arn` output; `data.tf:134-137`'s comment: "nothing in
+this repo or in CI ever holds it"). No application connects as `georag` in
+steady state — only `georag-migrate`, which reads
+`MIGRATE_DB_PASSWORD` fresh from that AWS-managed secret on every run —
+so there is no consumer to roll and no `georag/app` key to update.
+Rotating it on demand, if ever needed, is AWS's own mechanism against its
+own secret, not this runbook's `put-secret-value` pattern:
 
 ```bash
-az postgres flexible-server update -g $RG -n georag-pg-cc --admin-password "$(openssl rand -base64 32 | tr -d '=+/')"
+aws secretsmanager rotate-secret --secret-id "$(terraform -chdir=deploy/aws/terraform output -raw db_master_secret_arn)"
 ```
 
-Put the value in your password manager first; `az` prints nothing back.
+Both role rotations below connect as the master (`georag`) to run `ALTER
+ROLE`, which needs its AWS-managed password — never typed, read once into
+`PGPASSWORD` so it reaches `psql` through its environment rather than a
+command-line flag or a prompt a screen-recorder could catch:
 
-**Application role** — set the role password first (old sessions keep
-working; new connections need the new password), then roll every
-consumer. Which apps consume which role comes from the §0 discovery loop,
-not from this table:
+```bash
+set +x
+export PGPASSWORD="$(aws secretsmanager get-secret-value \
+  --secret-id "$(terraform -chdir=deploy/aws/terraform output -raw db_master_secret_arn)" \
+  --query SecretString --output text | jq -r .password)"
+export PGHOST="$(terraform -chdir=deploy/aws/terraform output -raw db_endpoint)"
+```
+
+**The server never sees the password, only its SCRAM verifier.** RDS logs
+statement text: `log_min_duration_statement` is set (`data.tf`), and any
+statement that ERRORS is logged in full regardless. `ALTER ROLE ... PASSWORD
+'<cleartext>'` would put the new password in the RDS log the moment it
+failed. Postgres accepts a pre-computed `SCRAM-SHA-256$...` verifier in the
+same position and stores it as-is, which is what `\password` does
+internally. Define this once per shell (checked on 2026-09-24 against
+PostgreSQL 16: the role logs in with the password, and a wrong one is
+refused):
+
+```bash
+scram () {   # stdin: a password -> the SCRAM-SHA-256 verifier Postgres stores
+  python3 -c '
+import base64, hashlib, hmac, os, sys
+pw = sys.stdin.read().encode()
+salt, i = os.urandom(16), 4096
+salted = hashlib.pbkdf2_hmac("sha256", pw, salt, i)
+ck = hmac.new(salted, b"Client Key", "sha256").digest()
+sk = hmac.new(salted, b"Server Key", "sha256").digest()
+b = lambda x: base64.b64encode(x).decode()
+print(f"SCRAM-SHA-256${i}:{b(salt)}${b(hashlib.sha256(ck).digest())}:{b(sk)}")'
+}
+```
+
+**`georag_app`** — set the role password first (old sessions keep working;
+new connections need the new password), then roll every consumer the
+discovery loop names:
 
 ```bash
 set +x
 NEW="$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-32)"
 case "$NEW" in *[!A-Za-z0-9]*) echo "not alphanumeric, refusing"; exit 1;; esac
-printf "ALTER ROLE georag_app WITH PASSWORD '%s';\n" "$NEW" \
-  | psql "host=georag-pg-cc.postgres.database.azure.com dbname=georag user=georag_admin sslmode=require" --set=ON_ERROR_STOP=1 --quiet --file -
-for app in fastapi-cc hatchet-worker-cc; do        # add the Laravel apps if they use this role
-  az containerapp secret set -g $RG -n "$app" --secrets pg-app-password="$NEW" --output none
-  az containerapp update -g $RG -n "$app" --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-done
-az containerapp job secret set -g $RG -n laravel-migrate-job --secrets pg-app-password="$NEW" --output none
+printf "ALTER ROLE georag_app LOGIN PASSWORD '%s';\n" "$(printf '%s' "$NEW" | scram)" \
+  | psql "dbname=georag user=georag sslmode=require" \
+      --set=ON_ERROR_STOP=1 --quiet --file -
+
+V="$NEW" jq -c '.GEORAG_APP_PASSWORD = env.V' \
+  <(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text) \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
 unset NEW
+for svc in laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$svc" --force-new-deployment --query 'service.serviceName' --output text
+done
+aws ecs wait services-stable --cluster "$CLUSTER" --services laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker
 ```
 
 The SQL goes on stdin, not `--command` and not `--set`: `--command` does
 not expand `:'var'`, and `--set` puts the password in `ps` output for every
-user on the host (both measured 2026-08-25). The alphanumeric check is what
-makes the `printf` interpolation safe; keep them together.
+user on the host. The alphanumeric check is what makes the `printf`
+interpolation safe; keep them together.
 
-Verify: each new revision `Healthy`, and no `28P01` in the logs:
-
-```kusto
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(15m) and Log_s has "28P01"
-| summarize n = count() by ContainerAppName_s
-```
-
-**`martin_readonly`** — one command, generates and stores the credential
-without a human ever seeing it:
+Verify: every service `stable`, and no `28P01` in the logs:
 
 ```bash
-# NOT YET PORTED — the script went with deploy/azure/ on 2026-09-08.
-# By hand: ALTER ROLE martin_readonly PASSWORD, put-secret-value on
-# MARTIN_DATABASE_URL, then force-new-deployment on the martin service.
-# The ORDER matters: Martin holds persistent connections, so the old
-# password keeps working until the task is replaced.
+aws logs start-query --log-group-name /ecs/georag \
+  --start-time "$(date -u -d '15 minutes ago' +%s)" --end-time "$(date -u +%s)" \
+  --query-string 'fields @timestamp, @logStream, @message | filter @message like /28P01/ | stats count() by @logStream'
 ```
+
+**`martin_readonly`** — one role, one consumer, and the order matters:
+Martin holds persistent connections, so the old password keeps working
+until the task is replaced. There is no scripted equivalent of the Azure
+`rotate-martin-credential.sh` on this deployment yet; by hand:
+
+```bash
+set +x
+NEW="$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-32)"
+case "$NEW" in *[!A-Za-z0-9]*) echo "not alphanumeric, refusing"; exit 1;; esac
+printf "ALTER ROLE martin_readonly LOGIN PASSWORD '%s';\n" "$(printf '%s' "$NEW" | scram)" \
+  | psql "dbname=georag user=georag sslmode=require" \
+      --set=ON_ERROR_STOP=1 --quiet --file -
+
+# MARTIN_DATABASE_URL is a full connection string, not a bare password —
+# read the current one, swap only the password segment, write it back.
+CUR=$(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text | jq -r .MARTIN_DATABASE_URL)
+NEWURL=$(printf '%s' "$CUR" | sed -E "s|://martin_readonly:[^@]+@|://martin_readonly:${NEW}@|")
+V="$NEWURL" jq -c '.MARTIN_DATABASE_URL = env.V' \
+  <(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text) \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
+unset NEW CUR NEWURL
+aws ecs update-service --cluster "$CLUSTER" --service martin --force-new-deployment --query 'service.serviceName' --output text
+aws ecs wait services-stable --cluster "$CLUSTER" --services martin
+```
+
+**`hatchet`'s own database role** follows the identical shape against
+`HATCHET_DATABASE_URL`, restarting `hatchet` instead of `martin`. This one
+is genuinely **not** zero-downtime: the engine holds one long-lived
+connection for `SERVER_MSGQUEUE_KIND=postgres`, and `hatchet` runs
+`desired = 1` with no overlap, so the engine — and every worker registered
+against it — is unreachable for the seconds it takes the replacement task
+to pass its health check.
 
 ---
 
 ## 5. `REDIS_PASSWORD`
 
-redis-cc runs `--requirepass` from its `redis-password` secret. **Rolling
-redis-cc loses everything in it** — Horizon's queues, sessions, the
-dedupe windows — so do not roll it to change the password. Redis ACLs let
-one user hold several passwords, which gives a zero-downtime path:
+redis runs `--requirepass "$REDIS_PASSWORD"` (`services.tf`'s
+`service_command.redis`, run through `sh -c` for exactly one reason: the
+env var has to expand, and ECS hands a command array to the container with
+no shell). **Rolling the redis service loses everything in it** —
+Horizon's queues, sessions, the dedupe windows — so do not restart it to
+change the password. Redis ACLs let one user hold several passwords at
+once, which is the zero-downtime path — but on Azure that ran the ACL
+command *inside* the running container over `az containerapp exec`, and
+**ECS Exec is disabled cluster-wide** (`deploy/aws/terraform/rotation.tf`'s
+header; no `enable_execute_command` anywhere in `services.tf`, no
+`ssmmessages` grant in `iam.tf`). There is no way to open a shell in the
+live redis task.
+
+The AWS-native substitute needs no shell in the target container: run a
+**separate, one-off task from the same image**, in the same private
+subnets and security group as the standing `redis` service, and have it
+dial redis over the network (Cloud Map: `redis.<namespace>:6379`) instead
+of a local socket. This is the same trick `deploy/aws/README.md` uses to
+mint a Hatchet token — a fresh task from a vendor image, not a shell into
+a running one.
+
+**Neither password may travel in the `run-task` request.** CloudTrail
+records `RunTask` request parameters, container overrides included, and
+`describe-tasks` returns them for as long as the task is listed. So the
+one-off task gets both values the way every service gets secrets, from
+Secrets Manager at task start, using version stages: write the new value
+first (Secrets Manager keeps the old one as `AWSPREVIOUS`), then give the
+one-off task `REDIS_OLD` from `AWSPREVIOUS` and `REDIS_NEW` from
+`AWSCURRENT`. The command override then names only variables.
+
+Two consequences of that order. Between step 1 and step 2, a client task
+that happens to start (a Spot replacement, an autoscale) reads the NEW
+password before redis accepts it and fails AUTH until step 2 finishes, which
+takes about a minute. Don't do this during a deploy. And **nothing else may
+write `georag/app` until step 5**, or `AWSPREVIOUS` stops being the old
+password.
 
 ```bash
 set +x
-OLD="$(az containerapp secret show -g $RG -n redis-cc --secret-name redis-password --query value -o tsv)"
-NEW="$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-32)"
+CLUSTER=georag
+SECRET_ARN=$(aws secretsmanager describe-secret --secret-id georag/app --query ARN --output text)
+NS=$(aws servicediscovery list-namespaces --query "Namespaces[?Type=='DNS_PRIVATE'].Name | [0]" --output text)
+NET=$(aws ecs describe-services --cluster "$CLUSTER" --services redis \
+        --query 'services[0].networkConfiguration.awsvpcConfiguration')
+NETCFG="awsvpcConfiguration={subnets=[$(jq -r '.subnets|join(",")' <<<"$NET")],securityGroups=[$(jq -r '.securityGroups|join(",")' <<<"$NET")],assignPublicIp=DISABLED}"
 
-# 1. Add the new password to the running instance (both now work).
-az containerapp exec -g $RG -n redis-cc --command "redis-cli -a '$OLD' --no-auth-warning ACL SETUSER default '>$NEW'"
+# 1. The new password into the secret. The old one stays as AWSPREVIOUS.
+NEW="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 40)"
+aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text \
+  | V="$NEW" jq -c '.REDIS_PASSWORD = env.V' \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
+unset NEW
 
-# 2. Move every client to the new one.
-for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc fastapi-cc hatchet-worker-cc; do
-  az containerapp secret set -g $RG -n "$app" --secrets redis-password="$NEW" --output none
-  az containerapp update -g $RG -n "$app" --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
+# 2. A one-off task definition: the redis image, both versions as secrets,
+#    no volumes (it never touches redis's data directory).
+REDIS_TD=$(aws ecs describe-services --cluster "$CLUSTER" --services redis --query 'services[0].taskDefinition' --output text)
+aws ecs describe-task-definition --task-definition "$REDIS_TD" --query taskDefinition \
+  | jq --arg arn "$SECRET_ARN" '
+      .family = "georag-redis-acl"
+      | .volumes = []
+      | .containerDefinitions |= map(select(.name == "redis")
+          | .mountPoints = [] | .portMappings = [] | del(.healthCheck)
+          | .secrets = [{name: "REDIS_OLD", valueFrom: "\($arn):REDIS_PASSWORD:AWSPREVIOUS:"},
+                        {name: "REDIS_NEW", valueFrom: "\($arn):REDIS_PASSWORD:AWSCURRENT:"}])
+      | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+            .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' \
+  > /tmp/redis-acl-td.json
+ACL_TD=$(aws ecs register-task-definition --cli-input-json file:///tmp/redis-acl-td.json \
+           --query 'taskDefinition.taskDefinitionArn' --output text)
+rm -f /tmp/redis-acl-td.json
+
+acl () {   # $1: the redis-cli command line, referring to $REDIS_OLD / $REDIS_NEW by name only
+  local ovr task code
+  ovr=$(jq -nc --arg cmd "$1" '{containerOverrides: [{name: "redis", command: ["sh", "-c", $cmd]}]}')
+  task=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$ACL_TD" --launch-type FARGATE \
+           --network-configuration "$NETCFG" --overrides "$ovr" --query 'tasks[0].taskArn' --output text)
+  aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
+  code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].containers[0].exitCode' --output text)
+  echo "exit $code"; [ "$code" = "0" ]
+}
+
+# 3. Redis accepts both passwords.
+acl "redis-cli -h redis.$NS -a \"\$REDIS_OLD\" --no-auth-warning ACL SETUSER default \">\$REDIS_NEW\" | grep -qx OK"
+
+# 4. Every client onto the new one.
+for svc in laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$svc" --force-new-deployment --query 'service.serviceName' --output text
 done
+aws ecs wait services-stable --cluster "$CLUSTER" --services laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker
 
-# 3. Make it survive the next redis-cc restart, and retire the old one.
-az containerapp secret set -g $RG -n redis-cc --secrets redis-password="$NEW" --output none
-az containerapp exec -g $RG -n redis-cc --command "redis-cli -a '$NEW' --no-auth-warning ACL SETUSER default '<$OLD'"
-unset OLD NEW
+# 5. Retire the old password, and prove the new one works on its own.
+acl "redis-cli -h redis.$NS -a \"\$REDIS_NEW\" --no-auth-warning ACL SETUSER default \"<\$REDIS_OLD\" | grep -qx OK"
+acl "redis-cli -h redis.$NS -a \"\$REDIS_NEW\" --no-auth-warning PING | grep -qx PONG"
+acl "! redis-cli -h redis.$NS -a \"\$REDIS_OLD\" --no-auth-warning PING | grep -qx PONG"
+
+aws ecs deregister-task-definition --task-definition "$ACL_TD" --query 'taskDefinition.status' --output text
 ```
 
-Step 3's `secret set` does not restart redis-cc (that is the point). The
-ACL change is in memory only; the secret is what the next restart reads.
-Do both. Verify with `redis-cli -a "$NEW" PING` through `exec`, and check
-Horizon is consuming: the `laravel-horizon-cc` logs should show
-supervisors starting on the new revision.
+If step 3 exits non-zero, nothing has changed on redis. Put the old value
+back (the `--rollback` pattern in §9: restore only the key, from
+`AWSPREVIOUS`) before any client restarts.
+
+The ACL change made by the one-off task is in the **live redis-server's
+memory**, not on redis's own task definition — the two are independent
+processes, and the one-off task exits as soon as `redis-cli` returns.
+`REDIS_PASSWORD` in Secrets Manager is what the redis service's *next*
+restart reads; step 1's `put-secret-value` is what makes that true without
+restarting redis itself. Step 5 already proved the new password alone
+works; also check Horizon is consuming: `aws logs tail /ecs/georag --filter-pattern laravel-horizon --since 5m`
+should show supervisors starting on the new task.
 
 ---
 
 ## 6. `QDRANT_API_KEY`
 
-qdrant-cc reads `QDRANT__SERVICE__API_KEY`; fastapi-cc and hatchet-worker-cc
-send it. Qdrant holds exactly one read-write key, so there is no overlap:
-the clients fail from the moment qdrant-cc restarts on the new key until
-they restart too. Every query refuses while that lasts (retrieval returns
-nothing, the guards do their job). Do it in the quiet hour before the
-maintenance window, server first, clients immediately after. Data is on
-the SMB share and survives the roll.
+qdrant reads `QDRANT__SERVICE__API_KEY` (config.tf's `service_secrets.qdrant`);
+laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker
+and sparse all hold `QDRANT_API_KEY` under that name. Qdrant holds exactly
+one read-write key, so there is no overlap: clients fail from the moment
+the qdrant service restarts on the new key until they restart too. Every
+query refuses while that lasts (retrieval returns nothing, the guards do
+their job). Data is on EFS and survives the roll — unlike the Azure SMB
+share, rotating this never touches the mount.
 
 ```bash
 set +x
 NEW="$(openssl rand -base64 32 | tr -d '=+/')"
-az containerapp secret set -g $RG -n qdrant-cc --secrets qdrant-api-key="$NEW" --output none
-az containerapp update -g $RG -n qdrant-cc --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-for app in fastapi-cc hatchet-worker-cc; do
-  az containerapp secret set -g $RG -n "$app" --secrets qdrant-api-key="$NEW" --output none
-  az containerapp update -g $RG -n "$app" --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-done
+V="$NEW" jq -c '.QDRANT_API_KEY = env.V' \
+  <(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text) \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
 unset NEW
-az containerapp exec -g $RG -n fastapi-cc --command 'python3 /app/scripts/ops/post_deploy_smoke.py'   # `qdrant` must pass
+aws ecs update-service --cluster "$CLUSTER" --service qdrant --force-new-deployment --query 'service.serviceName' --output text
+aws ecs wait services-stable --cluster "$CLUSTER" --services qdrant
+for svc in fastapi hatchet-worker laravel-octane laravel-horizon laravel-reverb; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$svc" --force-new-deployment --query 'service.serviceName' --output text
+done
+aws ecs wait services-stable --cluster "$CLUSTER" --services fastapi hatchet-worker laravel-octane laravel-horizon laravel-reverb
 ```
 
-If `georag_qdrant`-style errors persist after all three are `Healthy`, the
-`QDRANT_PARTIAL_LOSS` marker in the hatchet-worker-cc logs tells you
-whether the collection itself is missing points (that is a different
-incident — `refusal-rate-spike.md` §3).
+Qdrant first, clients immediately after — do it in the quiet hour before
+the maintenance window, same reasoning as Azure. Verify with the
+`post_deploy_smoke.py` one-off task (§3's pattern, `qdrant` check must
+pass). If Qdrant errors persist after every service is `stable`, that is a
+different incident (data missing from the collection, not the key) —
+`refusal-rate-spike.md` §3.
 
 ---
 
-## 7. `AZURE_FOUNDRY_API_KEY`
+## 7. Retired: the Foundry key and the storage account keys
 
-`georag-foundry-cc` has two keys. Rotate by switching consumers to the
-other one, then regenerating the one they left:
-
-```bash
-set +x
-az cognitiveservices account keys list -g $RG -n georag-foundry-cc --query "{k1:key1,k2:key2}" -o json >/dev/null   # confirm access; do not print
-NEW="$(az cognitiveservices account keys list -g $RG -n georag-foundry-cc --query key2 -o tsv)"
-for app in fastapi-cc hatchet-worker-cc; do
-  az containerapp secret set -g $RG -n "$app" --secrets azure-foundry-api-key="$NEW" --output none
-  az containerapp update -g $RG -n "$app" --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-done
-unset NEW
-az cognitiveservices account keys regenerate -g $RG -n georag-foundry-cc --key-name key1 --output none
-```
-
-Next time, swap the roles of key1 and key2. This key fronts the LLM,
-Embed v4, Rerank v4 **and** Cohere Parse v5, so a wrong value shows up as
-Foundry `ClientErrors` on every path at once (`aws-oncall.md` §4) and as
-`ocr_method='tesseract'` on newly ingested scanned pages.
+Both are gone, per ADR-0022. Bedrock (Embed v4, Rerank 3.5) authenticates
+with the ECS task role — no long-lived credential exists to rotate. S3
+authenticates with the same task role, and presigned URLs (Laravel's
+`temporaryUrl()`, export and figure downloads) are native to it, so the
+Azure `allowSharedKeyAccess` workaround has no AWS successor either.
+Nothing in `deploy/aws/terraform/` or in `georag/app` holds a Foundry key
+or a storage key, and `aws-preflight.sh` has no check for one because
+there is nothing to check.
 
 ---
 
-## 8. Storage account keys and `AZURE_STORAGE_CONNECTION_STRING`
+## 8. `COHERE_API_KEY`
 
-`georagblobcc` keeps shared-key access on because Laravel's
-`temporaryUrl()` signs export and figure download URLs with the account
-key (historical; see ADR-0022). FastAPI and the Hatchet worker use the
-key only if their env carries `AZURE_STORAGE_CONNECTION_STRING` rather than
-`AZURE_STORAGE_ACCOUNT_URL` (managed identity via `DefaultAzureCredential`,
-`src/georag_object_storage/.../azure_config.py`) — check with the §0 loop.
-Two keys, same dance as Foundry:
+The one long-lived model-tier credential left, per ADR-0023: Command A+
+chat (`LLM_BACKEND=cohere`) and Parse 5 OCR (`OCR_ENGINE=cohere_parse`)
+both authenticate with it, against Cohere's own API rather than through
+Bedrock. `config.tf`'s `_extra_secret_ref` hands it to exactly two
+services — `fastapi` and `hatchet-worker`, each its own copy, because the
+worker runs the parser in-process rather than calling out to FastAPI for
+it. A worker without the key logs one `CRITICAL` and silently runs
+`tesseract` on every scanned page instead, which extracts no tables and
+raises nothing — check for `ocr_method='tesseract'` on newly ingested
+pages if a rotation is suspected of having missed the worker.
+
+Rotate in Cohere's dashboard first (issue the new key there — this is not
+an AWS-generated value), then merge it in with the same read-modify-write
+pipeline every other key uses, never splitting the edit from the upload:
 
 ```bash
 set +x
-CONN="$(az storage account show-connection-string -g $RG -n georagblobcc --key secondary --query connectionString -o tsv)"
-for app in laravel-octane-cc laravel-horizon-cc; do              # plus fastapi-cc / hatchet-worker-cc if they hold the string
-  az containerapp secret set -g $RG -n "$app" --secrets azure-storage-connection-string="$CONN" --output none
-  az containerapp update -g $RG -n "$app" --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
+NEW="<paste from Cohere's dashboard into the variable, never into a command>"
+V="$NEW" jq -c '.COHERE_API_KEY = env.V' \
+  <(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text) \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
+unset NEW
+for svc in fastapi hatchet-worker; do
+  aws ecs update-service --cluster "$CLUSTER" --service "$svc" --force-new-deployment --query 'service.serviceName' --output text
 done
-unset CONN
-az storage account keys renew -g $RG -n georagblobcc --key primary --output none
+aws ecs wait services-stable --cluster "$CLUSTER" --services fastapi hatchet-worker
 ```
 
-**The qdrant-cc SMB share mounts with the account key too** (it is an
-environment-level storage mount). Renewing the key that mount was created
-with breaks the mount on the next qdrant-cc restart. Before renewing,
-check which key the environment storage uses and update it:
+**This is not zero-downtime**, for the same reason as §3: there is no
+`COHERE_API_KEY_PREVIOUS`, in the code or in Terraform, so a request that
+lands on the old task after the new key exists but before that task is
+replaced, or a request signed against Cohere after the old key is revoked
+but before the new task is up, can fail. The window is one service
+rollout, not a whole maintenance cycle, but it is real — plan the Cohere
+console's revocation for *after* both services report `stable`, not
+before.
+
+Confirm the new key covers **both** models before revoking the old one —
+a key entitled to chat but not Parse deploys cleanly and then sends every
+scanned page to tesseract, which is exactly the failure mode with the
+weakest signal (`aws-preflight.sh` A-11 wants a fresh report from each
+probe):
 
 ```bash
-az containerapp env storage list -g $RG -n georag-env-cc -o table
-az containerapp env storage set -g $RG -n georag-env-cc --storage-name <name> --azure-file-account-name georagblobcc \
-  --azure-file-account-key "$(az storage account keys list -g $RG -n georagblobcc --query "[?keyName=='key2'].value" -o tsv)" \
-  --azure-file-share-name qdrant-storage --access-mode ReadWrite --output none
+COHERE_API_KEY="$NEW_FOR_VERIFICATION" bash ops/validation/cohere_probe.sh
+git add ops/validation/reports/cohere_probe_*.json
+git commit -m "chore(validation): re-run the Cohere wire-contract probe after key rotation"
 ```
 
-Then roll qdrant-cc so it remounts, and only then renew the old key.
-Skipping this is how a key rotation turns into a vector-store outage.
+Only once the probe passes and both services are `stable`, revoke the old
+key in Cohere's dashboard.
 
 ---
 
 ## 9. `HATCHET_CLIENT_TOKEN`
 
-A JWT issued by hatchet-cc for the default tenant, read by fastapi-cc and
-hatchet-worker-cc. Old tokens stay valid until they expire or are revoked,
-so this one is genuinely zero-downtime: mint, roll consumers, revoke.
+A JWT issued by the Hatchet engine for the default tenant, read by
+fastapi, hatchet-worker, laravel-octane, laravel-horizon and
+laravel-reverb. Use `deploy/aws/rotation/rotate-hatchet-token.sh` rather
+than repeating the mint-by-hand procedure in `deploy/aws/README.md`
+("Minting the real one") — that procedure is what the script automates,
+and it is what it was first run for real against, on 2026-09-24.
 
 ```bash
-TENANT="$(psql "host=georag-pg-cc.postgres.database.azure.com dbname=hatchet user=georag_admin sslmode=require" -tA -c "SELECT id FROM \"Tenant\" WHERE slug='default'")"
-set +x
-NEW="$(az containerapp exec -g $RG -n hatchet-cc --command "/hatchet-admin --config /config token create --name georag-worker-$(date -u +%Y%m%d) --tenant-id $TENANT" 2>/dev/null | tr -d '\r' | grep -o 'ey[A-Za-z0-9_.-]*' | tail -1)"
-[ -n "$NEW" ] || { echo "no token minted"; exit 1; }
-for app in fastapi-cc hatchet-worker-cc; do
-  az containerapp secret set -g $RG -n "$app" --secrets hatchet-client-token="$NEW" --output none
-  az containerapp update -g $RG -n "$app" --revision-suffix "rot$(date -u +%y%m%d%H%M%S)" --output none
-done
-unset NEW
+bash deploy/aws/rotation/rotate-hatchet-token.sh              # preview: consumers + the current token's claims
+bash deploy/aws/rotation/rotate-hatchet-token.sh --apply       # mint, store, restart every consumer, verify
+bash deploy/aws/rotation/rotate-hatchet-token.sh --rollback    # only if --apply's verification failed
 ```
 
-The `hatchet` database name and the `/hatchet-admin --config /config`
-path are the compose-era values (`docker-compose.yml` § hatchet-worker,
-Appendix K); confirm them against the running hatchet-cc image the first
-time. Revoke the old token from the Hatchet dashboard (Settings → API
-tokens) once the worker logs show `finished step run:` lines again
-(`aws-oncall.md` §3 query). A worker on a bad token does not crash — it
-sits Running and consumes nothing, which is exactly that section's symptom.
+**Both tokens stay valid at once, so `--apply` is genuinely
+zero-downtime — but "zero-downtime" here means the roll, not the
+lifecycle.** Hatchet tokens are independent signed JWTs; minting a new one
+does not invalidate the old one. The script rolls every consumer onto the
+new token and confirms the worker is finishing steps on it before it calls
+the rotation done.
 
-Hatchet's own server secrets (cookie and encryption keys in hatchet-cc)
-invalidate every client token when rotated; that is a bigger operation
-and not covered here.
+**The old token is not revoked, and nothing in this deployment can revoke
+it.** Hatchet's own API refuses the operation for a bearer token calling
+on its own behalf (`api/v1/server/authz`: "bearer tokens cannot read,
+list, or write other bearer tokens") — revocation needs a signed-in
+dashboard session, and the dashboard is not reachable from outside the VPC
+(§10 explains why, and it is the same reason here). So the old token
+simply keeps working, silently, alongside the new one, until it hits its
+own 90-day expiry (`exp - iat` on the minted JWT is 7776000 seconds).
+Nothing alarms on that expiry either — it is a fact about the JWT, not
+something CloudWatch watches. The preview mode prints the current token's
+expiry every time; read it.
+
+**State lives in `~/.hatchet-token-rotation`** (`$STATE` in the script) —
+the old token's `token_id` and expiry, not the token itself. Nothing
+secret is in it. `--rollback` reads it to know what it is putting back,
+and deletes it once rollback succeeds.
+
+**Rollback restores only the token key.** It reads `AWSPREVIOUS` from
+`georag/app`, extracts `HATCHET_CLIENT_TOKEN` from it, and merges that one
+key into the *current* JSON — the same `jq -c '.HATCHET_CLIENT_TOKEN = env.T'`
+pattern every section here uses, not a wholesale restore of the previous
+secret version. If anything else wrote to `georag/app` between the
+rotation and the rollback, that other change is preserved; only the token
+reverts. If the previous version's token equals the current one (nothing
+to roll back to) or holds no `HATCHET_CLIENT_TOKEN` at all, the script
+refuses rather than writing something meaningless.
+
+The token itself is never printed by this script. The mint task's only
+output channel is its own CloudWatch log stream
+(`hatchet/hatchet/<task-id>` under `/ecs/georag`); the script reads the
+new token from there and deletes that stream immediately afterward, so it
+does not sit in the logs the way the very first hand-minted token did on
+2026-09-18 (`deploy/aws/README.md`, "The token reaches you through
+CloudWatch Logs").
+
+Hatchet's own server secrets (cookie and encryption keys, part of the
+engine's own config) invalidate every client token when rotated; that is a
+bigger operation and not covered here.
 
 ---
 
-## 10. Reverb keys
+## 10. `HATCHET_ADMIN_PASSWORD`
 
-`REVERB_APP_SECRET` is server-side (laravel-octane-cc, laravel-horizon-cc,
-laravel-reverb-cc): generic cycle on all three. `REVERB_APP_KEY` is not a
-secret in the usual sense — the browser sends it — but rotating it means
-**rebuilding the Laravel image**: `cd.yml` bakes `VITE_REVERB_APP_KEY` into
-the Vite bundle as a build-arg literal (line ~263). Change it there, set
-the same value on the three apps, and let CD ship the rebuilt image. Until
-the new image is live the frontend will connect with the old key and every
-channel silently drops (§07 "Env trap").
+hatchet-lite's entrypoint runs `hatchet-admin quickstart` on **every**
+boot, and its seed creates a dashboard user, `admin@example.com`, whenever
+that email is absent from the engine's database
+(`cmd/hatchet-admin/cli/seed/seed.go`). The password it assigns is
+`ADMIN_PASSWORD` — which Terraform injects from the `HATCHET_ADMIN_PASSWORD`
+key of `georag/app` (`config.tf`'s `service_secrets.hatchet`) — or, if
+that is unset, Hatchet's own **published default** (v0.91.2,
+`pkg/config/database/config.go`).
+
+**The seed only creates the account. It never updates an existing
+password.** That single fact governs everything below: setting or
+rotating `HATCHET_ADMIN_PASSWORD` changes nothing for a database whose
+`admin@example.com` row already exists — the next boot's seed sees the
+email is taken and moves on, ADMIN_PASSWORD or not.
+
+**The production engine was seeded on 2026-09-18, before this key existed
+in `georag/app`.** `HATCHET_ADMIN_PASSWORD` was added to Terraform on
+2026-09-24. As of today, `admin@example.com` on the production engine
+still has Hatchet's **published default password** — writing a value into
+`georag/app` now and applying does not close this, for the reason above.
+
+This exposure is scoped to the VPC only: port 8888 (the dashboard) is in
+no ALB target group, and the task security group admits only sibling
+tasks — nothing outside the VPC can reach the login page at all. Closing
+it on the existing account means changing that password from inside the
+dashboard itself (Settings → Profile), which needs a way to reach port
+8888 that this deployment deliberately does not provide (no ECS Exec, no
+target group, no bastion). **Whether to open one is an open decision for
+the owner, not a step this runbook prescribes.**
+
+Do not include the default value in any document, script, or chat
+message, and do not log in with it as a way of "checking" — reaching the
+dashboard at all requires deciding how, which is exactly the open
+question above.
+
+For a **fresh** engine — a new database, or after a deliberate reseed —
+setting this before the first boot that creates the account is what makes
+it take effect:
+
+```bash
+set +x
+PW=$(python3 -c 'import secrets, string
+a = string.ascii_letters + string.digits
+while True:
+    p = "".join(secrets.choice(a) for _ in range(40))
+    if any(c.isupper() for c in p) and any(c.islower() for c in p) and any(c.isdigit() for c in p):
+        print(p); break')
+V="$PW" jq -c '.HATCHET_ADMIN_PASSWORD = env.V' \
+  <(aws secretsmanager get-secret-value --secret-id georag/app --query SecretString --output text) \
+  | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
+      --query VersionId --output text
+unset PW
+```
+
+The validation rule (8–64 characters, an upper, a lower and a digit) is
+enforced by the seed itself and checked without printing the value by
+`aws-preflight.sh` A-15 — an invalid value aborts the seed **before** it
+creates the default tenant, which leaves no tenant for
+`HATCHET_CLIENT_TOKEN` to be minted against (§9). No `force-new-deployment`
+follows this write on an existing engine: the hatchet service does not
+need restarting for this key to matter, because restarting it changes
+nothing on a database that already has the account.
 
 ---
 
-## 11. `AUDIT_ENCRYPTION_KEY` and `EXTERNAL_NOTIFICATION_HMAC_SECRET`
+## 11. CloudFront origin secret (`X-Origin-Verify`)
 
-`AUDIT_ENCRYPTION_KEY` is the pgcrypto key for the per-flow JWT keys in
-`workflow.flow_jwt_keys` (`services/flow_jwt.py` sets it as the
-`app.audit_encryption_key` GUC per transaction). There is no re-encrypt
-tool. Rotating it makes every stored per-flow key unreadable, and
-`FlowKeyLookupError` is deliberately **not** swallowed — integrations
-authenticating on `/internal/v1/integrations/*` get 401s until each flow's
-key is re-issued under the new value. So: set the new secret on fastapi-cc
-and hatchet-worker-cc and roll, then rotate every flow at
-`/admin/integrations/jwt-keys/rotate`, then let `flow_jwt_key_reaper`
-(nightly) delete the unreadable ones. On compromise only (Appendix C §9).
+Not an ECS-task secret at all — it is a Terraform *input*
+(`cloudfront_origin_secret` in `deploy/aws/terraform/edge.tf`), sensitive
+but not generated by Terraform, and it governs the ALB security posture
+rather than an application credential: the load balancer's security group
+admits every CloudFront edge, not only this deployment's distribution, so
+the listener refuses any request that lacks the header the distribution
+adds (`services.tf`'s listener rules carry the same header condition).
+Unset, the ALB accepts traffic from **any** CloudFront distribution, not
+just this one.
+
+Use the script — the ordering is the entire point, and doing it by hand
+against a live ALB and a CloudFront distribution that takes minutes to
+propagate is not something to improvise:
+
+```bash
+bash deploy/aws/rotation/rotate-cloudfront-origin-secret.sh            # preview: what exists, changes nothing
+bash deploy/aws/rotation/rotate-cloudfront-origin-secret.sh --apply    # rotate
+bash deploy/aws/rotation/rotate-cloudfront-origin-secret.sh --finish   # only if --apply stopped part-way
+```
+
+It widens every listener rule to accept old-and-new, waits for the
+distribution to report `Deployed` on the new value, checks a real request
+through CloudFront still succeeds, then narrows every rule to the new
+value alone — never a window where a real request is refused.
+
+**The new value's home is `georag/cloudfront-origin-secret`, a Secrets
+Manager secret of its own — not `georag/app`.** `georag/app` holds values
+ECS tasks read at start; this value is read by nothing at task start, only
+by Terraform at `apply` time, and by the script itself. It is also the
+**only** copy of the value when the platform is powered off:
+`power = "off"` destroys the distribution and the ALB outright (§0's
+maintenance-window note is about RDS stopping, not this — the ALB and
+CloudFront have no stopped state at all), and `power = "on"` rebuilds them
+from `production.tfvars`, which is why the next step matters.
+
+**After `--apply` succeeds, update `production.tfvars`'s
+`cloudfront_origin_secret` before the next `terraform apply`, or that
+apply silently puts the old value back** — Terraform does not know the
+script changed anything, and a `terraform apply` with the old tfvars value
+present is itself a valid, successful apply that reintroduces the exposure
+the rotation just closed:
+
+```bash
+aws secretsmanager get-secret-value --secret-id georag/cloudfront-origin-secret --query SecretString --output text
+# put that value into production.tfvars's cloudfront_origin_secret, or:
+export TF_VAR_cloudfront_origin_secret="$(aws secretsmanager get-secret-value --secret-id georag/cloudfront-origin-secret --query SecretString --output text)"
+```
+
+---
+
+## 12. Reverb keys
+
+`REVERB_APP_SECRET` is server-side (`_extra_secret_ref`: laravel-octane,
+laravel-horizon and laravel-reverb all hold it) — rotate it with the
+generic §0 pattern against all three. `REVERB_APP_KEY` is not a secret in
+the usual sense — the browser receives it — and it is a Terraform
+*variable* (`var.reverb_app_key`), not a Secrets Manager key. Rotating it
+means **rebuilding the Laravel image**: `cd.yml` bakes
+`VITE_REVERB_APP_KEY` into the Vite bundle from the `vars.VITE_REVERB_APP_KEY`
+repository variable (`.github/workflows/cd.yml:167,197`), and that value
+must match `var.reverb_app_key` in `production.tfvars` exactly — `cd.yml`
+itself fails the deploy if the repository variable is unset
+(`.github/workflows/cd.yml:199-200`). Change both, in the same change, and
+let CD ship the rebuilt image. Until the new image is live the frontend
+connects with the old key and every channel silently drops.
+
+---
+
+## 13. `AUDIT_ENCRYPTION_KEY` and `EXTERNAL_NOTIFICATION_HMAC_SECRET` — not provisioned
+
+**Neither is currently a key in `georag/app`.** `deploy/aws/README.md`'s
+Step 3 table — the exhaustive list `scripts/check-ecs-secret-keys.py`
+enforces — does not name either, and no `.tf` file references them.
+
+`AUDIT_ENCRYPTION_KEY` is the pgcrypto key `services/flow_jwt.py` would
+use to encrypt the per-flow JWT keys in `workflow.flow_jwt_keys`
+(`src/fastapi/app/services/flow_jwt.py:135` reads it via
+`os.environ.get("AUDIT_ENCRYPTION_KEY", "")`, defaulting to empty). Unset,
+as it is in production today, the module logs
+`"flow_jwt: AUDIT_ENCRYPTION_KEY unset — no per-flow keys"` and every flow
+runs with none. This is consistent with — not a regression from — §17's
+finding that the integrations bridge `flow_jwt.py` guards has no caller in
+this deployment at all: there is nothing to encrypt yet.
 
 `EXTERNAL_NOTIFICATION_HMAC_SECRET` signs outbound notifications from
-hatchet-worker-cc; every external receiver verifies with the same value,
-so rotation is a coordinated re-issue with them, not a solo change.
+`app/hatchet_workflows/external_notification.py`; it has real code and no
+Terraform wiring either.
+
+If either capability is ever activated for AWS, provisioning the key
+follows the same shape as every other addition to `_extra_secret_ref` —
+name the reader(s) explicitly, add the key to `config.tf`'s comment and
+the README's Step 3 table, and let `terraform apply` create the reference
+before the first value is written. Until then there is nothing to rotate.
 
 ---
 
-## 12. `ANTHROPIC_API_KEY`
+## 14. `ANTHROPIC_API_KEY` — not provisioned
 
-Optional fallback LLM, fastapi-cc only. Issue a new key in the Anthropic
-console, generic cycle on fastapi-cc, delete the old key in the console.
-`LLM_BACKEND=azure` is the default, so a wrong value is invisible until
-the fallback is exercised — check `az containerapp show -n fastapi-cc
---query "properties.template.containers[0].env[?name=='LLM_BACKEND']"`
-before assuming it matters.
+Optional fallback LLM (`LLM_BACKEND=anthropic`), `fastapi` only
+(`src/fastapi/app/config.py:458` defaults it to `""`). Like §13, it is not
+a key in `georag/app` today — `LLM_BACKEND` is `"cohere"` in
+`config.tf`'s `common_environment`, and nothing in Terraform names this
+key. If it is ever added: issue a key in the Anthropic console, add
+`ANTHROPIC_API_KEY` to `_extra_secret_ref` for `fastapi`, apply, then
+rotate with the generic §0 pattern and delete the old key in the console.
+Because `LLM_BACKEND` defaults away from it, a wrong or missing value is
+invisible until the fallback path is actually exercised — confirm
+`LLM_BACKEND` before assuming a rotation here matters at all.
 
 ---
 
-## 13. Users: Sanctum tokens and sessions
+## 15. Users: Sanctum tokens and sessions
 
-Per-user, revoked rather than rotated:
+Per-user, revoked rather than rotated. With ECS Exec disabled cluster-wide,
+this runs the same way §3's smoke check does — a one-off task built from
+the standing `georag-migrate` task definition (full Laravel env, correct
+network placement) with its command overridden:
 
 ```bash
-az containerapp exec -g $RG -n laravel-octane-cc --command "php artisan tinker --execute 'App\\Models\\User::find(42)->tokens()->delete();'"
+def=$(aws ecs describe-task-definition --task-definition georag-migrate --query taskDefinition)
+new=$(echo "$def" | jq \
+  --arg cmd "php artisan tinker --execute='App\\\\Models\\\\User::find(42)->tokens()->delete();'" '
+  .family = "georag-oneoff"
+  | .containerDefinitions[0].command = [$cmd]
+  | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+rev=$(aws ecs register-task-definition --cli-input-json "$new" --query 'taskDefinition.taskDefinitionArn' --output text)
+NET=$(aws ecs describe-services --cluster "$CLUSTER" --services laravel-octane --query 'services[0].networkConfiguration.awsvpcConfiguration')
+TASK=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$rev" --launch-type FARGATE \
+  --network-configuration "$(jq -c '{awsvpcConfiguration:.}' <<<"$NET")" --query 'tasks[0].taskArn' --output text)
+aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
 ```
+
+`georag-migrate`'s container entrypoint is `["/bin/sh","-c"]`
+(`services.tf:654`), so the override above is one shell-string argument,
+same as its default migration command — quote it accordingly, and never
+put a live token value in the string (the example above deletes by user
+ID, not by token).
 
 Sessions live in Redis; a compromised session ends with the user's logout
 or with §5 (a Redis roll, which ends everyone's).
 
 ---
 
-## 14. GitHub and operator-side credentials
+## 16. GitHub and operator-side credentials
 
-- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` are OIDC
-  identifiers, not secrets. CD's credential is the federated credential on
-  the Entra app trusting this repo's `main`; rotate it there if the trust
-  is wrong, not in GitHub.
-- `SOPS_AGE_PRIVATE_KEY` (CI) and the operator key under
-  `~/.config/georag/` guard the `.env.production.enc` record.
-  `age-keygen` a new pair, add the recipient to `.sops.yaml`,
-  `sops updatekeys .env.production.enc`, push the CI key with
-  `scripts/operator/set-github-secrets.sh`, then drop the old recipient and
-  `updatekeys` again. `scripts/operator/bootstrap-secrets.sh` is idempotent
-  and does the first half.
-- ACR pulls use the apps' managed identities; nothing to rotate.
+- **`AWS_DEPLOY_ROLE_ARN`** is the OIDC federated role `cd.yml` assumes
+  (`aws-actions/configure-aws-credentials@v4`, `role-to-assume`) — an
+  identifier naming a trust relationship, not a secret by itself. Rotate
+  by changing the IAM role's trust policy (which repo/branch it trusts),
+  not by generating a new value; there is no key to leak because OIDC
+  issues short-lived tokens per run.
+- **`AWS_PRIVATE_SUBNET_IDS`** and **`AWS_TASK_SECURITY_GROUP_ID`** are
+  repository secrets holding `terraform output -raw private_subnet_ids`
+  and `terraform output -raw task_security_group_id` — configuration, not
+  credentials. Re-run those outputs and update the repo secrets whenever
+  the VPC changes (a `power=off` → `power=on` cycle recreates both).
+- **SOPS / age** (`scripts/operator/bootstrap-secrets.sh`,
+  `.env.production.enc`) governs the pre-cutover, on-prem/k3s deployment
+  model that `charts/georag/` still targets — it is not part of this AWS
+  runbook, and nothing in the AWS deploy path reads it. `georag/app` in
+  Secrets Manager is the equivalent record here, and §0's discovery loop
+  is how it is kept honest rather than a separate encrypted file that can
+  drift from what is actually deployed.
+- ECR pulls use the tasks' execution role; nothing to rotate.
 
 ---
 
-## 15. Dead and pending
+## 17. Dead and pending
 
-- `FLOW_JWT_SECRET` (renamed from `KESTRA_FLOW_JWT_SECRET` on 2026-09-14,
-  ADR-0022) has a reader but no caller. `services/flow_jwt.py` signs and
-  verifies with it; nothing invokes the bridge, because Kestra — the
-  integration edge it was built for — was removed 2026-07-28.
-  **Corrected:** the previous entry here said it "has no consumer", which
-  was wrong in a way that mattered — a consumer with no caller is not a
-  dead variable, and deleting it would have broken the bridge the moment
-  anything called it.
-  Two things follow. Pydantic runs with `extra="forbid"`, so the OLD name
-  left in a deployed `.env` is now a startup crash naming the new one —
-  delete it, do not keep both. And `scripts/check_settings_have_readers.py`
-  guards the other direction: the field cannot be removed while
-  `flow_jwt.py` reads it.
-  It **is** in the AWS Secrets Manager key list as of 2026-09-14
-  (`deploy/aws/terraform/config.tf`, `_extra_secret_ref`), injected into
-  `fastapi` and `hatchet-worker` only — the two services that import
-  `services/flow_jwt.py`. It is deliberately NOT in the common
-  `_secret_ref` set every task receives: it is an HS256 signing key, and
-  laravel-*, the hatchet engine and the sparse model server have no use
-  for it. Until that date it was absent entirely while compose marked it
-  `${VAR:?}` required, so dev could not start without it and production
-  ran without it — the field defaults to `""`, so FastAPI started anyway
-  and the bridge would have raised 500 on first use.
-- `AZURE_DOCUMENT_INTELLIGENCE_*` / the `docintel-*` secret refs on
-  hatchet-worker-cc are dead since ADR-0019; remove them, they are not
-  rotated.
+- `FLOW_JWT_SECRET` (renamed from `KESTRA_FLOW_JWT_SECRET`, ADR-0022) has a
+  reader but no caller. `services/flow_jwt.py` signs and verifies with it;
+  nothing invokes the bridge, because Kestra — the integration edge it was
+  built for — was removed 2026-07-28.
+  It **is** in the AWS Secrets Manager key list, injected into `fastapi`
+  and `hatchet-worker` only — the two services that import
+  `services/flow_jwt.py` (`config.tf`'s `_extra_secret_ref`). Deliberately
+  NOT in the common `_secret_ref` set every application service receives:
+  it is an HS256 signing key, and laravel-*, the hatchet engine and the
+  sparse model server have no use for it. Rotate it with the generic §0
+  pattern against `fastapi` and `hatchet-worker` only, on compromise —
+  there is no active caller to notice a stale value either way, which is
+  exactly why a rotation here would go unverified without deliberately
+  exercising `/admin/integrations/jwt-keys/rotate` first.
 - Nothing rotates on a schedule. There is no reminder, no calendar hook and
-  no expiry alert; the cadences in §1 are policy, not automation.
+  no expiry alert — except `HATCHET_CLIENT_TOKEN`'s own 90-day JWT expiry
+  (§9), which is a property of the token, not an alarm. The cadences in §1
+  are policy, not automation.
 
 ---
 
-## 16. Record it
+## 18. Record it
 
-Every rotation gets a line in the `authz_audit` channel, which on Azure
-lands in `ContainerAppConsoleLogs_CL` as JSON:
+Every rotation gets a line in the `authz_audit` channel, which on ECS
+lands in CloudWatch Logs (`/ecs/georag`) as JSON. With ECS Exec disabled,
+write it the same way §15 revokes a token — a one-off task from
+`georag-migrate`:
 
 ```bash
-az containerapp exec -g $RG -n laravel-octane-cc --command "php artisan tinker --execute 'Log::channel(\"authz_audit\")->info(\"secret_rotation\", [\"credential\" => \"REDIS_PASSWORD\", \"actor\" => \"<you>\", \"reason\" => \"scheduled\"]);'"
+def=$(aws ecs describe-task-definition --task-definition georag-migrate --query taskDefinition)
+new=$(echo "$def" | jq \
+  --arg cmd 'php artisan tinker --execute='"'"'Log::channel("authz_audit")->info("secret_rotation", ["credential" => "REDIS_PASSWORD", "actor" => "<you>", "reason" => "scheduled"]);'"'"'' '
+  .family = "georag-oneoff"
+  | .containerDefinitions[0].command = [$cmd]
+  | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+rev=$(aws ecs register-task-definition --cli-input-json "$new" --query 'taskDefinition.taskDefinitionArn' --output text)
+NET=$(aws ecs describe-services --cluster "$CLUSTER" --services laravel-octane --query 'services[0].networkConfiguration.awsvpcConfiguration')
+TASK=$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$rev" --launch-type FARGATE \
+  --network-configuration "$(jq -c '{awsvpcConfiguration:.}' <<<"$NET")" --query 'tasks[0].taskArn' --output text)
+aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
 ```
 
-Then update `.env.production.enc` (`sops .env.production.enc`) so the
-encrypted record matches what is deployed, and commit it. An encrypted
-record that lags the portal is the state this deployment was found in on
-2026-08-22; the whole point of §0's discovery loop is that nobody should
-have to rely on it.
+There is no `.env.production.enc` to keep in sync on this deployment
+(§16) — `georag/app` in Secrets Manager already is the record, and §0's
+discovery loop is what confirms it matches what every task actually
+holds, the same way it always has.

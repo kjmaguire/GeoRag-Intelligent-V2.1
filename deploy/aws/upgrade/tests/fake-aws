@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI for upgrade-service-image.sh and upgrade-qdrant.sh.
+# Stateful: register-task-definition stores what it was given, update-service
+# moves the service onto it, and describe-* read that back.
+#
+# State under $FAKE_STATE:
+#   calls                       every argv, in order
+#   svc.<name>                  the service's current task definition name
+#   td.<name>.json              task definitions (describe-task-definition's .taskDefinition)
+#   qdrant.version              what the fake Qdrant reports; follows the running image
+#   counts.json                 the point counts the fake Qdrant reports
+#
+# Knobs:
+#   FAKE_DESIRED=0              the service is scaled to 0
+#   FAKE_UNSTABLE=1             `wait services-stable` fails
+#   FAKE_SNAPSHOT_FAIL=1        the snapshot task fails
+#   FAKE_LOSE_POINTS=<version>  after moving to this version, a collection comes back short
+set -uo pipefail
+ST="${FAKE_STATE:?FAKE_STATE must be set}"
+printf '%s\n' "$*" >> "$ST/calls"
+
+arg_after() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+  return 1
+}
+Q="$(arg_after --query "$@" || true)"
+
+case "$1 ${2:-}" in
+  "ecs describe-services")
+    svc="$(arg_after --services "$@")"
+    case "$Q" in
+      *networkConfiguration*) echo '{"subnets":["subnet-1"],"securityGroups":["sg-1"]}'; exit 0 ;;
+    esac
+    [ -f "$ST/svc.$svc" ] || { echo '{"td":null,"desired":null,"running":null}'; exit 0; }
+    jq -n --arg td "$(cat "$ST/svc.$svc")" --argjson d "${FAKE_DESIRED:-1}" \
+      '{td: $td, desired: $d, running: $d}'
+    ;;
+  "ecs describe-task-definition")
+    td="$(arg_after --task-definition "$@")"
+    cat "$ST/td.$td.json"
+    ;;
+  "ecs register-task-definition")
+    body="$(arg_after --cli-input-json "$@")"
+    fam=$(jq -r .family <<<"$body")
+    n=$(ls "$ST" | grep -c "^td\.$fam:" || true)
+    name="$fam:$((n + 10))"
+    jq --arg arn "$name" '. + {taskDefinitionArn: $arn}' <<<"$body" > "$ST/td.$name.json"
+    echo "$name"
+    ;;
+  "ecs update-service")
+    svc="$(arg_after --service "$@")"
+    td="$(arg_after --task-definition "$@")"
+    echo "$td" > "$ST/svc.$svc"
+    if [ "$svc" = "qdrant" ]; then
+      img=$(jq -r '.containerDefinitions[] | select(.name == "qdrant") | .image' "$ST/td.$td.json")
+      v="${img##*:v}"; echo "${v%%@*}" > "$ST/qdrant.version"
+    fi
+    echo "$svc"
+    ;;
+  "ecs wait")
+    if [ "${2:-}" = "wait" ] && [ "${3:-}" = "services-stable" ] && [ "${FAKE_UNSTABLE:-0}" = 1 ]; then exit 255; fi
+    ;;
+  "ecs run-task")
+    ovr="$(arg_after --overrides "$@")"
+    mode=$(jq -r '.containerOverrides[0].environment[] | select(.name == "QDRANT_MODE") | .value' <<<"$ovr")
+    id="t$(wc -l < "$ST/calls" | tr -d ' ')"
+    counts=$(cat "$ST/counts.json")
+    v=$(cat "$ST/qdrant.version")
+    if [ -n "${FAKE_LOSE_POINTS:-}" ] && [ "$v" = "$FAKE_LOSE_POINTS" ]; then
+      counts=$(jq -c '.georag_chunks -= 1' <<<"$counts")
+    fi
+    {
+      printf 'QDRANT_STATE %s\n' "$(jq -c -n --arg v "$v" --argjson c "$counts" '{version: $v, counts: $c}')"
+      if [ "$mode" = "snapshot" ]; then
+        if [ "${FAKE_SNAPSHOT_FAIL:-0}" = 1 ]; then
+          echo "Traceback (most recent call last): boto3 AccessDenied"
+          echo 1 > "$ST/exit.$id"
+        else
+          echo "QDRANT_SNAPSHOT s3://backups/_ops/qdrant-snapshots/x/georag_chunks/s.snapshot (123 bytes)"
+          echo "QDRANT_SNAPSHOTS_DONE"
+          echo 0 > "$ST/exit.$id"
+        fi
+      else
+        echo 0 > "$ST/exit.$id"
+      fi
+    } > "$ST/log.$id"
+    echo "arn:aws:ecs:r:1:task/georag/$id"
+    ;;
+  "ecs describe-tasks")
+    id="$(arg_after --tasks "$@")"; id="${id##*/}"
+    cat "$ST/exit.$id"
+    ;;
+  "logs get-log-events")
+    s="$(arg_after --log-stream-name "$@")"; id="${s##*/}"
+    tr '\n' '\t' < "$ST/log.$id"; echo
+    ;;
+  *)
+    echo "UNHANDLED: $*" >&2
+    exit 9
+    ;;
+esac
