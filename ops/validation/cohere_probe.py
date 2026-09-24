@@ -678,7 +678,15 @@ def _stream_text(event: dict[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _render(pdf: Path, page: int, max_pixels: int) -> bytes | None:
+def _render_sized(pdf: Path, page: int, max_pixels: int) -> tuple[bytes, int] | None:
+    """Render ``page`` to fill ``max_pixels``; return (png, actual pixels).
+
+    No scale ceiling. The first live run (2026-09-24) capped the scale at
+    4.0, which on a Letter page is ~7.8 MP: its 8, 12 and 20 MP rungs sent
+    byte-identical images, and the report read as "accepted up to 20 MP"
+    when nothing above ~7.8 MP had been sent. The actual pixel count now
+    travels with each rung so the report cannot overstate what it tested.
+    """
     try:
         import pypdfium2
     except ImportError:
@@ -687,15 +695,25 @@ def _render(pdf: Path, page: int, max_pixels: int) -> bytes | None:
     try:
         target = document[page - 1]
         width, height = target.get_size()
-        scale = min(4.0, (max_pixels / (width * height)) ** 0.5)
+        scale = (max_pixels / (width * height)) ** 0.5
         image = target.render(scale=scale).to_pil()
+        if image.width * image.height > max_pixels:
+            shrink = (max_pixels / (image.width * image.height)) ** 0.5
+            image = image.resize(
+                (max(1, int(image.width * shrink)), max(1, int(image.height * shrink)))
+            )
         import io as _io
 
         buffer = _io.BytesIO()
         image.save(buffer, format="PNG")
-        return buffer.getvalue()
+        return buffer.getvalue(), image.width * image.height
     finally:
         document.close()
+
+
+def _render(pdf: Path, page: int, max_pixels: int) -> bytes | None:
+    rendered = _render_sized(pdf, page, max_pixels)
+    return None if rendered is None else rendered[0]
 
 
 def probe_parse(pdf: Path | None, pages: list[int]) -> dict[str, Any]:
@@ -745,9 +763,10 @@ def probe_parse(pdf: Path | None, pages: list[int]) -> dict[str, Any]:
         # the request 4xxs and the page falls back to tesseract — so the
         # ladder climbs until something refuses rather than stopping early.
         for pixels in PIXEL_LADDER:
-            png = _render(pdf, pages[0], pixels)
-            if png is None:
+            rendered = _render_sized(pdf, pages[0], pixels)
+            if rendered is None:
                 break
+            png, actual_pixels = rendered
             body = _parse_body(model, png, "blocks")
             try:
                 response = client.post(url, content=json.dumps(body).encode())
@@ -764,6 +783,7 @@ def probe_parse(pdf: Path | None, pages: list[int]) -> dict[str, Any]:
                     break
                 out["pixel_ladder"][str(pixels)] = {
                     "png_bytes": len(png),
+                    "pixels": actual_pixels,
                     "status": response.status_code,
                     "accepted": response.status_code < 300,
                 }

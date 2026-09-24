@@ -475,7 +475,7 @@ honoured by both for A/B parity.
   adapter's NotConfigured error loudly — unset means every page runs
   Tesseract with no table structure and no error) — plus
   `COHERE_PARSE_MODEL=parse-v5.0`, `COHERE_PARSE_TIMEOUT_S=120`,
-  `COHERE_PARSE_MAX_PIXELS=4000000`, `COHERE_PARSE_OUTPUT_FORMAT=blocks`,
+  `COHERE_PARSE_MAX_PIXELS=20000000`, `COHERE_PARSE_OUTPUT_FORMAT=blocks`,
   `PDF_PARSER_TESSERACT_FALLBACK_ENABLED=true`, `OCR_PAGES_PER_BATCH=8`,
   `OCR_MAX_PAGES_PER_DOC=300`, `PDF_PARSE_PAGE_WORKERS=4`,
   `PARSE_SUBPROCESS_MAX_WORKERS` (empty → `min(cpu_count, 4)`),
