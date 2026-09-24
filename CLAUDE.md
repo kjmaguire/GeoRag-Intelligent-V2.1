@@ -75,10 +75,27 @@ as-built note for exact detail.
    the contract for any code touching the RAG pipeline: retrieval quality
    gate → typed output validation → numerical claim verification → entity
    resolution → chunk provenance → geological constraint rules. As built,
-   four guards run in `orchestrator_validators.py` (typed output, numbers,
-   entities, constraints, plus advisory completeness); the retrieval gate is
-   a flat reranker score floor and provenance is enrichment, not a gate.
-   Restoring the missing two is welcome; weakening the four is not.
+   six guards run across `orchestrator_validators.py`,
+   `layer1_retrieval.py` and `layer5_provenance.py` (typed output, numbers,
+   entities, constraints, plus advisory completeness, plus retrieval
+   quality and chunk provenance — restored 2026-09-24). The retrieval gate
+   is no longer only the flat reranker score floor
+   (`RERANKER_SCORE_THRESHOLD_HOSTED`/`RERANKER_SCORE_THRESHOLD`, still
+   applied per-chunk in `app/agent/tools.py:search_documents`): a
+   query-level Layer 1 check in `app/agent/hallucination/layer1_retrieval.py`
+   now hard-refuses (before the LLM is ever called, from `assemble_node`)
+   when nothing cleared the floor from ANY store, and flags "weak"
+   marginal retrieval as an advisory warning. Provenance is no longer only
+   enrichment either: `app/agent/hallucination/layer5_provenance.py`'s
+   `gate_citation_provenance` (called from `validate_node`, before
+   `enrich_provenance`) rejects any document-chunk citation whose
+   `source_chunk_id` does not resolve to a chunk actually retrieved for
+   that query, or that carries no document id — the rejected citation is
+   dropped and `should_retry` is forced, floor-and-banner, the same as a
+   genuine Layer 3/4/6 finding. Both gates default ON
+   (`RETRIEVAL_QUALITY_GATE_ENABLED`, `CHUNK_PROVENANCE_GATE_ENABLED`).
+   Weakening the four pre-existing guards is not welcome; neither is
+   weakening these two now that they exist.
 
 6. **Schemas in Section 04e are contracts.** Don't invent fields. Don't skip
    constraints. Don't change enumeration values without SME approval.

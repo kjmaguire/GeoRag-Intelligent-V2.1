@@ -172,18 +172,21 @@ Hard Rule #5. Every code path that touches RAG output must apply all six.
 
 | Layer | File | Kind |
 |------:|------|------|
-| 1. Retrieval quality gate | [layer1_retrieval.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | ML score threshold (default `RETRIEVAL_QUALITY_THRESHOLD=0.6` from [docker-compose.yml:992](../../../docker-compose.yml)) |
-| 2. Typed output validation | [layer2_typed_output.py](../../../src/fastapi/app/agent/hallucination/layer2_typed_output.py) | Pydantic AI typed-output — refuses unstructured / un-cited claims |
-| 3. Numerical claim verification | [layer3_numerical.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | Re-runs every numeric claim against the cited evidence row; flags mismatch |
-| 4. Entity resolution | [layer4_entity.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | Resolves named entities (deposits, holes, formations) against `workspace.entities` + ontology |
-| 5. Chunk provenance | [layer5_provenance.py](../../../src/fastapi/app/agent/hallucination/layer5_provenance.py) | Every `[ev:xxxxxxxx]` marker must resolve to a real `silver.evidence_items` row |
+| 1. Retrieval quality gate | [layer1_retrieval.py](../../../src/fastapi/app/agent/hallucination/layer1_retrieval.py) (query-level verdict) + `RERANKER_SCORE_THRESHOLD_HOSTED`/`RERANKER_SCORE_THRESHOLD` per-chunk floor in [tools.py](../../../src/fastapi/app/agent/tools.py) `search_documents` | Restored 2026-09-24 (was deleted 2026-08-21 as unreachable; recreated, not undeleted). Two halves: a HARD refusal from `assemble_node`, before the LLM is called, when no document chunk and no structured tool returned anything; an ADVISORY "weak retrieval" warning from `orchestrator_validators.verify_retrieval_quality` (post-assembly). On reranker fallback (`rerank_degraded=True`, RRF/cosine order) only a chunk-COUNT check runs — RRF scores are never compared to the calibrated confident threshold. Still no per-query-class gate; the `RETRIEVAL_QUALITY_THRESHOLD=0.6` this row used to cite is a dead config knob (see `config.py`'s own comment on it) that governs neither half. |
+| 2. Typed output validation | [layer2_typed_output.py](../../../src/fastapi/app/agent/hallucination/layer2_typed_output.py) | Repairs (not Pydantic-AI-rejects) orphan citation markers, out-of-range confidence, empty text. Runs twice on the live path since 2026-09-24 — once before the Layer 5 gate, once after (to strip markers the gate just orphaned). |
+| 3. Numerical claim verification | `verify_numbers` in [orchestrator_validators.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | Re-runs every numeric claim against the cited tool results; flags mismatch (demotes, does not re-call the LLM — the agentic path has no retry loop). |
+| 4. Entity resolution | `verify_entities` in [orchestrator_validators.py](../../../src/fastapi/app/agent/hallucination/orchestrator_validators.py) | Resolves drill-hole IDs against `silver.collars`; the graph/formation half is permanently fail-open since Neo4j was removed. |
+| 5. Chunk provenance | [layer5_provenance.py](../../../src/fastapi/app/agent/hallucination/layer5_provenance.py) | Restored 2026-09-24 as a gate, alongside the pre-existing enrichment. `gate_citation_provenance` (new, runs first from `validate_node`) REJECTS a document-chunk citation whose `source_chunk_id` does not name a chunk actually retrieved for that query, or carries no document id — dropped, and forces the should_retry floor-and-banner treatment. `enrich_provenance` (unchanged) still only enriches `Citation.section` with a `source_chunk_id → silver.reports.source_file_sha256 → bronze.source_files` trace and never rejects. Neither uses `[ev:xxxxxxxx]` markers or a `silver.evidence_items` table — those don't exist; citation markers are `[NI43-n]`/`[PUB-n]`/`[DATA-n]`/`[PGEO-n]` (see `citation_markers.py`). |
 | 6. Geological constraints | [layer6_constraints.py](../../../src/fastapi/app/agent/hallucination/layer6_constraints.py) + [layer6_constraints.json](../../../src/fastapi/app/agent/hallucination/layer6_constraints.json) | Domain rule pack (e.g., "azimuth ∈ [0, 360)", "Au grade < 50 g/t in vein deposits unless flagged") |
 
 Additional:
 - `qualitative_detector.py` — catches qualitative-only answers ("rich",
   "promising") and forces them to be either retracted or evidence-anchored.
-- `layer_completeness.py` — verifies the OIUR envelope has all four sections.
-- `orchestrator_validators.py` — top-level validator pipeline.
+- `orchestrator_validators.py` — top-level validator pipeline; also holds
+  Layer 1's advisory half (`verify_retrieval_quality`) since 2026-09-24.
+  `layer_completeness.py` (the standalone module this row used to name) was
+  deleted 2026-08-21 as unreachable; its logic was ported into
+  `orchestrator_validators.verify_completeness`.
 
 ## 7. The OIUR answer architecture
 
