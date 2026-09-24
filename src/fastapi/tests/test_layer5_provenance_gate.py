@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent.hallucination.layer1_retrieval import build_refusal_text
 from app.agent.hallucination.layer5_provenance import gate_citation_provenance
 from app.agent.tools import DocumentChunk, DocumentSearchResult
 from app.config import settings
@@ -204,6 +205,163 @@ class TestAllCitationsRejected:
         assert gated.citations[0].source_chunk_id == "provenance-rejected"
         # Still a structurally valid GeoRAGResponse.
         assert gated.citations[0].relevance_score == 0.0
+        # Hard rule 4 (rag-expert follow-up, 2026-09-24): the only citation
+        # was rejected, so the whole response falls through to a refusal —
+        # no unsupported prose ships, and sources_used matches.
+        assert gated.text == build_refusal_text()
+        assert gated.sources_used == ["provenance-rejected"]
+
+
+class TestSentenceRemoval:
+    """Hard rule 4 (rag-expert follow-up, 2026-09-24): a rejected marker
+    takes the SENTENCE it backs with it, not just the bracket text. Ship
+    no claim that reads as grounded once its citation is gone."""
+
+    def test_trailing_marker_after_period_removes_the_whole_claim(self) -> None:
+        """The regression this whole class exists to pin: the model's own
+        convention is 'Claim. [Marker]' -- the citation AFTER the
+        sentence's closing period, not before it. A naive per-fragment
+        check sees the claim and the marker as two separate pieces
+        joined by nothing, and never removes the claim at all (this is
+        the exact shape the original version of this test failed to
+        catch: "The grade is 1.85 g/t Au." used to survive rejection)."""
+        doc_result = DocumentSearchResult(
+            chunks=[_chunk("c1")], count=1, data_source="qdrant (reranked)"
+        )
+        bad = _citation(_doc_source_id(chunk_id="ghost"), citation_id="[NI43-1]")
+        response = _response([bad], text="The grade is 1.85 g/t Au. [NI43-1]")
+
+        gated, warnings = gate_citation_provenance(
+            response, tool_results=[("search_documents", doc_result)]
+        )
+
+        assert len(warnings) == 1
+        # Only citation was rejected -> nothing citeable survives -> refusal.
+        assert gated.text == build_refusal_text()
+        assert "1.85" not in gated.text
+        assert "[NI43-1]" not in gated.text
+
+    def test_rejected_sentence_is_removed_but_a_surviving_sentence_stays(
+        self,
+    ) -> None:
+        doc_result = DocumentSearchResult(
+            chunks=[_chunk("c1")], count=1, data_source="qdrant (reranked)"
+        )
+        good = _citation(_doc_source_id(chunk_id="c1"), citation_id="[NI43-1]")
+        bad = _citation(_doc_source_id(chunk_id="ghost"), citation_id="[NI43-2]")
+        response = _response(
+            [good, bad],
+            text=(
+                "The grade is 1.85 g/t Au [NI43-1]. "
+                "The depth is a fabricated number [NI43-2]."
+            ),
+        )
+
+        gated, warnings = gate_citation_provenance(
+            response, tool_results=[("search_documents", doc_result)]
+        )
+
+        assert len(warnings) == 1
+        # The claim backed by the surviving citation ships unchanged.
+        assert "1.85 g/t Au" in gated.text
+        assert "[NI43-1]" in gated.text
+        # The claim backed ONLY by the rejected citation is gone entirely
+        # -- not just its marker.
+        assert "fabricated number" not in gated.text
+        assert "[NI43-2]" not in gated.text
+        assert len(gated.citations) == 1
+        assert gated.citations[0].citation_id == "[NI43-1]"
+
+    def test_mixed_marker_sentence_keeps_valid_marker_strips_rejected_one(
+        self,
+    ) -> None:
+        """A single sentence carrying BOTH a rejected and a surviving
+        marker keeps the sentence and the valid marker; only the
+        rejected marker's bracket text goes."""
+        doc_result = DocumentSearchResult(
+            chunks=[_chunk("c1")], count=1, data_source="qdrant (reranked)"
+        )
+        good = _citation(_doc_source_id(chunk_id="c1"), citation_id="[NI43-1]")
+        bad = _citation(_doc_source_id(chunk_id="ghost"), citation_id="[NI43-2]")
+        response = _response(
+            [good, bad],
+            text="The grade is 1.85 g/t Au [NI43-1] [NI43-2].",
+        )
+
+        gated, warnings = gate_citation_provenance(
+            response, tool_results=[("search_documents", doc_result)]
+        )
+
+        assert len(warnings) == 1
+        assert "1.85 g/t Au" in gated.text  # sentence survives
+        assert "[NI43-1]" in gated.text  # valid marker survives
+        assert "[NI43-2]" not in gated.text  # rejected marker is gone
+        assert len(gated.citations) == 1
+        assert gated.citations[0].citation_id == "[NI43-1]"
+
+    def test_everything_removed_falls_through_to_refusal_no_orphan_chip(
+        self,
+    ) -> None:
+        """Every sentence cited only a rejected marker: the whole answer
+        collapses to a refusal, and the placeholder citation is not
+        anchored to any marker in that refusal text -- no chip renders
+        that a reader could mistake for backing a claim."""
+        doc_result = DocumentSearchResult(
+            chunks=[_chunk("c1")], count=1, data_source="qdrant (reranked)"
+        )
+        bad1 = _citation(_doc_source_id(chunk_id="ghost1"), citation_id="[NI43-1]")
+        bad2 = _citation(_doc_source_id(chunk_id="ghost2"), citation_id="[NI43-2]")
+        response = _response(
+            [bad1, bad2],
+            text=(
+                "First fabricated claim [NI43-1]. "
+                "Second fabricated claim [NI43-2]."
+            ),
+        )
+
+        gated, warnings = gate_citation_provenance(
+            response, tool_results=[("search_documents", doc_result)]
+        )
+
+        assert len(warnings) == 2
+        assert gated.text == build_refusal_text()
+        assert len(gated.citations) == 1
+        assert gated.citations[0].source_chunk_id == "provenance-rejected"
+        # The placeholder's own citation_id never appears inline in the
+        # refusal text -- no orphan chip.
+        assert gated.citations[0].citation_id not in gated.text
+        assert gated.sources_used == ["provenance-rejected"]
+
+
+class TestSourcesUsed:
+    """Item 2 (rag-expert follow-up, 2026-09-24): a rejected citation's
+    source_chunk_id must not linger in sources_used either."""
+
+    def test_rejected_source_chunk_id_is_dropped_from_sources_used(self) -> None:
+        doc_result = DocumentSearchResult(
+            chunks=[_chunk("c1")], count=1, data_source="qdrant (reranked)"
+        )
+        good = _citation(_doc_source_id(chunk_id="c1"), citation_id="[NI43-1]")
+        bad = _citation(_doc_source_id(chunk_id="ghost"), citation_id="[NI43-2]")
+        response = GeoRAGResponse(
+            text="Claim one [NI43-1]. Claim two [NI43-2].",
+            citations=[good, bad],
+            confidence=0.8,
+            sources_used=[
+                _doc_source_id(chunk_id="c1"),
+                _doc_source_id(chunk_id="ghost"),
+                "some-other-source-not-tied-to-a-citation",
+            ],
+        )
+
+        gated, warnings = gate_citation_provenance(
+            response, tool_results=[("search_documents", doc_result)]
+        )
+
+        assert len(warnings) == 1
+        assert _doc_source_id(chunk_id="ghost") not in gated.sources_used
+        assert _doc_source_id(chunk_id="c1") in gated.sources_used
+        assert "some-other-source-not-tied-to-a-citation" in gated.sources_used
 
 
 class TestFeatureFlag:

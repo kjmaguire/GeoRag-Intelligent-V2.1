@@ -240,7 +240,10 @@ def assess_retrieval_quality(
             f"Layer 1: weak retrieval — {chunks_considered} chunk(s) cleared "
             f"the relevance floor but none reached the confident threshold "
             f"({confident_threshold:.2f}); the cited evidence may be only "
-            f"marginally relevant"
+            f"marginally relevant. NOTE: this confident threshold is a "
+            f"provisional default, unmeasured against Cohere Rerank 3.5 "
+            f"(see RETRIEVAL_GATE_CONFIDENT_SCORE in config.py) — read this "
+            f"warning as advisory, not as evidence of a real quality problem"
         )
     return RetrievalQualityVerdict(
         refuse=False,

@@ -1931,8 +1931,14 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     rejects). As of 2026-09-24 a GATE half runs first (``gate_citation_provenance``)
     that DOES reject: any document-chunk citation whose chunk was not
     actually retrieved for this query, or carries no document id, is
-    dropped and its marker stripped by Layer 2's second pass — restoring
-    the "provenance is a gate, not just enrichment" half of hard rule 5.
+    dropped — restoring the "provenance is a gate, not just enrichment"
+    half of hard rule 5. Per hard rule 4 ("every claim must include a
+    source_chunk_id or be rejected"), a rejection also removes the
+    SENTENCE(S) that carried the dropped marker, not just the bracket
+    text — a bare marker-strip would ship the claim it used to back as
+    uncited prose. See ``gate_citation_provenance``'s own docstring for
+    the sentence-removal rule and the all-rejected refusal fallback
+    (rag-expert review, 2026-09-24).
     Layer 1's hard half (zero-evidence refusal) runs earlier still, in
     assemble_node, before the LLM is ever called; its advisory half
     (``verify_retrieval_quality``) runs inside
@@ -1987,12 +1993,14 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     # Layer 5 (gate half), restored 2026-09-24 — reject citations whose
     # chunk was not actually retrieved for this query (or carries no
-    # document id) BEFORE Layer 2 runs its second pass below. Dropping a
-    # Citation here turns its marker into an orphan; validate_and_repair
-    # then strips it from the text the same way it strips any other orphan
-    # marker, so no separate text-editing logic is needed. Wrapped in its
-    # own try/except even though the gate is pure/no-I/O — a bug here must
-    # not cost the user their answer.
+    # document id) BEFORE Layer 2 runs its second pass below. The gate
+    # itself removes the sentence(s) that carried a rejected marker (hard
+    # rule 4 — see gate_citation_provenance's docstring), so it normally
+    # leaves no orphan marker behind for Layer 2 to find; the second
+    # validate_and_repair pass below is kept as a cheap, idempotent
+    # backstop for anything the gate's regex-based sentence split missed.
+    # Wrapped in its own try/except even though the gate is pure/no-I/O —
+    # a bug here must not cost the user their answer.
     layer5_gate_warnings: list[str] = []
     try:
         response, layer5_gate_warnings = gate_citation_provenance(
