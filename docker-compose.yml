@@ -1625,10 +1625,10 @@ services:
     # with `hatchet-sdk>=1.33` in pyproject.toml. The Cameco-recovery
     # incident (2026-06-02, project_cameco_recovery memory) was the exact
     # failure mode this prevents: a silent engine bump invalidating the
-    # SDK contract. Operator: pin to digest after pull —
-    #   docker pull ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12
-    #   docker images ghcr.io/hatchet-dev/hatchet/hatchet-lite --digests
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12
+    # SDK contract. 2026-09-24: v0.86.12 -> v0.91.2 for CVE-2026-61687, and
+    # digest-pinned like every other third-party image here (the multi-arch
+    # index digest, read from ghcr.io's registry API).
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2@sha256:00705eb1e9ea653aaa9473703fd24df7350eacca1a1a0b5e9a7dece0f8d27c70
     container_name: georag-hatchet
     restart: unless-stopped
     depends_on:

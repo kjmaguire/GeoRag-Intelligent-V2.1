@@ -866,7 +866,7 @@ spec:
       
       containers:
         - name: hatchet
-          image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.50
+          image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2@sha256:00705eb1e9ea653aaa9473703fd24df7350eacca1a1a0b5e9a7dece0f8d27c70
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 7077

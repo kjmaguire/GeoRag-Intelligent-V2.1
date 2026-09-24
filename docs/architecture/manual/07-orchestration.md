@@ -87,7 +87,7 @@ agent (2026-08-23), Activepieces (Phase 3).
 
 | | Dev (compose) | Production (ECS) |
 |---|---|---|
-| Engine | `hatchet-lite:v0.86.12`, ports 8889 → 8888 (UI/REST) and 7077 (gRPC), state in the `hatchet` DB on the stack's Postgres ([Ch 02 §6](02-data-stores.md#6-hatchet-engine-state)) | `hatchet` service, 1 task, reachable only over Cloud Map on 7077, state in the `hatchet` DB on RDS. The image tag is in `deploy/aws/terraform/services.tf` — read it rather than assuming dev parity |
+| Engine | `hatchet-lite:v0.91.2`, ports 8889 → 8888 (UI/REST) and 7077 (gRPC), state in the `hatchet` DB on the stack's Postgres ([Ch 02 §6](02-data-stores.md#6-hatchet-engine-state)) | `hatchet` service, 1 task, reachable only over Cloud Map on 7077, state in the `hatchet` DB on RDS. The image tag is in `deploy/aws/terraform/services.tf` — read it rather than assuming dev parity |
 | Worker | `hatchet-worker`, `WORKER_POOL=all`, 20 slots, 6 CPU / 24 GiB + GPU, healthcheck greps `/proc/1/cmdline` | `hatchet-worker`, `WORKER_POOL=all`, 20 slots, 4 vCPU / 8 GiB, **desired 1** (several workflows are `max_runs=1` singletons — §7 records this as open, not as a free knob) |
 | SDK | `hatchet-sdk>=1.33` (`src/fastapi/pyproject.toml`) | same image |
 | Auth | `HATCHET_CLIENT_TOKEN` from `hatchet-admin token create`; gRPC insecure, cookie insecure (`HATCHET_*_INSECURE=t`) | flags flipped to `f` per `.env.production.example`; the token is a Secrets Manager reference. CD deploys the worker image but not the engine |
@@ -445,7 +445,7 @@ Where each finding stands in the code on 2026-09-07:
 | 8.4 stale crons on the engine (`vllm_security_check_run`, `backup_neo4j`) | Needs an engine-side sweep; nothing in the repo does it |
 | 8.5 dead pull modules carrying crons | Closed (deleted 2026-08-28) |
 | 8.6 24 h timeouts on skeleton workflows | Open |
-| 8.7 engine version drift 0.86.12 / 0.89.7 | Open |
+| 8.7 engine version drift 0.86.12 / 0.89.7 | Closed 2026-09-24: Azure (0.89.7) is gone, and compose, Helm and ECS all pin v0.91.2 by digest |
 | 8.8 throttle docstring says `max_runs=1` | Open |
 | 8.9 `charts/georag/templates/hatchet.yaml` describes a StatefulSet nothing runs | Open (documents, does not drive) |
 | 8.10 `.claude/skills/hatchet-workflow/` has only `NOTES.md` | Open |

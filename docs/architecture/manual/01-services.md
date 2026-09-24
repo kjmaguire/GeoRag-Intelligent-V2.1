@@ -52,11 +52,12 @@ each store, [Ch 07](07-orchestration.md) for the two orchestrators,
 | Data (profile) | `qdrant` | `dev-data`, `dev-full` | `qdrant/qdrant:v1.17.1` | `6333`, `6334` | `qdrant` (EFS — elastic and IAM-authorised, unlike the fixed-quota key-mounted Azure Files share) |
 | Data (profile) | `minio` (SeaweedFS) | `dev-data`, `dev-full` | `chrislusf/seaweedfs:4.35` | `8333` (S3), `8888` (filer) | none — S3, `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset so boto3 resolves the region and the task role (ADR-0022) |
 | Data (profile) | `minio-init` | `dev-data`, `dev-full` | `minio/mc:RELEASE.2025-08-13T08-35-41Z` | none | none |
-| Orchestration | `hatchet-lite` | `dev-data`, `dev-full` | `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12` | `8889` → 8888, `7077` | `hatchet` |
+| Orchestration | `hatchet-lite` | `dev-data`, `dev-full` | `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2` | `8889` → 8888, `7077` | `hatchet` |
 | Orchestration | `hatchet-worker` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none | `hatchet-worker` — stops overnight at `desired-count 0`, which `--min-replicas 0` never did |
 
-Every third-party image except `hatchet-lite` carries an `@sha256` digest
-pin (captured 2026-04-19, refreshed in the 2026-06-23 sweep). The three
+Every third-party image carries an `@sha256` digest pin (captured
+2026-04-19, refreshed in the 2026-06-23 sweep; `hatchet-lite` joined on
+2026-09-24). The three
 `georag/*` images are local builds tagged `:latest`, meaning "last local
 build", never a registry pull.
 
@@ -418,8 +419,9 @@ honoured by both for A/B parity.
 
 ### hatchet-lite ([docker-compose.yml:1585](../../../docker-compose.yml))
 
-- **Image** `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12` — tag-
-  pinned, the one third-party image without a digest. Aligned with
+- **Image** `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2`, pinned by
+  tag and digest since 2026-09-24, when it moved off v0.86.12 for
+  CVE-2026-61687. Aligned with
   `hatchet-sdk>=1.33`; the 2026-06-02 Cameco-recovery incident was a silent
   engine bump invalidating the SDK contract.
 - **What it is** engine + admin + dashboard + migrations in one container.

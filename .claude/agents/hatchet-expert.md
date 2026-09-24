@@ -20,7 +20,7 @@ Actions cron, or an EventBridge schedule. If someone proposes
 
 One merged `hatchet-worker` service, `WORKER_POOL=all`, **51 registered
 workflows**, inventoried in manual §07b. It runs on **hatchet-lite**
-(`ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12`, port 7077) with a
+(`ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2`, port 7077) with a
 **Postgres-backed queue**.
 
 There are **no** `hatchet-worker-ingestion` / `hatchet-worker-ai` services.

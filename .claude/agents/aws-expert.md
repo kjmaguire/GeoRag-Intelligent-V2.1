@@ -42,7 +42,7 @@ Seven run our three images (`service_image`); three run vendor images
 - **laravel** image → `laravel-octane` (:80), `laravel-horizon`, `laravel-reverb` (:8080)
 - **fastapi** image → `fastapi` (:8000), `hatchet-worker`, `sparse` (:8000)
 - **martin** image → `martin`
-- vendor → `hatchet` (hatchet-lite v0.86.12, :7077), `qdrant` (v1.17.1), `redis` (8.10.0-alpine)
+- vendor → `hatchet` (hatchet-lite v0.91.2, :7077), `qdrant` (v1.17.1), `redis` (8.10.0-alpine)
 
 **No GPU anywhere on Fargate.** Any reasoning that assumes CUDA is wrong for
 production. `sparse` (SPLADE++) runs on CPU and has no hosted equivalent on
