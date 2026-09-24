@@ -291,7 +291,9 @@ locals {
 
   # Services running a third-party image rather than one of ours.
   external_image = {
-    hatchet = "ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12"
+    # v0.91.2 fixes CVE-2026-61687 (was v0.86.12). Digest-pinned like
+    # docker-compose.yml, so a re-pushed tag cannot change the engine.
+    hatchet = "ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2@sha256:00705eb1e9ea653aaa9473703fd24df7350eacca1a1a0b5e9a7dece0f8d27c70"
     qdrant  = "qdrant/qdrant:v1.17.1"
     redis   = "redis:8.10.0-alpine"
   }

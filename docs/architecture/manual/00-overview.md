@@ -128,7 +128,7 @@ Images, from the compose file: `georag/postgres:18-ext` (built on
 `edoburu/pgbouncer:v1.25.1-p0`, `redis:8.6.4-alpine`, `qdrant/qdrant:v1.17.1`,
 `chrislusf/seaweedfs:4.35` (the service is still named `minio` for
 compatibility — see ADR-0001), `minio/mc` for bucket provisioning,
-`ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12`,
+`ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2`,
 `ghcr.io/maplibre/martin:1.11.0`, and the two local builds `georag/laravel`
 and `georag/fastapi` ([docker/laravel.Dockerfile](../../../docker/laravel.Dockerfile),
 [docker/fastapi.Dockerfile](../../../docker/fastapi.Dockerfile)).
