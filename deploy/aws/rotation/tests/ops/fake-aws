@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI for rotate-hatchet-token.sh and
+# rotate-cloudfront-origin-secret.sh. Stateful, like ../fake-aws: the scripts
+# read back what they wrote, so a put that a later get cannot see would make
+# the interesting properties untestable.
+#
+# Every argv is appended to $FAKE_STATE/calls, and every body a script sends
+# on stdin to $FAKE_STATE/stdin, one line per call, prefixed with the call.
+# The split matters: run.sh asserts that no secret value ever appears in
+# `calls`, because argv is readable by every process on the machine.
+#
+# State under $FAKE_STATE:
+#   secret.json, secret.prev.json   georag/app AWSCURRENT / AWSPREVIOUS
+#   store                           the CloudFront value store (absent = no secret)
+#   rules.json                      listener rules, as describe-rules returns them
+#   dist.json                       {"ETag":..., "DistributionConfig":...}
+#
+# Knobs:
+#   FAKE_NOMINT=1         the mint task logs no token
+#   FAKE_MINT_TENANT=x    tenant (sub) of the minted token        (t-1)
+#   FAKE_WORKER_DEAD=1    no "finished step run" after the restart
+#   FAKE_DIST_STICKY=1    update-distribution "succeeds" but changes nothing
+set -uo pipefail
+ST="${FAKE_STATE:?FAKE_STATE must be set}"
+printf '%s\n' "$*" >> "$ST/calls"
+
+arg_after() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+  return 1
+}
+read_stdin_body() { local b; b=$(cat); printf '%s %s\t%s\n' "$1" "$2" "$b" >> "$ST/stdin"; printf '%s' "$b"; }
+
+jwt() {
+  local p
+  p=$(printf '{"sub":"%s","token_id":"%s","exp":1797000000}' "$1" "$2" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+  echo "eyJhbGciOiJub25lIn0.$p.c2ln"
+}
+
+Q="$(arg_after --query "$@" || true)"
+case "$1 ${2:-}" in
+
+  # ── ECS ────────────────────────────────────────────────────────────────
+  "ecs list-services")
+    printf 'arn:aws:ecs:r:1:service/georag/fastapi\tarn:aws:ecs:r:1:service/georag/hatchet-worker\tarn:aws:ecs:r:1:service/georag/hatchet\tarn:aws:ecs:r:1:service/georag/laravel-octane\n'
+    ;;
+  "ecs describe-services")
+    svc="$(arg_after --services "$@")"; svc="${svc##*/}"
+    case "$Q" in
+      *networkConfiguration*) echo '{"subnets":["subnet-1","subnet-2"],"securityGroups":["sg-1"],"assignPublicIp":"DISABLED"}' ;;
+      *taskDefinition*)       echo "td-$svc" ;;
+      *) echo "UNHANDLED describe-services query: $Q" >&2; exit 9 ;;
+    esac
+    ;;
+  "ecs describe-task-definition")
+    td="$(arg_after --task-definition "$@")"
+    case "$Q" in
+      *"secrets[].name"*)
+        if [ "$td" = "td-hatchet" ]; then echo "DATABASE_URL"; else printf 'APP_KEY\tHATCHET_CLIENT_TOKEN\n'; fi ;;
+      *valueFrom*)
+        echo "arn:aws:secretsmanager:r:1:secret:georag/app-AbC:HATCHET_CLIENT_TOKEN::" ;;
+      *) echo "UNHANDLED describe-task-definition query: $Q" >&2; exit 9 ;;
+    esac
+    ;;
+  "ecs run-task")
+    echo "arn:aws:ecs:r:1:task/georag/mint$(wc -l < "$ST/calls" | tr -d ' ')"
+    ;;
+  "ecs wait")
+    ;;
+  "ecs describe-tasks")
+    echo '{"exit":1,"reason":"Essential container exited"}'
+    ;;
+  "ecs update-service")
+    arg_after --service "$@" >> "$ST/restarted"; echo >> "$ST/restarted"
+    echo x
+    ;;
+
+  # ── CloudWatch Logs ────────────────────────────────────────────────────
+  "logs get-log-events")
+    if [ "${FAKE_NOMINT:-0}" = 1 ]; then echo "level=error msg=could not load encryption service"; exit 0; fi
+    printf 'level=info msg=started\t%s\n' "$(jwt "${FAKE_MINT_TENANT:-t-1}" new-id)"
+    ;;
+  "logs delete-log-stream")
+    arg_after --log-stream-name "$@" >> "$ST/deleted_streams"; echo >> "$ST/deleted_streams"
+    ;;
+  "logs filter-log-events")
+    if [ "${FAKE_WORKER_DEAD:-0}" = 1 ]; then echo None; else echo "finished step run: cron"; fi
+    ;;
+
+  # ── Secrets Manager ────────────────────────────────────────────────────
+  "secretsmanager get-secret-value")
+    id="$(arg_after --secret-id "$@")"
+    if [ "$id" = "${STORE_ID_EXPECTED:-georag/cloudfront-origin-secret}" ]; then
+      [ -f "$ST/store" ] || { echo "ResourceNotFoundException" >&2; exit 254; }
+      cat "$ST/store"
+    elif [ "$(arg_after --version-stage "$@" || true)" = "AWSPREVIOUS" ]; then
+      cat "$ST/secret.prev.json"
+    else
+      cat "$ST/secret.json"
+    fi
+    ;;
+  "secretsmanager put-secret-value")
+    id="$(arg_after --secret-id "$@")"
+    body=$(read_stdin_body secretsmanager put-secret-value)
+    if [ "$id" = "${STORE_ID_EXPECTED:-georag/cloudfront-origin-secret}" ]; then
+      printf '%s' "$body" > "$ST/store"
+    else
+      cp "$ST/secret.json" "$ST/secret.prev.json"
+      printf '%s' "$body" > "$ST/secret.json"
+    fi
+    echo v-new
+    ;;
+  "secretsmanager describe-secret")
+    [ -f "$ST/store" ] || { echo "ResourceNotFoundException" >&2; exit 254; }
+    echo '{}'
+    ;;
+  "secretsmanager create-secret")
+    read_stdin_body secretsmanager create-secret > "$ST/store"
+    echo arn:aws:secretsmanager:r:1:secret:store
+    ;;
+
+  # ── ELBv2 ──────────────────────────────────────────────────────────────
+  "elbv2 describe-load-balancers")
+    echo '{"arn":"arn:lb/georag","dns":"georag-123.elb.amazonaws.com"}'
+    ;;
+  "elbv2 describe-listeners")
+    echo "arn:listener/80"
+    ;;
+  "elbv2 describe-rules")
+    jq '{Rules: .}' "$ST/rules.json"
+    ;;
+  "elbv2 modify-rule")
+    body=$(read_stdin_body elbv2 modify-rule)
+    arn=$(jq -r .RuleArn <<<"$body")
+    # The real API refuses a condition carrying both the legacy Values and a
+    # *Config block. Refuse it here too, so a script that forgets to strip
+    # Values fails its test instead of its first real run.
+    if jq -e '[.Conditions[] | select(has("Values"))] | length > 0' <<<"$body" >/dev/null; then
+      echo "ValidationError: You cannot specify both Values and a condition config" >&2; exit 254
+    fi
+    jq --arg arn "$arn" --argjson c "$(jq -c .Conditions <<<"$body")" \
+      'map(if .RuleArn == $arn then .Conditions = $c else . end)' "$ST/rules.json" > "$ST/rules.tmp" \
+      && mv "$ST/rules.tmp" "$ST/rules.json"
+    echo 20
+    ;;
+
+  # ── CloudFront ─────────────────────────────────────────────────────────
+  "cloudfront list-distributions")
+    echo "E123"
+    ;;
+  "cloudfront get-distribution")
+    case "$Q" in
+      *DomainName*) echo "d111.cloudfront.net" ;;
+      *Status*)     echo "Deployed" ;;
+    esac
+    ;;
+  "cloudfront get-distribution-config")
+    cat "$ST/dist.json"
+    ;;
+  "cloudfront update-distribution")
+    body=$(read_stdin_body cloudfront update-distribution)
+    [ "$(jq -r .IfMatch <<<"$body")" = "$(jq -r .ETag "$ST/dist.json")" ] \
+      || { echo "PreconditionFailed: ETag mismatch" >&2; exit 254; }
+    if [ "${FAKE_DIST_STICKY:-0}" != 1 ]; then
+      jq -n --argjson d "$(jq -c .DistributionConfig <<<"$body")" '{ETag: "E2", DistributionConfig: $d}' > "$ST/dist.json"
+    fi
+    echo InProgress
+    ;;
+  "cloudfront wait")
+    ;;
+
+  *)
+    echo "UNHANDLED: $*" >&2
+    exit 9
+    ;;
+esac
