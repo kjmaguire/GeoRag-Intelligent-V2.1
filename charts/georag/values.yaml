@@ -88,13 +88,13 @@ pgbouncer:
     limits:   { cpu: "500m", memory: "256Mi" }
 
 # ─────────────────────────────────────────────────────────────────────
-# Qdrant v1.17 — vector store. StatefulSet, 30Gi PVC.
+# Qdrant v1.19 — vector store. StatefulSet, 30Gi PVC.
 # ─────────────────────────────────────────────────────────────────────
 qdrant:
   enabled: true
   image:
     repository: qdrant/qdrant
-    tag: "v1.17.1"
+    tag: "v1.19.1"
   service:
     grpcPort: 6334
     httpPort: 6333

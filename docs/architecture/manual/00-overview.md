@@ -76,7 +76,7 @@ The repo is a single monorepo containing:
   MapLibre GL 5 and Plotly. React Flow was removed 2026-08-28; there is no
   graph view.
 - A row of **data stores**: PostgreSQL 18 + PostGIS 3.6 behind PgBouncer
-  (transaction mode), Qdrant 1.17 for dense + sparse vector retrieval, Redis
+  (transaction mode), Qdrant 1.19 for dense + sparse vector retrieval, Redis
   8 for sessions / queues / caches / rate limits, and an S3-compatible
   object store for bronze files — SeaweedFS in compose, AWS S3 in
   production, both through the one `STORAGE_BACKEND` value that remains
@@ -125,7 +125,7 @@ FastAPI sits in `dev-data`, not `dev-light`.
 
 Images, from the compose file: `georag/postgres:18-ext` (built on
 `postgis/postgis:18-3.6-alpine`, [docker/postgresql/Dockerfile](../../../docker/postgresql/Dockerfile)),
-`edoburu/pgbouncer:v1.25.1-p0`, `redis:8.6.4-alpine`, `qdrant/qdrant:v1.17.1`,
+`edoburu/pgbouncer:v1.25.1-p0`, `redis:8.6.4-alpine`, `qdrant/qdrant:v1.19.1`,
 `chrislusf/seaweedfs:4.35` (the service is still named `minio` for
 compatibility — see ADR-0001), `minio/mc` for bucket provisioning,
 `ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2`,

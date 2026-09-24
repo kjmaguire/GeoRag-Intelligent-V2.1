@@ -37,7 +37,7 @@ Table-level detail is in [Ch 03](03-schemas.md); row-level security in
 | Store | Dev (compose) | Production (Azure) |
 |---|---|---|
 | PostgreSQL 18 + PostGIS 3.6 | `georag/postgres:18-ext` behind PgBouncer 1.25.1 | Azure Database for PostgreSQL Flexible Server `georag-pg-cc`, no PgBouncer |
-| Qdrant v1.17.1 | `qdrant` service, `qdrant_data` volume | `qdrant-cc` Container App on the `qdrant-storage` Azure Files share |
+| Qdrant v1.19.1 | `qdrant` service, `qdrant_data` volume | `qdrant-cc` Container App on the `qdrant-storage` Azure Files share |
 | Redis | `redis:8.6.4-alpine`, AOF on, `redis_data` volume | `redis-cc` running `redis:8.10.0-alpine`, AOF off, no volume |
 | Object storage | SeaweedFS 4.35 as service `minio` (S3 API) | Azure Blob account `georagblobcc` (ADR-0020) |
 | Tiles | `martin` 1.11.0 as `georag_app` | `martin-cc` as `martin_readonly` |
@@ -181,7 +181,7 @@ automated backups with 35-day point-in-time restore
 
 ---
 
-## 2. Qdrant v1.17.1 — the vector index
+## 2. Qdrant v1.19.1 — the vector index
 
 ### 2.1 Where it runs
 
