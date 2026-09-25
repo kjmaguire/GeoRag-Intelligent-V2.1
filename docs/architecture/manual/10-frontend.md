@@ -16,7 +16,10 @@ the graph view; no graph rendering library is installed.
 
 ## 1. Repo layout
 
-79 `.tsx` files in total.
+87 `.tsx` files in total (was 79 at the 2026-09-07 reconciliation; +8 for
+the 2026-09-24 chat-adjacent build — `RefusalPanel.tsx`,
+`EvidenceInspector.tsx`, `FeedbackControls.tsx`, `ui/sheet.tsx`,
+`ui/icons.tsx` and their three `__tests__` files — see §8).
 
 | Path | What lives there |
 |---|---|
@@ -59,12 +62,14 @@ these sixteen strings and no others.
 | PublicGeoscience | `Foundry/PublicGeoscience.tsx` | public geoscience overlay browsing |
 | RasterLayers | `Foundry/RasterLayers.tsx` | raster layer management |
 
-**Design-only.** The feedback UI, follow-up chips, evidence inspector,
-conflict and freshness UX, refusal panels, Lakehouse, row-level drill
-review, the targeting and hypothesis surfaces, the audit log, the support
-cockpit and every admin console page are described elsewhere in this
-manual and in `georag-architecture.html` but have no page here. Treat
-them as target state.
+**Design-only.** Follow-up chips (FastAPI writes nothing to
+`GeoRAGResponse.followups` — see §8), conflict and freshness UX, Lakehouse,
+row-level drill review, the targeting and hypothesis surfaces, the audit
+log, the support cockpit and every admin console page are described
+elsewhere in this manual and in `georag-architecture.html` but have no page
+here. Treat them as target state. **Built 2026-09-24 (as components inside
+`Foundry/Chat.tsx`, not separate pages — see §8):** the feedback UI,
+evidence inspector, and refusal panels.
 
 ## 3. Reverb broadcast channels
 
@@ -157,8 +162,28 @@ The five ADR-0007 card names this chapter used to list (`evidence_list`,
 **Citations.** Citation objects arrive on the `citation` frame and again in
 bulk on `completed`; `CitationPGEODetail` renders public-geoscience
 citations. There is no `Components/Citation/` directory and no
-`CitationPill` component — the evidence drawer and pill rendering described
-elsewhere in this manual are design-only.
+`CitationPill` component. **Built 2026-09-24:** a non-PGEO citation chip
+opens `Components/EvidenceInspector.tsx`, a slide-in Sheet (new
+`Components/ui/sheet.tsx` primitive, built on the `radix-ui` package's
+`Dialog`) fetching `GET /api/v1/citations/resolve` — the same route
+`Chat.tsx` already called inline, not the unwired
+`GET /api/v1/evidence/{id}` (`EvidenceController`, still registered
+nowhere in `routes/api.php`). PGEO citations keep their existing inline
+`CitationPGEODetail` expand, unchanged.
+
+**Refusal panel.** **Built 2026-09-24:** `Components/RefusalPanel.tsx`
+renders below an assistant bubble instead of the old plain-text error
+footnote, off either the `completed` frame's `refusal_payload` (gated
+behind FastAPI's `REPAIR_LOOP_TERMINAL_ENABLED`) or the `failed` frame's
+`error`/`code`.
+
+**Feedback.** **Built 2026-09-24:** `Components/FeedbackControls.tsx`
+(👍/👎 + the §10p 6-value taxonomy + optional note) posts to a new Laravel
+route, `POST /api/v1/answer-runs/{id}/feedback`
+(`AnswerRunFeedbackController`), proxying to FastAPI's existing
+`POST /v1/answer_runs/{id}/feedback` → `silver.message_feedback` writer,
+which had no Laravel caller before this. `EvidenceInspector`'s "Report
+citation issue" button pre-fills the taxonomy to `citation_issue`.
 
 **OIUR.** No Observation/Interpretation/Uncertainty/Recommendation card
 rendering exists in `Chat.tsx`. The envelope is produced server-side behind

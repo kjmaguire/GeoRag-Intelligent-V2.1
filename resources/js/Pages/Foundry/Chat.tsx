@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { Head, Link, router } from '@inertiajs/react';
+import { Head, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { Pill, EmptyState, BrandDiamond } from '@/Components/Foundry/primitives';
 import EvidencePacketBadge from '@/Components/EvidencePacketBadge';
 import InlineViz from '@/Components/InlineViz';
 import ResolutionPreviewChip from '@/Components/ResolutionPreviewChip';
+import RefusalPanel from '@/Components/RefusalPanel';
+import EvidenceInspector from '@/Components/EvidenceInspector';
+import FeedbackControls from '@/Components/FeedbackControls';
 import CitationPGEODetail from '@/Components/PublicGeoscience/CitationPGEODetail';
 import type { Citation as SharedCitation } from '@/types';
 import { formatTime, formatWhen } from '@/lib/time';
@@ -29,13 +32,25 @@ import {
  * page load.
  *
  * Not yet ported from legacy Pages/Chat.tsx:
- *   - EvidenceInspector + TrustInspector side panels
+ *   - TrustInspector side panel
  *   - Conflict-detection + freshness rendering
- *   - Map / viz payload rendering (M2 P5 visualization)
- *   - Follow-up suggestion rendering
+ *   - Follow-up suggestion rendering (backend doesn't generate these yet —
+ *     see §10q as-built note, nothing to port)
  *   - WS-01 reconnect / event-dedup layer
  * These all live in the backend already (their payload fields land on
  * the completed event), so they can be layered in without server work.
+ *
+ * Built 2026-09-24 (chat-adjacent design-only pieces, §10s/§10p/§10u):
+ *   - RefusalPanel — renders a typed refusal/failure panel instead of a
+ *     generic error footnote, off the `failed` frame's `error`/`code` or
+ *     the `completed` frame's `refusal_payload`.
+ *   - EvidenceInspector — a Sheet-style panel triggered from a citation
+ *     chip, built on the existing GET /api/v1/citations/resolve endpoint
+ *     already called inline below (no new backend route needed).
+ *   - FeedbackControls — 👍/👎 + optional note on a settled assistant
+ *     answer, proxied through the new POST
+ *     /api/v1/answer_runs/{id}/feedback Laravel route to FastAPI's
+ *     existing silver.message_feedback writer.
  */
 
 interface ChatThread { id: string; title: string; updated: string }
@@ -86,6 +101,24 @@ interface ChatMessage {
     answer_run_id: string | null;
     status?: string | null;
     error?: string | null;
+    // Built 2026-09-24 — typed error code off the `failed`/`error` SSE
+    // frame (app/agent/errors.py's ErrorCode enum: TIMEOUT,
+    // LLM_UNAVAILABLE, QUOTA_EXCEEDED, ...). Null for client-side errors
+    // (network failure before the stream opened) that never carried one.
+    errorCode?: string | null;
+    // Built 2026-09-24 — structured refusal payload off the `completed`
+    // frame (GeoRAGResponse.refusal_payload, Plan §4b Stage 2, gated
+    // behind REPAIR_LOOP_TERMINAL_ENABLED). Shape:
+    // {type, reason_code, strategy, message, candidates, guard_codes}.
+    // Null on every committed (non-refused) answer.
+    refusalPayload?: {
+        type?: string;
+        reason_code?: string;
+        strategy?: string;
+        message?: string;
+        candidates?: string[];
+        guard_codes?: string[];
+    } | null;
     isStreaming?: boolean;
     // M2 P5 visualization payloads — backend emits these on the completed
     // SSE event (src/fastapi/app/agent/agentic_retrieval/nodes.py:_build_chat_card_payloads).
@@ -445,6 +478,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             vizPayload: null,
             evidencePacket: null,
             multiTurnResolution: null,
+            refusalPayload: null,
         };
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         setComposer('');
@@ -565,6 +599,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     // "Interpreted as:" preview chip.
                     const finalMultiTurn =
                         (event.multi_turn_resolution as Record<string, unknown> | null | undefined) ?? null;
+                    // Built 2026-09-24 — structured refusal payload, present
+                    // only when a terminal guard strategy fired (§10u).
+                    // RefusalPanel no-ops when null.
+                    const finalRefusalPayload =
+                        (event.refusal_payload as ChatMessage['refusalPayload']) ?? null;
                     // Built from the ref snapshot (not inside the state
                     // updater) so the fire-and-forget persistence below is
                     // NOT a side effect of a React updater — updaters are
@@ -585,6 +624,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                   vizPayload: finalVizPayload,
                                   evidencePacket: finalEvidencePacket,
                                   multiTurnResolution: finalMultiTurn,
+                                  refusalPayload: finalRefusalPayload,
                               }
                             : m,
                     );
@@ -597,11 +637,16 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     setStreaming(false);
                 } else if (eventType === 'failed' || eventType === 'error') {
                     const errMsg = String(event.error ?? event.message ?? 'Query failed');
+                    // Built 2026-09-24 — typed code off classify_error()
+                    // (app/agent/errors.py). Absent on a client-side error
+                    // that never reached the backend.
+                    const errCode = event.code ? String(event.code) : null;
                     setMessages((prev) =>
                         prev.map((m) =>
                             m.id === assistantId
                                 ? {
                                       ...m,
+                                      errorCode: errCode,
                                       // Keep whatever streamed. This used to
                                       // overwrite `content` with the error
                                       // string, which threw away a partial
@@ -916,19 +961,6 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     );
 }
 
-type ResolvedCitation = {
-    text: string;
-    source_type: string;
-    title?: string;
-    // Present on report-backed (non-PGEO) citations — see
-    // ReportResolver::resolve(). `section_number` is the raw
-    // "section=N" token off source_chunk_id (may be "unknown" when the
-    // chunk carries no section, in which case there's nothing useful to
-    // deep-link to).
-    section_number?: string | null;
-    metadata?: Record<string, unknown>;
-};
-
 /**
  * Pill tone for a retrieval-confidence score.
  *
@@ -978,37 +1010,33 @@ function MessageBubble({
     }
     // Citation chips were inert (title-attribute tooltip only) despite the
     // platform's citation-first pitch — GET /api/v1/citations/resolve
-    // already existed server-side with nothing in the UI calling it. Keyed
-    // by source_chunk_id so re-expanding an already-fetched citation is free.
-    const [expandedCitation, setExpandedCitation] = useState<string | null>(null);
-    const [resolvedCitations, setResolvedCitations] = useState<Record<string, ResolvedCitation | 'loading' | 'error'>>({});
+    // already existed server-side with nothing in the UI calling it.
+    //
+    // Built 2026-09-24 (§10s) — a non-PGEO chip now opens EvidenceInspector,
+    // a slide-in Sheet, instead of expanding inline; EvidenceInspector owns
+    // its own /citations/resolve fetch. PGEO citations keep their existing
+    // inline <CitationPGEODetail> expand (a distinct, already-built citation
+    // detail view with its own resolution flow — not what the inspector
+    // should replace).
+    const [inspectorCitation, setInspectorCitation] = useState<Citation | null>(null);
+    const [expandedPgeo, setExpandedPgeo] = useState<string | null>(null);
+    // §10p feedback hook from the inspector's "Report citation issue"
+    // button — a fresh object identity on every click so FeedbackControls'
+    // effect re-opens the down-vote form even on a repeat click for the
+    // same category.
+    const [feedbackPreset, setFeedbackPreset] = useState<{ category: 'citation_issue' } | null>(null);
 
-    async function toggleCitation(sourceChunkId: string, citationType: string) {
-        if (expandedCitation === sourceChunkId) {
-            setExpandedCitation(null);
+    function handleCitationClick(c: Citation) {
+        if (c.citation_type === 'PGEO') {
+            setExpandedPgeo((prev) => (prev === c.source_chunk_id ? null : (c.source_chunk_id ?? null)));
             return;
         }
-        setExpandedCitation(sourceChunkId);
-        // PGEO citations render via <CitationPGEODetail>, which resolves its
-        // own body lazily — fetching here too would be a redundant, wasted
-        // second /citations/resolve call on every expand.
-        if (citationType === 'PGEO' || resolvedCitations[sourceChunkId]) {
-            return;
-        }
-        setResolvedCitations((prev) => ({ ...prev, [sourceChunkId]: 'loading' }));
-        try {
-            const resp = await fetch(`/api/v1/citations/resolve?source_chunk_id=${encodeURIComponent(sourceChunkId)}`, {
-                credentials: 'same-origin',
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            });
-            if (!resp.ok) {
-                throw new Error(`resolve failed (${resp.status})`);
-            }
-            const data = (await resp.json()) as ResolvedCitation;
-            setResolvedCitations((prev) => ({ ...prev, [sourceChunkId]: data }));
-        } catch {
-            setResolvedCitations((prev) => ({ ...prev, [sourceChunkId]: 'error' }));
-        }
+        setInspectorCitation(c);
+    }
+
+    function handleReportCitationIssue() {
+        setInspectorCitation(null);
+        setFeedbackPreset({ category: 'citation_issue' });
     }
 
     return (
@@ -1031,37 +1059,25 @@ function MessageBubble({
                     {m.isStreaming && m.content && (
                         <span className="inline-block ml-1 animate-pulse" style={{ color: 'var(--accent)' }}>▍</span>
                     )}
-                    {m.error && (
-                        // When nothing streamed this row IS the bubble, so it
-                        // carries a border and a label rather than sitting as
-                        // a 10px afterthought under empty space. When text did
-                        // stream it stays a footnote qualifying the text above.
-                        <div
-                            className={
-                                m.content
-                                    ? 'mt-2 text-[10px] font-mono'
-                                    : 'text-xs font-mono rounded border px-3 py-2'
-                            }
-                            role="alert"
-                            style={
-                                m.content
-                                    ? { color: 'var(--warn, #d97706)' }
-                                    : {
-                                          color: 'var(--warn, #d97706)',
-                                          borderColor: 'var(--warn, #d97706)',
-                                          background: 'color-mix(in oklch, var(--warn, #d97706) 8%, transparent)',
-                                      }
-                            }
-                        >
-                            {!m.content && (
-                                <div className="uppercase tracking-wider mb-1 text-[10px]">
-                                    Answer failed
-                                </div>
-                            )}
-                            {m.error}
-                        </div>
-                    )}
                 </div>
+                {/* Built 2026-09-24 (§10u) — a typed refusal/failure panel
+                    replaces the old plain-text error footnote. Prefers the
+                    structured `refusal_payload` (completed frame, terminal
+                    guard strategy) over the `failed` frame's error/code —
+                    the two are mutually exclusive by construction (see the
+                    stream handler above), so this is just precedence, not a
+                    real conflict. */}
+                {!isUser && m.refusalPayload && (
+                    <RefusalPanel
+                        variant="refusal"
+                        message={m.refusalPayload.message ?? 'The answer was refused.'}
+                        code={m.refusalPayload.reason_code ?? null}
+                        guardCodes={m.refusalPayload.guard_codes ?? null}
+                    />
+                )}
+                {!isUser && !m.refusalPayload && m.error && (
+                    <RefusalPanel variant="failed" message={m.error} code={m.errorCode ?? null} />
+                )}
                 {/* M2 P5 — inline visualizations (map / strip log / timeline / stereonet /
                     3D drill traces / coverage table) ride on completed event's
                     map_payload + viz_payload. InlineViz no-ops when both are null. */}
@@ -1084,6 +1100,12 @@ function MessageBubble({
                     user's query. Renders nothing when the flag was off
                     or no rewrite happened. */}
                 {!isUser && <ResolutionPreviewChip resolution={m.multiTurnResolution} />}
+                {/* Built 2026-09-24 (§10p) — 👍/👎 + taxonomy + note on a
+                    settled answer. No-ops while answer_run_id is null
+                    (streaming, or errored before a run was persisted). */}
+                {!isUser && (
+                    <FeedbackControls answerRunId={m.answer_run_id} presetCategory={feedbackPreset} />
+                )}
                 <div className="flex items-center gap-2 mt-1.5 text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
                     <span>{m.role}</span>
                     <span>·</span>
@@ -1162,11 +1184,14 @@ function MessageBubble({
                             <button
                                 key={c.citation_id || i}
                                 type="button"
-                                onClick={() => c.source_chunk_id && toggleCitation(c.source_chunk_id, c.citation_type)}
+                                onClick={() => c.source_chunk_id && handleCitationClick(c)}
                                 className="text-[10px] font-mono px-1.5 py-0.5 rounded border cursor-pointer"
                                 style={{
                                     color: 'var(--fg-2)',
-                                    borderColor: expandedCitation === c.source_chunk_id ? 'var(--accent)' : 'var(--line-2)',
+                                    borderColor:
+                                        expandedPgeo === c.source_chunk_id || inspectorCitation?.citation_id === c.citation_id
+                                            ? 'var(--accent)'
+                                            : 'var(--line-2)',
                                     background: 'transparent',
                                 }}
                                 title={c.source_chunk_id}
@@ -1179,85 +1204,51 @@ function MessageBubble({
                         ))}
                     </div>
                 )}
+                {/* PGEO citations keep their existing inline expand — see the
+                    handleCitationClick docblock above for why. Non-PGEO
+                    citations open <EvidenceInspector> instead, mounted
+                    below. */}
                 {m.citations.map((c, i) => {
-                    if (!c.source_chunk_id || expandedCitation !== c.source_chunk_id) {
+                    if (c.citation_type !== 'PGEO' || !c.source_chunk_id || expandedPgeo !== c.source_chunk_id) {
                         return null;
                     }
-                    if (c.citation_type === 'PGEO') {
-                        const pgeoCitation: SharedCitation = {
-                            citation_id: c.citation_id,
-                            citation_type: 'PGEO',
-                            source_chunk_id: c.source_chunk_id,
-                            document_title: c.document_title ?? '',
-                            relevance_score: c.relevance_score ?? 0,
-                            corpus: c.corpus,
-                            jurisdiction_code: c.jurisdiction_code,
-                            jurisdiction_name: c.jurisdiction_name,
-                            license_summary: c.license_summary,
-                            license_url: c.license_url,
-                            source_url: c.source_url,
-                            staleness_seconds: c.staleness_seconds,
-                        };
-                        return (
-                            <div
-                                key={`resolved-${c.citation_id || i}`}
-                                className="mt-1.5 rounded-lg px-3 py-3"
-                                style={{ background: 'var(--bg-2)', border: '1px solid var(--line-1)' }}
-                            >
-                                <CitationPGEODetail citation={pgeoCitation} />
-                            </div>
-                        );
-                    }
-                    const resolved = resolvedCitations[c.source_chunk_id];
+                    const pgeoCitation: SharedCitation = {
+                        citation_id: c.citation_id,
+                        citation_type: 'PGEO',
+                        source_chunk_id: c.source_chunk_id,
+                        document_title: c.document_title ?? '',
+                        relevance_score: c.relevance_score ?? 0,
+                        corpus: c.corpus,
+                        jurisdiction_code: c.jurisdiction_code,
+                        jurisdiction_name: c.jurisdiction_name,
+                        license_summary: c.license_summary,
+                        license_url: c.license_url,
+                        source_url: c.source_url,
+                        staleness_seconds: c.staleness_seconds,
+                    };
                     return (
                         <div
                             key={`resolved-${c.citation_id || i}`}
-                            className="mt-1.5 rounded-lg px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap"
-                            style={{ background: 'var(--bg-2)', border: '1px solid var(--line-1)', color: 'var(--fg-2)' }}
+                            className="mt-1.5 rounded-lg px-3 py-3"
+                            style={{ background: 'var(--bg-2)', border: '1px solid var(--line-1)' }}
                         >
-                            {resolved === 'loading' && <span style={{ color: 'var(--fg-3)' }}>Loading source…</span>}
-                            {resolved === 'error' && <span style={{ color: 'var(--warn, #d97706)' }}>Could not load this source.</span>}
-                            {resolved && resolved !== 'loading' && resolved !== 'error' && (
-                                <>
-                                    {resolved.text}
-                                    <ReaderLink resolved={resolved} projectSlug={projectSlug} />
-                                </>
-                            )}
+                            <CitationPGEODetail citation={pgeoCitation} />
                         </div>
                     );
                 })}
             </div>
+            {/* Built 2026-09-24 (§10s) — Evidence Inspector Sheet, opened by
+                a non-PGEO citation chip click above. */}
+            <EvidenceInspector
+                citation={inspectorCitation}
+                open={inspectorCitation !== null}
+                onOpenChange={(open) => {
+                    if (!open) setInspectorCitation(null);
+                }}
+                projectSlug={projectSlug}
+                onReportIssue={handleReportCitationIssue}
+            />
         </div>
     );
 }
 
-/**
- * "Open in Reader →" deep link for the expanded citation panel. Only
- * report-backed citations (ReportResolver::resolve()) carry
- * `metadata.report_id` — PGEO / structured citations don't reference a
- * silver.reports row, so this renders nothing for those (handled by the
- * caller never invoking it for PGEO, and by the report_id guard below for
- * any other resolver that omits it).
- */
-function ReaderLink({ resolved, projectSlug }: { resolved: ResolvedCitation; projectSlug: string }) {
-    const metadata = resolved.metadata;
-    const reportId = metadata && typeof metadata.report_id === 'string' ? metadata.report_id : null;
-    if (!reportId) return null;
-    // "unknown" is ReportResolver's literal token for a chunk with no
-    // section — nothing to jump to, so leave the query string off rather
-    // than deep-linking to a section that doesn't exist.
-    const sectionNum =
-        resolved.section_number && resolved.section_number !== 'unknown' ? resolved.section_number : null;
-    const href = `/projects/${projectSlug}/reports/${reportId}${sectionNum ? `?section=${encodeURIComponent(sectionNum)}` : ''}`;
-    return (
-        <div className="mt-2">
-            <Link
-                href={href}
-                className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
-                style={{ color: 'var(--accent)', borderColor: 'var(--accent-dim)', background: 'transparent' }}
-            >
-                Open in Reader →
-            </Link>
-        </div>
-    );
-}

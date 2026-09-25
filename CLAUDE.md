@@ -26,13 +26,28 @@ doc for the reading order.
 
 Since v1.52 (2026-09-06) the doc distinguishes **target state** from **as
 built**: sections describe the intended architecture, and a dated *As built*
-note says exactly what exists where the code has not caught up (feedback UI,
-follow-up chips, evidence inspector, conflict/freshness UX, refusal panels,
-Lakehouse, row-level drill review are all design-only today). A *Corrected*
+note says exactly what exists where the code has not caught up. A *Corrected*
 note records what a section used to claim. Read the as-built note before
 building on a section. `docs/architecture/manual/` is the file-cited
 companion; `tests/Unit/ArchitectureDocSchemaParityTest.php` fails CI if the
 doc names a `schema.table` no migration creates.
+
+**As built 2026-09-24** — three of the pieces this note used to call
+design-only now have a chat-adjacent UI: **feedback UI** (§10p —
+`Components/FeedbackControls.tsx` + the new `POST
+/api/v1/answer-runs/{id}/feedback` Laravel route), **evidence inspector**
+(§10s — `Components/EvidenceInspector.tsx`, a Sheet opened from a citation
+chip, built on the existing `citations/resolve` route rather than the
+still-unwired `GET /v1/evidence/{id}`), and **refusal panels** (§10u —
+`Components/RefusalPanel.tsx`, off the `failed` frame's `error`/`code` or
+the `completed` frame's `refusal_payload`). *Corrected 2026-09-06
+(superseded in part):* "feedback UI, follow-up chips, evidence inspector,
+conflict/freshness UX, refusal panels, Lakehouse, row-level drill review
+are all design-only today." **Follow-up chips, conflict/freshness UX,
+Lakehouse, and row-level drill review are still design-only** — follow-up
+chips because FastAPI generates no suggestions to render (§10q as-built
+note); the other three untouched by this pass. See each section's own
+as-built note for exact detail.
 
 ## Hard rules — never violate
 
