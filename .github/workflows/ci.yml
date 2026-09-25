@@ -1284,6 +1284,11 @@ jobs:
       # ops/validation/tests/fake_cohere.py. Needs the venv built above.
       - name: Cohere probe runner (fake AWS + fake Cohere)
         run: bash scripts/tests/run_cohere_probe_test.sh
+      # The in-VPC rerank-threshold runner end to end: the real runner, probe
+      # and deployed reranker adapter, against a fake `aws` and
+      # ops/validation/tests/fake_bedrock_rerank.py. Needs the venv built above.
+      - name: Rerank threshold probe runner (fake AWS + fake Bedrock rerank)
+        run: bash scripts/tests/run_rerank_threshold_probe_test.sh
 
       # Dagster test steps were removed 2026-08-11 and the src/dagster tree
       # itself was deleted on 2026-08-28. It had been dormant since the

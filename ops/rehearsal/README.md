@@ -48,6 +48,8 @@ refuses to report a pass.
 | `make_step6_bundle.sh` | Emits a repo-free seed+verify script (step 6), likewise. |
 | `run_cohere_probe.sh` | Runs `ops/validation/cohere_probe.py` as a one-off task inside the VPC, using the deployed service's own `COHERE_API_KEY` and egress, and writes the report to `ops/validation/reports/` only if it verified something (aws-preflight A-11). Tested end to end without AWS or a key by `scripts/tests/run_cohere_probe_test.sh`. |
 | `make_probe_bundle.sh` | Emits a repo-free CloudShell script carrying `run_cohere_probe.sh`, the probe and the fixture PDF; the report lands in `~/cohere-probe-reports/` and is printed for copying. Exercised by the same test. |
+| `run_rerank_threshold_probe.sh` | Runs `ops/validation/rerank_threshold_probe.py` as a one-off task inside the VPC: it samples the deployed corpus and scores it through the deployed Bedrock reranker adapter under the task role. It writes the report to `ops/validation/reports/` only if it measured something. See "Rerank threshold" below. Tested end to end without AWS by `scripts/tests/run_rerank_threshold_probe_test.sh`. |
+| `make_rerank_threshold_bundle.sh` | Emits a repo-free CloudShell script carrying that runner and the probe; arguments pass through to the probe, and the report lands in `~/rerank-threshold-reports/`. Exercised by the same test. |
 
 None of the three SQL files contains a psql meta-command. They are executed
 over **asyncpg**, because the fastapi image is the only one in this deployment
@@ -224,3 +226,64 @@ obvious version — paste the SQL into a second file and commit it — creates a
 copy of `seed_multitenant_corpus.sql` that drifts the first time someone
 edits one and not the other. Generating means the bundle cannot disagree
 with the source it came from.
+
+
+## Rerank threshold: label-free evidence for `RERANKER_SCORE_THRESHOLD_HOSTED`
+
+`RERANKER_SCORE_THRESHOLD_HOSTED` (0.2) is the only retrieval-quality gate.
+It was measured against Rerank v4 and carried over to Rerank 3.5 unvalidated.
+There are no chunk-level relevance labels, so it cannot be calibrated the
+textbook way. `ops/validation/rerank_threshold_probe.py` produces the evidence
+that can be had without labels. **It changes nothing.** A person edits
+`app/config.py` citing the committed report.
+
+```bash
+bash ops/rehearsal/make_rerank_threshold_bundle.sh > /tmp/rerank.sh
+# upload /tmp/rerank.sh via CloudShell Actions -> Upload file, then:
+bash rerank.sh                               # corpus contrast, ~300 Rerank calls
+bash rerank.sh --harvest-since 2026-09-08    # plus the answer_runs harvest, once there is traffic
+# download ~/rerank-threshold-reports/rerank_threshold_*.json, commit it to ops/validation/reports/
+```
+
+From a checkout, `bash ops/rehearsal/run_rerank_threshold_probe.sh [probe args]`
+does the same and writes straight into `ops/validation/reports/`.
+
+**Method: corpus contrast.** It samples indexed passages from
+`silver.document_passages`. For each one it cuts one sentence out as the
+query (inverse cloze), so the rest of the passage is relevant *by
+construction*. It pairs the same query with passages from other documents and
+with fixed foreign-domain texts. Every pair is scored through
+`get_reranker_or_none()`, the adapter and model id production uses. The
+report gives the band of thresholds that keeps at least 95% of on-topic pairs
+and passes at most 5% of off-topic ones, with AUC and bootstrap intervals.
+The recommendation is the band point nearest the current value, so an in-band
+0.2 comes back as "keep 0.2". Two biases, both written into every report:
+inverse-cloze queries are easier than real questions, and some cross-document
+negatives are really on-topic. Both push the measured band **up**. A value
+the report calls too high is too high. One it calls too low is only probably
+too low.
+
+**It refuses to give a number** when the sample is too small, when AUC is
+below 0.75 (the model cannot separate the pseudo-labels), or when the Bedrock
+calls were denied. It also warns when a pair's score changes with the other
+documents in the call. That would mean an absolute floor does not transfer
+from its ~6-document calls to production's 40.
+
+**The harvest route** (`--harvest-since`) is the one `app/services/reranker.py`
+described. Building it turned up two facts the report records:
+
+* **Nothing writes `answer_runs.reranker_version`.** The persist node's INSERT
+  omits the column, so every row is NULL and the version filter matches
+  nothing. The harvest attributes rows to 3.5 by the time window you give it,
+  and says so.
+* **Only surviving chunks are stored.** `answer_retrieval_items` holds what
+  passed the floor, so the harvested distribution is cut off at the threshold
+  in force. It shows what *raising* the floor would drop, and it can never
+  show what lowering it would recover.
+
+The report contains scores, counts and parameters only: no passage text, no
+query text, no ids. Other options: `--reference-model-id <bedrock id>` scores
+the same pairs with a second model and maps the threshold across (for when
+Bedrock serves v4). `--source pairs --pairs file.jsonl` (or
+`RERANK_PROBE_PAIRS=` for the runner) scores a hand-built pair set instead of
+the corpus.

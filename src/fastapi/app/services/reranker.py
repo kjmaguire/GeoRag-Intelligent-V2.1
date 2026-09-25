@@ -194,6 +194,28 @@ QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
 # tests/test_backend_selection.py), and pick the floor from the observed 3.5
 # score distribution against refusal outcomes.
 #
+# *Corrected 2026-09-24*, while building that route as
+# ops/validation/rerank_threshold_probe.py. Two things in the paragraph above
+# do not hold as built. (1) Nothing writes answer_runs.reranker_version: the
+# persist node's INSERT (agentic_retrieval/nodes.py) does not name the column,
+# and app.state.reranker_version is computed at startup and never persisted.
+# The test cited above checks active_reranker_version()'s string, not that it
+# reaches the table. (2) answer_retrieval_items stores only chunks that
+# SURVIVED the floor, so the harvested distribution is cut off at the
+# threshold in force. It can show what raising the floor would drop, never
+# what lowering it would recover. The probe runs the harvest anyway
+# (--harvest-since) and records both limits in its report. Its primary method
+# needs no traffic: inverse-cloze pairs built from the indexed corpus and
+# scored through get_reranker_or_none(). Run it in-VPC with
+# ops/rehearsal/run_rerank_threshold_probe.sh or its CloudShell bundle; see
+# ops/rehearsal/README.md, "Rerank threshold".
+#
+# (1) is fixed the same day: persist_node now writes the column from what
+# the run USED (agentic_retrieval/nodes.py::_reranker_version_for_run), and
+# a run whose searches all fell back to RRF order records "degraded:rrf",
+# not the configured model. Rows before 2026-09-24 are still NULL, so the
+# harvest keeps attributing those by date window.
+#
 # AUTO-DISCOVERY (Kyle, 2026-09-16). Being pinned to 3.5 should not mean
 # staying pinned to 3.5 forever once AWS adds v4 to Bedrock's catalogue —
 # that would be a second silent regression sitting on top of the first one.

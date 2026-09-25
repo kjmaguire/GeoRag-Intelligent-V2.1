@@ -2631,6 +2631,44 @@ def _build_terminal_refusal_payload(
 # INSERT, and writes both columns; the trace block reuses the same codes.
 
 
+# answer_runs.reranker_version, the record of which reranker scored a run.
+# The column has existed since 2026-04-21 and nothing wrote it, while
+# app/services/reranker.py described it as the way a Rerank v4-scored run
+# and a 3.5-scored run stay distinguishable after the fact, which is what
+# re-measuring RERANKER_SCORE_THRESHOLD_HOSTED from traffic needs
+# (ops/validation/rerank_threshold_probe.py --harvest-since).
+#
+# What was USED, not what is configured: a run whose every document search
+# fell back to RRF order records "degraded:rrf", because its scores are
+# fusion ranks, not reranker scores, and must not be read as either
+# version. A run with no document search records NULL.
+_RERANK_DEGRADED_VERSION = "degraded:rrf"
+
+
+def _reranker_version_for_run(state: AgenticRetrievalState) -> str | None:
+    """The reranker that actually scored this run's document chunks."""
+    try:
+        from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
+        from app.services.reranker import active_reranker_version  # noqa: PLC0415
+
+        reranked = degraded = False
+        for _name, result in state.tool_results or []:
+            if isinstance(result, DocumentSearchResult) and result.chunks:
+                if result.rerank_degraded:
+                    degraded = True
+                else:
+                    reranked = True
+        if reranked:
+            return active_reranker_version()[:64]
+        if degraded:
+            return _RERANK_DEGRADED_VERSION
+        return None
+    except Exception:  # noqa: BLE001
+        # Observability must never fail the persist.
+        logger.debug("agentic_retrieval.persist: reranker_version unavailable", exc_info=True)
+        return None
+
+
 def _classify_persist_guards(
     state: AgenticRetrievalState, citation_state: str,
 ) -> list[Any]:
@@ -3047,11 +3085,12 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 input_tokens,
                 output_tokens,
                 rejection_reason,
-                hallucination_guard_results
+                hallucination_guard_results,
+                reranker_version
             ) VALUES (
                 $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
                 $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
-                $17, $18::jsonb
+                $17, $18::jsonb, $19
             )
             RETURNING answer_run_id
             """,
@@ -3091,6 +3130,7 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             _output_tokens,
             _rejection_reason,
             _guard_results_json,
+            _reranker_version_for_run(state),
         )
 
         if row is not None:
