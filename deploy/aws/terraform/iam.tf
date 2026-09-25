@@ -93,9 +93,11 @@ data "aws_iam_policy_document" "task" {
     # and a grant kept "in case someone flips LLM_BACKEND=bedrock" is a
     # standing permission for a call nothing makes. Re-add it with the
     # endpoint if that ever happens.
+    # bedrock:Rerank is NOT here: it has its own statement below, because
+    # it does not match a model ARN (production was denied it with this
+    # grant in place, 2026-09-24).
     actions = [
       "bedrock:InvokeModel",
-      "bedrock:Rerank",
     ]
     # Scoped to the two models this deployment uses, not "*". A wildcard
     # here would let a compromised task invoke any model in the account,
@@ -109,6 +111,31 @@ data "aws_iam_policy_document" "task" {
       "arn:aws:bedrock:${local.bedrock_region}::foundation-model/${var.bedrock_embed_model_id}",
       "arn:aws:bedrock:${local.bedrock_region}::foundation-model/${var.bedrock_rerank_model_id}",
     ]
+  }
+
+  statement {
+    sid    = "BedrockRerankApi"
+    effect = "Allow"
+    # The Rerank API action has no resource type, so it only matches "*":
+    # with it granted on the Rerank 3.5 model ARN in BedrockServerless,
+    # production still logged "no identity-based policy allows the
+    # bedrock:Rerank action" (2026-09-24). Which model a Rerank call may
+    # use is still bounded by bedrock:InvokeModel above, which names only
+    # Embed v4 and Rerank 3.5.
+    #
+    # Unverified (the AWS Service Authorization Reference was unreachable
+    # when this was written): that Rerank enforces InvokeModel on the
+    # model ARN. Check after applying: a rerank naming any other model
+    # (e.g. amazon.rerank-v1:0, via rerank_threshold_probe.py
+    # --reference-model-id) must be DENIED. If it is not, this statement
+    # permits any rerank model in this one region.
+    actions   = ["bedrock:Rerank"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [local.bedrock_region]
+    }
   }
 
   statement {
