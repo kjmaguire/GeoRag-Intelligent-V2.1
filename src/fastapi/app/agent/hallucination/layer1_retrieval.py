@@ -160,6 +160,9 @@ def assess_retrieval_quality(
     chunks_considered = len(doc_chunks)
 
     # ── Hard gate: nothing at all was retrieved from ANY store. ───────────
+    # One annotation for every branch below: mypy fixes a variable's type at
+    # its first assignment, and the later branches assign None.
+    reason: str | None
     if chunks_considered == 0 and not other_evidence_present:
         reason = (
             "Layer 1: retrieval quality gate failed — no document passages "
