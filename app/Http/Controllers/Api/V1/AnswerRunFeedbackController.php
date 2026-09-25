@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Services\FastApiJwtMinter;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -81,23 +82,32 @@ class AnswerRunFeedbackController extends Controller
             (string) $answerRun->workspace_id,
         );
 
+        // Retry only when the request never reached FastAPI. This is a POST
+        // that inserts a row, so retrying an answer it did give (a 5xx after
+        // a partial write, a 4xx) could record the same feedback twice, and
+        // the default retry() also throws on the last non-2xx, which turned
+        // FastAPI's 400/422 into a 502 here.
         try {
             $resp = Http::withHeaders([
                 'X-Service-Key' => $serviceKey,
                 'Authorization' => 'Bearer '.$jwt,
                 'Accept' => 'application/json',
-            ])->timeout(10)->retry(2, 250)->post(
+            ])->timeout(10)->retry(
+                2,
+                250,
+                fn (\Throwable $exc): bool => $exc instanceof ConnectionException,
+                throw: false,
+            )->post(
                 $fastApiBase.'/v1/answer_runs/'.rawurlencode($answerRunId).'/feedback',
                 $payload,
             );
-        } catch (\Throwable $exc) {
-            return response()->json(
-                ['error' => 'fastapi unreachable', 'reason' => $exc->getMessage()],
-                502,
-            );
+        } catch (ConnectionException) {
+            return response()->json(['error' => 'fastapi unreachable'], 502);
         }
 
-        if (! $resp->ok()) {
+        // successful(), not ok(): FastAPI answers this POST with 201, and
+        // ok() is true for exactly 200.
+        if (! $resp->successful()) {
             return response()->json(
                 ['error' => 'fastapi non-2xx', 'status' => $resp->status(), 'body' => $resp->json() ?? $resp->body()],
                 $resp->status() >= 400 && $resp->status() < 600 ? $resp->status() : 502,
