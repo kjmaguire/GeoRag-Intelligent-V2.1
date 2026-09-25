@@ -91,8 +91,9 @@ as-built note for exact detail.
    `enrich_provenance`) rejects any document-chunk citation whose
    `source_chunk_id` does not resolve to a chunk actually retrieved for
    that query, or that carries no document id — the rejected citation is
-   dropped and `should_retry` is forced, floor-and-banner, the same as a
-   genuine Layer 3/4/6 finding. Both gates default ON
+   dropped together with the sentence it supported (the answer refuses if
+   nothing substantive is left), and `should_retry` is forced,
+   floor-and-banner, the same as a genuine Layer 3/4/6 finding. Both gates default ON
    (`RETRIEVAL_QUALITY_GATE_ENABLED`, `CHUNK_PROVENANCE_GATE_ENABLED`).
    Weakening the four pre-existing guards is not welcome; neither is
    weakening these two now that they exist.
