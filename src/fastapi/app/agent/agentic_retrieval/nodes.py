@@ -1185,7 +1185,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
             RETRIEVAL_GATE_REFUSED_TOTAL.inc()
         except Exception:  # noqa: BLE001 — metrics must never break the gate
-            pass
+            logger.debug("RETRIEVAL_GATE_REFUSED_TOTAL increment failed", exc_info=True)
         if state.status_callback is not None:
             try:
                 await state.status_callback("No relevant evidence found…")

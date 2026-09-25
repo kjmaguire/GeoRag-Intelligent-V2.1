@@ -371,7 +371,7 @@ def gate_citation_provenance(
 
         CHUNK_PROVENANCE_REJECTED_TOTAL.inc(len(warnings))
     except Exception:  # noqa: BLE001 — metrics must never break the gate
-        pass
+        logger.debug("CHUNK_PROVENANCE_REJECTED_TOTAL increment failed", exc_info=True)
 
     return (
         response.model_copy(
