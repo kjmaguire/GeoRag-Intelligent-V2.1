@@ -1154,10 +1154,48 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     intent-specific prompt variants in 2.3 — that lands as an enhancement
     in 2.4 / 2.5 once we have real-corpus telemetry.
     """
+    from app.agent.hallucination.layer1_retrieval import (  # noqa: PLC0415
+        assess_retrieval_quality,
+        build_refusal_text,
+    )
     from app.agent.llm_calls import _call_llm  # noqa: PLC0415
     from app.agent.orchestrator import _select_system_prompt  # noqa: PLC0415
     from app.agent.response_assembler import assemble_response  # noqa: PLC0415
     from app.config import settings as _settings  # noqa: PLC0415
+
+    # Layer 1 — retrieval quality gate (hard half), restored 2026-09-24 per
+    # CLAUDE.md hard rule 5 / §04i. Runs BEFORE the LLM is ever called: if
+    # nothing cleared the relevance floor from ANY store (document search's
+    # own per-chunk floor has already run inside search_documents by this
+    # point), there is no point spending an LLM call synthesizing an answer
+    # from empty context, and no reliable way for a post-hoc guard to tell
+    # a careful refusal apart from a confident fabrication built on
+    # nothing. See app.agent.hallucination.layer1_retrieval for the full
+    # verdict logic, including why cosine/RRF-fallback scores never drive
+    # this decision.
+    _l1_verdict = assess_retrieval_quality(state.tool_results)
+    if _l1_verdict.refuse:
+        logger.warning(
+            "agentic_retrieval.assemble: Layer 1 retrieval quality gate "
+            "refused this query -- %s",
+            _l1_verdict.reason,
+        )
+        try:
+            from app.metrics import RETRIEVAL_GATE_REFUSED_TOTAL  # noqa: PLC0415
+
+            RETRIEVAL_GATE_REFUSED_TOTAL.inc()
+        except Exception:  # noqa: BLE001 — metrics must never break the gate
+            logger.debug("RETRIEVAL_GATE_REFUSED_TOTAL increment failed", exc_info=True)
+        if state.status_callback is not None:
+            try:
+                await state.status_callback("No relevant evidence found…")
+            except Exception:  # pragma: no cover — status is a UX affordance
+                logger.debug(
+                    "agentic_retrieval.assemble: status_callback raised",
+                    exc_info=True,
+                )
+        response = assemble_response(build_refusal_text(), state.tool_results)
+        return {"response": response, **_fold_token_usage(state)}
 
     # Plan §3 — when CONTEXT_PREP_ENABLED is set, run the EvidencePacket
     # through the per-intent prepare_evidence_for_intent pipeline. The
@@ -1872,7 +1910,7 @@ def _extract_conflicts_safely(text: str) -> list[dict[str, Any]] | None:
 
 
 async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
-    """Run the Layer-2/3/4/6 post-assembly validation the legacy path uses.
+    """Run the Layer-1/2/3/4/5/6 post-assembly validation the legacy path uses.
 
     Audit 2026-06-27 (T3): two gaps fixed here.
       1. Layer 2 (typed-output repair) was never run on the agentic path — it
@@ -1888,10 +1926,23 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     CLAUDE.md hard rule #5 audit (post Step 2.5): Layer 5 (chunk provenance)
     was defined in layer5_provenance.py but never called anywhere on the
     live agentic path — its only prior caller lived in the deleted legacy
-    orchestrator body. Wired in here, last, since it's a pure enrichment
-    pass (never rejects/mutates the answer text, only appends source-file
-    provenance onto Citation.section) and is cheapest to run once the
-    response is otherwise final.
+    orchestrator body. Wired in here since 2026-08-21 as a pure enrichment
+    pass (appends source-file provenance onto Citation.section, never
+    rejects). As of 2026-09-24 a GATE half runs first (``gate_citation_provenance``)
+    that DOES reject: any document-chunk citation whose chunk was not
+    actually retrieved for this query, or carries no document id, is
+    dropped — restoring the "provenance is a gate, not just enrichment"
+    half of hard rule 5. Per hard rule 4 ("every claim must include a
+    source_chunk_id or be rejected"), a rejection also removes the
+    SENTENCE(S) that carried the dropped marker, not just the bracket
+    text — a bare marker-strip would ship the claim it used to back as
+    uncited prose. See ``gate_citation_provenance``'s own docstring for
+    the sentence-removal rule and the all-rejected refusal fallback
+    (rag-expert review, 2026-09-24).
+    Layer 1's hard half (zero-evidence refusal) runs earlier still, in
+    assemble_node, before the LLM is ever called; its advisory half
+    (``verify_retrieval_quality``) runs inside
+    ``run_post_assembly_validation`` below alongside Layers 3/4/6.
 
     Fail-closed exception posture (2026-08-15): ``run_post_assembly_validation``
     wraps numeric grounding (Layer 3), entity resolution, and geological
@@ -1919,6 +1970,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     )
     from app.agent.hallucination.layer5_provenance import (  # noqa: PLC0415
         enrich_provenance,
+        gate_citation_provenance,
     )
     from app.agent.hallucination.orchestrator_validators import (  # noqa: PLC0415
         run_post_assembly_validation,
@@ -1938,6 +1990,30 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     # Layer 2 — typed-output repair (sync, never raises).
     response = validate_and_repair(state.response)
+
+    # Layer 5 (gate half), restored 2026-09-24 — reject citations whose
+    # chunk was not actually retrieved for this query (or carries no
+    # document id) BEFORE Layer 2 runs its second pass below. The gate
+    # itself removes the sentence(s) that carried a rejected marker (hard
+    # rule 4 — see gate_citation_provenance's docstring), so it normally
+    # leaves no orphan marker behind for Layer 2 to find; the second
+    # validate_and_repair pass below is kept as a cheap, idempotent
+    # backstop for anything the gate's regex-based sentence split missed.
+    # Wrapped in its own try/except even though the gate is pure/no-I/O —
+    # a bug here must not cost the user their answer.
+    layer5_gate_warnings: list[str] = []
+    try:
+        response, layer5_gate_warnings = gate_citation_provenance(
+            response, state.tool_results
+        )
+    except Exception:  # pragma: no cover — defensive
+        logger.exception(
+            "agentic_retrieval.validate: layer5 provenance GATE raised — "
+            "skipping (citations left unchanged)"
+        )
+    else:
+        if layer5_gate_warnings:
+            response = validate_and_repair(response)
 
     try:
         response, warnings, should_retry = await run_post_assembly_validation(
@@ -1963,7 +2039,18 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         )
         response = await _enrich_provenance_safely(response)
         response = response.model_copy(update={"validation_state": "unverified"})
-        return {"response": response, "validation_warnings": [_unverified_warning]}
+        return {
+            "response": response,
+            "validation_warnings": [*layer5_gate_warnings, _unverified_warning],
+        }
+
+    # Layer 5 gate findings are folded in here (not inside
+    # run_post_assembly_validation, which only sees tool_results/text, not
+    # the citations list) and always force should_retry — a rejected
+    # citation is exactly the "fabrication or a bug shipped a wrong source"
+    # case the other guards' should_retry path exists for.
+    warnings = [*layer5_gate_warnings, *warnings]
+    should_retry = should_retry or bool(layer5_gate_warnings)
 
     if should_retry:
         warnings = [

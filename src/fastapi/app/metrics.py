@@ -61,6 +61,25 @@ RERANK_DEGRADED_TOTAL = Counter(
     "citation relevance and answer confidence for evidence that was fine.",
 )
 
+# §04i Layer 1/5 restoration (2026-09-24). See
+# app.agent.hallucination.layer1_retrieval / layer5_provenance.
+
+RETRIEVAL_GATE_REFUSED_TOTAL = Counter(
+    "georag_retrieval_gate_refused_total",
+    "Layer 1 retrieval-quality gate refusals -- assemble_node returned a "
+    "typed refusal instead of calling the LLM because no document chunk "
+    "cleared the relevance floor and no structured tool returned any rows "
+    "either.",
+)
+
+CHUNK_PROVENANCE_REJECTED_TOTAL = Counter(
+    "georag_chunk_provenance_rejected_total",
+    "Layer 5 provenance-gate rejections -- a Citation's source_chunk_id "
+    "did not resolve to a document chunk actually retrieved for that "
+    "query (or carried no document id) and was dropped from the response "
+    "instead of shipped.",
+)
+
 # ---------------------------------------------------------------------------
 # C5/C6 + R15 prompt caching (Anthropic ephemeral cache AND vLLM prefix cache).
 # ---------------------------------------------------------------------------

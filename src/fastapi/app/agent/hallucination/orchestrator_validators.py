@@ -4,6 +4,9 @@ This module IS the live post-assembly validation path. It holds Layers 3
 (numerical grounding), 4 (entity resolution), 6 (geological constraints)
 and the completeness guard, all working against the deterministic
 orchestrator's tool_results list rather than Pydantic AI's ctx.messages.
+Since 2026-09-24 it also holds the ADVISORY half of Layer 1 (retrieval
+quality) — see ``verify_retrieval_quality`` below; the HARD half (zero-
+evidence refusal) runs earlier, in assemble_node, before the LLM is called.
 
 History (2026-08-21): the Pydantic-AI-shaped originals — layer3_numerical.py,
 layer4_entity.py, layer1_retrieval.py and layer_completeness.py — were
@@ -13,8 +16,12 @@ sat alongside this module looking like controls that were in force while
 only this one ever executed. The completeness guard and the guard-tolerance
 model were the only logic unique to them and were ported here; the rest was
 a second, unreachable implementation of what verify_numbers and
-verify_entities already do. Layers 2, 5 and 6 remain in their own modules
-and are wired into agentic_retrieval/nodes.py.
+verify_entities already do. Layers 2 and 6 remain in their own modules and
+are wired into agentic_retrieval/nodes.py. Layer 5 (chunk provenance) is
+split since 2026-09-24: enrichment stays in layer5_provenance.py; the gate
+half also lives there (``gate_citation_provenance``) and is called directly
+from validate_node, not through this module, because it must run BEFORE
+Layer 2's marker-stripping pass rather than alongside Layers 3/4/6.
 
 Usage in orchestrator:
     from app.agent.hallucination.orchestrator_validators import run_post_assembly_validation
@@ -1128,6 +1135,47 @@ async def verify_entities(
 
 
 # ---------------------------------------------------------------------------
+# Layer 1 — Retrieval Quality Gate (advisory half, orchestrator version)
+#
+# The HARD half of Layer 1 (zero-evidence refusal) runs earlier, in
+# assemble_node, before the LLM is ever called — see
+# app.agent.hallucination.layer1_retrieval.assess_retrieval_quality. This
+# function re-runs the same assessment POST-assembly so a "weak" verdict
+# (some document chunks cleared the floor, but only marginally, or the
+# reranker fell back to RRF/cosine order and returned too few candidates to
+# trust) is visible in validation_warnings and GeoRAGResponse.validation_state
+# — the same way the Layer 3/6 findings are. Restored 2026-09-24.
+# ---------------------------------------------------------------------------
+
+
+def verify_retrieval_quality(tool_results: list[tuple[str, Any]]) -> list[str]:
+    """Layer 1 (advisory half): surface weak-but-passing retrieval.
+
+    Deliberately advisory-only — the "Layer 1:" prefix this emits matches
+    none of the severity buckets in run_post_assembly_validation (which key
+    off "Layer 3"/"Layer 4:"/"Layer 6:"), so it never sets should_retry on
+    its own, matching the completeness guard's posture for a check that has
+    not yet been calibrated against a real corpus. The hard refusal case
+    (assess_retrieval_quality(...).refuse) is handled separately in
+    assemble_node and never reaches this function — a refused query has no
+    LLM-generated text to validate.
+
+    Returns a list of at most one warning string. Never raises.
+    """
+    if not settings.RETRIEVAL_QUALITY_GATE_ENABLED:
+        return []
+
+    from app.agent.hallucination.layer1_retrieval import (  # noqa: PLC0415
+        assess_retrieval_quality,
+    )
+
+    verdict = assess_retrieval_quality(tool_results)
+    if verdict.weak and verdict.reason:
+        return [verdict.reason]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Layer 6 — Geological Constraints (orchestrator version)
 # Delegates to the existing constraint checker which only needs the text.
 # ---------------------------------------------------------------------------
@@ -1441,7 +1489,9 @@ async def run_post_assembly_validation(
     *,
     query_class: str | None = None,
 ) -> tuple[GeoRAGResponse, list[str], bool]:
-    """Run all 4 orchestrator-compatible validators on an assembled response.
+    """Run all orchestrator-compatible validators on an assembled response
+    (Layer 1 advisory, Layer 3, Layer 4, Layer 6, plus the completeness
+    guard).
 
     Args:
         response: The assembled response to validate (never mutated).
@@ -1467,6 +1517,10 @@ async def run_post_assembly_validation(
     # unsafe (the LLM's own output could reproduce the header and hide
     # fabricated content from every guard below).
     _insights_offset = response.proactive_insights_offset
+
+    # Layer 1 — retrieval quality gate (advisory half; the hard-refuse half
+    # already ran in assemble_node before this response was ever built).
+    all_warnings.extend(verify_retrieval_quality(tool_results))
 
     # Layer 3 — numerical grounding
     all_warnings.extend(

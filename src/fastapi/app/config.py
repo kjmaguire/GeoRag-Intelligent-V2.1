@@ -1531,6 +1531,64 @@ class Settings(BaseSettings):
     # Layer 6: apply SME-defined geological constraint rules to numerical claims.
     GEOLOGICAL_CONSTRAINTS_ENABLED: bool = True
 
+    # -------------------------------------------------------------------------
+    # Layer 1 (restored 2026-09-24) — retrieval quality gate, beyond the flat
+    # per-chunk floor above. See app.agent.hallucination.layer1_retrieval.
+    # RERANKER_SCORE_THRESHOLD_HOSTED/RERANKER_SCORE_THRESHOLD (above) are
+    # applied PER CHUNK inside app.agent.tools.search_documents and are
+    # unchanged by this restoration. This flag gates a separate,
+    # query-level assessment: a hard refusal (before the LLM is ever
+    # called) when NOTHING cleared the floor from any store, and an
+    # advisory "weak retrieval" warning when document chunks cleared the
+    # floor only marginally.
+    RETRIEVAL_QUALITY_GATE_ENABLED: bool = True
+
+    # Minimum document chunks a query must retrieve (after the per-chunk
+    # floor already applied in search_documents) before Layer 1 stops
+    # calling it "thin coverage." Applies whether or not the reranker
+    # degraded to RRF/cosine fallback — see RETRIEVAL_GATE_CONFIDENT_SCORE
+    # below for why fallback scores get a count check ONLY, never a score
+    # comparison.
+    RETRIEVAL_GATE_MIN_CHUNKS: int = 1
+
+    # "Confidently relevant" secondary threshold, checked ONLY when a real
+    # reranker produced the scores (DocumentSearchResult.rerank_degraded is
+    # False). By the time a chunk reaches this check its relevance_score has
+    # already been normalised to a comparable [0,1] scale for every backend
+    # (search_documents sigmoid-transforms cross_encoder/qwen3_causal logits
+    # and passes Cohere's calibrated probability through unchanged), so one
+    # threshold applies regardless of RERANKER_BACKEND. NEVER applied to
+    # cosine/RRF fallback scores — those live on an entirely different,
+    # uncalibrated scale (an RRF fusion score is ~1/(k+rank), typically
+    # << 0.2), and comparing them against a calibrated-scale threshold is
+    # the exact RETRIEVAL_QUALITY_THRESHOLD incident described above,
+    # under a new name: every fallback-reranker query would refuse or flag,
+    # regardless of actual relevance.
+    #
+    # rag-expert review (2026-09-24): 0.35 is a PROVISIONAL default, same
+    # unmeasured-against-the-live-model situation RERANKER_SCORE_THRESHOLD_HOSTED
+    # was in when it shipped — chosen by inspection, not calibration. It is
+    # kept advisory-only ON PURPOSE (layer1_retrieval.verify_retrieval_quality
+    # never sets should_retry on a "weak" verdict) for exactly that reason.
+    # Do NOT promote a "weak" Layer 1 finding to a should_retry trigger, and
+    # do not retune this value, without a real measurement: a committed
+    # report from ops/validation/rerank_threshold_probe.py, which scores
+    # label-free on-topic/off-topic pairs through the live Cohere Rerank 3.5
+    # adapter. The probe exists; no report does yet, so this value, like
+    # RERANKER_SCORE_THRESHOLD_HOSTED, is still a guess.
+    RETRIEVAL_GATE_CONFIDENT_SCORE: float = 0.35
+
+    # -------------------------------------------------------------------------
+    # Layer 5 (restored 2026-09-24) — chunk provenance GATE, alongside the
+    # existing enrichment pass in app.agent.hallucination.layer5_provenance.
+    # Rejects (drops from the response, does not just skip enriching) any
+    # Citation whose source_chunk_id does not resolve to a document chunk
+    # actually retrieved for THIS query, or that carries no document id.
+    # Scoped to document-chunk ("georag_reports:...") citations only, same
+    # scope enrich_provenance already uses — structured silver.* citations
+    # have no per-row source-file linkage to check against (see that
+    # module's docstring).
+    CHUNK_PROVENANCE_GATE_ENABLED: bool = True
 
     # Doc-phase 186 — §04i guard tolerance thresholds (Phase E.3.1).
     #
