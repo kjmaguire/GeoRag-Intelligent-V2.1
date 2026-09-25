@@ -110,7 +110,9 @@ final class AnswerRunFeedbackControllerTest extends TestCase
                 && $request->hasHeader('Authorization')
                 && $request->hasHeader('X-Service-Key')
                 && $request['polarity'] === 'up'
-                && $request['category'] === null;
+                // validate() returns only the keys the client sent, so an
+                // up-vote with no category forwards no category key at all.
+                && ($request->data()['category'] ?? null) === null;
         });
     }
 
