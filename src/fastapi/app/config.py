@@ -1571,14 +1571,11 @@ class Settings(BaseSettings):
     # kept advisory-only ON PURPOSE (layer1_retrieval.verify_retrieval_quality
     # never sets should_retry on a "weak" verdict) for exactly that reason.
     # Do NOT promote a "weak" Layer 1 finding to a should_retry trigger, and
-    # do not retune this value, without a real measurement — the expected
-    # artifact is a report from ops/validation/rerank_threshold_probe.py
-    # (query, chunk, relevant?) triples against the live Cohere Rerank 3.5
-    # score distribution, the same shape of evidence RERANKER_SCORE_THRESHOLD_HOSTED's
-    # own re-measurement is blocked on (see that setting's comment — SME
-    # labelling has not started). rerank_threshold_probe.py does not exist
-    # yet; this comment names the artifact this value is waiting on, not a
-    # script that has already run.
+    # do not retune this value, without a real measurement: a committed
+    # report from ops/validation/rerank_threshold_probe.py, which scores
+    # label-free on-topic/off-topic pairs through the live Cohere Rerank 3.5
+    # adapter. The probe exists; no report does yet, so this value, like
+    # RERANKER_SCORE_THRESHOLD_HOSTED, is still a guess.
     RETRIEVAL_GATE_CONFIDENT_SCORE: float = 0.35
 
     # -------------------------------------------------------------------------
