@@ -609,7 +609,7 @@ SeaweedFS as the S3-compatible object store. Buckets: `bronze`, `bronze-raster`,
 - **Canonical GUC**: `app.workspace_id` (used by all RLS policy bodies).
 - **Application-context GUCs**: `georag.workspace_id`, `georag.project_id` (consumed by triggers, audit, repair-shadow).
 - **`acquire_scoped` contract** (`src/fastapi/app/agent/deps.py::AgentDeps.acquire_scoped`): opens transaction → `SET LOCAL statement_timeout` + `georag.project_id` + `georag.workspace_id`. Required for RLS to fire AND for `statement_timeout` to apply (PgBouncer transaction pooling).
-- **RLS coverage**: 48 `ENABLE ROW LEVEL SECURITY` + 65 `CREATE POLICY` in migrations; 40 + 43 in raw SQL. Canonical policy shape: `USING (workspace_id = current_setting('app.workspace_id', true)::uuid) WITH CHECK (...)`. Regression test `WorkspaceRlsCoverageTest`.
+- **RLS coverage**: 48 `ENABLE ROW LEVEL SECURITY` + 65 `CREATE POLICY` in migrations; 40 + 43 in raw SQL. Canonical policy shape: `USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (...)`. Regression test `WorkspaceRlsCoverageTest`.
 - **Role hierarchy** (`docker/postgresql/init/init-roles.sql`): `georag_read ⊂ georag_write` (via `GRANT georag_read TO georag_write`); `georag_audit` independent (INSERT on `public.query_audit_log` only); `martin_ro` for silver MVT functions only.
 - **`bronze.provenance.workspace_id`** BEFORE-INSERT trigger auto-fills workspace_id from target silver row.
 - **Migration connection contract** — `pgsql_migrations` Laravel connection bypasses PgBouncer + uses `georag` owner role. Detail in [`CICD_PIPELINE.md`](CICD_PIPELINE.md) §6.2.

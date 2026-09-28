@@ -138,7 +138,7 @@ Created at collection-creation time via
 - Index: GIN on `text_tsv`.
 - Weights: `setweight(to_tsvector(title), 'A') || setweight(to_tsvector(section_path),'B') || setweight(to_tsvector(text),'C')`.
 - Query: `plainto_tsquery('english', query)` with rank `ts_rank_cd`.
-- Tenant fence: `workspace_id = current_setting('app.workspace_id', true)::uuid`.
+- Tenant fence: `workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid`.
 
 ## 6. Fusion (RRF + DBSF)
 
@@ -283,7 +283,7 @@ Surfaced to the frontend in the `QueryComplete` Reverb event.
 
 - Dense: Qdrant filter `payload.workspace_id == $ws`.
 - Sparse: same filter.
-- BM25: `WHERE workspace_id = current_setting('app.workspace_id', true)::uuid`.
+- BM25: `WHERE workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid`.
 - Reranker: pairs come pre-filtered.
 - Graph traversal: `MATCH (n {workspace_id: $ws})` everywhere.
 

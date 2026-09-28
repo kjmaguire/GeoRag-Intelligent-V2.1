@@ -66,12 +66,22 @@ RLS:
 ALTER TABLE silver.collars ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.collars FORCE  ROW LEVEL SECURITY;
 CREATE POLICY collars_workspace_isolation ON silver.collars
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 ```
 
 `FORCE` is critical — without it, the table owner (`georag` during ALTERs)
 would bypass.
+
+The `NULLIF(..., '')` is required, not decoration. `BindWorkspaceRlsContext`
+binds the empty string when it resolves no workspace, and a bare
+`current_setting('app.workspace_id', true)::uuid` turns that into
+`''::uuid`, which raises `22P02` inside the row filter instead of matching no
+rows. *Corrected 2026-09-28:* this block, and the raw files 96–98 it quotes,
+used the bare cast until it 500'd `/projects` on the first AWS deploy.
+`tests/Unit/RawRlsEmptyGucCastTest.php` (raw files and migrations) and
+`src/fastapi/tests/test_workspace_guc_cast_guard.py` (FastAPI SQL) now fail on
+the bare form.
 
 ### NULL-exempt pattern (cross-schema sweep)
 

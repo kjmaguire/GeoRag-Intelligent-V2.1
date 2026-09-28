@@ -135,7 +135,10 @@ def test_silver_target_pins_workspace_id_predicate():
         geometry_wkt="POINT(0 0)",
     )
     plan = plan_spatial_query(spec)
-    assert "workspace_id = current_setting('app.workspace_id')::uuid" in plan.sql
+    assert (
+        "workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid"
+        in plan.sql
+    )
 
 
 def test_public_smdi_does_not_pin_workspace_predicate():

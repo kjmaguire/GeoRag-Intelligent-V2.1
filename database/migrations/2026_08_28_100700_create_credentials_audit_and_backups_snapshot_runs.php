@@ -68,16 +68,16 @@ use Illuminate\Support\Facades\DB;
  * fails — the `audit` schema is in its sweep and this table is not on its
  * exempt list.
  *
- * So the policy is ported from block 3, byte-for-byte including its lack of a
- * `NULLIF` wrapper. That shape has a real edge — `current_setting('app.
- * workspace_id', true)::uuid` raises `22P02 invalid_text_representation` on
- * the empty-string sentinel that `BindWorkspaceRlsContext` binds when it
- * cannot resolve a workspace, rather than returning no rows. It is ported
- * anyway and deliberately: block 3 DROPs and re-CREATEs this policy by name
- * every time it runs, so a different shape here would flip back and forth
- * depending on whether an operator had run `db:apply-raw`. Fixing the shape
- * means changing block 3 and this migration together, which is a separate
- * change; the table has no readers today, so the edge is latent.
+ * So the policy is ported from block 3, in block 3's current shape:
+ * `NULLIF(current_setting('app.workspace_id', true), '')::uuid`. Block 3 DROPs
+ * and re-CREATEs this policy by name every time it runs, so the two must stay
+ * identical or the shape flips depending on whether an operator has run
+ * `db:apply-raw`. Until 2026-09-28 both carried the bare cast, which raises
+ * `22P02 invalid_text_representation` on the empty-string sentinel that
+ * `BindWorkspaceRlsContext` binds when it cannot resolve a workspace; that
+ * 500'd /projects on the first AWS deploy and was fixed in both places.
+ * Databases that already ran this migration are corrected by
+ * 2026_09_28_120000_guard_empty_workspace_guc_on_credentials_audit_policy.
  *
  * ## backups.snapshot_runs
  *
@@ -179,8 +179,8 @@ return new class extends Migration
             DB::statement($index);
         }
 
-        // Ported byte-for-byte from block 3 — see the class docblock on why
-        // the missing NULLIF is preserved rather than corrected here.
+        // Same shape as block 3 (98-rls-tenant-isolation-block3.sql) — see
+        // the class docblock.
         DB::statement('ALTER TABLE audit.integration_credentials_audit ENABLE ROW LEVEL SECURITY');
         DB::statement('ALTER TABLE audit.integration_credentials_audit FORCE ROW LEVEL SECURITY');
         DB::statement(<<<'SQL'
@@ -190,8 +190,8 @@ return new class extends Migration
         DB::statement(<<<'SQL'
             CREATE POLICY integration_credentials_audit_workspace_isolation
                 ON audit.integration_credentials_audit
-                USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-                WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid)
+                USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+                WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
         SQL);
     }
 

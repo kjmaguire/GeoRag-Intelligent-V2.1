@@ -125,7 +125,7 @@ rls:
   enabled: true
   forced: true
   policy: |
-    workspace_id = current_setting('app.workspace_id', true)::uuid
+    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
 audit:
   - on INSERT/UPDATE/DELETE → audit.audit_ledger via app-side writes (no row-level trigger)
 sensitive_fields: []
