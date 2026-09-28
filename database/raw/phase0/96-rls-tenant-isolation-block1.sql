@@ -85,8 +85,8 @@ ALTER TABLE silver.collars ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.collars FORCE  ROW LEVEL SECURITY;
 
 CREATE POLICY collars_workspace_isolation ON silver.collars
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 2. silver.reports  ── add workspace_id, backfill (orphans → default), strict RLS
@@ -134,8 +134,8 @@ ALTER TABLE silver.reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.reports FORCE  ROW LEVEL SECURITY;
 
 CREATE POLICY reports_workspace_isolation ON silver.reports
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 3. silver.well_log_curves  ── workspace_id via collar → project, strict RLS
@@ -181,8 +181,8 @@ DROP POLICY IF EXISTS well_log_curves_project_scope     ON silver.well_log_curve
 DROP POLICY IF EXISTS well_log_curves_workspace_isolation ON silver.well_log_curves;
 
 CREATE POLICY well_log_curves_workspace_isolation ON silver.well_log_curves
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 4. silver.hypothesis_evidence_links  ── add direct workspace_id + strict RLS
@@ -230,8 +230,8 @@ ALTER TABLE silver.hypothesis_evidence_links FORCE  ROW LEVEL SECURITY;
 
 CREATE POLICY hypothesis_evidence_links_workspace_isolation
     ON silver.hypothesis_evidence_links
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 5. silver.spatial_features  ── add workspace_id, enable RLS (table empty)
@@ -267,8 +267,8 @@ ALTER TABLE silver.spatial_features FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS spatial_features_workspace_isolation ON silver.spatial_features;
 
 CREATE POLICY spatial_features_workspace_isolation ON silver.spatial_features
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 COMMIT;
 

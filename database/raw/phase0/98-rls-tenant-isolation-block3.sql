@@ -114,8 +114,8 @@ DROP POLICY IF EXISTS audit_ledger_verification_runs_workspace_isolation
     ON audit.audit_ledger_verification_runs;
 CREATE POLICY audit_ledger_verification_runs_workspace_isolation
     ON audit.audit_ledger_verification_runs
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 1C. audit.integration_credentials_audit (RLS only — already has ws_id)
@@ -126,8 +126,8 @@ DROP POLICY IF EXISTS integration_credentials_audit_workspace_isolation
     ON audit.integration_credentials_audit;
 CREATE POLICY integration_credentials_audit_workspace_isolation
     ON audit.integration_credentials_audit
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 CREATE INDEX IF NOT EXISTS idx_integration_credentials_audit_workspace_id
     ON audit.integration_credentials_audit (workspace_id);
@@ -202,8 +202,8 @@ DROP POLICY IF EXISTS support_replay_runs_workspace_isolation
     ON ops.support_replay_runs;
 CREATE POLICY support_replay_runs_workspace_isolation
     ON ops.support_replay_runs
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 3B. ops.support_ticket_traces (7 rows) ← support_tickets.workspace_id
@@ -246,8 +246,8 @@ DROP POLICY IF EXISTS support_ticket_traces_workspace_isolation
     ON ops.support_ticket_traces;
 CREATE POLICY support_ticket_traces_workspace_isolation
     ON ops.support_ticket_traces
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 3C. ops.support_tickets (RLS only — already has ws_id)
@@ -256,8 +256,8 @@ ALTER TABLE ops.support_tickets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ops.support_tickets FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS support_tickets_workspace_isolation ON ops.support_tickets;
 CREATE POLICY support_tickets_workspace_isolation ON ops.support_tickets
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 CREATE INDEX IF NOT EXISTS idx_support_tickets_workspace_id
     ON ops.support_tickets (workspace_id);
@@ -270,8 +270,8 @@ ALTER TABLE targeting.target_backtests FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS target_backtests_workspace_isolation
     ON targeting.target_backtests;
 CREATE POLICY target_backtests_workspace_isolation ON targeting.target_backtests
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 CREATE INDEX IF NOT EXISTS idx_target_backtests_workspace_id
     ON targeting.target_backtests (workspace_id);
@@ -314,8 +314,8 @@ DROP POLICY IF EXISTS target_score_factors_workspace_isolation
     ON targeting.target_score_factors;
 CREATE POLICY target_score_factors_workspace_isolation
     ON targeting.target_score_factors
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- target_uncertainties — same pattern
 ALTER TABLE targeting.target_uncertainties
@@ -351,8 +351,8 @@ DROP POLICY IF EXISTS target_uncertainties_workspace_isolation
     ON targeting.target_uncertainties;
 CREATE POLICY target_uncertainties_workspace_isolation
     ON targeting.target_uncertainties
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- ---------------------------------------------------------------------------
 -- 4C. targeting — add missing indexes on tables that already have ws_col
@@ -384,8 +384,8 @@ BEGIN
         EXECUTE format('DROP POLICY IF EXISTS %I_workspace_isolation ON gold.%I', t, t);
         EXECUTE format(
             'CREATE POLICY %I_workspace_isolation ON gold.%I '
-            'USING (workspace_id = current_setting(''app.workspace_id'', true)::uuid) '
-            'WITH CHECK (workspace_id = current_setting(''app.workspace_id'', true)::uuid)',
+            'USING (workspace_id = NULLIF(current_setting(''app.workspace_id'', true), '''')::uuid) '
+            'WITH CHECK (workspace_id = NULLIF(current_setting(''app.workspace_id'', true), '''')::uuid)',
             t, t
         );
         EXECUTE format(
