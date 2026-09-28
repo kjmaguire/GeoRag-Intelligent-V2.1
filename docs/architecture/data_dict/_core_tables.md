@@ -37,7 +37,7 @@ Spatial uncertainty added by [2026_05_23_050000](../../../database/migrations/20
 `idx_collars_geom` GIST `(geom)`.
 
 **RLS:** enabled + FORCE; policy
-`workspace_id = current_setting('app.workspace_id', true)::uuid`.
+`workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid`.
 
 **Read by:** Martin `silver.pg_collars_by_project`; frontend
 DrillholeDetail / HoleCompare / Lakehouse / Workspace; Neo4j

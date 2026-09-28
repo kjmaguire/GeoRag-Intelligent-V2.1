@@ -87,7 +87,7 @@ CREATE INDEX dataset_categories_workspace_idx
     ON silver.dataset_categories (workspace_id, dataset_kind, category_id);
 ```
 
-- RLS: `workspace_id = current_setting('app.workspace_id', true)::uuid`.
+- RLS: `workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid`.
 - Seed `silver.data_categories` from a checked-in fixture
   (`database/seeders/data_categories_seed.sql`) so codes are stable across
   environments.

@@ -8,7 +8,7 @@ node + integration with the agentic_retrieval LangGraph is downstream.
 Why a planner (not just SQL inline):
 
   1. **Workspace tenancy is non-negotiable.** Every plan emits the
-     `workspace_id = current_setting('app.workspace_id')::uuid`
+     `workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid`
      predicate so RLS can't be silently bypassed. The planner pins
      this into every emitted query; ad-hoc SQL elsewhere can't.
 
@@ -99,7 +99,7 @@ class SpatialTarget:
         geom_column: Name of the geometry column on that table.
         crs_epsg: CRS EPSG code the geometry is stored in.
         workspace_scoped: When True, the planner adds a
-            ``workspace_id = current_setting('app.workspace_id')::uuid``
+            ``workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid``
             predicate. When False, the planner ASSUMES the schema
             (e.g. ``public.smdi_deposits``) is intentionally not
             workspace-scoped and emits a comment in the SQL noting why.
@@ -324,7 +324,7 @@ def plan_spatial_query(spec: SpatialQuerySpec) -> SpatialPlan:
     if target.workspace_scoped:
         where_clauses.append(
             f"{_workspace_column(target)} = "
-            f"current_setting('app.workspace_id')::uuid"
+            f"NULLIF(current_setting('app.workspace_id', true), '')::uuid"
         )
 
     # WHERE clause assembly.

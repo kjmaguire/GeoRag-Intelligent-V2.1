@@ -352,7 +352,7 @@ async def _insert_gap(
                 workspace_id
             ) VALUES (
                 $1, $2, $3, $4, $5::uuid, $6,
-                current_setting('app.workspace_id', true)::uuid
+                NULLIF(current_setting('app.workspace_id', true), '')::uuid
             )
             """,
             entity_text,
