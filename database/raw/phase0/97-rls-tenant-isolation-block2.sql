@@ -21,7 +21,7 @@
 --   silver.geological_ontology_terms, silver.geological_ontology_synonyms
 --
 -- Strict policy form (applied uniformly):
---   USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
+--   USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
 --   WITH CHECK (...same...)
 --
 -- Idempotent. Re-run-safe.
@@ -84,8 +84,8 @@ BEGIN
         -- Strict workspace_id policy
         EXECUTE format(
             'CREATE POLICY %I_workspace_isolation ON silver.%I '
-            'USING (workspace_id = current_setting(''app.workspace_id'', true)::uuid) '
-            'WITH CHECK (workspace_id = current_setting(''app.workspace_id'', true)::uuid)',
+            'USING (workspace_id = NULLIF(current_setting(''app.workspace_id'', true), '''')::uuid) '
+            'WITH CHECK (workspace_id = NULLIF(current_setting(''app.workspace_id'', true), '''')::uuid)',
             t, t
         );
 
@@ -190,8 +190,8 @@ BEGIN
         EXECUTE format('DROP POLICY IF EXISTS %I_workspace_isolation ON silver.%I', t, t);
         EXECUTE format(
             'CREATE POLICY %I_workspace_isolation ON silver.%I '
-            'USING (workspace_id = current_setting(''app.workspace_id'', true)::uuid) '
-            'WITH CHECK (workspace_id = current_setting(''app.workspace_id'', true)::uuid)',
+            'USING (workspace_id = NULLIF(current_setting(''app.workspace_id'', true), '''')::uuid) '
+            'WITH CHECK (workspace_id = NULLIF(current_setting(''app.workspace_id'', true), '''')::uuid)',
             t, t
         );
     END LOOP;
@@ -238,8 +238,8 @@ ALTER TABLE silver.decision_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.decision_options FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS decision_options_workspace_isolation ON silver.decision_options;
 CREATE POLICY decision_options_workspace_isolation ON silver.decision_options
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 -- silver.lithology_logs (4 rows) ← silver.collars.workspace_id
 ALTER TABLE silver.lithology_logs
@@ -278,7 +278,7 @@ ALTER TABLE silver.lithology_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE silver.lithology_logs FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS lithology_logs_workspace_isolation ON silver.lithology_logs;
 CREATE POLICY lithology_logs_workspace_isolation ON silver.lithology_logs
-    USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
-    WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
+    USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
+    WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
 
 COMMIT;
