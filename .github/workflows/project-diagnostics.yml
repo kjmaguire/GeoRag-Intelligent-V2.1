@@ -1,0 +1,363 @@
+# One-click, READ-ONLY diagnostics for a project's drill data, from inside AWS.
+#
+# One-off operator action. Production RDS is in private subnets, ECS Exec is
+# disabled (deploy/aws/terraform/rotation.tf) and there is no bastion, so nobody
+# can run SQL by hand. The diagnostics script
+# (src/fastapi/scripts/ops/project_data_diagnostics.py) needs Postgres, which an
+# operator's sandbox cannot reach, so it runs as a one-off ECS task on the Hatchet
+# worker's task definition — the Python image, the DB secrets, the same VPC — and
+# prints its report to stdout. This workflow starts it, waits, reads the task's
+# CloudWatch stream, and puts the report in the job log and the step summary.
+#
+# It answers "why is this project's lithology / structure / logs / 3D missing?"
+# with facts: the last 300 ingest runs and their warning codes, row counts per
+# table, attribute-table column names, collar geometry and georeferencing,
+# per-hole coverage (surveys, curves, traces), curve names and DERIVED-vs-logged
+# lithology. It does not interpret; it reports.
+#
+# READ-ONLY: the Postgres session is `default_transaction_read_only = on` and
+# every statement the script sends is a SELECT. There is no S3, Qdrant or Cohere
+# client in it, so nothing is written or spent.
+#
+# Same shape as parse-comparison.yml, and for the same reason it registers a
+# derived task-definition family (georag-project-diagnostics) rather than a bare
+# `run-task` on georag-hatchet-worker: that definition carries the worker's
+# container health check (`curl :8001/health`), which a one-off command never
+# answers, so ECS would kill the task as UNHEALTHY. Nothing can override a health
+# check at run-task time, so the family is registered from the worker's LATEST
+# revision (i.e. whatever CD last deployed) with only that block removed — the
+# same trick cd.yml uses for georag-smoke. The command itself is a run-task
+# override, as in run-seeder.yml.
+#
+# Uses the CD deploy role (AWS_DEPLOY_ROLE_ARN). ci.tf already grants what this
+# needs — ecs:RegisterTaskDefinition / RunTask / DescribeTasks on "*",
+# iam:PassRole on the execution + task roles, rds:DescribeDBInstances, and
+# logs:GetLogEvents on /ecs/georag* — so no Terraform apply is required. ci.tf
+# does NOT grant ecs:StopTask: the timeout branch below tries it and ignores the
+# denial, which is harmless here (the script's statements are individually capped
+# at 120 s, so a task that outlives the timeout ends on its own).
+#
+# The report carries metadata about the project's data: file names, hole ids,
+# column names, curve names, warning codes and each ingest error truncated to 300
+# characters. Row VALUES and warning text are never selected. It goes to
+# CloudWatch (30-day retention), this job's log and summary, and a 14-day
+# artifact — run it on a project whose file and hole names you are content to have there.
+
+name: Project data diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_slug:
+        description: "Project slug (a-z, 0-9, hyphen; the Projects page URL, e.g. red-star)"
+        required: true
+        type: string
+
+concurrency:
+  group: project-diagnostics
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: georag
+  DB_IDENTIFIER: georag-pg
+  # The Hatchet worker: `${local.name}-hatchet-worker` in services.tf, one
+  # container named after the service, image shared with fastapi.
+  SOURCE_TASK_FAMILY: georag-hatchet-worker
+  DIAGNOSTICS_TASK_FAMILY: georag-project-diagnostics
+  CONTAINER_NAME: hatchet-worker
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Project diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Inputs reach the shell as ENVIRONMENT VARIABLES, never interpolated into
+      # the script text, and are checked here before anything uses them. The
+      # override below is then built with jq --arg, so no input can become shell
+      # syntax or an extra argv element.
+      - name: Validate inputs
+        id: inputs
+        env:
+          INPUT_SLUG: ${{ inputs.project_slug }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$INPUT_SLUG" =~ ^[a-z0-9-]{1,64}$ ]]; then
+            echo "::error::project_slug is required and must match ^[a-z0-9-]{1,64}\$ (lowercase letters, digits, hyphen)"
+            exit 1
+          fi
+
+          echo "slug=$INPUT_SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The script reads Postgres; the instance is stopped nightly and absent
+      # under `power=off`. Same gate, same two messages, as run-seeder.yml.
+      - name: Postgres gate (nightly stop window / power flag)
+        run: |
+          set -uo pipefail
+          STATE=$(aws rds describe-db-instances \
+            --db-instance-identifier "$DB_IDENTIFIER" \
+            --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "absent")
+          echo "postgres state: $STATE"
+          if [ "$STATE" = "absent" ]; then
+            echo "::error::$DB_IDENTIFIER does not exist. The stack is powered off — run 'terraform apply -var power=on' first (see deploy/aws/terraform/power.tf)."
+            exit 1
+          fi
+          if [ "$STATE" != "available" ]; then
+            echo "::error::$DB_IDENTIFIER is '$STATE'. The nightly sweep stops it at 23:00 and starts it at 06:00 America/Los_Angeles. Re-run when it is 'available'."
+            exit 1
+          fi
+
+      - name: Register the diagnostics task definition (worker's latest revision, health check removed)
+        id: taskdef
+        run: |
+          set -euo pipefail
+
+          def=$(aws ecs describe-task-definition --task-definition "$SOURCE_TASK_FAMILY" \
+                  --query taskDefinition)
+          new=$(echo "$def" | jq --arg family "$DIAGNOSTICS_TASK_FAMILY" --arg c "$CONTAINER_NAME" '
+            .family = $family
+            | del(.containerDefinitions[] | select(.name == $c) | .healthCheck)
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)')
+
+          # Fail here, not at run-task, if the container is not where we think.
+          if [ "$(echo "$new" | jq --arg c "$CONTAINER_NAME" '[.containerDefinitions[] | select(.name == $c)] | length')" != "1" ]; then
+            echo "::error::$SOURCE_TASK_FAMILY has no container named $CONTAINER_NAME — services.tf changed; update CONTAINER_NAME in this workflow."
+            exit 1
+          fi
+
+          REV=$(aws ecs register-task-definition --cli-input-json "$new" \
+                  --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task definition: $REV"
+          echo "arn=$REV" >> "$GITHUB_OUTPUT"
+
+          # The log destination comes from the task definition, not from a
+          # guess: awslogs names the stream <prefix>/<container>/<task id>.
+          GROUP=$(echo "$new" | jq -r --arg c "$CONTAINER_NAME" '.containerDefinitions[] | select(.name == $c) | .logConfiguration.options["awslogs-group"]')
+          PREFIX=$(echo "$new" | jq -r --arg c "$CONTAINER_NAME" '.containerDefinitions[] | select(.name == $c) | .logConfiguration.options["awslogs-stream-prefix"]')
+          if [ -z "$GROUP" ] || [ "$GROUP" = "null" ] || [ -z "$PREFIX" ] || [ "$PREFIX" = "null" ]; then
+            echo "::error::could not read awslogs-group / awslogs-stream-prefix from $SOURCE_TASK_FAMILY"
+            exit 1
+          fi
+          echo "log_group=$GROUP" >> "$GITHUB_OUTPUT"
+          echo "log_prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+
+      - name: Run the diagnostics as a one-off ECS task
+        id: run
+        env:
+          SLUG: ${{ steps.inputs.outputs.slug }}
+          TASK_DEF_ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          set -euo pipefail
+
+          # The command is an argv array: nothing here passes through a shell in
+          # the container, and the slug came out of the validation step.
+          OVERRIDES=$(jq -nc \
+            --arg c "$CONTAINER_NAME" \
+            --arg slug "$SLUG" '
+            {
+              containerOverrides: [{
+                name: $c,
+                command: ["python3", "/app/scripts/ops/project_data_diagnostics.py", ("--project-slug=" + $slug)]
+              }]
+            }')
+          echo "override: $OVERRIDES"
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$TASK_DEF_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.AWS_PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.AWS_TASK_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
+            --overrides "$OVERRIDES" \
+            --query 'tasks[0].taskArn' --output text)
+
+          # A zero exit with empty output means a task may be running that this
+          # run cannot name — the trap cd.yml and run-seeder.yml both document.
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::run-task returned no task ARN (capacity, network configuration or a bad task definition)"
+            exit 1
+          fi
+          echo "diagnostics task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+          # Poll rather than `aws ecs wait tasks-stopped` (10-minute budget, and
+          # no message of its own on timeout). A run is a few dozen SELECTs; the
+          # budget is mostly Fargate cold start.
+          DEADLINE=$(( $(date +%s) + 20 * 60 ))
+          while :; do
+            STATUS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+              --query 'tasks[0].lastStatus' --output text)
+            [ "$STATUS" = "STOPPED" ] && break
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::diagnostics task still $STATUS after 20 minutes; trying to stop it (ci.tf does not grant ecs:StopTask, so this may be denied — the task ends on its own)"
+              aws ecs stop-task --cluster "$ECS_CLUSTER" --task "$TASK_ARN" --reason "project-diagnostics workflow timeout" >/dev/null || true
+              exit 1
+            fi
+            sleep 10
+          done
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query "tasks[0].containers[?name=='${CONTAINER_NAME}'] | [0].exitCode" --output text)
+          REASON=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+          echo "diagnostics exit code: ${EXIT_CODE} (${REASON})"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+
+      # Runs whether or not the task succeeded: a failed run's log is the most
+      # useful thing it produced, and `if: always()` keeps that from being lost
+      # behind the exit-code check below. Skipped only when no task was ever
+      # started.
+      - name: Fetch the task's CloudWatch log and print the report
+        id: report
+        if: always() && steps.run.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.run.outputs.arn }}
+          LOG_GROUP: ${{ steps.taskdef.outputs.log_group }}
+          LOG_PREFIX: ${{ steps.taskdef.outputs.log_prefix }}
+          EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+          SLUG: ${{ steps.inputs.outputs.slug }}
+        run: |
+          set -uo pipefail
+
+          TASK_ID="${TASK_ARN##*/}"
+          STREAM="${LOG_PREFIX}/${CONTAINER_NAME}/${TASK_ID}"
+          echo "log stream: ${LOG_GROUP} :: ${STREAM}"
+
+          RAW=/tmp/task.log
+          SUMMARY=/tmp/summary.md
+          JSON=/tmp/report.json
+          BEGIN_SUM='=====BEGIN PROJECT_DIAGNOSTICS_SUMMARY_MD====='
+          END_SUM='=====END PROJECT_DIAGNOSTICS_SUMMARY_MD====='
+          BEGIN_JSON='=====BEGIN PROJECT_DIAGNOSTICS_JSON====='
+          END_JSON='=====END PROJECT_DIAGNOSTICS_JSON====='
+
+          fetch_log() {
+            : > "$RAW"
+            local token="" resp next
+            for _ in $(seq 1 400); do
+              if [ -z "$token" ]; then
+                resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" \
+                  --start-from-head --limit 10000 --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+              else
+                resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" \
+                  --start-from-head --limit 10000 --next-forward-token "$token" --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+              fi
+              echo "$resp" | jq -r '.events[].message' >> "$RAW"
+              next=$(echo "$resp" | jq -r '.nextForwardToken')
+              # The last page hands back the token it was given.
+              [ "$next" = "$token" ] && return 0
+              token="$next"
+            done
+            return 0
+          }
+
+          # CloudWatch trails the container by a few seconds; the report is the
+          # LAST thing the task prints, so wait for its end marker.
+          for attempt in 1 2 3 4 5 6; do
+            fetch_log || true
+            if grep -qF "$END_JSON" "$RAW" 2>/dev/null; then break; fi
+            # Exit 0 (report) and exit 2 (project not found — the script still
+            # prints a report saying so) both end with the markers. Any other
+            # exit legitimately has no report; do not wait for one.
+            if [ "$attempt" -ge 3 ] && [ "${EXIT_CODE:-}" != "0" ] && [ "${EXIT_CODE:-}" != "2" ]; then break; fi
+            sleep 15
+          done
+
+          echo "::group::Full task log (${RAW})"
+          cat "$RAW" || true
+          echo "::endgroup::"
+
+          awk -v b="$BEGIN_SUM" -v e="$END_SUM" '$0==b{f=1;next} $0==e{f=0} f' "$RAW" > "$SUMMARY"
+          awk -v b="$BEGIN_JSON" -v e="$END_JSON" '$0==b{f=1;next} $0==e{f=0} f' "$RAW" > "$JSON"
+
+          {
+            echo "## Project data diagnostics: \`${SLUG}\`"
+            echo ""
+            echo "Task \`${TASK_ID}\`, exit code \`${EXIT_CODE:-unknown}\`."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s "$SUMMARY" ]; then
+            echo "════ Markdown summary ════════════════════════════════════════"
+            cat "$SUMMARY"
+            cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::no report between the BEGIN/END markers — the task failed before producing one. See the log above."
+            {
+              echo "**No report was produced.** The task's own error output:"
+              echo ""
+              echo '```text'
+              tail -n 60 "$RAW" || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -s "$JSON" ]; then
+            echo "════ Full JSON ═══════════════════════════════════════════════"
+            cat "$JSON"
+            # A check that ERRORED (as opposed to a table that is merely absent)
+            # is reported inside the document and does not fail the task; make it
+            # visible on the run page too.
+            ERRORED=$(jq -r '.meta.checks_errored // 0' "$JSON" 2>/dev/null || echo 0)
+            if [ "${ERRORED:-0}" != "0" ]; then
+              echo "::warning::${ERRORED} diagnostic check(s) errored — see 'Checks that ERRORED' in the summary (permissions or schema drift)."
+            fi
+            # GITHUB_STEP_SUMMARY is capped at 1 MiB per step; keep the JSON
+            # under 700 KB so the Markdown above always fits.
+            if [ "$(wc -c < "$JSON")" -le 700000 ]; then
+              {
+                echo ""
+                echo "<details><summary>Full JSON</summary>"
+                echo ""
+                echo '```json'
+                cat "$JSON"
+                echo '```'
+                echo ""
+                echo "</details>"
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "_Full JSON is over 700 KB and is in the job log and the artifact only._" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload the report
+        if: always() && steps.report.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-diagnostics-report
+          path: |
+            /tmp/summary.md
+            /tmp/report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Last, so the report above is never lost to it. Exit codes are the
+      # script's contract (project_data_diagnostics.py docstring): 0 report
+      # produced, 2 project not found / not visible, 1 unexpected error.
+      - name: Check the task's exit code
+        if: always() && steps.run.outputs.arn != ''
+        env:
+          EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+          REASON: ${{ steps.run.outputs.reason }}
+        run: |
+          case "${EXIT_CODE:-}" in
+            0) echo "diagnostics completed" ;;
+            2) echo "::error::project not found or not visible (no silver.projects row with that slug, unscoped or under any workspace). Check the slug against the Projects page URL."; exit 1 ;;
+            *) echo "::error::diagnostics task failed (exit ${EXIT_CODE:-none}: ${REASON:-unknown}). Container output is in the CloudWatch log group."; exit 1 ;;
+          esac
