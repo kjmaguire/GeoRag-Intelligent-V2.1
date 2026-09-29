@@ -116,6 +116,9 @@ final class WorkspaceLithologyQueryCountTest extends TestCase
         });
 
         $page = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
+        // The windowed interval query lives in the deferred 3D group (FE-11);
+        // count it too, or this test would pass without ever running it.
+        $page->assertInertia(fn (AssertableInertia $inertia) => $inertia->loadDeferredProps('viz3d'));
 
         return ['queries' => $intervalQueries, 'page' => $page];
     }
@@ -150,7 +153,7 @@ final class WorkspaceLithologyQueryCountTest extends TestCase
         $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
 
         $response->assertInertia(
-            fn (AssertableInertia $page) => $page->where(
+            fn (AssertableInertia $page) => $page->loadDeferredProps('viz3d', fn (AssertableInertia $reload) => $reload->where(
                 'first_holes_intervals',
                 function ($holes) {
                     $holes = json_decode(json_encode($holes), true);
@@ -175,7 +178,7 @@ final class WorkspaceLithologyQueryCountTest extends TestCase
 
                     return true;
                 },
-            ),
+            )),
         );
     }
 
@@ -188,7 +191,7 @@ final class WorkspaceLithologyQueryCountTest extends TestCase
         $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
 
         $response->assertInertia(
-            fn (AssertableInertia $page) => $page->where(
+            fn (AssertableInertia $page) => $page->loadDeferredProps('viz3d', fn (AssertableInertia $reload) => $reload->where(
                 'first_holes_intervals',
                 function ($holes) {
                     $holes = json_decode(json_encode($holes), true);
@@ -197,7 +200,7 @@ final class WorkspaceLithologyQueryCountTest extends TestCase
                         && $holes[0]['bands'] === []
                         && $holes[1]['bands'] === [];
                 },
-            ),
+            )),
         );
     }
 }

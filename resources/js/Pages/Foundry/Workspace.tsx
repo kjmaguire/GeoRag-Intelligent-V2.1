@@ -1,5 +1,5 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { Head, Link, router } from '@inertiajs/react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Deferred, Head, Link, router } from '@inertiajs/react';
 // 2026-08-17 — restored after the 2026-07-27 reader-core trim (see plan
 // addendum). One change from the original: the toolbar's "Views" link to
 // /projects/{slug}/saved-views was dropped — its controller
@@ -14,16 +14,20 @@ import { WorkspaceMap, type MapProjectInfo, type MapProjectSummary, type MapColl
 import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/CompareHolesModal';
 import { SectionView } from '@/Components/Foundry/SectionView';
 import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
-import { Borehole3DView } from '@/Components/Foundry/Borehole3DView';
 import { LogCurveToggles, type AvailableLogCurve } from '@/Components/Foundry/LogCurveToggles';
 import { describeTruncation, type WorkspaceTruncation } from '@/lib/workspaceLimits';
 import { useFullscreenToggle } from '@/Hooks/useFullscreenToggle';
 import { structurePoles, structureStrikes } from '@/lib/structureProjection';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
+import { LOG_PROPS, VIZ3D_PROPS, copilotQuickPrompts, crsLabel, initialView3D, reloadPlan } from '@/lib/workspacePage';
+import { hasNonCollarMapData, type LonLatBounds } from '@/lib/workspaceMapView';
 
 // Heavy Plotly-backed 3D sub-views — lazy-loaded so the workspace shell
 // stays small and only pays the Plotly cost when the user enters 3D mode
 // and selects the corresponding sub-view.
+// Borehole3DView too: it was the one static import here, and it pulled the
+// 4.6 MB Plotly chunk into every Workspace visit, MAP mode included (FE-10).
+const Borehole3DView = lazy(() => import('@/Components/Foundry/Borehole3DView'));
 const MultiHole3DTrace = lazy(() => import('@/Components/Analytics/MultiHole3DTrace'));
 const Stereosphere = lazy(() => import('@/Components/HoleAnalysis/Stereosphere'));
 const OrientationSpiral = lazy(() => import('@/Components/HoleAnalysis/OrientationSpiral'));
@@ -138,6 +142,7 @@ interface HoleIntervalBand {
 }
 
 interface HoleIntervals {
+    collar_id?: string;
     hole_id: string;
     total_depth: number | null;
     easting: number | null;
@@ -173,7 +178,10 @@ interface WorkspaceProps {
         commodity: string | null;
         region: string | null;
         crs_epsg: number | null;
+        data_version?: number;
     };
+    /** [west, south, east, north] of non-collar map data; set when no collar has a position. */
+    project_extent?: LonLatBounds | null;
     project_summary: MapProjectSummary;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     project_aoi: any | null;
@@ -198,19 +206,21 @@ interface WorkspaceProps {
     log_alteration_intervals: StripAlterationBand[];
     log_mineralization_intervals: StripMineralBand[];
     log_tracks_truncated?: { lithology?: boolean; alteration?: boolean; mineralization?: boolean };
-    first_holes_intervals: HoleIntervals[];
+    // ── deferred `viz3d` group (FE-11): undefined until it arrives ──
+    first_holes_intervals?: HoleIntervals[];
     project_layers: ProjectLayer[];
     strat_units: StratUnit[];
     strat_source: 'project' | 'reference';
     project_country: 'CA' | 'US' | 'OTHER';
-    surveys_3d: Survey3D[];
-    structures_3d: Structure3D[];
-    assay_composites_3d: AssayComposite3D[];
-    assay_elements_3d: AssayElement3D[];
-    significant_intersections_3d: SignificantIntersection3D[];
-    structures_visual_3d: StructureVisual3D[];
-    commodity_samples_3d: CommoditySample3D[];
-    commodity_keys_3d: CommodityKey3D[];
+    surveys_3d?: Survey3D[];
+    structures_3d?: Structure3D[];
+    assay_composites_3d?: AssayComposite3D[];
+    assay_elements_3d?: AssayElement3D[];
+    significant_intersections_3d?: SignificantIntersection3D[];
+    structures_visual_3d?: StructureVisual3D[];
+    commodity_samples_3d?: CommoditySample3D[];
+    commodity_keys_3d?: CommodityKey3D[];
+    survey_holes_downsampled?: number;
     empty: boolean;
     truncation?: WorkspaceTruncation;
 }
@@ -246,13 +256,58 @@ function initialMode(): Mode {
 }
 type Tool = 'pan' | 'draw' | 'measure' | 'select';
 
-export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_available_curves, log_selected_curves, log_curves_max, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, log_alteration_intervals = [], log_mineralization_intervals = [], log_tracks_truncated, first_holes_intervals, project_layers, strat_units, strat_source, project_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty, truncation }: WorkspaceProps) {
-    // Phase 5 real-time push — sync_silver_to_kg / mv_refresh_silver /
-    // ingest jobs all touch the 3D mode's 9 sub-views. Full reload is
-    // acceptable given the large prop surface (per Phase 5 decision).
+/** Shared empty value for deferred props that have not arrived yet (stable identity for memo deps). */
+const EMPTY: never[] = [];
+
+/**
+ * Placeholder for panels fed by the deferred 3D group. A deferred prop with
+ * no placeholder reads as a broken page.
+ */
+function DeferredPanelSkeleton({ label }: { label: string }) {
+    return (
+        <div
+            role="status"
+            aria-live="polite"
+            data-testid="deferred-skeleton"
+            className="flex-1 flex flex-col gap-3 min-h-[240px] p-4 rounded border animate-pulse"
+            style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
+        >
+            <div className="h-3 w-48 rounded" style={{ background: 'var(--bg-3, var(--bg-2))' }} />
+            <div className="h-3 w-80 rounded" style={{ background: 'var(--bg-3, var(--bg-2))' }} />
+            <div className="flex-1 rounded" style={{ background: 'var(--bg-2)' }} />
+            <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                {label}
+            </span>
+        </div>
+    );
+}
+
+export default function FoundryWorkspace({ project, project_extent = null, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_available_curves, log_selected_curves, log_curves_max, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, log_alteration_intervals = [], log_mineralization_intervals = [], log_tracks_truncated, first_holes_intervals = EMPTY, project_layers, strat_units, strat_source, project_country, surveys_3d = EMPTY, structures_3d = EMPTY, assay_composites_3d = EMPTY, assay_elements_3d = EMPTY, significant_intersections_3d = EMPTY, structures_visual_3d = EMPTY, commodity_samples_3d = EMPTY, commodity_keys_3d = EMPTY, survey_holes_downsampled, empty, truncation }: WorkspaceProps) {
+    // Real-time push, scoped (FE-11). This used to router.reload() every
+    // prop — the whole multi-MB 3D payload included — on any event carrying
+    // `reports`, which every ingest completion carries. reloadPlan() maps
+    // each affected type to the props that actually read it; the deferred
+    // 3D group is refetched now if a 3D-using mode is on screen, otherwise
+    // on the next visit to one.
+    const modeRef = useRef<Mode>(initialMode());
+    const viz3dStaleRef = useRef(false);
     useWorkspaceDataUpdated(project.project_id, (event) => {
-        if (event.affected_types.includes('collars') || event.affected_types.includes('reports')) {
+        const plan = reloadPlan(event.affected_types);
+        if (plan.props === 'all') {
+            viz3dStaleRef.current = false;
             router.reload();
+            return;
+        }
+        const only = [...plan.props];
+        if (plan.viz3d) {
+            if (modeRef.current === '3d' || modeRef.current === 'structure') {
+                only.push(...VIZ3D_PROPS);
+            } else {
+                viz3dStaleRef.current = true;
+            }
+        }
+        if (only.length > 0) {
+            router.reload({ only });
         }
     });
 
@@ -292,12 +347,16 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
     // in it. The mode looked broken at exactly the moment it had data to
     // show. Order below is "richest first": whichever is populated wins,
     // and lithology stays the preference when it is.
-    const [view3d, setView3d] = useState<View3D>(() => {
-        if (intervals_count > 0) return 'lithology';
-        if (surveys_3d.length > 0 || collars.length > 0) return 'trajectories';
-        if (structures_3d.length > 0 || structures_visual_3d.length > 0) return 'stereosphere';
-        return 'lithology';
-    });
+    //
+    // Judged on the EAGER counts: the 3D arrays arrive deferred, after mount.
+    // An only-gold-structures project opens on Structure Discs (the view that
+    // draws that table), not an empty Stereosphere (FE-25).
+    const [view3d, setView3d] = useState<View3D>(() => initialView3D({
+        intervalsCount: intervals_count,
+        collarsCount: collars.length,
+        structuresCount: structures_count,
+        structuresVisualCount: structures_visual_count,
+    }));
     const [tool, setTool] = useState<Tool>('pan');
     const [projectLayersOn, setProjectLayersOn] = useState<Record<string, boolean>>(
         () => Object.fromEntries(project_layers.map((l) => [l.id, l.on])),
@@ -329,6 +388,15 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
     // teardown+rebuild every switch — MapLibre instance, Plotly 3D
     // scene, and SectionView fetches all persist between switches.
     const [visitedModes, setVisitedModes] = useState<Set<Mode>>(() => new Set<Mode>([initialMode()]));
+    // Entering a 3D-using mode after an ingest marked the 3D group stale.
+    useEffect(() => {
+        modeRef.current = mode;
+        if ((mode === '3d' || mode === 'structure') && viz3dStaleRef.current) {
+            viz3dStaleRef.current = false;
+            router.reload({ only: [...VIZ3D_PROPS] });
+        }
+    }, [mode]);
+    const [showReferenceStrat, setShowReferenceStrat] = useState(false);
     useEffect(() => {
         setVisitedModes((prev) => {
             if (prev.has(mode)) return prev;
@@ -384,6 +452,16 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
     function renderModePanel(target: Mode, content: React.ReactNode) {
         if (!visitedModes.has(target)) return null;
         const visible = mode === target;
+        // Only MAP (and COMPARE, which has its own message) can show anything
+        // for a project with GIS data but no drill holes.
+        if (empty && target !== 'map' && target !== 'compare') {
+            content = (
+                <EmptyState
+                    title="No drill holes in this project yet."
+                    detail="This mode draws collars, surveys and downhole data. The project's map layers are in MAP mode; add drill data via Data → Connect Source."
+                />
+            );
+        }
 
         return (
             <div
@@ -414,7 +492,15 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
         }
     }
 
-    const truncationNotices = describeTruncation(truncation);
+    const truncationNotices = describeTruncation(
+        truncation ? { ...truncation, survey_holes_downsampled: survey_holes_downsampled ?? 0 } : truncation,
+    );
+
+    // FE-3: the canvas is shown when the project has ANY map data. It used to
+    // be gated on collars alone, so a delivery of shapefiles / geochem /
+    // claims — already counted in the Layers rail — had nowhere to be seen.
+    const hasMapData = !empty || hasNonCollarMapData(project_layers);
+    const logCollar = log_hole_id ? findCollar(log_hole_id) : null;
 
     // A hole can have a logged strip with no curves at all (a geology log and no LAS).
     const hasLogGeologyTracks = log_alteration_intervals.length > 0 || log_mineralization_intervals.length > 0;
@@ -540,10 +626,10 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                         Internal scroll lives on the chart card content,
                         not on the section, so the page never grows past 100vh. */}
                     <section className={`flex flex-col overflow-hidden min-h-0${isCanvasFullscreen ? ' p-0' : ' p-6'}`}>
-                        {empty ? (
+                        {!hasMapData ? (
                             <EmptyState
-                                title="No drill data in this project."
-                                detail="Ingest LAS / SEG-Y / AGS / KMZ via Data → Connect Source to populate the workspace canvases."
+                                title="Nothing to show in this project yet."
+                                detail="Upload drill data (collars, surveys, logs) or map layers (shapefiles, GeoPackage, geochemistry, claims) via Data → Connect Source to populate the workspace canvases."
                                 action={<Link href={`/projects/${project.slug}/reports`} className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border" style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}>Open import quality →</Link>}
                             />
                         ) : (
@@ -567,6 +653,8 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             // not the slug: /tiles/silver/{fn}/
                                             // {z}/{x}/{y}.pbf?project_id={uuid}
                                             projectId={project.project_id}
+                                            dataVersion={project.data_version ?? 0}
+                                            projectExtent={project_extent}
                                             projectInfo={{
                                                 project_name: project.project_name,
                                                 company: project.company,
@@ -597,21 +685,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                     {
                                                         preserveScroll: true,
                                                         preserveState: true,
-                                                        only: [
-                                                            'log_tracks',
-                                                            'log_available_curves',
-                                                            'log_selected_curves',
-                                                            'log_hole_id',
-                                                            'log_depth_max',
-                                                            'log_hole_total_depth',
-                                                            'log_hole_easting',
-                                                            'log_hole_northing',
-                                                            'log_lithology_intervals',
-                                                            'log_alteration_intervals',
-                                                            'log_mineralization_intervals',
-                                                            'log_tracks_truncated',
-                                                            'log_hole_options',
-                                                        ],
+                                                        only: [...LOG_PROPS],
                                                     },
                                                 );
                                             }}
@@ -642,7 +716,9 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                         )}
                                     </Card>
                                 ))}
-                                {renderModePanel('3d', (() => {
+                                {renderModePanel('3d', (
+                                    <Deferred data={[...VIZ3D_PROPS]} fallback={<DeferredPanelSkeleton label="Loading 3D data…" />}>
+                                    {(() => {
                                     // Resolve the "active hole" for the per-hole 3D sub-views
                                     // (Spiral). Prefer the LOGS panel's current hole if set,
                                     // otherwise fall back to the first collar with usable
@@ -722,11 +798,13 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             intervals_count > 0 ? (
                                                 <>
                                                     <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Each hole rendered as a vertical line coloured by derived lithology bands. Yellow segments = U-host (ore).
+                                                        Each hole drawn along its desurveyed path (surveys, or collar azimuth/dip when it has none) and coloured by derived lithology bands.
                                                         Drag to rotate, scroll to zoom, shift-drag to pan. Hover a band for hole ID / depth interval / lithology code.
                                                     </div>
                                                     <div className="flex-1 min-h-0">
-                                                        <Borehole3DView holes={first_holes_intervals} height={chartH} />
+                                                        <Suspense fallback={<EmptyState title="Loading 3D viewer…" detail="" />}>
+                                                            <Borehole3DView holes={first_holes_intervals} collars={collars} surveys={surveys_3d} height={chartH} />
+                                                        </Suspense>
                                                     </div>
                                                 </>
                                             ) : (
@@ -740,9 +818,9 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             collars.length > 0 ? (
                                                 <>
                                                     <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Every drill hole projected from its collar in shared UTM space using azimuth + dip surveys.
-                                                        Colour-coded by hole status — green = completed, amber = active, red = abandoned. Use it to spot
-                                                        drilling-pattern gaps, overlapping targets, and overall campaign geometry.
+                                                        Every drill hole desurveyed from its collar (minimum curvature) and extended to TD. Dashed = no
+                                                        downhole survey, projected along the collar azimuth/dip. Colour-coded by hole status — green =
+                                                        completed, amber = active, red = abandoned.
                                                     </div>
                                                     <div className="flex-1 min-h-0">
                                                         <Suspense fallback={<EmptyState title="Loading 3D trajectories…" detail="" />}>
@@ -755,6 +833,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                                     elevation: c.elevation ?? null,
                                                                     easting: c.easting,
                                                                     northing: c.northing,
+                                                                    total_depth: c.total_depth,
                                                                     hole_type: c.hole_type ?? null,
                                                                     status: c.status ?? null,
                                                                 }))}
@@ -790,8 +869,10 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                 </>
                                             ) : (
                                                 <EmptyState
-                                                    title="No structural measurements ingested yet (system-wide)."
-                                                    detail="The 3D stereosphere needs discrete planar features (bedding, foliation, joints, faults, veins) with true_dip + dip_direction. silver.structure has 0 rows across every project — the LAS/binary-log corpora carry per-depth downhole survey curves (used by Trajectories + Spiral) but not measured geological structures. Add via Data → Connect Source (CSV with strike/dip per depth) or QField, or wait for downstream extraction from descriptions."
+                                                    title="No logged planar structures in this project."
+                                                    detail={structures_visual_3d.length > 0
+                                                        ? 'The stereosphere draws logged structure rows (dip + dip direction). This project has derived structure measurements instead — see Structure Discs.'
+                                                        : 'The stereosphere needs logged planar features (bedding, foliation, joints, faults, veins) with a dip and a dip direction. Upload a structure table (hole, depth, dip, dip direction) via Data → Connect Source.'}
                                                 />
                                             )
                                         )}
@@ -819,7 +900,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             ) : (
                                                 <EmptyState
                                                     title="Not enough survey data for an orientation spiral."
-                                                    detail="Need at least one collar with azimuth + dip, plus survey stations (silver.surveys). The Wyoming Cameco corpus has AZIMUTH + SANG curves on well_log_curves but no parsed survey rows yet — derivation is the next pipeline step."
+                                                    detail="Needs downhole survey stations for the active hole, or a collar azimuth + dip. Upload a survey table (hole, depth, azimuth, dip) via Data → Connect Source."
                                                 />
                                             )
                                         )}
@@ -839,8 +920,8 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                 </>
                                             ) : (
                                                 <EmptyState
-                                                    title="No structural measurements ingested yet (system-wide)."
-                                                    detail="silver.structure has 0 rows across every project. The aggregate stereonet aggregates planar features (bedding/foliation/joint/fault) across every hole, but none have been logged. Add via Data → Connect Source (CSV/QGIS) or QField; the binary .log corpus carries deviation curves (used by Trajectories + Spiral) but not measured structures."
+                                                    title="No logged planar structures in this project."
+                                                    detail="The aggregate stereonet combines logged planar features (bedding, foliation, joints, faults) across every hole in this project. Upload a structure table via Data → Connect Source."
                                                 />
                                             )
                                         )}
@@ -857,6 +938,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                         <Suspense fallback={<EmptyState title="Loading assay composites…" detail="" />}>
                                                             <AssayComposites3DView
                                                                 collars={collars}
+                                                                surveys={surveys_3d}
                                                                 composites={assay_composites_3d}
                                                                 elements={assay_elements_3d}
                                                                 height={chartH}
@@ -867,7 +949,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             ) : (
                                                 <EmptyState
                                                     title="0 rows in gold.assay_composites for this project."
-                                                    detail="The composite pipeline (compute_assay_composites Dagster asset) hasn't run for this project yet. Composites are derived from silver.assays_v2 at common cutoffs per element."
+                                                    detail="Assay composites are derived from this project's assays at common cutoffs per element. Upload assay data via Data → Connect Source; composites appear once the derivation has run for this project."
                                                 />
                                             )
                                         )}
@@ -884,6 +966,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                         <Suspense fallback={<EmptyState title="Loading significant intersections…" detail="" />}>
                                                             <SignificantIntersections3DView
                                                                 collars={collars}
+                                                                surveys={surveys_3d}
                                                                 intersections={significant_intersections_3d}
                                                                 height={chartH}
                                                             />
@@ -893,7 +976,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             ) : (
                                                 <EmptyState
                                                     title="0 rows in gold.significant_intersections for this project."
-                                                    detail="The promote_significant_intersections Dagster asset hasn't run. Once it does, every cutoff-grade hit per hole shows up here as a highlight ribbon."
+                                                    detail="Significant intersections are derived from this project's assays at cutoff grades. Once assays are ingested and the derivation has run, every cutoff-grade hit per hole shows up here as a highlight ribbon."
                                                 />
                                             )
                                         )}
@@ -901,14 +984,14 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             commodity_keys_3d.length > 0 ? (
                                                 <>
                                                     <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Commodity grades per sample interval from <span className="font-bold">silver.samples</span>.
-                                                        For Cameco this is where uranium grade (U3O8_pct_e) actually lives — gold.assay_composites
-                                                        is REE/base-metals only. Pick a commodity to see grade variation along every hole.
+                                                        Commodity grades per sample interval from <span className="font-bold">silver.samples</span>,
+                                                        placed along each hole's desurveyed path. Pick a commodity to see grade variation along every hole.
                                                     </div>
                                                     <div className="flex-1 min-h-0">
                                                         <Suspense fallback={<EmptyState title="Loading commodity samples…" detail="" />}>
                                                             <CommoditySamples3DView
                                                                 collars={collars}
+                                                                surveys={surveys_3d}
                                                                 samples={commodity_samples_3d}
                                                                 commodityKeys={commodity_keys_3d}
                                                                 height={chartH}
@@ -936,6 +1019,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                         <Suspense fallback={<EmptyState title="Loading structure discs…" detail="" />}>
                                                             <StructureDiscs3DView
                                                                 collars={collars}
+                                                                surveys={surveys_3d}
                                                                 structures={structures_visual_3d}
                                                                 height={chartH}
                                                             />
@@ -951,8 +1035,12 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                         )}
                                     </Card>
                                     );
-                                })())}
+                                })()}
+                                    </Deferred>
+                                ))}
                                 {renderModePanel('structure', (
+                                    <Deferred data={['structures_3d', 'structures_visual_3d']} fallback={<DeferredPanelSkeleton label="Loading structure measurements…" />}>
+                                    {
                                     structures_count > 0 || structures_visual_count > 0 ? (
                                         <div className="grid grid-cols-2 gap-4">
                                             <Card eyebrow={`STEREONET · ${poles.length} poles`} title="Schmidt equal-area">
@@ -985,7 +1073,8 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                 detail="Downhole surveys give this project hole orientation, but a stereonet needs logged planar readings — joint, foliation, fault or bedding measurements with a dip and a dip direction. Upload a structure table, or a shapefile of structural readings, and this panel fills in."
                                             />
                                         </Card>
-                                    )
+                                    )}
+                                    </Deferred>
                                 ))}
                                 {renderModePanel('logs', (
                                     <Card
@@ -1052,22 +1141,56 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                             </div>
                                                             {(log_hole_easting !== null && log_hole_northing !== null) && (
                                                                 <div className="mt-1.5" style={{ color: 'var(--fg-3)' }}>
-                                                                    UTM 13N · E {Math.round(log_hole_easting).toLocaleString()} · N {Math.round(log_hole_northing).toLocaleString()}
+                                                                    {/* FE-18: was a hard-coded "UTM 13N" on every project. */}
+                                                                    {crsLabel(project.crs_epsg)} · E {Math.round(log_hole_easting).toLocaleString()} · N {Math.round(log_hole_northing).toLocaleString()}
                                                                 </div>
                                                             )}
+                                                            {logCollar && (
+                                                                // FE-15: the per-hole page had no inbound link.
+                                                                <Link
+                                                                    href={`/projects/${project.slug}/holes/${encodeURIComponent(logCollar.collar_id)}/detail`}
+                                                                    className="inline-block mt-2 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
+                                                                    style={{ color: 'var(--accent)', borderColor: 'var(--accent-dim)', background: 'var(--accent-bg)' }}
+                                                                >
+                                                                    Open hole page →
+                                                                </Link>
+                                                            )}
                                                         </div>
-                                                        <ChronoColumn
-                                                            units={strat_units}
-                                                            height={Math.max(360, chartH - 100)}
-                                                            width={420}
-                                                            eyebrow={strat_source === 'project' ? 'Project chronostratigraphy' : `Regional reference · ${project_country === 'US' ? 'Wyoming roll-front uranium' : 'Athabasca / Wollaston Domain'}`}
-                                                            title={strat_source === 'project' ? 'Stratigraphic column' : (project_country === 'US' ? 'Shirley / PRB / WRB roll-front host stack' : 'Athabasca Group · Wollaston Domain')}
-                                                        />
+                                                        {strat_source === 'project' || showReferenceStrat ? (
+                                                            <ChronoColumn
+                                                                units={strat_units}
+                                                                height={Math.max(360, chartH - 100)}
+                                                                width={420}
+                                                                eyebrow={strat_source === 'project' ? 'Project chronostratigraphy' : `Regional reference — NOT this project's stratigraphy · ${project_country === 'US' ? 'Wyoming roll-front uranium' : 'Athabasca / Wollaston Domain'}`}
+                                                                title={strat_source === 'project' ? 'Stratigraphic column' : (project_country === 'US' ? 'Shirley / PRB / WRB roll-front host stack' : 'Athabasca Group · Wollaston Domain')}
+                                                            />
+                                                        ) : (
+                                                            // FE-25: a regional column (Athabasca, or a Wyoming
+                                                            // roll-front stack) was shown for every project in
+                                                            // that country whatever its geology. Now opt-in and
+                                                            // labelled; which column, if any, is right for a
+                                                            // project is an SME call.
+                                                            <div
+                                                                className="text-[11px] font-mono px-4 py-3 rounded border"
+                                                                style={{ borderColor: 'var(--line-1)', background: 'var(--bg-2)', color: 'var(--fg-2)' }}
+                                                            >
+                                                                <div className="uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>Stratigraphic column</div>
+                                                                No formations are recorded for this project yet.
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setShowReferenceStrat(true)}
+                                                                    className="block mt-2 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
+                                                                    style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}
+                                                                >
+                                                                    Show a regional reference column ({project_country === 'US' ? 'Wyoming roll-front' : 'Athabasca / Wollaston'})
+                                                                </button>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 </div>
-                                                {strat_source === 'reference' && (
+                                                {strat_source === 'reference' && showReferenceStrat && (
                                                     <div className="text-[10px] font-mono mt-2 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Chrono column = regional reference (silver.geological_formations has 0 rows for this project).
+                                                        Chrono column = regional reference, not derived from this project (no formations recorded for it).
                                                     </div>
                                                 )}
                                             </>
@@ -1179,11 +1302,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                         </div>
                                     </div>
                                     <div className="text-[10px] font-mono uppercase tracking-wider pt-2" style={{ color: 'var(--fg-3)' }}>Quick prompts</div>
-                                    {[
-                                        'Summarise the ore zones in this project',
-                                        'Which holes have U₃O₈ > 0.05% intervals?',
-                                        'Compare this project to Smith Ranch-Highland',
-                                    ].map((q) => (
+                                    {copilotQuickPrompts(project.commodity).map((q) => (
                                         <Link
                                             key={q}
                                             href={`/projects/${project.slug}/chat?prompt=${encodeURIComponent(q)}`}
@@ -1306,21 +1425,7 @@ function LogsHolePicker({ projectSlug, activeHoleId, holes }: { projectSlug: str
             {
                 preserveScroll: true,
                 preserveState: true,
-                only: [
-                    'log_tracks',
-                    'log_available_curves',
-                    'log_selected_curves',
-                    'log_hole_id',
-                    'log_depth_max',
-                    'log_hole_total_depth',
-                    'log_hole_easting',
-                    'log_hole_northing',
-                    'log_lithology_intervals',
-                    'log_alteration_intervals',
-                    'log_mineralization_intervals',
-                    'log_tracks_truncated',
-                    'log_hole_options',
-                ],
+                only: [...LOG_PROPS],
             },
         );
     }

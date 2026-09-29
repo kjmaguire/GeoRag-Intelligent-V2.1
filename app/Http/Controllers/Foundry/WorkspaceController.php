@@ -10,6 +10,7 @@ use App\Support\HoleStripTracks;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
@@ -100,7 +101,7 @@ class WorkspaceController extends Controller
 
         $workspaceId = (string) $project->workspace_id;
 
-        return $this->withWorkspaceRls($workspaceId, function () use ($request, $project) {
+        return $this->withWorkspaceRls($workspaceId, function () use ($request, $project, $workspaceId) {
             // Deterministic order (hole_id, then collar_id as a tiebreaker) so
             // the cap always keeps the same holes and the 3D interval set below
             // is a stable prefix of this one.
@@ -420,393 +421,6 @@ class WorkspaceController extends Controller
                 $this->rollBackToSavepoint($sp);
             }
 
-            // All holes' lithology intervals — feeds both the 3D Plotly viewer
-            // and the mini-strip 3D grid. Capped at MAX_INTERVAL_HOLES holes +
-            // MAX_INTERVAL_BANDS_PER_HOLE bands/hole to keep payloads reasonable
-            // (worst case ~16k records ≈ 2MB).
-            // Each entry now also carries lat/lng + easting/northing so the
-            // 3D viewer can position each cylinder in real space.
-            $firstHolesIntervals = [];
-            $sp = $this->openSavepoint();
-            try {
-                // A prefix of the SAME ordered collar set the map and every
-                // other per-hole panel use, not a second independent query.
-                $collarRows = $collars->take(self::MAX_INTERVAL_HOLES);
-                // One windowed query for every hole's bands, instead of one
-                // query per hole.
-                //
-                // This was a `foreach ($collarRows as $cr)` issuing a
-                // separate SELECT per collar — up to 200 sequential round
-                // trips on a single page load. withWorkspaceRls() wraps the
-                // whole action in DB::transaction(), and PgBouncer runs in
-                // transaction pooling, so one server connection stayed
-                // pinned across all 200. A handful of concurrent workspace
-                // loads was enough to exhaust the server-side pool and queue
-                // every other query in the application behind them.
-                //
-                // ROW_NUMBER() reproduces the per-collar `ORDER BY
-                // depth_from LIMIT 80` exactly; a plain `whereIn` with a
-                // global LIMIT would not — one deep hole would eat the whole
-                // budget and the rest would come back empty.
-                $bandsByCollar = [];
-                $collarIds = $collarRows->pluck('collar_id')->all();
-                if ($collarIds !== []) {
-                    $ranked = DB::table('gold.drillhole_intervals_visual')
-                        ->whereIn('collar_id', $collarIds)
-                        ->where('interval_kind', 'lithology')
-                        ->selectRaw(
-                            'collar_id, depth_from, depth_to, lithology_code, color_hint, '
-                            .'ROW_NUMBER() OVER (PARTITION BY collar_id ORDER BY depth_from) AS rn',
-                        );
-
-                    foreach (
-                        DB::query()->fromSub($ranked, 'ranked')
-                            ->where('rn', '<=', self::MAX_INTERVAL_BANDS_PER_HOLE)
-                            ->orderBy('collar_id')
-                            ->orderBy('depth_from')
-                            ->get() as $b
-                    ) {
-                        $bandsByCollar[(string) $b->collar_id][] = [
-                            'from' => (float) $b->depth_from,
-                            'to' => (float) $b->depth_to,
-                            'code' => (string) $b->lithology_code,
-                            'color' => (string) $b->color_hint,
-                        ];
-                    }
-                }
-
-                foreach ($collarRows as $cr) {
-                    $firstHolesIntervals[] = [
-                        'hole_id' => (string) ($cr->hole_id_canonical ?? $cr->hole_id),
-                        'total_depth' => $cr->total_depth !== null ? (float) $cr->total_depth : null,
-                        'easting' => $cr->easting !== null ? (float) $cr->easting : null,
-                        'northing' => $cr->northing !== null ? (float) $cr->northing : null,
-                        'lat' => isset($cr->lat) ? (float) $cr->lat : null,
-                        'lng' => isset($cr->lng) ? (float) $cr->lng : null,
-                        // A hole with no lithology bands still gets an entry,
-                        // same as when its per-hole query returned nothing.
-                        'bands' => $bandsByCollar[(string) $cr->collar_id] ?? [],
-                    ];
-                }
-                $this->releaseSavepoint($sp);
-            } catch (\Throwable $e) { /* fallback empty */
-                $this->rollBackToSavepoint($sp);
-            }
-
-            // Downhole survey stations (depth, azimuth, dip) — feeds the 3D
-            // Trajectories sub-view in the workspace 3D mode.
-            //
-            // Fetched for EXACTLY the collars returned above (whereIn on that
-            // set), bounded PER HOLE rather than by one global row cap. The old
-            // `ORDER BY collar_id LIMIT 20000` spent the whole budget on the
-            // first holes in uuid order and silently gave every later hole no
-            // trajectory at all. Now a hole with more than
-            // MAX_SURVEY_STATIONS_PER_HOLE stations is thinned to evenly spaced
-            // stations (first and last always kept, so the deep end of the
-            // trace is not cut off); the visual is a qualitative drill-pattern
-            // check, not a precise survey export.
-            //
-            // FALLBACK, per collar: any returned collar with no silver.surveys
-            // rows gets stations derived from silver.well_log_curves AZIMUTH +
-            // SANG curves (Cameco binary .log corpus carries per-depth survey
-            // angles on every hole but has never promoted them into the surveys
-            // table), downsampled to ~25 stations per hole.
-            $surveys = [];
-            $surveyHolesDownsampled = 0;
-            $sp = $this->openSavepoint();
-            try {
-                $collarIds = $collars->pluck('collar_id')->all();
-                if (! empty($collarIds)) {
-                    $maxStations = self::MAX_SURVEY_STATIONS_PER_HOLE;
-                    $ranked = DB::table('silver.surveys')
-                        ->whereIn('collar_id', $collarIds)
-                        ->selectRaw(
-                            'collar_id, depth, azimuth, dip, '
-                            .'ROW_NUMBER() OVER (PARTITION BY collar_id ORDER BY depth) AS rn, '
-                            .'COUNT(*) OVER (PARTITION BY collar_id) AS cnt',
-                        );
-                    $surveyRows = DB::query()->fromSub($ranked, 'ranked')
-                        ->whereRaw(sprintf(
-                            '(((rn - 1) %% ((cnt + %1$d - 1) / %1$d)) = 0 OR rn = cnt)',
-                            $maxStations,
-                        ))
-                        ->orderBy('collar_id')
-                        ->orderBy('depth')
-                        ->get(['collar_id', 'depth', 'azimuth', 'dip', 'cnt']);
-
-                    $downsampled = [];
-                    foreach ($surveyRows as $r) {
-                        if ((int) $r->cnt > $maxStations) {
-                            $downsampled[(string) $r->collar_id] = true;
-                        }
-                        $surveys[] = [
-                            'collar_id' => (string) $r->collar_id,
-                            'depth' => (float) $r->depth,
-                            'azimuth' => $r->azimuth !== null ? (float) $r->azimuth : null,
-                            'dip' => $r->dip !== null ? (float) $r->dip : null,
-                        ];
-                    }
-                    $surveyHolesDownsampled = count($downsampled);
-
-                    $haveSurveys = array_fill_keys(array_column($surveys, 'collar_id'), true);
-                    $missing = array_values(array_filter(
-                        array_map('strval', $collarIds),
-                        fn (string $id) => ! isset($haveSurveys[$id]),
-                    ));
-                    // Chunked: each collar's AZIMUTH/SANG arrays are ~3.7k
-                    // samples, so bound how many are parsed in memory at once.
-                    foreach (array_chunk($missing, 100) as $chunk) {
-                        array_push($surveys, ...$this->deriveSurveysFromCurves($chunk));
-                    }
-                }
-                $this->releaseSavepoint($sp);
-            } catch (\Throwable $e) { /* fallback empty */
-                $this->rollBackToSavepoint($sp);
-            }
-
-            // Raw structure measurements (planar features + lineations) — feeds
-            // the 3D Stereosphere sub-view. Table is `silver.structure` (singular,
-            // per the migration); columns are `true_dip` + `true_dip_dir` + `notes`.
-            // May be empty (Wyoming Cameco binary .log corpus has no extracted
-            // structures yet); Stereosphere still renders the wireframe.
-            $structures = [];
-            $sp = $this->openSavepoint();
-            try {
-                $collarIds = $collars->pluck('collar_id')->all();
-                if (! empty($collarIds)) {
-                    $structures = DB::table('silver.structure')
-                        ->whereIn('collar_id', $collarIds)
-                        ->whereNotNull('true_dip')
-                        ->whereNotNull('true_dip_dir')
-                        ->limit(5000)
-                        ->get(['collar_id', 'depth', 'structure_type', 'true_dip', 'true_dip_dir', 'notes'])
-                        ->map(fn ($r) => [
-                            'collar_id' => (string) $r->collar_id,
-                            'depth' => (float) $r->depth,
-                            'structure_type' => (string) $r->structure_type,
-                            'true_dip' => $r->true_dip !== null ? (float) $r->true_dip : null,
-                            'dip_direction' => $r->true_dip_dir !== null ? (float) $r->true_dip_dir : null,
-                            'description' => $r->notes !== null ? (string) $r->notes : null,
-                        ])
-                        ->values()
-                        ->all();
-                }
-                $this->releaseSavepoint($sp);
-            } catch (\Throwable $e) { /* fallback empty */
-                $this->rollBackToSavepoint($sp);
-            }
-
-            // Gold-tier 3D payloads — three new sub-views in MODE=3D:
-            // assay grade bands, significant intersection highlights, and
-            // structure-measurement discs. All wrapped in try/catch so the
-            // route still renders cleanly if a table is missing or empty.
-
-            // gold.assay_composites — composited grade bands per hole/element.
-            // Default to the most-common element on the project so the picker
-            // has a sensible starting state; the FE can switch.
-            $assayComposites = [];
-            $assayElements = [];
-            $sp = $this->openSavepoint();
-            try {
-                $collarIds = $collars->pluck('collar_id')->all();
-                if (! empty($collarIds)) {
-                    $elementRows = DB::table('gold.assay_composites')
-                        ->whereIn('collar_id', $collarIds)
-                        ->select('element', DB::raw('COUNT(*) AS n'))
-                        ->groupBy('element')
-                        ->orderByDesc('n')
-                        ->limit(12)
-                        ->get();
-                    $assayElements = $elementRows->map(fn ($r) => [
-                        'element' => (string) $r->element,
-                        'count' => (int) $r->n,
-                    ])->values()->all();
-
-                    $assayComposites = DB::table('gold.assay_composites')
-                        ->whereIn('collar_id', $collarIds)
-                        ->orderBy('collar_id')
-                        ->orderBy('element')
-                        ->orderBy('from_depth')
-                        ->limit(10000)
-                        ->get(['collar_id', 'element', 'from_depth', 'to_depth', 'weighted_avg', 'unit', 'cutoff_grade', 'sample_count'])
-                        ->map(fn ($r) => [
-                            'collar_id' => (string) $r->collar_id,
-                            'element' => (string) $r->element,
-                            'from_depth' => (float) $r->from_depth,
-                            'to_depth' => (float) $r->to_depth,
-                            'weighted_avg' => (float) $r->weighted_avg,
-                            'unit' => (string) $r->unit,
-                            'cutoff_grade' => $r->cutoff_grade !== null ? (float) $r->cutoff_grade : null,
-                            'sample_count' => $r->sample_count !== null ? (int) $r->sample_count : null,
-                        ])
-                        ->values()
-                        ->all();
-                }
-                $this->releaseSavepoint($sp);
-            } catch (\Throwable $e) { /* fallback empty */
-                $this->rollBackToSavepoint($sp);
-            }
-
-            // gold.significant_intersections — one or more cutoff-grade hits per
-            // hole. Renders as a highlight ribbon on each trace.
-            $significantIntersections = [];
-            $sp = $this->openSavepoint();
-            try {
-                $collarIds = $collars->pluck('collar_id')->all();
-                if (! empty($collarIds)) {
-                    $significantIntersections = DB::table('gold.significant_intersections')
-                        ->whereIn('collar_id', $collarIds)
-                        ->orderBy('collar_id')
-                        ->orderBy('from_depth')
-                        ->limit(5000)
-                        ->get(['collar_id', 'element', 'cutoff_grade', 'from_depth', 'to_depth', 'true_width_m', 'weighted_avg', 'unit', 'peak_value', 'peak_depth', 'zone_name'])
-                        ->map(fn ($r) => [
-                            'collar_id' => (string) $r->collar_id,
-                            'element' => (string) $r->element,
-                            'cutoff_grade' => (float) $r->cutoff_grade,
-                            'from_depth' => (float) $r->from_depth,
-                            'to_depth' => (float) $r->to_depth,
-                            'true_width_m' => $r->true_width_m !== null ? (float) $r->true_width_m : null,
-                            'weighted_avg' => (float) $r->weighted_avg,
-                            'unit' => (string) $r->unit,
-                            'peak_value' => $r->peak_value !== null ? (float) $r->peak_value : null,
-                            'peak_depth' => $r->peak_depth !== null ? (float) $r->peak_depth : null,
-                            'zone_name' => $r->zone_name !== null ? (string) $r->zone_name : null,
-                        ])
-                        ->values()
-                        ->all();
-                }
-                $this->releaseSavepoint($sp);
-            } catch (\Throwable $e) { /* fallback empty */
-                $this->rollBackToSavepoint($sp);
-            }
-
-            // gold.structure_measurements_visual — depth-anchored strike/dip
-            // measurements with stereonet-ready derived columns. Feeds the
-            // Structure Discs sub-view.
-            $structuresVisual = [];
-            $sp = $this->openSavepoint();
-            try {
-                // Real schema (verified 2026-05-25): columns are `depth` (not
-                // depth_m), `structure_type` (not measurement_kind), `trend_deg`
-                // / `plunge_deg` (not pole_*). Earlier migration source under
-                // database/raw/_archive/phase5-30-structure-measurements-visual.sql
-                // is stale relative to the live table (archived 2026-08-28).
-                $structuresVisual = DB::table('gold.structure_measurements_visual')
-                    ->where('project_id', $project->project_id)
-                    ->whereNotNull('collar_id')
-                    ->orderBy('collar_id')
-                    ->orderBy('depth')
-                    ->limit(5000)
-                    ->get(['collar_id', 'strike_deg', 'dip_deg', 'structure_type', 'depth', 'trend_deg', 'plunge_deg', 'dip_direction_deg'])
-                    ->map(function ($r) {
-                        // Pole-to-plane: trend = (dip_direction + 180) mod 360,
-                        // plunge = 90 - dip. Fallback because the gold asset
-                        // doesn't currently populate trend_deg / plunge_deg, but
-                        // it does populate dip_direction_deg + dip_deg.
-                        $dip = $r->dip_deg !== null ? (float) $r->dip_deg : 0.0;
-                        $dipDir = $r->dip_direction_deg !== null ? (float) $r->dip_direction_deg : null;
-                        $trend = $r->trend_deg !== null ? (float) $r->trend_deg
-                            : ($dipDir !== null ? fmod($dipDir + 180.0, 360.0) : 0.0);
-                        $plunge = $r->plunge_deg !== null ? (float) $r->plunge_deg : (90.0 - $dip);
-
-                        return [
-                            'collar_id' => (string) $r->collar_id,
-                            'strike_deg' => $r->strike_deg !== null ? (float) $r->strike_deg : 0.0,
-                            'dip_deg' => $dip,
-                            'measurement_kind' => (string) $r->structure_type,
-                            'depth_m' => $r->depth !== null ? (float) $r->depth : null,
-                            'pole_trend_deg' => $trend,
-                            'pole_plunge_deg' => $plunge,
-                            'display_color' => null,
-                            'display_symbol' => null,
-                            'confidence' => null,
-                        ];
-                    })
-                    ->values()
-                    ->all();
-                $this->releaseSavepoint($sp);
-            } catch (\Throwable $e) { /* fallback empty */
-                $this->rollBackToSavepoint($sp);
-            }
-
-            // silver.samples (commodity-grade samples) — feeds the
-            // CommoditySamples3DView sub-view. For Cameco this is the only
-            // place uranium grade (U3O8_pct_e) appears at hole+depth resolution;
-            // gold.assay_composites covers geochemistry/REE/base-metals but not
-            // U. Available commodities are surfaced as a picker; default to the
-            // one with the most non-null samples.
-            $commoditySamples = [];
-            $commodityKeys = [];
-            $sp = $this->openSavepoint();
-            try {
-                $collarIds = $collars->pluck('collar_id')->all();
-                if (! empty($collarIds)) {
-                    // Walk all sample rows and tally which jsonb keys carry a
-                    // numeric grade. We could push this into SQL with jsonb
-                    // path queries, but the 5k row cap keeps the PHP loop fast
-                    // and lets us be lenient with key normalisation.
-                    $rawSamples = DB::table('silver.samples')
-                        ->whereIn('collar_id', $collarIds)
-                        ->whereNotNull('commodity_assays')
-                        ->orderBy('collar_id')
-                        ->orderBy('from_depth')
-                        ->limit(5000)
-                        ->get(['collar_id', 'from_depth', 'to_depth', 'sample_type', 'commodity_assays']);
-
-                    $tally = [];
-                    foreach ($rawSamples as $r) {
-                        $assays = is_string($r->commodity_assays) ? json_decode($r->commodity_assays, true) : $r->commodity_assays;
-                        if (! is_array($assays)) {
-                            continue;
-                        }
-                        foreach ($assays as $key => $val) {
-                            if (! is_numeric($val)) {
-                                continue;
-                            }
-                            $tally[$key] = ($tally[$key] ?? 0) + 1;
-                        }
-                    }
-                    arsort($tally);
-                    // Exclude bookkeeping keys that aren't grades.
-                    $skip = ['confidence', 'n_points', 'method'];
-                    $commodityKeys = [];
-                    foreach ($tally as $k => $n) {
-                        if (in_array($k, $skip, true)) {
-                            continue;
-                        }
-                        $commodityKeys[] = ['key' => (string) $k, 'count' => (int) $n];
-                    }
-
-                    $commoditySamples = [];
-                    foreach ($rawSamples as $r) {
-                        $assays = is_string($r->commodity_assays) ? json_decode($r->commodity_assays, true) : $r->commodity_assays;
-                        if (! is_array($assays)) {
-                            continue;
-                        }
-                        $values = [];
-                        foreach ($assays as $key => $val) {
-                            if (is_numeric($val) && ! in_array($key, $skip, true)) {
-                                $values[$key] = (float) $val;
-                            }
-                        }
-                        if (empty($values)) {
-                            continue;
-                        }
-                        $commoditySamples[] = [
-                            'collar_id' => (string) $r->collar_id,
-                            'from_depth' => (float) $r->from_depth,
-                            'to_depth' => (float) $r->to_depth,
-                            'sample_type' => (string) $r->sample_type,
-                            'grades' => $values,
-                        ];
-                    }
-                }
-                $this->releaseSavepoint($sp);
-            } catch (\Throwable $e) { /* fallback empty */
-                $this->rollBackToSavepoint($sp);
-            }
-
             // Project layer row counts — drives the Layers panel left rail. Each
             // entry has the layer label, the table it represents, and the row
             // count so the UI can dim layers with no data.
@@ -900,8 +514,12 @@ class WorkspaceController extends Controller
             //
             // Each is wrapped because the table may not exist in every
             // environment; a missing count must not take the whole page down.
-            $mvtCounts = ['spatial_features' => 0, 'geochem' => 0, 'workings' => 0, 'formations' => 0, 'boundaries' => 0, 'seismic' => 0];
+            $mvtCounts = ['spatial_features' => 0, 'geochem' => 0, 'workings' => 0, 'formations' => 0, 'boundaries' => 0, 'seismic' => 0, 'drill_traces' => 0];
             foreach ([
+                // `traces` toggles ONLY the desurveyed MVT traces now (the
+                // synthetic due-south ticks were removed, FE-7 / GIS-10), so
+                // it counts trace rows, not collars.
+                'drill_traces' => 'silver.drill_traces',
                 'spatial_features' => 'silver.spatial_features',
                 'geochem' => 'silver.geochemistry',
                 'workings' => 'silver.historic_workings',
@@ -926,7 +544,7 @@ class WorkspaceController extends Controller
                 ['id' => 'collars', 'label' => 'Collars', 'count' => $collars->count(), 'on' => true],
                 ['id' => 'samples', 'label' => 'Ore-bearing holes only', 'count' => $oreHoleCount, 'on' => false],
                 ['id' => 'ore_heatmap', 'label' => 'Ore heatmap', 'count' => $oreHoleCount, 'on' => false],
-                ['id' => 'traces', 'label' => 'Drillhole traces', 'count' => $collars->count(), 'on' => false],
+                ['id' => 'traces', 'label' => 'Drillhole traces', 'count' => $mvtCounts['drill_traces'], 'on' => false],
                 ['id' => 'aoi', 'label' => 'Project AOI', 'count' => $aoiAvailable, 'on' => false],
                 ['id' => 'tier_5', 'label' => 'Ore tier ≥ 5 m', 'count' => $tierCounts['ore_5'], 'on' => false],
                 ['id' => 'tier_10', 'label' => 'Ore tier ≥ 10 m', 'count' => $tierCounts['ore_10'], 'on' => false],
@@ -994,6 +612,29 @@ class WorkspaceController extends Controller
             // Retain country context for the regional reference stratigraphic column.
             $country = $this->resolveProjectCountry($project);
 
+            // The heavy 3D payload is built at most once per request, and only
+            // when one of its deferred props is actually requested. It runs
+            // in its OWN RLS transaction: Inertia resolves deferred closures
+            // in toResponse(), after this outer withWorkspaceRls() transaction
+            // has committed, so without the wrap the GUC would be unset and the
+            // fail-closed policies would return nothing.
+            $threeD = null;
+            $loadThreeD = function () use (&$threeD, $workspaceId, $project, $collars): array {
+                return $threeD ??= $this->withWorkspaceRls(
+                    $workspaceId,
+                    fn (): array => $this->buildThreeDPayload($project, $collars),
+                );
+            };
+            $deferThreeD = fn (string $key) => Inertia::defer(fn () => $loadThreeD()[$key], 'viz3d');
+
+            // Where the map opens when no collar has a position: the extent of
+            // everything else the project has on the map. Without it a
+            // GIS-only delivery (shapefiles, geochem, claims) had no map at all
+            // (FE-3).
+            $projectExtent = $collars->contains(fn ($c) => isset($c->lat, $c->lng))
+                ? null
+                : $this->projectExtent((string) $project->project_id);
+
             return Inertia::render('Foundry/Workspace', [
                 'project' => [
                     'project_id' => $project->project_id,
@@ -1003,7 +644,13 @@ class WorkspaceController extends Controller
                     'commodity' => $project->commodity,
                     'region' => $project->region,
                     'crs_epsg' => $project->crs_epsg,
+                    // Client cache key for the silver MVT tile URLs (&v=). The
+                    // proxy serves those tiles with max-age=86400, so a URL
+                    // that never changes kept new imports invisible for a day
+                    // (FE-5). WorkspaceMap also bumps it live from Echo.
+                    'data_version' => (int) ($project->data_version ?? 0),
                 ],
+                'project_extent' => $projectExtent,
                 'project_summary' => [
                     'total_drilled_m' => round($totalDrilledM, 1),
                     'mean_td_m' => $meanTd !== null ? round($meanTd, 1) : null,
@@ -1064,18 +711,19 @@ class WorkspaceController extends Controller
                 'log_alteration_intervals' => $logAlterationIntervals,
                 'log_mineralization_intervals' => $logMineralizationIntervals,
                 'log_tracks_truncated' => $logTracksTruncated,
-                'first_holes_intervals' => $firstHolesIntervals,
-                // 3D mode payload — surveys feed MultiHole3DTrace; structures
-                // feed the 3D Stereosphere. Both may be empty arrays.
-                'surveys_3d' => $surveys,
-                'structures_3d' => $structures,
-                // Gold-tier sub-view payloads.
-                'assay_composites_3d' => $assayComposites,
-                'assay_elements_3d' => $assayElements,
-                'significant_intersections_3d' => $significantIntersections,
-                'structures_visual_3d' => $structuresVisual,
-                'commodity_samples_3d' => $commoditySamples,
-                'commodity_keys_3d' => $commodityKeys,
+                // 3D / STRUCTURE payload — one deferred group, see
+                // buildThreeDPayload(). The page renders a skeleton for the
+                // panels that read these until the group arrives.
+                'first_holes_intervals' => $deferThreeD('first_holes_intervals'),
+                'surveys_3d' => $deferThreeD('surveys_3d'),
+                'structures_3d' => $deferThreeD('structures_3d'),
+                'assay_composites_3d' => $deferThreeD('assay_composites_3d'),
+                'assay_elements_3d' => $deferThreeD('assay_elements_3d'),
+                'significant_intersections_3d' => $deferThreeD('significant_intersections_3d'),
+                'structures_visual_3d' => $deferThreeD('structures_visual_3d'),
+                'commodity_samples_3d' => $deferThreeD('commodity_samples_3d'),
+                'commodity_keys_3d' => $deferThreeD('commodity_keys_3d'),
+                'survey_holes_downsampled' => $deferThreeD('survey_holes_downsampled'),
                 'project_layers' => $projectLayers,
                 'project_aoi' => $projectAoi,
                 'strat_units' => $stratUnits,
@@ -1085,16 +733,494 @@ class WorkspaceController extends Controller
                 // Which payload caps actually bit. `collars` bounds the map and
                 // every per-hole panel; `interval_holes` is the (smaller) 3D
                 // lithology cap, a prefix of the same collar set;
-                // `survey_holes_downsampled` counts holes whose survey stations
-                // were thinned to MAX_SURVEY_STATIONS_PER_HOLE.
+                // How many holes had survey stations thinned is part of the
+                // deferred 3D group (`survey_holes_downsampled`), since it is
+                // only known once the surveys are read.
                 'truncation' => $this->truncationSummary(
                     $collars->count(),
                     $collarsTotal,
                     min(self::MAX_INTERVAL_HOLES, $collars->count()),
-                    $surveyHolesDownsampled,
                 ),
             ]);
         });
+    }
+
+    /**
+     * Lon/lat bounding box of the project's non-collar map data, or null.
+     *
+     * Each table is read in its own savepoint (the LAR-4 helpers from
+     * SetsWorkspaceRlsContext): a missing table must not abort the
+     * surrounding RLS transaction (Postgres refuses every later statement
+     * in an aborted transaction). Boxes outside WGS84 range are discarded —
+     * a CAD file stored with model units as 4326 (GIS-11) would otherwise
+     * send the map to "longitude 512,100".
+     *
+     * @return array{0: float, 1: float, 2: float, 3: float}|null [west, south, east, north]
+     */
+    private function projectExtent(string $projectId): ?array
+    {
+        $box = null;
+        foreach ([
+            'silver.spatial_features',
+            'silver.project_boundaries',
+            'silver.geochemistry',
+            'silver.geological_formations',
+            'silver.historic_workings',
+        ] as $table) {
+            $sp = $this->openSavepoint();
+            try {
+                $row = DB::selectOne(
+                    'SELECT ST_XMin(x.e) AS w, ST_YMin(x.e) AS s, ST_XMax(x.e) AS e, ST_YMax(x.e) AS n '
+                    .'FROM (SELECT ST_Extent(geom) AS e FROM '.$table.' WHERE project_id = ?) AS x',
+                    [$projectId],
+                );
+                $this->releaseSavepoint($sp);
+            } catch (\Throwable $e) {
+                $this->rollBackToSavepoint($sp);
+                Log::debug('workspace: extent unavailable', ['table' => $table, 'error' => $e->getMessage()]);
+
+                continue;
+            }
+            if (! $row || $row->w === null) {
+                continue;
+            }
+            [$w, $south, $east, $n] = [(float) $row->w, (float) $row->s, (float) $row->e, (float) $row->n];
+            if ($w < -180 || $east > 180 || $south < -90 || $n > 90) {
+                continue;
+            }
+            $box = $box === null
+                ? [$w, $south, $east, $n]
+                : [min($box[0], $w), min($box[1], $south), max($box[2], $east), max($box[3], $n)];
+        }
+
+        return $box;
+    }
+
+    /**
+     * The 3D / STRUCTURE payload: interval bands, survey stations, structures,
+     * assay composites, significant intersections, structure discs and
+     * commodity samples, all for exactly the collars the page returned.
+     *
+     * Sent as ONE deferred Inertia group (`viz3d`) rather than inside the
+     * initial page: on a 1,000-hole project this is several MB of JSON that
+     * MAP mode — the default — never reads, and it used to sit in the HTML
+     * `data-page` attribute so first paint waited on parsing it (FE-11,
+     * 2026-09-29 audit). The LOGS-panel partial reloads no longer pay for it
+     * either, since a closure is only run when its prop is requested.
+     *
+     * Must run inside withWorkspaceRls() (show()'s $loadThreeD does that, in
+     * a transaction of its own). Each block has its own savepoint (LAR-4), so
+     * one failing query degrades only its panel instead of aborting the
+     * transaction and emptying every block after it.
+     *
+     * @param Collection<int, \stdClass> $collars
+     *
+     * @return array{first_holes_intervals: list<array<string, mixed>>, surveys_3d: list<array<string, mixed>>, structures_3d: list<array<string, mixed>>, assay_composites_3d: list<array<string, mixed>>, assay_elements_3d: list<array<string, mixed>>, significant_intersections_3d: list<array<string, mixed>>, structures_visual_3d: list<array<string, mixed>>, commodity_samples_3d: list<array<string, mixed>>, commodity_keys_3d: list<array<string, mixed>>, survey_holes_downsampled: int}
+     */
+    private function buildThreeDPayload(Project $project, Collection $collars): array
+    {
+        // All holes' lithology intervals — feeds both the 3D Plotly viewer
+        // and the mini-strip 3D grid. Capped at MAX_INTERVAL_HOLES holes +
+        // MAX_INTERVAL_BANDS_PER_HOLE bands/hole to keep payloads reasonable
+        // (worst case ~16k records ≈ 2MB).
+        // Each entry now also carries lat/lng + easting/northing so the
+        // 3D viewer can position each cylinder in real space.
+        $firstHolesIntervals = [];
+        $sp = $this->openSavepoint();
+        try {
+            // A prefix of the SAME ordered collar set the map and every
+            // other per-hole panel use, not a second independent query.
+            $collarRows = $collars->take(self::MAX_INTERVAL_HOLES);
+            // One windowed query for every hole's bands, instead of one
+            // query per hole.
+            //
+            // This was a `foreach ($collarRows as $cr)` issuing a
+            // separate SELECT per collar — up to 200 sequential round
+            // trips on a single page load. withWorkspaceRls() wraps the
+            // whole action in DB::transaction(), and PgBouncer runs in
+            // transaction pooling, so one server connection stayed
+            // pinned across all 200. A handful of concurrent workspace
+            // loads was enough to exhaust the server-side pool and queue
+            // every other query in the application behind them.
+            //
+            // ROW_NUMBER() reproduces the per-collar `ORDER BY
+            // depth_from LIMIT 80` exactly; a plain `whereIn` with a
+            // global LIMIT would not — one deep hole would eat the whole
+            // budget and the rest would come back empty.
+            $bandsByCollar = [];
+            $collarIds = $collarRows->pluck('collar_id')->all();
+            if ($collarIds !== []) {
+                $ranked = DB::table('gold.drillhole_intervals_visual')
+                    ->whereIn('collar_id', $collarIds)
+                    ->where('interval_kind', 'lithology')
+                    ->selectRaw(
+                        'collar_id, depth_from, depth_to, lithology_code, color_hint, '
+                        .'ROW_NUMBER() OVER (PARTITION BY collar_id ORDER BY depth_from) AS rn',
+                    );
+
+                foreach (
+                    DB::query()->fromSub($ranked, 'ranked')
+                        ->where('rn', '<=', self::MAX_INTERVAL_BANDS_PER_HOLE)
+                        ->orderBy('collar_id')
+                        ->orderBy('depth_from')
+                        ->get() as $b
+                ) {
+                    $bandsByCollar[(string) $b->collar_id][] = [
+                        'from' => (float) $b->depth_from,
+                        'to' => (float) $b->depth_to,
+                        'code' => (string) $b->lithology_code,
+                        'color' => (string) $b->color_hint,
+                    ];
+                }
+            }
+
+            foreach ($collarRows as $cr) {
+                $firstHolesIntervals[] = [
+                    // Lets the 3D lithology view join this hole to its
+                    // collar attitude + surveys for desurveying (FE-9).
+                    'collar_id' => (string) $cr->collar_id,
+                    'hole_id' => (string) ($cr->hole_id_canonical ?? $cr->hole_id),
+                    'total_depth' => $cr->total_depth !== null ? (float) $cr->total_depth : null,
+                    'easting' => $cr->easting !== null ? (float) $cr->easting : null,
+                    'northing' => $cr->northing !== null ? (float) $cr->northing : null,
+                    'lat' => isset($cr->lat) ? (float) $cr->lat : null,
+                    'lng' => isset($cr->lng) ? (float) $cr->lng : null,
+                    // A hole with no lithology bands still gets an entry,
+                    // same as when its per-hole query returned nothing.
+                    'bands' => $bandsByCollar[(string) $cr->collar_id] ?? [],
+                ];
+            }
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) { /* fallback empty */
+            $this->rollBackToSavepoint($sp);
+        }
+
+        // Downhole survey stations (depth, azimuth, dip) — feeds the 3D
+        // Trajectories sub-view in the workspace 3D mode.
+        //
+        // Fetched for EXACTLY the collars returned above (whereIn on that
+        // set), bounded PER HOLE rather than by one global row cap. The old
+        // `ORDER BY collar_id LIMIT 20000` spent the whole budget on the
+        // first holes in uuid order and silently gave every later hole no
+        // trajectory at all. Now a hole with more than
+        // MAX_SURVEY_STATIONS_PER_HOLE stations is thinned to evenly spaced
+        // stations (first and last always kept, so the deep end of the
+        // trace is not cut off); the visual is a qualitative drill-pattern
+        // check, not a precise survey export.
+        //
+        // FALLBACK, per collar: any returned collar with no silver.surveys
+        // rows gets stations derived from silver.well_log_curves AZIMUTH +
+        // SANG curves (Cameco binary .log corpus carries per-depth survey
+        // angles on every hole but has never promoted them into the surveys
+        // table), downsampled to ~25 stations per hole.
+        $surveys = [];
+        $surveyHolesDownsampled = 0;
+        $sp = $this->openSavepoint();
+        try {
+            $collarIds = $collars->pluck('collar_id')->all();
+            if (! empty($collarIds)) {
+                $maxStations = self::MAX_SURVEY_STATIONS_PER_HOLE;
+                $ranked = DB::table('silver.surveys')
+                    ->whereIn('collar_id', $collarIds)
+                    ->selectRaw(
+                        'collar_id, depth, azimuth, dip, '
+                        .'ROW_NUMBER() OVER (PARTITION BY collar_id ORDER BY depth) AS rn, '
+                        .'COUNT(*) OVER (PARTITION BY collar_id) AS cnt',
+                    );
+                $surveyRows = DB::query()->fromSub($ranked, 'ranked')
+                    ->whereRaw(sprintf(
+                        '(((rn - 1) %% ((cnt + %1$d - 1) / %1$d)) = 0 OR rn = cnt)',
+                        $maxStations,
+                    ))
+                    ->orderBy('collar_id')
+                    ->orderBy('depth')
+                    ->get(['collar_id', 'depth', 'azimuth', 'dip', 'cnt']);
+
+                $downsampled = [];
+                foreach ($surveyRows as $r) {
+                    if ((int) $r->cnt > $maxStations) {
+                        $downsampled[(string) $r->collar_id] = true;
+                    }
+                    $surveys[] = [
+                        'collar_id' => (string) $r->collar_id,
+                        'depth' => (float) $r->depth,
+                        'azimuth' => $r->azimuth !== null ? (float) $r->azimuth : null,
+                        'dip' => $r->dip !== null ? (float) $r->dip : null,
+                    ];
+                }
+                $surveyHolesDownsampled = count($downsampled);
+
+                $haveSurveys = array_fill_keys(array_column($surveys, 'collar_id'), true);
+                $missing = array_values(array_filter(
+                    array_map('strval', $collarIds),
+                    fn (string $id) => ! isset($haveSurveys[$id]),
+                ));
+                // Chunked: each collar's AZIMUTH/SANG arrays are ~3.7k
+                // samples, so bound how many are parsed in memory at once.
+                foreach (array_chunk($missing, 100) as $chunk) {
+                    array_push($surveys, ...$this->deriveSurveysFromCurves($chunk));
+                }
+            }
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) { /* fallback empty */
+            $this->rollBackToSavepoint($sp);
+        }
+
+        // Raw structure measurements (planar features + lineations) — feeds
+        // the 3D Stereosphere sub-view. Table is `silver.structure` (singular,
+        // per the migration); columns are `true_dip` + `true_dip_dir` + `notes`.
+        // May be empty (Wyoming Cameco binary .log corpus has no extracted
+        // structures yet); Stereosphere still renders the wireframe.
+        $structures = [];
+        $sp = $this->openSavepoint();
+        try {
+            $collarIds = $collars->pluck('collar_id')->all();
+            if (! empty($collarIds)) {
+                $structures = DB::table('silver.structure')
+                    ->whereIn('collar_id', $collarIds)
+                    ->whereNotNull('true_dip')
+                    ->whereNotNull('true_dip_dir')
+                    ->limit(5000)
+                    ->get(['collar_id', 'depth', 'structure_type', 'true_dip', 'true_dip_dir', 'notes'])
+                    ->map(fn ($r) => [
+                        'collar_id' => (string) $r->collar_id,
+                        'depth' => (float) $r->depth,
+                        'structure_type' => (string) $r->structure_type,
+                        'true_dip' => $r->true_dip !== null ? (float) $r->true_dip : null,
+                        'dip_direction' => $r->true_dip_dir !== null ? (float) $r->true_dip_dir : null,
+                        'description' => $r->notes !== null ? (string) $r->notes : null,
+                    ])
+                    ->values()
+                    ->all();
+            }
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) { /* fallback empty */
+            $this->rollBackToSavepoint($sp);
+        }
+
+        // Gold-tier 3D payloads — three new sub-views in MODE=3D:
+        // assay grade bands, significant intersection highlights, and
+        // structure-measurement discs. All wrapped in try/catch so the
+        // route still renders cleanly if a table is missing or empty.
+
+        // gold.assay_composites — composited grade bands per hole/element.
+        // Default to the most-common element on the project so the picker
+        // has a sensible starting state; the FE can switch.
+        $assayComposites = [];
+        $assayElements = [];
+        $sp = $this->openSavepoint();
+        try {
+            $collarIds = $collars->pluck('collar_id')->all();
+            if (! empty($collarIds)) {
+                $elementRows = DB::table('gold.assay_composites')
+                    ->whereIn('collar_id', $collarIds)
+                    ->select('element', DB::raw('COUNT(*) AS n'))
+                    ->groupBy('element')
+                    ->orderByDesc('n')
+                    ->limit(12)
+                    ->get();
+                $assayElements = $elementRows->map(fn ($r) => [
+                    'element' => (string) $r->element,
+                    'count' => (int) $r->n,
+                ])->values()->all();
+
+                $assayComposites = DB::table('gold.assay_composites')
+                    ->whereIn('collar_id', $collarIds)
+                    ->orderBy('collar_id')
+                    ->orderBy('element')
+                    ->orderBy('from_depth')
+                    ->limit(10000)
+                    ->get(['collar_id', 'element', 'from_depth', 'to_depth', 'weighted_avg', 'unit', 'cutoff_grade', 'sample_count'])
+                    ->map(fn ($r) => [
+                        'collar_id' => (string) $r->collar_id,
+                        'element' => (string) $r->element,
+                        'from_depth' => (float) $r->from_depth,
+                        'to_depth' => (float) $r->to_depth,
+                        'weighted_avg' => (float) $r->weighted_avg,
+                        'unit' => (string) $r->unit,
+                        'cutoff_grade' => $r->cutoff_grade !== null ? (float) $r->cutoff_grade : null,
+                        'sample_count' => $r->sample_count !== null ? (int) $r->sample_count : null,
+                    ])
+                    ->values()
+                    ->all();
+            }
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) { /* fallback empty */
+            $this->rollBackToSavepoint($sp);
+        }
+
+        // gold.significant_intersections — one or more cutoff-grade hits per
+        // hole. Renders as a highlight ribbon on each trace.
+        $significantIntersections = [];
+        $sp = $this->openSavepoint();
+        try {
+            $collarIds = $collars->pluck('collar_id')->all();
+            if (! empty($collarIds)) {
+                $significantIntersections = DB::table('gold.significant_intersections')
+                    ->whereIn('collar_id', $collarIds)
+                    ->orderBy('collar_id')
+                    ->orderBy('from_depth')
+                    ->limit(5000)
+                    ->get(['collar_id', 'element', 'cutoff_grade', 'from_depth', 'to_depth', 'true_width_m', 'weighted_avg', 'unit', 'peak_value', 'peak_depth', 'zone_name'])
+                    ->map(fn ($r) => [
+                        'collar_id' => (string) $r->collar_id,
+                        'element' => (string) $r->element,
+                        'cutoff_grade' => (float) $r->cutoff_grade,
+                        'from_depth' => (float) $r->from_depth,
+                        'to_depth' => (float) $r->to_depth,
+                        'true_width_m' => $r->true_width_m !== null ? (float) $r->true_width_m : null,
+                        'weighted_avg' => (float) $r->weighted_avg,
+                        'unit' => (string) $r->unit,
+                        'peak_value' => $r->peak_value !== null ? (float) $r->peak_value : null,
+                        'peak_depth' => $r->peak_depth !== null ? (float) $r->peak_depth : null,
+                        'zone_name' => $r->zone_name !== null ? (string) $r->zone_name : null,
+                    ])
+                    ->values()
+                    ->all();
+            }
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) { /* fallback empty */
+            $this->rollBackToSavepoint($sp);
+        }
+
+        // gold.structure_measurements_visual — depth-anchored strike/dip
+        // measurements with stereonet-ready derived columns. Feeds the
+        // Structure Discs sub-view.
+        $structuresVisual = [];
+        $sp = $this->openSavepoint();
+        try {
+            // Real schema (verified 2026-05-25): columns are `depth` (not
+            // depth_m), `structure_type` (not measurement_kind), `trend_deg`
+            // / `plunge_deg` (not pole_*). Earlier migration source under
+            // database/raw/_archive/phase5-30-structure-measurements-visual.sql
+            // is stale relative to the live table (archived 2026-08-28).
+            $structuresVisual = DB::table('gold.structure_measurements_visual')
+                ->where('project_id', $project->project_id)
+                ->whereNotNull('collar_id')
+                ->orderBy('collar_id')
+                ->orderBy('depth')
+                ->limit(5000)
+                ->get(['collar_id', 'strike_deg', 'dip_deg', 'structure_type', 'depth', 'trend_deg', 'plunge_deg', 'dip_direction_deg'])
+                ->map(function ($r) {
+                    // Pole-to-plane: trend = (dip_direction + 180) mod 360,
+                    // plunge = 90 - dip. Fallback because the gold asset
+                    // doesn't currently populate trend_deg / plunge_deg, but
+                    // it does populate dip_direction_deg + dip_deg.
+                    $dip = $r->dip_deg !== null ? (float) $r->dip_deg : 0.0;
+                    $dipDir = $r->dip_direction_deg !== null ? (float) $r->dip_direction_deg : null;
+                    $trend = $r->trend_deg !== null ? (float) $r->trend_deg
+                        : ($dipDir !== null ? fmod($dipDir + 180.0, 360.0) : 0.0);
+                    $plunge = $r->plunge_deg !== null ? (float) $r->plunge_deg : (90.0 - $dip);
+
+                    return [
+                        'collar_id' => (string) $r->collar_id,
+                        'strike_deg' => $r->strike_deg !== null ? (float) $r->strike_deg : 0.0,
+                        'dip_deg' => $dip,
+                        'measurement_kind' => (string) $r->structure_type,
+                        'depth_m' => $r->depth !== null ? (float) $r->depth : null,
+                        'pole_trend_deg' => $trend,
+                        'pole_plunge_deg' => $plunge,
+                        'display_color' => null,
+                        'display_symbol' => null,
+                        'confidence' => null,
+                    ];
+                })
+                ->values()
+                ->all();
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) { /* fallback empty */
+            $this->rollBackToSavepoint($sp);
+        }
+
+        // silver.samples (commodity-grade samples) — feeds the
+        // CommoditySamples3DView sub-view. For Cameco this is the only
+        // place uranium grade (U3O8_pct_e) appears at hole+depth resolution;
+        // gold.assay_composites covers geochemistry/REE/base-metals but not
+        // U. Available commodities are surfaced as a picker; default to the
+        // one with the most non-null samples.
+        $commoditySamples = [];
+        $commodityKeys = [];
+        $sp = $this->openSavepoint();
+        try {
+            $collarIds = $collars->pluck('collar_id')->all();
+            if (! empty($collarIds)) {
+                // Walk all sample rows and tally which jsonb keys carry a
+                // numeric grade. We could push this into SQL with jsonb
+                // path queries, but the 5k row cap keeps the PHP loop fast
+                // and lets us be lenient with key normalisation.
+                $rawSamples = DB::table('silver.samples')
+                    ->whereIn('collar_id', $collarIds)
+                    ->whereNotNull('commodity_assays')
+                    ->orderBy('collar_id')
+                    ->orderBy('from_depth')
+                    ->limit(5000)
+                    ->get(['collar_id', 'from_depth', 'to_depth', 'sample_type', 'commodity_assays']);
+
+                $tally = [];
+                foreach ($rawSamples as $r) {
+                    $assays = is_string($r->commodity_assays) ? json_decode($r->commodity_assays, true) : $r->commodity_assays;
+                    if (! is_array($assays)) {
+                        continue;
+                    }
+                    foreach ($assays as $key => $val) {
+                        if (! is_numeric($val)) {
+                            continue;
+                        }
+                        $tally[$key] = ($tally[$key] ?? 0) + 1;
+                    }
+                }
+                arsort($tally);
+                // Exclude bookkeeping keys that aren't grades.
+                $skip = ['confidence', 'n_points', 'method'];
+                $commodityKeys = [];
+                foreach ($tally as $k => $n) {
+                    if (in_array($k, $skip, true)) {
+                        continue;
+                    }
+                    $commodityKeys[] = ['key' => (string) $k, 'count' => (int) $n];
+                }
+
+                $commoditySamples = [];
+                foreach ($rawSamples as $r) {
+                    $assays = is_string($r->commodity_assays) ? json_decode($r->commodity_assays, true) : $r->commodity_assays;
+                    if (! is_array($assays)) {
+                        continue;
+                    }
+                    $values = [];
+                    foreach ($assays as $key => $val) {
+                        if (is_numeric($val) && ! in_array($key, $skip, true)) {
+                            $values[$key] = (float) $val;
+                        }
+                    }
+                    if (empty($values)) {
+                        continue;
+                    }
+                    $commoditySamples[] = [
+                        'collar_id' => (string) $r->collar_id,
+                        'from_depth' => (float) $r->from_depth,
+                        'to_depth' => (float) $r->to_depth,
+                        'sample_type' => (string) $r->sample_type,
+                        'grades' => $values,
+                    ];
+                }
+            }
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) { /* fallback empty */
+            $this->rollBackToSavepoint($sp);
+        }
+
+        return [
+            'first_holes_intervals' => $firstHolesIntervals,
+            'surveys_3d' => $surveys,
+            'structures_3d' => $structures,
+            'assay_composites_3d' => $assayComposites,
+            'assay_elements_3d' => $assayElements,
+            'significant_intersections_3d' => $significantIntersections,
+            'structures_visual_3d' => $structuresVisual,
+            'commodity_samples_3d' => $commoditySamples,
+            'commodity_keys_3d' => $commodityKeys,
+            'survey_holes_downsampled' => $surveyHolesDownsampled,
+        ];
     }
 
     /**
@@ -1176,9 +1302,9 @@ class WorkspaceController extends Controller
     }
 
     /**
-     * @return array{collars: array{shown: int, total: int, truncated: bool}, interval_holes: array{shown: int, total: int, truncated: bool}, survey_holes_downsampled: int}
+     * @return array{collars: array{shown: int, total: int, truncated: bool}, interval_holes: array{shown: int, total: int, truncated: bool}}
      */
-    private function truncationSummary(int $collarsShown, int $collarsTotal, int $intervalHolesShown, int $surveyHolesDownsampled): array
+    private function truncationSummary(int $collarsShown, int $collarsTotal, int $intervalHolesShown): array
     {
         $collarsTotal = max($collarsTotal, $collarsShown);
 
@@ -1193,7 +1319,6 @@ class WorkspaceController extends Controller
                 'total' => $collarsTotal,
                 'truncated' => $intervalHolesShown < $collarsTotal,
             ],
-            'survey_holes_downsampled' => $surveyHolesDownsampled,
         ];
     }
 

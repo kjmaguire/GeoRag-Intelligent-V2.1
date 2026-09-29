@@ -155,6 +155,43 @@ final class OptionalPanelSavepointTest extends TestCase
             );
     }
 
+    /**
+     * The deferred `viz3d` group (FE-11) is built in its own RLS transaction
+     * after the page's transaction commits, so it needs its own savepoints:
+     * the interval bands are read first, and before LAR-4 reached
+     * buildThreeDPayload() their failure emptied every 3D panel after them.
+     */
+    public function test_deferred_3d_group_survives_a_failed_block_and_still_reads_later_blocks(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedProject();
+        $collarId = $this->seedCollar($project);
+
+        DB::table('silver.surveys')->insert([
+            'survey_id' => (string) Str::uuid(),
+            'collar_id' => $collarId,
+            'workspace_id' => $this->workspaceId,
+            'depth' => 50,
+            'azimuth' => 180,
+            'dip' => -60,
+            'survey_method' => 'gyro',
+        ]);
+
+        $this->breakGoldIntervalReaders();
+
+        $this->actingAs($user)
+            ->get('/projects/'.$project->slug.'/workspace')
+            ->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $page
+                ->component('Foundry/Workspace')
+                ->loadDeferredProps('viz3d', fn (AssertableInertia $reload) => $reload
+                    // The broken block degrades to its empty shape...
+                    ->where('first_holes_intervals', [])
+                    // ...and the survey block read after it still sees its row.
+                    ->has('surveys_3d', 1)
+                    ->where('surveys_3d.0.collar_id', $collarId)),
+            );
+    }
+
     public function test_optional_query_rolls_back_only_its_savepoint_and_keeps_the_rls_guc(): void
     {
         $workspaceId = (string) Str::uuid();

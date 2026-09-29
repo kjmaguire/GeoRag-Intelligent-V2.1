@@ -125,6 +125,11 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
             ->assertStatus(200)
             ->assertInertia(function (AssertableInertia $page) use (&$props) {
                 $props = $page->toArray()['props'];
+                // The 3D group is deferred (FE-11); fetch it the way the
+                // client does and merge, so assertions see the whole page.
+                $page->loadDeferredProps('viz3d', function (AssertableInertia $reload) use (&$props) {
+                    $props = array_merge($props, $reload->toArray()['props']);
+                });
 
                 return $page;
             });
@@ -271,7 +276,7 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
         $this->assertGreaterThan(50, count($byCollar[$ids['RS-002']]));
         $this->assertEquals(0, min($byCollar[$ids['RS-002']]), 'first station is kept');
         $this->assertEquals(249, max($byCollar[$ids['RS-002']]), 'last station is kept');
-        $this->assertSame(1, $props['truncation']['survey_holes_downsampled']);
+        $this->assertSame(1, $props['survey_holes_downsampled']);
     }
 
     public function test_surveys_are_not_returned_for_another_projects_collars(): void
@@ -303,10 +308,10 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
             [
                 'collars' => ['shown' => 2, 'total' => 2, 'truncated' => false],
                 'interval_holes' => ['shown' => 2, 'total' => 2, 'truncated' => false],
-                'survey_holes_downsampled' => 0,
             ],
             $props['truncation'],
         );
+        $this->assertSame(0, $props['survey_holes_downsampled']);
     }
 
     public function test_collar_cap_sets_truncated_flag_and_keeps_hole_id_order(): void
