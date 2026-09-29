@@ -599,7 +599,12 @@ probe_worthless=""
 probe_found=""
 
 for probe in bedrock cohere; do
-  newest=$(ls -t "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | head -1)
+  # Newest by the UTC timestamp IN THE FILENAME (…_probe_YYYYMMDDTHHMMSSZ.json,
+  # which sorts lexically in time order), not by mtime. A fresh git checkout
+  # gives every report the same mtime, and `ls -t` then fell back to name
+  # order in the wrong direction — picking the OLDER cohere run, whose pixel
+  # ladder sent byte-identical images (VEN-16, 2026-09-29).
+  newest=$(ls "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | LC_ALL=C sort | tail -1)
   if [ -z "$newest" ]; then
     probe_missing="${probe_missing}${probe} "
     continue
