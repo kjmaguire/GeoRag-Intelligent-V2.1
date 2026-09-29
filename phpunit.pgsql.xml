@@ -207,6 +207,12 @@
                  was missing (see .github/workflows/ci.yml laravel job
                  comment for the full story on how they went undetected). -->
             <file>tests/Feature/Api/V1/ProjectControllerDeleteOrderingTest.php</file>
+            <!-- 2026-09-29 database audit: PG-2 (the thirteen collar FKs now
+                 cascade, so project/collar delete works with typed drill
+                 rows) and PG-1 (mv_collar_summary no longer multiplies its
+                 counts by the samples x lithology cross product). -->
+            <file>tests/Feature/Api/V1/ProjectControllerDeleteTypedDrillDataTest.php</file>
+            <file>tests/Feature/Database/MvCollarSummaryAggregatesTest.php</file>
             <file>tests/Feature/Api/V1/PublicGeoscience/PublicGeoscienceMapControllerTest.php</file>
             <!-- 2026-09-29: polygon layers (ST_ClipByBox2D /
                  ST_SimplifyPreserveTopology) and the sync-status counts. -->
