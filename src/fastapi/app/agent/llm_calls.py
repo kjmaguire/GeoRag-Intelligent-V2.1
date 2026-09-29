@@ -35,13 +35,14 @@ rare back-compat caller.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import json
 import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
 import httpx
@@ -59,19 +60,20 @@ logger = logging.getLogger(__name__)
 # escalation, query rephrasing, primary synthesis, retry-on-validation-fail,
 # one-shot failover, follow-ups generation. The contextvar lets us count
 # every call without plumbing a counter through every helper signature.
-# `run_deterministic_rag` resets the counter at the start of every run.
-# `_call_llm` increments and enforces the cap.
-
+# `_call_llm` (and the Cohere/Bedrock pre-stream retry pacing) increment it
+# and enforce the cap.
 #
-# Audit AGT-12 (2026-09-29): the counter used to be a ContextVar[int].
+# Audit AGT-12 (2026-09-29): a plain ContextVar[int] cannot span a run.
 # LangGraph runs every node in its own asyncio Task, and a Task gets a COPY
 # of the context, so classify / assemble / repair each started from the
-# parent's value (0) and their increments vanished with the Task — the
-# 8-call cap never spanned nodes. The count now lives in a mutable cell;
-# the ContextVar holds a REFERENCE to it, which the copied contexts share.
-# `begin_run_llm_call_budget()` (called by run_agentic_retrieval) installs a
-# fresh cell per run. Callers outside a run get a cell created on first
-# `set`, context-local exactly as before.
+# parent's value and their increments vanished with the Task. Two stores:
+#
+#   * inside `llm_call_budget()` - which run_agentic_retrieval wraps around
+#     graph.ainvoke - the count is a mutable cell every Task started in the
+#     block shares by reference; the block unbinds it on exit, so nothing
+#     outside the run (or after it) can see or inherit that count;
+#   * everywhere else it is a plain per-context int, exactly the behaviour
+#     before AGT-12: a child Task's increments stay in the child.
 
 
 class _RunCallCount:
@@ -84,53 +86,50 @@ class _RunCallCount:
 _llm_call_cell: contextvars.ContextVar[_RunCallCount | None] = contextvars.ContextVar(
     "georag_llm_call_cell", default=None
 )
-
-
-class _CounterToken:
-    """What ``_LLMCallCounter.set`` returns: enough to undo that one set."""
-
-    __slots__ = ("cell", "previous")
-
-    def __init__(self, cell: _RunCallCount, previous: int) -> None:
-        self.cell = cell
-        self.previous = previous
+_llm_call_local: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "georag_llm_call_count", default=0
+)
 
 
 class _LLMCallCounter:
-    """ContextVar-shaped (``get``/``set``/``reset``) facade over the per-run cell.
+    """``get``/``set`` over whichever count is active.
 
-    ``set`` returns a token and ``reset(token)`` restores the value it
-    replaced, as ``contextvars.ContextVar`` does, so callers written against
-    the old ContextVar (the adapters' test fixtures) keep working.
+    Inside ``llm_call_budget()`` that is the run's shared cell; outside it,
+    a per-context int. There is deliberately no ``reset``: isolation comes
+    from scoping with ``llm_call_budget()``, not from undoing a write to a
+    value other Tasks may share.
     """
 
     def get(self) -> int:
         cell = _llm_call_cell.get()
-        return cell.n if cell is not None else 0
+        return cell.n if cell is not None else _llm_call_local.get()
 
-    def set(self, value: int) -> _CounterToken:
+    def set(self, value: int) -> None:
         cell = _llm_call_cell.get()
-        if cell is None:
-            cell = _RunCallCount()
-            _llm_call_cell.set(cell)
-        token = _CounterToken(cell, cell.n)
-        cell.n = int(value)
-        return token
-
-    def reset(self, token: _CounterToken) -> None:
-        token.cell.n = token.previous
+        if cell is not None:
+            cell.n = int(value)
+        else:
+            _llm_call_local.set(int(value))
 
 
 _llm_call_counter = _LLMCallCounter()
 
 
-def begin_run_llm_call_budget() -> None:
-    """Start a fresh per-query LLM-call count shared by every graph node.
+@contextlib.contextmanager
+def llm_call_budget() -> Iterator[None]:
+    """A fresh MAX_LLM_CALLS_PER_QUERY count for the duration of the block.
 
-    Must be called in the context the graph is invoked from (before
-    ``ainvoke``), so each node Task's copied context points at this cell.
+    Every asyncio Task created inside the block shares it (they copy a
+    reference to one cell), which is what makes the cap span graph nodes.
+    Enter and exit in the same context - a ``with`` around an ``await`` in
+    one coroutine, or a synchronous fixture's setup/teardown - because exit
+    unbinds the cell with ``ContextVar.reset``.
     """
-    _llm_call_cell.set(_RunCallCount())
+    token = _llm_call_cell.set(_RunCallCount())
+    try:
+        yield
+    finally:
+        _llm_call_cell.reset(token)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -144,8 +143,9 @@ def begin_run_llm_call_budget() -> None:
 # Producers (`_call_openai_compatible_llm`, `_call_anthropic_llm`) call
 # `add_token_usage()` on every response. The orchestrator reads
 # `get_run_token_usage()` immediately before the answer_runs INSERT.
-# Reset is implicit via `_llm_call_counter` being reset at run start —
-# we do the same here for consistency.
+# Nothing resets these at run start: each request is served in its own
+# context, where they begin at the default 0. Code that runs several queries
+# in one context calls `reset_run_token_usage()` between them.
 # ──────────────────────────────────────────────────────────────────────────
 
 _run_input_tokens: contextvars.ContextVar[int] = contextvars.ContextVar(
@@ -1708,7 +1708,7 @@ async def _call_llm(
 
 __all__ = [
     "_llm_call_counter",
-    "begin_run_llm_call_budget",
+    "llm_call_budget",
     "LLMCallBudgetExceeded",
     "NON_ANSWER_AUDIT_LABELS",
     "_build_user_message",

@@ -150,14 +150,14 @@ async def run_agentic_retrieval(
         bind_callback=bind_callback,
     )
     # Audit AGT-12: one MAX_LLM_CALLS_PER_QUERY budget for the whole run.
-    # Installed here, in the context ainvoke is called from, so every node
-    # Task's copied context shares the same count.
-    from app.agent.llm_calls import begin_run_llm_call_budget  # noqa: PLC0415
+    # Opened here, in the context ainvoke is called from, so every node
+    # Task's copied context shares the same count; unbound when the run ends.
+    from app.agent.llm_calls import llm_call_budget  # noqa: PLC0415
 
-    begin_run_llm_call_budget()
     # LangGraph's ainvoke accepts either a dict or the state model; the
     # report-builder graph passes the model directly. final is a dict.
-    final = await graph.ainvoke(initial)
+    with llm_call_budget():
+        final = await graph.ainvoke(initial)
     response = final.get("response") if isinstance(final, dict) else None
     if response is None:
         # Extremely defensive — should never happen because assemble_node
