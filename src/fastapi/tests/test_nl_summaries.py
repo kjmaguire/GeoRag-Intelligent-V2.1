@@ -340,13 +340,33 @@ class TestBuildRows:
         rows = build_rows("collars", [collar_row()], WS)
 
         assert len(rows) == 1
-        passage_id, workspace_id, text, digest, kind, parser = rows[0]
+        passage_id, workspace_id, text, digest, kind, parser, project = rows[0]
         uuid.UUID(passage_id)
         assert workspace_id == WS
         assert "PLS-22-08" in text
         assert digest == text_hash(text)
         assert kind == CHUNK_KIND_STRUCTURED
         assert parser == PARSER_USED
+        assert project is None  # the fixture names no project_id
+
+    def test_the_passage_carries_its_collar_s_project(self) -> None:
+        """Audit RAG-9: without it the embedder wrote project_id NULL and
+        project_or_public retrieval served this project's per-hole
+        summaries to every other project in the workspace."""
+        pid = "44444444-4444-4444-4444-444444444444"
+        for source, fixture in (
+            ("collars", collar_row(project_id=pid)),
+            ("assays", assay_row(project_id=pid)),
+            ("lithology", lithology_row(project_id=pid)),
+        ):
+            assert build_rows(source, [fixture], WS)[0][6] == pid, source
+
+    def test_the_upsert_writes_project_and_reembeds_when_it_changes(self) -> None:
+        from app.hatchet_workflows.nl_summaries import UPSERT_PASSAGE_SQL
+
+        assert "project_id" in UPSERT_PASSAGE_SQL
+        assert "$7::uuid" in UPSERT_PASSAGE_SQL
+        assert "project_id IS NOT DISTINCT FROM EXCLUDED.project_id" in UPSERT_PASSAGE_SQL
 
     def test_the_row_s_own_workspace_wins_over_the_input(self) -> None:
         """The fetch is already workspace-scoped, so these agree -- but if

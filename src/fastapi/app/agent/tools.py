@@ -1978,6 +1978,14 @@ def _payload_page(payload: dict[str, Any]) -> int | None:
     return None
 
 
+#: Chunk kinds synthesized from ONE project's structured rows (ADR-0012
+#: nl_summaries; the KG narratives were per-project too). They must never
+#: pass the project_or_public "empty project_id" branch — see RAG-9.
+PROJECT_SCOPED_SYNTHESIZED_KINDS: frozenset[str] = frozenset(
+    {"structured_summary", "kg_narrative"}
+)
+
+
 def _build_document_scope_filter(project_id: str):
     """Build a Qdrant ``Filter`` for ``search_documents`` per project-scope policy.
 
@@ -1999,6 +2007,7 @@ def _build_document_scope_filter(project_id: str):
             FieldCondition,
             Filter,
             IsEmptyCondition,
+            MatchAny,
             MatchValue,
             PayloadField,
         )
@@ -2017,13 +2026,27 @@ def _build_document_scope_filter(project_id: str):
         return Filter(must=[project_match])
 
     if mode == "project_or_public":
-        # Admit: project_id == caller, OR payload.project_id is empty
-        # (legacy public-report rows), OR project_id == "public".
+        # Admit: project_id == caller, OR project_id == "public", OR
+        # payload.project_id is empty (legacy public-report rows and
+        # public-geoscience synthesis) — EXCEPT for chunk kinds synthesized
+        # from one project's structured rows. Those were written with no
+        # project_id until audit RAG-9 (2026-09-29), and the bare IsEmpty
+        # branch admitted every project's per-hole assay summaries into
+        # every other project's retrieval. Once re-embedded they carry
+        # their project and match the first branch.
         return Filter(
             should=[
                 project_match,
-                IsEmptyCondition(is_empty=PayloadField(key="project_id")),
                 FieldCondition(key="project_id", match=MatchValue(value="public")),
+                Filter(
+                    must=[IsEmptyCondition(is_empty=PayloadField(key="project_id"))],
+                    must_not=[
+                        FieldCondition(
+                            key="chunk_kind",
+                            match=MatchAny(any=list(PROJECT_SCOPED_SYNTHESIZED_KINDS)),
+                        ),
+                    ],
+                ),
             ]
         )
 
