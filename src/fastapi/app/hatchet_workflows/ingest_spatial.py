@@ -827,7 +827,7 @@ ingest_spatial = hatchet.workflow(
 )
 
 
-@ingest_spatial.task(execution_timeout="2h", retries=1)
+@ingest_spatial.task(execution_timeout="2h", schedule_timeout="2h", retries=1)
 async def run_ingest_spatial(
     input: IngestSpatialInput, ctx: Context,
 ) -> IngestSpatialOut:

@@ -856,7 +856,9 @@ ingest_zip_archive = hatchet.workflow(
 )
 
 
-@ingest_zip_archive.task(execution_timeout="4h", retries=0)
+# HAT-3 (2026-09-29): schedule_timeout matches ingest_pdf. Hatchet's
+# 5-minute default cancelled a queued archive silently behind long tasks.
+@ingest_zip_archive.task(execution_timeout="4h", schedule_timeout="2h", retries=0)
 async def run_zip_ingest(
     input: IngestZipArchiveInput, ctx: Context
 ) -> dict[str, Any]:

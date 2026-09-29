@@ -152,7 +152,7 @@ ingest_well_logs = hatchet.workflow(
 )
 
 
-@ingest_well_logs.task(execution_timeout="1h", retries=1)
+@ingest_well_logs.task(execution_timeout="1h", schedule_timeout="2h", retries=1)
 async def run_ingest_well_logs(
     input: IngestWellLogsInput, ctx: Context,
 ) -> IngestWellLogsOut:

@@ -127,7 +127,7 @@ import logging
 import math
 
 import asyncpg
-from hatchet_sdk import Context
+from hatchet_sdk import ConcurrencyExpression, ConcurrencyLimitStrategy, Context
 from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
@@ -208,6 +208,33 @@ class PromoteSilverToGoldOutput(BaseModel):
 promote_silver_to_gold = hatchet.workflow(
     name="promote_silver_to_gold",
     input_validator=PromoteSilverToGoldInput,
+    # HAT-8 (2026-09-29) — one promotion per workspace at a time. Every
+    # ingest_tabular completion dispatches one, so collar + survey +
+    # lithology + structure CSVs uploaded back to back (or a ZIP whose
+    # tabular children finish together) ran 2-4 promotes of the same
+    # project at once: the concurrent clear-and-rebuilds of
+    # gold.structure_measurements_visual both inserted (a doubled
+    # stereonet), and the concurrent silver.lithology inserts collided on
+    # the primary key and failed one run.
+    #
+    # Keyed on the WORKSPACE, not the project: the nightly Tier 3 sweep
+    # dispatches project_id=None for the whole workspace, and a per-project
+    # key would not serialise it against a per-project run.
+    #
+    # GROUP_ROUND_ROBIN queues rather than cancels, so the newest dispatch
+    # (which reads the newest silver) always runs. CANCEL_NEWEST would drop
+    # exactly that one. The SDK's CANCEL_QUEUED_EXCEPT_NEWEST would coalesce
+    # the queue, but nothing here has run it against the pinned
+    # hatchet-lite engine, and a strategy the engine rejects fails
+    # PutWorkflow for the whole worker.
+    concurrency=ConcurrencyExpression(
+        expression=(
+            "has(input.workspace_id) && string(input.workspace_id) != '' "
+            "? string(input.workspace_id) : 'none'"
+        ),
+        max_runs=1,
+        limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
+    ),
 )
 
 
@@ -1084,7 +1111,10 @@ SELECT gen_random_uuid(), s.collar_id, c.workspace_id, c.project_id,
 """
 
 
-@promote_silver_to_gold.task(execution_timeout="20m")
+# HAT-3 (2026-09-29): schedule_timeout matches ingest_pdf. With the
+# per-workspace queue above, a promotion routinely waits behind another,
+# and Hatchet's 5-minute default would cancel the queued one.
+@promote_silver_to_gold.task(execution_timeout="20m", schedule_timeout="2h")
 async def promote(
     input: PromoteSilverToGoldInput, ctx: Context,
 ) -> PromoteSilverToGoldOutput:

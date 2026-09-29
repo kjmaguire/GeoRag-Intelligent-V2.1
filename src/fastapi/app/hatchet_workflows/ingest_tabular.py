@@ -2560,7 +2560,7 @@ ingest_tabular = hatchet.workflow(
 )
 
 
-@ingest_tabular.task(execution_timeout="2h", retries=1)
+@ingest_tabular.task(execution_timeout="2h", schedule_timeout="2h", retries=1)
 async def run_ingest_tabular(
     input: IngestTabularInput, ctx: Context,
 ) -> IngestTabularOut:
