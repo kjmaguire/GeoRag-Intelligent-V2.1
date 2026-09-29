@@ -136,6 +136,9 @@ final class SourcesControllerTest extends TestCase
                 fn (AssertableInertia $page) => $page
                     ->where('stats.parsers_active', 2)
                     ->where('parser_activity.0.parser', 'fitz')
+                    // The stored value is a historical name; users see
+                    // the tool that actually runs (ExtractionMethods).
+                    ->where('parser_activity.0.parser_label', 'Native text (pypdfium2)')
                     ->where('parser_activity.0.rows_written', 2),
             );
     }

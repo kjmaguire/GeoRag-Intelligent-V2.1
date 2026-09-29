@@ -295,7 +295,7 @@ final class OverviewControllerTest extends TestCase
             $this->assertSame(0, $c['unknown_total']);
 
             $byMethod = collect($c['by_method'])->keyBy('method');
-            $this->assertSame('Cohere Parse (Foundry)', $byMethod['cohere_parse']['label']);
+            $this->assertSame('Cohere Parse', $byMethod['cohere_parse']['label']);
             $this->assertTrue($byMethod['cohere_parse']['is_ocr'], 'cohere_parse ran OCR, not a text layer');
         });
     }

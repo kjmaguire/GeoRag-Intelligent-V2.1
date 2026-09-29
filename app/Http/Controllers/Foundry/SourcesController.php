@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Support\ExtractionMethods;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -91,6 +92,7 @@ class SourcesController extends Controller
             [$project->project_id],
         ))->map(fn ($p) => [
             'parser' => (string) $p->parser_used,
+            'parser_label' => ExtractionMethods::parserLabel((string) $p->parser_used) ?? (string) $p->parser_used,
             'version' => '',
             'rows_written' => (int) $p->rows_written,
             'last_run' => (string) $p->last_run,

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Http\Controllers\Api\V1\UploadController;
+use App\Support\ExtractionMethods;
 use App\Support\SetsWorkspaceRlsContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
@@ -332,6 +333,7 @@ final class IngestionSnapshot
                 'report_id' => $r['report_id'],
                 'title' => $r['title'],
                 'parser_used' => $r['parser_used'],
+                'parser_label' => ExtractionMethods::parserLabel($r['parser_used']),
                 'parse_quality_pct' => $r['parse_quality_pct'],
                 'text_page_coverage_pct' => $r['text_page_coverage_pct'],
                 'is_scanned' => $r['is_scanned'],

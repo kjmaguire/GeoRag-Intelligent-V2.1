@@ -96,6 +96,8 @@ interface ReportDetail {
     is_scanned: boolean;
     page_count: number | null;
     parser_used: string;
+    /** Display name from App\Support\ExtractionMethods; null when parser_used is empty. */
+    parser_label: string | null;
     created_at: string;
     updated_at: string;
     /**
@@ -859,12 +861,14 @@ function QualityTab({
                         }
                     />
                     {/*
-                      * parser_used is the BASE parser label (PyMuPDF reads
-                      * 'fitz' whenever a text layer was found); it is not the
-                      * OCR engine. The real per-page engine lives in
-                      * document_passages.ocr_method.
+                      * parser_used is the BASE parser — the stored value
+                      * 'fitz' means the native text layer was read, by
+                      * pypdfium2 (PyMuPDF, once imported as fitz, was removed
+                      * for its AGPL licence). It is not the OCR engine: the
+                      * per-page engine lives in document_passages.ocr_method.
+                      * The display name comes from App\Support\ExtractionMethods.
                       */}
-                    <MetaRow label="Base parser" value={report.parser_used || '—'} />
+                    <MetaRow label="Base parser" value={report.parser_label || report.parser_used || '—'} />
                 </div>
             </Card>
 
