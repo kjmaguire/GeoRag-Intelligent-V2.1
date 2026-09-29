@@ -34,6 +34,26 @@ export interface TracePoint {
     y: number;          // latitude / northing (matches collar.latitude)
     z: number;          // elevation (m, RL)
     depth_m: number;    // downhole depth measured from collar (0 at top)
+    /**
+     * Metric east/north offsets computed server-side (GIS-9 fix in
+     * query_drill_traces_3d). Used when EVERY point of a trace carries both;
+     * otherwise the points are projected from lon/lat here (lib/localEnu).
+     * Only differences between points are used, so the server's choice of
+     * origin (collar or otherwise) does not matter.
+     */
+    east_m?: number | null;
+    north_m?: number | null;
+    /** True past the last survey station — projected to TD, not measured. */
+    extrapolated?: boolean | null;
+}
+
+/** A trace point in scene metres: east/north of the collar centroid. */
+interface ScenePoint {
+    x: number;
+    y: number;
+    z: number;
+    depth_m: number;
+    extrapolated: boolean;
 }
 
 export interface CollarPoint {
@@ -119,12 +139,39 @@ function effectiveTrace(c: CollarPoint): TracePoint[] {
 }
 
 /**
+ * A collar's trace in scene metres.
+ *
+ * The collar is placed from its lon/lat about the scene origin; the path
+ * below it comes from the server's metric offsets when every point has them,
+ * or from projecting each point's lon/lat (GIS-9).
+ */
+function sceneTrace(
+    c: CollarPoint,
+    toLocal: (lon: number, lat: number) => { east: number; north: number },
+): ScenePoint[] {
+    const raw = effectiveTrace(c);
+    const collar = toLocal(c.longitude, c.latitude);
+    const metric = raw.length >= 2 && raw.every(
+        (p) => typeof p.east_m === 'number' && Number.isFinite(p.east_m)
+            && typeof p.north_m === 'number' && Number.isFinite(p.north_m),
+    );
+    const e0 = metric ? (raw[0].east_m as number) : 0;
+    const n0 = metric ? (raw[0].north_m as number) : 0;
+    return raw.map((p) => {
+        const xy = metric
+            ? { east: collar.east + (p.east_m as number) - e0, north: collar.north + (p.north_m as number) - n0 }
+            : toLocal(p.x, p.y);
+        return { x: xy.east, y: xy.north, z: p.z, depth_m: p.depth_m, extrapolated: p.extrapolated === true };
+    });
+}
+
+/**
  * Linear-interpolate an (x,y,z) point along a sorted-by-depth trace
  * for an arbitrary downhole depth. Clamps to endpoints when the depth
  * falls outside the trace's depth range.
  */
 function interpolateAtDepth(
-    trace: TracePoint[],
+    trace: Array<{ x: number; y: number; z: number; depth_m: number }>,
     depth: number,
 ): { x: number; y: number; z: number } | null {
     if (!trace.length) return null;
@@ -164,6 +211,15 @@ export default function DrillTrace3D({
         const toLocal = toLocalMetres(origin);
         const ex = (lon: number, lat: number) => toLocal(lon, lat).east;
         const ny = (lon: number, lat: number) => toLocal(lon, lat).north;
+        const scene = new Map<CollarPoint, ScenePoint[]>();
+        const traceOf = (c: CollarPoint): ScenePoint[] => {
+            let t = scene.get(c);
+            if (!t) {
+                t = sceneTrace(c, toLocal);
+                scene.set(c, t);
+            }
+            return t;
+        };
 
         const byStatus: Record<string, CollarPoint[]> = {};
         collars.forEach((c) => {
@@ -206,17 +262,37 @@ export default function DrillTrace3D({
             });
 
             holes.forEach((h) => {
-                const trace = effectiveTrace(h);
+                const trace = traceOf(h);
+                // Measured part solid; the projection to TD past the last
+                // survey (server `extrapolated`) dashed, so it does not read
+                // as surveyed.
+                const firstExtra = trace.findIndex((p) => p.extrapolated);
+                const measured = firstExtra === -1 ? trace : trace.slice(0, Math.max(firstExtra, 1));
                 traces.push({
                     type: 'scatter3d',
                     mode: 'lines',
                     showlegend: false,
-                    x: trace.map((p) => ex(p.x, p.y)),
-                    y: trace.map((p) => ny(p.x, p.y)),
-                    z: trace.map((p) => p.z),
+                    x: measured.map((p) => p.x),
+                    y: measured.map((p) => p.y),
+                    z: measured.map((p) => p.z),
                     line: { color, width: 3 },
                     hoverinfo: 'skip',
                 });
+                if (firstExtra !== -1) {
+                    const projected = trace.slice(Math.max(firstExtra - 1, 0));
+                    traces.push({
+                        type: 'scatter3d',
+                        mode: 'lines',
+                        showlegend: false,
+                        name: 'projected to TD',
+                        x: projected.map((p) => p.x),
+                        y: projected.map((p) => p.y),
+                        z: projected.map((p) => p.z),
+                        line: { color, width: 2, dash: 'dash' },
+                        opacity: 0.7,
+                        hoverinfo: 'skip',
+                    });
+                }
             });
         });
 
@@ -238,7 +314,7 @@ export default function DrillTrace3D({
             intervals.forEach((iv) => {
                 const collar = collarLookup.get(iv.collar_id);
                 if (!collar) return;
-                const trace = effectiveTrace(collar);
+                const trace = traceOf(collar);
                 const from = interpolateAtDepth(trace, iv.depth_from);
                 const to = interpolateAtDepth(trace, iv.depth_to);
                 if (!from || !to) return;
@@ -260,8 +336,8 @@ export default function DrillTrace3D({
                     // hovertemplate's %{text} — escape it (see the hole_id
                     // comment above for why).
                     const label = `${escapeHtml(iv.label)} · ${iv.depth_from}-${iv.depth_to}m`;
-                    xs.push(ex(from.x, from.y), ex(to.x, to.y), null);
-                    ys.push(ny(from.x, from.y), ny(to.x, to.y), null);
+                    xs.push(from.x, to.x, null);
+                    ys.push(from.y, to.y, null);
                     zs.push(from.z, to.z, null);
                     text.push(label, label, null);
                 });
@@ -297,7 +373,7 @@ export default function DrillTrace3D({
             structures.forEach((s) => {
                 const collar = collarLookup.get(s.collar_id);
                 if (!collar) return;
-                const trace = effectiveTrace(collar);
+                const trace = traceOf(collar);
                 const pt = interpolateAtDepth(trace, s.depth);
                 if (!pt) return;
                 const kind = s.structure_type || 'unknown';
@@ -311,8 +387,8 @@ export default function DrillTrace3D({
                     type: 'scatter3d',
                     mode: 'markers',
                     name: kind,
-                    x: items.map((i) => ex(i.pt.x, i.pt.y)),
-                    y: items.map((i) => ny(i.pt.x, i.pt.y)),
+                    x: items.map((i) => i.pt.x),
+                    y: items.map((i) => i.pt.y),
                     z: items.map((i) => i.pt.z),
                     // kind/strike/dip are ingested/derived data rendered via
                     // hovertemplate's %{text} — escape (see hole_id comment above).
