@@ -81,12 +81,17 @@ def test_las_derive_coordinates_uses_section_reference():
 
 
 @_requires_lasio
-def test_las_derive_coordinates_falls_back_to_default():
+def test_las_derive_coordinates_never_fabricates_for_an_unknown_section():
+    """Was `..._falls_back_to_default`, which pinned the fabrication.
+
+    A section that is not in PLSS_REFERENCE_UTM (or no section at all) used to
+    land at DEFAULT_UTM_FALLBACK (480000, 4660000) -- the same Wyoming box for
+    every such hole, with no warning. It now returns None and the caller
+    refuses the file; see tests/test_las_collar_location.py.
+    """
     from app.services.ingest.las_ingester import _derive_coordinates
-    e, n = _derive_coordinates("999N999W99", "unknown-hole")
-    # Falls back to DEFAULT_UTM_FALLBACK around 480k/4660k
-    assert 478_000 < e < 482_000
-    assert 4_659_000 < n < 4_661_000
+    assert _derive_coordinates("999N999W99", "unknown-hole") is None
+    assert _derive_coordinates(None, "unknown-hole") is None
 
 
 @_requires_lasio
