@@ -737,7 +737,10 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         and not any(name == "query_stereonet" for name, _ in results)
     ):
         result = await _call_tool_safely("query_stereonet", state.query, state.deps)
-        if result is not None:
+        # count == 0 is what the tool returns on timeout, error or no data
+        # (never None); an empty card is not worth rendering and must not
+        # reach Layer 1 looking like a result (AGT-4).
+        if result is not None and getattr(result, "count", 1):
             results.append(("query_stereonet", result))
             logger.info(
                 "agentic_retrieval.execute: stereonet card triggered (keyword match)"
@@ -772,7 +775,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             result = await _call_tool_safely(
                 "query_drill_traces_3d", state.query, state.deps,
             )
-            if result is not None:
+            if result is not None and getattr(result, "count", 1):  # AGT-4
                 results.append(("query_drill_traces_3d", result))
                 logger.info(
                     "agentic_retrieval.execute: drill_trace_3d card triggered "
@@ -1181,7 +1184,11 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # nothing. See app.agent.hallucination.layer1_retrieval for the full
     # verdict logic, including why cosine/RRF-fallback scores never drive
     # this decision.
-    _l1_verdict = assess_retrieval_quality(state.tool_results)
+    _l1_verdict = assess_retrieval_quality(
+        state.tool_results,
+        intent=state.effective_intent or state.intent,
+        query=state.query,
+    )
     if _l1_verdict.refuse:
         logger.warning(
             "agentic_retrieval.assemble: Layer 1 retrieval quality gate "

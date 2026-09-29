@@ -67,6 +67,7 @@ Usage
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -102,8 +103,8 @@ _REFUSAL_TEXT = (
     "I don't have sufficient relevant information retrieved for this "
     "project to answer confidently. Document search found no passages "
     "that cleared the relevance threshold, and no structured data (drill "
-    "holes, samples, spatial features, or public geoscience records) was "
-    "retrieved for this query either. Try rephrasing the question, "
+    "holes, samples, spatial features, or public geoscience records) "
+    "relevant to this question was retrieved either. Try rephrasing the question, "
     "narrowing it to a specific hole or area, or verify the project has "
     "ingested data covering this topic."
 )
@@ -138,8 +139,75 @@ def build_refusal_payload() -> dict[str, Any]:
     }
 
 
+#: Visualization cards (ADR-0007). Rendered beside the answer, not evidence:
+#: query_stereonet returns StereonetResult(count=0) on timeout, error or no
+#: data, and query_drill_traces_3d an empty result, never None — so a
+#: keyword-triggered card ("3d ", "drill trace") used to satisfy the
+#: zero-evidence gate on its own and send an empty context to the LLM
+#: (audit 2026-09-29, AGT-4).
+_VIZ_CARD_TOOLS: frozenset[str] = frozenset(("query_stereonet", "query_drill_traces_3d"))
+
+#: Tools that return project-wide rows whatever the question asked: every
+#: collar, the project's assays for an auto-picked element, the project
+#: overview. They answer questions ABOUT the drill data; for anything else
+#: they are context, not evidence (RAG-13).
+_PROJECT_WIDE_TOOLS: frozenset[str] = frozenset((
+    "query_spatial_collars", "query_assay_data", "query_project_overview",
+))
+
+#: Intents whose primary evidence is documents (retrieval_profile.py puts
+#: search_documents first). For these, project-wide rows only count toward
+#: the zero-evidence gate when the question is about the drill data.
+#: anomaly_detection, project_summary and coverage_gap are structured-data
+#: intents and are deliberately absent: what counts for them is unchanged.
+_DOCUMENT_CENTRIC_INTENTS: frozenset[str] = frozenset((
+    "factual_lookup", "synthesis", "hypothesis_generation",
+    "uncertainty_quantification", "decision_support",
+))
+
+#: A question "about the drill data": drilling, holes, collars, assays,
+#: grades, samples, intercepts, depths, logs, or a named commodity.
+_DRILL_DATA_QUESTION_RE = re.compile(
+    r"\b(?:drill\w*|holes?|boreholes?|ddh|collars?|assay\w*|grades?|samples?|"
+    r"sampling|intercepts?|intersect\w*|intervals?|depths?|deep\w*|deepest|"
+    r"lithology|logs?|logged|core|mineraliz\w*|mineralis\w*|cut-?off|"
+    r"u3o8|e?u3o8|uranium|gold|silver|copper|zinc|nickel|cobalt|lead|"
+    r"molybdenum|lithium|au|ag|cu|zn|ni|co|pb|mo|li|ppm|ppb)\b|g/t|\d\s*%",
+    re.IGNORECASE,
+)
+
+
+def _is_viz_card(name: str, result: Any) -> bool:
+    if name in _VIZ_CARD_TOOLS:
+        return True
+    from app.agent.tools import DrillTrace3DResult, StereonetResult  # noqa: PLC0415
+
+    return isinstance(result, (StereonetResult, DrillTrace3DResult))
+
+
+def _counts_as_evidence(
+    name: str, result: Any, *, intent: str | None, query: str | None
+) -> bool:
+    """Whether a non-document result satisfies the zero-evidence gate."""
+    if _is_viz_card(name, result):
+        return False
+    if name not in _PROJECT_WIDE_TOOLS:
+        # Query-specific: the hole-ID pre-pass (query_collar_details), a
+        # hole's downhole log, scored public-geoscience records, and the
+        # structured-intent aggregates.
+        return True
+    if intent is None or intent not in _DOCUMENT_CENTRIC_INTENTS or query is None:
+        return True
+    from app.agent.hole_id_patterns import HOLE_ID_RE  # noqa: PLC0415
+
+    return bool(_DRILL_DATA_QUESTION_RE.search(query) or HOLE_ID_RE.search(query))
+
+
 def assess_retrieval_quality(
     tool_results: list[tuple[str, Any]],
+    *,
+    intent: str | None = None,
+    query: str | None = None,
 ) -> RetrievalQualityVerdict:
     """Layer 1: judge whether ``tool_results`` grounds the query about to be
     answered.
@@ -154,6 +222,21 @@ def assess_retrieval_quality(
     ``RERANKER_SCORE_THRESHOLD``, applied inside ``search_documents``) has
     already run by the time this function sees a chunk — this goes beyond
     it, not in place of it.
+
+    What counts as "other evidence" for the hard gate (2026-09-29):
+
+      * Visualization cards (stereonet, 3-D drill traces) never count —
+        they are rendered beside the answer, and arrive even when empty
+        (AGT-4).
+      * For a document-centric ``intent`` (``_DOCUMENT_CENTRIC_INTENTS``),
+        the project-wide structured dumps (every collar, the project's
+        assays, the overview) count only when ``query`` is about the drill
+        data. "What metallurgical recovery did the PEA assume?" with no
+        document chunk above the floor used to go to the LLM with five
+        collars and seven uranium samples as its evidence; it is now
+        refused (RAG-13). Hole-specific lookups, public-geoscience records
+        and the structured-intent aggregates always count, and with no
+        ``intent`` / ``query`` (the advisory caller) nothing changes.
 
     Never raises — this is pure computation over already-fetched Python
     objects, no I/O.
@@ -175,7 +258,10 @@ def assess_retrieval_quality(
         r for _name, r in tool_results if isinstance(r, DocumentSearchResult)
     ]
     other_results = [
-        (name, r) for name, r in tool_results if not isinstance(r, DocumentSearchResult)
+        (name, r)
+        for name, r in tool_results
+        if not isinstance(r, DocumentSearchResult)
+        and _counts_as_evidence(name, r, intent=intent, query=query)
     ]
     other_evidence_present = len(other_results) > 0
 
