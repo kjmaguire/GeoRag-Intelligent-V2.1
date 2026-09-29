@@ -164,8 +164,8 @@ share one Pydantic `Settings` class with the two Python readers that do.
 | Credential | Holder of truth | Read by (task definition) | Zero-downtime? | Section |
 | --- | --- | --- | --- | --- |
 | `APP_KEY` | `APP_KEY` key of `georag/app` | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse (+ `georag-migrate`, `georag-app-key-rotation`); consumed only by the three laravel-* services | No — laravel-octane and laravel-horizon scaled to **zero** while `query_audit_log` is re-encrypted; scripted (`deploy/aws/rotation/rotate-app-key.sh`) | §2 |
-| `FASTAPI_SERVICE_KEY` (+ `_KID`) | `georag/app` | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse | Not currently — see §3 for the gap | §3 |
-| `FASTAPI_SERVICE_KEY_PREVIOUS` (+ `_KID`) | documented in `config.tf`'s comment; **not wired into any ECS secret reference** | nobody, on AWS, today | n/a — see §3 | §3 |
+| `FASTAPI_SERVICE_KEY` (+ `_KID`) | `georag/app` | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse | Yes, once the 2026-09-29 Terraform change is applied — overlap via `_PREVIOUS` (§3) | §3 |
+| `FASTAPI_SERVICE_KEY_PREVIOUS` (+ `_KID`) | `georag/app`; empty in steady state. **Wired into `_secret_ref` on 2026-09-29 (audit AWS-20)** — until that apply is live, §3's hard-cut description still holds | the same six services | n/a — it is the overlap slot | §3 |
 | `GEORAG_APP_PASSWORD` | `georag/app` (role: `georag_app`) | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse (as `DB_PASSWORD` / `POSTGRES_PASSWORD`) | Brief `28P01` on each consumer until rolled | §4 |
 | RDS master password (`georag`) | AWS-managed Secrets Manager secret (`manage_master_user_password = true`, `data.tf:137`) — never in `georag/app` | operators only; no application connects as it | Yes — nothing to roll | §4 |
 | `martin_readonly` password | embedded in `MARTIN_DATABASE_URL` | martin | Yes (order matters — see §4) | §4 |

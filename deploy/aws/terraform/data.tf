@@ -144,6 +144,15 @@ resource "aws_db_instance" "this" {
   backup_retention_period = var.db_backup_retention_days
   copy_tags_to_snapshot   = true
 
+  # Both windows inside the hours the instance is actually RUNNING (audit
+  # AWS-13, 2026-09-29). Left unset, RDS picks a random 30-minute backup
+  # window and weekly maintenance window per region — and this instance is
+  # stopped 17:00-08:30 America/Vancouver every night, so a window that lands
+  # there never finds the instance up. See the two variables for the UTC
+  # arithmetic.
+  backup_window      = var.db_backup_window
+  maintenance_window = var.db_maintenance_window
+
   # BOTH of these were constants until 2026-09-16, and both blocked the very
   # teardown power.tf is built around. Neither had ever run: there are no AWS
   # credentials in CI, so `terraform plan` has never executed in either power
@@ -202,6 +211,15 @@ resource "aws_efs_file_system" "this" {
 
   lifecycle_policy {
     transition_to_ia = "AFTER_30_DAYS"
+  }
+
+  # Back to Standard on first read (audit AWS-17, 2026-09-29). Optimised
+  # Qdrant segments are immutable, so after 30 days they move to IA — and
+  # every morning's cold start then reads them from IA, which bills per GB
+  # read and is slower. Without this they stay in IA and are re-billed every
+  # single morning; with it a segment pays one IA read and comes back.
+  lifecycle_policy {
+    transition_to_primary_storage_class = "AFTER_1_ACCESS"
   }
 
   tags = { Name = local.name }
@@ -373,21 +391,63 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
     }
   }
 
-  rule {
-    id     = "tier-cold-objects"
-    status = "Enabled"
+  # Bronze only — and now actually only bronze (audit AWS-19, 2026-09-29).
+  # This rule sat inside the for_each over all four buckets, so the comment
+  # said "bronze only" while exports, backups and bronze-raster got it too.
+  # Exports are read soon after they are written or never, and backups are
+  # already infrequent-access by nature.
+  dynamic "rule" {
+    for_each = each.key == "bronze" ? [1] : []
+    content {
+      id     = "tier-cold-objects"
+      status = "Enabled"
 
-    # Bronze only. Exports are read soon after they are written or never,
-    # and backups are already infrequent-access by nature.
-    filter {
-      prefix = "reports/"
-    }
+      filter {
+        prefix = "reports/"
+      }
 
-    transition {
-      days          = 90
-      storage_class = "STANDARD_IA"
+      transition {
+        days          = 90
+        storage_class = "STANDARD_IA"
+      }
     }
   }
+}
+
+# TLS only (audit AWS-19). Every client here — boto3 in the Python services,
+# Flysystem's S3 adapter in Laravel — speaks HTTPS by default, so this
+# changes nothing that works today. It makes a plaintext request a refusal
+# rather than something that silently succeeds, whatever misconfigured client
+# or future endpoint override sends it. A Deny-only policy is not "public",
+# so block_public_policy above does not reject it.
+data "aws_iam_policy_document" "bucket_tls_only" {
+  for_each = aws_s3_bucket.this
+
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    resources = [each.value.arn, "${each.value.arn}/*"]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "tls_only" {
+  for_each = aws_s3_bucket.this
+  bucket   = each.value.id
+  policy   = data.aws_iam_policy_document.bucket_tls_only[each.key].json
+
+  # The public access block is written first; applying both at once can race
+  # and have S3 evaluate the policy against the account-level defaults.
+  depends_on = [aws_s3_bucket_public_access_block.this]
 }
 
 # The `storage_tiering_run` Phase 0 agent moves bronze objects between

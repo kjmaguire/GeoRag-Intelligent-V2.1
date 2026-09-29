@@ -232,6 +232,50 @@ variable "db_backup_retention_days" {
   default     = 35
 }
 
+variable "db_backup_window" {
+  description = <<-EOT
+    Daily automated-backup window, UTC, "hh24:mi-hh24:mi" (at least 30 min).
+
+    Must fall inside the hours the instance is RUNNING. The nightly sweep
+    stops it 17:00-08:30 America/Vancouver, so it runs 15:30-24:00 UTC under
+    PDT and 16:30-01:00 UTC under PST; the overlap valid all year is
+    16:30-24:00 UTC. The default, 17:00-17:30 UTC, is 10:00 PDT / 09:00 PST,
+    after the startup sweep has finished. Single-AZ, so expect a brief I/O
+    pause while the snapshot starts.
+
+    Move it if you move `startup_cron` or `shutdown_cron`, and keep it clear
+    of `db_maintenance_window` (RDS rejects an overlap).
+  EOT
+  type        = string
+  default     = "17:00-17:30"
+
+  validation {
+    condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$", var.db_backup_window))
+    error_message = "db_backup_window must look like \"17:00-17:30\" (UTC, hh24:mi-hh24:mi)."
+  }
+}
+
+variable "db_maintenance_window" {
+  description = <<-EOT
+    Weekly maintenance window, UTC, "ddd:hh24:mi-ddd:hh24:mi" (at least 30
+    min). Same constraint as `db_backup_window`: inside running hours or
+    maintenance (including the minor-version upgrades
+    `auto_minor_version_upgrade` opts into) never finds the instance up.
+
+    Default sun:18:00-sun:18:30 UTC = Sunday 11:00 PDT / 10:00 PST: the
+    platform is up (the sweeps run every day) and nobody is likely to be
+    mid-query. A maintenance action can restart the instance for a few
+    minutes — that is the trade for maintenance happening at all.
+  EOT
+  type        = string
+  default     = "sun:18:00-sun:18:30"
+
+  validation {
+    condition     = can(regex("^(mon|tue|wed|thu|fri|sat|sun):([01][0-9]|2[0-3]):[0-5][0-9]-(mon|tue|wed|thu|fri|sat|sun):([01][0-9]|2[0-3]):[0-5][0-9]$", var.db_maintenance_window))
+    error_message = "db_maintenance_window must look like \"sun:18:00-sun:18:30\" (UTC)."
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Bedrock model ids
 # ---------------------------------------------------------------------------

@@ -475,14 +475,23 @@ resource "aws_cloudwatch_metric_alarm" "db_storage" {
   count = local.on
 
   alarm_name        = "${local.name}-pg-storage"
-  alarm_description = "Less than 10 GiB free. Storage autoscaling is on, so this is a warning that it is working, not that it is about to stop."
+  alarm_description = "Postgres free storage is under 15% of the initially allocated size. On the original volume that is just ahead of RDS storage autoscaling's 10%-free trigger; after autoscaling has grown the volume it means autoscaling has not acted (it waits 6 hours between changes). Check FreeStorageSpace and the instance's storage-modification events."
 
-  namespace           = "AWS/RDS"
-  metric_name         = "FreeStorageSpace"
-  statistic           = "Minimum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 10 * 1024 * 1024 * 1024
+  namespace          = "AWS/RDS"
+  metric_name        = "FreeStorageSpace"
+  statistic          = "Minimum"
+  period             = 300
+  evaluation_periods = 1
+  # 15% of var.db_allocated_storage_gb, in bytes: 3 GiB at the 20 GB default.
+  # It was a flat 10 GiB until 2026-09-29 (audit AWS-18) — HALF of a 20 GB
+  # volume, so it fired as soon as the database held 10 GB of ordinary data,
+  # went back to OK every night when the stopped instance stopped reporting
+  # (notBreaching), and re-emailed every morning. RDS publishes no
+  # allocated-storage metric to divide by, so this is relative to the INITIAL
+  # size and stays a fixed floor once autoscaling grows the volume. Past the
+  # first growth it sits below the 10% autoscaling trigger, so from then on it
+  # fires only when autoscaling has NOT acted — the case worth an email.
+  threshold           = floor(var.db_allocated_storage_gb * 0.15 * 1024 * 1024 * 1024)
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions

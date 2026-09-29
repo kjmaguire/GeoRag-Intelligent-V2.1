@@ -29,7 +29,10 @@ resource "aws_secretsmanager_secret" "app" {
 #   FASTAPI_SERVICE_KEY      the X-Service-Key both sides check on every
 #                            internal hop; rotation accepts the previous
 #                            value on both sides simultaneously
-#   FASTAPI_SERVICE_KEY_PREVIOUS
+#   FASTAPI_SERVICE_KEY_KID  the kid Laravel mints with ("primary")
+#   FASTAPI_SERVICE_KEY_PREVIOUS, FASTAPI_SERVICE_KEY_PREVIOUS_KID
+#                            the outgoing key and its kid during a rotation
+#                            overlap; empty the rest of the time
 #   QDRANT_API_KEY           one read-write key
 #   HATCHET_CLIENT_TOKEN
 #   HATCHET_ADMIN_PASSWORD   the seeded Hatchet dashboard admin's password;
@@ -78,9 +81,21 @@ resource "aws_secretsmanager_secret_version" "app_placeholder" {
 locals {
   # Secrets injected into every task, by ARN. The execution role reads
   # them; the container never sees the ARN, only the value.
+  #
+  # The three FASTAPI_SERVICE_KEY_* rotation slots joined on 2026-09-29 (audit
+  # AWS-20). Both sides already accept a previous key during an overlap
+  # (app/services/auth.py, VerifyServiceKey.php) but nothing injected it, so
+  # rotating the service key was a hard cut: 401s on every internal hop until
+  # every task had restarted. Steady state: _KID = "primary", _PREVIOUS and
+  # _PREVIOUS_KID = "" (FastAPI and Laravel both read empty as "no rotation
+  # in progress"). ECS refuses to start a task whose referenced key is ABSENT,
+  # so all three must be written to georag/app BEFORE the apply that adds them.
   _secret_ref = { for key in [
     "APP_KEY",
     "FASTAPI_SERVICE_KEY",
+    "FASTAPI_SERVICE_KEY_KID",
+    "FASTAPI_SERVICE_KEY_PREVIOUS",
+    "FASTAPI_SERVICE_KEY_PREVIOUS_KID",
     "QDRANT_API_KEY",
     "HATCHET_CLIENT_TOKEN",
     "REDIS_PASSWORD",
