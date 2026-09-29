@@ -14,6 +14,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -27,9 +28,19 @@ use Illuminate\Support\Facades\Log;
  * under its own Horizon supervisor so long-running streams never saturate
  * the default pool and starve other queued work.
  *
- * FastAPI SSE event vocabulary (see src/fastapi/app/routers/queries.py):
- *   - status    : progress message (e.g. "Analyzing query…")
- *   - delta     : a token chunk — re-broadcast as-is
+ * FastAPI SSE event vocabulary — the contract is these six names, declared
+ * identically in src/fastapi/app/routers/queries.py and consumed by
+ * resources/js/Pages/Foundry/Chat.tsx (tests/Unit/Jobs/SseVocabularyContractTest
+ * fails if the three drift):
+ *
+ *   SSE vocabulary: status · bind · delta · citation · completed · failed
+ *
+ *   - status    : progress message (e.g. "Analyzing query…"). Also used,
+ *                 with heartbeat=true, as FastAPI's periodic keep-alive
+ *                 during silent phases so the browser's idle watchdog does
+ *                 not fire while the model is thinking (CHAT-6).
+ *   - bind      : the citation manifest, bound before the first token
+ *   - delta     : a token chunk — re-broadcast as-is ({token, token_seq})
  *   - citation  : a single citation's payload
  *   - completed : terminal success; carries the full GeoRAGResponse.
  *                 Triggers the audit-log completion write (response_text,
@@ -191,6 +202,17 @@ class StreamQueryFromFastApi implements ShouldQueue
             ]);
             $auditRow = null;
         }
+
+        // CHAT-14 — a job picked up long after /start streams to nobody:
+        // the browser's idle watchdog has already given up, so calling
+        // FastAPI only bills an LLM run no one will see. Happens when the
+        // llm supervisor was down, backlogged, or restarted mid-queue.
+        if ($auditRow !== null && $this->isStale($auditRow)) {
+            $this->abandonStaleJob($auditRow);
+
+            return;
+        }
+
         $userId = $auditRow?->user_id ?? 'unknown';
         // Audit 2026-06-27: carry workspace_id in the JWT so the FastAPI
         // lifecycle/RLS guard on the MAIN query path is actually enforced.
@@ -306,10 +328,18 @@ class StreamQueryFromFastApi implements ShouldQueue
             ]);
 
             if ($statusCode < 200 || $statusCode >= 300) {
-                $body = stream_get_contents($stream);
+                $body = (string) stream_get_contents($stream);
                 fclose($stream);
+                // The body stays server-side (log + encrypted audit row).
+                // It can name internal hosts and carry framework error text,
+                // none of which belongs in the browser (CHAT-20 / LAR-19).
+                Log::warning('StreamQueryFromFastApi: FastAPI returned non-2xx', [
+                    'query_id' => $this->queryId,
+                    'status' => $statusCode,
+                    'body' => substr($body, 0, 480),
+                ]);
                 $this->broadcastError(
-                    "FastAPI returned HTTP {$statusCode}: ".substr($body, 0, 200),
+                    "The answer service returned an error (HTTP {$statusCode}). Please try again.",
                     $statusCode,
                 );
                 // Fall through to the shared audit finalisation instead of
@@ -330,10 +360,28 @@ class StreamQueryFromFastApi implements ShouldQueue
                 $dataBuffer = '';
                 $eventCount = 0;
 
+                $cancelled = false;
+                // 0.0 so the first frame checks at once; then at most 1/s.
+                $lastCancelCheck = 0.0;
+
                 while (! feof($stream)) {
                     $line = fgets($stream);
                     if ($line === false) {
                         break;
+                    }
+
+                    // CHAT-18 — Stop in the browser used to only leave the
+                    // channel; this job and the FastAPI run carried on for
+                    // up to 180 s, holding one of the llm slots and billing
+                    // the LLM. Checked at most once a second, between
+                    // frames; closing the socket cancels the FastAPI run
+                    // through its client-disconnect path.
+                    if (microtime(true) - $lastCancelCheck >= 1.0) {
+                        $lastCancelCheck = microtime(true);
+                        if ($this->cancellationRequested()) {
+                            $cancelled = true;
+                            break;
+                        }
                     }
 
                     $line = rtrim($line, "\r\n");
@@ -356,12 +404,26 @@ class StreamQueryFromFastApi implements ShouldQueue
                     }
                 }
 
-                if ($dataBuffer !== '') {
+                if (! $cancelled && $dataBuffer !== '') {
                     $this->dispatchSseEvent($eventType ?? 'delta', $dataBuffer);
                     $eventCount++;
                 }
 
                 fclose($stream);
+
+                if ($cancelled && $this->completedPayload === null && $this->failedPayload === null) {
+                    Log::info('StreamQueryFromFastApi: cancelled by the user', [
+                        'query_id' => $this->queryId,
+                        'events_dispatched' => $eventCount,
+                    ]);
+                    $this->failedPayload = [
+                        'event' => 'failed',
+                        'query_id' => $this->queryId,
+                        'code' => 'CANCELLED',
+                        'error' => 'Stopped by the user.',
+                    ];
+                    $this->dispatchSseEvent('failed', (string) json_encode($this->failedPayload));
+                }
 
                 Log::info('StreamQueryFromFastApi: stream complete', [
                     'query_id' => $this->queryId,
@@ -386,7 +448,7 @@ class StreamQueryFromFastApi implements ShouldQueue
                         'code' => 'STREAM_TRUNCATED',
                         'error' => 'The answer stream ended unexpectedly — please try again.',
                     ];
-                    $this->dispatchSseEvent('failed', json_encode($this->failedPayload));
+                    $this->dispatchSseEvent('failed', (string) json_encode($this->failedPayload));
                 }
             }
 
@@ -452,15 +514,24 @@ class StreamQueryFromFastApi implements ShouldQueue
                 // is re-opened. The live SSE broadcast already forwards
                 // these to React in real-time via QueryStreamEvent — this
                 // block adds durability across sessions.
+                $existing = is_array($row->metadata) ? $row->metadata : [];
                 $guardCodes = $this->completedPayload['guard_error_codes'] ?? null;
                 if (is_array($guardCodes) && $guardCodes !== []) {
-                    $existing = is_array($row->metadata) ? $row->metadata : [];
                     $existing['guard_error_codes'] = array_values(array_filter(
                         $guardCodes,
                         fn ($c) => is_string($c) && $c !== '',
                     ));
-                    $row->metadata = $existing;
                 }
+                // CHAT-8 — what GET /api/v1/queries/{id}/result needs to
+                // re-render this answer in a tab that lost the `completed`
+                // frame (reconnect, oversize, watchdog): the verdicts and
+                // the run id, not just text + citations.
+                foreach (['validation_state', 'answer_run_id', 'refusal_payload'] as $key) {
+                    if (array_key_exists($key, $this->completedPayload)) {
+                        $existing[$key] = $this->completedPayload[$key];
+                    }
+                }
+                $row->metadata = $existing;
 
                 $row->save();
             } elseif ($row !== null && $this->failedPayload !== null) {
@@ -482,7 +553,12 @@ class StreamQueryFromFastApi implements ShouldQueue
             // Broadcast FIRST — if the DB is the failing dependency, the
             // audit write below re-throws and the client would otherwise
             // never receive a terminal event.
-            $this->broadcastError($e->getMessage(), 500);
+            //
+            // A generic message, not $e->getMessage() (CHAT-20 / LAR-19):
+            // that text named the internal FastAPI URL ("Failed to open
+            // stream to FastAPI: http://fastapi.<ns>:8000/...") or carried
+            // SQL. The detail is in the log line above and the audit row.
+            $this->broadcastError('The answer service could not be reached. Please try again.', 'INTERNAL');
 
             $elapsed = (int) ((microtime(true) - $this->startTime) * 1000);
             try {
@@ -508,24 +584,29 @@ class StreamQueryFromFastApi implements ShouldQueue
     /**
      * Terminal-failure hook (C8).
      *
-     * Invoked by Horizon when the job exhausts its attempts OR is SIGTERM'd
-     * at the `$timeout` boundary mid-stream. In the SIGTERM case the catch
+     * Invoked by Horizon when the job exhausts its attempts OR is killed at
+     * the `$timeout` boundary mid-stream. In the timeout case the catch
      * block in handle() does NOT run (the worker dies inside fgets()), so
      * without this method the audit row and the frontend are both left in
-     * limbo: the browser waits for its 5 min client timeout and the audit
-     * row never gets a failure marker.
+     * limbo.
      *
-     * Two important differences from the in-handle catch:
+     * Differences from the in-handle catch:
      *   1. Runs on a FRESH deserialised instance — the captured $startTime
-     *      is 0. We derive elapsed time from the audit row's dispatched_at
-     *      instead so the failure-path latency metric is still meaningful.
+     *      is 0. Elapsed time comes from the audit row's dispatched_at.
      *   2. Broadcasts `event: 'failed'` (not `'error'`), matching the
      *      FastAPI SSE vocabulary + the frontend's terminal handler.
      *
-     * Idempotent: if the row is already marked failed, a repeat invocation
-     * is a no-op on the audit side (the broadcast still fires in case the
-     * first one was lost — the frontend already tolerates a duplicate
-     * terminal event).
+     * Order matters (CHAT-13): the terminal broadcast goes out BEFORE the
+     * audit write, and the write is guarded. When the database is the
+     * failing dependency (RDS stopped by the nightly sweep, connection
+     * exhaustion) an unguarded write used to throw first, so no terminal
+     * frame was sent and the browser waited for its watchdog.
+     *
+     * A row that handle() already finalised is left alone (CHAT-1 / CHAT-20):
+     *   - a successful answer is never overwritten with a [FAILED marker —
+     *     that is what a re-queued duplicate of a finished job used to do;
+     *   - an `[error:` marker means handle() already broadcast its own
+     *     terminal and recorded the cause, so neither is repeated.
      */
     public function failed(\Throwable $e): void
     {
@@ -535,43 +616,34 @@ class StreamQueryFromFastApi implements ShouldQueue
             'message' => $e->getMessage(),
         ]);
 
-        $row = QueryAuditLog::where('query_id', $this->queryId)->first();
-
-        if ($row === null) {
-            Log::warning('StreamQueryFromFastApi::failed: audit row not found', [
+        $row = null;
+        $rowReadable = true;
+        try {
+            $row = QueryAuditLog::where('query_id', $this->queryId)->first();
+        } catch (\Throwable $lookupError) {
+            $rowReadable = false;
+            Log::warning('StreamQueryFromFastApi::failed: audit row lookup failed', [
                 'query_id' => $this->queryId,
+                'exception' => $lookupError->getMessage(),
             ]);
-        } else {
-            $alreadyMarked = is_string($row->response_text)
-                && str_starts_with($row->response_text, '[FAILED');
+        }
 
-            if (! $alreadyMarked) {
-                // Elapsed since dispatched_at (set by QueryController::start).
-                // Falls back to 0 if for any reason dispatched_at wasn't
-                // populated — better an unknown latency than throwing here.
-                $elapsed = 0;
-                if ($row->dispatched_at !== null) {
-                    $elapsed = (int) abs(now()->diffInMilliseconds($row->dispatched_at));
-                }
+        $existing = $row?->response_text;
+        $finalisedByHandle = is_string($existing) && $existing !== ''
+            && ! str_starts_with($existing, '[FAILED');
 
-                $row->response_text = '[FAILED: '.get_class($e).' — '
-                                       .substr($e->getMessage(), 0, 480).']';
-                $row->response_time_ms = $elapsed;
-                $row->save();
-            }
+        if ($finalisedByHandle) {
+            Log::info('StreamQueryFromFastApi::failed: row already finalised by handle(), not overwriting', [
+                'query_id' => $this->queryId,
+                'kind' => str_starts_with($existing, '[error:') ? 'failure' : 'answer',
+            ]);
+
+            return;
         }
 
         // Broadcast a terminal `failed` event so the client stops waiting.
-        // Deliberately NOT piggy-backing broadcastError() (which emits
-        // event:'error') — `failed` is the terminal vocabulary in the
-        // FastAPI SSE contract and the frontend routes it to its terminal
-        // error UI via the Retry affordance (A5).
-        //
-        // Defensive: if the broadcast itself fails (Reverb down, payload
-        // limit, network blip) we MUST NOT let the failed() handler die —
-        // the audit row has already been written above. Swallow + log.
-        // The frontend's own timeout watchdog (P0.2) will catch the silent
-        // case where no terminal event ever reaches the client.
+        // Defensive: if the broadcast itself fails (Reverb down, network
+        // blip) the handler must still reach the audit write. Swallow + log.
         try {
             broadcast(new QueryStreamEvent(
                 $this->channel,
@@ -589,7 +661,185 @@ class StreamQueryFromFastApi implements ShouldQueue
                 'broadcast_exception' => $broadcastError->getMessage(),
             ]);
         }
+
+        if ($row === null) {
+            if ($rowReadable) {
+                Log::warning('StreamQueryFromFastApi::failed: audit row not found', [
+                    'query_id' => $this->queryId,
+                ]);
+            }
+
+            return;
+        }
+
+        if (is_string($existing) && str_starts_with($existing, '[FAILED')) {
+            // Idempotent: a repeat invocation keeps the first marker.
+            return;
+        }
+
+        try {
+            // Elapsed since dispatched_at (set by QueryController::start).
+            // Falls back to 0 if for any reason dispatched_at wasn't
+            // populated — better an unknown latency than throwing here.
+            $elapsed = 0;
+            if ($row->dispatched_at !== null) {
+                $elapsed = (int) abs(now()->diffInMilliseconds($row->dispatched_at));
+            }
+
+            $row->response_text = '[FAILED: '.get_class($e).' — '
+                                   .substr($e->getMessage(), 0, 480).']';
+            $row->response_time_ms = $elapsed;
+            $row->save();
+        } catch (\Throwable $auditError) {
+            Log::warning('StreamQueryFromFastApi::failed: audit write skipped', [
+                'query_id' => $this->queryId,
+                'exception' => $auditError->getMessage(),
+            ]);
+        }
     }
+
+    /**
+     * Cache key the cancel endpoint sets and handle() polls (CHAT-18).
+     *
+     * A pure function of the id — no state is held on the class.
+     */
+    public static function cancelCacheKey(string $queryId): string
+    {
+        return 'georag:query-cancel:'.$queryId;
+    }
+
+    /**
+     * Has the user pressed Stop? A cache failure reads as "no" — the
+     * stream carries on, which is the pre-cancel behaviour.
+     */
+    private function cancellationRequested(): bool
+    {
+        try {
+            return Cache::has(self::cancelCacheKey($this->queryId));
+        } catch (\Throwable $e) {
+            Log::debug('StreamQueryFromFastApi: cancel flag lookup failed', [
+                'query_id' => $this->queryId,
+                'exception' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Was this job picked up too long after /start to be worth running?
+     *
+     * Only a row whose dispatched_at is known can be stale; a missing row
+     * (unit tests, DB blip) runs as before.
+     */
+    private function isStale(?QueryAuditLog $row): bool
+    {
+        $threshold = (int) config('services.fastapi.queue_stale_after', 110);
+        if ($threshold <= 0 || $row === null || $row->dispatched_at === null) {
+            return false;
+        }
+
+        return $row->dispatched_at->diffInSeconds(now(), true) > $threshold;
+    }
+
+    /**
+     * Terminal for a stale job: tell the browser (if it is still there) and
+     * mark the audit row, without calling FastAPI.
+     */
+    private function abandonStaleJob(QueryAuditLog $row): void
+    {
+        $waited = $row->dispatched_at?->diffInSeconds(now(), true);
+
+        Log::warning('StreamQueryFromFastApi: abandoning stale job (queued too long)', [
+            'query_id' => $this->queryId,
+            'queued_seconds' => $waited,
+            'threshold_seconds' => (int) config('services.fastapi.queue_stale_after', 110),
+        ]);
+
+        $payload = [
+            'event' => 'failed',
+            'query_id' => $this->queryId,
+            'code' => 'QUEUE_STALE',
+            'error' => 'The query waited too long for a free worker and was not run. Please try again.',
+        ];
+        $this->dispatchSseEvent('failed', (string) json_encode($payload));
+
+        try {
+            $row->response_text = $this->formatFailureMarker($payload);
+            $row->response_time_ms = $waited !== null ? (int) ($waited * 1000) : null;
+            $row->save();
+        } catch (\Throwable $e) {
+            Log::warning('StreamQueryFromFastApi: stale-job audit write skipped', [
+                'query_id' => $this->queryId,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * The `completed` frame as it can actually be delivered (CHAT-5).
+     *
+     * The full GeoRAGResponse can carry a 3D drill-trace card of up to 200
+     * collars x 50 points plus 1000 intervals — about a megabyte of JSON.
+     * Reverb rejects a request over REVERB_MAX_REQUEST_SIZE, the broadcast
+     * throws, and the chat never sees a terminal frame. Over the budget,
+     * this keeps everything the answer's integrity depends on (text,
+     * citations, the verdicts, the run id) and drops the bulky
+     * visualisation fields, saying which ones went.
+     *
+     * @param array<string, mixed> $payload
+     *
+     * @return array<string, mixed>
+     */
+    private function fitCompletedFrame(array $payload): array
+    {
+        $budget = (int) config('services.fastapi.completed_frame_budget_bytes', 700_000);
+        $encoded = json_encode($payload);
+        if ($budget <= 0 || ($encoded !== false && strlen($encoded) <= $budget)) {
+            return $payload;
+        }
+
+        $slim = array_intersect_key($payload, array_flip(self::COMPLETED_FRAME_ESSENTIAL_KEYS));
+        $slim['payload_truncated'] = true;
+        $slim['truncated_fields'] = array_values(array_filter(
+            array_keys(array_diff_key($payload, $slim)),
+            fn (string $key): bool => $payload[$key] !== null && $payload[$key] !== [],
+        ));
+
+        // Still too big means the citations themselves are the bulk. Keep
+        // them all if at all possible — they are the answer's evidence —
+        // but a frame that cannot be delivered helps nobody.
+        $encodedSlim = json_encode($slim);
+        if ($encodedSlim !== false && strlen($encodedSlim) > $budget && is_array($slim['citations'] ?? null)) {
+            $slim['citations_total'] = count($slim['citations']);
+            $slim['citations'] = array_slice($slim['citations'], 0, self::COMPLETED_FRAME_MAX_CITATIONS);
+        }
+
+        Log::warning('StreamQueryFromFastApi: completed frame over Reverb budget, broadcasting slim frame', [
+            'query_id' => $this->queryId,
+            'bytes' => $encoded !== false ? strlen($encoded) : null,
+            'budget' => $budget,
+            'dropped' => $slim['truncated_fields'],
+        ]);
+
+        return $slim;
+    }
+
+    /**
+     * Keys a slim `completed` frame keeps — what Chat.tsx needs to render a
+     * verified, cited answer and its verdict (stamping fields included).
+     *
+     * @var list<string>
+     */
+    private const COMPLETED_FRAME_ESSENTIAL_KEYS = [
+        'event', 'query_id', 'event_seq', 'event_id', 'event_name', 'trace_id',
+        'text', 'citations', 'confidence', 'validation_state', 'answer_run_id',
+        'refusal_payload', 'guard_error_codes', 'llm_model', 'sources_used',
+        'multi_turn_resolution', 'validation_warnings',
+    ];
+
+    /** Citation cap for a slim frame that is still over budget. */
+    private const COMPLETED_FRAME_MAX_CITATIONS = 100;
 
     /** Completed event payload — captured for audit log update. */
     private ?array $completedPayload = null;
@@ -650,13 +900,56 @@ class StreamQueryFromFastApi implements ShouldQueue
         // audit row, and subsequent frames may broadcast fine. Swallow
         // here and let handle() complete normally. The frontend's
         // timeout watchdog catches the rare case where every frame fails.
+        //
+        // Except for the terminal frame (CHAT-5): swallowing THAT one left
+        // the browser with every delta and no end, and the watchdog then
+        // blamed the realtime channel two minutes later. A terminal whose
+        // broadcast fails is followed by a small `failed` that says the
+        // answer exists (recoverable=true), so Chat.tsx fetches it from
+        // GET /api/v1/queries/{id}/result instead of waiting.
+        $wirePayload = $eventType === 'completed' ? $this->fitCompletedFrame($payload) : $payload;
+
         try {
-            broadcast(new QueryStreamEvent($this->channel, $eventType, $payload));
+            broadcast(new QueryStreamEvent($this->channel, $eventType, $wirePayload));
         } catch (\Throwable $broadcastError) {
             Log::warning('StreamQueryFromFastApi: SSE frame broadcast failed', [
                 'query_id' => $this->queryId,
                 'event_type' => $eventType,
                 'broadcast_exception' => $broadcastError->getMessage(),
+            ]);
+
+            if ($eventType === 'completed' || $eventType === 'failed') {
+                $this->broadcastTerminalFallback($eventType);
+            }
+        }
+    }
+
+    /**
+     * Last-resort terminal after a terminal frame failed to broadcast.
+     *
+     * Deliberately tiny so it fits any Reverb limit. For a lost `completed`
+     * it marks the answer recoverable: the job finalises the audit row right
+     * after the stream drains, and the result endpoint serves it from there.
+     */
+    private function broadcastTerminalFallback(string $lostEventType): void
+    {
+        $answerExists = $lostEventType === 'completed';
+
+        try {
+            broadcast(new QueryStreamEvent($this->channel, 'failed', [
+                'event' => 'failed',
+                'query_id' => $this->queryId,
+                'code' => $answerExists ? 'DELIVERY_FAILED' : 'JOB_FAILED',
+                'error' => $answerExists
+                    ? 'The answer was produced but could not be delivered over the realtime channel. Loading it now…'
+                    : 'Your query could not be completed. Please try again.',
+                'recoverable' => $answerExists,
+            ]));
+        } catch (\Throwable $fallbackError) {
+            Log::error('StreamQueryFromFastApi: terminal fallback broadcast failed', [
+                'query_id' => $this->queryId,
+                'lost_event_type' => $lostEventType,
+                'broadcast_exception' => $fallbackError->getMessage(),
             ]);
         }
     }
@@ -665,7 +958,7 @@ class StreamQueryFromFastApi implements ShouldQueue
      * Broadcast an error event so the frontend can surface a meaningful message
      * rather than silently timing out.
      */
-    private function broadcastError(string $message, int $code): void
+    private function broadcastError(string $message, int|string $code): void
     {
         // Defensive: a broken broadcast layer must not propagate back into
         // the caller's catch block — handle() relies on broadcastError()
@@ -698,6 +991,9 @@ class StreamQueryFromFastApi implements ShouldQueue
                     'event' => 'failed',
                     'query_id' => $this->queryId,
                     'code' => $code,
+                    // `error` is the key FastAPI's `failed` frame and
+                    // failed() use; `message` kept for older clients.
+                    'error' => $message,
                     'message' => $message,
                 ],
             ));
@@ -799,12 +1095,21 @@ class StreamQueryFromFastApi implements ShouldQueue
             // ascending+limit form silently returned the OLDEST 20 turns,
             // so long threads resolved pronouns against ancient context
             // and never the immediately preceding turn.
+            //
+            // Ordered by `position` (CHAT-2 / LAR-5). This used to order
+            // and select by `id`, a column chat_messages does not have (its
+            // key is message_id): Postgres raised, the catch below returned
+            // [], and no chat turn ever reached FastAPI with its history.
+            // created_at cannot stand in — a sync re-inserts the whole
+            // thread within one second — so position is the order, and
+            // message_id only makes ties deterministic.
             $messages = ChatMessage::query()
                 ->where('conversation_id', $this->conversationId)
+                ->orderByDesc('position')
                 ->orderByDesc('created_at')
-                ->orderByDesc('id')
+                ->orderByDesc('message_id')
                 ->limit(self::HISTORY_MAX_TURNS)
-                ->get(['id', 'conversation_id', 'role', 'content', 'metadata'])
+                ->get(['message_id', 'conversation_id', 'role', 'content', 'metadata', 'position'])
                 ->reverse()
                 ->values();
         } catch (\Throwable $e) {

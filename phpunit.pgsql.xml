@@ -78,6 +78,12 @@
                  Uses RefreshDatabase + Project::factory(), so it runs
                  against PG (the silver.* migrations don't work on SQLite). -->
             <file>tests/Feature/Api/V1/QueryControllerContextEnvelopeTest.php</file>
+            <!-- CHAT-2 / LAR-5 — chat persistence against the REAL
+                 chat_messages table (raw-SQL migration + the `position`
+                 column). On SQLite these build a stand-in schema; here they
+                 prove the migrations and queries agree. -->
+            <file>tests/Feature/Chat/StreamQueryRelayTest.php</file>
+            <file>tests/Feature/Chat/ChatConversationSyncTest.php</file>
             <!-- Reliability spec Phase 4 — per-run polling endpoint.
                  Locks T11 cross-workspace 404 contract. -->
             <file>tests/Feature/Api/V1/IngestProgressControllerTest.php</file>

@@ -182,6 +182,20 @@ return [
         // the job, which raising FASTAPI_STREAM_TIMEOUT would have inverted
         // without a word.
         'stream_timeout' => (int) env('FASTAPI_STREAM_TIMEOUT', 270),
+        // Seconds after /queries/{id}/start past which a StreamQueryFromFastApi
+        // job that has only just been picked up is abandoned (terminal
+        // `failed` QUEUE_STALE) instead of calling FastAPI. Chat.tsx's idle
+        // watchdog gives up after 120 s with nothing received; a job popped
+        // later than that streams to nobody and still pays for the LLM run.
+        // Kept under 120 so the stale frame still reaches a listening client.
+        'queue_stale_after' => (int) env('FASTAPI_QUEUE_STALE_AFTER', 110),
+        // Largest `completed` frame, in bytes of JSON, that the job hands to
+        // Reverb as-is. Reverb rejects a request over REVERB_MAX_REQUEST_SIZE
+        // (1,000,000 in production) and the Pusher SDK re-escapes `data`
+        // (+~20%), so an oversized frame is dropped and the chat never
+        // terminates. Over budget, the job broadcasts a slim `completed`
+        // (answer, citations, verdicts) marked payload_truncated=true.
+        'completed_frame_budget_bytes' => (int) env('FASTAPI_COMPLETED_FRAME_BUDGET_BYTES', 700_000),
         // Stamped onto every query_audit_log row by QueryController.
         //
         // The default was 'Qwen/Qwen3-14B-AWQ' with a docblock explaining
