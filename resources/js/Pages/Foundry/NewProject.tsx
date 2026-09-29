@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 import AppLayout from '@/Layouts/AppLayout';
 import { filesFromDataTransfer } from '@/lib/dropFiles';
 import { PageHeader, Card } from '@/Components/Foundry/primitives';
+import { COMMODITIES, Field, inputStyle } from '@/Components/Foundry/projectFormFields';
 import {
     CATEGORY_EXTS,
     CATEGORY_LABEL,
@@ -66,8 +67,6 @@ const STATES_BY_COUNTRY: Record<string, Array<{ code: string; name: string }>> =
         { code: 'YT', name: 'Yukon' },
     ],
 };
-
-const COMMODITIES = ['Uranium', 'Gold', 'Copper', 'Nickel', 'Lithium', 'Zinc', 'Silver', 'Lead', 'REE'];
 
 // Categories, labels and extensions live in one shared module so this
 // picker, DataImportWizard and UploadController cannot drift apart again —
@@ -1359,18 +1358,5 @@ export default function FoundryNewProject() {
                 </div>
             </div>
         </AppLayout>
-    );
-}
-
-const inputStyle = { background: 'var(--bg-2)', color: 'var(--fg-0)', borderColor: 'var(--line-2)' } as React.CSSProperties;
-
-function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
-    return (
-        <label className="block">
-            <span className="text-[10px] font-mono uppercase tracking-wider mb-1 block" style={{ color: 'var(--fg-3)' }}>
-                {label}{required && <span style={{ color: 'var(--accent)' }}> *</span>}
-            </span>
-            {children}
-        </label>
     );
 }

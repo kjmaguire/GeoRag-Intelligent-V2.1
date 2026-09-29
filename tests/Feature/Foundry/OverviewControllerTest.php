@@ -164,6 +164,23 @@ final class OverviewControllerTest extends TestCase
             });
     }
 
+    public function test_the_project_prop_carries_what_the_edit_sheet_prefills(): void
+    {
+        // Components/EditProjectSheet.tsx starts from these values; without
+        // `company` the Operator field would open blank and a save would
+        // clear the column.
+        $project = $this->makeProject();
+
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertStatus(200)
+            ->assertInertia(fn (AssertableInertia $page) => $page
+                ->where('project.project_name', $project->project_name)
+                ->where('project.company', $project->company)
+                ->where('project.commodity', $project->commodity)
+                ->where('project.region', $project->region));
+    }
+
     public function test_the_next_action_never_points_at_the_corpus_redirect(): void
     {
         // /projects/{slug}/corpus is a 302 to /reports (merged 2026-08-18).
