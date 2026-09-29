@@ -397,6 +397,41 @@ resource "aws_cloudwatch_metric_alarm" "cohere_parse_pages" {
   depends_on = [aws_cloudwatch_log_metric_filter.cohere_parse_pages]
 }
 
+# Audit VEN-11, 2026-09-29. A page whose Parse call is still 429/5xx after
+# its retries falls back to Tesseract - lower-quality text, silently. The
+# client logs COHERE_PARSE_THROTTLED (WARNING) for each such page; five in an
+# hour means Parse is being throttled or is down, not one unlucky page.
+resource "aws_cloudwatch_log_metric_filter" "cohere_parse_throttled" {
+  name           = "cohere-parse-throttled"
+  log_group_name = aws_cloudwatch_log_group.services.name
+  pattern        = "\"COHERE_PARSE_THROTTLED\""
+
+  metric_transformation {
+    name          = "cohere-parse-throttled"
+    namespace     = "GeoRAG/Markers"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cohere_parse_throttled" {
+  count = local.on
+
+  alarm_name          = "${local.name}-cohere-parse-throttled"
+  alarm_description   = "Five or more PDF pages in an hour exhausted their Cohere Parse retries (429/5xx) and fell back to Tesseract, so their text is lower quality. Search /ecs/georag for COHERE_PARSE_THROTTLED: the line gives the HTTP status. Sustained 429s mean the account's Parse rate limit is too low for the ingest volume; re-ingest the affected documents once it clears."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "cohere-parse-throttled"
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 5
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.cohere_parse_throttled]
+}
+
 # ---------------------------------------------------------------------------
 # Scheduler sweeps
 # ---------------------------------------------------------------------------
