@@ -71,6 +71,34 @@ Two of the retired assets are deliberately NOT ported here:
 Both are named in the run's counters as ``skipped`` so the gap stays
 visible rather than looking like a table that simply had nothing in it.
 
+WHAT THE STRIP LOG IS GIVEN
+===========================
+
+``gold.drillhole_intervals_visual`` is what the Workspace LOGS panel, the hole
+page's strip log and the 3-D bands draw. Per hole it now carries:
+
+  * ``lithology`` rows - code, a label (the description, else the rock name),
+    and ``color_hint``, which is a display colour ONLY when the data gave one
+    as a hex code. A described colour ("dark grey") is not a display colour and
+    is not turned into one; it stays in silver (lithology.colour) for the
+    tooltip, and the strip log assigns a stable legend colour per code. It used
+    to write the colour TEXT, or the rock code when there was none, into a
+    VARCHAR(20) the front end uses as a CSS fill - invalid as a fill, and a
+    colour of 21+ characters ("Dark greenish grey to black") failed the INSERT
+    for the whole project.
+  * ``alteration`` rows - one per interval, ``alteration_payload`` =
+    ``{"alterations": [{"type", "intensity", "minerals", "notes"}, ...]}``, so
+    two alterations over one interval share a row (the table's unique key is
+    per interval and kind).
+  * ``sample_window`` rows, as before.
+
+Mineralization (silver.mineralization) has NO gold row. The table's CHECK allows
+lithology / alteration / structure / assay_high_grade / sample_window / other,
+and none of them is a mineral occurrence; bending 'other' or alteration_payload
+to carry it would be a guess about what the schema intends. The strip log reads
+silver.mineralization directly, the way the hole page already reads
+silver.assays_v2. A ``mineralization`` kind is proposed for §04e (SME sign-off).
+
 IDEMPOTENCY
 ===========
 
@@ -145,6 +173,12 @@ class PromoteSilverToGoldOutput(BaseModel):
     traces_unchanged: int = 0
     traces_skipped_no_geometry: int = 0
     intervals_written: int = 0
+    #: 'alteration' rows rebuilt this run (a subset of nothing above: they are
+    #: rebuilt, not upserted, so the count is the project's whole set).
+    alteration_intervals_written: int = 0
+    #: Lithology intervals that shared a (collar, from, to) key with another and
+    #: were folded into one gold band. The table's unique key is per interval.
+    lithology_duplicate_intervals: int = 0
     structures_written: int = 0
     projects_seen: int = 0
     lithology_rows_promoted: int = 0
@@ -704,25 +738,131 @@ INSERT INTO gold.drillhole_intervals_visual (
     assay_payload, alteration_payload, structure_payload,
     computed_at, created_at
 )
-SELECT gen_random_uuid(), l.collar_id, c.workspace_id, c.project_id,
-       l.from_depth, l.to_depth, 'lithology',
-       LEFT(COALESCE(l.rock_code, l.rock_name, ''), 32),
-       COALESCE(NULLIF(l.description, ''), l.rock_name, l.rock_code),
-       LEFT(COALESCE(NULLIF(l.colour, ''), l.rock_code), 32),
+SELECT gen_random_uuid(), b.collar_id, c.workspace_id, c.project_id,
+       b.depth_from, b.depth_to, 'lithology',
+       LEFT(COALESCE(b.rock_code, b.rock_name, ''), 32),
+       COALESCE(NULLIF(b.description, ''), b.rock_name, b.rock_code),
+       CASE WHEN b.colour ~ '^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$'
+            THEN lower(b.colour) END,
        '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
        NOW(), NOW()
-  FROM silver.lithology l
-  JOIN silver.collars c ON c.collar_id = l.collar_id
+  FROM (
+        SELECT DISTINCT ON (l.collar_id, round(l.from_depth, 3), round(l.to_depth, 3))
+               l.collar_id, round(l.from_depth, 3) AS depth_from,
+               round(l.to_depth, 3) AS depth_to,
+               l.rock_code, l.rock_name, l.description, l.colour
+          FROM silver.lithology l
+          JOIN silver.collars cl ON cl.collar_id = l.collar_id
+         WHERE cl.project_id = $1::uuid
+         ORDER BY l.collar_id, round(l.from_depth, 3), round(l.to_depth, 3),
+                  l.created_at, l.id
+       ) b
+  JOIN silver.collars c ON c.collar_id = b.collar_id
  WHERE c.project_id = $1::uuid
-   AND l.from_depth IS NOT NULL
-   AND l.to_depth IS NOT NULL
-   AND l.to_depth > l.from_depth
-   AND l.from_depth >= 0
+   AND b.depth_from IS NOT NULL
+   AND b.depth_to IS NOT NULL
+   AND b.depth_to > b.depth_from
+   AND b.depth_from >= 0
+   AND b.depth_to < 10000000
 ON CONFLICT (collar_id, depth_from, depth_to, interval_kind) DO UPDATE SET
     lithology_code  = EXCLUDED.lithology_code,
     lithology_label = EXCLUDED.lithology_label,
-    color_hint      = EXCLUDED.color_hint,
+    -- A display colour already on the row (the gamma-derived bands carry
+    -- curated hex colours that silver.lithology never had) is not blanked by
+    -- a promotion that has none; anything that is not a hex colour is.
+    color_hint      = CASE
+        WHEN EXCLUDED.color_hint IS NOT NULL THEN EXCLUDED.color_hint
+        WHEN gold.drillhole_intervals_visual.color_hint
+             ~ '^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$'
+            THEN gold.drillhole_intervals_visual.color_hint
+    END,
     computed_at     = EXCLUDED.computed_at
+"""
+
+#: Intervals silver.lithology no longer has. The upsert above never removes a
+#: row, so a corrected log with different boundaries left the OLD bands beside
+#: the new ones - two overlapping columns on the strip log. Gamma-derived bands
+#: (DERIVED-*) are owned by derive_intervals, which clears and rewrites them
+#: itself, so they are left alone.
+_INTERVALS_LITHOLOGY_STALE = """
+DELETE FROM gold.drillhole_intervals_visual g
+ WHERE g.project_id = $1::uuid
+   AND g.interval_kind = 'lithology'
+   AND (g.lithology_code IS NULL OR g.lithology_code NOT LIKE 'DERIVED-%')
+   AND NOT EXISTS (
+        SELECT 1 FROM silver.lithology l
+         WHERE l.collar_id = g.collar_id
+           AND round(l.from_depth, 3) = g.depth_from
+           AND round(l.to_depth, 3) = g.depth_to
+   )
+"""
+
+#: Duplicate (collar, from, to) lithology intervals, counted so the fold into
+#: one gold band is reported rather than silent.
+_LITHOLOGY_DUPLICATES = """
+SELECT count(*) - count(DISTINCT (l.collar_id, round(l.from_depth, 3),
+                                  round(l.to_depth, 3))) AS duplicates
+  FROM silver.lithology l
+  JOIN silver.collars c ON c.collar_id = l.collar_id
+ WHERE c.project_id = $1::uuid
+"""
+
+#: Alteration intervals, rebuilt per project. One gold row per (collar, from,
+#: to) - the table's unique key - so two alterations logged over the same
+#: interval share a row and travel in ``alteration_payload``. silver.alteration
+#: carries no project_id: the scope comes through the collar, and workspace_id
+#: from the COLLAR as for every band above.
+#:
+#: Rebuilt (clear + insert in one transaction) rather than upserted: the rows
+#: are a pure function of silver.alteration, and an upsert would leave the
+#: intervals of a corrected log beside the old ones.
+_INTERVALS_ALTERATION_CLEAR = """
+DELETE FROM gold.drillhole_intervals_visual
+ WHERE project_id = $1::uuid AND interval_kind = 'alteration'
+"""
+
+_INTERVALS_ALTERATION = """
+INSERT INTO gold.drillhole_intervals_visual (
+    visual_id, collar_id, workspace_id, project_id,
+    depth_from, depth_to, interval_kind,
+    lithology_code, lithology_label, color_hint,
+    assay_payload, alteration_payload, structure_payload,
+    computed_at, created_at
+)
+SELECT gen_random_uuid(), a.collar_id, c.workspace_id, c.project_id,
+       a.depth_from, a.depth_to, 'alteration',
+       NULL,
+       LEFT(string_agg(
+           a.alteration_type
+           || CASE WHEN NULLIF(a.intensity, '') IS NOT NULL
+                   THEN ' (' || a.intensity || ')' ELSE '' END,
+           '; ' ORDER BY a.created_at, a.id), 500),
+       NULL,
+       '{}'::jsonb,
+       jsonb_build_object('alterations', jsonb_agg(
+           jsonb_build_object(
+               'type', a.alteration_type,
+               'intensity', a.intensity,
+               'minerals', COALESCE(to_jsonb(a.minerals), '[]'::jsonb),
+               'notes', a.notes)
+           ORDER BY a.created_at, a.id)),
+       '{}'::jsonb,
+       NOW(), NOW()
+  FROM (
+        SELECT x.id, x.collar_id, x.alteration_type, x.intensity, x.minerals,
+               x.notes, x.created_at,
+               round(x.from_depth, 3) AS depth_from,
+               round(x.to_depth, 3) AS depth_to
+          FROM silver.alteration x
+          JOIN silver.collars cx ON cx.collar_id = x.collar_id
+         WHERE cx.project_id = $1::uuid
+           AND x.from_depth >= 0
+           AND x.to_depth < 10000000
+           AND round(x.to_depth, 3) > round(x.from_depth, 3)
+       ) a
+  JOIN silver.collars c ON c.collar_id = a.collar_id
+ WHERE c.project_id = $1::uuid
+ GROUP BY a.collar_id, c.workspace_id, c.project_id, a.depth_from, a.depth_to
 """
 
 #: Sampled windows. `commodity_assays` is already JSONB on silver.samples,
@@ -882,9 +1022,30 @@ async def promote(
                 project_id=project_id,
                 out=out,
             )
-            for sql in (_INTERVALS_LITHOLOGY, _INTERVALS_SAMPLES):
-                status = await conn.execute(sql, project_id)
+            duplicates = int(
+                await conn.fetchval(_LITHOLOGY_DUPLICATES, project_id) or 0
+            )
+            if duplicates:
+                out.lithology_duplicate_intervals += duplicates
+                log.warning(
+                    "promote_silver_to_gold: project %s has %d lithology "
+                    "interval(s) sharing a (hole, from, to) with another; "
+                    "each set was folded into one gold band",
+                    project_id, duplicates,
+                )
+            # Upsert, then drop the bands silver no longer has, in one
+            # transaction so the strip log never sees a half-rebuilt hole.
+            async with conn.transaction():
+                status = await conn.execute(_INTERVALS_LITHOLOGY, project_id)
                 out.intervals_written += _affected(status)
+                await conn.execute(_INTERVALS_LITHOLOGY_STALE, project_id)
+            status = await conn.execute(_INTERVALS_SAMPLES, project_id)
+            out.intervals_written += _affected(status)
+            # Alteration: a pure function of silver.alteration, rebuilt.
+            async with conn.transaction():
+                await conn.execute(_INTERVALS_ALTERATION_CLEAR, project_id)
+                status = await conn.execute(_INTERVALS_ALTERATION, project_id)
+            out.alteration_intervals_written += _affected(status)
             # Clear-and-rebuild in one transaction: see _STRUCTURES_VISUAL for
             # why an append (the old ON CONFLICT DO NOTHING) duplicated rows.
             async with conn.transaction():
