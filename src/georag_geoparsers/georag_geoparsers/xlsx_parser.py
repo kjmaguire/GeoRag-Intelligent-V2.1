@@ -15,7 +15,16 @@ Legacy-format behaviours:
   - Merged cells are detected (xlrd exposes sheet.merged_cells).  Sprint 4 does
     NOT auto-unmerge; a structured warning is emitted instead.
   - Multi-row headers: if row 0 is mostly empty but row 1 has full coverage, a
-    warning is emitted.  Row 0 is still used as the header (no auto-switch).
+    warning is emitted.
+  - Title / preamble rows (ING-13, 2026-09-29): when row 0 classifies as no
+    drill layout but a row within the first 15 does, THAT row is the header
+    and the rows above it are skipped, with a ``header_row_detected`` warning.
+    A branded export ("Acme Gold Corp - Drill Collar Table" in A1, headers in
+    row 3) used to classify ``unknown`` and reach only the text fallback.
+  - .xlsx is read through openpyxl explicitly. polars' default Excel engine is
+    calamine, which needs ``fastexcel`` - a package no lockfile in this repo
+    installs - so the default read raised ModuleNotFoundError for every
+    .xlsx sheet.
   - Formula cells: xlrd returns cached values only (live formulas unavailable).
     This is logged at debug level and is not an error.
   - xls_legacy_format_detected info warning is emitted for all .xls files.
@@ -51,6 +60,10 @@ SheetType = Literal[
 #: are forwarded from the CSV parser to the workbook result.
 _FORWARDED_PARSER_WARNINGS = frozenset({
     "optional_values_blanked",
+    "sample_type_column_missing",
+    "assay_unit_assumed",
+    "assay_unit_converted",
+    "assay_columns_merged",
     "structure_strike_not_converted",
     "structure_type_unmapped",
     "structure_interval_collapsed",
@@ -91,6 +104,7 @@ class SheetMeta:
     sheet_type: str            # collar | survey | lithology | sample | structure | alteration | mineralization | unknown
     classify_confidence: float # 0.0-1.0 from the header classifier
     hidden: bool               # True if the sheet is hidden / very_hidden
+    header_row: int = 0        # 0-based row the headers were found on (ING-13)
 
 
 def enumerate_sheets(path: str, *, column_map=None) -> list[SheetMeta]:
@@ -112,7 +126,11 @@ def enumerate_sheets(path: str, *, column_map=None) -> list[SheetMeta]:
     mapping written FOR that sheet could never take effect on it.
     """
     # Deferred import — keeps the parser module lightweight at load.
-    from georag_geoparsers._sheet_classifier import classify_sheet_type
+    from georag_geoparsers._sheet_classifier import (
+        HEADER_SCAN_ROWS,
+        classify_sheet_type,
+        detect_header_row,
+    )
 
     ext = Path(path).suffix.lower()
     out: list[SheetMeta] = []
@@ -131,19 +149,25 @@ def enumerate_sheets(path: str, *, column_map=None) -> list[SheetMeta]:
                 ws = wb[sheet_name]
                 # openpyxl sheet_state: 'visible' | 'hidden' | 'veryHidden'
                 hidden = (getattr(ws, "sheet_state", "visible") or "visible") != "visible"
-                # Pull the first row as headers; bail out if the sheet is empty.
-                headers: list[str] = []
-                row_count = 0
-                first_row_consumed = False
+                # The header is row 0 unless a title/preamble sits above it
+                # (detect_header_row); the data rows are those below it.
+                head: list[tuple] = []
+                nonempty: list[bool] = []
+                total_nonempty = 0
                 for row in ws.iter_rows(values_only=True):
-                    if not first_row_consumed:
-                        headers = [
-                            (str(c) if c is not None else "") for c in row
-                        ]
-                        first_row_consumed = True
-                        continue
-                    if any(c is not None and str(c).strip() for c in row):
-                        row_count += 1
+                    filled = any(c is not None and str(c).strip() for c in row)
+                    if len(head) < HEADER_SCAN_ROWS:
+                        head.append(tuple(row))
+                        nonempty.append(filled)
+                    total_nonempty += int(filled)
+                header_row = detect_header_row(head, column_map=column_map)
+                headers = (
+                    [(str(c) if c is not None else "") for c in head[header_row]]
+                    if head else []
+                )
+                row_count = (
+                    total_nonempty - sum(nonempty[: header_row + 1]) if head else 0
+                )
                 sheet_type, confidence = classify_sheet_type(
                     headers, column_map=column_map,
                 )
@@ -154,6 +178,7 @@ def enumerate_sheets(path: str, *, column_map=None) -> list[SheetMeta]:
                     sheet_type=sheet_type,
                     classify_confidence=confidence,
                     hidden=hidden,
+                    header_row=header_row,
                 ))
         finally:
             wb.close()
@@ -174,12 +199,17 @@ def enumerate_sheets(path: str, *, column_map=None) -> list[SheetMeta]:
             hidden = getattr(sheet, "visibility", 0) != 0
             headers: list[str] = []
             row_count = 0
+            header_row = 0
             if sheet.nrows > 0:
+                header_row = detect_header_row(
+                    [sheet.row_values(i) for i in range(min(sheet.nrows, HEADER_SCAN_ROWS))],
+                    column_map=column_map,
+                )
                 headers = [
                     (str(v) if v is not None else "")
-                    for v in sheet.row_values(0)
+                    for v in sheet.row_values(header_row)
                 ]
-                row_count = max(0, sheet.nrows - 1)
+                row_count = max(0, sheet.nrows - 1 - header_row)
             sheet_type, confidence = classify_sheet_type(
                 headers, column_map=column_map,
             )
@@ -190,6 +220,7 @@ def enumerate_sheets(path: str, *, column_map=None) -> list[SheetMeta]:
                 sheet_type=sheet_type,
                 classify_confidence=confidence,
                 hidden=hidden,
+                header_row=header_row,
             ))
         return out
 
@@ -252,11 +283,11 @@ def read_sheet_rows(path: str, sheet_name: str = "") -> list[dict[str, Any]]:
     """
     ext = Path(path).suffix.lower()
     if ext == ".xls":
-        df, _resolved, _warnings = _xls_to_polars_df(path, sheet_name)
+        df, _resolved, _warnings = _xls_to_polars_df(path, sheet_name, header_row=0)
     elif ext in _XLSX_EXTS:
         df = (
-            pl.read_excel(path, sheet_name=sheet_name)
-            if sheet_name else pl.read_excel(path)
+            pl.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+            if sheet_name else pl.read_excel(path, engine="openpyxl")
         )
     else:
         raise ValueError(
@@ -364,8 +395,14 @@ def _detect_multi_row_header(sheet, ncols: int) -> bool:
     return row0_empty_pct > 0.5 and row1_fill_pct > 0.8
 
 
-def _xls_to_polars_df(path: str, sheet_name: str) -> tuple[pl.DataFrame, str, list[dict]]:
+def _xls_to_polars_df(
+    path: str, sheet_name: str, *, header_row: int | None = None, column_map=None,
+) -> tuple[pl.DataFrame, str, list[dict]]:
     """Load an .xls workbook via xlrd and return a Polars DataFrame plus metadata.
+
+    ``header_row`` is the 0-based row holding the column names; None detects
+    it (``detect_header_row``: row 0 unless a title row sits above a
+    recognisable drill header).
 
     Returns (df, resolved_sheet_name, xls_warnings).
     All cell values are converted to strings for downstream CSV parser compatibility
@@ -432,8 +469,24 @@ def _xls_to_polars_df(path: str, sheet_name: str) -> tuple[pl.DataFrame, str, li
     if nrows == 0 or ncols == 0:
         return pl.DataFrame(), resolved_name, xls_warnings
 
+    if header_row is None:
+        from georag_geoparsers._sheet_classifier import (
+            HEADER_SCAN_ROWS,
+            detect_header_row,
+        )
+
+        header_row = detect_header_row(
+            [sheet.row_values(i) for i in range(min(nrows, HEADER_SCAN_ROWS))],
+            column_map=column_map,
+        )
+    if header_row:
+        xls_warnings.append(_header_row_warning(resolved_name, header_row))
+
     # Extract header row
-    header = [str(v) if v != "" else f"col_{i}" for i, v in enumerate(sheet.row_values(0))]
+    header = [
+        str(v) if v != "" else f"col_{i}"
+        for i, v in enumerate(sheet.row_values(header_row))
+    ]
 
     # Extract data rows — xlrd returns cached cell values; formulas show computed result
     logger.debug(
@@ -441,7 +494,7 @@ def _xls_to_polars_df(path: str, sheet_name: str) -> tuple[pl.DataFrame, str, li
     )
 
     rows_data: list[list[str]] = []
-    for ridx in range(1, nrows):
+    for ridx in range(header_row + 1, nrows):
         row_vals = sheet.row_values(ridx)
         rows_data.append([
             "" if (v is None or (isinstance(v, float) and str(v) == "nan")) else str(v)
@@ -457,6 +510,75 @@ def _xls_to_polars_df(path: str, sheet_name: str) -> tuple[pl.DataFrame, str, li
         df = pl.DataFrame(col_data, schema={k: pl.Utf8 for k in col_data})
 
     return df, resolved_name, xls_warnings
+
+
+def _header_row_warning(sheet_name: str, header_row: int) -> dict:
+    """Say that rows above the header were skipped (ING-13)."""
+    return {
+        "code": "header_row_detected",
+        "message": (
+            f"sheet '{sheet_name}': headers found on row {header_row + 1}; "
+            f"the {header_row} row(s) above were read as a title and skipped"
+        ),
+        "detail": (
+            f"The first row of sheet '{sheet_name}' is not a column header, so "
+            f"the header was taken from row {header_row + 1}, the first row "
+            f"whose columns match a drill-table layout. The {header_row} "
+            f"row(s) above it (a title or notes) were not read as data."
+        ),
+        "context": {"sheet": sheet_name, "header_row": header_row + 1},
+    }
+
+
+def _xlsx_sheet_head(path: str, sheet_name: str) -> list[tuple]:
+    """The first rows of an .xlsx sheet, for header detection."""
+    import openpyxl
+
+    from georag_geoparsers._sheet_classifier import HEADER_SCAN_ROWS
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name] if sheet_name else wb[wb.sheetnames[0]]
+        head: list[tuple] = []
+        for row in ws.iter_rows(values_only=True):
+            head.append(tuple(row))
+            if len(head) >= HEADER_SCAN_ROWS:
+                break
+        return head
+    finally:
+        wb.close()
+
+
+def _promote_header(raw: pl.DataFrame, header_row: int) -> pl.DataFrame:
+    """A header-less frame with row *header_row* made the column names."""
+    rows = raw.rows()
+    names: list[str] = []
+    for i, value in enumerate(rows[header_row] if header_row < len(rows) else []):
+        name = str(value).strip() if value is not None else ""
+        name = name or f"col_{i}"
+        while name in names:
+            name = f"{name}_{i}"
+        names.append(name)
+    data = [
+        ["" if v is None else str(v) for v in row]
+        for row in rows[header_row + 1:]
+        if any(v is not None and str(v).strip() for v in row)
+    ]
+    return pl.DataFrame(
+        {name: [row[i] if i < len(row) else "" for row in data] for i, name in enumerate(names)},
+        schema={name: pl.Utf8 for name in names},
+    )
+
+
+def _classifier_map(sheet_type: str, vendor_aliases: dict | None) -> dict | None:
+    """The user's confirmed mapping, in the classifier's shape."""
+    if not vendor_aliases:
+        return None
+    return {sheet_type: {
+        field_name: aliases[0]
+        for field_name, aliases in vendor_aliases.items()
+        if aliases
+    }}
 
 
 # ---------------------------------------------------------------------------
@@ -534,7 +656,8 @@ def parse_xlsx_sheet(
 
         try:
             df, resolved_sheet_name, xls_warnings = _xls_to_polars_df(
-                path_str, sheet_name
+                path_str, sheet_name,
+                column_map=_classifier_map(sheet_type, vendor_aliases),
             )
         except Exception as exc:
             logger.error(
@@ -548,12 +671,47 @@ def parse_xlsx_sheet(
 
     elif ext in _XLSX_EXTS:
         # --- Modern .xlsx / .xlsm path (Polars / openpyxl) ---
+        header_row = 0
         try:
-            if sheet_name:
-                df = pl.read_excel(path_str, sheet_name=sheet_name)
+            from georag_geoparsers._sheet_classifier import detect_header_row
+
+            header_row = detect_header_row(
+                _xlsx_sheet_head(path_str, sheet_name),
+                column_map=_classifier_map(sheet_type, vendor_aliases),
+            )
+        except Exception:
+            # Detection is an improvement, never a new way to fail: an
+            # unreadable head leaves the header on row 0, as before.
+            logger.debug(
+                "xlsx_parser: header-row detection failed for %s", path_str,
+                exc_info=True,
+            )
+        try:
+            if header_row:
+                raw_df = pl.read_excel(
+                    path_str, sheet_name=sheet_name or None, engine="openpyxl",
+                    has_header=False, drop_empty_rows=False,
+                    infer_schema_length=0,
+                )
+                # Re-detected on the frame itself: its row numbering is what
+                # the header is promoted from.
+                from georag_geoparsers._sheet_classifier import detect_header_row
+
+                header_row = detect_header_row(
+                    raw_df.rows()[:15],
+                    column_map=_classifier_map(sheet_type, vendor_aliases),
+                )
+                df = _promote_header(raw_df, header_row)
+                resolved_sheet_name = sheet_name or "Sheet1"
+                if header_row:
+                    extra_warnings.append(
+                        _header_row_warning(resolved_sheet_name, header_row),
+                    )
+            elif sheet_name:
+                df = pl.read_excel(path_str, sheet_name=sheet_name, engine="openpyxl")
                 resolved_sheet_name = sheet_name
             else:
-                df = pl.read_excel(path_str)
+                df = pl.read_excel(path_str, engine="openpyxl")
                 resolved_sheet_name = "Sheet1"
                 try:
                     import openpyxl

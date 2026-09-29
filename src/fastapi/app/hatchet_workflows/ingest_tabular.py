@@ -1625,6 +1625,34 @@ def _columns_not_ingested_warning(
     }
 
 
+def _csv_preamble_warning(path: str, filename: str) -> dict[str, Any] | None:
+    """Say that title/comment lines above a CSV's header were skipped (ING-13).
+
+    ``_csv_io.open_csv_with_encoding`` drops them for every reader, so the
+    parsers and ``_csv_headers`` see the real header; this is the note that
+    tells the geologist which lines were not read as data.
+    """
+    from georag_geoparsers._csv_io import open_csv_with_encoding  # noqa: PLC0415
+
+    stream, _encoding, _sha, _size = open_csv_with_encoding(path)
+    skipped = int(getattr(stream, "preamble_lines", 0) or 0)
+    if not skipped:
+        return None
+    return {
+        "code": "header_row_detected",
+        "message": (
+            f"{filename}: {skipped} line(s) above the column headers were read "
+            f"as a title or comments and skipped"
+        ),
+        "detail": (
+            f"The first {skipped} line(s) of {filename} are not part of the "
+            f"table (a title, notes or '#' comments), so the column headers "
+            f"were taken from line {skipped + 1} and the lines above it were "
+            f"not read as data."
+        ),
+    }
+
+
 def _csv_headers(path: str) -> list[str]:
     """Read a CSV's header row, honouring its real encoding and delimiter.
 
@@ -2754,6 +2782,11 @@ async def run_ingest_tabular(
                     elif meta.sheet_type not in WRITE_ORDER:
                         unclassified.append(meta.name)
             else:
+                preamble_note = await asyncio.to_thread(
+                    _csv_preamble_warning, local, filename,
+                )
+                if preamble_note is not None:
+                    warnings.append(preamble_note)
                 sheet_type = input.sheet_type
                 if sheet_type not in WRITE_ORDER:
                     from georag_geoparsers._sheet_classifier import (  # noqa: PLC0415

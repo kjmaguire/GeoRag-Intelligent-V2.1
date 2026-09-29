@@ -8,6 +8,9 @@ Provides:
     between ``,``, ``;``, ``\\t``, ``|`` by count + variance. Added
     2026-05-23 because EU-export semicolon CSVs were silently collapsing
     to a single column under Polars' default comma separator.
+  - count_preamble_lines(content) — title / comment lines above the header
+    row (ING-13). ``open_csv_with_encoding`` drops them from the stream it
+    returns and records how many on ``stream.preamble_lines``.
   - transform_decimal_comma(df) — column-aware EU decimal-comma transform.
     Replaces ``_check_decimal_comma`` which detected-and-warned only.
     Per the original docstring: "Decimal-comma detection is Sprint-2 scope.
@@ -109,7 +112,81 @@ def open_csv_with_encoding(
 
     sha256 = _sha256_hex(raw)
     byte_count = len(raw)
+
+    # A title or comment block above the header ("# Exported from ...",
+    # "Acme Gold Corp - Assays") made the parsers read the title as the
+    # header and refuse the file (ING-13). Dropped here, once, so every
+    # parser and the workflow's own header read agree; the hash above is
+    # still over the bytes as uploaded.
+    text = stream.getvalue()
+    preamble = count_preamble_lines(text)
+    if preamble:
+        stream = StringIO("".join(text.splitlines(keepends=True)[preamble:]))
+        logger.info("csv_io: skipped %d preamble line(s) above the header", preamble)
+    stream.preamble_lines = preamble  # type: ignore[attr-defined]
     return stream, encoding, sha256, byte_count
+
+
+#: How many leading lines may be a title/comment block (ING-13).
+_PREAMBLE_SCAN_LINES: int = 15
+#: How many lines are sampled to learn the table's width.
+_PREAMBLE_SAMPLE_LINES: int = 60
+
+
+def count_preamble_lines(content: str) -> int:
+    """How many leading lines of *content* sit ABOVE the header row.
+
+    The table's width is the number of filled fields most sampled lines
+    share. A leading line is preamble when it fills fewer than half of that
+    (and fewer than 2) - a title, a "# exported by" comment, a blank line.
+    The first line that fills at least half the width is the header. A file
+    whose first line already does returns 0, so ordinary files are
+    untouched; so does anything too narrow (one column) to judge.
+
+    A header that merely STARTS with ``#`` ("#HoleID,From,To") is as wide as
+    the data and is kept.
+    """
+    import csv
+    from collections import Counter
+
+    lines = content.splitlines()[:_PREAMBLE_SAMPLE_LINES]
+    if len(lines) < 2:
+        return 0
+
+    #: (lines sharing the modal width, modal width, widths). The delimiter
+    #: that splits MOST lines to one consistent width wins: "Sample;Au_ppm /
+    #: P1;0,016" is a two-column ';' table, not a ',' table with a one-field
+    #: header.
+    best: tuple[int, int, list[int]] | None = None
+    for delimiter in _DELIMITER_CANDIDATES:
+        try:
+            rows = list(csv.reader(lines, delimiter=delimiter))
+        except csv.Error:
+            logger.debug("csv_io: preamble scan could not split on %r", delimiter, exc_info=True)
+            continue
+        widths = [sum(1 for cell in row if cell.strip()) for row in rows]
+        wide = [w for w in widths if w >= 2]
+        if not wide:
+            continue
+        common, shared = Counter(wide).most_common(1)[0]
+        if best is None or (shared, common) > (best[0], best[1]):
+            best = (shared, common, widths)
+    if best is None:
+        return 0
+
+    _shared, common, widths = best
+    threshold = max(2, -(-common // 2))       # ceil(common / 2), at least 2
+    for index, width in enumerate(widths[:_PREAMBLE_SCAN_LINES]):
+        # A comment-marked line ("# Exported, 2024") is the header only if it
+        # is as wide as the table; its one comma must not make it one.
+        commented = lines[index].lstrip().startswith(_COMMENT_MARKERS)
+        if width >= (common if commented else threshold):
+            return index
+    return 0
+
+
+#: Leading characters that mark a comment line in exported CSVs.
+_COMMENT_MARKERS: tuple[str, ...] = ("#", "'", "//", "!")
 
 
 def _check_decimal_comma(content: str, encoding: str) -> bool:
