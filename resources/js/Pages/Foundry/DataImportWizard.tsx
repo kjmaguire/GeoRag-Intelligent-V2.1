@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { filesFromDataTransfer } from '@/lib/dropFiles';
+import { describeUploadFailure, exceedsUploadLimit, tooLargeMessage, useUploadLimit } from '@/lib/uploadLimit';
 import { Head, Link, router } from '@inertiajs/react';
 import JSZip from 'jszip';
 import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
@@ -329,6 +330,10 @@ function groupByExtension(names: string[]): { ext: string; names: string[]; reas
 }
 
 export default function FoundryDataImportWizard() {
+    // The server's single upload ceiling (FE-2). This screen checked nothing,
+    // so an over-cap file uploaded for minutes and then died as a dropped
+    // connection.
+    const uploadLimit = useUploadLimit();
     const [projects, setProjects] = useState<ProjectPick[] | null>(null);
     const [projectsError, setProjectsError] = useState<string | null>(null);
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -672,6 +677,11 @@ export default function FoundryDataImportWizard() {
         // even after the API began accepting them.
         const ext = fileExtension(qf.file.name);
         const category = qf.category ?? categoryForExtension(ext);
+        // Refused here, before a byte is sent: Swoole drops an over-cap body
+        // only after the whole thing has arrived.
+        if (exceedsUploadLimit(qf.file.size, uploadLimit)) {
+            return { id: qf.id, ok: false, message: tooLargeMessage(uploadLimit) };
+        }
         if (!category) {
             return {
                 id: qf.id,
@@ -738,15 +748,17 @@ export default function FoundryDataImportWizard() {
                 return {
                     id: qf.id,
                     ok: false,
-                    message: body.message ?? `HTTP ${res.status}`,
+                    // A 413 (HTML body, so no JSON message) reads as the limit.
+                    message: describeUploadFailure(res.status, body.message, payload.size, uploadLimit),
                 };
             }
             return { id: qf.id, ok: true, message: 'queued' };
-        } catch (err) {
+        } catch {
             return {
                 id: qf.id,
                 ok: false,
-                message: err instanceof Error ? err.message : String(err),
+                // fetch threw: a dropped connection ("Failed to fetch").
+                message: describeUploadFailure(null, undefined, payload.size, uploadLimit),
             };
         }
     }
@@ -1145,6 +1157,15 @@ export default function FoundryDataImportWizard() {
                                                     >
                                                         {(qf.file.size / 1024).toFixed(1)} KB
                                                     </span>
+                                                    {exceedsUploadLimit(qf.file.size, uploadLimit) && (
+                                                        <span
+                                                            className="text-[10px] font-mono uppercase tracking-wider"
+                                                            style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}
+                                                            title={tooLargeMessage(uploadLimit)}
+                                                        >
+                                                            over the {uploadLimit.human} limit — will not upload
+                                                        </span>
+                                                    )}
                                                     {canOverrideCrs && (
                                                         <label className="flex items-center gap-1.5">
                                                             <span
