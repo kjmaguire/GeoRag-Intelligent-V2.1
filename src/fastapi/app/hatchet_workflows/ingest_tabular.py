@@ -169,9 +169,13 @@ COLLAR_GEOM_SRID = 32613
 #:
 #: Collars first: every other type resolves hole_id -> collar_id against
 #: silver.collars. ``structure`` (silver.structure, per-collar oriented
-#: measurements) follows the collars it references.
+#: measurements) follows the collars it references, and so do ``alteration``
+#: and ``mineralization`` (silver.alteration / silver.mineralization: one
+#: alteration or mineral over one interval of a hole) - as standalone tables,
+#: and as the companion columns of a lithology log (see _COMPANION_TYPES).
 WRITE_ORDER: tuple[str, ...] = (
-    "collar", "structure", "survey", "lithology", "sample",
+    "collar", "structure", "survey", "lithology", "alteration",
+    "mineralization", "sample",
 )
 
 #: NOT NULL columns the parsers do not guarantee. Defaulting these is the
@@ -324,6 +328,34 @@ INSERT INTO silver.structure (
     $5::double precision, $6::double precision,
     $7::double precision, $8::double precision,
     $9, $10, $11, NOW()
+)
+"""
+
+#: silver.alteration / silver.mineralization - the COLUMNS created by
+#: 2026_05_20_060400_create_silver_geological_singulars (the older plural
+#: ``silver.alterations`` of 2026_04_09_180400 was dropped by it). Every
+#: column of both tables is written; none is added. ``minerals`` is text[].
+#: Depths and the percentage go through double precision so the numeric column
+#: receives what the file said (see _STRUCTURE_SQL).
+_ALTERATION_SQL = """
+INSERT INTO silver.alteration (
+    id, workspace_id, collar_id, from_depth, to_depth,
+    alteration_type, intensity, minerals, notes, created_at
+) VALUES (
+    gen_random_uuid(), $1::uuid, $2::uuid,
+    $3::double precision, $4::double precision,
+    $5, $6, $7::text[], $8, NOW()
+)
+"""
+
+_MINERALIZATION_SQL = """
+INSERT INTO silver.mineralization (
+    id, workspace_id, collar_id, from_depth, to_depth,
+    mineral, abundance_pct, form, grain_size, notes, created_at
+) VALUES (
+    gen_random_uuid(), $1::uuid, $2::uuid,
+    $3::double precision, $4::double precision,
+    $5, $6::double precision, $7, $8, $9, NOW()
 )
 """
 
@@ -1155,6 +1187,25 @@ _INTERVAL_TABLES = {
     # corrected structure log replaces the holes it mentions, and re-running
     # the same file must not double every measurement on the stereonet.
     "structure": "silver.structure",
+    # Same replace-per-collar rule: a corrected alteration / mineralization
+    # log replaces the holes it mentions, and re-running the same file (or the
+    # same lithology log, whose alteration columns feed the same tables) must
+    # not stack a second copy of every interval.
+    "alteration": "silver.alteration",
+    "mineralization": "silver.mineralization",
+}
+
+#: Tables a geology log can ALSO feed. One source row of a log with columns
+#: like ``Lith, Lith_Desc, Alteration, Alt_Intensity, Mineral1, Min1_%`` is a
+#: lithology interval, an alteration interval and a mineralization interval,
+#: so the file is read once per table it carries the columns of, rather than
+#: asking the user to split it. The primary type keeps priority (the sheet
+#: classifier decides it); a companion is written only when the headers name
+#: its family explicitly.
+_COMPANION_TYPES: dict[str, tuple[str, ...]] = {
+    "lithology": ("alteration", "mineralization"),
+    "alteration": ("mineralization",),
+    "mineralization": ("alteration",),
 }
 
 
@@ -1162,7 +1213,7 @@ async def _write_intervals(
     conn: asyncpg.Connection, *, workspace_id: str, sheet_type: str,
     records: list[dict], index: dict[str, str],
 ) -> dict[str, int]:
-    """Write survey / lithology / sample rows against resolved collars.
+    """Write survey / lithology / sample (and structure, alteration, mineralization) rows against resolved collars.
 
     A sample sheet writes TWO tables in one transaction: the interval row
     into silver.samples (with its commodity_assays payload — dropped on the
@@ -1214,6 +1265,27 @@ async def _write_intervals(
                 _num(rec.get("true_dip")), _num(rec.get("true_dip_dir")),
                 rec.get("roughness"), rec.get("infill"), rec.get("notes"),
             ))
+        elif sheet_type == "alteration":
+            from_d, to_d = _num(rec.get("from_depth")), _num(rec.get("to_depth"))
+            if from_d is None or to_d is None or not rec.get("alteration_type"):
+                unwritable += 1
+                continue
+            rows.append((
+                workspace_id, collar_id, from_d, to_d,
+                rec["alteration_type"], rec.get("intensity"),
+                list(rec["minerals"]) if rec.get("minerals") else None,
+                rec.get("notes"),
+            ))
+        elif sheet_type == "mineralization":
+            from_d, to_d = _num(rec.get("from_depth")), _num(rec.get("to_depth"))
+            if from_d is None or to_d is None or not rec.get("mineral"):
+                unwritable += 1
+                continue
+            rows.append((
+                workspace_id, collar_id, from_d, to_d,
+                rec["mineral"], _num(rec.get("abundance_pct")),
+                rec.get("form"), rec.get("grain_size"), rec.get("notes"),
+            ))
         elif sheet_type == "lithology":
             rows.append((
                 workspace_id, collar_id,
@@ -1248,6 +1320,8 @@ async def _write_intervals(
         "survey": _SURVEY_SQL,
         "structure": _STRUCTURE_SQL,
         "lithology": _LITHOLOGY_SQL,
+        "alteration": _ALTERATION_SQL,
+        "mineralization": _MINERALIZATION_SQL,
         "sample": _SAMPLE_SQL,
     }[sheet_type]
 
@@ -1303,6 +1377,73 @@ async def _write_intervals(
         stats["assay_rows_skipped"] = assay_skipped
         stats["assay_replaced"] = assay_replaced
     return stats
+
+
+def _result_headers(result: Any) -> list[str]:
+    """Every column a parser saw: the ones it mapped plus the ones it did not."""
+    return [
+        *(getattr(result, "column_map", None) or {}).values(),
+        *(getattr(result, "unmapped_columns", None) or []),
+    ]
+
+
+def _companion_types_present(
+    result: Any, write_type: str,
+    column_map: dict[str, dict[str, str]] | None,
+) -> list[str]:
+    """The other tables the file just parsed as *write_type* also feeds.
+
+    Read off the headers the primary parse saw, by the same token rules the
+    classifier uses (``has_family_evidence``): a companion needs a column that
+    NAMES the family (``Alteration``, ``Mineral1``, ``Mineralization``). A
+    table the user mapped an alteration / mineralization column for counts too.
+    """
+    from georag_geoparsers._geology_columns import has_family_evidence  # noqa: PLC0415
+
+    headers = _result_headers(result)
+    out: list[str] = []
+    for companion in _COMPANION_TYPES.get(write_type, ()):
+        if has_family_evidence(headers, companion) or (column_map or {}).get(companion):
+            out.append(companion)
+    return out
+
+
+#: Columns listed in a not-ingested warning.
+_NOT_INGESTED_MAX_COLUMNS = 12
+
+
+def _columns_not_ingested_warning(
+    *, label: str, write_type: str, columns: list[str],
+) -> dict[str, Any] | None:
+    """Say which columns of a geology log matched no field, so were not read.
+
+    A lithology / alteration / mineralization parse maps the columns it knows
+    and ignores the rest; the ignoring used to be a log line. Data the
+    geologist typed - a second description column, a vein log, a logger's
+    name - therefore vanished with no trace in the run. The columns stay in
+    bronze (the uploaded file); nothing is invented for them.
+    """
+    if not columns:
+        return None
+    shown = columns[:_NOT_INGESTED_MAX_COLUMNS]
+    more = len(columns) - len(shown)
+    names = ", ".join(repr(c[:60]) for c in shown) + (f" and {more} more" if more else "")
+    return {
+        "code": "columns_not_ingested",
+        "message": (
+            f"{len(columns)} column(s) of {label} were not recognised and were "
+            f"not read as {write_type} data"
+        ),
+        "detail": (
+            f"{label} was read as {write_type} data. These columns matched no "
+            f"field, so their values are not in the drillhole tables: {names}. "
+            f"The file itself is kept in bronze. If one of them is a value you "
+            f"expect to see (a second description, a mineral, an alteration), "
+            f"rename it to a recognised header or map it explicitly and "
+            f"re-upload."
+        )[:900],
+        "columns": shown,
+    }
 
 
 def _csv_headers(path: str) -> list[str]:
@@ -1923,11 +2064,18 @@ def _parse_rows(
     rows: list[dict[str, Any]],
     sheet_type: str,
     column_map: dict[str, dict[str, str]] | None = None,
+    companion: bool = False,
 ) -> Any:
-    """Run the CSV parser for *sheet_type* over an in-memory table."""
+    """Run the CSV parser for *sheet_type* over an in-memory table.
+
+    ``companion`` reads only the alteration / mineralization columns of a table
+    that is primarily a lithology log (see _COMPANION_TYPES).
+    """
+    extra = {"companion": True} if companion else {}
     return _csv_parser_for(sheet_type)(
         _rows_as_csv_stream(rows),
         vendor_aliases=_vendor_aliases_for(column_map, sheet_type),
+        **extra,
     )
 
 
@@ -1976,8 +2124,10 @@ def _typed_verdict_for_table(
 def _csv_parser_for(sheet_type: str) -> Any:
     """The georag_geoparsers CSV parser that reads *sheet_type*."""
     from georag_geoparsers import (  # noqa: PLC0415
+        parse_csv_alteration,
         parse_csv_collars,
         parse_csv_lithology,
+        parse_csv_mineralization,
         parse_csv_samples,
         parse_csv_structures,
         parse_csv_surveys,
@@ -1988,6 +2138,8 @@ def _csv_parser_for(sheet_type: str) -> Any:
         "survey": parse_csv_surveys,
         "structure": parse_csv_structures,
         "lithology": parse_csv_lithology,
+        "alteration": parse_csv_alteration,
+        "mineralization": parse_csv_mineralization,
         "sample": parse_csv_samples,
     }[sheet_type]
 
@@ -1997,14 +2149,16 @@ def _parse_one(
     sheet_type: str,
     sheet_name: str | None,
     column_map: dict[str, dict[str, str]] | None = None,
+    companion: bool = False,
 ) -> Any:
     """Run the parser matching *sheet_type*."""
     parser = _csv_parser_for(sheet_type)
 
     vendor_aliases = _vendor_aliases_for(column_map, sheet_type)
+    extra = {"companion": True} if companion else {}
 
     if sheet_name is None:
-        return parser(path, vendor_aliases=vendor_aliases)
+        return parser(path, vendor_aliases=vendor_aliases, **extra)
 
     # A workbook sheet is materialised to CSV first so the CSV parsers —
     # which carry the delimiter, encoding, decimal-comma, hole-ID and
@@ -2017,6 +2171,7 @@ def _parse_one(
         sheet_name=sheet_name,
         sheet_type=sheet_type,
         vendor_aliases=vendor_aliases,
+        **extra,
     )
 
 
@@ -2348,6 +2503,84 @@ async def run_ingest_tabular(
                         epsg_assumed = False
                         georef_method = "declared"
 
+                #: Rows the companion tables of the sheet just written landed.
+                #: A lithology sheet the lithology writer refused can still have
+                #: fed alteration or mineralization, and that is not "wrote
+                #: nothing" - so the refusal path reads this.
+                companion_landed: dict[str, int] = {"rows": 0}
+
+                async def _write_companions(
+                    primary_result: Any, write_type: str,
+                    table: tuple[str, list[dict[str, Any]]] | None,
+                    target_sheet: str | None, index: dict[str, str],
+                ) -> None:
+                    """Feed the tables *write_type*'s columns also describe.
+
+                    The same file is parsed again as each companion type
+                    (``companion=True``: rows with no alteration / mineral are
+                    not-applicable, not rejected, and generic Comments columns
+                    stay with the lithology), and the records go through the
+                    same collar resolution and replace-per-collar write. Then
+                    the columns NOBODY read are reported.
+                    """
+                    label = (
+                        (table[0] if table is not None else None)
+                        or target_sheet or filename
+                    )
+                    claimed_elsewhere: set[str] = set()
+                    for companion_type in _companion_types_present(
+                        primary_result, write_type, input.column_map,
+                    ):
+                        if table is not None:
+                            comp = await asyncio.to_thread(
+                                _parse_rows, table[1], companion_type,
+                                input.column_map, True,
+                            )
+                        else:
+                            comp = await asyncio.to_thread(
+                                _parse_one, local, companion_type,
+                                target_sheet, input.column_map, True,
+                            )
+                        warnings.extend(getattr(comp, "warnings", None) or [])
+                        claimed_elsewhere.update(
+                            (getattr(comp, "column_map", None) or {}).values()
+                        )
+                        comp_records = getattr(comp, "records", None) or []
+                        if not comp_records:
+                            continue
+                        comp_stats = await _write_intervals(
+                            conn,
+                            workspace_id=input.workspace_id,
+                            sheet_type=companion_type,
+                            records=comp_records, index=index,
+                        )
+                        # The same source rows already reported their unknown
+                        # holes under the primary type; counting them again
+                        # would double the orphan total.
+                        comp_stats["orphaned"] = 0
+                        prior_c = written.setdefault(
+                            companion_type,
+                            {"written": 0, "skipped": 0, "orphaned": 0, "replaced": 0},
+                        )
+                        for k, v in comp_stats.items():
+                            prior_c[k] = prior_c.get(k, 0) + v
+                        companion_landed["rows"] += comp_stats.get("written", 0)
+                        sheets.append({
+                            "sheet": label,
+                            "type": companion_type,
+                            "rows": comp_stats.get("written", 0),
+                            "companion_of": write_type,
+                        })
+                    unread = [
+                        c for c in (getattr(primary_result, "unmapped_columns", None) or [])
+                        if c not in claimed_elsewhere
+                    ]
+                    note = _columns_not_ingested_warning(
+                        label=label, write_type=write_type, columns=unread,
+                    )
+                    if note is not None:
+                        warnings.append(note)
+
                 async def _parse_and_write(
                     write_type: str, target_sheet: str | None,
                 ) -> tuple[Any, dict[str, int]]:
@@ -2360,6 +2593,7 @@ async def run_ingest_tabular(
                     collar/interval split and the accumulator arithmetic,
                     and the two copies would drift.
                     """
+                    companion_landed["rows"] = 0
                     table = (
                         table_sources.get(target_sheet)
                         if target_sheet is not None else None
@@ -2396,6 +2630,10 @@ async def run_ingest_tabular(
                             sheet_type=write_type,
                             records=records, index=index,
                         )
+                        if write_type in _COMPANION_TYPES:
+                            await _write_companions(
+                                result, write_type, table, target_sheet, index,
+                            )
 
                     rejected_note = _rows_rejected_warning(
                         label=(table[0] if table is not None else None)
@@ -2465,7 +2703,10 @@ async def run_ingest_tabular(
                             "rows": stats["written"],
                         })
                         typed_rows_shadowing_attribute += stats["written"]
-                    if stats.get("written") or stats.get("orphaned"):
+                    if (
+                        stats.get("written") or stats.get("orphaned")
+                        or companion_landed["rows"]
+                    ):
                         # ORPHANED COUNTS AS LANDED DELIBERATELY. An
                         # interval sheet whose rows all orphaned parsed
                         # perfectly well -- its collars simply are not

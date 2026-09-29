@@ -418,7 +418,12 @@ class TestWriteIntervals:
         for sheet_type in _INTERVAL_TABLES:
             conn = FakeConn()
             result = await self._write(conn, sheet_type, [
-                {"hole_id": "EL001", "depth": 1, "from_depth": 0, "to_depth": 1},
+                {
+                    "hole_id": "EL001", "depth": 1, "from_depth": 0, "to_depth": 1,
+                    # The alteration / mineralization writers refuse an
+                    # unnamed interval (their type column is NOT NULL).
+                    "alteration_type": "Chlorite", "mineral": "Pyrite",
+                },
             ])
             assert result["written"] == 1, sheet_type
 
