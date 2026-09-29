@@ -67,10 +67,9 @@ async def _collar(
         """
         INSERT INTO silver.collars
             (collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
-             total_depth, azimuth, dip, hole_type, status, geom, geom_4326)
+             total_depth, azimuth, dip, hole_type, status, geom_4326)
         VALUES (gen_random_uuid(), $1, $2::uuid, $3::uuid, 500000, 6000000, $4,
                 $5, $6, $7, 'DD', 'active',
-                ST_SetSRID(ST_MakePoint(500000, 6000000), 32613),
                 ST_Transform(ST_SetSRID(ST_MakePoint(500000, 6000000), 32613), 4326))
         RETURNING collar_id::text
         """,
