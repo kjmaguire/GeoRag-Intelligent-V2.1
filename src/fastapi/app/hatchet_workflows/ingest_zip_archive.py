@@ -1427,7 +1427,7 @@ async def _ingest_one(
             counts["skipped"] += 1
             log.warning(
                 "ingest_zip_archive: LOG %s not loaded — its coordinates carry no CRS "
-                "and EPSG:%s was not declared for this upload",
+                "and EPSG:%s (or 3736, the ftUS code) was not declared for this upload",
                 file_path.name, LOG_COORD_EPSG,
             )
             if member_warnings is not None:

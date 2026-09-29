@@ -16,8 +16,11 @@ Strategy:
      UPDATE its easting/northing with the surveyed values
   5. Else, create a stub collar
 
-The state plane Wyoming East coordinate system is EPSG:32155 (NAD83).
-We transform to UTM Zone 13N (EPSG:32613) at insert time via PostGIS.
+The E=/N= pair is NAD83 / Wyoming East in US survey feet. The operator
+declares it as EPSG:3736 (the ftUS code, used as-is) or EPSG:32155 (the
+metre code; the feet are converted to metres first) — see LOG_COORD_EPSGS.
+PostGIS transforms from the declared system to geom (32613) and geom_4326;
+silver.collars.easting/northing keep the file's own E=/N= numbers (GIS-6).
 """
 from __future__ import annotations
 
@@ -64,15 +67,39 @@ _TOTAL_DEPTH_FILENAME_RE = re.compile(
 #: The CRS this binary format writes its E=/N= pair in (NAD83 / Wyoming East,
 #: US survey feet) -- a property of the FORMAT, not of the project it is
 #: dropped into. The file states no CRS of its own, so a caller may only
-#: create or move a collar from it when the operator has DECLARED this EPSG
-#: for the upload (``source_epsg``). Without that, a .log dropped into a
-#: project from anywhere else would be placed in Wyoming.
+#: create or move a collar from it when the operator has DECLARED one of these
+#: EPSG codes for the upload (``source_epsg``). Without that, a .log dropped
+#: into a project from anywhere else would be placed in Wyoming.
+#:
+#: GIS-19 (approved 2026-09-29): EPSG:3736 is the honest code for this data —
+#: NAD83 / Wyoming East in US survey feet — and used to be refused, because
+#: only the metre code 32155 was accepted and the ftUS -> m conversion was
+#: done here. Both are accepted now, each with its own unit handling. The
+#: East Central zone (32156 / 3737) is NOT accepted until a real Shirley
+#: Basin header confirms which zone the files use (needs Kyle).
 LOG_COORD_EPSG = 32155
+LOG_COORD_EPSG_FTUS = 3736
+
+#: 1 US survey foot = 1200/3937 m.
+_US_FT_TO_M = 1200.0 / 3937.0
+
+#: declared EPSG -> factor applied to the file's E=/N= before ST_SetSRID.
+LOG_COORD_EPSGS: dict[int, float] = {
+    LOG_COORD_EPSG: _US_FT_TO_M,     # metre CRS: convert the ftUS values
+    LOG_COORD_EPSG_FTUS: 1.0,        # ftUS CRS: the values are already in its unit
+}
 
 
 def log_crs_declared(source_epsg: int | None) -> bool:
-    """Whether the operator declared the CRS this format's coordinates use."""
-    return source_epsg == LOG_COORD_EPSG
+    """Whether the operator declared a CRS this format's coordinates can use."""
+    return source_epsg in LOG_COORD_EPSGS
+
+
+def _source_point(parsed: CamecoLogResult, source_epsg: int) -> tuple[float, float]:
+    """The .log's E=/N= in the declared CRS's own unit."""
+    factor = LOG_COORD_EPSGS[source_epsg]
+    assert parsed.state_plane_easting is not None and parsed.state_plane_northing is not None
+    return parsed.state_plane_easting * factor, parsed.state_plane_northing * factor
 
 
 @dataclass
@@ -167,10 +194,11 @@ async def update_collar_with_log_coords(
     to UTM Zone 13N (EPSG:32613) via PostGIS.
 
     Returns True if the collar was found and updated; False if not found --
-    and False, touching nothing, unless ``source_epsg`` is LOG_COORD_EPSG:
-    the file carries no CRS, so it is used only when the operator declared it.
+    and False, touching nothing, unless ``source_epsg`` is one of
+    LOG_COORD_EPSGS: the file carries no CRS, so it is used only when the
+    operator declared it.
     """
-    if not log_crs_declared(source_epsg):
+    if source_epsg is None or not log_crs_declared(source_epsg):
         return False
     if not parsed.hole_id or parsed.state_plane_easting is None or parsed.state_plane_northing is None:
         return False
@@ -186,26 +214,25 @@ async def update_collar_with_log_coords(
     if not row:
         return False
 
-    # Cameco .log binary stores coords in US survey feet. EPSG:32155
-    # (NAD83 / Wyoming East) expects METERS, so we convert ft → m
-    # before constructing the State Plane point.
-    # 1 US survey foot = 1200/3937 m ≈ 0.3048006096 m
-    FT_TO_M = 1200.0 / 3937.0
-    e_m = parsed.state_plane_easting * FT_TO_M
-    n_m = parsed.state_plane_northing * FT_TO_M
+    # The point in the DECLARED system's own unit (ftUS for 3736, metres
+    # for 32155). easting/northing keep the file's E=/N= as given (GIS-6):
+    # they used to be overwritten with 32613 metres, so the same columns
+    # meant a different CRS on every ingest path.
+    x, y = _source_point(parsed, source_epsg)
 
     await conn.execute(
         """
         UPDATE silver.collars SET
-            easting = ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 32155), 32613)),
-            northing = ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 32155), 32613)),
-            geom = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 32155), 32613),
-            geom_4326 = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 32155), 4326),
+            easting = $4,
+            northing = $5,
+            geom = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), $6::int), 32613),
+            geom_4326 = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), $6::int), 4326),
             georef_method = 'declared',
             updated_at = NOW()
          WHERE collar_id = $3::uuid
         """,
-        e_m, n_m, row["collar_id"],
+        x, y, row["collar_id"],
+        parsed.state_plane_easting, parsed.state_plane_northing, source_epsg,
     )
     return True
 
@@ -230,18 +257,17 @@ async def upsert_collar_from_log(
     whether or not a LAS file happened to seed one first.
 
     Returns the collar_id, or None if the parse lacks coordinates -- or if
-    ``source_epsg`` is not LOG_COORD_EPSG (the file states no CRS; see
-    ``log_crs_declared``). Nothing is written in either case.
+    ``source_epsg`` is not one of LOG_COORD_EPSGS (the file states no CRS;
+    see ``log_crs_declared``). Nothing is written in either case.
     """
-    if not log_crs_declared(source_epsg):
+    if source_epsg is None or not log_crs_declared(source_epsg):
         return None
     if not parsed.hole_id or parsed.state_plane_easting is None or parsed.state_plane_northing is None:
         return None
 
-    # ft → m for the State Plane WY East (32155) point
-    FT_TO_M = 1200.0 / 3937.0
-    e_m = parsed.state_plane_easting * FT_TO_M
-    n_m = parsed.state_plane_northing * FT_TO_M
+    # The point in the declared system's own unit; see _source_point.
+    x, y = _source_point(parsed, source_epsg)
+    FT_TO_M = _US_FT_TO_M
 
     # total_depth lives in feet on the .log filename; convert to metres
     # to align with silver.collars.total_depth (metres per §04e).
@@ -258,11 +284,10 @@ async def upsert_collar_from_log(
              geom, geom_4326, created_at, updated_at)
         VALUES (
             gen_random_uuid(), $1, $1, $2::uuid, $3::uuid,
-            ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 32613)),
-            ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 32613)),
+            $7, $8,
             $6, 'exploration', 'historical', 'declared',
-            ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 32613),
-            ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 4326),
+            ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), $9::int), 32613),
+            ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), $9::int), 4326),
             NOW(), NOW()
         )
         ON CONFLICT (project_id, hole_id) DO UPDATE SET
@@ -275,7 +300,8 @@ async def upsert_collar_from_log(
             updated_at = NOW()
         RETURNING collar_id::text AS collar_id
         """,
-        parsed.hole_id, project_id, workspace_id, e_m, n_m, td_m,
+        parsed.hole_id, project_id, workspace_id, x, y, td_m,
+        parsed.state_plane_easting, parsed.state_plane_northing, source_epsg,
     )
     return row["collar_id"] if row else None
 
@@ -308,5 +334,7 @@ __all__ = [
     "emit_log_provenance",
     "CamecoLogResult",
     "LOG_COORD_EPSG",
+    "LOG_COORD_EPSG_FTUS",
+    "LOG_COORD_EPSGS",
     "log_crs_declared",
 ]

@@ -261,7 +261,7 @@ async def ingest_cluster(
             # every hole in the format's home zone.
             msg = (
                 f"{len(log_paths)} binary .log file(s) skipped: their coordinates carry "
-                f"no CRS and EPSG:{LOG_COORD_EPSG} was not declared (source_epsg)"
+                f"no CRS and EPSG:{LOG_COORD_EPSG} was not declared (nor EPSG:3736; source_epsg)"
             )
             summary.errors.append({"type": "log", "file": cluster_dir, "err": msg})
             log.warning("cluster_runner.log_skipped %s", msg)

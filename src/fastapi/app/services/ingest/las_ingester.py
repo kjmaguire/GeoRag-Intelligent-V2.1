@@ -51,6 +51,11 @@ from typing import Any
 
 import asyncpg
 import lasio
+from georag_geoparsers.las_parser import (
+    las_depth_unit_warning,
+    resolve_las_depth_unit,
+    unit_to_metres_factor,
+)
 
 log = logging.getLogger("georag.ingest.las")
 
@@ -186,8 +191,12 @@ def _crs_epsg_from_text(text: str, *, projected: bool | None) -> int | None:
 def _within_crs_area(epsg: int, x: float, y: float) -> bool:
     """Whether (x, y) transforms to a valid lon/lat near the CRS's home area.
 
-    Catches feet read as metres, a wrong UTM zone and swapped axes, all of
-    which produce a perfectly finite coordinate in the wrong place.
+    Catches swapped axes and gross unit errors, which land far outside the
+    CRS's published area. It does NOT catch a wrong UTM zone or a wrong
+    datum (GIS-13): a zone's area of use spans every valid easting, so
+    zone-12 coordinates read as zone 13 pass here while landing ~360 km
+    east. That is what the project-reference check in
+    ``_placement_plausibility`` (backed by services/ingest/collar_crs.py) is for.
     """
     from pyproj import CRS, Transformer  # noqa: PLC0415
 
@@ -272,6 +281,9 @@ async def _placement_from_header(
             declared = epsg is not None
             if epsg is None:
                 epsg = 4326
+            # Transformed only to prove the position is representable; the
+            # row keeps the SOURCE values (GIS-6: easting/northing are "as
+            # the source gave them" on every path, geom_4326 is the truth).
             e, n = _to_collar_srid(epsg, lon, lat)
             if not (math.isfinite(e) and math.isfinite(n)):
                 notes.append("the position does not transform to a projected coordinate")
@@ -289,7 +301,7 @@ async def _placement_from_header(
                     }
                 return _Placement(
                     source_x=lon, source_y=lat, source_epsg=epsg,
-                    easting=e, northing=n,
+                    easting=lon, northing=lat,
                     georef_method="declared" if declared else "assumed",
                     warning=warning,
                 ), notes
@@ -344,6 +356,39 @@ async def _placement_from_header(
                 ), notes
 
     return None, notes
+
+
+async def _placement_plausibility(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    hole_id: str,
+    placement: _Placement,
+    file_name: str,
+) -> list[dict[str, str]]:
+    """Warnings when a header-placed collar lands somewhere unbelievable.
+
+    GIS-13 / GIS-15: the LATI/LONG branch had no area check at all, so a
+    positive-west longitude (common in older US headers) put a Wyoming well
+    in China with only 'assumed' to show for it; the X/Y branch's area check
+    cannot see a wrong UTM zone. Both are now compared with the project's
+    boundary or its other placed collars (services/ingest/collar_crs.py).
+    Warn only — the collar is still created.
+    """
+    from app.services.ingest.collar_crs import (  # noqa: PLC0415
+        plausibility_warnings,
+        project_reference,
+    )
+
+    reference = await project_reference(conn, project_id, exclude_hole_ids=[hole_id])
+    found, _flagged = await asyncio.to_thread(
+        plausibility_warnings,
+        epsg=placement.source_epsg,
+        points=[(hole_id, placement.source_x, placement.source_y)],
+        reference=reference,
+        label=file_name,
+    )
+    return [{"code": w["code"], "detail": w["detail"]} for w in found]
 
 
 async def _get_or_create_project(
@@ -494,7 +539,11 @@ async def _insert_curve(
     workspace_id: str,
     null_value: float = -999.25,
 ) -> None:
-    """Insert or replace a `silver.well_log_curves` row for one LAS curve."""
+    """Insert or replace a `silver.well_log_curves` row for one LAS curve.
+
+    ``depths`` must already be METRES (see ``ingest_las_file``); the row is
+    stamped ``depth_unit = 'm'``.
+    """
     # Doc-phase 183 — Cameco T_DEPTH curves start at -0.1ft or -0.2ft
     # (legitimate above-ground tool-reference measurements). The
     # `chk_well_log_curves_min_depth_non_negative` constraint rejects
@@ -521,13 +570,14 @@ async def _insert_curve(
             (curve_id, collar_id, curve_name, curve_unit, curve_description,
              min_depth, max_depth, step, null_value, sample_count,
              las_version, source_file, depths, values,
-             workspace_id, created_at, updated_at)
+             workspace_id, depth_unit, created_at, updated_at)
         VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4,
                 $5, $6, $7, $8, $9,
                 $10, $11, $12::float8[], $13::float8[],
-                $14::uuid, NOW(), NOW())
+                $14::uuid, 'm', NOW(), NOW())
         ON CONFLICT (collar_id, curve_name) DO UPDATE
-        SET min_depth      = EXCLUDED.min_depth,
+        SET depth_unit     = EXCLUDED.depth_unit,
+            min_depth      = EXCLUDED.min_depth,
             max_depth      = EXCLUDED.max_depth,
             step           = EXCLUDED.step,
             null_value     = EXCLUDED.null_value,
@@ -636,8 +686,20 @@ async def ingest_las_file(
     state = str(well.get("STAT", lasio.HeaderItem("STAT", value="")).value).strip()
     date_str = str(well.get("DATE", lasio.HeaderItem("DATE", value="")).value).strip()
 
+    # Depth unit (GIS-4): read from the header, never assumed to be feet.
+    # silver.collars.total_depth and every curve depth are metres, so a
+    # STOP.F 1257.5 is 383.3 m, not a 1,257 m hole. STOP's own unit wins
+    # for STOP (a file may declare it where the index does not).
+    depth_unit = resolve_las_depth_unit(las)
     try:
-        total_depth = float(las.well["STOP"].value) if "STOP" in las.well else 0.0
+        # Not .get(): lasio's SectionItems.get() fabricates a HeaderItem for
+        # a missing key instead of returning the default.
+        stop_item = las.well["STOP"] if "STOP" in las.well else None  # noqa: SIM401
+        total_depth = float(stop_item.value) if stop_item is not None else 0.0
+        stop_factor = (
+            unit_to_metres_factor(stop_item.unit) if stop_item is not None else None
+        )
+        total_depth *= stop_factor if stop_factor is not None else depth_unit.factor
     except (TypeError, ValueError):
         # Reported below as las_invalid_stop_depth, with the file name.
         log.debug("las_ingester.stop_not_numeric file=%s", p.name)
@@ -679,6 +741,10 @@ async def ingest_las_file(
         )
 
     warnings: list[dict[str, str]] = []
+    unit_warning = las_depth_unit_warning(depth_unit, file_name=p.name, well=hole_id)
+    if unit_warning is not None:
+        warnings.append({"code": unit_warning["code"], "detail": unit_warning["detail"]})
+        log.warning("las_ingester.depth_unit_assumed file=%s declared=%r", p.name, depth_unit.declared)
     georef_method: str | None = None
     collar_id = await _find_collar(conn, project_id=project_id, hole_id=hole_id)
     if collar_id is None:
@@ -704,6 +770,14 @@ async def ingest_las_file(
                 skipped_reason="collar_unlocated",
                 warnings=[{"code": "las_collar_unlocated", "detail": detail}],
             )
+        for implausible in await _placement_plausibility(
+            conn, project_id=project_id, hole_id=hole_id,
+            placement=placement, file_name=p.name,
+        ):
+            warnings.append(implausible)
+            log.warning(
+                "las_ingester.%s file=%s well=%s", implausible["code"], p.name, hole_id,
+            )
         collar_id = await _create_collar(
             conn,
             project_id=project_id,
@@ -728,7 +802,9 @@ async def ingest_las_file(
     curves_inserted = 0
     null_value = float(las.well["NULL"].value) if "NULL" in las.well else -999.25
     las_version = str(las.version["VERS"].value) if "VERS" in las.version else "2.0"
-    depths = list(las.index.tolist())
+    # Metres, like every other depth in silver (GIS-4); depth_unit='m' on
+    # the row tells derive_intervals so.
+    depths = [float(d) * depth_unit.factor for d in las.index.tolist()]
 
     for curve in las.curves:
         if curve.mnemonic.upper() in ("DEPT", "DEPTH"):

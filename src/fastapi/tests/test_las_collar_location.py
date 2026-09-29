@@ -145,9 +145,12 @@ async def test_header_latlon_with_datum_is_declared_and_warning_free(tmp_path: P
     row = _insert(conn)
     assert row["georef_method"] == "declared"
     assert (row["source_x"], row["source_y"], row["source_epsg"]) == (-105.35, 42.06, 4269)
-    # easting/northing hold METRES in the collar SRID, never degrees.
-    assert 300_000 < row["easting"] < 700_000
-    assert 4_000_000 < row["northing"] < 5_000_000
+    # GIS-6 (2026-09-29): easting/northing hold the values the SOURCE gave,
+    # as on the tabular and X/Y paths. They used to be the 32613 projection
+    # of the lon/lat here, so the same column meant a different CRS per
+    # ingester and a radius search compared zone-13 metres with project-grid
+    # metres. The position lives in geom/geom_4326, built from source_x/y.
+    assert (row["easting"], row["northing"]) == (-105.35, 42.06)
     assert conn.curve_writes == 1  # GAMMA (DEPT is the index)
 
 

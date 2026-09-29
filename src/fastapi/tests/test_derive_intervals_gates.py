@@ -169,7 +169,8 @@ async def test_a_uranium_project_derives_every_hole_that_has_no_logged_lithology
     assert summary["skipped"] is False
     assert summary["collars_emitted"] == 3
     assert summary["collars_skipped_logged_lithology"] == 0
-    assert summary["depth_unit_assumed"] == "ft"  # unchanged, and stated
+    # GIS-4: nothing is assumed any more — the unit comes off each curve row.
+    assert summary["depth_unit_assumed"] is None
 
 
 @pytest.mark.asyncio

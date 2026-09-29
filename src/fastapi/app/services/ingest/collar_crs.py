@@ -338,6 +338,21 @@ def to_lonlat(
     return out
 
 
+def _within_area(area: Any, lon: float, lat: float) -> bool:
+    """Inside a pyproj AreaOfUse, with slack, antimeridian-aware.
+
+    NAD83 (EPSG:4269) publishes west=167.65, east=-40.73: its area CROSSES
+    the antimeridian (the Aleutians), so a plain ``west <= lon <= east``
+    rejects every point in it.
+    """
+    if not (area.south - _AREA_SLACK_DEG <= lat <= area.north + _AREA_SLACK_DEG):
+        return False
+    west, east = area.west - _AREA_SLACK_DEG, area.east + _AREA_SLACK_DEG
+    if area.west <= area.east:
+        return bool(west <= lon <= east)
+    return bool(lon >= west or lon <= east)
+
+
 def plausibility_warnings(
     *,
     epsg: int,
@@ -366,10 +381,7 @@ def plausibility_warnings(
             no_transform.append(hole_id)
             continue
         lon, lat = ll
-        if area is not None and not (
-            area.west - _AREA_SLACK_DEG <= lon <= area.east + _AREA_SLACK_DEG
-            and area.south - _AREA_SLACK_DEG <= lat <= area.north + _AREA_SLACK_DEG
-        ):
+        if area is not None and not _within_area(area, lon, lat):
             outside_area.append(hole_id)
         if reference is not None:
             dist = haversine_km(lon, lat, reference.lon, reference.lat)
