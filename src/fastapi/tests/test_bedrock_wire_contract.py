@@ -17,6 +17,7 @@ that way until ``ops/validation/bedrock_probe.py`` runs with real credentials
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ from app.services.bedrock_wire import (
     CONTRACTS,
     EMBED_IMAGE,
     EMBED_TEXT,
+    OBSERVED_STATUSES,
     RERANK,
     Field,
     Status,
@@ -563,24 +565,123 @@ def test_an_unrecognised_cohere_chat_payload_raises_rather_than_returning_empty(
 # ---------------------------------------------------------------------------
 
 
-def test_nothing_claims_to_have_been_observed_on_bedrock() -> None:
-    """The moment this fails, someone has run the probe and promoted a field.
+_REPORTS_DIR = Path(__file__).resolve().parents[3] / "ops" / "validation" / "reports"
+_ALL_CONTRACTS = (*CONTRACTS, PARSE, CHAT_V2)
 
-    That is a good failure — but it must be a deliberate one, accompanied by
-    a committed report, not a status that drifted upward while nobody was
-    looking. ADR-0022 makes that report the gate on trusting any adapter, and
-    ADR-0023 keeps it: the host changed, the absence of evidence did not.
+
+def _observed_paths() -> dict[str, set[str]]:
+    return {
+        c.name: {f.path for f in (*c.request, *c.response) if f.status in OBSERVED_STATUSES}
+        for c in _ALL_CONTRACTS
+    }
+
+
+def test_an_observed_field_cites_a_committed_report_from_its_own_host() -> None:
+    """Replaces `test_nothing_claims_to_have_been_observed_on_bedrock`.
+
+    That test forbade OBSERVED outright, which was right while no report
+    existed and wrong once two did (VEN-7, 2026-09-29): the contract kept
+    saying "assumed" about fields a committed live run had seen. The rule
+    now is the one it was protecting: OBSERVED only with evidence. Every
+    observed field names a committed report, from the host its status
+    claims; nothing else names one.
     """
-    observed = [
-        (c.name, f.path)
-        for c in (*CONTRACTS, PARSE, CHAT_V2)
-        for f in (*c.request, *c.response)
-        if f.status is Status.OBSERVED
-    ]
-    assert not observed, (
-        f"{observed} is marked OBSERVED. If a real probe run confirmed it, "
-        f"commit the report and update this test. If not, the status is a lie."
-    )
+    for contract in _ALL_CONTRACTS:
+        for f in (*contract.request, *contract.response):
+            where = f"{contract.name}:{f.path}"
+            if f.status not in OBSERVED_STATUSES:
+                assert f.report is None, f"{where} cites a report but is {f.status.value}"
+                continue
+            assert f.report, f"{where} is {f.status.value} with no report — the status is a claim without evidence"
+            assert (_REPORTS_DIR / f.report).is_file(), f"{where} cites {f.report}, which is not committed"
+            expected_prefix = "bedrock_probe_" if f.status is Status.OBSERVED else "cohere_probe_"
+            assert f.report.startswith(expected_prefix), (
+                f"{where} is {f.status.value} but cites {f.report}: a Cohere-API "
+                "observation is not a Bedrock one, or vice versa"
+            )
+
+
+def test_the_promotions_are_exactly_what_the_committed_reports_show() -> None:
+    """Pinned, so a status cannot drift upward without this diff changing.
+
+    Promote a field only alongside a committed report that shows it, and
+    update this set in the same commit.
+    """
+    observed = _observed_paths()
+    assert observed["chat_converse"] == set()
+    assert observed["chat_converse_stream"] == set()
+    assert observed["embed_image"] == set(), "no probe run has ever sent an image"
+    assert observed["embed_text"] == {
+        "modelId",
+        "body.texts[]",
+        "body.input_type",
+        "body.embedding_types[]",
+        "body.output_dimension",
+        "embeddings.float[][]",
+    }
+    assert observed["rerank"] == {f.path for f in (*RERANK.request, *RERANK.response)}
+    assert observed["chat_v2"] == {
+        "model",
+        "messages[].role",
+        "messages[].content",
+        "temperature",
+        "max_tokens",
+        "stream",
+        "response_format.type",
+        "message.content[].type",
+        "message.content[].text",
+        "message.content[].thinking",
+        "message.role",
+        "usage.tokens.input_tokens",
+        "usage.tokens.output_tokens",
+        "usage.billed_units",
+    }
+    assert observed["parse"] == {
+        "model",
+        "document.type",
+        "document.image_url",
+        "output_format",
+        "pages[]",
+        "pages[].index",
+        "pages[].blocks[].type",
+        "pages[].blocks[].text",
+        "pages[].blocks[].text.content",
+        "pages[].markdown",
+    }
+
+
+def test_parse_tables_and_figures_remain_unobserved() -> None:
+    """The reason ADR-0019 chose Parse, and the part no run has exercised."""
+    for f in PARSE.response:
+        if any(part in f.path for part in (".table", ".image", ".html", ".description", ".caption", "bbox", "bounding_box")):
+            assert f.status not in OBSERVED_STATUSES, f"{f.path} promoted without a table/figure sample"
+
+
+def test_re_diffing_the_committed_reports_holds_and_contradicts_nothing() -> None:
+    """The committed reports, re-read against today's contracts, offline."""
+    from app.services import cohere_wire
+
+    bedrock = json.loads((_REPORTS_DIR / "bedrock_probe_20260916T205112Z.json").read_text())
+    diff = diff_report(bedrock)
+    assert set(diff["calls_observed"]) == {"embed_text", "rerank"}
+    assert diff["calls"]["embed_text"]["confirmed"] == ["embeddings"]
+    assert diff["calls"]["rerank"]["confirmed"] == ["index", "relevanceScore"]
+    assert diff["contract_holds"] is True
+
+    cohere = json.loads((_REPORTS_DIR / "cohere_probe_20260924T060435Z.json").read_text())
+    cdiff = cohere_wire.diff_report(cohere)
+    parse = cdiff["calls"]["parse"]
+    assert parse["contradicted"] == []
+    assert {"table", "image", "html"} <= set(parse["not_exercised"])
+    assert cdiff["contract_holds"] is True
+
+
+def test_an_optional_key_the_sample_lacked_is_not_exercised_not_contradicted() -> None:
+    """VEN-9: a text-only page cannot show a table block."""
+    section = {"formats": {"blocks": {"page0_keys": ["blocks", "index"], "block_keys": ["text", "type"]}}}
+    result = diff_section(PARSE, section)
+    assert "table" in result["not_exercised"]
+    assert "table" not in result["contradicted"]
 
 
 def test_the_three_carried_foundry_behaviours_are_all_declared() -> None:
