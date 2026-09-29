@@ -91,6 +91,7 @@ interface Viewport {
 export default function PublicGeoscience() {
     const mapContainer = useRef<HTMLDivElement | null>(null);
     const mapRef = useRef<MapLibreMap | null>(null);
+    const mapRemovedRef = useRef(false);
     const popupRef = useRef<Popup | null>(null);
     const polygonPopupRef = useRef<Popup | null>(null);
     const [mapReady, setMapReady] = useState(false);
@@ -155,9 +156,16 @@ export default function PublicGeoscience() {
         map.on('moveend', onMoveEnd);
 
         mapRef.current = map;
+        mapRemovedRef.current = false;
         return () => {
             clearTimeout(moveTimer);
             map.off('moveend', onMoveEnd);
+            // Set BEFORE remove(): on unmount React runs effect cleanups in
+            // declaration order, so this one runs first and the layer
+            // cleanups below then find a map with no style. Calling
+            // getLayer() on it threw, and the error boundary replaced the
+            // page ("Something went wrong") on every navigation away.
+            mapRemovedRef.current = true;
             map.remove();
             mapRef.current = null;
             setMapReady(false);
@@ -250,6 +258,7 @@ export default function PublicGeoscience() {
         );
 
         return () => {
+            if (mapRemovedRef.current) return; // the layers went with the map
             for (const id of [POLYGON_LINE_LAYER_ID, POLYGON_FILL_LAYER_ID]) {
                 if (map.getLayer(id)) map.removeLayer(id);
             }
@@ -329,6 +338,7 @@ export default function PublicGeoscience() {
         } as unknown as AddLayerObject);
 
         return () => {
+            if (mapRemovedRef.current) return; // the layers went with the map
             for (const id of [CLUSTER_COUNT_LAYER_ID, CLUSTER_LAYER_ID, POINT_LAYER_ID]) {
                 if (map.getLayer(id)) map.removeLayer(id);
             }
@@ -507,8 +517,17 @@ export default function PublicGeoscience() {
                     </div>
                 </div>
 
-                <div className="flex-1 relative">
-                    <div ref={mapContainer} className="absolute inset-0" />
+                {/* The map element is sized with an inline style, not Tailwind:
+                    maplibre-gl.css sets `.maplibregl-map { position: relative }`
+                    unlayered, which beats Tailwind v4's layered `absolute`
+                    utility. On the old `absolute inset-0` element that
+                    collapsed the container to zero height, MapLibre fell back
+                    to a 400x300 canvas inside it, and the page showed record
+                    counts over an empty map. Same pattern as WorkspaceMap. */}
+                <div className="flex-1 relative min-h-0">
+                    <div className="absolute inset-0">
+                        <div ref={mapContainer} style={{ width: '100%', height: '100%' }} />
+                    </div>
                 </div>
             </div>
         </AppLayout>

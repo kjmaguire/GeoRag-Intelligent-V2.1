@@ -38,7 +38,9 @@ const JSON_HEADERS = { Accept: 'application/json', 'X-Requested-With': 'XMLHttpR
 
 export function formatFreshness(status: SyncStatus | null): string | null {
     if (!status) return null;
-    if (!status.layers.length || !status.last_seen_at) return 'Not synced yet';
+    // Guard the shape, not just null: this renders in the page header, so a
+    // malformed body must degrade to 'Not synced yet', never throw.
+    if (!Array.isArray(status.layers) || !status.layers.length || !status.last_seen_at) return 'Not synced yet';
     const byJurisdiction = new Map<string, number>();
     for (const row of status.layers) {
         byJurisdiction.set(row.jurisdiction_code, (byJurisdiction.get(row.jurisdiction_code) ?? 0) + row.rows);
