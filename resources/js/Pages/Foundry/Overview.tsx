@@ -1,6 +1,7 @@
 import { Head, Link, router } from '@inertiajs/react';
 import { useEffect, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
+import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Stat, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import EditProjectSheet from '@/Components/EditProjectSheet';
@@ -181,6 +182,14 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                 style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
                             >
                                 Open Chat →
+                            </Link>
+                            <Link
+                                href={importWizardHref(project.slug)}
+                                className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                style={{ color: 'var(--fg-1)', background: 'var(--bg-2)', borderColor: 'var(--line-2)' }}
+                                title="Upload more reports, drill tables, logs or GIS files into this project"
+                            >
+                                + Add Documents
                             </Link>
                             <button
                                 type="button"

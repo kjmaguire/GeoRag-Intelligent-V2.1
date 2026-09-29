@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { router } from '@inertiajs/react';
-import { useBasemapGlyphsUrl, useBasemapStyleUrl, useSatelliteTiles } from '@/lib/basemap';
+import { BASEMAP_OPTIONS, useBasemapStyleSpec, type BasemapId } from '@/lib/basemap';
 import { formatU3O8Pct } from '@/lib/grade';
 import { addMvtLayers, setMvtVisibility, type MvtCapableMap } from '@/lib/mvtSources';
 
@@ -58,7 +58,7 @@ export interface MapProjectSummary {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GeoJsonGeometry = any;
 
-export type BasemapId = 'dark_matter' | 'positron' | 'bright' | 'satellite';
+export type { BasemapId };
 export type MapTool = 'pan' | 'draw' | 'measure' | 'select';
 
 
@@ -128,41 +128,7 @@ export function WorkspaceMap({
     // repoint these from the environment (CLAUDE.md hard rule #8), and a
     // second copy here meant three of the five assets ignored whatever was
     // configured.
-    const positronStyle = useBasemapStyleUrl('positron');
-    const brightStyle = useBasemapStyleUrl('bright');
-    const darkMatterStyle = useBasemapStyleUrl('dark_matter');
-    const glyphsUrl = useBasemapGlyphsUrl();
-    const satellite = useSatelliteTiles();
-
-    // Memoised: the satellite arm returns a fresh object literal, and this
-    // value is in the map-construction effect's dependency array.
-    const styleSpec = useMemo<string | object>(() => {
-        switch (basemap) {
-            case 'positron':
-                return positronStyle;
-            case 'bright':
-                return brightStyle;
-            case 'satellite':
-                // A raster tile source has no style.json, so wrap it in the
-                // minimal style MapLibre needs.
-                return {
-                    version: 8,
-                    sources: {
-                        'esri-imagery': {
-                            type: 'raster',
-                            tiles: [satellite.tiles],
-                            tileSize: 256,
-                            maxzoom: 19,
-                            attribution: satellite.attribution,
-                        },
-                    },
-                    layers: [{ id: 'esri-imagery', type: 'raster', source: 'esri-imagery' }],
-                    glyphs: glyphsUrl,
-                };
-            default:
-                return darkMatterStyle;
-        }
-    }, [basemap, positronStyle, brightStyle, darkMatterStyle, glyphsUrl, satellite.tiles, satellite.attribution]);
+    const styleSpec = useBasemapStyleSpec(basemap);
     const [hoverHole, setHoverHole] = useState<{ hole: MapCollar; x: number; y: number } | null>(null);
     // Drag-box state for the Select tool (screen-space pixel rect).
     const [selectRect, setSelectRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -1480,10 +1446,9 @@ export function WorkspaceMap({
                     className="text-[10px] font-mono px-1.5 py-0.5 rounded border"
                     style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
                 >
-                    <option value="dark_matter">Dark</option>
-                    <option value="positron">Light (Positron)</option>
-                    <option value="bright">Bright (OSM)</option>
-                    <option value="satellite">Satellite (Esri)</option>
+                    {BASEMAP_OPTIONS.map((o) => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                    ))}
                 </select>
                 <label className="flex items-center gap-1 cursor-pointer">
                     <input type="checkbox" checked={terrainOn} onChange={(e) => onTerrainChange(e.target.checked)} />

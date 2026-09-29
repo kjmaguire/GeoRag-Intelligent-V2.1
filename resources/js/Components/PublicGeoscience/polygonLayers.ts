@@ -38,8 +38,11 @@ export const POLYGON_LAYER_COLORS: Record<PolygonLayerKey, string> = {
 /** Tenure is the one a geologist wants first; the rest are opt-in. */
 export const DEFAULT_POLYGON_LAYERS: PolygonLayerKey[] = ['mineral_disposition'];
 
-/** Popup rows per layer: property key → label. Order is display order. */
-const POPUP_FIELDS: Record<PolygonLayerKey, Array<[string, string]>> = {
+/**
+ * Rows per layer: property key → label. Order is display order. The map's
+ * polygon card (PublicGeoFeatureCard) and polygonPopupHtml both read it.
+ */
+export const POLYGON_FIELDS: Record<PolygonLayerKey, Array<[string, string]>> = {
     mineral_disposition: [
         ['disposition_type', 'Type'],
         ['status', 'Status'],
@@ -121,7 +124,7 @@ export function polygonPopupHtml(
     sources: Record<string, SourceAttribution> | undefined,
 ): string {
     const layerLabel = POLYGON_LAYER_LABELS[props.layer] ?? props.layer;
-    const rows = (POPUP_FIELDS[props.layer] ?? [])
+    const rows = (POLYGON_FIELDS[props.layer] ?? [])
         .filter(([key]) => props[key] !== null && props[key] !== undefined && props[key] !== '')
         .map(
             ([key, label]) =>

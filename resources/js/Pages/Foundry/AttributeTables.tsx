@@ -1,5 +1,6 @@
 import { Head, Link } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
+import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import ReportsViewBar from '@/Components/Foundry/ReportsViewBar';
 import { formatWhen } from '@/lib/time';
@@ -155,7 +156,7 @@ export default function FoundryAttributeTables({
                             detail="Standalone .dbf / .dat tables and sheets that match no drill schema land in silver.attribute_tables — rows kept whole, with the file they came from. Upload one through the Import Wizard and it will appear here."
                             action={
                                 <Link
-                                    href="/foundry/imports/wizard"
+                                    href={importWizardHref(project.slug)}
                                     className="inline-block text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                                     style={{
                                         color: 'var(--accent)',

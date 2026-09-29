@@ -143,6 +143,8 @@ class CitationControllerPgeoTest extends TestCase
             'drill_type' => 'core',
             'commodity_of_interest' => '{uranium}',
             'total_length_m' => '350.5',
+            'inclination_deg' => '-70.00',
+            'azimuth_deg' => '135.00',
             'collar_elevation_m' => '420.0',
             'stratigraphic_depths' => null,
             'core_availability' => 'available',
@@ -165,6 +167,10 @@ class CitationControllerPgeoTest extends TestCase
             ->assertOk()
             ->assertJsonPath('source_type', 'public_geo')
             ->assertJsonPath('canonical_type', 'drillhole_collar')
+            // The Public Geo map's hole card reads orientation from here.
+            ->assertJsonPath('entity.inclination_deg', '-70.00')
+            ->assertJsonPath('entity.azimuth_deg', '135.00')
+            ->assertJsonPath('entity.total_length_m', '350.5')
             ->assertJsonStructure([
                 'source_type', 'corpus', 'canonical_type', 'source_chunk_id',
                 'jurisdiction', 'source', 'license', 'refresh',

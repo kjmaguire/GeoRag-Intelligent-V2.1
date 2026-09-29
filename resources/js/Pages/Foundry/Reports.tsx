@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
+import { importWizardHref } from '@/lib/importWizardLink';
 import DocumentBody from '@/Components/Foundry/DocumentBody';
 import {
     PageHeader,
@@ -246,7 +247,19 @@ export default function FoundryReports({
                               `${quality.passages_total.toLocaleString()} passages · ` +
                               `${quality.embedded_total.toLocaleString()} embedded`
                     }
-                    actions={<DataQualityFlagsBadge data={data_quality_flags} />}
+                    actions={
+                        <>
+                            <DataQualityFlagsBadge data={data_quality_flags} />
+                            <Link
+                                href={importWizardHref(project.slug)}
+                                className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                                title="Upload more documents into this project"
+                            >
+                                + Add Documents
+                            </Link>
+                        </>
+                    }
                 />
 
                 {/* Documents | Tables. The tabular half of the same delivery
@@ -270,6 +283,15 @@ export default function FoundryReports({
                         <EmptyState
                             title="No documents linked to this project yet."
                             detail="Drop a PDF or XLSX filing into the Import Wizard — once ingested it lands in silver.reports, gets chunked into silver.document_passages, and shows up here with its ingest status."
+                            action={
+                                <Link
+                                    href={importWizardHref(project.slug)}
+                                    className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                    style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                                >
+                                    + Add Documents
+                                </Link>
+                            }
                         />
                     </div>
                 ) : (

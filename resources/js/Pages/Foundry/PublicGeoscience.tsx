@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Head, usePage } from '@inertiajs/react';
 import maplibregl from 'maplibre-gl';
-import type { Map as MapLibreMap, Popup, GeoJSONSource, AddLayerObject } from 'maplibre-gl';
+import type { Map as MapLibreMap, GeoJSONSource, AddLayerObject, FilterSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader } from '@/Components/Foundry/primitives';
-import { useBasemapStyleUrl } from '@/lib/basemap';
-import { escapeHtml } from '@/lib/escapeHtml';
+import { BASEMAP_OPTIONS, useBasemapStyleSpec, type BasemapId } from '@/lib/basemap';
 import {
     PUBLIC_GEO_LAYER_LABELS,
     PUBLIC_GEO_LAYER_COLORS,
@@ -18,15 +17,16 @@ import PublicGeoSyncControls from '@/Components/PublicGeoscience/PublicGeoSyncCo
 import {
     DEFAULT_POLYGON_LAYERS,
     POLYGON_COLOR_MATCH,
-    polygonPopupHtml,
     type PolygonFeatureProperties,
     type PolygonLayerKey,
     type PolygonResponseFields,
 } from '@/Components/PublicGeoscience/polygonLayers';
+import PublicGeoFeatureCard, { type PublicGeoSelection } from '@/Components/PublicGeoscience/PublicGeoFeatureCard';
 import type { PageProps } from '@/types';
 
 const SOURCE_ID = 'public-geoscience';
 const POINT_LAYER_ID = 'public-geoscience-points';
+const SELECTED_LAYER_ID = 'public-geoscience-selected';
 const CLUSTER_LAYER_ID = 'public-geoscience-clusters';
 const CLUSTER_COUNT_LAYER_ID = 'public-geoscience-cluster-counts';
 const POLYGON_SOURCE_ID = 'public-geoscience-polygons';
@@ -52,6 +52,14 @@ interface Viewport {
     bbox: string;
     zoom: number;
 }
+
+/** Filter for the selected-record ring: the clicked point's id, or nothing. */
+function selectedFilter(selection: PublicGeoSelection | null): FilterSpecification {
+    const id = selection?.kind === 'point' ? selection.id : '';
+    return ['all', ['!=', ['get', 'cluster'], true], ['==', ['get', 'id'], id]] as unknown as FilterSpecification;
+}
+
+type HoverTip = { title: string; sub: string; x: number; y: number };
 
 /**
  * Foundry/PublicGeoscience — standalone browse page for /public-geoscience,
@@ -86,14 +94,29 @@ interface Viewport {
  *   - a freshness line (rows + last sync) and, for admins only, "Sync now",
  *     which queues the public_geo_sync Hatchet workflow and toasts its run id.
  *
- * Point behaviour is unchanged.
+ * 2026-09-29 (later) — consistent with the Workspace map:
+ *
+ *   - clicking a point opens PublicGeoFeatureCard, the same top-left card
+ *     the Workspace map uses for a clicked collar. For a public drillhole
+ *     it shows the full record — depth, dip/azimuth, operator, project,
+ *     core, and the published stratigraphic contacts drawn down the hole.
+ *     Before this a point click did nothing at all; only clusters answered.
+ *   - polygons open the same card instead of a MapLibre popup;
+ *   - hover is the Workspace's DOM tooltip, not a dark MapLibre popup;
+ *   - the basemap picker (Dark default, Light, Bright, Satellite) is the
+ *     Workspace's, and points use its zoom-scaled collar dot.
  */
 export default function PublicGeoscience() {
     const mapContainer = useRef<HTMLDivElement | null>(null);
     const mapRef = useRef<MapLibreMap | null>(null);
-    const mapRemovedRef = useRef(false);
-    const popupRef = useRef<Popup | null>(null);
-    const polygonPopupRef = useRef<Popup | null>(null);
+    const [hover, setHover] = useState<HoverTip | null>(null);
+    const [selection, setSelection] = useState<PublicGeoSelection | null>(null);
+    const selectionRef = useRef<PublicGeoSelection | null>(null);
+    useEffect(() => {
+        selectionRef.current = selection;
+    }, [selection]);
+    // The camera survives a basemap switch, which rebuilds the map.
+    const cameraRef = useRef<{ center: [number, number]; zoom: number }>({ center: [-107, 55], zoom: 4 });
     const [mapReady, setMapReady] = useState(false);
     const [data, setData] = useState<MapResponse | null>(null);
     const [polygonLayers, setPolygonLayers] = useState<PolygonLayerKey[]>(DEFAULT_POLYGON_LAYERS);
@@ -103,7 +126,9 @@ export default function PublicGeoscience() {
     const [jurisdiction, setJurisdiction] = useState('');
     const [viewport, setViewport] = useState<Viewport | null>(null);
 
-    const styleUrl = useBasemapStyleUrl('positron');
+    // Dark by default, like the Workspace map.
+    const [basemap, setBasemap] = useState<BasemapId>('dark_matter');
+    const styleSpec = useBasemapStyleSpec(basemap);
 
     // The click handler is bound once per map; it reads the latest response
     // (for source attribution) through a ref rather than re-binding per fetch.
@@ -135,9 +160,10 @@ export default function PublicGeoscience() {
 
         const map = new maplibregl.Map({
             container: mapContainer.current,
-            style: styleUrl,
-            center: [-107, 55],
-            zoom: 4,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            style: styleSpec as any,
+            center: cameraRef.current.center,
+            zoom: cameraRef.current.zoom,
         });
 
         map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
@@ -145,6 +171,8 @@ export default function PublicGeoscience() {
 
         let moveTimer: ReturnType<typeof setTimeout> | undefined;
         const onMoveEnd = () => {
+            const c = map.getCenter();
+            cameraRef.current = { center: [c.lng, c.lat], zoom: map.getZoom() };
             clearTimeout(moveTimer);
             moveTimer = setTimeout(() => setViewport(readViewport(map)), MOVE_DEBOUNCE_MS);
         };
@@ -156,21 +184,25 @@ export default function PublicGeoscience() {
         map.on('moveend', onMoveEnd);
 
         mapRef.current = map;
-        mapRemovedRef.current = false;
         return () => {
             clearTimeout(moveTimer);
             map.off('moveend', onMoveEnd);
-            // Set BEFORE remove(): on unmount React runs effect cleanups in
-            // declaration order, so this one runs first and the layer
-            // cleanups below then find a map with no style. Calling
+            // Cleared BEFORE remove(), and the layer cleanups below bail out
+            // when mapRef no longer holds THEIR map. On unmount React runs
+            // effect cleanups in declaration order, so this one runs first
+            // and the layer cleanups then find a map with no style; calling
             // getLayer() on it threw, and the error boundary replaced the
-            // page ("Something went wrong") on every navigation away.
-            mapRemovedRef.current = true;
-            map.remove();
+            // page ("Something went wrong") on every navigation away. A
+            // basemap switch rebuilds the map the same way, with the new map
+            // already in mapRef when the old layer cleanups run — an
+            // identity check covers both, where a removed-flag would be
+            // reset by the new map before the old cleanups saw it.
             mapRef.current = null;
+            map.remove();
             setMapReady(false);
+            setHover(null);
         };
-    }, [readViewport]);
+    }, [readViewport, styleSpec]);
 
     // ── Fetch on viewport / filter change ───────────────────────────────────
     useEffect(() => {
@@ -258,7 +290,7 @@ export default function PublicGeoscience() {
         );
 
         return () => {
-            if (mapRemovedRef.current) return; // the layers went with the map
+            if (mapRef.current !== map) return; // the layers went with the map
             for (const id of [POLYGON_LINE_LAYER_ID, POLYGON_FILL_LAYER_ID]) {
                 if (map.getLayer(id)) map.removeLayer(id);
             }
@@ -290,11 +322,27 @@ export default function PublicGeoscience() {
             type: 'circle',
             source: SOURCE_ID,
             filter: ['!=', ['get', 'cluster'], true],
+            // The Workspace map's collar dot: zoom-scaled, dark keyline.
             paint: {
-                'circle-radius': 5,
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 3.5, 8, 5, 14, 9, 18, 14],
                 'circle-color': LAYER_COLOR_MATCH,
-                'circle-stroke-width': 1,
-                'circle-stroke-color': '#0b0f14',
+                'circle-stroke-width': 1.5,
+                'circle-stroke-color': '#0a0e14',
+            },
+        } as unknown as AddLayerObject);
+
+        // Ring around the clicked record, so the card and the map agree on
+        // which point it describes.
+        map.addLayer({
+            id: SELECTED_LAYER_ID,
+            type: 'circle',
+            source: SOURCE_ID,
+            filter: selectedFilter(selectionRef.current),
+            paint: {
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 8, 8, 10, 14, 15, 18, 21],
+                'circle-color': 'rgba(0,0,0,0)',
+                'circle-stroke-color': '#f9fafb',
+                'circle-stroke-width': 2,
             },
         } as unknown as AddLayerObject);
 
@@ -338,97 +386,91 @@ export default function PublicGeoscience() {
         } as unknown as AddLayerObject);
 
         return () => {
-            if (mapRemovedRef.current) return; // the layers went with the map
-            for (const id of [CLUSTER_COUNT_LAYER_ID, CLUSTER_LAYER_ID, POINT_LAYER_ID]) {
+            if (mapRef.current !== map) return; // the layers went with the map
+            for (const id of [CLUSTER_COUNT_LAYER_ID, CLUSTER_LAYER_ID, SELECTED_LAYER_ID, POINT_LAYER_ID]) {
                 if (map.getLayer(id)) map.removeLayer(id);
             }
             if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
         };
     }, [data, mapReady]);
 
-    // ── Hover popup + cluster drill-in ──────────────────────────────────────
+    // ── Selected-record ring follows the card ───────────────────────────────
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !mapReady || !map.getLayer(SELECTED_LAYER_ID)) return;
+        map.setFilter(SELECTED_LAYER_ID, selectedFilter(selection));
+    }, [selection, mapReady, data]);
+
+    // ── Hover tooltip, point / polygon card, cluster drill-in ───────────────
     useEffect(() => {
         const map = mapRef.current;
         if (!map || !mapReady) return;
 
         const interactive = [POINT_LAYER_ID, CLUSTER_LAYER_ID];
-
-        const onMove = (e: maplibregl.MapMouseEvent) => {
+        const markersAt = (point: maplibregl.PointLike) => {
             const present = interactive.filter((id) => map.getLayer(id));
-            if (!present.length) return;
-            const features = map.queryRenderedFeatures(e.point, { layers: present });
+            return present.length ? map.queryRenderedFeatures(point, { layers: present }) : [];
+        };
+
+        // The Workspace map's hover: a small DOM tooltip beside the cursor,
+        // not a MapLibre popup.
+        const onMove = (e: maplibregl.MapMouseEvent) => {
+            const features = markersAt(e.point);
             map.getCanvas().style.cursor = features.length ? 'pointer' : '';
             if (!features.length) {
-                popupRef.current?.remove();
-                popupRef.current = null;
+                setHover(null);
                 return;
             }
-            const feat = features[0];
-            const props = feat.properties as PublicGeoFeature['properties'];
+            const props = features[0].properties as PublicGeoFeature['properties'];
             const layerLabel = PUBLIC_GEO_LAYER_LABELS[props.layer] ?? props.layer;
-
-            const html = props.cluster
-                ? `<div style="font: 11px monospace; color: #e5e7eb;">
-                        <div style="font-weight: 600;">${props.point_count.toLocaleString()} records</div>
-                        <div style="color: #9ca3af;">${escapeHtml(layerLabel)} · click to zoom in</div>
-                   </div>`
-                : `<div style="font: 11px monospace; color: #e5e7eb;">
-                        <div style="font-weight: 600;">${escapeHtml(props.label ?? layerLabel)}</div>
-                        <div style="color: #9ca3af;">${escapeHtml(layerLabel)} · ${escapeHtml(props.jurisdiction_code)}</div>
-                   </div>`;
-
-            popupRef.current?.remove();
-            popupRef.current = new maplibregl.Popup({ closeButton: false, closeOnClick: false })
-                .setLngLat((feat.geometry as GeoJSON.Point).coordinates as [number, number])
-                .setHTML(html)
-                .addTo(map);
+            setHover(
+                props.cluster
+                    ? { title: `${props.point_count.toLocaleString()} records`, sub: `${layerLabel} · click to zoom in`, x: e.point.x, y: e.point.y }
+                    : { title: props.label ?? layerLabel, sub: `${layerLabel} · ${props.jurisdiction_code} · click for detail`, x: e.point.x, y: e.point.y },
+            );
         };
 
         const onLeave = () => {
-            popupRef.current?.remove();
-            popupRef.current = null;
+            setHover(null);
             map.getCanvas().style.cursor = '';
         };
 
-        // Clicking a cluster is the only way to reach the records inside it,
-        // so it has to actually resolve — zoom two levels toward the cell.
-        const onClusterClick = (e: maplibregl.MapMouseEvent) => {
-            if (!map.getLayer(CLUSTER_LAYER_ID)) return;
-            const hits = map.queryRenderedFeatures(e.point, { layers: [CLUSTER_LAYER_ID] });
-            if (!hits.length) return;
-            const coords = (hits[0].geometry as GeoJSON.Point).coordinates as [number, number];
-            map.easeTo({ center: coords, zoom: Math.min(map.getZoom() + 2, 18) });
-        };
-
-        // Polygons answer a click (not hover — they tile the map, so a hover
-        // popup would follow the cursor everywhere). A click on a point or
-        // cluster belongs to that marker, not to the parcel under it.
-        const onPolygonClick = (e: maplibregl.MapMouseEvent) => {
-            if (!map.getLayer(POLYGON_FILL_LAYER_ID)) return;
-            const markers = [POINT_LAYER_ID, CLUSTER_LAYER_ID].filter((id) => map.getLayer(id));
-            if (markers.length && map.queryRenderedFeatures(e.point, { layers: markers }).length) return;
-            const hits = map.queryRenderedFeatures(e.point, { layers: [POLYGON_FILL_LAYER_ID] });
-            polygonPopupRef.current?.remove();
-            polygonPopupRef.current = null;
-            if (!hits.length) return;
-            const props = hits[0].properties as PolygonFeatureProperties;
-            polygonPopupRef.current = new maplibregl.Popup({ closeButton: true, closeOnClick: false, maxWidth: '300px' })
-                .setLngLat(e.lngLat)
-                .setHTML(polygonPopupHtml(props, dataRef.current?.sources))
-                .addTo(map);
+        // One click handler, in priority order: a cluster zooms toward its
+        // records (the only way to reach them); a point opens its card; a
+        // polygon under neither opens the polygon's card; empty map closes it.
+        const onClick = (e: maplibregl.MapMouseEvent) => {
+            const hit = markersAt(e.point)[0];
+            if (hit) {
+                const props = hit.properties as PublicGeoFeature['properties'];
+                const coords = (hit.geometry as GeoJSON.Point).coordinates as [number, number];
+                if (props.cluster) {
+                    map.easeTo({ center: coords, zoom: Math.min(map.getZoom() + 2, 18) });
+                    return;
+                }
+                setSelection({
+                    kind: 'point',
+                    layer: props.layer,
+                    id: String(props.id),
+                    sourceId: String(props.source_id),
+                    label: props.label ?? null,
+                    jurisdiction: props.jurisdiction_code,
+                    lngLat: coords,
+                });
+                return;
+            }
+            const polygons = map.getLayer(POLYGON_FILL_LAYER_ID)
+                ? map.queryRenderedFeatures(e.point, { layers: [POLYGON_FILL_LAYER_ID] })
+                : [];
+            setSelection(polygons.length ? { kind: 'polygon', props: polygons[0].properties as PolygonFeatureProperties } : null);
         };
 
         map.on('mousemove', onMove);
         map.on('mouseout', onLeave);
-        map.on('click', onClusterClick);
-        map.on('click', onPolygonClick);
+        map.on('click', onClick);
         return () => {
             map.off('mousemove', onMove);
             map.off('mouseout', onLeave);
-            map.off('click', onClusterClick);
-            map.off('click', onPolygonClick);
-            polygonPopupRef.current?.remove();
-            polygonPopupRef.current = null;
+            map.off('click', onClick);
         };
     }, [mapReady]);
 
@@ -527,6 +569,50 @@ export default function PublicGeoscience() {
                 <div className="flex-1 relative min-h-0">
                     <div className="absolute inset-0">
                         <div ref={mapContainer} style={{ width: '100%', height: '100%' }} />
+                    </div>
+
+                    {/* Hover tooltip — the Workspace map's, hidden while a card is open. */}
+                    {hover && !selection && (
+                        <div
+                            className="absolute z-10 pointer-events-none text-[10px] font-mono px-2 py-1 rounded border"
+                            style={{
+                                left: hover.x + 12,
+                                top: hover.y + 12,
+                                background: 'var(--bg-1)',
+                                borderColor: 'var(--line-2)',
+                                color: 'var(--fg-1)',
+                            }}
+                        >
+                            <div style={{ color: 'var(--fg-0)' }}>{hover.title}</div>
+                            <div style={{ color: 'var(--fg-3)' }}>{hover.sub}</div>
+                        </div>
+                    )}
+
+                    {selection && (
+                        <PublicGeoFeatureCard
+                            selection={selection}
+                            sources={data?.sources}
+                            onClose={() => setSelection(null)}
+                        />
+                    )}
+
+                    {/* Basemap picker — same control, same place as the Workspace map's. */}
+                    <div
+                        className="absolute bottom-8 right-2 z-10 flex items-center gap-2 text-[10px] font-mono px-2 py-1.5 rounded border"
+                        style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
+                    >
+                        <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Map</span>
+                        <select
+                            aria-label="Basemap"
+                            value={basemap}
+                            onChange={(e) => setBasemap(e.target.value as BasemapId)}
+                            className="text-[10px] font-mono px-1.5 py-0.5 rounded border"
+                            style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
+                        >
+                            {BASEMAP_OPTIONS.map((o) => (
+                                <option key={o.id} value={o.id}>{o.label}</option>
+                            ))}
+                        </select>
                     </div>
                 </div>
             </div>

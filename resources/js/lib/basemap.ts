@@ -28,9 +28,24 @@
  * (the glyph endpoint and the satellite raster template, both hard-coded a
  * second time inside WorkspaceMap) are configured alongside the styles.
  */
+import { useMemo } from 'react';
 import { usePage } from '@inertiajs/react';
 
 export type BasemapStyleId = 'positron' | 'bright' | 'dark_matter';
+
+/**
+ * Every basemap a map page offers: the three style.json basemaps plus
+ * satellite, which is a raster tile source rather than a style.
+ */
+export type BasemapId = BasemapStyleId | 'satellite';
+
+/** Picker labels, in picker order — the Workspace and Public Geo maps share them. */
+export const BASEMAP_OPTIONS: ReadonlyArray<{ id: BasemapId; label: string }> = [
+    { id: 'dark_matter', label: 'Dark' },
+    { id: 'positron', label: 'Light (Positron)' },
+    { id: 'bright', label: 'Bright (OSM)' },
+    { id: 'satellite', label: 'Satellite (Esri)' },
+];
 
 /**
  * Defaults that mirror config/services.php. Used as a last-resort fallback
@@ -135,4 +150,46 @@ export function useImageryTileUrl(): string {
     const page = usePage<SharedPropsWithBasemap>();
     const baked = import.meta.env.VITE_SATELLITE_TILES_URL as string | undefined;
     return baked || page.props.basemap_imagery || DEFAULT_IMAGERY_TILES;
+}
+
+/**
+ * The MapLibre `style` for a basemap id: a style.json URL, or for satellite
+ * the minimal inline style wrapping the raster tiles (a tile source has no
+ * style.json of its own).
+ *
+ * Memoised so it can sit in a map-construction effect's dependency array:
+ * the satellite arm would otherwise be a fresh object on every render.
+ */
+export function useBasemapStyleSpec(basemap: BasemapId): string | object {
+    const positron = useBasemapStyleUrl('positron');
+    const bright = useBasemapStyleUrl('bright');
+    const darkMatter = useBasemapStyleUrl('dark_matter');
+    const glyphs = useBasemapGlyphsUrl();
+    const satellite = useSatelliteTiles();
+
+    return useMemo<string | object>(() => {
+        switch (basemap) {
+            case 'positron':
+                return positron;
+            case 'bright':
+                return bright;
+            case 'satellite':
+                return {
+                    version: 8,
+                    sources: {
+                        'esri-imagery': {
+                            type: 'raster',
+                            tiles: [satellite.tiles],
+                            tileSize: 256,
+                            maxzoom: 19,
+                            attribution: satellite.attribution,
+                        },
+                    },
+                    layers: [{ id: 'esri-imagery', type: 'raster', source: 'esri-imagery' }],
+                    glyphs,
+                };
+            default:
+                return darkMatter;
+        }
+    }, [basemap, positron, bright, darkMatter, glyphs, satellite.tiles, satellite.attribution]);
 }

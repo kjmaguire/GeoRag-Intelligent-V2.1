@@ -1,6 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
+import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Card, Pill, Stat, EmptyState, ProgressBar } from '@/Components/Foundry/primitives';
 import { formatTime } from '@/lib/time';
 import { listenPrivate } from '@/lib/echoChannel';
@@ -691,7 +692,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                             detail="Upload a PDF, drill log, or other source and it will show up here, where you can watch it move through parse → tables → embed."
                             action={
                                 <Link
-                                    href="/foundry/imports/wizard"
+                                    href={importWizardHref(project.slug)}
                                     className="inline-block text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                                     style={{
                                         color: 'var(--accent)',
