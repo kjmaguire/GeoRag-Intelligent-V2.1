@@ -20,14 +20,31 @@
 # terraform-apply-capable — this role builds and rolls out images, it does
 # not provision infrastructure.
 #
-# repo/ref condition, not repo alone: sub claims from GitHub's OIDC token
-# are `repo:<owner>/<repo>:ref:refs/heads/<branch>` for a branch push and
-# `repo:<owner>/<repo>:pull_request` for a PR — restricting to `*:ref:refs/heads/main`
-# would break `workflow_dispatch` from other refs and the PR-triggered smoke
-# build. Condition on the repository claim (aud) and leave ref unscoped
-# within it; this is a build/deploy role, not a production-secrets role, so
-# the blast radius of any authorized workflow run in this repo is already
-# the accepted scope.
+# TRUST: main only, since 2026-09-29 (audit AWS-6). The first version of this
+# file trusted every ref in the repository, on the argument that narrowing it
+# would break workflow_dispatch from other refs and "the PR-triggered smoke
+# build", and that this was a build/deploy role rather than a
+# production-secrets role. Both premises were wrong:
+#
+#   * it IS a production-secrets role in effect. It may RegisterTaskDefinition
+#     and RunTask with iam:PassRole on the execution role, which reads every
+#     key in georag/app and the RDS master secret. So any branch or same-repo
+#     PR workflow with `id-token: write` could register a task that echoes
+#     those secrets and read them back through logs:GetLogEvents.
+#   * nothing that runs on a PR or a branch uses it. Its only callers are
+#     cd.yml (workflow_run on main, or dispatch), run-seeder.yml,
+#     project-diagnostics.yml and parse-comparison.yml (dispatch only). PR CI
+#     (ci.yml, docker-build.yml) never assumes it — docker-build's
+#     id-token:write is for SBOM attestation, not AWS.
+#
+# So the sub claim is pinned to refs/heads/main. workflow_run always runs on
+# the default branch, so cd.yml's automatic path produces exactly that claim.
+# A dispatch from any other branch now fails at "Configure AWS credentials" —
+# which is the point. Deliberately NOT `environment:production`: a job with
+# `environment:` gets an environment-shaped sub instead of a ref-shaped one,
+# and an environment with no deployment-branch rule would re-open every
+# branch. Add it only together with a protected `production` environment
+# restricted to main, and list both claims below.
 
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url            = "https://token.actions.githubusercontent.com"
@@ -58,8 +75,7 @@ data "aws_iam_policy_document" "github_actions_assume" {
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
-    # Any ref/event in this specific repo. Deliberately not narrowed to
-    # ref:refs/heads/main — see file header.
+    # main only — see the file header for why this is no longer "any ref".
     #
     # Verified live via CloudTrail on 2026-09-17 during the go-live
     # rehearsal: this org has GitHub's "include repository and organization
@@ -75,9 +91,9 @@ data "aws_iam_policy_document" "github_actions_assume" {
     # inlined here instead of parameterized, since they're this AWS account's
     # fixed GitHub identity, not something an operator sets per deploy.
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:kjmaguire@79488174/GeoRag-Intelligent-V2.1@1252963201:*"]
+      values   = ["repo:kjmaguire@79488174/GeoRag-Intelligent-V2.1@1252963201:ref:refs/heads/main"]
     }
   }
 }
@@ -122,8 +138,6 @@ data "aws_iam_policy_document" "github_deploy" {
       "ecs:DescribeTasks",
       "ecs:ListTasks",
       "ecs:RegisterTaskDefinition",
-      "ecs:RunTask",
-      "ecs:UpdateService",
     ]
     # RegisterTaskDefinition and the read calls that inspect an arbitrary
     # revision don't take a resource ARN in their request the way
@@ -132,6 +146,30 @@ data "aws_iam_policy_document" "github_deploy" {
     # task definition can run as) matches AWS's own documented pattern for
     # ECS deploy roles.
     resources = ["*"]
+  }
+
+  # The two calls that START or MOVE something, scoped (audit AWS-6): only
+  # this deployment's task families, only on this cluster, and only this
+  # cluster's services. Same ArnLike/ecs:cluster shape the scheduler role in
+  # iam.tf already uses for its RunTask grant. `georag-*` covers migrate,
+  # smoke and every service family CD registers.
+  statement {
+    sid       = "EcsRunOwnTasksInOwnCluster"
+    effect    = "Allow"
+    actions   = ["ecs:RunTask"]
+    resources = ["arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:task-definition/${local.name}-*"]
+    condition {
+      test     = "ArnLike"
+      variable = "ecs:cluster"
+      values   = [aws_ecs_cluster.this.arn]
+    }
+  }
+
+  statement {
+    sid       = "EcsRollOwnServices"
+    effect    = "Allow"
+    actions   = ["ecs:UpdateService"]
+    resources = ["arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:service/${aws_ecs_cluster.this.name}/*"]
   }
 
   statement {
