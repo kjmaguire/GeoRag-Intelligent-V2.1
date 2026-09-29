@@ -310,6 +310,9 @@ def _float(text: str) -> float | None:
     try:
         return float(text.strip())
     except (TypeError, ValueError):
+        # Not an error: the caller decides whether a non-numeric cell rejects
+        # the row (a depth) or is kept as text with a warning (a percentage).
+        logger.debug("geology_interval: non-numeric cell")
         return None
 
 
