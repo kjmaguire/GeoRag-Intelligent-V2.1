@@ -235,12 +235,12 @@ class TestNoCrsAllowlist:
         assert result.source_crs == "EPSG:4326"
         assert result.feature_count == 1
 
-    def test_dgn_gets_4326_and_a_warning_rather_than_a_refusal(self):
-        """MicroStation has no CRS concept, so absence is not a defect.
+    def test_dgn_without_an_epsg_is_refused(self):
+        """GIS-11 (2026-09-29): design-file units are not degrees.
 
-        .dgn was the format nobody had named: in _VECTOR_EXTENSIONS, in the
-        Laravel categories, and with no CRS exemption — so it took the same
-        arm as a .prj-less shapefile and suffered the identical corruption.
+        This used to return EPSG:4326 at confidence 0 and the features were
+        WRITTEN — the same "longitude four hundred thousand degrees" the
+        crs_required refusal exists to stop for a .prj-less shapefile.
         Exercised through _resolve_crs because no .dgn writer exists.
         """
         frame = gpd.GeoDataFrame({"n": ["a"]}, geometry=[Point(1, 2)], crs=None)
@@ -248,26 +248,35 @@ class TestNoCrsAllowlist:
 
         _, decision = _resolve_crs(frame, ".dgn", "site.dgn", None, warnings_out)
 
-        assert decision.missing is False
-        assert decision.source_crs == "EPSG:4326"
-        assert decision.confidence == 0.0
-        assert [w["code"] for w in warnings_out] == ["dgn_no_crs"]
-        assert warnings_out[0]["detail"]
+        assert decision.missing is True
+        assert decision.source_crs == ""
+        assert [w["code"] for w in warnings_out] == ["crs_required"]
+        assert "EPSG" in warnings_out[0]["detail"]
 
-    def test_dxf_keeps_its_placeholder_and_its_warning(self):
-        """Pinned by test_dxf_blocks.py's integration class — do not change."""
-        frame = gpd.GeoDataFrame({"n": ["a"]}, geometry=[Point(1, 2)], crs=None)
+    def test_dxf_without_an_epsg_is_refused(self):
+        """GIS-11: a DXF point at (512100, 6123100) parsed to SRID 4326 with
+        crs_missing False; a local grid at (45, 60) landed in Russia."""
+        frame = gpd.GeoDataFrame(
+            {"n": ["a"]}, geometry=[Point(512100, 6123100)], crs=None,
+        )
         warnings_out: list[dict] = []
 
         _, decision = _resolve_crs(frame, ".dxf", "plan.dxf", None, warnings_out)
 
-        assert decision.missing is False
-        assert decision.source_crs == "EPSG:4326"
-        assert decision.confidence == 0.0
-        assert [w["code"] for w in warnings_out] == ["dxf_no_crs"]
-        assert warnings_out[0]["message"] == (
-            "DXF files have no CRS; caller must georeference."
+        assert decision.missing is True
+        assert decision.source_crs == ""
+        assert [w["code"] for w in warnings_out] == ["crs_required"]
+
+    def test_dxf_with_an_epsg_is_placed(self):
+        frame = gpd.GeoDataFrame(
+            {"n": ["a"]}, geometry=[Point(512100, 6123100)], crs=None,
         )
+        warnings_out: list[dict] = []
+
+        _, decision = _resolve_crs(frame, ".dxf", "plan.dxf", 26913, warnings_out)
+
+        assert decision.missing is False
+        assert decision.source_crs == "EPSG:26913"
 
 
 # ---------------------------------------------------------------------------
