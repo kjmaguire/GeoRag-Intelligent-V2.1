@@ -59,7 +59,7 @@ authlib==1.8.0
     # via georag-fastapi
 backoff==2.2.1
     # via langfuse
-boto3==1.40.61
+boto3==1.43.97
     # via
     #   aiobotocore
     #   georag-object-storage
