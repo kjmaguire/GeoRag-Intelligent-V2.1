@@ -86,19 +86,39 @@ _llm_call_cell: contextvars.ContextVar[_RunCallCount | None] = contextvars.Conte
 )
 
 
+class _CounterToken:
+    """What ``_LLMCallCounter.set`` returns: enough to undo that one set."""
+
+    __slots__ = ("cell", "previous")
+
+    def __init__(self, cell: _RunCallCount, previous: int) -> None:
+        self.cell = cell
+        self.previous = previous
+
+
 class _LLMCallCounter:
-    """ContextVar-shaped (``get``/``set``) facade over the per-run cell."""
+    """ContextVar-shaped (``get``/``set``/``reset``) facade over the per-run cell.
+
+    ``set`` returns a token and ``reset(token)`` restores the value it
+    replaced, as ``contextvars.ContextVar`` does, so callers written against
+    the old ContextVar (the adapters' test fixtures) keep working.
+    """
 
     def get(self) -> int:
         cell = _llm_call_cell.get()
         return cell.n if cell is not None else 0
 
-    def set(self, value: int) -> None:
+    def set(self, value: int) -> _CounterToken:
         cell = _llm_call_cell.get()
         if cell is None:
             cell = _RunCallCount()
             _llm_call_cell.set(cell)
+        token = _CounterToken(cell, cell.n)
         cell.n = int(value)
+        return token
+
+    def reset(self, token: _CounterToken) -> None:
+        token.cell.n = token.previous
 
 
 _llm_call_counter = _LLMCallCounter()
