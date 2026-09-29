@@ -1,6 +1,6 @@
 ---
 name: hatchet-expert
-description: Hatchet durable orchestration — the 50 registered workflows, the merged worker and its pools, declarative on_crons triggers, the Postgres-backed queue, retries and idempotency, the shadow trigger endpoint, run lifecycle and stale-run detection, and the boundary against Laravel queues. Use for anything about scheduled or durable background work. For what an ingestion workflow parses use ingestion-gis-expert; for EventBridge sweeps use aws-expert.
+description: Hatchet durable orchestration — the 51 registered workflows, the merged worker and its pools, declarative on_crons triggers, the Postgres-backed queue, retries and idempotency, the shadow trigger endpoint, run lifecycle and stale-run detection, and the boundary against Laravel queues. Use for anything about scheduled or durable background work. For what an ingestion workflow parses use ingestion-gis-expert; for EventBridge sweeps use aws-expert.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: sonnet
 color: yellow
@@ -18,7 +18,7 @@ Actions cron, or an EventBridge schedule. If someone proposes
 
 ## Topology
 
-One merged `hatchet-worker` service, `WORKER_POOL=all`, **50 registered
+One merged `hatchet-worker` service, `WORKER_POOL=all`, **51 registered
 workflows**, inventoried in manual §07b. It runs on **hatchet-lite**
 (`ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.91.2`, port 7077) with a
 **Postgres-backed queue**.

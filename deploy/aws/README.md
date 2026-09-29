@@ -681,7 +681,7 @@ Getting this wrong does not fail loudly. The extensions are the visible half.
 The other half is the Hatchet engine's own role and database — Hatchet runs
 with `SERVER_MSGQUEUE_KIND=postgres`, so that database is both its schema
 store and its message queue, and without it the engine starts, fails to
-migrate, and the worker registers nothing: 50 workflows and 29 crons quietly
+migrate, and the worker registers nothing: 51 workflows and 29 crons quietly
 do not exist while every container reports healthy.
 
 `bootstrap.sql` says what it deliberately leaves to something else, and why.

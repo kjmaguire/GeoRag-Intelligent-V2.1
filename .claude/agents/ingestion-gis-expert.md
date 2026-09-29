@@ -1,6 +1,6 @@
 ---
 name: ingestion-gis-expert
-description: Getting exploration data in — the six Hatchet ingestion workflows, every format parser in georag_geoparsers, the in-process PDF stack and Cohere Parse OCR, the medallion pipeline bronze→silver→gold, chunking and embedding of ingested content, upload limits, ZIP fan-out, provenance and idempotency, and ingest-time data quality. Use for "this file won't ingest" or "the ingested data is wrong". For spatial correctness of what was parsed use gis-expert; for workflow mechanics use hatchet-expert.
+description: Getting exploration data in — the seven Hatchet ingestion workflows, every format parser in georag_geoparsers, the in-process PDF stack and Cohere Parse OCR, the medallion pipeline bronze→silver→gold, chunking and embedding of ingested content, upload limits, ZIP fan-out, provenance and idempotency, and ingest-time data quality. Use for "this file won't ingest" or "the ingested data is wrong". For spatial correctness of what was parsed use gis-expert; for workflow mechanics use hatchet-expert.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: sonnet
 color: orange

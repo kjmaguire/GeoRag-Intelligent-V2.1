@@ -273,7 +273,7 @@ was **not** re-derived.
 | 04 Ingestion flow | six Hatchet ingest workflows, not a Dagster path; the gold tables had no writer for a month; the outbox is not on the ingest path |
 | 05 PDF stack | pdfminer.six + pdfplumber (PyMuPDF removed on licence grounds); parsers moved to `georag_geoparsers`; SEG-Y and Word ingest are gone |
 | 06 Retrieval + agents | graph tools removed; support-cockpit trace sources corrected |
-| 07 Orchestration | Horizon's three jobs, the 50-workflow registry with every cron, the schedulers, the 2026-08-21 review findings |
+| 07 Orchestration | Horizon's three jobs, the 51-workflow registry with every cron, the schedulers, the 2026-08-21 review findings |
 | 08 LLM + ML | the hosted backend as default; Embed v4 / Rerank; SPLADE++ has no hosted equivalent *(host predates ADR-0022)* |
 | 09 Martin + MapLibre | nothing scrapes Martin's `/metrics`; no alert replaced the deleted rules |
 | 10 Frontend | **sixteen pages exist**, not the eighty this chapter listed; no admin console, no dashboards, no React Flow |

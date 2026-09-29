@@ -256,7 +256,7 @@ ALTER ROLE martin_readonly LOGIN PASSWORD :'martin_password';
 -- Hatchet runs with SERVER_MSGQUEUE_KIND=postgres — there is no RabbitMQ in
 -- this stack — so this database is both its schema store AND its message
 -- queue. Without it the engine starts, fails to migrate, and the worker
--- registers nothing: 50 workflows and 29 crons quietly do not exist.
+-- registers nothing: 51 workflows and 29 crons quietly do not exist.
 --
 -- The compose default password is the literal string 'hatchet', which is
 -- fine for a laptop and not for this. Set it from Secrets Manager, at the
@@ -278,7 +278,7 @@ ALTER ROLE martin_readonly LOGIN PASSWORD :'martin_password';
 -- way. With \set ON_ERROR_STOP on at the top of this file, that aborted
 -- bootstrap.sql here: the first command of the whole go-live sequence,
 -- failing before the hatchet database exists, which is what the engine
--- needs to migrate before 50 workflows can register.
+-- needs to migrate before 51 workflows can register.
 --
 -- So the substitution happens at the top level, where it works, and the
 -- create is made conditional with \gexec instead of PL/pgSQL. format(%L)

@@ -9,7 +9,7 @@
 # WHY (audit AWS-12, 2026-09-29). The engine mints the token with a 90-day
 # lifetime (`exp - iat` = 7776000 s, deploy/aws/README.md Step 3), and nothing
 # renewed it or alarmed on it. When it lapses, every worker and client fails
-# auth at the same moment while the engine looks healthy: all 50 workflows
+# auth at the same moment while the engine looks healthy: all 51 workflows
 # and every cron stop, one quiet morning about three months after go-live.
 #
 # WHAT IT SAYS. Every run logs one line with the days left. Inside
