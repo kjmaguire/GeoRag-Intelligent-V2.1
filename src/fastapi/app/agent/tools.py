@@ -1268,6 +1268,33 @@ async def query_downhole_logs(
     )
 
 
+def normalize_hole_id(hole_id: str) -> str:
+    """Comparable form of a hole ID (audit RAG-17).
+
+    Upper-case; any run of non-alphanumerics becomes one "-"; a letter/digit
+    boundary gets a "-"; leading zeros are dropped from each numeric run;
+    outer "-" trimmed. "BH-01", "bh 1", "BH1" -> "BH-1"; "PLS22-08" and
+    "PLS-22-08" -> "PLS-22-8"; "PLS-2-28" stays distinct. Must match
+    :func:`_hole_norm_sql` exactly — the two are compared in SQL.
+    """
+    u = re.sub(r"[^A-Z0-9]+", "-", (hole_id or "").upper())
+    u = re.sub(r"([A-Z])([0-9])", r"\1-\2", u)
+    u = re.sub(r"([0-9])([A-Z])", r"\1-\2", u)
+    u = re.sub(r"(^|-)0+([0-9])", r"\1\2", u)
+    return u.strip("-")
+
+
+def _hole_norm_sql(column: str) -> str:
+    """PostgreSQL twin of :func:`normalize_hole_id` for ``column``."""
+    return (
+        "trim(both '-' from regexp_replace(regexp_replace(regexp_replace("
+        f"regexp_replace(UPPER({column}), '[^A-Z0-9]+', '-', 'g'), "
+        "'([A-Z])([0-9])', '\\1-\\2', 'g'), "
+        "'([0-9])([A-Z])', '\\1-\\2', 'g'), "
+        "'(^|-)0+([0-9])', '\\1\\2', 'g'))"
+    )
+
+
 @_metered("query_collar_details")
 async def query_collar_details(
     deps: AgentDeps,
@@ -1334,9 +1361,22 @@ async def query_collar_details(
     )
 
     # ── Collar header. Match in priority order: exact hole_id, canonical,
-    # substring. The single SELECT walks each branch via UNION ALL so we
+    # normalised. The single SELECT walks each branch via UNION ALL so we
     # get one round-trip and the LIMIT 1 + ORDER BY priority chooses the
     # best match. workspace_id + project_id are ALWAYS in the WHERE.
+    #
+    # Audit RAG-17 (2026-09-29): branch 3 used to be a SUBSTRING match
+    # (`hole_id ILIKE '%'||$3||'%'`, first alphabetically), so "BH-1"
+    # stored as "BH-01" resolved to BH-10 and "36-108" to 36-1085 — the
+    # pre-pass then fed another hole's depth and grades in as the answer —
+    # while "BH12" vs "BH-12" found nothing. It is now an equality on a
+    # normalised form (separators unified, letter/digit runs split, leading
+    # zeros dropped per numeric run; see normalize_hole_id), and it only
+    # answers when exactly ONE collar in the project has that form. Two
+    # candidates is an ambiguity, and returning neither is the honest
+    # answer.
+    norm_hole_sql = _hole_norm_sql("hole_id")
+    norm_hole_sql_c2 = _hole_norm_sql("c2.hole_id")
     collar_sql = (
         "SELECT collar_id::text, hole_id, hole_id_canonical, project_id::text, "
         # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
@@ -1359,8 +1399,11 @@ async def query_collar_details(
         "  UNION ALL "
         "  SELECT *, 3 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
-        "    AND hole_id ILIKE '%' || $3 || '%' "
+        f"    AND {norm_hole_sql} = $4 "
         "    AND UPPER(hole_id) <> UPPER($3) "
+        "    AND (SELECT COUNT(*) FROM silver.collars c2 "
+        "         WHERE c2.workspace_id = $1::uuid AND c2.project_id = $2::uuid "
+        f"          AND {norm_hole_sql_c2} = $4) = 1 "
         ") matches "
         "ORDER BY match_priority ASC, hole_id ASC "
         "LIMIT 1"
@@ -1411,7 +1454,8 @@ async def query_collar_details(
     async def _run() -> CollarDetailsResult:
         async with deps.pg_pool.acquire() as conn:
             collar_row = await conn.fetchrow(
-                collar_sql, workspace_id, project_id, hole_id
+                collar_sql, workspace_id, project_id, hole_id,
+                normalize_hole_id(hole_id),
             )
             if collar_row is None:
                 return empty
