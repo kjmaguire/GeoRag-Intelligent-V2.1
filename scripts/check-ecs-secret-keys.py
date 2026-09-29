@@ -15,7 +15,7 @@ That gap is not theoretical. Every one of these was found in the Terraform on
     no default on purpose. Every MVT tile in the platform.
   * the hatchet engine was handed no DATABASE_URL either, which with
     SERVER_MSGQUEUE_KIND=postgres is both its schema store and its queue:
-    51 workflows and every cron.
+    50 workflows and every cron.
   * redis-server was never given REDIS_PASSWORD, so it would have run with
     no requirepass while every client authenticates.
   * no service got a database password under ANY name, so Laravel would have

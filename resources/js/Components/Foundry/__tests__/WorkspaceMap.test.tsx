@@ -79,12 +79,11 @@ class FakeMap {
     }
 }
 
+// maplibre-gl 6 is ESM-only with named exports and no default export.
 vi.mock('maplibre-gl', () => ({
-    default: {
-        Map: FakeMap,
-        NavigationControl: class {},
-        ScaleControl: class {},
-    },
+    Map: FakeMap,
+    NavigationControl: class {},
+    ScaleControl: class {},
 }));
 
 vi.mock('@inertiajs/react', () => ({

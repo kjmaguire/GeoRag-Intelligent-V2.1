@@ -36,9 +36,13 @@ the biggest win (most workspace state is PG-stored).
 Triggering
 ==========
 
-Manual (no cron) — operators invoke via Hatchet's manual run UI with
-``{"workspace_id": "<uuid>"}``. Output run_id is logged + audit-row
-anchored.
+No cron. Since 2026-09-29 (HAT-13) an admin who belongs to the workspace
+starts it with Laravel
+``POST /api/v1/admin/workspaces/{workspace}/workflows/workspace_export``,
+which calls FastAPI ``POST /internal/v1/workflows/workspace_export/trigger``.
+That route only ever writes to the ``workspace-exports`` bucket. The Hatchet
+UI still works for an operator, with ``{"workspace_id": "<uuid>"}``. Output
+run_id is logged + audit-row anchored.
 """
 
 from __future__ import annotations

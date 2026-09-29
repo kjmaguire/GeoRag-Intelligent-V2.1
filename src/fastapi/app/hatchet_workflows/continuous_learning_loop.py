@@ -1,14 +1,34 @@
 """continuous_learning_loop Hatchet workflow (§12.10).
 
-Daily cron orchestrator that:
+Daily cron at 22:30 UTC. Until 2026-09-29 this docstring called it a
+"daily cron orchestrator" while the workflow declared no ``on_crons`` at
+all, so it registered and never fired (HAT-13). It is scheduled now because
+it passes the bar Kyle set for unattended runs:
 
-1. Checks each workspace's ``targeting.target_outcomes`` row count
-   delta since the last loop run.
-2. Triggers ``train_target_model`` if the delta crosses the
-   per-deposit-model retraining threshold (default +25 new outcomes).
-3. Triggers ``train_source_trust`` if the workspace's citation count
-   delta crosses threshold (default +500 new citations).
+* It is cheap: two ``count(*)`` queries per workspace and one audit row.
+* It never spends on Cohere. There is no LLM, embed, rerank or Parse call
+  anywhere in the body, and it spawns nothing (see below).
+* It is safe to repeat. The delta window starts at the previous run's
+  audit anchor, so an extra manual run just narrows tomorrow's window.
+* It accepts the empty input an engine cron sends; every field defaults.
+* It fits the window. 22:30 UTC plus the 30-minute budget ends at 23:00,
+  before the earliest nightly stop (00:00 UTC in PDT, 01:00 in PST).
+  ``tests/test_crons_avoid_the_shutdown_window.py`` checks both the start
+  and the end.
+
+What each run does:
+
+1. Counts each workspace's new ``targeting.target_outcomes`` rows since
+   the last loop run.
+2. Flags ``train_target_model`` as pending if that delta crosses the
+   retraining threshold (default +25 new outcomes).
+3. Flags ``train_source_trust`` as pending if the workspace's citation
+   delta crosses its threshold (default +500 new citations).
 4. Emits ``continuous_learning_loop.completed`` to the audit ledger.
+
+It flags; it does not spawn. Training is started by an operator through
+``/api/v1/admin/ml/``. It does not call ``field_outcome_learning`` either,
+whatever an earlier version of this docstring said: that workflow is manual.
 
 It does NOT evaluate answer quality, whatever this docstring said
 for the month after the code stopped doing it. ``evaluate_workspace`` was deleted in
@@ -22,20 +42,22 @@ silver.answer_runs; look there, not here.
 This is the "closed-loop intelligence" anchor from §20.8.
 
 Phase H4 graduation — the orchestrator runs end-to-end as a
-deterministic monitor. The two ML-training spawns (`train_target_model`
-+ `train_source_trust`) are still skeletons (gated on xgboost dep +
-real drilling outcomes accumulating — §12.7 master-plan note). When
-those graduate, only the inner `await ... .run(...)` calls need
-updating; the orchestration shell is correct.
+deterministic monitor. Auto-spawning the two trainers is a separate
+decision, and it has not been made. If it ever is, re-check the cron bar
+above: a trainer that calls a hosted model would make this workflow spend
+unattended.
 
 The shell:
-- Walks `silver.workspaces` to find active workspaces.
-- For each workspace + each of its `silver.projects`, counts the new
-  target_outcomes rows since the last loop run.
-- Records that threshold check in the audit ledger.
-- Calls `field_outcome_learning` directly (it's graduated and ETL-only).
-- Marks `target_models_retrained` / `source_trust_models_retrained`
-  per skeleton return.
+- Lists workspaces with ``list_workspace_ids`` (``silver.workspaces`` is
+  readable unscoped by design; HAT-1).
+- Counts each workspace's deltas in its own short transaction with that
+  workspace's scope bound, so the fail-closed ``targeting`` and ``silver``
+  policies admit the rows under the AWS worker role (``georag_app``,
+  NOBYPASSRLS).
+- Records the threshold check in the audit ledger (a system row, NULL
+  workspace).
+- Reports ``target_models_retrained`` / ``source_trust_models_retrained``
+  as "pending" counts. Nothing is retrained here.
 """
 from __future__ import annotations
 
@@ -47,7 +69,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
-from app.db import bind_workspace_scope
+from app.db import bind_workspace_scope, list_workspace_ids
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
@@ -82,15 +104,25 @@ _dsn = build_dsn
 
 continuous_learning_loop = hatchet.workflow(
     name="continuous_learning_loop",
+    # HAT-13 (2026-09-29): scheduled at last. 22:30 UTC sits in the open
+    # window after model_cost_summary_run (22:00) and, with the 30 min budget
+    # below, ends at 23:00, before the earliest nightly stop (00:00 UTC, PDT).
+    # A cron tick sends NO input, and every input field defaults, so {} is
+    # a complete input.
+    on_crons=["30 22 * * *"],
     input_validator=ContinuousLearningLoopInput,
 )
 
 
-@continuous_learning_loop.task(execution_timeout=timedelta(hours=8), retries=0)
+#: Was 8 h, which the end-time check in test_crons_avoid_the_shutdown_window
+#: would reject from any open-window start. The body is two counts per
+#: workspace and one audit insert; 30 minutes is two orders of magnitude of
+#: headroom and still ends before the stop.
+@continuous_learning_loop.task(execution_timeout=timedelta(minutes=30), retries=0)
 async def execute(
     input: ContinuousLearningLoopInput, ctx: Context
 ) -> ContinuousLearningLoopOutput:
-    """Daily orchestration of model retraining + eval runs."""
+    """Daily retraining-readiness check. Flags, never trains, never calls a model."""
     log.info(
         "continuous_learning_loop.start initiated_by=%s loop_request_id=%s",
         input.initiated_by, input.loop_request_id,
@@ -98,13 +130,10 @@ async def execute(
 
     conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        # Find all active workspaces (operator-mode read; this is a
-        # platform job, not tenant-scoped).
-        ws_rows = await conn.fetch(
-            "SELECT workspace_id::text AS workspace_id, name "
-            "FROM silver.workspaces ORDER BY workspace_id"
-        )
-        workspaces_scanned = len(ws_rows)
+        # Every workspace, listed with the scope cleared (HAT-1 helper; logs
+        # WORKSPACE_ENUMERATION_EMPTY if the policy ever hides them all).
+        ws_ids = await list_workspace_ids(conn, site="continuous_learning_loop")
+        workspaces_scanned = len(ws_ids)
 
         # Per-workspace delta check.
         last_loop_at = await conn.fetchval(
@@ -121,37 +150,33 @@ async def execute(
         target_models_retrained = 0
         source_trust_models_retrained = 0
 
-        for ws in ws_rows:
-            ws_id = ws["workspace_id"]
-            # REC#2 Phase-2 (2026-06-03) — bind_workspace_scope replaces
-            # the bespoke set_config call. Same effect; centralised UUID
-            # validation; loud failure if ws_id ever falls through as None.
-            # is_local=False: dedicated asyncpg.connect() (line 94) with
-            # no wrapping transaction, rebound once per workspace as the
-            # loop advances. SET LOCAL would be discarded here and every
-            # query below would run unscoped.
-            await bind_workspace_scope(
-                conn, workspace_id=ws_id, site="continuous_learning_loop",
-                is_local=False,
-            )
+        for ws_id in ws_ids:
+            # One short transaction per workspace with the scope bound
+            # SET LOCAL, so it ends with the transaction. It used to be a
+            # session-level bind that stayed on the connection after the
+            # loop, which left the last workspace's scope in place for the
+            # audit insert below.
+            async with conn.transaction():
+                await bind_workspace_scope(
+                    conn, workspace_id=ws_id, site="continuous_learning_loop",
+                )
+                outcome_delta = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM targeting.target_outcomes
+                     WHERE workspace_id = $1::uuid
+                       AND recorded_at >= $2
+                    """,
+                    ws_id, last_loop_at,
+                ) or 0
 
-            outcome_delta = await conn.fetchval(
-                """
-                SELECT count(*) FROM targeting.target_outcomes
-                 WHERE workspace_id = $1::uuid
-                   AND recorded_at >= $2
-                """,
-                ws_id, last_loop_at,
-            ) or 0
-
-            citation_delta = await conn.fetchval(
-                """
-                SELECT count(*) FROM silver.answer_citation_items
-                 WHERE workspace_id = $1::uuid
-                   AND created_at >= $2
-                """,
-                ws_id, last_loop_at,
-            ) or 0
+                citation_delta = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM silver.answer_citation_items
+                     WHERE workspace_id = $1::uuid
+                       AND created_at >= $2
+                    """,
+                    ws_id, last_loop_at,
+                ) or 0
 
             target_threshold_hit = outcome_delta >= input.target_retraining_threshold
             source_threshold_hit = citation_delta >= input.source_trust_retraining_threshold

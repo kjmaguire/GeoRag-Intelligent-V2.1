@@ -108,7 +108,7 @@ exists so the every-minute crons could one day move to a small always-on
 pool; today it is dormant. `python -m app.hatchet_workflows.worker --list`
 prints the names without connecting. Crons are UTC.
 
-Every fixed-hour slot below sits between 17:00 and 22:00 UTC. That is not a
+Every fixed-hour slot below sits between 17:00 and 22:30 UTC. That is not a
 preference: since 2026-09-16 the EventBridge sweeps
 (`deploy/aws/terraform/scheduler.tf`) run the platform 08:30-17:00
 America/Vancouver, which closes 00:00-16:30 UTC once both sides of a DST
@@ -157,23 +157,26 @@ three times and will move again.
 | `answer_quality_watch` | `30 21 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
 | `enrich_passage_context` | `45 21 * * *` | Contextual-retrieval headers (one LLM call per passage); 2 h budget so it ends 23:45, before the 00:00 UTC PDT stop (HAT-14) |
 | `model_cost_summary_run` | `0 22 * * *` | Phase 0 agent |
+| `continuous_learning_loop` | `30 22 * * *` | Retraining-readiness check: counts new `targeting.target_outcomes` and citations per workspace (scope bound per workspace), flags `train_target_model` / `train_source_trust` as pending, writes one audit anchor. No LLM, embed, rerank or Parse call and spawns nothing, which is why it may run unattended; 30 min budget ends 23:00. Declared "daily cron" in its docstring for months while having no `on_crons`; scheduled 2026-09-29 (HAT-13) |
 | `what_changed_weekly` | `0 17 * * 1` | Fans `what_changed_detector` across active workspaces |
 | `cost_burn_watcher` | `*/5 * * * *` | Emits `cost.burn.alert` audit rows; suspends LLM activity at 2× the ceiling |
 | `promote_silver_to_gold` | — | Silver → gold visual tables; dispatched per project and by the nightly sweep; one run per workspace at a time (`GROUP_ROUND_ROBIN`, HAT-8) |
 | `nl_summaries` | — | One retrievable passage per structured row (ADR-0012); registered, deliberately unscheduled |
 | `external_notification`, `public_geoscience_pull` | — | The two rows in `workflow.flow_registry`, reachable through the integrations endpoint (§2.3); no caller since Kestra went |
 | `phase2_smoke` | — | Placeholder |
-| `generate_report`, `score_targets` | — | Report Builder and Target Recommendation graphs; `execution_timeout="24h"` on a 20-slot single-replica worker |
-| `field_outcome_learning`, `what_changed_detector`, `train_target_model`, `train_source_trust`, `continuous_learning_loop` | — | Learning-loop workflows; two of them are only ever run inline (§2.4) |
-| `support_replay`, `restore_workspace`, `workspace_export` | — | Operator-triggered diagnosis, manifest-backed restore, per-workspace JSONL.gz export |
-| `lineage_walk`, `llm_incident_diagnosis_run`, `support_packet_assemble` | — | On-demand Phase 0 agents |
+| `generate_report`, `score_targets` | — | Report Builder and Target Recommendation graphs; `execution_timeout="24h"` on a 20-slot single-replica worker. Started by a project member through the workflow trigger endpoint (§2.3). `score_targets` cannot be a cron: every run needs a user, an AOI and candidate zones |
+| `what_changed_detector`, `train_target_model`, `train_source_trust` | — | Learning-loop workflows; all three are only ever run inline (§2.4) |
+| `field_outcome_learning` | — | **Manual only** (Hatchet UI). Not scheduled, not triggerable: nothing writes `targeting.target_outcomes`, and each run appends a fresh `target_backtests` row (plus a lesson row) for every outcome in the project, so repeating it duplicates. `continuous_learning_loop` does not call it |
+| `support_replay`, `restore_workspace`, `workspace_export` | — | Diagnosis replay (dispatched `dry_run=true` only), manifest-backed restore (own-workspace `s3://workspace-exports/<ws>/` manifests only; a live restore needs `confirm_workspace_id`), per-workspace JSONL.gz export. Admin-triggered through §2.3 |
+| `lineage_walk`, `llm_incident_diagnosis_run`, `support_packet_assemble` | — | On-demand Phase 0 agents, admin-triggered through §2.3 (`llm_incident_diagnosis_run` platform-wide, the other two workspace-scoped). `routers/phase0_ops.py` also runs the last two inline, with no Laravel caller |
 
 `graph_tenant_audit` (`30 17 * * *`, a Phase 0 auditor for the Neo4j
 store removed 2026-07-28) was unregistered on 2026-09-29 (HAT-13); the
 agent module `app/agents/phase0/graph_tenant_auditor.py` is left in place,
 unscheduled.
 
-Totals: 26 workflows carry 28 cron expressions. The shutdown-job header
+Totals: 27 workflows carry 29 cron expressions (`continuous_learning_loop`
+joined on 2026-09-29). The shutdown-job header
 and the compose header still say "32 registered crons"; that count
 predates the 2026-08-23 and 2026-08-28 deletions.
 
@@ -183,8 +186,9 @@ predates the 2026-08-23 and 2026-08-28 deletions.
 |---|---|---|
 | **Upload trigger endpoints** | `POST /internal/v1/shadow/{ingest_pdf \| tiff_normalize \| ingest_zip_archive \| ingest_spatial \| ingest_tabular \| ingest_well_logs}/trigger` in `app/routers/shadow_trigger.py` → `_claim_and_dispatch`: under a per-file advisory lock it writes the `queued` `silver.ingest_progress` row BEFORE `workflow.aio_run_no_wait(payload)`, and answers `200 dispatched:false` when a non-terminal run for the key (or the caller's `run_id`) already exists, so Laravel's `retry(3, 500)` cannot double-dispatch (HAT-6/HAT-12, 2026-09-29). ZIP members get the same row-before-dispatch treatment inside `ingest_zip_archive` (HAT-4) | Laravel `UploadController` (the `ShadowRouter` is retired), gated per workspace by `app/Services/Ingestion/HatchetDispatchThrottle.php` after the 2026-06-01 burst that lost 529 files to queue-expiry cancellations |
 | **Integrations endpoint** | `POST /internal/v1/integrations/{flow}/trigger` in `app/routers/integrations_trigger.py`; per-flow JWT only (`Authorization: Bearer`, `scope=flow:<name>`), keys in `workflow.flow_registry` decrypted with `AUDIT_ENCRYPTION_KEY` | Designed for Kestra. No caller exists; the endpoint and its key machinery (`flow_jwt.py`, `flow_jwt_key_reaper`) remain live |
+| **Workflow trigger endpoint** | `POST /internal/v1/workflows/{workflow}/trigger` in `app/routers/workflow_trigger.py` (HAT-13, 2026-09-29): validates the input against the workflow's own model, then, under `scoped_connection`, refuses (404/422) any project, ticket, audit entry, workflow run or manifest prefix outside the authorised workspace before `aio_run_no_wait` | Laravel `WorkflowTriggerController`, gated by `WorkflowTriggerPolicy`: project members for `generate_report` / `score_targets` (`POST /api/v1/projects/{project}/workflows/{workflow}`); admins who belong to the workspace for `workspace_export`, `restore_workspace`, `lineage_walk`, `support_packet_assemble`, `support_replay` (`POST /api/v1/admin/workspaces/{workspace}/workflows/{workflow}`); admins for `llm_incident_diagnosis_run` (`POST /api/v1/admin/workflows/{workflow}`). 429 on an identical request within 60 s |
 | **In-process dispatch** | `aio_run_no_wait` from inside another workflow | `ingest_pdf` → `embed_pending_passages`; `stale_run_detector` → the owning `ingest_*`; `ingest_tabular` → `promote_silver_to_gold` |
-| **Engine crons** | `on_crons=` on the workflow decorator; the engine sends an empty input, so cron-fired workflows must default every field and their CEL concurrency keys must use `has()` (fixed 2026-08-21) | 26 workflows |
+| **Engine crons** | `on_crons=` on the workflow decorator; the engine sends an empty input, so cron-fired workflows must default every field and their CEL concurrency keys must use `has()` (fixed 2026-08-21) | 27 workflows |
 | **Operator** | Hatchet UI on 8889 / `hatchet-cc`, or `hatchet-admin` | ad hoc |
 
 Laravel → FastAPI calls carry `X-Service-Key` plus a short-lived HS256
@@ -333,7 +337,7 @@ What the window does to orchestration:
   **Crons that fall inside the window are not backfilled**; the engine logs
   `could not poll cron schedules` and the worker retries its heartbeat until
   the database returns.
-- The fixed-hour block at 17:00–22:00 sits outside it. Still inside:
+- The fixed-hour block at 17:00–22:30 sits outside it. Still inside:
   `index_health_check` at 06:00 and 12:00 (its 00:00 tick lands inside in PDT
   and outside in PST, and its 18:00 tick is always outside), most ticks of
   `qdrant_payload_audit` and `verbalize_page_images`, and every tick of the
@@ -385,6 +389,7 @@ What the window does to orchestration:
 | 21:30 | `answer_quality_watch` |
 | 21:45 | `enrich_passage_context` |
 | 22:00 | `model_cost_summary_run` |
+| 22:30 | `continuous_learning_loop` |
 
 The two GitHub Actions rows are the only ones the window does not apply to:
 they run on GitHub's runners, not on the ECS platform, which is why they sit

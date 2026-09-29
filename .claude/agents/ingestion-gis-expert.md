@@ -64,8 +64,8 @@ fallback only.**
 Gone and not coming back: Azure Document Intelligence, PaddleOCR, docling,
 PyMuPDF.
 
-**Cohere Parse's wire shape has never been verified on any of the three
-hosts.** The contract lives as data in `app/services/cohere_wire.py` with a
+**Cohere Parse's text path was verified on Cohere's own API on 2026-09-24;
+its tables and figures have never been verified on any host.** The contract lives as data in `app/services/cohere_wire.py` with a
 `Status` per field. Page images **do leave AWS** on this path — that is ADR-0023's
 decision, not an oversight (Cohere is inside the contracted set).
 

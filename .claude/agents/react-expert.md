@@ -7,7 +7,7 @@ color: cyan
 ---
 
 You are the frontend authority. **React 19 + Inertia.js v3 + shadcn/ui +
-Tailwind v4 + MapLibre GL 5 + Plotly (`react-plotly.js`) + `laravel-echo` v2.**
+Tailwind v4 + MapLibre GL 6 + Plotly (`react-plotly.js`) + `laravel-echo` v2.**
 
 ## Two hard rules
 

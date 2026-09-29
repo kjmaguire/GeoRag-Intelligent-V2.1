@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\V1\QueryController;
 use App\Http\Controllers\Api\V1\TrustController;
 use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Api\V1\VendorProfileController;
+use App\Http\Controllers\Api\V1\WorkflowTriggerController;
 use App\Http\Controllers\Internal\AdminSurfaceUpdatedBridgeController;
 use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
 use App\Http\Controllers\Internal\ReportBuildProgressController;
@@ -206,6 +207,26 @@ Route::prefix('v1')->group(function () {
         Route::get('audit/{workspace_id}', [PublicApiController::class, 'audit'])->where('workspace_id', '[0-9a-fA-F-]{36}');
         Route::get('usage/{workspace_id}', [PublicApiController::class, 'usage'])->where('workspace_id', '[0-9a-fA-F-]{36}');
         Route::get('webhooks', [PublicApiController::class, 'webhooks']);
+
+        // HAT-13 (2026-09-29) — triggers for the Hatchet workflows that were
+        // reachable only from the Hatchet UI. Each hands the run to FastAPI's
+        // /internal/v1/workflows/{workflow}/trigger and answers 202 with the
+        // run id. Who may pull which lever is WorkflowTriggerPolicy; see the
+        // WorkflowTriggerController docblock.
+        Route::middleware('throttle:10,1')->group(function () use ($uuid) {
+            Route::post('projects/{project}/workflows/{workflow}', [WorkflowTriggerController::class, 'project'])
+                ->where(['project' => $uuid, 'workflow' => 'generate_report|score_targets'])
+                ->name('api.projects.workflows.trigger');
+            Route::post('admin/workspaces/{workspace}/workflows/{workflow}', [WorkflowTriggerController::class, 'workspace'])
+                ->where([
+                    'workspace' => $uuid,
+                    'workflow' => 'workspace_export|restore_workspace|lineage_walk|support_packet_assemble|support_replay',
+                ])
+                ->name('api.admin.workspaces.workflows.trigger');
+            Route::post('admin/workflows/{workflow}', [WorkflowTriggerController::class, 'platform'])
+                ->where('workflow', 'llm_incident_diagnosis_run')
+                ->name('api.admin.workflows.trigger');
+        });
 
         // Public-geoscience entity references remain part of cited-answer drill-in.
         Route::prefix('public-geoscience')->group(function () {

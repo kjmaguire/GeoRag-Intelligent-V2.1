@@ -359,7 +359,7 @@ locals {
     # the only topology that did not. The worker raises out of
     # admin.put_workflow before its SDK health server on :8001 ever binds, so
     # the container health check cannot pass and ECS replaces the task
-    # forever — 51 workflows and every cron simply do not exist, while
+    # forever — 50 workflows and every cron simply do not exist, while
     # nothing in alerts.tf watches for it.
     #
     # In common_environment rather than on the two clients: it is inert
@@ -451,8 +451,9 @@ locals {
     # PDF_PARSE_MODE=all every page is a billed page, so this is the only
     # per-document cost bound; pages past it keep their text layer (or go to
     # tesseract) and the run lands in `partial`, which the UI shows. 300 is
-    # the code default and .env.production.example's value. The fleet-wide
-    # signal is the cohere-parse-pages alarm in alerts.tf.
+    # the code default and .env.production.example's value. There is no
+    # fleet-wide page alarm by default (cohere_parse_daily_page_alarm = 0,
+    # Kyle 2026-09-29); the metric is still logged.
     OCR_MAX_PAGES_PER_DOC = 300
 
     # SPLADE++ has no managed equivalent anywhere. This is what makes the
@@ -715,7 +716,7 @@ locals {
         # The Hatchet engine had NO configuration here at all — it got the
         # common set and nothing else, and hatchet-lite reads none of that.
         # It would have failed at boot on the missing DATABASE_URL (supplied
-        # through `secrets`), taking all 51 registered workflows with it:
+        # through `secrets`), taking all 50 registered workflows with it:
         # every ingestion path and every cron in the platform.
         #
         # These are docker-compose.yml's hatchet-lite values, with the two

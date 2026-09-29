@@ -237,9 +237,9 @@ function FootprintMap({
         if (!containerRef.current || overall === null) return;
         let cancelled = false;
 
-        import('maplibre-gl').then((ml) => {
+        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(([maplibregl, { configureMaplibreWorker }]) => {
             if (cancelled || !containerRef.current) return;
-            const maplibregl = ml.default ?? ml;
+            configureMaplibreWorker(maplibregl);
 
             if (mapRef.current?.remove) {
                 mapRef.current.remove();

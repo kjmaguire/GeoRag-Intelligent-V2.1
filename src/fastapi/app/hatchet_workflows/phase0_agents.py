@@ -20,11 +20,17 @@ actually specified, and those survived intact.
     model_cost_summary_run          0 22 * * *     daily   22:00 UTC
     index_health_check              0 */6 * * *    every 6 h
 
-On-demand only (no cron — triggered via FastAPI route or manual run):
+On-demand only, no cron. Since 2026-09-29 (HAT-13) Laravel dispatches all
+three through FastAPI ``POST /internal/v1/workflows/{name}/trigger``
+(``app/routers/workflow_trigger.py``):
 
-    lineage_walk
-    llm_incident_diagnosis_run
-    support_packet_assemble
+    lineage_walk                admin, workspace-scoped
+    llm_incident_diagnosis_run  admin, platform-wide
+    support_packet_assemble     admin, workspace-scoped
+
+``app/routers/phase0_ops.py`` still runs the last two INLINE (no Hatchet run)
+at ``/api/v1/incidents/diagnose`` and ``/api/v1/support/packets/assemble``;
+nothing in Laravel calls those.
 
 Removed 2026-09-29 (HAT-13): ``graph_tenant_audit``, the 17:30 UTC cron
 wrapping ``app.agents.phase0.graph_tenant_auditor``. It audited Neo4j,

@@ -1,7 +1,20 @@
 """field_outcome_learning Hatchet workflow (§9.11 / §21.4) — doc-phase 184.
 
-Graduated from skeleton (doc-phase 94). Triggered when new drilling
-outcomes import into the workspace. The workflow:
+Graduated from skeleton (doc-phase 94).
+
+MANUAL ONLY: start it from the Hatchet UI. Nothing schedules or dispatches
+it, and that is deliberate (HAT-13, 2026-09-29). This docstring used to say
+it was "triggered when new drilling outcomes import into the workspace", but
+no outcome import exists: nothing in the repo writes
+``targeting.target_outcomes``. It is not a cron, for two reasons. It needs a
+workspace and project, and a cron tick sends no input. And it is not safe to
+repeat: each run inserts a fresh ``targeting.target_backtests`` row per model
+version, plus a lesson row, for EVERY outcome in the project, so a nightly
+run would duplicate them. ``continuous_learning_loop`` does not call it.
+Revisit when an outcome importer exists and the fold is keyed on unprocessed
+outcomes.
+
+The workflow:
 
 1. Walks each input `targeting.target_outcomes` row
 2. Matches to its parent `targeting.target_recommendations` via

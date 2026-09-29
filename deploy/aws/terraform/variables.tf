@@ -490,17 +490,15 @@ variable "cohere_parse_daily_page_alarm" {
   description = <<-EOT
     Pages sent to Cohere Parse in 24 hours above which alerts.tf emails
     (`cohere-parse-pages`). 0 disables the alarm; the metric is still
-    recorded.
+    recorded (COHERE_PARSE_PAGES_BILLED in /ecs/georag).
 
-    In PAGES, because this repository does not hold Cohere's per-page price
-    and a guessed dollar figure would be silently wrong. Multiply the price
-    on the account by this number to get the day's spend it represents. The
-    default, 3000, is ten documents at the OCR_MAX_PAGES_PER_DOC ceiling of
-    300 (config.tf); a bulk ingest of historical reports crosses it on the
-    first day, which is the point.
+    Off by default: Kyle decided on 2026-09-29 not to have a Parse page
+    alarm. In PAGES, because this repository does not hold Cohere's
+    per-page price; to turn it on, pick a page count (e.g. 3000 = ten
+    documents at the OCR_MAX_PAGES_PER_DOC ceiling of 300 in config.tf).
   EOT
   type        = number
-  default     = 3000
+  default     = 0
 
   validation {
     condition     = var.cohere_parse_daily_page_alarm >= 0

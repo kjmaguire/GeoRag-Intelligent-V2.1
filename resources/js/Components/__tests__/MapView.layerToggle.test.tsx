@@ -106,15 +106,14 @@ vi.mock('maplibre-gl', () => {
         this.options   = {};
     }
 
+    // maplibre-gl 6 is ESM-only: named exports, no default export.
     return {
-        default: {
-            Map:               MapMock,
-            NavigationControl: NavCtrl,
-            FullscreenControl: FullscreenCtrl,
-            ScaleControl:      ScaleCtrl,
-            Marker:            MarkerMock,
-            Popup:             PopupMock,
-        },
+        Map:               MapMock,
+        NavigationControl: NavCtrl,
+        FullscreenControl: FullscreenCtrl,
+        ScaleControl:      ScaleCtrl,
+        Marker:            MarkerMock,
+        Popup:             PopupMock,
     };
 });
 

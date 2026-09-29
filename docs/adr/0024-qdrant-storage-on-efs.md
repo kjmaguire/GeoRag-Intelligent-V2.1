@@ -1,8 +1,8 @@
 # ADR 0024: Qdrant storage stays on EFS for now; Qdrant leaves Fargate Spot
 
 - **Date**: 2026-09-29
-- **Status**: Proposed. The Terraform half is written; the storage decision is
-  Kyle's.
+- **Status**: Accepted (2026-09-29). Kyle chose to keep Qdrant's storage on
+  EFS; see "Resolution" at the end.
 - **Deciders**: Kyle Maguire (SME)
 - **Relates to**: ADR-0022 (AWS as the production cloud), audit finding AWS-14
 
@@ -93,5 +93,14 @@ and that is the check to reuse.
   guidance attaches to it. The risk now covers only the nightly stop, not
   Spot reclaims at random times, and the nightly stop now has a 120 s drain.
 - There is a ~$9–16/month line item, estimated above.
-- This ADR stays **Proposed** until the vendor guidance is verified and an
-  option from the table is chosen or explicitly declined.
+- This ADR stayed **Proposed** until an option from the table was chosen.
+
+## Resolution (2026-09-29)
+
+Kyle: "Keep it there." Qdrant's storage stays on EFS, with the four
+mitigations above. Options B, C and D are declined for now. Option A's
+scheduled snapshot is **not built**: Qdrant still has no backup of its own
+beyond `upgrade-qdrant.sh`'s snapshots, and recovery from a corrupted
+collection is a re-embed from `silver.document_passages`. Adding the
+snapshot cron is the cheapest way to close that gap if it ever matters.
+The vendor-guidance claim in "Context" is still unverified.

@@ -88,7 +88,8 @@ vi.mock('maplibre-gl', () => {
         this.remove = vi.fn();
     }
     const mod = { Map: MapMock, NavigationControl: Control, ScaleControl: Control, Popup: PopupMock };
-    return { default: mod, ...mod };
+    // maplibre-gl 6 is ESM-only: named exports, no default export.
+    return { ...mod };
 });
 vi.mock('maplibre-gl/dist/maplibre-gl.css', () => ({}));
 vi.mock('@/Layouts/AppLayout', () => ({ default: ({ children }: { children: ReactNode }) => <div>{children}</div> }));

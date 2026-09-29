@@ -414,7 +414,12 @@ locals {
     # instead have killed a perfectly healthy one every few minutes, and the
     # symptom (a worker that keeps restarting) looks like the hang it was
     # meant to detect.
-    hatchet-worker  = ["CMD", "curl", "-f", "http://localhost:8001/health"]
+    hatchet-worker = ["CMD", "curl", "-f", "http://localhost:8001/health"]
+    # fastapi stays on liveness (/health), not /ready (Kyle, 2026-09-29).
+    # /ready includes the embedder's health; a Bedrock blip would then
+    # fail the check and ECS would kill a healthy process, turning a
+    # dependency outage into a restart loop. Readiness is reported, not
+    # enforced by the container check.
     fastapi         = ["CMD", "curl", "-f", "http://localhost:8000/health"]
     sparse          = ["CMD", "curl", "-f", "http://localhost:8000/health"]
     laravel-octane  = ["CMD", "curl", "-f", "http://localhost:80/up"]

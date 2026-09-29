@@ -235,9 +235,9 @@ export function WorkspaceMap({
             projectExtent,
         );
 
-        import('maplibre-gl').then((ml) => {
+        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(([maplibregl, { configureMaplibreWorker }]) => {
             if (cancelled || !containerRef.current) return;
-            const maplibregl = ml.default ?? ml;
+            configureMaplibreWorker(maplibregl);
 
             if (mapRef.current?.remove) {
                 mapRef.current.remove();
@@ -749,7 +749,7 @@ export function WorkspaceMap({
                         console.warn('[workspace-map] source has no getClusterLeaves — source is not clustered');
                         return;
                     }
-                    // MapLibre v5 returns a Promise here (Mapbox GL JS used a
+                    // MapLibre (v5+) returns a Promise here (Mapbox GL JS used a
                     // callback). Using the callback signature silently
                     // produced no result.
                     src.getClusterLeaves(clusterId, 500, 0)

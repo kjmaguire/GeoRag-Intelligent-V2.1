@@ -22,6 +22,13 @@ What's live in this graduation:
   - Composes `diff_summary` from chain outcomes
   - UPDATEs the replay_runs row with status='completed' + completed_at
   - Emits a `support.replay.completed` audit anchor
+
+Trigger. Since 2026-09-29 (HAT-13) an admin who belongs to the ticket's
+workspace starts it with Laravel
+``POST /api/v1/admin/workspaces/{workspace}/workflows/support_replay``, which
+calls FastAPI ``POST /internal/v1/workflows/support_replay/trigger``. That
+route checks the ticket belongs to the workspace and only dispatches
+``dry_run=true``, because no consent flow exists for a live replay. No cron.
 """
 from __future__ import annotations
 

@@ -73,7 +73,7 @@ The repo is a single monorepo containing:
   stack (Ch 05).
 - A **React 19 + Inertia 3** frontend ([resources/js/Pages/](../../../resources/js/Pages/),
   [package.json](../../../package.json)) with shadcn/ui, Tailwind v4,
-  MapLibre GL 5 and Plotly. React Flow was removed 2026-08-28; there is no
+  MapLibre GL 6 and Plotly. React Flow was removed 2026-08-28; there is no
   graph view.
 - A row of **data stores**: PostgreSQL 18 + PostGIS 3.6 behind PgBouncer
   (transaction mode), Qdrant 1.19 for dense + sparse vector retrieval, Redis
