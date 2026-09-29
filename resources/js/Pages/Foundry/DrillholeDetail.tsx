@@ -5,6 +5,8 @@ import { PageHeader, Card, Pill, Stat, EmptyState } from '@/Components/Foundry/p
 import { DataQualityBadge } from '@/Components/Foundry/DataQualityBadge';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import DataQualityFlagsBadge from '@/Components/DataQualityFlagsBadge';
+import DrillholeStripLog from '@/Components/Foundry/DrillholeStripLog';
+import { EMPTY_TRACKS, tracksFromIntervals, type StripTracks } from '@/lib/stripLog';
 
 /**
  * Foundry DrillholeDetail — §5.12 anchored-scroll per-hole page.
@@ -13,8 +15,10 @@ import DataQualityFlagsBadge from '@/Components/DataQualityFlagsBadge';
  * Assays / Structures / Cross Section). Designed for print-to-PDF as a
  * single report; tabs were rejected in the kickoff decision.
  *
- * All visuals read pre-computed gold rows. When a section is empty the
- * page renders an EmptyState explaining which gold asset hasn't run.
+ * The strip log draws one column per kind of logging - lithology (coloured by
+ * code, description on hover and click), alteration, mineralization and
+ * samples - from `strip_tracks`. When a section is empty the page renders an
+ * EmptyState saying what to upload.
  *
  * 2026-08-17 — restored after the 2026-07-27 reader-core trim. Dropped the
  * Visual QA panel (qa prop, QaIssue/QaPayload types, issuesForSection/
@@ -36,6 +40,11 @@ interface Collar {
     total_depth_m?: number | null;
     azimuth_deg?: number | null;
     dip_deg?: number | null;
+    // silver.collars' own column names - the controller passes the row through,
+    // so these are what actually arrive; the *_m / *_deg spellings above never did.
+    total_depth?: number | null;
+    azimuth?: number | null;
+    dip?: number | null;
     // CC-01 Item 2 — spatial uncertainty + CRS provenance.
     spatial_uncertainty_m?: number | null;
     crs_confidence?: number | null;
@@ -87,6 +96,7 @@ interface Props {
     project: { project_id: string; project_name: string; slug: string };
     collar: Collar;
     intervals: Interval[];
+    strip_tracks?: StripTracks;
     assays: AssayRow[];
     structures: StructureRow[];
     cross_sections: CrossSectionRow[];
@@ -104,7 +114,7 @@ const SECTIONS = [
     { id: 'cross-section', label: 'Cross Section' },
 ];
 
-export default function DrillholeDetail({ project, collar, intervals, assays, structures, cross_sections, lithology_quality, data_quality_flags }: Props) {
+export default function DrillholeDetail({ project, collar, intervals, strip_tracks, assays, structures, cross_sections, lithology_quality, data_quality_flags }: Props) {
     // Reliability spec Phase 2b — drill-hole-level data depends on
     // silver.collars + silver.intervals + silver.assays. Refetch the
     // relevant Inertia props if this project saw collars/assays move.
@@ -121,12 +131,18 @@ export default function DrillholeDetail({ project, collar, intervals, assays, st
             || t.includes('curves')
         ) {
             router.reload({
-                only: ['collar', 'intervals', 'assays', 'structures', 'cross_sections', 'lithology_quality', 'data_quality_flags'],
+                only: ['collar', 'intervals', 'strip_tracks', 'assays', 'structures', 'cross_sections', 'lithology_quality', 'data_quality_flags'],
             });
         }
     });
 
-    const maxDepth = collar.total_depth_m ?? Math.max(...intervals.map(i => i.depth_to), 100);
+    const tracks: StripTracks = strip_tracks ?? (intervals.length ? tracksFromIntervals(intervals) : EMPTY_TRACKS);
+    const totalDepth = collar.total_depth_m ?? collar.total_depth ?? null;
+    const azimuth = collar.azimuth_deg ?? collar.azimuth ?? null;
+    const dip = collar.dip_deg ?? collar.dip ?? null;
+    const sampleWindows = intervals.filter((i) => i.interval_kind === 'sample_window');
+    const hasStrip = tracks.lithology.length + tracks.alteration.length + tracks.mineralization.length + sampleWindows.length > 0;
+    const maxDepth = totalDepth && totalDepth > 0 ? totalDepth : Math.max(...intervals.map((i) => Number(i.depth_to)), 100);
 
     return (
         <AppLayout>
@@ -137,7 +153,7 @@ export default function DrillholeDetail({ project, collar, intervals, assays, st
                     <PageHeader
                         eyebrow={`HOLE · ${project.project_name.toUpperCase()}`}
                         title={collar.hole_id}
-                        sub={`${(collar.total_depth_m ?? 0).toFixed(1)} m total depth · ${collar.azimuth_deg ?? '—'}° az · ${collar.dip_deg ?? '—'}° dip`}
+                        sub={`${Number(totalDepth ?? 0).toFixed(1)} m total depth · ${azimuth ?? '—'}° az · ${dip ?? '—'}° dip`}
                         actions={
                             <div className="flex items-center gap-2">
                                 {/* Plan §6a — data-quality flags badge.
@@ -193,15 +209,15 @@ export default function DrillholeDetail({ project, collar, intervals, assays, st
                 <section id="strip-log" className="px-8 py-6">
                     <Card
                         eyebrow="STRIP LOG"
-                        title={`Lithology + assay overlay · ${intervals.length} intervals`}
+                        title={`${tracks.lithology.length} lithology · ${tracks.alteration.length} alteration · ${tracks.mineralization.length} mineralization · ${sampleWindows.length} sample intervals`}
                     >
-                        {intervals.length === 0 ? (
+                        {!hasStrip ? (
                             <EmptyState
-                                title="No strip-log intervals yet."
-                                detail="Materialise gold.drillhole_intervals_visual via Dagster to populate this section."
+                                title="Nothing logged for this hole yet."
+                                detail="Upload a geology log for this hole (CSV, Excel, dBASE or Access) with hole, from and to columns plus lithology - and optionally alteration and mineral columns - and the strip log fills in. Sample intervals appear once an assay file is loaded."
                             />
                         ) : (
-                            <StripLog intervals={intervals} maxDepth={maxDepth} />
+                            <DrillholeStripLog tracks={tracks} sampleWindows={sampleWindows} maxDepth={maxDepth} />
                         )}
                     </Card>
                 </section>
@@ -229,7 +245,7 @@ export default function DrillholeDetail({ project, collar, intervals, assays, st
                         {structures.length === 0 ? (
                             <EmptyState
                                 title="No structure measurements yet."
-                                detail="Materialise gold.structure_measurements_visual via Dagster (equal-area projection)."
+                                detail="Upload a structure table (depth, dip and dip direction, or alpha and beta) and the stereonet fills in."
                             />
                         ) : (
                             <Stereonet points={structures} />
@@ -247,7 +263,7 @@ export default function DrillholeDetail({ project, collar, intervals, assays, st
                             <div className="px-4 py-6">
                                 <EmptyState
                                     title="No cross-section panels yet."
-                                    detail="Materialise gold.cross_section_panels with this hole inside the tolerance corridor."
+                                    detail="Cross-section panels appear once a section line is drawn through this hole in the Workspace SECTION view."
                                 />
                             </div>
                         ) : (
@@ -321,42 +337,6 @@ function SpatialConfidenceBadge({ collar }: { collar: Collar }) {
                 </span>
             )}
         </span>
-    );
-}
-
-function StripLog({ intervals, maxDepth }: { intervals: Interval[]; maxDepth: number }) {
-    const totalDepth = maxDepth || 1;
-    return (
-        <div className="relative" style={{ height: 400 }}>
-            <svg viewBox="0 0 200 1000" preserveAspectRatio="none" className="w-full h-full">
-                {intervals.map((iv, i) => {
-                    const yStart = (iv.depth_from / totalDepth) * 1000;
-                    const height = ((iv.depth_to - iv.depth_from) / totalDepth) * 1000;
-                    return (
-                        <g key={i}>
-                            <rect
-                                x={0}
-                                y={yStart}
-                                width={120}
-                                height={height}
-                                fill={iv.color_hint ?? '#666'}
-                                stroke="rgba(0,0,0,0.15)"
-                                strokeWidth={0.5}
-                            />
-                            <text
-                                x={130}
-                                y={yStart + height / 2 + 4}
-                                fontSize={10}
-                                fontFamily="ui-monospace, monospace"
-                                fill="var(--fg-2)"
-                            >
-                                {iv.lithology_code ?? iv.interval_kind}
-                            </text>
-                        </g>
-                    );
-                })}
-            </svg>
-        </div>
     );
 }
 

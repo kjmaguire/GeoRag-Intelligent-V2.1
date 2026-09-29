@@ -103,18 +103,23 @@ LITHOLOGY_ALIASES: dict[str, list[str]] = {
     "to_depth": TO_DEPTH_ALIASES,
     "lithology_code": [
         "Lithology", "LithCode", "Lith_Code", "Lith", "Litho", "RockCode",
-        "Rock_Code", "RockType", "Rock_Type", "Unit", "Formation",
+        "Rock_Code", "RockType", "Rock_Type", "Rock", "Rock_Unit", "Lith_Type",
+        "Lith_Unit", "Geo_Code", "GeoCode", "Geology_Code", "Unit", "Formation",
     ],
     "lithology_description": [
         "Description", "LithDesc", "Lithology_Description", "Lith_Description",
-        "Desc", "Log_Description", "Comments", "Remarks", "Notes",
+        "Desc", "Log_Description", "Geology_Description", "Geol_Desc",
+        "Comments", "Comment", "Remarks", "Notes",
     ],
     "grain_size": ["GrainSize", "Grain_Size", "Grain", "Texture"],
-    "color": ["Color", "Colour"],
+    "color": ["Color", "Colour", "Rock_Colour", "Rock_Color"],
     "hardness": ["Hardness", "Strength"],
     "rqd": ["RQD", "RockQualityDesignation", "RQD_Pct"],
-    "recovery": ["Recovery", "CoreRecovery", "Core_Recovery", "Rec"],
-    "weathering": ["Weathering", "Weathered", "Alteration_Weathering"],
+    "recovery": [
+        "Recovery", "CoreRecovery", "Core_Recovery", "Core_Rec", "Rec", "Recov",
+        "TCR",
+    ],
+    "weathering": ["Weathering", "Weathered", "Weath", "Alteration_Weathering"],
 }
 
 SAMPLE_ALIASES: dict[str, list[str]] = {
@@ -191,6 +196,62 @@ STRUCTURE_ALIASES: dict[str, list[str]] = {
     ],
 }
 
+#: Alteration (silver.alteration): one alteration over one interval.
+#:
+#: Canonical names are the silver.alteration COLUMNS (alteration_type,
+#: intensity, minerals, notes). The spellings below are the COMMON ones, kept
+#: so the sheet classifier, the mapping UI and the docs share one vocabulary;
+#: the parser reads the full family - numbered slots (Alt1/Alt2, Alt1_Int) and
+#: the rules that keep ``Mineral1`` and ``Mineral1_Pct`` apart - through
+#: ``_geology_columns``, which a plain alias table cannot express (see there).
+#:
+#: Only the type column is evidence. Intensity, minerals and notes are read
+#: once the table is known to be an alteration table.
+ALTERATION_ALIASES: dict[str, list[str]] = {
+    "hole_id": HOLE_ID_ALIASES,
+    "from_depth": FROM_DEPTH_ALIASES,
+    "to_depth": TO_DEPTH_ALIASES,
+    "alteration_type": [
+        "Alteration", "Alt", "Alteration_Type", "Alt_Type", "Alteration_Code",
+        "Alt_Code", "Alt1", "Alteration_1",
+    ],
+    "intensity": [
+        "Alt_Intensity", "Alteration_Intensity", "Alt_Int", "Alteration_Int",
+    ],
+    "minerals": ["Alt_Minerals", "Alteration_Minerals", "Alt_Mineralogy"],
+    "notes": [
+        "Alt_Comments", "Alteration_Comments", "Alt_Notes", "Alteration_Notes",
+        "Alt_Description", "Alteration_Description",
+    ],
+}
+
+#: Mineralization (silver.mineralization): one mineral over one interval.
+#: Canonical names are the silver.mineralization COLUMNS (mineral,
+#: abundance_pct, form, grain_size, notes). See ALTERATION_ALIASES for why the
+#: lists are documentation rather than the whole matching rule.
+MINERALIZATION_ALIASES: dict[str, list[str]] = {
+    "hole_id": HOLE_ID_ALIASES,
+    "from_depth": FROM_DEPTH_ALIASES,
+    "to_depth": TO_DEPTH_ALIASES,
+    "mineral": [
+        "Mineral", "Mineral1", "Mineral_1", "Min1", "Min_1", "Mineral_Type",
+        "Mineralization", "Mineralisation",
+    ],
+    "abundance_pct": [
+        "Mineral_Pct", "Mineral1_Pct", "Min1_Pct", "Min1_%", "Mineral_%",
+        "Sulphide%", "Sulfide_Pct",
+    ],
+    "form": [
+        "Min_Style", "Mineral_Style", "Mineralization_Style", "Min_Form",
+        "Mineral_Habit",
+    ],
+    "grain_size": ["Min1_Grain_Size", "Mineral_Grain_Size", "Min_Grain"],
+    "notes": [
+        "Min_Comments", "Mineral_Comments", "Mineralization_Comments",
+        "Mineralization_Notes", "Min_Description",
+    ],
+}
+
 #: A collar needs an identity and a position. Elevation was required until
 #: 2026-08-24 and should not have been: ``silver.collars.elevation`` is
 #: nullable, the writer already reads it with ``.get()``, and plenty of
@@ -210,20 +271,35 @@ SAMPLE_REQUIRED: frozenset[str] = frozenset(
 #: many oriented-core logs carry only depth/alpha/beta/dip/dip-dir, and the
 #: parser stores 'other' (and says so) rather than refusing the measurement.
 STRUCTURE_REQUIRED: frozenset[str] = frozenset({"hole_id", "depth"})
+#: An alteration is an interval with a named type; a mineralization is an
+#: interval with a named mineral. silver.alteration.alteration_type and
+#: silver.mineralization.mineral are NOT NULL, and a row with no name is not
+#: an observation.
+ALTERATION_REQUIRED: frozenset[str] = frozenset(
+    {"hole_id", "from_depth", "to_depth", "alteration_type"}
+)
+MINERALIZATION_REQUIRED: frozenset[str] = frozenset(
+    {"hole_id", "from_depth", "to_depth", "mineral"}
+)
 
 
 def schemas() -> dict[str, tuple[dict[str, list[str]], frozenset[str]]]:
-    """``{sheet_type: (aliases, required)}`` for the five drill layouts.
+    """``{sheet_type: (aliases, required)}`` for the seven drill layouts.
 
     Order matters to the classifier, which breaks ties in favour of the
     earlier entry: ``structure`` is last so that survey keeps priority
-    wherever the two are genuinely ambiguous.
+    wherever the two are genuinely ambiguous, and ``alteration`` /
+    ``mineralization`` come after lithology and sample so that a lithology log
+    that ALSO carries alteration or mineralization columns stays a lithology
+    log (the parsers then read those columns as companions of the same rows).
     """
     return {
         "collar": (COLLAR_ALIASES, COLLAR_REQUIRED),
         "survey": (SURVEY_ALIASES, SURVEY_REQUIRED),
         "lithology": (LITHOLOGY_ALIASES, LITHOLOGY_REQUIRED),
         "sample": (SAMPLE_ALIASES, SAMPLE_REQUIRED),
+        "alteration": (ALTERATION_ALIASES, ALTERATION_REQUIRED),
+        "mineralization": (MINERALIZATION_ALIASES, MINERALIZATION_REQUIRED),
         "structure": (STRUCTURE_ALIASES, STRUCTURE_REQUIRED),
     }
 

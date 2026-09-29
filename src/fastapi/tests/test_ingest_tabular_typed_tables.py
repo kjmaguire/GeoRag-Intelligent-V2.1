@@ -72,6 +72,7 @@ class _Conn:
             "silver.collars", "silver.surveys", "silver.lithology_logs",
             "silver.samples", "silver.structure", "silver.attribute_tables",
             "silver.geochemistry", "silver.assays_v2",
+            "silver.alteration", "silver.mineralization",
         ):
             if f"INTO {name}" in sql:
                 return name

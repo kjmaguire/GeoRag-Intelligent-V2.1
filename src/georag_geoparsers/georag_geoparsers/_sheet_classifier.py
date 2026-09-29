@@ -1,8 +1,9 @@
 """Sheet-type classifier for multi-sheet Excel workbooks.
 
 Given a sheet's header row, decides whether the sheet looks like
-``collar`` / ``survey`` / ``lithology`` / ``sample`` / ``structure`` data — or
-``unknown`` if no schema matches confidently.
+``collar`` / ``survey`` / ``lithology`` / ``sample`` / ``structure`` /
+``alteration`` / ``mineralization`` data — or ``unknown`` if no schema matches
+confidently.
 
 Used by ``silver_xlsx`` to auto-dispatch each sheet of a multi-sheet
 workbook to the right CSV parser, fixing the silent-data-loss bug where
@@ -170,6 +171,16 @@ def _structure_evidence(
     return verdict
 
 
+#: The two geology-log families read by ``_geology_columns``. Neither is ever
+#: chosen on coverage alone (see ``classify_sheet_type``).
+_KEY_FIELDS: frozenset[str] = frozenset({"hole_id", "from_depth", "to_depth"})
+
+_GEOLOGY_FAMILY_TYPES: dict[str, tuple[str, str]] = {
+    "alteration": ("alteration", "alteration_type"),
+    "mineralization": ("mineralization", "mineral"),
+}
+
+
 def classify_sheet_type(
     headers: list[str],
     *,
@@ -201,9 +212,18 @@ def classify_sheet_type(
     -------
     (sheet_type, confidence) : tuple[str, float]
         ``sheet_type`` is one of ``collar`` / ``survey`` / ``lithology`` / ``structure``
-        / ``sample`` / ``unknown``. ``confidence`` is the fraction of
+        / ``sample`` / ``alteration`` / ``mineralization`` / ``unknown``. ``confidence`` is the fraction of
         the winning type's REQUIRED_FIELDS that were matched — 0.0 when
         the result is ``unknown``.
+
+    ``alteration`` and ``mineralization`` need EXPLICIT evidence - a column
+    that names the family (``Alteration``, ``Alt_Type``, ``Mineral1``,
+    ``Mineralization``, ``Sulphide%``); an intensity, a percentage or a
+    ``Comments`` column is what many tables have and proves nothing. They also
+    never displace another type: a table with a lithology code AND alteration
+    columns is a lithology log (the parsers read the alteration columns of the
+    same rows as companions), and only a table with no other reading becomes an
+    alteration or mineralization table of its own.
     """
     if not headers:
         return ("unknown", 0.0)
@@ -230,11 +250,31 @@ def classify_sheet_type(
         user_fields = (column_map or {}).get(sheet_type) or {}
         # Track which canonical fields matched any alias in the headers.
         matched_canonicals: set[str] = set()
+        family_entry = _GEOLOGY_FAMILY_TYPES.get(sheet_type)
         for canonical, alias_list in aliases.items():
+            if family_entry is not None and canonical not in _KEY_FIELDS:
+                # Alteration / mineralization columns are read by TOKEN
+                # (_geology_columns), not by alias skeleton: the skeleton of
+                # "Min1_%" is "min1", the same as the mineral-name column
+                # "Min1", so alias matching would call a percentage column a
+                # mineral column and classify a table on it.
+                continue
             named = user_fields.get(canonical)
             extra = [named] if isinstance(named, str) and named.strip() else []
             if headers_lower & _alias_skeletons(canonical, [*extra, *alias_list]):
                 matched_canonicals.add(canonical)
+
+        if family_entry is not None:
+            from georag_geoparsers._geology_columns import has_family_evidence
+
+            family, type_field = family_entry
+            named_type = user_fields.get(type_field)
+            user_named = (
+                isinstance(named_type, str) and named_type.strip()
+                and _normalize_header(named_type) in headers_lower
+            )
+            if user_named or has_family_evidence(list(headers), family):
+                matched_canonicals.add(type_field)
 
         required_matched = matched_canonicals & set(required)
         coverage = len(required_matched) / max(1, len(required))
@@ -245,6 +285,15 @@ def classify_sheet_type(
         # sheet, so the lock must not be able to override this.
         if _IDENTITY_FIELD in required and _IDENTITY_FIELD not in matched_canonicals:
             continue
+
+        # Alteration / mineralization: explicit evidence only, and never a
+        # tie-break win. Anything already classified keeps its type at equal
+        # coverage (a lithology log with an Alteration column stays lithology).
+        if family_entry is not None:
+            if family_entry[1] not in matched_canonicals:
+                continue
+            if best_type != "unknown" and coverage <= best_coverage:
+                continue
 
         # Structure shares hole + depth + dip (+ azimuth) with survey, so
         # coverage alone can never tell them apart. It is a candidate only

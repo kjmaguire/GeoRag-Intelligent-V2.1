@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { DownholeMultiLog, LithologyStripColumn, type LithologyInterval } from '@/Components/Foundry/Charts';
+import type { StripAlterationBand, StripMineralBand } from '@/lib/stripLog';
 import { formatU3O8Pct } from '@/lib/grade';
 
 interface HolePayload {
@@ -19,6 +20,8 @@ interface HolePayload {
     }>;
     log_depth_max: number;
     lithology_intervals: LithologyInterval[];
+    alteration_intervals?: StripAlterationBand[];
+    mineralization_intervals?: StripMineralBand[];
     ore_bands: number;
     ore_thickness_m: number;
     mean_u3o8_pct: number | null;
@@ -251,10 +254,12 @@ function HoleColumn({ payload, depthMax, chartH }: { payload: HolePayload; depth
             <div className="shrink-0">
                 <LithologyStripColumn
                     intervals={payload.lithology_intervals}
+                    alteration={payload.alteration_intervals}
+                    mineralization={payload.mineralization_intervals}
                     holeId={payload.hole_id}
                     depthMax={depthMax}
                     height={chartH}
-                    width={360}
+                    width={payload.alteration_intervals?.length || payload.mineralization_intervals?.length ? 500 : 360}
                 />
             </div>
         </div>

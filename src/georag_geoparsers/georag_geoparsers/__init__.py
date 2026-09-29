@@ -53,17 +53,21 @@ tree importing from here) is the right end state and should happen the moment
 anyone touches Dagster again.
 """
 
+from georag_geoparsers.csv_alteration import parse_csv_alteration
 from georag_geoparsers.csv_collar import parse_csv_collars
 from georag_geoparsers.csv_geochronology import parse_csv_geochronology
 from georag_geoparsers.csv_lithology import parse_csv_lithology
+from georag_geoparsers.csv_mineralization import parse_csv_mineralization
 from georag_geoparsers.csv_sample import parse_csv_samples
 from georag_geoparsers.csv_structure import parse_csv_structures
 from georag_geoparsers.csv_survey import parse_csv_surveys
 
 __all__ = [
+    "parse_csv_alteration",
     "parse_csv_collars",
     "parse_csv_geochronology",
     "parse_csv_lithology",
+    "parse_csv_mineralization",
     "parse_csv_samples",
     "parse_csv_structures",
     "parse_csv_surveys",

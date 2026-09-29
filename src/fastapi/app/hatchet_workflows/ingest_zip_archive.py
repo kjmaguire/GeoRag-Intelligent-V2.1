@@ -263,8 +263,15 @@ _build_dsn = build_dsn
 
 #: Tables that FK to a collar. A member that classifies to these ONLY has
 #: nothing to write until its collars exist. ``structure`` is one: its rows
-#: resolve to a collar by hole id exactly like an interval table's.
-_INTERVAL_SHEET_TYPES = frozenset({"survey", "lithology", "sample", "structure"})
+#: resolve to a collar by hole id exactly like an interval table's. So are
+#: ``alteration`` and ``mineralization`` (silver.alteration /
+#: silver.mineralization): a member that is a standalone alteration or
+#: mineralization log waits for its collars like a lithology log does. (A
+#: lithology log that merely CARRIES those columns is already a lithology
+#: member, so it needs no rule of its own.)
+_INTERVAL_SHEET_TYPES = frozenset({
+    "survey", "lithology", "sample", "structure", "alteration", "mineralization",
+})
 _WRITE_SHEET_TYPES = frozenset({"collar"}) | _INTERVAL_SHEET_TYPES
 
 _PHASE_PRODUCERS = 1
@@ -405,7 +412,7 @@ async def _await_runs(
 
 
 def _sniff_sheet_types(path: Path, ext: str) -> set[str] | None:
-    """Which drill tables (collar/survey/lithology/sample/structure) a member holds.
+    """Which drill tables (collar/survey/lithology/sample/structure/alteration/mineralization) a member holds.
 
     Uses the classifiers ingest_tabular itself uses, so the phase a member is
     put in and the table it is later written to cannot disagree. Returns None

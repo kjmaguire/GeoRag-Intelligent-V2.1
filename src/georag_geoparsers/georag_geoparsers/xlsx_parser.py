@@ -42,7 +42,10 @@ logger = logging.getLogger(__name__)
 PARSER_VERSION = "1.2.0"  # 2026-05-23 — added enumerate_sheets for multi-sheet auto-dispatch
 
 # Supported sheet types map directly to the existing CSV parsers.
-SheetType = Literal["collar", "survey", "lithology", "sample", "structure"]
+SheetType = Literal[
+    "collar", "survey", "lithology", "sample", "structure",
+    "alteration", "mineralization",
+]
 
 #: Codes of parser warnings that describe the data (not the transport) and
 #: are forwarded from the CSV parser to the workbook result.
@@ -53,6 +56,15 @@ _FORWARDED_PARSER_WARNINGS = frozenset({
     "structure_interval_collapsed",
     "structure_no_orientation",
     "structure_strike_converted",
+    "lithology_values_too_long",
+    "mineralization_abundance_not_numeric",
+    "mineralization_abundance_out_of_range",
+    "mineralization_text_unsplit",
+    "mineralization_text_in_notes",
+    "mineralization_intensity_in_notes",
+    "mineralization_value_unassigned",
+    "alteration_style_in_notes",
+    "alteration_value_unassigned",
 })
 
 # Extension sets for routing to the correct read backend.
@@ -76,7 +88,7 @@ class SheetMeta:
     name: str                  # sheet name as it appears in the workbook
     headers: list[str]         # first-row column names (may be empty)
     row_count: int             # data rows below the header (0 = empty sheet)
-    sheet_type: str            # collar | survey | lithology | sample | unknown
+    sheet_type: str            # collar | survey | lithology | sample | structure | alteration | mineralization | unknown
     classify_confidence: float # 0.0-1.0 from the header classifier
     hidden: bool               # True if the sheet is hidden / very_hidden
 
@@ -457,6 +469,7 @@ def parse_xlsx_sheet(
     sheet_type: SheetType,
     *,
     vendor_aliases: dict[str, list[str]] | None = None,
+    companion: bool = False,
 ) -> ExcelParseResult:
     """Parse a single sheet of an Excel file (.xlsx, .xlsm, or .xls) as the given sheet_type.
 
@@ -475,13 +488,17 @@ def parse_xlsx_sheet(
     sheet_name:
         Name of the sheet to load.  Pass an empty string to use the first sheet.
     sheet_type:
-        One of "collar", "survey", "lithology", "sample", "structure".  Controls which CSV
-        parser is invoked.
+        One of "collar", "survey", "lithology", "sample", "structure",
+        "alteration", "mineralization".  Controls which CSV parser is invoked.
     vendor_aliases:
         Extra column spellings, passed straight through to that CSV parser.
         A workbook sheet resolves its columns in the CSV parser, so a user's
         confirmed mapping has to travel the same way or it would apply to a
         loose .csv and be ignored for the identical table inside an .xlsx.
+    companion:
+        Only for "alteration" / "mineralization": read those columns of a sheet
+        that is primarily a lithology log (rows without any are not-applicable,
+        not rejected). See ``_geology_interval``.
 
     Returns
     -------
@@ -594,6 +611,18 @@ def parse_xlsx_sheet(
     elif sheet_type == "structure":
         from georag_geoparsers.csv_structure import parse_csv_structures
         result = parse_csv_structures(csv_buffer, vendor_aliases=vendor_aliases)
+        assay_columns = []
+    elif sheet_type == "alteration":
+        from georag_geoparsers.csv_alteration import parse_csv_alteration
+        result = parse_csv_alteration(
+            csv_buffer, vendor_aliases=vendor_aliases, companion=companion,
+        )
+        assay_columns = []
+    elif sheet_type == "mineralization":
+        from georag_geoparsers.csv_mineralization import parse_csv_mineralization
+        result = parse_csv_mineralization(
+            csv_buffer, vendor_aliases=vendor_aliases, companion=companion,
+        )
         assay_columns = []
     else:
         raise ValueError(f"xlsx_parser: unknown sheet_type '{sheet_type}'")

@@ -9,6 +9,7 @@ import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, Segmented, EmptyState } from '@/Components/Foundry/primitives';
 import { StereonetMini, RoseMini, DownholeMultiLog, ChronoColumn, LithologyStripColumn, type StratUnit, type LithologyInterval, type StereonetPole } from '@/Components/Foundry/Charts';
+import type { StripAlterationBand, StripMineralBand } from '@/lib/stripLog';
 import { WorkspaceMap, type MapProjectInfo, type MapProjectSummary, type MapCollar, type BasemapId } from '@/Components/Foundry/WorkspaceMap';
 import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/CompareHolesModal';
 import { SectionView } from '@/Components/Foundry/SectionView';
@@ -194,6 +195,9 @@ interface WorkspaceProps {
     log_hole_easting: number | null;
     log_hole_northing: number | null;
     log_lithology_intervals: LithologyInterval[];
+    log_alteration_intervals: StripAlterationBand[];
+    log_mineralization_intervals: StripMineralBand[];
+    log_tracks_truncated?: { lithology?: boolean; alteration?: boolean; mineralization?: boolean };
     first_holes_intervals: HoleIntervals[];
     project_layers: ProjectLayer[];
     strat_units: StratUnit[];
@@ -242,7 +246,7 @@ function initialMode(): Mode {
 }
 type Tool = 'pan' | 'draw' | 'measure' | 'select';
 
-export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_available_curves, log_selected_curves, log_curves_max, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, first_holes_intervals, project_layers, strat_units, strat_source, project_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty, truncation }: WorkspaceProps) {
+export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_available_curves, log_selected_curves, log_curves_max, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, log_alteration_intervals = [], log_mineralization_intervals = [], log_tracks_truncated, first_holes_intervals, project_layers, strat_units, strat_source, project_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty, truncation }: WorkspaceProps) {
     // Phase 5 real-time push — sync_silver_to_kg / mv_refresh_silver /
     // ingest jobs all touch the 3D mode's 9 sub-views. Full reload is
     // acceptable given the large prop surface (per Phase 5 decision).
@@ -412,6 +416,10 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
 
     const truncationNotices = describeTruncation(truncation);
 
+    // A hole can have a logged strip with no curves at all (a geology log and no LAS).
+    const hasLogGeologyTracks = log_alteration_intervals.length > 0 || log_mineralization_intervals.length > 0;
+    const hasLogGeology = log_lithology_intervals.length > 0 || hasLogGeologyTracks;
+
     function changeLogCurves(next: string[]) {
         router.get(
             `/projects/${project.slug}/workspace`,
@@ -429,6 +437,10 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                     'log_hole_easting',
                     'log_hole_northing',
                     'log_lithology_intervals',
+                    'log_alteration_intervals',
+                    'log_mineralization_intervals',
+                    'log_tracks_truncated',
+                    'log_hole_options',
                 ],
             },
         );
@@ -595,6 +607,10 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                             'log_hole_easting',
                                                             'log_hole_northing',
                                                             'log_lithology_intervals',
+                                                            'log_alteration_intervals',
+                                                            'log_mineralization_intervals',
+                                                            'log_tracks_truncated',
+                                                            'log_hole_options',
                                                         ],
                                                     },
                                                 );
@@ -974,7 +990,13 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                 {renderModePanel('logs', (
                                     <Card
                                         eyebrow={log_hole_id ? `LOGS · HOLE ${log_hole_id}` : 'LOGS'}
-                                        title={log_tracks.length > 0 ? `${log_tracks.length} of ${log_available_curves.length} curves rendered · ${well_log_curves_count} total in project` : 'No curve data'}
+                                        title={
+                                            log_tracks.length > 0
+                                                ? `${log_tracks.length} of ${log_available_curves.length} curves rendered · ${well_log_curves_count} total in project`
+                                                : hasLogGeology
+                                                    ? `${log_lithology_intervals.length} lithology · ${log_alteration_intervals.length} alteration · ${log_mineralization_intervals.length} mineralization · no curves`
+                                                    : 'No curve data'
+                                        }
                                         className="flex-1 flex flex-col min-h-0"
                                         contentClassName="flex-1 flex flex-col min-h-0"
                                     >
@@ -991,22 +1013,29 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             max={log_curves_max}
                                             onChange={changeLogCurves}
                                         />
-                                        {log_tracks.length > 0 ? (
+                                        {log_tracks.length > 0 || hasLogGeology ? (
                                             <>
-                                                <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                    Curves available across project: {curve_summary.map((c) => `${c.curve_name} (${c.curves})`).join(' · ')}
-                                                </div>
-                                                <div className="flex gap-6 overflow-auto items-start flex-1 min-h-0 py-1 px-1">
-                                                    <div className="shrink-0">
-                                                        <DownholeMultiLog tracks={log_tracks} depthMax={log_depth_max} height={chartH} trackWidth={96} />
+                                                {log_tracks.length > 0 && (
+                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
+                                                        Curves available across project: {curve_summary.map((c) => `${c.curve_name} (${c.curves})`).join(' · ')}
                                                     </div>
+                                                )}
+                                                <div className="flex gap-6 overflow-auto items-start flex-1 min-h-0 py-1 px-1">
+                                                    {log_tracks.length > 0 && (
+                                                        <div className="shrink-0">
+                                                            <DownholeMultiLog tracks={log_tracks} depthMax={log_depth_max} height={chartH} trackWidth={96} />
+                                                        </div>
+                                                    )}
                                                     <div className="shrink-0">
                                                         <LithologyStripColumn
                                                             intervals={log_lithology_intervals}
+                                                            alteration={log_alteration_intervals}
+                                                            mineralization={log_mineralization_intervals}
+                                                            truncated={log_tracks_truncated}
                                                             holeId={log_hole_id}
                                                             depthMax={log_depth_max}
                                                             height={chartH}
-                                                            width={380}
+                                                            width={hasLogGeologyTracks ? 520 : 380}
                                                         />
                                                     </div>
                                                     <div className="shrink-0 flex flex-col gap-3" style={{ width: 420 }}>
@@ -1044,8 +1073,8 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             </>
                                         ) : (
                                             <EmptyState
-                                                title="No well-log curves found for this hole."
-                                                detail="LOGS mode reads silver.well_log_curves for the selected hole. Ingest LAS files via Data → Connect Source to populate."
+                                                title="No curves or logged intervals for this hole."
+                                                detail="LOGS shows a hole's downhole curves (LAS) and its logged lithology, alteration and mineralization. Upload a LAS file, or a geology log with hole, from, to and lithology columns (alteration and mineral columns are read too), via Data → Connect Source."
                                             />
                                         )}
                                     </Card>
@@ -1287,6 +1316,10 @@ function LogsHolePicker({ projectSlug, activeHoleId, holes }: { projectSlug: str
                     'log_hole_easting',
                     'log_hole_northing',
                     'log_lithology_intervals',
+                    'log_alteration_intervals',
+                    'log_mineralization_intervals',
+                    'log_tracks_truncated',
+                    'log_hole_options',
                 ],
             },
         );

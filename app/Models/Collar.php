@@ -99,6 +99,16 @@ class Collar extends Model
     }
 
     /**
+     * Get all mineralization intervals for this collar.
+     *
+     * @return HasMany<Mineralization, $this>
+     */
+    public function mineralization(): HasMany
+    {
+        return $this->hasMany(Mineralization::class, 'collar_id', 'collar_id');
+    }
+
+    /**
      * Get all structures for this collar.
      */
     public function structures(): HasMany

@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Support\HoleStripTracks;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -68,6 +69,13 @@ class DrillholeDetailController extends Controller
                     ->get(),
             );
 
+            // The strip log's tracks: lithology (coloured by code, with its
+            // description and attributes), alteration and mineralization. Read
+            // beside `intervals` rather than out of it - that list carries
+            // every kind of gold row overlapped in one column, which is what
+            // the page used to draw.
+            $stripTracks = $this->stripTracks($collarId);
+
             $assayHighlights = $this->safeQuery(
                 fn () => DB::table('silver.assays_v2')
                     ->where('collar_id', $collarId)
@@ -113,6 +121,7 @@ class DrillholeDetailController extends Controller
                 ],
                 'collar' => $collar,
                 'intervals' => $intervals,
+                'strip_tracks' => $stripTracks,
                 'assays' => $assayHighlights,
                 'structures' => $structures,
                 'cross_sections' => $crossSections,
@@ -288,6 +297,21 @@ class DrillholeDetailController extends Controller
             ];
         } catch (\Throwable $e) {
             return null;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function stripTracks(string $collarId): array
+    {
+        try {
+            return (new HoleStripTracks)->forCollar($collarId);
+        } catch (\Throwable $e) {
+            return [
+                'lithology' => [], 'alteration' => [], 'mineralization' => [],
+                'truncated' => ['lithology' => false, 'alteration' => false, 'mineralization' => false],
+            ];
         }
     }
 

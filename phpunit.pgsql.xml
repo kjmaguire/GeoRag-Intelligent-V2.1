@@ -182,6 +182,10 @@
             <!-- Workspace LOGS curve discovery + payload caps (any-curve hole
                  list, curve list, per-collar surveys, truncation flags). -->
             <file>tests/Feature/Foundry/WorkspaceLogsAndLimitsTest.php</file>
+            <!-- Strip-log tracks: lithology colour rule + attributes,
+                 alteration (gold) and mineralization (silver) payloads, the
+                 per-track bound, and curve-less holes in the LOGS picker. -->
+            <file>tests/Feature/Foundry/HoleStripTracksTest.php</file>
             <!-- 2026-08-17 CI-gap audit: these RequiresPostgres files existed
                  but were never added here — grep -rl "RequiresPostgres\|
                  skipIfSqlite" tests/Feature turned up 7 files this config
