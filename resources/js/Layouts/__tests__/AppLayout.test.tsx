@@ -90,3 +90,35 @@ describe('AppLayout — auth surface', () => {
         expect(headers['Authorization']).toBeUndefined();
     });
 });
+
+describe('AppLayout — FE-20 / FE-24', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('navigates to /login only after the logout request has finished', async () => {
+        const { router } = await import('@inertiajs/react');
+        const visit = router.visit as unknown as ReturnType<typeof vi.fn>;
+        visit.mockClear();
+        let finish: (r: Response) => void = () => {};
+        vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise<Response>((res) => { finish = res; }));
+
+        const { getByRole } = render(<AppLayout><div /></AppLayout>);
+        fireEvent.click(getByRole('button', { expanded: false }));
+        fireEvent.click(getByRole('menuitem', { name: /sign out/i }));
+
+        await new Promise((r) => setTimeout(r, 0));
+        expect(visit).not.toHaveBeenCalled();
+
+        finish(new Response('{}', { status: 200 }));
+        await waitFor(() => expect(visit).toHaveBeenCalledWith('/login'));
+    });
+
+    it('labels the theme toggle and reports which theme is on', () => {
+        vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+        const { getByRole } = render(<AppLayout><div /></AppLayout>);
+        const dark = getByRole('button', { name: 'Dark theme' });
+        const light = getByRole('button', { name: 'Light theme' });
+        expect([dark.getAttribute('aria-pressed'), light.getAttribute('aria-pressed')].sort()).toEqual(['false', 'true']);
+    });
+});

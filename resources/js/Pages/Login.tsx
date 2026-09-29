@@ -1,6 +1,7 @@
 import { useState, type JSX } from 'react';
 import { Head, router, usePage } from '@inertiajs/react';
 import type { PageProps } from '@/types';
+import { safeReturnTo } from '@/lib/safeReturnTo';
 
 /**
  * Login — split-screen Foundry auth (TrustGauge-style).
@@ -63,20 +64,13 @@ export default function Login(): JSX.Element {
 
             localStorage.setItem('georag_user', JSON.stringify(data.user));
 
-            // Honour ?return_to=... from bootstrap.ts 401 handler. Same-site
-            // absolute paths only — guard against open-redirect.
+            // Honour ?return_to=... from bootstrap.ts 401 handler — only when
+            // it resolves to THIS origin (lib/safeReturnTo; a backslash path like `/\evil.example`
+            // used to pass a prefix check and leave the site, FE-21).
             let target = '/projects';
             try {
                 const params = new URLSearchParams(window.location.search);
-                const returnTo = params.get('return_to');
-                if (
-                    returnTo &&
-                    returnTo.startsWith('/') &&
-                    !returnTo.startsWith('//') &&
-                    !returnTo.startsWith('/login')
-                ) {
-                    target = returnTo;
-                }
+                target = safeReturnTo(params.get('return_to'), window.location.origin) ?? target;
             } catch {
                 /* malformed query string is fine, keep default */
             }

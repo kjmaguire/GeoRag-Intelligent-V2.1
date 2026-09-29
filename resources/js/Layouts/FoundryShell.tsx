@@ -108,13 +108,21 @@ function UserMenu() {
     const user = auth?.user ?? null;
     const [open, setOpen] = useState(false);
 
-    function handleLogout() {
+    // FE-20: the logout request is AWAITED before navigating. It used to be
+    // fire-and-forget with router.visit('/login') racing it: if the GET
+    // /login loaded the session before invalidate() and saved it after, or
+    // its Set-Cookie landed last, the old authenticated session came back.
+    async function handleLogout() {
         const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-        fetch('/api/v1/auth/logout', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}) },
-        }).catch(() => {});
+        try {
+            await fetch('/api/v1/auth/logout', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}) },
+            });
+        } catch {
+            // Network failure: still leave; the session expires server-side.
+        }
         try { localStorage.removeItem('georag_user'); } catch { /* */ }
         router.visit('/login');
     }
@@ -380,9 +388,11 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                     </button>
 
                     {/* Theme toggle */}
-                    <div className="flex p-0.5 rounded border" style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)' }}>
+                    <div role="group" aria-label="Theme" className="flex p-0.5 rounded border" style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)' }}>
                         <button
                             type="button"
+                            aria-label="Dark theme"
+                            aria-pressed={theme === 'dark'}
                             onClick={() => setTheme('dark')}
                             className={['px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded', theme === 'dark' ? 'text-[var(--fg-0)]' : 'text-[var(--fg-3)]'].join(' ')}
                             style={{ background: theme === 'dark' ? 'var(--bg-3)' : 'transparent' }}
@@ -392,6 +402,8 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                         </button>
                         <button
                             type="button"
+                            aria-label="Light theme"
+                            aria-pressed={theme === 'light'}
                             onClick={() => setTheme('light')}
                             className={['px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded', theme === 'light' ? 'text-[var(--fg-0)]' : 'text-[var(--fg-3)]'].join(' ')}
                             style={{ background: theme === 'light' ? 'var(--bg-3)' : 'transparent' }}
