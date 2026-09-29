@@ -424,6 +424,7 @@ locals {
     COHERE_CHAT_MODEL  = var.cohere_chat_model
     COHERE_PARSE_MODEL = var.cohere_parse_model
     OCR_ENGINE         = "cohere_parse"
+    PDF_PARSE_MODE     = "ocr_only"
 
     # SPLADE++ has no managed equivalent anywhere. This is what makes the
     # sparse leg of hybrid retrieval exist; unset, sparse_encoder falls

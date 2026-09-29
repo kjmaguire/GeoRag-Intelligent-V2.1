@@ -10,13 +10,53 @@ anything. RAGFlow was replaced by this in-process stack per ADR-0002; there
 is no other parser in front of it. Extraction order: pypdfium2 (fitz) native
 text first, pdfplumber as the structural fallback when native text is
 insufficient, and per-page OCR (Tesseract by default, or Cohere Parse v5 on
-Azure AI Foundry when `OCR_ENGINE=cohere_parse` — ADR-0019) for scanned/image
-pages. See `_attempt_ocr`, `_attempt_ocr_cohere_parse`, and
-`cohere_parse_client` for the OCR dispatch.
+Cohere's own API when `OCR_ENGINE=cohere_parse` — ADR-0019 chose the model,
+ADR-0023 the host) for scanned/image pages. See `_attempt_ocr`,
+`_attempt_ocr_cohere_parse`, and `cohere_parse_client` for the OCR dispatch.
 
 NOTE ON THE ENV VALUE: the selector is the exact string `cohere_parse` — see
 `ocr_engine.selected_engine`. The retired `azure_document_intelligence` value
 is logged at CRITICAL and runs Tesseract; it never silently selects anything.
+
+PDF_PARSE_MODE — which pages the remote engine reads
+----------------------------------------------------
+Only meaningful when `OCR_ENGINE=cohere_parse` and `COHERE_API_KEY` is set
+(see `ocr_engine.selected_parse_mode` and `_effective_parse_mode`; otherwise
+`tables` / `all` warn once and behave as `ocr_only`, and an unknown value
+logs CRITICAL once and behaves as `ocr_only`).
+
+  ocr_only (DEFAULT, unset == this)
+      Exactly the historical behaviour: the remote engine reads only pages
+      with no usable text layer (< PER_PAGE_MIN_CHARS chars, or failing the
+      F16 native-text screen); Tesseract is the floor for those. Tables on
+      text-layer pages come from pdfplumber.
+
+  tables
+      Prose stays native (pypdfium2), so citation spans keep the exact text
+      layer. Every text-layer page on which a table is detected — a
+      pdfplumber table (`_extract_all_tables_as_sections`, the drawing-based
+      bordered/borderless classification) or a resource/reserve trigger phrase
+      or a "Table N" caption line — is ALSO sent to the remote engine, and the
+      engine's table grids replace the pdfplumber tables for that page
+      (`Table (OCR, page N, #k)` sections, ocr_method=cohere_parse). If the
+      engine fails for a page, is over budget, or returns no table, that page
+      keeps its pdfplumber tables. Never falls back to Tesseract.
+
+  all
+      Every page is sent to the remote engine and its text replaces the text
+      layer. Native text is used only as the fallback for a page the engine
+      cannot answer for (request failed, over the OCR_MAX_PAGES_PER_DOC
+      budget, empty/catastrophic output, or text shorter than
+      PER_PAGE_MIN_CHARS) — never Tesseract on a born-digital page.
+      Genuinely image-only pages are prioritised for the page budget and
+      keep the Tesseract floor. Text-layer pages the engine read do NOT feed
+      the OCR review queue (`ocr_quality_assessment` is not emitted for
+      them) and do not make the document `is_scanned`.
+
+In both non-default modes `per_page_method` is truthful (a page the engine's
+text replaced is `cohere_parse`; a page that fell back is `fitz_native`), the
+budget warning says which fallback applied, and a single
+`pdf_parse_mode_summary` warning lists the pages involved.
 
 ---
 
@@ -33,8 +73,9 @@ for image pages. Fallback engine:
 pdfplumber, used when the primary can't extract sufficient structure.
 
 Parse quality is reported as a float 0.0–1.0 representing the fraction of the
-17 expected NI 43-101 sections identified. The caller (silver_reports asset)
-records this in Dagster materialisation metadata.
+17 expected NI 43-101 sections identified. The caller (`ingest_pdf` Hatchet
+workflow) persists it as `silver.reports.parse_quality_pct` (the Dagster asset
+that used to record it was retired 2026-07-28).
 """
 
 from __future__ import annotations
@@ -1860,6 +1901,180 @@ def _native_text_screen_reason(
     return None
 
 
+# ---------------------------------------------------------------------------
+# PDF_PARSE_MODE (tables / all) — see the module docstring
+# ---------------------------------------------------------------------------
+
+_PARSE_MODE_UNCONFIGURED_WARNED = False
+
+#: A "Table 14.1 ..." caption at the start of a line. Deliberately anchored:
+#: an unanchored "table" matches every "see Table 3" cross-reference in prose
+#: and would send most of a report to the remote engine.
+_TABLE_CAPTION_RE = re.compile(
+    r"^\s*Table\s+\d+(?:[.\-]\d+)*\b", re.IGNORECASE | re.MULTILINE
+)
+
+_PARSE_MODE_SUMMARY_CODE = "pdf_parse_mode_summary"
+
+
+def _effective_parse_mode() -> str:
+    """``PDF_PARSE_MODE`` resolved against what this worker can actually do.
+
+    ``ocr_engine.selected_parse_mode`` handles the setting itself (unknown
+    value, wrong ``OCR_ENGINE``). This adds the credential check: ``tables``
+    and ``all`` with no ``COHERE_API_KEY`` would otherwise send every page to
+    a Tesseract floor that is strictly worse than the text layer already in
+    the file, so they log CRITICAL once and behave as ``ocr_only``.
+    """
+    from . import ocr_engine
+
+    mode = ocr_engine.selected_parse_mode()
+    if mode == ocr_engine.PARSE_MODE_OCR_ONLY:
+        return mode
+
+    from . import cohere_parse_client as _engine
+
+    if not _engine.is_configured():
+        global _PARSE_MODE_UNCONFIGURED_WARNED
+        if not _PARSE_MODE_UNCONFIGURED_WARNED:
+            _PARSE_MODE_UNCONFIGURED_WARNED = True
+            logger.critical(
+                "pdf_report: %s=%s needs the remote OCR engine but %s is not "
+                "set — behaving as %s (text-layer pages keep their text layer "
+                "and pdfplumber tables).",
+                ocr_engine.PARSE_MODE_ENV,
+                mode,
+                _engine.API_KEY_ENV,
+                ocr_engine.PARSE_MODE_OCR_ONLY,
+            )
+        return ocr_engine.PARSE_MODE_OCR_ONLY
+    return mode
+
+
+def _page_has_table_keywords(text: str) -> bool:
+    """Cheap table hint from the text layer: a resource/reserve trigger phrase
+    (the same list `_extract_resource_tables` uses) or a ``Table N`` caption."""
+    lowered = (text or "").lower()
+    if any(trigger in lowered for trigger in _RESOURCE_TABLE_TRIGGERS):
+        return True
+    return _TABLE_CAPTION_RE.search(text or "") is not None
+
+
+def _parse_mode_summary_warning(mode: str, **pages: list[int]) -> dict[str, Any]:
+    """The one warning a non-default parse mode adds to the parse result.
+
+    ``pages`` maps a label (``engine_text_pages``, ``engine_table_pages``,
+    ``native_fallback_pages`` ...) to the 1-indexed pages it names. Empty
+    lists are kept so a reader can tell "none" from "not recorded".
+    """
+    return {
+        "code": _PARSE_MODE_SUMMARY_CODE,
+        "severity": "info",
+        "mode": mode,
+        **{label: sorted(set(nums)) for label, nums in pages.items()},
+    }
+
+
+def _summary_pages(warnings: Sequence[Any], label: str) -> set[int]:
+    """Pages named ``label`` in any `pdf_parse_mode_summary` warning."""
+    found: set[int] = set()
+    for warning in warnings:
+        if isinstance(warning, dict) and warning.get("code") == _PARSE_MODE_SUMMARY_CODE:
+            found.update(int(p) for p in warning.get(label) or [])
+    return found
+
+
+def _tables_mode_candidate_pages(
+    per_page_text: Sequence[tuple[int, str]],
+    per_page_method: dict[int, str],
+    pdfplumber_table_pages: set[int],
+) -> tuple[list[int], dict[str, list[int]]]:
+    """Text-layer pages that should ALSO be read by the remote engine.
+
+    A page qualifies when it is a text-layer page (``fitz_native``) and either
+    pdfplumber / the drawing-based classifier found a table on it
+    (``pdfplumber_table_pages``) or its text carries a resource/reserve
+    trigger phrase or a ``Table N`` caption. Pages the engine already read
+    (scanned pages) are excluded: their tables are already the engine's.
+    Returns ``(pages, {reason: pages})``.
+    """
+    native_text = {
+        n: text for n, text in per_page_text if per_page_method.get(n) == "fitz_native"
+    }
+    detected = sorted(p for p in pdfplumber_table_pages if p in native_text)
+    keyword = sorted(
+        n for n, text in native_text.items()
+        if n not in pdfplumber_table_pages and _page_has_table_keywords(text)
+    )
+    return sorted(set(detected) | set(keyword)), {
+        "table_detected": detected,
+        "keyword_only": keyword,
+    }
+
+
+def _remote_tables_for_native_pages(
+    pdf_path: str, pages: Sequence[int],
+) -> tuple[dict[int, list[list[list[str]]]], list[int], list[int]]:
+    """Ask the remote engine for the tables on text-layer pages.
+
+    Returns ``(tables_by_page, answered_without_tables, unanswered)``.
+
+    Goes through the same budget (`_ocr_budget_take`) and the same grouped
+    transport (`_ocr_page_selection`) as scanned pages, but NEVER falls back
+    to Tesseract: an engine that cannot answer for a page leaves that page
+    with the pdfplumber tables it already has. A group the budget cannot
+    cover in full is retried page by page so the last few budgeted pages are
+    still used, exactly as the scanned-page path does.
+    """
+    from . import cohere_parse_client as _engine
+
+    ordered = sorted(set(pages))
+    if not ordered:
+        return {}, [], []
+
+    size = _engine.pages_per_batch()
+    plan = [ordered[i:i + size] for i in range(0, len(ordered), size)]
+    concurrency = max(1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4")))
+    answered: dict[int, Any] = {}
+
+    def _single(page_num: int) -> tuple[int, Any | None]:
+        if not _ocr_budget_take(pdf_path):
+            return page_num, None
+        try:
+            result = _engine_single_page_request(_engine, pdf_path, page_num)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pdf_report: tables-mode request failed on page %d of '%s': %s",
+                page_num, pdf_path, exc,
+            )
+            _ocr_budget_refund(pdf_path, 1)
+            return page_num, None
+        if not result.request_succeeded:
+            logger.warning(
+                "pdf_report: tables-mode request failed on page %d of '%s': %s",
+                page_num, pdf_path, result.error or "unknown error",
+            )
+            _ocr_budget_refund(pdf_path, 1)
+            return page_num, None
+        return page_num, result
+
+    with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(plan)))) as pool:
+        for mapping in pool.map(lambda grp: _ocr_page_selection(pdf_path, grp), plan):
+            answered.update(mapping)
+
+    leftovers = [p for p in ordered if p not in answered]
+    if leftovers:
+        with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(leftovers)))) as pool:
+            for page_num, result in pool.map(_single, leftovers):
+                if result is not None:
+                    answered[page_num] = result
+
+    tables = {p: list(r.tables) for p, r in answered.items() if r.tables}
+    without = sorted(p for p in answered if p not in tables)
+    unanswered = [p for p in ordered if p not in answered]
+    return tables, without, unanswered
+
+
 def _parse_with_fitz(
     path: str,
     apply_ocr_fallback: bool = True,
@@ -1922,6 +2137,12 @@ def _parse_with_fitz(
     short_page_nums: list[int] = []  # candidates for per-page OCR
     short_page_native: dict[int, str] = {}  # sub-threshold native text, kept for salvage
     _prev_native_stripped: str | None = None  # F16 — boilerplate comparison anchor
+    # PDF_PARSE_MODE=all — text-layer pages that also go to the remote engine,
+    # page → native text held as the fallback. Always empty in every other
+    # mode (and PDF_PARSE_MODE is only consulted when the OCR loop will run
+    # at all), so the default path below is untouched.
+    _parse_mode = _effective_parse_mode() if apply_ocr_fallback else "ocr_only"
+    engine_first_native: dict[int, str] = {}
     # Phase 3 (2026-05-22) — per-page engine + confidence tracking
     per_page_method: dict[int, str] = {}
     per_page_confidence: dict[int, float | None] = {}
@@ -1964,7 +2185,21 @@ def _parse_with_fitz(
                 _native_text_screen_reason(_stripped, _prev_native_stripped)
                 if len(_stripped) >= PER_PAGE_MIN_CHARS else None
             )
-            if len(_stripped) >= PER_PAGE_MIN_CHARS and _screen_reason is None:
+            if (
+                len(_stripped) >= PER_PAGE_MIN_CHARS
+                and _screen_reason is None
+                and _parse_mode == "all"
+            ):
+                # PDF_PARSE_MODE=all — a good text layer, but the remote
+                # engine reads it too. Its native text is held (not yet in
+                # per_page_text) and is used only if the engine cannot answer
+                # for this page. The language is detectable from the native
+                # text either way.
+                engine_first_native[n] = txt
+                short_page_native[n] = txt
+                page_languages.append(_detect_page_language(txt))
+                _prev_native_stripped = _stripped
+            elif len(_stripped) >= PER_PAGE_MIN_CHARS and _screen_reason is None:
                 pages_text.append(txt)
                 per_page_text.append((n, txt))
                 page_languages.append(_detect_page_language(txt))
@@ -1987,6 +2222,13 @@ def _parse_with_fitz(
     finally:
         with contextlib.suppress(Exception):
             pdf.close()
+
+    # PDF_PARSE_MODE=all — queue the text-layer pages for the remote engine
+    # AFTER the pages that genuinely need OCR. The page budget is first come
+    # first served (OCR_MAX_PAGES_PER_DOC), and an image-only page that loses
+    # the race falls to Tesseract, whereas a text-layer page that loses it
+    # simply keeps its text layer — so the pages with no alternative go first.
+    short_page_nums.extend(sorted(engine_first_native))
 
     # Per-page OCR for any pages fitz returned <PER_PAGE_MIN_CHARS on.
     # Runs the same tesseract pipeline as pdfplumber's fallback, so image
@@ -2089,6 +2331,14 @@ def _parse_with_fitz(
                     # and got nothing back; skip the duplicate billed
                     # request and go straight to tesseract.
                     skip_engine_page_request=n in _short_batched,
+                    # PDF_PARSE_MODE=all: a text-layer page never goes to
+                    # tesseract — its own text layer is the better fallback.
+                    # (The kwarg is only passed for those pages, so the
+                    # default path calls _ocr_single_page exactly as before.)
+                    **(
+                        {"allow_tesseract_fallback": False}
+                        if n in engine_first_native else {}
+                    ),
                 ), None
             except Exception as _ocr_exc:  # noqa: BLE001
                 return n, None, _ocr_exc
@@ -2110,9 +2360,44 @@ def _parse_with_fitz(
         ocr_page_results = asyncio.run(_run_ocr_fanout())
 
         _ocr_done = 0
+        _engine_text_pages: list[int] = []
+        _native_fallback_pages: list[int] = []
         for n, _ocr_result, _ocr_exc in ocr_page_results:
             _ocr_done += 1
             _tick_progress(progress_file, "ocr", _ocr_done, len(short_page_nums), force=True)
+            if n in engine_first_native:
+                # PDF_PARSE_MODE=all, text-layer page. The engine's text
+                # replaces the text layer only when it is a real answer: from
+                # the engine (not a floor), and at least PER_PAGE_MIN_CHARS.
+                # Anything else keeps the native text. No
+                # `ocr_quality_assessment` warning is emitted for these pages:
+                # it feeds the OCR review queue, and a page with an
+                # authoritative text layer is not a scan to be second-guessed.
+                _native_txt = engine_first_native[n]
+                _accepted = False
+                if _ocr_exc is None and _ocr_result is not None:
+                    _e_text, _e_conf, _e_assessment, _e_tables = _ocr_result
+                    if (
+                        str((_e_assessment or {}).get("ocr_method") or "")
+                        == _engine.OCR_METHOD
+                        and _e_text
+                        and len(_e_text.strip()) >= PER_PAGE_MIN_CHARS
+                    ):
+                        _accepted = True
+                        pages_text.append(_e_text)
+                        per_page_text.append((n, _e_text))
+                        per_page_method[n] = _engine.OCR_METHOD
+                        per_page_confidence[n] = _reported_confidence(_e_assessment, _e_conf)
+                        if _e_tables:
+                            per_page_tables[n] = _e_tables
+                        _engine_text_pages.append(n)
+                if not _accepted:
+                    pages_text.append(_native_txt)
+                    per_page_text.append((n, _native_txt))
+                    per_page_method[n] = "fitz_native"
+                    per_page_confidence[n] = None
+                    _native_fallback_pages.append(n)
+                continue
             if _ocr_exc is not None:
                 # F30 — an OCR exception must not drop sub-threshold native
                 # text: salvage it with the same bookkeeping as the
@@ -2195,6 +2480,30 @@ def _parse_with_fitz(
                 "pdf_report: fitz+OCR recovered %d/%d short pages",
                 ocr_recovered, len(short_page_nums),
             )
+        if engine_first_native:
+            warnings.append(
+                _parse_mode_summary_warning(
+                    "all",
+                    engine_text_pages=_engine_text_pages,
+                    native_fallback_pages=_native_fallback_pages,
+                )
+                | {
+                    "message": (
+                        f"PDF_PARSE_MODE=all: the remote engine read "
+                        f"{len(_engine_text_pages)} of {len(engine_first_native)} "
+                        f"text-layer page(s); {len(_native_fallback_pages)} kept "
+                        f"their native text layer because the engine could not "
+                        f"answer (request failed, OCR page budget exhausted, or "
+                        f"empty/short output)."
+                    ),
+                }
+            )
+            if _native_fallback_pages:
+                logger.warning(
+                    "pdf_report: PDF_PARSE_MODE=all — %d of %d text-layer page(s) "
+                    "of '%s' fell back to native text",
+                    len(_native_fallback_pages), len(engine_first_native), path,
+                )
         # Re-sort per_page_text by page number so the
         # _build_page_index calculation in _split_into_sections gets a
         # monotonic char-offset → page mapping.
@@ -2379,6 +2688,37 @@ def _ocr_budget_warning(pdf_path: str) -> dict[str, Any] | None:
         record = _OCR_CAP_EXHAUSTED.get(pdf_path)
     if not record:
         return None
+
+    from . import ocr_engine
+
+    mode = ocr_engine.selected_parse_mode()
+    if mode != ocr_engine.PARSE_MODE_OCR_ONLY:
+        # PDF_PARSE_MODE=tables|all spends the budget on text-layer pages
+        # too, and those have a fallback that is not Tesseract: their own
+        # text layer (all) or their pdfplumber tables (tables). Saying
+        # "read by tesseract" here would be false for most of the pages.
+        return {
+            "code": "ocr_page_budget_exhausted",
+            "cap": record["cap"],
+            "env": _OCR_PAGE_BUDGET_ENV,
+            "parse_mode": mode,
+            "message": (
+                f"Remote OCR (Cohere Parse) was capped at {record['cap']} page(s) "
+                f"for this document ({_OCR_PAGE_BUDGET_ENV}) under "
+                f"PDF_PARSE_MODE={mode}. Text-layer pages past the cap were NOT "
+                f"dropped: "
+                + (
+                    "they kept their native text layer (and pdfplumber tables), "
+                    "so their tables were not read by the engine. "
+                    if mode == ocr_engine.PARSE_MODE_ALL
+                    else "they kept their pdfplumber tables, so those tables "
+                    "were not read by the engine. "
+                )
+                + "Image-only pages past the cap were read by tesseract, which "
+                "extracts no table structure. Raise the cap for this document "
+                "or split it, then re-ingest."
+            ),
+        }
 
     return {
         "code": "ocr_page_budget_exhausted",
@@ -2579,6 +2919,7 @@ def _ocr_single_page(
     return_tables: bool = False,
     *,
     skip_engine_page_request: bool = False,
+    allow_tesseract_fallback: bool = True,
 ):
     """OCR one PDF page: the remote engine first, Tesseract as the floor.
 
@@ -2609,6 +2950,12 @@ def _ocr_single_page(
     bounded raster tiles reconstructed from word polygons — which Parse
     cannot support (it returns no polygons); oversized pages are
     downscaled by the engine instead.
+
+    ``allow_tesseract_fallback=False`` (PDF_PARSE_MODE=all, text-layer pages)
+    removes the floor: when the engine cannot give a usable answer the page
+    comes back empty with ``ocr_method="native_fallback"``, and the caller
+    keeps the page's own text layer — which beats Tesseract on a born-digital
+    page every time.
 
     Returns ``""`` (or the corresponding empty tuple) on any failure.
     """
@@ -2701,6 +3048,14 @@ def _ocr_single_page(
                     "of '%s' — falling back to tesseract",
                     page_num, pdf_path,
                 )
+
+    if not allow_tesseract_fallback:
+        return _empty_ocr_page_return(
+            return_confidence,
+            return_assessment,
+            method="native_fallback",
+            return_tables=return_tables,
+        )
 
     try:
         import pytesseract
@@ -3900,6 +4255,13 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         "PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "true"
     ).lower() == "true"
     fitz_enabled = os.environ.get("PDF_PARSER_FITZ_ENABLED", "true").lower() == "true"
+    # PDF_PARSE_MODE — "ocr_only" (the default, and what an unset variable
+    # means) leaves every code path below exactly as it was. Like the OCR
+    # loop itself, the non-default modes are off when the per-page OCR
+    # fallback is disabled.
+    _parse_mode = _effective_parse_mode() if _tesseract_fallback_enabled else "ocr_only"
+    if _parse_mode != "ocr_only":
+        _provenance["pdf_parse_mode"] = _parse_mode
 
     fitz_failed = False
     image_page_nums: list[int] = []
@@ -3933,9 +4295,15 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                 # page pre-recovery — OR those in. (per_page_method holds
                 # 'fitz_native' only for true text-layer pages; recovered
                 # pages carry 'tesseract'/'cohere_parse'/etc.)
+                # PDF_PARSE_MODE=all sends text-layer pages to the engine
+                # too; those were never image pages (empty set otherwise).
+                _engine_read_text_layer = _summary_pages(
+                    extraction_warnings, "engine_text_pages"
+                )
                 is_scanned = is_scanned or bool(image_page_nums) or any(
                     m not in ("fitz_native", "pdfplumber_native")
-                    for m in per_page_method.values()
+                    for pn, m in per_page_method.items()
+                    if pn not in _engine_read_text_layer
                 )
                 parser_used = "fitz"
                 logger.info(
@@ -4223,6 +4591,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     # becomes a section so it gets chunked + embedded and is searchable
     # from chat. The existing _extract_resource_tables path only catches
     # resource-trigger pages; this is the broader net.
+    table_sections: list[ReportSection] = []
     with _tracer.start_as_current_span("pdf_report.all_tables") as _span:
         try:
             table_sections = _extract_all_tables_as_sections(
@@ -4246,6 +4615,80 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                 Path(path).name,
                 at_exc,
             )
+
+    # --- PDF_PARSE_MODE=tables: engine tables for text-layer pages ---------
+    # Prose stays native. Every text-layer page with a detected table (the
+    # pdfplumber pass above, or a resource/reserve/"Table N" hint in its text)
+    # is also read by the remote engine, and the engine's grids replace the
+    # pdfplumber tables for that page below. Pages the engine cannot answer
+    # for keep their pdfplumber tables; there is no Tesseract rung here.
+    _remote_table_pages: set[int] = set()
+    if _parse_mode == "tables" and parser_used == "fitz":
+        with _tracer.start_as_current_span("pdf_report.remote_tables") as _span:
+            try:
+                _pp_table_pages = {
+                    s.page_first for s in table_sections if s.page_first is not None
+                } | {
+                    int(t["page"]) for t in resource_tables if t.get("page") is not None
+                }
+                _candidates, _reasons = _tables_mode_candidate_pages(
+                    per_page_text, per_page_method, _pp_table_pages,
+                )
+                _rt_tables, _rt_no_tables, _rt_unanswered = _remote_tables_for_native_pages(
+                    path, _candidates,
+                )
+                for _pg, _grids in _rt_tables.items():
+                    per_page_tables[_pg] = _grids
+                    _remote_table_pages.add(_pg)
+                _span.set_attribute("pdf.remote_table_pages_sent", len(_candidates))
+                _span.set_attribute("pdf.remote_table_pages_with_tables", len(_rt_tables))
+                extraction_warnings.append(
+                    _parse_mode_summary_warning(
+                        "tables",
+                        table_pages_sent=_candidates,
+                        engine_table_pages=list(_rt_tables),
+                        engine_no_table_pages=_rt_no_tables,
+                        pdfplumber_fallback_pages=_rt_unanswered,
+                    )
+                    | {
+                        "message": (
+                            f"PDF_PARSE_MODE=tables: {len(_candidates)} text-layer "
+                            f"page(s) with a table were sent to the remote engine; "
+                            f"it returned tables for {len(_rt_tables)}, none for "
+                            f"{len(_rt_no_tables)}, and could not answer for "
+                            f"{len(_rt_unanswered)} (request failed or OCR page "
+                            f"budget exhausted) — those keep their pdfplumber tables."
+                        ),
+                    }
+                )
+                logger.info(
+                    "pdf_report: tables mode sent %d page(s) to the engine "
+                    "(%d table_detected, %d keyword_only) for '%s': %d with tables, "
+                    "%d unanswered",
+                    len(_candidates), len(_reasons["table_detected"]),
+                    len(_reasons["keyword_only"]), Path(path).name,
+                    len(_rt_tables), len(_rt_unanswered),
+                )
+            except Exception as rtm_exc:  # noqa: BLE001
+                _span.record_exception(rtm_exc)
+                extraction_warnings.append({
+                    "code": "remote_table_pass_failed",
+                    "message": str(rtm_exc),
+                })
+                logger.warning(
+                    "pdf_report: tables-mode remote pass failed for '%s': %s — "
+                    "pdfplumber tables kept",
+                    Path(path).name, rtm_exc,
+                )
+
+    # Engine tables replace pdfplumber tables page by page (tables and all
+    # modes). Identity-matched so a narrative section can never be dropped.
+    if _parse_mode != "ocr_only" and per_page_tables:
+        _pp_section_ids = {id(s) for s in table_sections}
+        sections = [
+            s for s in sections
+            if not (id(s) in _pp_section_ids and s.page_first in per_page_tables)
+        ]
 
     # Phase 3 (2026-05-22) — backfill ocr_confidence + ocr_method on every
     # ReportSection (narrative sections, table sections, figure sections)
@@ -4274,7 +4717,13 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                     per_page_tables[_tbl_page],
                     _tbl_page,
                     mean_confidence=per_page_confidence.get(_tbl_page),
-                    ocr_method=per_page_method.get(_tbl_page) or _REMOTE_OCR_METHOD,
+                    # A tables-mode page's method is fitz_native (its prose);
+                    # the grid itself is the engine's.
+                    ocr_method=(
+                        _REMOTE_OCR_METHOD
+                        if _tbl_page in _remote_table_pages
+                        else per_page_method.get(_tbl_page) or _REMOTE_OCR_METHOD
+                    ),
                 )
             )
         if ocr_table_sections:
