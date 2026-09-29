@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import GeoPlot from '@/Components/GeoPlot';
+import { buildScene3D, deepestIntervalByCollar, sceneZAxisTitle, type SurveyStationInput } from '@/lib/desurvey';
 
 interface Composite {
     collar_id: string;
@@ -19,6 +20,9 @@ interface CollarPoint {
     easting: number | null;
     northing: number | null;
     total_depth: number | null;
+    azimuth?: number | null;
+    dip?: number | null;
+    elevation?: number | null;
 }
 
 interface AssayElement {
@@ -27,20 +31,22 @@ interface AssayElement {
 }
 
 /**
- * AssayComposites3DView — vertical hole sticks with each band coloured by
- * the composited weighted-average grade for the selected element. Built
- * on the same UTM-centred + depth-down convention as Borehole3DView so
- * the camera defaults feel familiar across sub-views. The element picker
+ * AssayComposites3DView — desurveyed hole traces with each band coloured by
+ * the composited weighted-average grade for the selected element. Bands sit
+ * on the real hole path at collar elevation (lib/desurvey), not on a vertical
+ * stick below z = 0 (FE-9). The element picker
  * lives in the card body (not the global toolbar) because it only makes
  * sense within this sub-view.
  */
 export default function AssayComposites3DView({
     collars,
+    surveys = [],
     composites,
     elements,
     height = 560,
 }: {
     collars: CollarPoint[];
+    surveys?: Array<SurveyStationInput & { collar_id: string }>;
     composites: Composite[];
     elements: AssayElement[];
     height?: number;
@@ -54,14 +60,13 @@ export default function AssayComposites3DView({
         [composites, selected],
     );
 
-    const { data, layout, gradeRange } = useMemo(() => {
+    const { data, layout, gradeRange, caption } = useMemo(() => {
         const valid = collars.filter((c) => c.easting !== null && c.northing !== null);
         if (valid.length === 0 || filtered.length === 0) {
-            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, gradeRange: [0, 0] as [number, number] };
+            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, gradeRange: [0, 0] as [number, number], caption: '' };
         }
 
-        const meanE = valid.reduce((s, c) => s + (c.easting ?? 0), 0) / valid.length;
-        const meanN = valid.reduce((s, c) => s + (c.northing ?? 0), 0) / valid.length;
+        const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(filtered));
 
         const grades = filtered.map((c) => c.weighted_avg);
         const gMin = Math.min(...grades);
@@ -85,21 +90,17 @@ export default function AssayComposites3DView({
         }
 
         const traces: Record<string, unknown>[] = [];
-        const allDepths: number[] = [];
 
         valid.forEach((collar) => {
-            const x0 = (collar.easting as number) - meanE;
-            const y0 = (collar.northing as number) - meanN;
-            const td = collar.total_depth ?? 0;
+            const path = scene.fullPath(collar.collar_id);
+            if (!path) return;
 
             // Faint baseline trace for the full hole so empty holes still
             // show as ghost sticks alongside hit holes.
             traces.push({
                 type: 'scatter3d',
                 mode: 'lines',
-                x: [x0, x0],
-                y: [y0, y0],
-                z: [0, -td],
+                ...path,
                 line: { color: 'rgba(155,169,184,0.18)', width: 2 },
                 hoverinfo: 'name',
                 showlegend: false,
@@ -109,21 +110,26 @@ export default function AssayComposites3DView({
             const bands = byCollar.get(collar.collar_id) ?? [];
             if (bands.length === 0) return;
 
-            const xs: number[] = [];
-            const ys: number[] = [];
-            const zs: number[] = [];
+            // One trace per hole; bands are separated by null gaps so the
+            // line does not bridge the unsampled stretch between them.
+            const xs: Array<number | null> = [];
+            const ys: Array<number | null> = [];
+            const zs: Array<number | null> = [];
             const colors: string[] = [];
             const text: string[] = [];
 
             for (const b of bands) {
-                xs.push(x0, x0);
-                ys.push(y0, y0);
-                zs.push(-b.from_depth, -b.to_depth);
+                const seg = scene.segment(collar.collar_id, b.from_depth, b.to_depth);
+                if (!seg) continue;
                 const col = colorFor(b.weighted_avg);
-                colors.push(col, col);
                 const desc = `${collar.hole_id_canonical || collar.hole_id} · ${b.from_depth.toFixed(1)}–${b.to_depth.toFixed(1)} m · ${b.weighted_avg.toFixed(3)} ${b.unit}${b.sample_count !== null ? ` · ${b.sample_count} samples` : ''}`;
-                text.push(desc, desc);
-                allDepths.push(b.to_depth);
+                xs.push(...seg.x, null);
+                ys.push(...seg.y, null);
+                zs.push(...seg.z, null);
+                for (let i = 0; i <= seg.x.length; i++) {
+                    colors.push(col);
+                    text.push(desc);
+                }
             }
 
             traces.push({
@@ -133,14 +139,13 @@ export default function AssayComposites3DView({
                 y: ys,
                 z: zs,
                 line: { color: colors, width: 7 },
+                connectgaps: false,
                 text,
                 hoverinfo: 'text',
                 showlegend: false,
                 name: collar.hole_id_canonical || collar.hole_id,
             });
         });
-
-        const maxDepth = Math.max(...allDepths, 100);
 
         const layoutObj: Record<string, unknown> = {
             scene: {
@@ -159,12 +164,11 @@ export default function AssayComposites3DView({
                     showbackground: true,
                 },
                 zaxis: {
-                    title: { text: 'Depth (m)', font: { color: '#9ba9b8', size: 10 } },
+                    title: { text: sceneZAxisTitle(scene), font: { color: '#9ba9b8', size: 10 } },
                     color: '#9ba9b8',
                     gridcolor: 'rgba(155,169,184,0.18)',
                     backgroundcolor: '#0a0e14',
                     showbackground: true,
-                    range: [-maxDepth * 1.1, 10],
                 },
                 bgcolor: '#0a0e14',
                 aspectmode: 'manual',
@@ -178,8 +182,8 @@ export default function AssayComposites3DView({
             hovermode: 'closest',
         };
 
-        return { data: traces, layout: layoutObj, gradeRange: [gMin, gMax] as [number, number] };
-    }, [collars, filtered]);
+        return { data: traces, layout: layoutObj, gradeRange: [gMin, gMax] as [number, number], caption: scene.caption };
+    }, [collars, surveys, filtered]);
 
     if (elements.length === 0) {
         return (
@@ -208,6 +212,9 @@ export default function AssayComposites3DView({
                     <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
                         {filtered.length} composites · grade range {gradeRange[0].toFixed(3)}–{gradeRange[1].toFixed(3)} {filtered[0]?.unit ?? ''}
                     </span>
+                )}
+                {caption && (
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
                 )}
             </div>
             {data.length === 0 ? (

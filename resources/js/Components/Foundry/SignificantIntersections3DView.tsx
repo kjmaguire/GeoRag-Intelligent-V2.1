@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import GeoPlot from '@/Components/GeoPlot';
+import { buildScene3D, deepestIntervalByCollar, sceneZAxisTitle, type SurveyStationInput } from '@/lib/desurvey';
 
 interface Intersection {
     collar_id: string;
@@ -22,21 +23,28 @@ interface CollarPoint {
     easting: number | null;
     northing: number | null;
     total_depth: number | null;
+    azimuth?: number | null;
+    dip?: number | null;
+    elevation?: number | null;
 }
 
 /**
- * SignificantIntersections3DView — ghost-rendered hole sticks with each
+ * SignificantIntersections3DView — ghost-rendered hole traces with each
  * cutoff-grade intersection drawn as a glowing thick segment at its
- * downhole position. Built on the same UTM-centred + depth-down scene
- * convention. Element filter lives in the card body so users can sweep
+ * downhole position. Holes are desurveyed (lib/desurvey, minimum curvature,
+ * extended to TD) and placed at collar elevation — they used to be vertical
+ * sticks hung from z = 0 at `-measured depth`, which put a 300 m hit in a
+ * -50° hole ~190 m from where it is (FE-9). Element filter lives in the card body so users can sweep
  * Au / Cu / U₃O₈ targeted intervals one element at a time.
  */
 export default function SignificantIntersections3DView({
     collars,
+    surveys = [],
     intersections,
     height = 560,
 }: {
     collars: CollarPoint[];
+    surveys?: Array<SurveyStationInput & { collar_id: string }>;
     intersections: Intersection[];
     height?: number;
 }) {
@@ -55,14 +63,13 @@ export default function SignificantIntersections3DView({
         [intersections, selected],
     );
 
-    const { data, layout, peakSummary } = useMemo(() => {
+    const { data, layout, peakSummary, caption } = useMemo(() => {
         const valid = collars.filter((c) => c.easting !== null && c.northing !== null);
         if (valid.length === 0) {
-            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, peakSummary: null as null | { min: number; max: number; unit: string } };
+            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, peakSummary: null as null | { min: number; max: number; unit: string }, caption: '' };
         }
 
-        const meanE = valid.reduce((s, c) => s + (c.easting ?? 0), 0) / valid.length;
-        const meanN = valid.reduce((s, c) => s + (c.northing ?? 0), 0) / valid.length;
+        const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(intersections));
 
         const peaks = filtered.map((it) => it.weighted_avg);
         const pMin = peaks.length > 0 ? Math.min(...peaks) : 0;
@@ -79,7 +86,6 @@ export default function SignificantIntersections3DView({
         };
 
         const traces: Record<string, unknown>[] = [];
-        const allDepths: number[] = [];
 
         const intersByCollar = new Map<string, Intersection[]>();
         for (const it of filtered) {
@@ -89,10 +95,9 @@ export default function SignificantIntersections3DView({
         }
 
         valid.forEach((collar) => {
-            const x0 = (collar.easting as number) - meanE;
-            const y0 = (collar.northing as number) - meanN;
-            const td = collar.total_depth ?? 0;
-            allDepths.push(td);
+            const path = scene.fullPath(collar.collar_id);
+            const top = scene.at(collar.collar_id, 0);
+            if (!path || !top) return;
 
             const hits = intersByCollar.get(collar.collar_id) ?? [];
             const isHit = hits.length > 0;
@@ -102,9 +107,7 @@ export default function SignificantIntersections3DView({
             traces.push({
                 type: 'scatter3d',
                 mode: 'lines',
-                x: [x0, x0],
-                y: [y0, y0],
-                z: [0, -td],
+                ...path,
                 line: { color: isHit ? 'rgba(255,255,255,0.20)' : 'rgba(155,169,184,0.12)', width: isHit ? 2.5 : 1.5 },
                 hoverinfo: 'name',
                 showlegend: false,
@@ -115,9 +118,9 @@ export default function SignificantIntersections3DView({
             traces.push({
                 type: 'scatter3d',
                 mode: 'markers',
-                x: [x0],
-                y: [y0],
-                z: [0],
+                x: [top.x],
+                y: [top.y],
+                z: [top.z],
                 marker: { size: 3.5, color: isHit ? '#facc15' : '#64748b', line: { color: '#0a0e14', width: 1 } },
                 hoverinfo: 'name',
                 showlegend: false,
@@ -126,28 +129,29 @@ export default function SignificantIntersections3DView({
 
             for (const it of hits) {
                 const col = colorFor(it.weighted_avg);
+                const seg = scene.segment(collar.collar_id, it.from_depth, it.to_depth);
+                if (!seg) continue;
                 const desc = `${collar.hole_id_canonical || collar.hole_id} · ${it.from_depth.toFixed(1)}–${it.to_depth.toFixed(1)} m · ${it.weighted_avg.toFixed(3)} ${it.unit} (cutoff ${it.cutoff_grade}${it.unit})${it.true_width_m !== null ? ` · TW ${it.true_width_m.toFixed(1)} m` : ''}${it.peak_value !== null ? ` · peak ${it.peak_value.toFixed(3)} @ ${it.peak_depth?.toFixed(1)} m` : ''}${it.zone_name ? ` · ${it.zone_name}` : ''}`;
                 traces.push({
                     type: 'scatter3d',
                     mode: 'lines',
-                    x: [x0, x0],
-                    y: [y0, y0],
-                    z: [-it.from_depth, -it.to_depth],
+                    ...seg,
                     line: { color: col, width: 12 },
-                    text: [desc, desc],
+                    text: seg.x.map(() => desc),
                     hoverinfo: 'text',
                     showlegend: false,
                     name: 'intersection',
                 });
 
                 // Peak-grade marker.
-                if (it.peak_value !== null && it.peak_depth !== null) {
+                const peakAt = it.peak_depth !== null ? scene.at(collar.collar_id, it.peak_depth) : null;
+                if (it.peak_value !== null && it.peak_depth !== null && peakAt) {
                     traces.push({
                         type: 'scatter3d',
                         mode: 'markers',
-                        x: [x0],
-                        y: [y0],
-                        z: [-it.peak_depth],
+                        x: [peakAt.x],
+                        y: [peakAt.y],
+                        z: [peakAt.z],
                         marker: { size: 5, color: '#fff', line: { color: col, width: 2 } },
                         hoverinfo: 'text',
                         text: [`peak ${it.peak_value.toFixed(3)} ${it.unit} @ ${it.peak_depth.toFixed(1)} m`],
@@ -155,11 +159,8 @@ export default function SignificantIntersections3DView({
                         name: 'peak',
                     });
                 }
-                allDepths.push(it.to_depth);
             }
         });
-
-        const maxDepth = Math.max(...allDepths, 100);
 
         const layoutObj: Record<string, unknown> = {
             scene: {
@@ -178,12 +179,11 @@ export default function SignificantIntersections3DView({
                     showbackground: true,
                 },
                 zaxis: {
-                    title: { text: 'Depth (m)', font: { color: '#9ba9b8', size: 10 } },
+                    title: { text: sceneZAxisTitle(scene), font: { color: '#9ba9b8', size: 10 } },
                     color: '#9ba9b8',
                     gridcolor: 'rgba(155,169,184,0.18)',
                     backgroundcolor: '#0a0e14',
                     showbackground: true,
-                    range: [-maxDepth * 1.1, 10],
                 },
                 bgcolor: '#0a0e14',
                 aspectmode: 'manual',
@@ -197,8 +197,8 @@ export default function SignificantIntersections3DView({
             hovermode: 'closest',
         };
 
-        return { data: traces, layout: layoutObj, peakSummary: peaks.length > 0 ? { min: pMin, max: pMax, unit } : null };
-    }, [collars, filtered]);
+        return { data: traces, layout: layoutObj, peakSummary: peaks.length > 0 ? { min: pMin, max: pMax, unit } : null, caption: scene.caption };
+    }, [collars, surveys, intersections, filtered]);
 
     if (elementOptions.length === 0) {
         return (
@@ -226,6 +226,7 @@ export default function SignificantIntersections3DView({
                 <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
                     {filtered.length} intersections{peakSummary && ` · WAvg ${peakSummary.min.toFixed(3)}–${peakSummary.max.toFixed(3)} ${peakSummary.unit}`}
                 </span>
+                <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
             </div>
             <div className="flex-1 min-h-0" style={{ height }}>
                 <GeoPlot data={data} layout={layout} />
