@@ -2787,6 +2787,61 @@ async def query_graph_by_label(
     )
 
 
+# Per-table column allowlist for verify_numerical_claim (P0 #2). `column`
+# used to be interpolated raw into the SELECT, letting an LLM-supplied
+# `column="total_depth, (SELECT current_user)"` exfiltrate row contents.
+#
+# Only columns that EXIST and store NUMERIC values belong here — the tool
+# returns a float. tests/test_numeric_claim_allowlist_parity.py checks every
+# entry against database/migrations, because this list has drifted before:
+# audit PG-12 (2026-09-29) found silver.samples.sample_length / .recovery,
+# silver.geochemistry.value / .detection_limit (none exist) and
+# silver.alteration.intensity (text). A claim routed to one of them errored,
+# came back verified=False, and counted toward NUMERIC_RETRY_THRESHOLD — a
+# spurious retry on a correct number.
+#
+# scope_mode drives how the tenancy WHERE clause + FROM clause are built:
+#   "direct"      — table carries workspace_id AND project_id itself.
+#   "collar"      — table carries workspace_id itself; project_id only
+#                   reachable via a join to silver.collars on collar_id.
+#   "collar_full" — table carries neither column; both come from the
+#                   silver.collars join.
+NUMERIC_CLAIM_COLUMNS: dict[str, tuple[str, frozenset[str], str]] = {
+    # (primary_key_column, allowed_value_columns, scope_mode)
+    "silver.collars": ("collar_id", frozenset({
+        "total_depth", "azimuth", "dip", "easting", "northing", "elevation",
+    }), "direct"),
+    # sample_length / recovery removed (PG-12): no such columns. Interval
+    # length is to_depth - from_depth, and both ends are verifiable.
+    "silver.samples": ("sample_id", frozenset({"from_depth", "to_depth"}), "collar"),
+    "silver.lithology_logs": ("log_id", frozenset({
+        "from_depth", "to_depth", "rqd", "recovery",
+    }), "collar"),
+    # pk is "id" (database/migrations/2026_05_20_060400_create_silver_
+    # geological_singulars.php). "intensity" removed (PG-12): it is text.
+    "silver.alteration": ("id", frozenset({"from_depth", "to_depth"}), "collar"),
+    # The singular table replaced "silver.structures" in the same
+    # migration; its angles are alpha/beta/true_dip/true_dip_dir.
+    "silver.structure": ("id", frozenset({
+        "depth", "true_dip", "true_dip_dir", "alpha_angle", "beta_angle",
+    }), "collar"),
+    # value / detection_limit removed (PG-12): geochemistry is wide oxide
+    # columns plus an assay_values_ppm jsonb. The stored numeric columns
+    # are listed instead. The table carries workspace_id and project_id
+    # itself (2026_04_22_140000) and collar_id is NULL for surface samples
+    # (2026_08_25_010000), so it is scoped directly, not through collars.
+    "silver.geochemistry": ("geochem_id", frozenset({
+        "from_depth", "to_depth",
+        "sio2_wt_pct", "al2o3_wt_pct", "fe2o3_wt_pct", "mgo_wt_pct",
+        "cao_wt_pct", "na2o_wt_pct", "k2o_wt_pct",
+        "mg_number", "cia", "eu_anomaly",
+    }), "direct"),
+    "silver.surveys": ("survey_id", frozenset({"depth", "azimuth", "dip"}), "collar_full"),
+    # page_count: migration 2026_08_15_040000_add_page_count_to_silver_reports.
+    "silver.reports": ("report_id", frozenset({"page_count"}), "direct"),
+}
+
+
 @_metered("verify_numerical_claim")
 async def verify_numerical_claim(
     ctx: RunContext[AgentDeps],
@@ -2821,9 +2876,9 @@ async def verify_numerical_claim(
     verification of the LLM's own claims. Every allowlisted table is now scoped by
     ``ctx.deps.workspace_id`` / ``ctx.deps.project_id`` (bound whenever
     present — lenient/absent otherwise, matching ``acquire_scoped()``'s own
-    GUC-bind fallback for single-tenant / no-workspace call paths). Six
+    GUC-bind fallback for single-tenant / no-workspace call paths). Five
     of the eight tables (``silver.samples``, ``silver.lithology_logs``,
-    ``silver.alteration``, ``silver.structure``, ``silver.geochemistry``,
+    ``silver.alteration``, ``silver.structure``,
     ``silver.surveys``) don't carry both tenancy columns directly, so the
     scope is applied via a join to ``silver.collars`` on ``collar_id``.
 
@@ -2837,79 +2892,9 @@ async def verify_numerical_claim(
     Returns:
         NumericalClaimVerification with verified flag and the actual DB value.
     """
-    # Per-table column allowlist (P0 #2). Previously `column` was
-    # interpolated raw into the f-string below, letting an LLM-supplied
-    # `column="total_depth, (SELECT current_user)"` exfiltrate row
-    # contents. Now we whitelist the set of numeric columns any caller
-    # could plausibly want to verify, keyed by table.
-    #
-    # Only columns that store NUMERIC values (not text, geometry, arrays,
-    # or JSON) belong here — verify_numerical_claim returns a float.
-    #
-    # scope_mode drives how the tenancy WHERE clause + FROM clause are
-    # built below:
-    #   "direct"      — table carries workspace_id AND project_id itself.
-    #   "collar"      — table carries workspace_id itself; project_id only
-    #                   reachable via a join to silver.collars on collar_id.
-    #   "collar_full" — table carries neither column; both come from the
-    #                   silver.collars join.
-    allowed_by_table: dict[str, tuple[str, set[str], str]] = {
-        # (primary_key_column, allowed_value_columns, scope_mode)
-        "silver.collars": ("collar_id", {
-            "total_depth", "azimuth", "dip", "easting", "northing", "elevation",
-        }, "direct"),
-        "silver.samples": ("sample_id", {
-            "from_depth", "to_depth", "sample_length", "recovery",
-        }, "collar"),
-        "silver.lithology_logs": ("log_id", {
-            "from_depth", "to_depth", "rqd", "recovery",
-        }, "collar"),
-        # NOTE (2026-08-15 audit): pk_col was previously "alteration_id",
-        # which has never existed on this table — the real schema
-        # (database/migrations/2026_05_20_060400_create_silver_geological_singulars.php)
-        # names the PK "id". Fixed here so the tenancy join added below is
-        # actually functional rather than erroring on every call.
-        "silver.alteration": ("id", {
-            "from_depth", "to_depth", "intensity",
-        }, "collar"),
-        # NOTE (2026-08-15 audit): was "silver.structures" (plural) with
-        # pk_col "structure_id" — that table was DROPPED in the same
-        # migration above (zero rows at the time) in favour of the
-        # singular "silver.structure", whose PK is "id" and whose columns
-        # differ (alpha_angle/beta_angle/true_dip/true_dip_dir, not
-        # dip_direction/apparent_dip). Every call against the old name
-        # failed at the DB with "relation does not exist" — silently
-        # caught below and returned as unverifiable, so this was a dead
-        # entry, not a security issue, but it blocked writing a working
-        # tenancy join. Renamed + column set corrected to match the real
-        # table (see query_coverage_gap's _COVERAGE_ATTRIBUTES, which
-        # already uses "silver.structure").
-        "silver.structure": ("id", {
-            "depth", "true_dip", "true_dip_dir", "alpha_angle", "beta_angle",
-        }, "collar"),
-        "silver.geochemistry": ("geochem_id", {
-            "from_depth", "to_depth", "value", "detection_limit",
-        }, "collar_full"),
-        "silver.surveys": ("survey_id", {
-            "depth", "azimuth", "dip",
-        }, "collar_full"),
-        # NOTE (2026-08-15 audit): was "bronze.reports", which has never
-        # existed as a table (report metadata lives in "silver.reports" —
-        # bronze.* only holds pre-parse raw/manifest data). Renamed to the
-        # real table + its real PK ("report_id"). "version_number" is NOT
-        # a column on silver.reports (it lives on silver.document_versions,
-        # keyed by version_id, not report_id, reachable via
-        # document_versions.document_id -> reports.report_id if ever
-        # needed). Follow-up decision (Kyle, 2026-08-15): added
-        # "page_count" as a real NUMERIC column on silver.reports
-        # (migration 2026_08_15_040000_add_page_count_to_silver_reports),
-        # populated at ingestion time from the PDF page count already
-        # computed in app/hatchet_workflows/ingest_pdf.py's preflight step
-        # (pikepdf) and app/services/ingest/{pdf,tiff_ocr}_ingester.py
-        # (pdfminer.six / Pillow frame count) — previously computed and
-        # discarded rather than persisted.
-        "silver.reports": ("report_id", {"page_count"}, "direct"),
-    }
+    # Allowlist: NUMERIC_CLAIM_COLUMNS (module level, parity-tested against
+    # the migrations since audit PG-12).
+    allowed_by_table = NUMERIC_CLAIM_COLUMNS
 
     if table not in allowed_by_table:
         logger.error("verify_numerical_claim: disallowed table '%s'", table)
