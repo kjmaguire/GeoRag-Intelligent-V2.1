@@ -167,9 +167,9 @@ of the paths this section previously listed as live —
 
 What exists of the dashboard is scaffolding with nothing behind it:
 `app/Policies/DashboardPolicy.php` (its `viewPortfolio` / `viewProject` gates
-are defined in `AppServiceProvider` and checked by nothing),
-`resources/js/Layouts/DashboardLayout.tsx` (imported only by its own test),
-and `resources/js/Types/Dashboard.ts` (imported only by that layout). The
+are defined in `AppServiceProvider` and checked by nothing). The
+`DashboardLayout.tsx` layout and `Types/Dashboard.ts` that went with it
+(imported by nothing but a test) were deleted on 2026-09-29 (FE-22). The
 static JSON fixtures that once backed these endpoints
 (`database/fixtures/dashboard/`, 14 files) and the config that gated them
 (`config/dashboard.php`, `DASHBOARD_USE_FIXTURES`) were removed on the

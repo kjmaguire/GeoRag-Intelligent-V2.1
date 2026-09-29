@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import GeoPlot from '../GeoPlot';
+import { desurveyHole, type OrientationSource } from '@/lib/desurvey';
 
 interface Survey {
     depth: number;
@@ -25,6 +26,7 @@ interface OrientationSpiralProps {
 }
 
 interface Trajectory {
+    /** One entry per path point: measured depth + attitude there. */
     pts: { depth: number; azimuth: number; dip: number }[];
     eOffset: number[];
     nOffset: number[];
@@ -33,55 +35,36 @@ interface Trajectory {
     alongHoleHoriz: number[];  // cumulative horizontal distance from collar
     elev: number;
     hasData: boolean;
+    surveyed: boolean;
+    orientation: OrientationSource;
 }
 
 /**
- * Walk the azimuth+dip survey stations and accumulate XYZ offsets using
- * the minimum-curvature-style per-segment projection we already use in
- * the 3-D spiral. Returns all the derived arrays so downstream renders
- * (Plan / Section / 3D) can reuse the same trajectory without recompute.
+ * Desurvey the hole with the shared minimum-curvature implementation
+ * (lib/desurvey) and derive the arrays the Plan / Section / 3D renders use.
+ *
+ * This used to average the two stations' azimuths linearly — 355° and 5°
+ * gave 180°, drawing that segment backwards — and needed two stations, so a
+ * collar-only hole plotted nothing. It now extends to TD and reports whether
+ * the path came from surveys at all (FE-8, 2026-09-29).
  */
-function buildTrajectory(
+export function buildTrajectory(
     surveys: Survey[],
     collarAzimuth: number | null,
     collarDip: number | null,
     collarElevation: number | null,
+    totalDepth: number | null = null,
 ): Trajectory {
-    const pts: { depth: number; azimuth: number; dip: number }[] = [];
-    if (collarAzimuth != null && collarDip != null) {
-        pts.push({ depth: 0, azimuth: collarAzimuth, dip: collarDip });
-    }
-    for (const s of surveys) {
-        if (s.azimuth != null && s.dip != null) {
-            pts.push({ depth: s.depth, azimuth: s.azimuth, dip: s.dip });
-        }
-    }
-    pts.sort((a, b) => a.depth - b.depth);
-
-    const eOffset: number[] = [0];
-    const nOffset: number[] = [0];
-    const zDrop: number[] = [0];
+    const hole = desurveyHole({ azimuth: collarAzimuth, dip: collarDip, totalDepth }, surveys);
+    const pts = hole.path.map((p) => ({ depth: p.md, azimuth: p.azimuth, dip: p.dip }));
+    const eOffset = hole.path.map((p) => p.x);
+    const nOffset = hole.path.map((p) => p.y);
+    const zDrop = hole.path.map((p) => p.z);
     const alongHoleHoriz: number[] = [0];
-
-    for (let i = 1; i < pts.length; i++) {
-        const a = pts[i - 1];
-        const b = pts[i];
-        const dMd = b.depth - a.depth;
-        if (dMd <= 0) continue;
-        const avgAz = 0.5 * (a.azimuth + b.azimuth);
-        const avgDip = 0.5 * (a.dip + b.dip);
-        const azRad = (avgAz * Math.PI) / 180;
-        const dipRad = (Math.abs(avgDip) * Math.PI) / 180;
-        const horiz = dMd * Math.cos(dipRad);
-        const vert = dMd * Math.sin(dipRad);
-        const lastN = nOffset[nOffset.length - 1];
-        const lastE = eOffset[eOffset.length - 1];
-        const lastZ = zDrop[zDrop.length - 1];
-        const lastH = alongHoleHoriz[alongHoleHoriz.length - 1];
-        nOffset.push(lastN + horiz * Math.cos(azRad));
-        eOffset.push(lastE + horiz * Math.sin(azRad));
-        zDrop.push(lastZ - vert);
-        alongHoleHoriz.push(lastH + horiz);
+    for (let i = 1; i < hole.path.length; i++) {
+        const a = hole.path[i - 1];
+        const b = hole.path[i];
+        alongHoleHoriz.push(alongHoleHoriz[i - 1] + Math.hypot(b.x - a.x, b.y - a.y));
     }
 
     const elev = collarElevation ?? 0;
@@ -95,7 +78,10 @@ function buildTrajectory(
         zElev,
         alongHoleHoriz,
         elev,
-        hasData: pts.length >= 2,
+        // A path needs length; a collar attitude + TD is enough.
+        hasData: hole.path.length >= 2 && hole.orientation !== 'assumed_vertical',
+        surveyed: hole.surveyed,
+        orientation: hole.orientation,
     };
 }
 
@@ -108,21 +94,36 @@ export default function OrientationSpiral({
     view = '3d',
 }: OrientationSpiralProps) {
     const traj = useMemo(
-        () => buildTrajectory(surveys, collarAzimuth, collarDip, collarElevation),
-        [surveys, collarAzimuth, collarDip, collarElevation],
+        () => buildTrajectory(surveys, collarAzimuth, collarDip, collarElevation, totalDepth),
+        [surveys, collarAzimuth, collarDip, collarElevation, totalDepth],
     );
 
     if (!traj.hasData) {
         return (
             <div className="flex items-center justify-center h-full min-h-[280px] text-gray-500 text-sm">
-                Need at least 2 survey stations (or a collar orientation + 1 survey) to plot a trajectory.
+                Need survey stations, or a collar azimuth + dip with a total depth, to plot a trajectory.
             </div>
         );
     }
 
-    return view === '2d'
+    const body = view === '2d'
         ? <TwoDViews traj={traj} totalDepth={totalDepth} collarElevation={collarElevation} />
         : <ThreeDView traj={traj} totalDepth={totalDepth} collarElevation={collarElevation} />;
+
+    if (traj.surveyed) return body;
+    return (
+        <div className="flex flex-col h-full min-h-0">
+            <div
+                role="note"
+                data-testid="spiral-unsurveyed"
+                className="text-[10px] font-mono mb-1 px-2 py-1 rounded border shrink-0"
+                style={{ color: '#f59e0b', borderColor: '#f59e0b55' }}
+            >
+                UNSURVEYED — no downhole survey rows; the path is projected straight along the collar azimuth/dip to TD.
+            </div>
+            <div className="flex-1 min-h-0">{body}</div>
+        </div>
+    );
 }
 
 // ── 3-D view (unchanged from previous implementation) ─────────────────

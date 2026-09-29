@@ -7,9 +7,26 @@ messages so the frontend can render actionable feedback.
 from __future__ import annotations
 
 import logging
+import re
 from enum import StrEnum
 
 logger = logging.getLogger(__name__)
+
+
+class RetrievalBackendUnavailable(RuntimeError):
+    """Document retrieval could not run (audit RAG-12, 2026-09-29).
+
+    Raised by the agentic graph's execute node when search_documents came
+    back empty because a backend FAILED — sparse encoder down, Qdrant error
+    — rather than because nothing matched. Answering anyway produced either
+    a false "no passages cleared the relevance threshold" refusal or a
+    normal-looking answer built without documents, with nothing telling
+    the user. There is no dense-only fallback by design (GI-11).
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"document retrieval unavailable: {reason}")
 
 
 class ErrorCode(StrEnum):
@@ -21,6 +38,7 @@ class ErrorCode(StrEnum):
     VALIDATION_FAILED = "VALIDATION_FAILED"
     RATE_LIMITED = "RATE_LIMITED"
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
+    RETRIEVAL_UNAVAILABLE = "RETRIEVAL_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -59,11 +77,54 @@ USER_MESSAGES: dict[ErrorCode, str] = {
         "questions are paused. An administrator can raise the limit; "
         "otherwise it resets at the start of next month."
     ),
+    ErrorCode.RETRIEVAL_UNAVAILABLE: (
+        "Document search is temporarily unavailable, so this question could "
+        "not be checked against your reports. Please try again in a few "
+        "minutes."
+    ),
     ErrorCode.INTERNAL_ERROR: (
         "An unexpected error occurred. The team has been notified. "
         "Please try again or rephrase your question."
     ),
 }
+
+_HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
+
+
+def _provider_error_code(exc: Exception) -> ErrorCode | None:
+    """Model-provider failures that carry a meaning the user can act on.
+
+    Audit AGT-14: CoherePreStreamError / CohereResponseShapeError (and the
+    Bedrock pre-stream error) are RuntimeErrors whose text matched no
+    branch below, so a provider throttle told the user "An unexpected error
+    occurred. The team has been notified."
+    """
+    provider_types: list[type] = []
+    try:
+        from app.agent.llm_cohere import (  # noqa: PLC0415
+            CoherePreStreamError,
+            CohereResponseShapeError,
+        )
+
+        provider_types += [CoherePreStreamError, CohereResponseShapeError]
+    except ImportError:  # pragma: no cover — adapter always importable in app
+        logger.debug("classify_error: llm_cohere unavailable", exc_info=True)
+    try:
+        from app.agent.llm_bedrock import BedrockPreStreamError  # noqa: PLC0415
+
+        provider_types.append(BedrockPreStreamError)
+    except ImportError:  # pragma: no cover
+        logger.debug("classify_error: llm_bedrock unavailable", exc_info=True)
+
+    if not provider_types or not isinstance(exc, tuple(provider_types)):
+        return None
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        m = _HTTP_STATUS_RE.search(str(exc))
+        status = int(m.group(1)) if m else None
+    if status == 429 or "throttl" in str(exc).lower():
+        return ErrorCode.RATE_LIMITED
+    return ErrorCode.LLM_UNAVAILABLE
 
 
 def classify_error(exc: Exception) -> tuple[ErrorCode, str]:
@@ -96,6 +157,16 @@ def classify_error(exc: Exception) -> tuple[ErrorCode, str]:
             type(exc).__name__,
             exc_info=True,
         )
+
+    if isinstance(exc, RetrievalBackendUnavailable):
+        return (
+            ErrorCode.RETRIEVAL_UNAVAILABLE,
+            USER_MESSAGES[ErrorCode.RETRIEVAL_UNAVAILABLE],
+        )
+
+    provider_code = _provider_error_code(exc)
+    if provider_code is not None:
+        return provider_code, USER_MESSAGES[provider_code]
 
     if isinstance(exc, asyncio.TimeoutError):
         return ErrorCode.TIMEOUT, USER_MESSAGES[ErrorCode.TIMEOUT]

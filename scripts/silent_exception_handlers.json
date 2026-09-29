@@ -8,7 +8,7 @@
     "AttributeError+ImportError": 1,
     "AttributeError+TypeError+ValueError": 1,
     "CancelledError": 1,
-    "Exception": 97,
+    "Exception": 96,
     "FileNotFoundError": 1,
     "HTTPError+ValueError": 2,
     "ImportError": 31,
@@ -38,7 +38,7 @@
     "ValueError": 32
   },
   "files": {
-    "src/fastapi/app/agent/agentic_retrieval/nodes.py": 4,
+    "src/fastapi/app/agent/agentic_retrieval/nodes.py": 3,
     "src/fastapi/app/agent/agentic_retrieval/qaqc_availability.py": 1,
     "src/fastapi/app/agent/context_budget.py": 1,
     "src/fastapi/app/agent/egress_gate.py": 2,
@@ -135,5 +135,5 @@
     "src/georag_geoparsers/georag_geoparsers/xlsx_parser.py": 1,
     "src/georag_geoparsers/georag_geoparsers/xyz_parser.py": 1
   },
-  "total": 233
+  "total": 232
 }

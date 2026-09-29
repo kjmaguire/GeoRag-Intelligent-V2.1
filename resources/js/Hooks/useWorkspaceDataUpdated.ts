@@ -44,6 +44,16 @@ export interface WorkspaceDataUpdatedEvent {
 
 const DEBOUNCE_MS = 2000;
 
+/** Latest payload, with the union of both events' affected_types (order kept). */
+export function mergeDataUpdatedEvents(
+    pending: WorkspaceDataUpdatedEvent | null,
+    next: WorkspaceDataUpdatedEvent,
+): WorkspaceDataUpdatedEvent {
+    if (pending === null) return next;
+    const types = Array.from(new Set([...(pending.affected_types ?? []), ...(next.affected_types ?? [])]));
+    return { ...next, affected_types: types };
+}
+
 export function useWorkspaceDataUpdated(
     projectId: string | null | undefined,
     callback: (event: WorkspaceDataUpdatedEvent) => void,
@@ -87,10 +97,13 @@ export function useWorkspaceDataUpdated(
             const event = raw as WorkspaceDataUpdatedEvent;
             if (event.project_id !== projectId) return;
 
-            // Always remember the latest event (so the trailing reload
-            // works against the freshest payload), reset the timer on
-            // every arrival — classic trailing-edge debounce.
-            pendingEvent = event;
+            // Trailing-edge debounce that MERGES: the fired event is the
+            // latest payload with the union of every affected_types seen in
+            // the window. Keeping only the last event dropped earlier types —
+            // a collar CSV and a PDF finishing within 2 s arrived as just
+            // ['reports'], and pages filtering on 'collars' never reloaded
+            // (FE-16).
+            pendingEvent = mergeDataUpdatedEvents(pendingEvent, event);
             if (debounceTimer !== null) {
                 clearTimeout(debounceTimer);
             }

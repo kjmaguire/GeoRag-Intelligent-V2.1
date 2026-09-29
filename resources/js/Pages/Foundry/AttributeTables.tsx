@@ -1,5 +1,4 @@
 import { Head, Link } from '@inertiajs/react';
-import AppLayout from '@/Layouts/AppLayout';
 import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import ReportsViewBar from '@/Components/Foundry/ReportsViewBar';
@@ -105,7 +104,7 @@ export default function FoundryAttributeTables({
     const totalRows = tables.reduce((sum, t) => sum + t.rows, 0);
 
     return (
-        <AppLayout>
+        <>
             <Head
                 title={
                     table
@@ -192,7 +191,7 @@ export default function FoundryAttributeTables({
                     </div>
                 )}
             </div>
-        </AppLayout>
+        </>
     );
 }
 

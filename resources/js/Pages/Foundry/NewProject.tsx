@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Head } from '@inertiajs/react';
 import JSZip from 'jszip';
-import AppLayout from '@/Layouts/AppLayout';
 import { filesFromDataTransfer } from '@/lib/dropFiles';
+import { describeUploadFailure, useUploadLimit } from '@/lib/uploadLimit';
 import { PageHeader, Card } from '@/Components/Foundry/primitives';
 import { COMMODITIES, Field, inputStyle } from '@/Components/Foundry/projectFormFields';
 import {
@@ -72,7 +72,9 @@ const STATES_BY_COUNTRY: Record<string, Array<{ code: string; name: string }>> =
 // picker, DataImportWizard and UploadController cannot drift apart again —
 // they had, in both directions. See resources/js/lib/uploadCategories.ts.
 
-const MAX_FILE_BYTES = 6 * 1024 * 1024 * 1024; // 6 GB — matches UploadController + Octane limits (ZIP archive support)
+// The upload ceiling comes from the server (lib/uploadLimit — the
+// `upload_limit` shared prop). This was a hard-coded 6 GB "matching
+// UploadController + Octane", which had been 512 MB for weeks (FE-2).
 
 
 function humanSize(bytes: number): string {
@@ -233,6 +235,12 @@ interface QueuedFile {
     category: Category | null; // null = unsupported
     status: 'queued' | 'uploading' | 'done' | 'error';
     error?: string;
+    /**
+     * Set when THIS row's upload was attempted and failed — as opposed to a
+     * row marked 'error' before submit (unsupported, CRS copy problem). Only
+     * these are offered for retry into the already-created project.
+     */
+    uploadFailed?: boolean;
     /** Advisory note shown beside the row. Not a failure — the file still uploads. */
     hint?: string;
     /**
@@ -320,6 +328,11 @@ export default function FoundryNewProject() {
     const [submitting, setSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
     const [submitProgress, setSubmitProgress] = useState<{ done: number; total: number } | null>(null);
+    const uploadLimit = useUploadLimit();
+    const MAX_FILE_BYTES = uploadLimit.bytes;
+    // The project, once created. A retry after some uploads failed re-uploads
+    // only the failed rows into THIS project; it never creates a second one.
+    const [createdProject, setCreatedProject] = useState<{ id: string; slug?: string } | null>(null);
     const [skipped, setSkipped] = useState<{ names: string[] } | null>(null);
     /** Incomplete-set verdicts and orphaned bundle members, each with the
      *  reason. Separate from `skipped`, which means "we do not accept this
@@ -570,7 +583,7 @@ export default function FoundryNewProject() {
                 parseEpsg(q.sourceEpsgText ?? '').error !== undefined,
         );
         return { ok, unsupported, oversize, bytes, badEpsg };
-    }, [queue]);
+    }, [queue, MAX_FILE_BYTES]);
 
     /**
      * True when this row carries an EPSG code the upload will actually send.
@@ -609,6 +622,8 @@ export default function FoundryNewProject() {
               )
             : null;
 
+    const failedUploads = queue.filter((q) => q.uploadFailed === true);
+
     function next() {
         const i = STEPS.indexOf(step);
         if (i < STEPS.length - 1) setStep(STEPS[i + 1]);
@@ -629,52 +644,64 @@ export default function FoundryNewProject() {
             };
             if (csrf) headers['X-CSRF-TOKEN'] = csrf;
 
-            // 1. Create project — matches POST /api/v1/projects (ProjectController@store).
-            // Body fields mirror what Pages/NewProject.tsx already sends.
-            const createRes = await fetch('/api/v1/projects', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { ...headers, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    project_name: form.name,
-                    company: form.operator,
-                    commodity: form.commodity,
-                    // region carries the state/province code (e.g. "WY", "ON")
-                    // to match existing seeded projects. Country scopes the UI
-                    // picker but isn't a separate column on silver.projects.
-                    region: form.state,
-                    orientation_reference: 'BOH',
-                    // Omitted entirely when blank rather than sent as null:
-                    // the column stays NULL either way, and a body that
-                    // carries the key only when it has a value is what the
-                    // validator's `nullable` rule reads most predictably.
-                    ...(projectEpsg.epsg !== undefined
-                        ? { crs_epsg: projectEpsg.epsg }
-                        : {}),
-                }),
-            });
-            const createJson = await createRes.json().catch(() => ({}));
-            if (!createRes.ok) {
-                throw new Error(createJson.message || `Project create failed (HTTP ${createRes.status})`);
+            let projectId: string | undefined = createdProject?.id;
+            let projectSlug: string | undefined = createdProject?.slug;
+            if (!createdProject) {
+                // 1. Create project — matches POST /api/v1/projects (ProjectController@store).
+                // Body fields mirror what Pages/NewProject.tsx already sends.
+                const createRes = await fetch('/api/v1/projects', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        project_name: form.name,
+                        company: form.operator,
+                        commodity: form.commodity,
+                        // region carries the state/province code (e.g. "WY", "ON")
+                        // to match existing seeded projects. Country scopes the UI
+                        // picker but isn't a separate column on silver.projects.
+                        region: form.state,
+                        orientation_reference: 'BOH',
+                        // Omitted entirely when blank rather than sent as null:
+                        // the column stays NULL either way, and a body that
+                        // carries the key only when it has a value is what the
+                        // validator's `nullable` rule reads most predictably.
+                        ...(projectEpsg.epsg !== undefined
+                            ? { crs_epsg: projectEpsg.epsg }
+                            : {}),
+                    }),
+                });
+                const createJson = await createRes.json().catch(() => ({}));
+                if (!createRes.ok) {
+                    throw new Error(createJson.message || `Project create failed (HTTP ${createRes.status})`);
+                }
+                projectId = createJson.data?.project_id ?? createJson.project_id;
+                projectSlug = createJson.data?.slug ?? createJson.slug;
+                if (!projectId) throw new Error('Project created but no project_id returned.');
+                setCreatedProject({ id: projectId, slug: projectSlug });
             }
-            const projectId: string | undefined =
-                createJson.data?.project_id ?? createJson.project_id;
-            const projectSlug: string | undefined =
-                createJson.data?.slug ?? createJson.slug;
-            if (!projectId) throw new Error('Project created but no project_id returned.');
 
             // 2. Upload each queued file. Skip unsupported + oversize; flag them.
             // status !== 'error' matters: the queue can hold a row the UI has
             // already told the user is unusable, and this filter used to
-            // ignore that and upload it anyway.
-            const uploadable = queue.filter(
-                (q) => q.category !== null && q.size <= MAX_FILE_BYTES && q.status !== 'error',
-            );
+            // ignore that and upload it anyway. On a retry (project already
+            // created) only the rows whose upload failed go again.
+            const uploadable = createdProject
+                ? queue.filter(
+                      (q) =>
+                          q.category !== null &&
+                          q.size <= MAX_FILE_BYTES &&
+                          (q.uploadFailed === true || q.status === 'queued'),
+                  )
+                : queue.filter(
+                      (q) => q.category !== null && q.size <= MAX_FILE_BYTES && q.status !== 'error',
+                  );
             setSubmitProgress({ done: 0, total: uploadable.length });
 
             let done = 0;
+            let failed = 0;
             for (const qf of uploadable) {
-                setQueue((q) => q.map((x) => (x.id === qf.id ? { ...x, status: 'uploading' } : x)));
+                setQueue((q) => q.map((x) => (x.id === qf.id ? { ...x, status: 'uploading', error: undefined, uploadFailed: false } : x)));
                 // `source_epsg`, an integer, and only for a category whose
                 // trigger carries it. Same field name and same type as the
                 // one the tabular ingest already takes: one concept, one
@@ -706,10 +733,12 @@ export default function FoundryNewProject() {
                                           ...x,
                                           status: 'error',
                                           error: `Could not drop the copied ${member}: ${why}`,
+                                          uploadFailed: true,
                                       }
                                     : x,
                             ),
                         );
+                        failed += 1;
                         done += 1;
                         setSubmitProgress({ done, total: uploadable.length });
                         continue;
@@ -729,6 +758,7 @@ export default function FoundryNewProject() {
                 if (donated?.wkt && donateCrs && !explicitEpsg) {
                     fd.append('source_crs_wkt', donated.wkt);
                 }
+                let failure: string | null = null;
                 try {
                     const upRes = await fetch(`/api/v1/projects/${projectId}/upload`, {
                         method: 'POST',
@@ -738,21 +768,43 @@ export default function FoundryNewProject() {
                     });
                     const upJson = await upRes.json().catch(() => ({}));
                     if (!upRes.ok) {
-                        throw new Error(upJson.message || `HTTP ${upRes.status}`);
+                        failure = describeUploadFailure(upRes.status, upJson.message, qf.size, uploadLimit);
                     }
+                } catch {
+                    // fetch threw: the connection was dropped (Swoole does this
+                    // to an over-cap body) or the network failed.
+                    failure = describeUploadFailure(null, undefined, qf.size, uploadLimit);
+                }
+                if (failure === null) {
                     setQueue((q) =>
-                        q.map((x) => (x.id === qf.id ? { ...x, status: 'done' } : x)),
+                        q.map((x) => (x.id === qf.id ? { ...x, status: 'done', uploadFailed: false } : x)),
                     );
-                } catch (err) {
-                    const msg = err instanceof Error ? err.message : String(err);
+                } else {
+                    failed += 1;
+                    const msg = failure;
                     setQueue((q) =>
                         q.map((x) =>
-                            x.id === qf.id ? { ...x, status: 'error', error: msg } : x,
+                            x.id === qf.id ? { ...x, status: 'error', error: msg, uploadFailed: true } : x,
                         ),
                     );
                 }
                 done += 1;
                 setSubmitProgress({ done, total: uploadable.length });
+            }
+
+            // FE-1: navigate ONLY when every upload succeeded. This used to
+            // navigate unconditionally, and the hard navigation threw away
+            // the per-row errors before anything rendered them — three of
+            // ten files rejected and nothing said so. Stay, list the failed
+            // rows, and offer a retry into the project that now exists.
+            if (failed > 0) {
+                setSubmitError(
+                    `The project was created, but ${failed} of ${uploadable.length} file${uploadable.length === 1 ? '' : 's'} failed to upload. ` +
+                        'Retrying re-uploads only the failed files into this project.',
+                );
+                setSubmitting(false);
+                setSubmitProgress(null);
+                return;
             }
 
             // 3. Land the user on Ingestion Runs, not the bare Overview —
@@ -773,7 +825,7 @@ export default function FoundryNewProject() {
     }
 
     return (
-        <AppLayout>
+        <>
             <Head title="New project — GeoRAG" />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
@@ -1076,7 +1128,7 @@ export default function FoundryNewProject() {
                                                     <span style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}> · {queueSummary.unsupported.length} unsupported</span>
                                                 )}
                                                 {queueSummary.oversize.length > 0 && (
-                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> · {queueSummary.oversize.length} over 6 GB</span>
+                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> · {queueSummary.oversize.length} over {uploadLimit.human}</span>
                                                 )}
                                             </div>
                                             <div className="flex-1" />
@@ -1241,7 +1293,7 @@ export default function FoundryNewProject() {
                                                             <span />
                                                         )}
                                                         <span className="text-[10px] font-mono uppercase tracking-wider text-center" style={{ color: oversize ? 'var(--danger, oklch(0.65 0.2 30))' : 'var(--fg-3)' }}>
-                                                            {oversize ? '>6GB' : ''}
+                                                            {oversize ? `>${uploadLimit.human}` : ''}
                                                         </span>
                                                         <button
                                                             type="button"
@@ -1282,7 +1334,7 @@ export default function FoundryNewProject() {
                                         )}
                                         {queueSummary.oversize.length > 0 && (
                                             <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
-                                                {' · '}{queueSummary.oversize.length} over 6 GB will be skipped
+                                                {' · '}{queueSummary.oversize.length} over the {uploadLimit.human} limit will be skipped
                                             </span>
                                         )}
                                         {queueSummary.badEpsg.length > 0 && (
@@ -1344,19 +1396,43 @@ export default function FoundryNewProject() {
                             >
                                 {submitting
                                     ? (submitProgress ? `Uploading ${submitProgress.done}/${submitProgress.total}…` : 'Creating…')
-                                    : queueSummary.ok.length > 0
+                                    : failedUploads.length > 0
+                                        ? `Retry ${failedUploads.length} failed upload${failedUploads.length === 1 ? '' : 's'} →`
+                                        : queueSummary.ok.length > 0
                                         ? `Create project + upload ${queueSummary.ok.length} file${queueSummary.ok.length === 1 ? '' : 's'} →`
                                         : 'Create project →'}
                             </button>
                         )}
                     </footer>
                     {submitError && (
-                        <div className="mt-3 text-[11px]" style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                        <div role="alert" className="mt-3 text-[11px]" style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
                             {submitError}
+                        </div>
+                    )}
+                    {failedUploads.length > 0 && createdProject && !submitting && (
+                        <div className="mt-3 rounded border px-3 py-2" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}>
+                            <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>
+                                Failed uploads
+                            </div>
+                            <ul className="space-y-0.5" data-testid="failed-uploads">
+                                {failedUploads.map((q) => (
+                                    <li key={q.id} className="text-[11px]">
+                                        <span style={{ color: 'var(--fg-0)' }}>{q.name}</span>
+                                        <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> — {q.error}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                            <a
+                                href={`/projects/${createdProject.slug ?? createdProject.id}/ingestion-runs`}
+                                className="inline-block mt-2 text-[10px] font-mono uppercase tracking-wider"
+                                style={{ color: 'var(--fg-2)' }}
+                            >
+                                Continue without them → Ingestion runs
+                            </a>
                         </div>
                     )}
                 </div>
             </div>
-        </AppLayout>
+        </>
     );
 }

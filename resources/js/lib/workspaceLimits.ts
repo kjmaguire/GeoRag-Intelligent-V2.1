@@ -15,7 +15,8 @@ export interface CountLimit {
 export interface WorkspaceTruncation {
     collars: CountLimit;
     interval_holes: CountLimit;
-    survey_holes_downsampled: number;
+    /** Sent in the deferred 3D group since FE-11; absent until it loads. */
+    survey_holes_downsampled?: number;
 }
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
@@ -34,7 +35,7 @@ export function describeTruncation(t: WorkspaceTruncation | null | undefined): s
         notices.push(`3D lithology shows ${fmt(t.interval_holes.shown)} of ${fmt(t.interval_holes.total)} holes.`);
     }
     if ((t.survey_holes_downsampled ?? 0) > 0) {
-        notices.push(`Survey stations thinned for ${fmt(t.survey_holes_downsampled)} holes (first and last kept).`);
+        notices.push(`Survey stations thinned for ${fmt(t.survey_holes_downsampled ?? 0)} holes (first and last kept).`);
     }
     return notices;
 }

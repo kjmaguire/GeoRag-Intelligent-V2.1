@@ -1055,6 +1055,29 @@ def _query_response_cache_key(deps: AgentDeps, query: str) -> str | None:
     )
 
 
+def _is_cacheable_response(result: GeoRAGResponse) -> bool:
+    """Only a clean, cited, complete answer may be replayed (audit AGT-7).
+
+    The 5-minute cache used to store every GeoRAGResponse — including the
+    Layer 1 refusal produced when retrieval timed out, and
+    BUDGET_EXHAUSTED_FALLBACK, whose text tells the user to retry — so the
+    retry inside five minutes was served the cached apology.
+    """
+    from app.agent.guards import _drop_sentinel_citations  # noqa: PLC0415
+    from app.agent.hallucination.layer1_retrieval import build_refusal_text  # noqa: PLC0415
+    from app.agent.llm_common import BUDGET_EXHAUSTED_FALLBACK  # noqa: PLC0415
+
+    text = (result.text or "").strip()
+    return (
+        result.validation_state == "clean"
+        and not result.refusal_payload
+        and not result.degraded_sources
+        and bool(_drop_sentinel_citations(result.citations))
+        and BUDGET_EXHAUSTED_FALLBACK.strip() not in text
+        and build_refusal_text().strip() not in text
+    )
+
+
 async def run_deterministic_rag(
     query: str,
     deps: AgentDeps,
@@ -1200,10 +1223,13 @@ async def run_deterministic_rag(
             token_callback=token_callback,
             bind_callback=bind_callback,
         )
-        if _cache_key is not None:
+        if _cache_key is not None and _is_cacheable_response(result):
             try:
+                # answer_run_id stripped (AGT-7): a hit is not that run, and
+                # feedback / the evidence inspector must not attach to it.
                 await deps.redis_client.setex(
-                    _cache_key, 300, result.model_dump_json(),
+                    _cache_key, 300,
+                    result.model_copy(update={"answer_run_id": None}).model_dump_json(),
                 )
             except Exception:
                 logger.debug(

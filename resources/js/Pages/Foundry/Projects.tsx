@@ -1,5 +1,4 @@
 import { Head, Link, router } from '@inertiajs/react';
-import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Pill, StatusDot, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceActivity } from '@/Hooks/useWorkspaceActivity';
 import type { ProjectsIndexProps, ProjectStatus } from '@/Types/Foundry';
@@ -19,7 +18,7 @@ export default function FoundryProjects({ workspace_id, projects, empty }: Proje
     });
 
     return (
-        <AppLayout>
+        <>
             <Head title="Projects — GeoRAG" />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
@@ -84,7 +83,7 @@ export default function FoundryProjects({ workspace_id, projects, empty }: Proje
                     </section>
                 )}
             </div>
-        </AppLayout>
+        </>
     );
 }
 

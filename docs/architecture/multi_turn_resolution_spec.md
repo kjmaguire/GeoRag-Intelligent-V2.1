@@ -32,23 +32,33 @@ this order (longest / most-specific phrases tested first):
 
 ### Class 1 — Pronoun coreference
 
-Possessive (`its`, `their`) and nominative (`it`, `they`, `that`,
-`those`, `this`) pronouns. Each pronoun has a default entity-type
-bias:
+Possessive (`its`, `their`) and nominative/object (`it`, `they`,
+`them`) pronouns. Each pronoun has a default entity-type bias:
 
-| Pronoun | Bias | Possessive form? |
-|---|---|---|
-| `its` | hole | yes — renders as `X's` |
-| `their` | hole | yes — renders as `X's` |
-| `it` | hole | no |
-| `they` | hole | no |
-| `that` | hole | no |
-| `those` | hole | no |
-| `this` | property | no |
+| Pronoun | Bias | Secondary | Possessive form? |
+|---|---|---|---|
+| `its` | hole | property | yes — renders as `X's` |
+| `their` | hole | — | yes — renders as `X's` |
+| `it` | hole | property | no |
+| `they` | hole | — | no |
+| `them` | hole | — | no |
 
-When the type-specific recency lookup misses, the resolver falls back
-to the **most recent entity of any type**. Pronouns are inherently
-ambiguous; we choose recency over silence.
+*Corrected 2026-09-29 (audit AGT-1):* this table used to list `that`,
+`those` and `this` as bare pronouns and said a lookup miss fell back to
+**the most recent entity of any type** ("recency over silence"). In
+practice those three words are nearly always determiners or
+relativizers ("assays **that** exceed 2 g/t", "what does **this**
+mean"), and the rewrite replaced them with a hole ID for every
+downstream node. Now:
+
+- `that` / `this` / `those` resolve only inside the typed demonstratives
+  of Class 2 (`that hole`, `this deposit`, `those assays`).
+- An expletive `it` ("it is possible that", "is it likely", "it seems",
+  "does it take") is not a reference and is left alone.
+- There is no any-type fallback. A miss on the preferred type tries
+  the secondary type only; otherwise the pronoun stays unresolved.
+- If the most recent turn naming the type names **more than one**
+  entity of it, the pronoun is ambiguous and stays unresolved.
 
 ### Class 2 — Demonstrative reference
 
@@ -148,9 +158,16 @@ class ResolvedQuery:
 **Overall confidence:**
 
 - `1.0` when no references found in the query (pristine pass-through)
-- `1.0 - (unresolved / total)` otherwise
-- Each reference that lacked a referent in history bumps the
-  unresolved count without changing the query text
+- otherwise `(1.0 - unresolved / total) × min(per-step confidence)` —
+  *corrected 2026-09-29:* it used to be the resolved fraction alone, so
+  a rewrite resting on a 0.75 guess reported 1.0
+- Each reference that lacked a referent in history (or was ambiguous)
+  bumps the unresolved count without changing the query text
+- `resolve_node` does not substitute a rewrite whose overall confidence
+  is below `REWRITE_MIN_CONFIDENCE` (0.6); the user's query is kept.
+- The synthesis model is always shown the user's original question;
+  when a rewrite was applied it follows as a labelled reading
+  (`nodes._question_for_llm`).
 
 The orchestrator uses `overall_confidence` as a demotion signal — a low
 confidence on a resolved query should propagate to the answer's

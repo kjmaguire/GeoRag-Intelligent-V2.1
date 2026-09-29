@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import GeoPlot from '../GeoPlot';
+import { describeDesurvey, desurveyCollars, type PathPoint } from '@/lib/desurvey';
 
 interface Collar {
     collar_id: string;
@@ -11,6 +12,8 @@ interface Collar {
     northing: number | null;
     hole_type: string | null;
     status: string | null;
+    /** Needed to extend a hole past its last station (or an unsurveyed hole) to TD. */
+    total_depth?: number | null;
 }
 
 interface Survey { collar_id: string; depth: number; azimuth: number | null; dip: number | null; }
@@ -37,89 +40,94 @@ const TYPE_COLORS: Record<string, string> = {
 
 /**
  * Render every drill hole in the project as a 3-D polyline in shared
- * UTM-ish space (easting / northing / elevation). Each hole is
- * integrated from its collar + survey stations using the same min-
- * curvature-style step we use in the per-hole OrientationSpiral, then
- * placed at the collar's geographic coords so the whole campaign
- * appears in one rotatable scene.
+ * easting / northing / elevation space. Each hole is desurveyed with minimum
+ * curvature (lib/desurvey — the same method as the server-side traces) and
+ * extended to TD along its last attitude.
+ *
+ * Holes with no downhole survey rows are drawn along their collar
+ * azimuth/dip, DASHED, with an open-circle collar, and the part of any hole
+ * beyond its deepest survey is dashed too — a projection must not look like
+ * a measurement (FE-8, 2026-09-29). The caption above the plot says how many
+ * of each there are.
  *
  * Purpose: spot drilling-pattern gaps, overlapping targets, and the
  * overall geometry of the drill array relative to the AOI.
  */
 export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' }: Props) {
-    const { traces, layout, hasData } = useMemo(() => {
-        if (collars.length === 0) return { traces: [], layout: {}, hasData: false };
-
-        // Index surveys by collar_id for fast lookup.
-        const surveysByCollar: Record<string, Survey[]> = {};
-        for (const s of surveys) {
-            (surveysByCollar[s.collar_id] = surveysByCollar[s.collar_id] || []).push(s);
-        }
+    const { traces, layout, hasData, caption } = useMemo(() => {
+        if (collars.length === 0) return { traces: [], layout: {}, hasData: false, caption: '' };
 
         const palette = colorBy === 'type' ? TYPE_COLORS : STATUS_COLORS;
         const colorKey = (c: Collar) => (colorBy === 'type' ? c.hole_type : c.status) ?? 'unknown';
 
+        const holes = desurveyCollars(collars, surveys);
+
         // Group traces by colour key so each category gets one legend row.
         const groups: Record<string, Record<string, unknown>[]> = {};
+        let anyProjected = false;
 
         for (const c of collars) {
-            if (c.easting == null || c.northing == null) continue;
-            const elev0 = c.elevation ?? 0;
-
-            // Build station list (collar + surveys), ordered by depth.
-            const stations: { depth: number; azimuth: number; dip: number }[] = [];
-            if (c.azimuth != null && c.dip != null) {
-                stations.push({ depth: 0, azimuth: c.azimuth, dip: c.dip });
-            }
-            const ownSurveys = (surveysByCollar[c.collar_id] || [])
-                .filter((s) => s.azimuth != null && s.dip != null);
-            for (const s of ownSurveys) {
-                stations.push({ depth: s.depth, azimuth: s.azimuth!, dip: s.dip! });
-            }
-            stations.sort((a, b) => a.depth - b.depth);
-
-            // Accumulate XYZ offsets from the collar.
-            const xs: number[] = [c.easting];
-            const ys: number[] = [c.northing];
-            const zs: number[] = [elev0];
-
-            for (let i = 1; i < stations.length; i++) {
-                const a = stations[i - 1];
-                const b = stations[i];
-                const dMd = b.depth - a.depth;
-                if (dMd <= 0) continue;
-                const avgAz = 0.5 * (a.azimuth + b.azimuth);
-                const avgDip = 0.5 * (a.dip + b.dip);
-                const azRad = (avgAz * Math.PI) / 180;
-                const dipRad = (Math.abs(avgDip) * Math.PI) / 180;
-                const horiz = dMd * Math.cos(dipRad);
-                const vert  = dMd * Math.sin(dipRad);
-                xs.push(xs[xs.length - 1] + horiz * Math.sin(azRad));
-                ys.push(ys[ys.length - 1] + horiz * Math.cos(azRad));
-                zs.push(zs[zs.length - 1] - vert);
-            }
+            const hole = holes.get(c.collar_id);
+            if (!hole) continue;
 
             const k = colorKey(c);
             const color = palette[k] ?? '#94a3b8';
-
-            (groups[k] = groups[k] || []).push({
-                type: 'scatter3d',
-                mode: 'lines',
-                x: xs, y: ys, z: zs,
-                line: { color, width: 3 },
-                hovertext: `${c.hole_id} — ${c.hole_type ?? '—'} (${c.status ?? 'unknown'})`,
-                hoverinfo: 'text',
-                name: k,
-                showlegend: false,  // consolidated legend via markers below
+            const label = `${c.hole_id} — ${c.hole_type ?? '—'} (${c.status ?? 'unknown'})`;
+            const unsurveyed = !hole.surveyed;
+            const note = unsurveyed
+                ? (hole.orientation === 'collar'
+                    ? ' · UNSURVEYED — projected on collar az/dip'
+                    : ' · NO ORIENTATION — drawn vertical')
+                : '';
+            const toXYZ = (pts: PathPoint[]) => ({
+                x: pts.map((p) => hole.origin.x + p.x),
+                y: pts.map((p) => hole.origin.y + p.y),
+                z: pts.map((p) => hole.origin.z + p.z),
             });
 
-            // Start marker at the collar — small diamond.
+            // Measured part solid; projection beyond the last station dashed.
+            const firstExtra = hole.path.findIndex((p) => p.extrapolated);
+            const measured = firstExtra === -1 ? hole.path : hole.path.slice(0, firstExtra);
+            const projected = firstExtra > 0 ? hole.path.slice(firstExtra - 1) : [];
+
+            if (!unsurveyed && measured.length >= 2) {
+                (groups[k] = groups[k] || []).push({
+                    type: 'scatter3d',
+                    mode: 'lines',
+                    ...toXYZ(measured),
+                    line: { color, width: 3 },
+                    hovertext: label,
+                    hoverinfo: 'text',
+                    name: k,
+                    showlegend: false,
+                });
+            }
+            const dashed = unsurveyed ? hole.path : projected;
+            if (dashed.length >= 2) {
+                anyProjected = true;
+                (groups[k] = groups[k] || []).push({
+                    type: 'scatter3d',
+                    mode: 'lines',
+                    ...toXYZ(dashed),
+                    line: { color, width: 2, dash: 'dash' },
+                    opacity: 0.7,
+                    hovertext: `${label}${note || ' · beyond last survey — projected to TD'}`,
+                    hoverinfo: 'text',
+                    name: k,
+                    showlegend: false,
+                });
+            }
+
+            // Collar marker — diamond; an unsurveyed hole's collar is an open
+            // circle so it reads differently even end-on.
             (groups[k] = groups[k] || []).push({
                 type: 'scatter3d',
                 mode: 'markers',
-                x: [xs[0]], y: [ys[0]], z: [zs[0]],
-                marker: { size: 4, color, symbol: 'diamond', line: { color: 'rgba(0,0,0,0.4)', width: 1 } },
-                hovertext: `${c.hole_id} collar`,
+                x: [hole.origin.x], y: [hole.origin.y], z: [hole.origin.z],
+                marker: unsurveyed
+                    ? { size: 4, color: 'rgba(0,0,0,0)', symbol: 'circle-open', line: { color, width: 2 } }
+                    : { size: 4, color, symbol: 'diamond', line: { color: 'rgba(0,0,0,0.4)', width: 1 } },
+                hovertext: `${c.hole_id} collar${note}`,
                 hoverinfo: 'text',
                 showlegend: false,
             });
@@ -140,6 +148,17 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
                 hoverinfo: 'skip',
             });
             for (const t of groups[k]) traces.push(t);
+        }
+        if (anyProjected) {
+            traces.push({
+                type: 'scatter3d',
+                mode: 'lines',
+                x: [null], y: [null], z: [null],
+                line: { color: '#94a3b8', width: 2, dash: 'dash' },
+                name: 'projected (no survey)',
+                showlegend: true,
+                hoverinfo: 'skip',
+            });
         }
 
         const layout = {
@@ -163,11 +182,20 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             },
         };
 
-        return { traces, layout, hasData: true };
+        return { traces, layout, hasData: holes.size > 0, caption: describeDesurvey(holes.values()) };
     }, [collars, surveys, colorBy]);
 
     if (!hasData) {
         return <div className="flex items-center justify-center h-full text-sm text-gray-500">No collars to plot.</div>;
     }
-    return <GeoPlot data={traces} layout={layout as Record<string, unknown>} />;
+    return (
+        <div className="flex flex-col h-full min-h-0">
+            <div className="text-[10px] font-mono mb-1 shrink-0" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">
+                {caption}
+            </div>
+            <div className="flex-1 min-h-0">
+                <GeoPlot data={traces} layout={layout as Record<string, unknown>} />
+            </div>
+        </div>
+    );
 }

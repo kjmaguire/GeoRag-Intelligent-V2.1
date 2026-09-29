@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { DownholeMultiLog, LithologyStripColumn, type LithologyInterval } from '@/Components/Foundry/Charts';
 import type { StripAlterationBand, StripMineralBand } from '@/lib/stripLog';
 import { formatU3O8Pct } from '@/lib/grade';
+import { Modal } from '@/Components/Foundry/primitives';
 
 interface HolePayload {
     hole_id: string;
@@ -151,23 +152,10 @@ export function CompareHolesModal({
     }, []);
     const chartH = useMemo(() => Math.max(360, windowHeight - 360), [windowHeight]);
 
+    // FE-24: a real dialog (Radix, via primitives Modal) — it had no
+    // role/aria-modal, no Escape, and focus stayed on the page behind it.
     return (
-        <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            style={{ background: 'rgba(2,5,10,0.72)' }}
-            onClick={onClose}
-        >
-            <div
-                className="rounded-lg border overflow-hidden flex flex-col"
-                style={{
-                    background: 'var(--bg-0)',
-                    borderColor: 'var(--line-1)',
-                    color: 'var(--fg-1)',
-                    width: 'min(1600px, 98vw)',
-                    height: '96vh',
-                }}
-                onClick={(e) => e.stopPropagation()}
-            >
+        <Modal open onClose={onClose} maxWidth={1600} height="96vh" zIndex={50} label={`Hole comparison: ${leftHole} vs ${rightHole}`}>
                 <div className="flex items-center justify-between px-6 py-3 border-b shrink-0" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
                     <div>
                         <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Hole comparison</div>
@@ -193,8 +181,7 @@ export function CompareHolesModal({
                         chartHeight={chartH}
                     />
                 </div>
-            </div>
-        </div>
+        </Modal>
     );
 }
 

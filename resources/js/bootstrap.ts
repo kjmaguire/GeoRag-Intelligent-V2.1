@@ -1,26 +1,25 @@
-import axios from 'axios';
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
 declare global {
     interface Window {
-        axios: typeof axios;
         Pusher: typeof Pusher;
         Echo: any;
     }
 }
 
-window.axios = axios;
-window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
+// Axios used to be imported here, exposed as a window global and given a 401/419
+// interceptor, and nothing ever called it — Inertia v3 dropped Axios for its
+// own XHR client, and the app's own calls use fetch (patched below). It sat
+// in the main chunk for nothing (FE-23).
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Global unauthorized handler (window.fetch + axios).
+// Global unauthorized handler (window.fetch).
 //
 // When a Sanctum session expires, components previously saw silent 401/403s
 // and rendered bespoke error banners instead of redirecting. This wraps the
-// native fetch and registers an axios interceptor so ANY API call that comes
-// back with 401/403 flushes the stale token, preserves the user's intended
-// URL, and bounces to /login.
+// native fetch so ANY API call that comes back with 401/419 flushes the
+// stale token, preserves the user's intended URL, and bounces to /login.
 //
 // Skip conditions:
 //   - the response is for the /sanctum or /login endpoints themselves
@@ -83,18 +82,6 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
         return response;
     };
 }
-
-window.axios.interceptors.response.use(
-    (response) => response,
-    (error) => {
-        const status = error?.response?.status;
-        const url = error?.config?.url ?? '';
-        if ((status === 401 || status === 419) && shouldBounceOnAuthFailure(url)) {
-            redirectToLogin();
-        }
-        return Promise.reject(error);
-    },
-);
 
 // Laravel Echo + Reverb WebSocket client
 // Reverb uses the Pusher protocol but runs on our own server.

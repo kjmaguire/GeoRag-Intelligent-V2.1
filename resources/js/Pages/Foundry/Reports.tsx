@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
-import AppLayout from '@/Layouts/AppLayout';
 import { importWizardHref } from '@/lib/importWizardLink';
 import DocumentBody from '@/Components/Foundry/DocumentBody';
 import {
@@ -226,7 +225,7 @@ export default function FoundryReports({
     const selectedRow = reports.find((r) => r.report_id === selected_id) ?? null;
 
     return (
-        <AppLayout>
+        <>
             <Head
                 title={
                     report
@@ -331,7 +330,7 @@ export default function FoundryReports({
                     </>
                 )}
             </div>
-        </AppLayout>
+        </>
     );
 }
 

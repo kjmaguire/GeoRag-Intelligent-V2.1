@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import GeoPlot from '@/Components/GeoPlot';
+import { buildScene3D, deepestIntervalByCollar, sceneZAxisTitle, type SurveyStationInput } from '@/lib/desurvey';
 
 interface StructureVisual {
     collar_id: string;
@@ -21,6 +22,9 @@ interface CollarPoint {
     easting: number | null;
     northing: number | null;
     total_depth: number | null;
+    azimuth?: number | null;
+    dip?: number | null;
+    elevation?: number | null;
 }
 
 const KIND_FALLBACK_COLORS: Record<string, string> = {
@@ -35,8 +39,9 @@ const KIND_FALLBACK_COLORS: Record<string, string> = {
 };
 
 /**
- * StructureDiscs3DView — collar sticks plus an oriented disc primitive at
- * each structure measurement's depth. Disc orientation derives from the
+ * StructureDiscs3DView — desurveyed hole traces plus an oriented disc
+ * primitive at each structure measurement's depth ALONG THE HOLE (lib/desurvey;
+ * it used to sit at `-depth` directly beneath the collar, FE-9). Disc orientation derives from the
  * measurement's strike + dip: we draw a small circle in the plane
  * perpendicular to the pole. Different from Stereosphere — that one
  * abstracts measurements onto a unit sphere; this one anchors them in
@@ -44,10 +49,12 @@ const KIND_FALLBACK_COLORS: Record<string, string> = {
  */
 export default function StructureDiscs3DView({
     collars,
+    surveys = [],
     structures,
     height = 560,
 }: {
     collars: CollarPoint[];
+    surveys?: Array<SurveyStationInput & { collar_id: string }>;
     structures: StructureVisual[];
     height?: number;
 }) {
@@ -70,14 +77,13 @@ export default function StructureDiscs3DView({
         [structures, visibleKinds],
     );
 
-    const { data, layout } = useMemo(() => {
+    const { data, layout, caption } = useMemo(() => {
         const valid = collars.filter((c) => c.easting !== null && c.northing !== null);
         if (valid.length === 0) {
-            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown> };
+            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, caption: '' };
         }
 
-        const meanE = valid.reduce((s, c) => s + (c.easting ?? 0), 0) / valid.length;
-        const meanN = valid.reduce((s, c) => s + (c.northing ?? 0), 0) / valid.length;
+        const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(structures));
 
         const collarById = new Map(valid.map((c) => [c.collar_id, c]));
 
@@ -87,20 +93,15 @@ export default function StructureDiscs3DView({
         const DISC_PTS = 24;
 
         const traces: Record<string, unknown>[] = [];
-        const allDepths: number[] = [];
 
-        // Faint collar trace per hole for spatial context.
+        // Faint hole trace per hole for spatial context.
         for (const c of valid) {
-            const x0 = (c.easting as number) - meanE;
-            const y0 = (c.northing as number) - meanN;
-            const td = c.total_depth ?? 0;
-            allDepths.push(td);
+            const path = scene.fullPath(c.collar_id);
+            if (!path) continue;
             traces.push({
                 type: 'scatter3d',
                 mode: 'lines',
-                x: [x0, x0],
-                y: [y0, y0],
-                z: [0, -td],
+                ...path,
                 line: { color: 'rgba(155,169,184,0.18)', width: 1.5 },
                 hoverinfo: 'name',
                 showlegend: false,
@@ -131,10 +132,9 @@ export default function StructureDiscs3DView({
             for (const s of rows) {
                 const collar = collarById.get(s.collar_id);
                 if (!collar || s.depth_m === null) continue;
-                const x0 = (collar.easting as number) - meanE;
-                const y0 = (collar.northing as number) - meanN;
-                const z0 = -s.depth_m;
-                allDepths.push(s.depth_m);
+                const at = scene.at(collar.collar_id, s.depth_m);
+                if (!at) continue;
+                const { x: x0, y: y0, z: z0 } = at;
 
                 // Build a disc in the plane perpendicular to the pole.
                 // Pole vector (unit) from (trend, plunge):
@@ -205,8 +205,6 @@ export default function StructureDiscs3DView({
             legendIdx += 1;
         }
 
-        const maxDepth = Math.max(...allDepths, 100);
-
         const layoutObj: Record<string, unknown> = {
             scene: {
                 xaxis: {
@@ -224,12 +222,11 @@ export default function StructureDiscs3DView({
                     showbackground: true,
                 },
                 zaxis: {
-                    title: { text: 'Depth (m)', font: { color: '#9ba9b8', size: 10 } },
+                    title: { text: sceneZAxisTitle(scene), font: { color: '#9ba9b8', size: 10 } },
                     color: '#9ba9b8',
                     gridcolor: 'rgba(155,169,184,0.18)',
                     backgroundcolor: '#0a0e14',
                     showbackground: true,
-                    range: [-maxDepth * 1.1, 10],
                 },
                 bgcolor: '#0a0e14',
                 aspectmode: 'manual',
@@ -244,8 +241,8 @@ export default function StructureDiscs3DView({
             hovermode: 'closest',
         };
 
-        return { data: traces, layout: layoutObj };
-    }, [collars, filtered]);
+        return { data: traces, layout: layoutObj, caption: scene.caption };
+    }, [collars, surveys, structures, filtered]);
 
     if (kindOptions.length === 0) {
         return (
@@ -270,6 +267,9 @@ export default function StructureDiscs3DView({
                         <span style={{ color: 'var(--fg-3)' }}>({count})</span>
                     </label>
                 ))}
+                {caption && (
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
+                )}
             </div>
             <div className="flex-1 min-h-0" style={{ height }}>
                 <GeoPlot data={data} layout={layout} />

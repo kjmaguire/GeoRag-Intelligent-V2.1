@@ -338,7 +338,12 @@ async def embed_pending_passages(
             # in the same 1024-dim dense slot.
             "       dp.modality, dp.page_number, dp.image_object_key, "
             "       COALESCE(r.title, dp.chunk_kind, 'Passage') AS report_title, "
-            "       r.project_id::text AS project_id "
+            # Audit RAG-9: a synthesized passage has no parent report, so
+            # r.project_id is NULL and the point was written with no
+            # project — which project_or_public retrieval admits into
+            # EVERY project's search. dp.project_id (written by
+            # nl_summaries from the source collar) fills it.
+            "       COALESCE(r.project_id, dp.project_id)::text AS project_id "
             "  FROM silver.document_passages dp "
             "  LEFT JOIN silver.reports r ON r.report_id = dp.document_id "
             " WHERE dp.embedding_id IS NULL "
@@ -368,7 +373,7 @@ async def embed_pending_passages(
             # INNER-JOIN semantics: only passages with a parent report
             # in that project. Public-geo passages have no project so
             # they fall outside this scope (intentionally).
-            query += " AND r.project_id = $1::uuid "
+            query += " AND COALESCE(r.project_id, dp.project_id) = $1::uuid "
             params.append(project_id)
         query += " ORDER BY dp.created_at ASC"
         if max_passages:
@@ -451,17 +456,24 @@ async def embed_pending_passages(
                     out.append(None)
             return out
 
-        def _encode_sparse_sync(texts: list[str]) -> list[dict]:
+        def _encode_sparse_sync(texts: list[str]) -> list[dict | None]:
             # Per-text loop preserved — see the 2026-08-07 OOM note in the
-            # docstring. Peak memory stays one 512-token forward per
-            # in-flight batch.
-            out: list[dict] = []
+            # docstring. Peak memory stays bounded per in-flight batch
+            # (long passages are windowed inside encode_sparse, RAG-10).
+            #
+            # None marks a FAILED encode, distinct from an empty vector.
+            # It used to be `{}` for both, and the caller then wrote a
+            # dense-only point and set embedding_id — so a sparse sidecar
+            # outage mid-ingest (it runs desired=1 on Fargate Spot) left
+            # every passage in flight permanently without a sparse leg,
+            # with nothing to retry it (audit RAG-11).
+            out: list[dict | None] = []
             for txt in texts:
                 try:
                     out.append(encode_sparse(txt))
                 except Exception as e:
                     log.warning("embed_pending.sparse_encode_failed err=%s", e)
-                    out.append({})
+                    out.append(None)
             return out
 
         loop = asyncio.get_running_loop()
@@ -513,10 +525,26 @@ async def embed_pending_passages(
                 sparse_vectors = await loop.run_in_executor(
                     executor, _encode_sparse_sync, texts,
                 )
+                sparse_failed = 0
                 for pos, i in enumerate(text_idx):
+                    sv = sparse_vectors[pos] if pos < len(sparse_vectors) else None
+                    if sv is None:
+                        # RAG-11: a text passage whose sparse encode FAILED
+                        # is not written dense-only. It stays unembedded
+                        # (embedding_id NULL) so the next sweep retries it —
+                        # the same rule the image path follows below, and
+                        # the ingest-side mirror of GI-11.
+                        sparse_failed += 1
+                        continue
                     dense_by_idx[i] = dense_vectors[pos]
-                    if pos < len(sparse_vectors) and sparse_vectors[pos]:
-                        sparse_by_idx[i] = sparse_vectors[pos]
+                    if sv:
+                        sparse_by_idx[i] = sv
+                if sparse_failed:
+                    result.passages_skipped += sparse_failed
+                    result.errors.append(
+                        f"sparse_encode_failed:{sparse_failed} passage(s) left "
+                        f"unembedded for retry"
+                    )
 
             if image_idx:
                 image_vectors = await loop.run_in_executor(

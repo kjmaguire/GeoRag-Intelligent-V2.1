@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
-import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, StatusDot, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import { formatWhen } from '@/lib/time';
@@ -120,7 +119,7 @@ export default function FoundrySources({
     });
 
     return (
-        <AppLayout>
+        <>
             <Head title={`Data · ${project.project_name}`} />
 
             <div
@@ -287,7 +286,7 @@ export default function FoundrySources({
                     </>
                 )}
             </div>
-        </AppLayout>
+        </>
     );
 }
 

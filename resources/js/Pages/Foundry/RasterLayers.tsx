@@ -1,6 +1,5 @@
 import { Head, Link } from '@inertiajs/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import AppLayout from '@/Layouts/AppLayout';
 import { Card, EmptyState, PageHeader, Pill, Stat } from '@/Components/Foundry/primitives';
 import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
 import { useBasemapStyleUrl } from '@/lib/basemap';
@@ -445,7 +444,7 @@ export default function FoundryRasterLayers({
     const empty = rasters.length === 0 && ungeoreferenced.length === 0;
 
     return (
-        <AppLayout>
+        <>
             <Head title={`Rasters · ${project.project_name}`} />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
@@ -698,6 +697,6 @@ export default function FoundryRasterLayers({
                     </section>
                 )}
             </div>
-        </AppLayout>
+        </>
     );
 }

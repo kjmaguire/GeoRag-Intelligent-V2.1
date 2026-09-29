@@ -50,7 +50,7 @@ import functools as _functools  # noqa: E402
 import logging
 import re
 import time as _metric_time  # noqa: E402
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -427,6 +427,14 @@ class DocumentSearchResult:
     #: path regardless, which made a reranker outage invisible in every
     #: trace, log field and API response.
     rerank_degraded: bool = False
+    #: Why this result is empty when the search did not actually run to
+    #: completion (audit RAG-12): "timeout", "sparse_encoder_unavailable",
+    #: "error", "model_not_loaded", "workspace_unresolved". None for a
+    #: search that ran — including one that genuinely matched nothing.
+    #: execute_node reads this BEFORE _worth_citing drops the empty
+    #: result, which is what made a backend outage indistinguishable from
+    #: an empty corpus.
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -571,6 +579,170 @@ class AssayDataResult:
     mean_value: float | None
     median_value: float | None
     data_source: str  # "PostGIS silver.samples"
+    # Audit AGT-15 / RAG-6 (2026-09-29). When the question names no
+    # commodity, the tool used to pick one silently (U3O8 > Au > Cu) and the
+    # answer described that element as if it were the one asked about. It
+    # still picks a primary element for the chart rows, but now also
+    # returns one summary per assayed element and says it auto-selected.
+    element_summaries: list[ElementSummary] = field(default_factory=list)
+    element_auto_selected: bool = False
+    #: The commodity the question named ("gold"), when one was named.
+    requested_commodity: str | None = None
+    #: True when the named commodity has no assay key in this project —
+    #: the summaries then describe what IS assayed.
+    requested_commodity_unavailable: bool = False
+    #: Hole IDs the rows and aggregates are restricted to (empty = project).
+    hole_filter: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ElementSummary:
+    """Aggregates for one assay key (``commodity_assays`` JSONB key)."""
+
+    element: str
+    count: int
+    min_value: float | None
+    max_value: float | None
+    mean_value: float | None
+    median_value: float | None
+
+
+# ---------------------------------------------------------------------------
+# Commodity vocabulary → assay element keys (audit AGT-15 / RAG-6)
+# ---------------------------------------------------------------------------
+#
+# silver.samples.commodity_assays is keyed by the SOURCE column name
+# ("Au_ppb", "au_ppm", "U3O8_pct_e", "Li2O_pct", "TREO_ppm"), so a key is
+# matched on its leading element/oxide token, case-insensitively. Prefixes
+# are listed in preference order within a commodity.
+COMMODITY_ELEMENT_PREFIXES: dict[str, tuple[str, ...]] = {
+    "gold": ("au",),
+    "silver": ("ag",),
+    "copper": ("cu",),
+    "uranium": ("u3o8", "eu3o8", "u"),
+    "zinc": ("zn",),
+    "lead": ("pb",),
+    "nickel": ("ni",),
+    "cobalt": ("co",),
+    "molybdenum": ("mo", "mos2"),
+    "lithium": ("li2o", "li"),
+    "rare earths": ("treo", "tree", "ree"),
+    "platinum": ("pt",),
+    "palladium": ("pd",),
+    "vanadium": ("v2o5", "v"),
+    "thorium": ("tho2", "th"),
+    "tungsten": ("wo3", "w"),
+    "tin": ("sn",),
+    "iron": ("fe", "fe2o3", "fe3o4"),
+    "manganese": ("mn", "mno"),
+    "niobium": ("nb2o5", "nb"),
+    "tantalum": ("ta2o5", "ta"),
+    "potash": ("k2o", "kcl"),
+    "phosphate": ("p2o5",),
+    "graphite": ("cg", "gr"),
+}
+
+_COMMODITY_WORD_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bgold\b", re.IGNORECASE), "gold"),
+    (re.compile(r"\bsilver\b", re.IGNORECASE), "silver"),
+    (re.compile(r"\bcopper\b", re.IGNORECASE), "copper"),
+    (re.compile(r"\buranium\b|\byellowcake\b", re.IGNORECASE), "uranium"),
+    (re.compile(r"\bzinc\b", re.IGNORECASE), "zinc"),
+    # "lead" is also a verb ("what could lead to…"); only the metal sense
+    # next to a grade/assay word counts.
+    (re.compile(
+        r"\blead\s+(?:grades?|assays?|values?|content|mineralization|"
+        r"concentrations?)\b|\b(?:grades?|assays?)\s+(?:of|for)\s+lead\b",
+        re.IGNORECASE,
+    ), "lead"),
+    (re.compile(r"\bnickel\b", re.IGNORECASE), "nickel"),
+    (re.compile(r"\bcobalt\b", re.IGNORECASE), "cobalt"),
+    (re.compile(r"\bmolybdenum\b|\bmoly\b", re.IGNORECASE), "molybdenum"),
+    (re.compile(r"\blithium\b", re.IGNORECASE), "lithium"),
+    (re.compile(
+        r"\brare[\s-]+earths?(?:\s+elements?)?\b|\bREEs?\b|\bTREO\b",
+        re.IGNORECASE,
+    ), "rare earths"),
+    (re.compile(r"\bplatinum\b", re.IGNORECASE), "platinum"),
+    (re.compile(r"\bpalladium\b", re.IGNORECASE), "palladium"),
+    (re.compile(r"\bvanadium\b", re.IGNORECASE), "vanadium"),
+    (re.compile(r"\bthorium\b", re.IGNORECASE), "thorium"),
+    (re.compile(r"\btungsten\b", re.IGNORECASE), "tungsten"),
+    (re.compile(r"\btin\s+(?:grades?|assays?|values?)\b", re.IGNORECASE), "tin"),
+    (re.compile(r"\biron\s+(?:grades?|assays?|values?|ore)\b", re.IGNORECASE), "iron"),
+    (re.compile(r"\bmanganese\b", re.IGNORECASE), "manganese"),
+    (re.compile(r"\bniobium\b", re.IGNORECASE), "niobium"),
+    (re.compile(r"\btantalum\b", re.IGNORECASE), "tantalum"),
+    (re.compile(r"\bpotash\b", re.IGNORECASE), "potash"),
+    (re.compile(r"\bphosphate\b", re.IGNORECASE), "phosphate"),
+    (re.compile(r"\bgraphite\b", re.IGNORECASE), "graphite"),
+)
+
+# Element symbols / oxides as written in a question. Case-SENSITIVE and
+# limited to tokens that are not also common English ("As", "In", "W" as a
+# compass bearing, "Co." as company are left out).
+_COMMODITY_SYMBOL_RE = re.compile(
+    r"(?<![A-Za-z0-9])("
+    r"eU3O8|U3O8|Au|Ag|Cu|Zn|Pb|Ni|Mo|Li2O|Li|TREO|Pt|Pd|V2O5|WO3|Sn|Nb2O5|"
+    r"Ta2O5|K2O|P2O5"
+    r")(?![A-Za-z0-9])"
+)
+_SYMBOL_TO_COMMODITY: dict[str, str] = {
+    "eU3O8": "uranium", "U3O8": "uranium", "Au": "gold", "Ag": "silver",
+    "Cu": "copper", "Zn": "zinc", "Pb": "lead", "Ni": "nickel",
+    "Mo": "molybdenum", "Li2O": "lithium", "Li": "lithium",
+    "TREO": "rare earths", "Pt": "platinum", "Pd": "palladium",
+    "V2O5": "vanadium", "WO3": "tungsten", "Sn": "tin",
+    "Nb2O5": "niobium", "Ta2O5": "tantalum", "K2O": "potash",
+    "P2O5": "phosphate",
+}
+
+_ELEMENT_KEY_PREFIX_RE = re.compile(r"^([A-Za-z][A-Za-z0-9]*)")
+
+
+def commodities_in_query(query: str | None) -> list[str]:
+    """Commodities the question names, in order of first appearance.
+
+    Returns canonical names ("gold", "uranium", ...) — keys of
+    :data:`COMMODITY_ELEMENT_PREFIXES`.
+    """
+    if not query:
+        return []
+    hits: list[tuple[int, str]] = []
+    for pattern, commodity in _COMMODITY_WORD_RES:
+        m = pattern.search(query)
+        if m:
+            hits.append((m.start(), commodity))
+    for m in _COMMODITY_SYMBOL_RE.finditer(query):
+        hits.append((m.start(), _SYMBOL_TO_COMMODITY[m.group(1)]))
+    hits.sort()
+    return list(dict.fromkeys(c for _, c in hits))
+
+
+def _element_key_prefix(key: str) -> str:
+    m = _ELEMENT_KEY_PREFIX_RE.match(key or "")
+    return m.group(1).lower() if m else ""
+
+
+def element_key_for_commodity(
+    commodity: str, available: list[str],
+) -> str | None:
+    """Best ``commodity_assays`` key for ``commodity`` among ``available``.
+
+    Prefix order in :data:`COMMODITY_ELEMENT_PREFIXES` decides first; among
+    keys sharing a prefix, a derived effective grade (``*_e``) wins, for the
+    reason query_assay_data's auto-pick documents (for some projects it is
+    the only populated grade column). None when nothing matches.
+    """
+    prefixes = COMMODITY_ELEMENT_PREFIXES.get((commodity or "").lower())
+    if not prefixes:
+        return None
+    for prefix in prefixes:
+        matches = sorted(k for k in available if _element_key_prefix(k) == prefix)
+        if matches:
+            derived = [k for k in matches if k.lower().endswith("_e")]
+            return (derived or matches)[0]
+    return None
 
 
 @dataclass
@@ -1096,6 +1268,33 @@ async def query_downhole_logs(
     )
 
 
+def normalize_hole_id(hole_id: str) -> str:
+    """Comparable form of a hole ID (audit RAG-17).
+
+    Upper-case; any run of non-alphanumerics becomes one "-"; a letter/digit
+    boundary gets a "-"; leading zeros are dropped from each numeric run;
+    outer "-" trimmed. "BH-01", "bh 1", "BH1" -> "BH-1"; "PLS22-08" and
+    "PLS-22-08" -> "PLS-22-8"; "PLS-2-28" stays distinct. Must match
+    :func:`_hole_norm_sql` exactly — the two are compared in SQL.
+    """
+    u = re.sub(r"[^A-Z0-9]+", "-", (hole_id or "").upper())
+    u = re.sub(r"([A-Z])([0-9])", r"\1-\2", u)
+    u = re.sub(r"([0-9])([A-Z])", r"\1-\2", u)
+    u = re.sub(r"(^|-)0+([0-9])", r"\1\2", u)
+    return u.strip("-")
+
+
+def _hole_norm_sql(column: str) -> str:
+    """PostgreSQL twin of :func:`normalize_hole_id` for ``column``."""
+    return (
+        "trim(both '-' from regexp_replace(regexp_replace(regexp_replace("
+        f"regexp_replace(UPPER({column}), '[^A-Z0-9]+', '-', 'g'), "
+        "'([A-Z])([0-9])', '\\1-\\2', 'g'), "
+        "'([0-9])([A-Z])', '\\1-\\2', 'g'), "
+        "'(^|-)0+([0-9])', '\\1\\2', 'g'))"
+    )
+
+
 @_metered("query_collar_details")
 async def query_collar_details(
     deps: AgentDeps,
@@ -1162,9 +1361,22 @@ async def query_collar_details(
     )
 
     # ── Collar header. Match in priority order: exact hole_id, canonical,
-    # substring. The single SELECT walks each branch via UNION ALL so we
+    # normalised. The single SELECT walks each branch via UNION ALL so we
     # get one round-trip and the LIMIT 1 + ORDER BY priority chooses the
     # best match. workspace_id + project_id are ALWAYS in the WHERE.
+    #
+    # Audit RAG-17 (2026-09-29): branch 3 used to be a SUBSTRING match
+    # (`hole_id ILIKE '%'||$3||'%'`, first alphabetically), so "BH-1"
+    # stored as "BH-01" resolved to BH-10 and "36-108" to 36-1085 — the
+    # pre-pass then fed another hole's depth and grades in as the answer —
+    # while "BH12" vs "BH-12" found nothing. It is now an equality on a
+    # normalised form (separators unified, letter/digit runs split, leading
+    # zeros dropped per numeric run; see normalize_hole_id), and it only
+    # answers when exactly ONE collar in the project has that form. Two
+    # candidates is an ambiguity, and returning neither is the honest
+    # answer.
+    norm_hole_sql = _hole_norm_sql("hole_id")
+    norm_hole_sql_c2 = _hole_norm_sql("c2.hole_id")
     collar_sql = (
         "SELECT collar_id::text, hole_id, hole_id_canonical, project_id::text, "
         # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
@@ -1187,8 +1399,11 @@ async def query_collar_details(
         "  UNION ALL "
         "  SELECT *, 3 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
-        "    AND hole_id ILIKE '%' || $3 || '%' "
+        f"    AND {norm_hole_sql} = $4 "
         "    AND UPPER(hole_id) <> UPPER($3) "
+        "    AND (SELECT COUNT(*) FROM silver.collars c2 "
+        "         WHERE c2.workspace_id = $1::uuid AND c2.project_id = $2::uuid "
+        f"          AND {norm_hole_sql_c2} = $4) = 1 "
         ") matches "
         "ORDER BY match_priority ASC, hole_id ASC "
         "LIMIT 1"
@@ -1239,7 +1454,8 @@ async def query_collar_details(
     async def _run() -> CollarDetailsResult:
         async with deps.pg_pool.acquire() as conn:
             collar_row = await conn.fetchrow(
-                collar_sql, workspace_id, project_id, hole_id
+                collar_sql, workspace_id, project_id, hole_id,
+                normalize_hole_id(hole_id),
             )
             if collar_row is None:
                 return empty
@@ -1420,6 +1636,9 @@ async def query_assay_data(
     element: str | None = None,
     hole_id: str | None = None,
     limit: int = 5000,
+    *,
+    commodity: str | None = None,
+    hole_ids: list[str] | None = None,
 ) -> AssayDataResult:
     """Fetch assay sample values from silver.samples for plotting + narration.
 
@@ -1440,8 +1659,14 @@ async def query_assay_data(
 
     Args:
         project_id: UUID scope.
-        element: JSONB key name (e.g. "U3O8_ppm"). None → auto-detect primary.
+        element: JSONB key name (e.g. "U3O8_ppm"). None → resolve from
+            ``commodity``, else auto-detect a primary element AND return
+            per-element summaries (``element_summaries``) with
+            ``element_auto_selected=True``.
         hole_id: Optional filter to a single hole.
+        commodity: Canonical commodity the question named ("gold"; see
+            :func:`commodities_in_query`). Mapped to this project's key.
+        hole_ids: Optional filter to several holes (unioned with hole_id).
         limit: Max raw sample rows to return (1 to 20000). Aggregates are
             ALWAYS computed over the full unfiltered set, so capping
             ``limit`` only affects what's available for plotting, not the
@@ -1498,7 +1723,16 @@ async def query_assay_data(
                     data_source="PostGIS silver.samples",
                 )
 
-            # Auto-detect primary element. Prefer derived composites
+            # Resolve the element (audit AGT-15 / RAG-6, 2026-09-29).
+            #   1. An explicit ``element`` key wins (direct callers).
+            #   2. Else a commodity the QUESTION named ("gold") maps to
+            #      this project's key for it ("Au_ppb_e"/"Au_ppb"/"au_ppm").
+            #   3. Else auto-pick a primary element for the chart rows,
+            #      but say so, and return every element's summary, so the
+            #      answer cannot present uranium statistics as "the grade"
+            #      of a question that never mentioned uranium.
+            #
+            # Auto-pick order prefers derived composites
             # (`U3O8_pct_e` / `Au_ppb_e` / `Cu_pct_e`) when they're the
             # populated path, because for some projects the only
             # populated grade column is the derived effective grade
@@ -1507,7 +1741,18 @@ async def query_assay_data(
             # produces a 4-row "assay" answer that the LLM correctly
             # refuses, instead of the genuine project-wide grade.
             chosen = element
+            auto_selected = False
+            requested_unavailable = False
+            if chosen is None and commodity:
+                chosen = element_key_for_commodity(commodity, available)
+                if chosen is None:
+                    requested_unavailable = True
+                    logger.info(
+                        "query_assay_data: question named %s but no assay key "
+                        "matches it (available=%s)", commodity, available,
+                    )
             if chosen is None:
+                auto_selected = True
                 preferred_order = (
                     "U3O8_pct_e", "U3O8_ppm",
                     "Au_ppb_e", "Au_ppb",
@@ -1542,23 +1787,64 @@ async def query_assay_data(
                     )
                     chosen = alt
 
+            # Named holes (audit AGT-15): "top Au assays in PLS-22-08" used
+            # to get project-wide statistics.
+            holes = [h for h in (hole_ids or []) if h]
+            if hole_id and hole_id not in holes:
+                holes.insert(0, hole_id)
+            holes_upper = [h.upper() for h in holes]
+
+            def _scope(first_idx: int) -> tuple[str, list[Any]]:
+                """Hole + workspace filter SQL and binds, numbered from first_idx."""
+                sql = ""
+                binds: list[Any] = []
+                idx = first_idx
+                if holes_upper:
+                    sql += f" AND UPPER(c.hole_id) = ANY(${idx}::text[])"
+                    binds.append(holes_upper)
+                    idx += 1
+                if workspace_id:
+                    sql += f" AND s.workspace_id = ${idx}"
+                    binds.append(workspace_id)
+                return sql, binds
+
+            # Per-element summaries whenever the element was not chosen by
+            # the question and there is more than one to choose from. Same
+            # scoping as the main aggregate.
+            summaries: list[ElementSummary] = []
+            if auto_selected and len(available) > 1:
+                summary_scope, summary_binds = _scope(2)
+                summary_sql = (
+                    "SELECT kv.key AS elem, COUNT(*) AS n, "
+                    "  MIN(kv.value::double precision) AS min_v, "
+                    "  MAX(kv.value::double precision) AS max_v, "
+                    "  AVG(kv.value::double precision) AS mean_v, "
+                    "  PERCENTILE_CONT(0.5) WITHIN GROUP "
+                    "    (ORDER BY kv.value::double precision) AS median_v "
+                    "FROM silver.samples s "
+                    "JOIN silver.collars c ON c.collar_id = s.collar_id "
+                    "CROSS JOIN LATERAL jsonb_each_text(s.commodity_assays) kv "
+                    f"WHERE c.project_id = $1{summary_scope} "
+                    "  AND kv.value ~ '^\\s*[-+]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][-+]?[0-9]+)?\\s*$' "
+                    "GROUP BY kv.key ORDER BY kv.key"
+                )
+                for r in await conn.fetch(summary_sql, project_id, *summary_binds):
+                    summaries.append(ElementSummary(
+                        element=r["elem"],
+                        count=int(r["n"] or 0),
+                        min_value=float(r["min_v"]) if r["min_v"] is not None else None,
+                        max_value=float(r["max_v"]) if r["max_v"] is not None else None,
+                        mean_value=float(r["mean_v"]) if r["mean_v"] is not None else None,
+                        median_value=float(r["median_v"]) if r["median_v"] is not None else None,
+                    ))
+
             # Step 2: aggregates computed over the FULL unfiltered set in
             # SQL so they don't degrade when we cap raw rows for context
             # budget. PERCENTILE_CONT gives us a true median (not the
             # discrete-row-pick that the old Python fallback used).
-            hole_filter = ""
-            bind = [project_id, chosen]
-            param_idx = 3
-            if hole_id:
-                hole_filter = f" AND UPPER(c.hole_id) = UPPER(${param_idx})"
-                bind.append(hole_id)
-                param_idx += 1
-
-            workspace_filter = ""
-            if workspace_id:
-                workspace_filter = f" AND s.workspace_id = ${param_idx}"
-                bind.append(workspace_id)
-                param_idx += 1
+            scope_sql, scope_binds = _scope(3)
+            bind: list[Any] = [project_id, chosen, *scope_binds]
+            param_idx = 3 + len(scope_binds)
 
             agg_sql = (
                 "SELECT "
@@ -1570,11 +1856,19 @@ async def query_assay_data(
                 "  SELECT (s.commodity_assays->>$2)::double precision AS val "
                 "  FROM silver.samples s "
                 "  JOIN silver.collars c ON c.collar_id = s.collar_id "
-                f"  WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter}{workspace_filter} "
+                f"  WHERE c.project_id = $1 AND s.commodity_assays ? $2{scope_sql} "
                 ") sub "
                 "WHERE val IS NOT NULL"
             )
             agg_row = await conn.fetchrow(agg_sql, *bind)
+
+            provenance: dict[str, Any] = {
+                "element_summaries": summaries,
+                "element_auto_selected": auto_selected,
+                "requested_commodity": commodity,
+                "requested_commodity_unavailable": requested_unavailable,
+                "hole_filter": holes,
+            }
 
             total_n = int(agg_row["total_n"]) if agg_row and agg_row["total_n"] else 0
             if total_n == 0:
@@ -1588,6 +1882,7 @@ async def query_assay_data(
                     mean_value=None,
                     median_value=None,
                     data_source="PostGIS silver.samples",
+                    **provenance,
                 )
 
             # Step 3: fetch raw sample rows for plotting. P1 #29 — apply
@@ -1601,7 +1896,7 @@ async def query_assay_data(
                 "      (s.commodity_assays->>$2)::double precision AS val "
                 "FROM silver.samples s "
                 "JOIN silver.collars c ON c.collar_id = s.collar_id "
-                f"WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter}{workspace_filter} "
+                f"WHERE c.project_id = $1 AND s.commodity_assays ? $2{scope_sql} "
                 "  AND (s.commodity_assays->>$2) IS NOT NULL "
                 f"ORDER BY c.hole_id, s.from_depth "
                 f"LIMIT ${limit_idx}"
@@ -1641,6 +1936,7 @@ async def query_assay_data(
                 mean_value=float(agg_row["mean_v"]) if agg_row["mean_v"] is not None else None,
                 median_value=float(agg_row["median_v"]) if agg_row["median_v"] is not None else None,
                 data_source="PostGIS silver.samples",
+                **provenance,
             )
 
     try:
@@ -1661,6 +1957,33 @@ async def query_assay_data(
         median_value=None,
         data_source="PostGIS silver.samples",
     )
+
+
+def _payload_page(payload: dict[str, Any]) -> int | None:
+    """Page a Qdrant chunk payload points at (audit RAG-15).
+
+    passage_embedder writes page_first / page_last / page_number, never
+    "page", so every georag_chunks citation had page=None and neither the
+    evidence inspector nor the model was ever told a page. "page" is read
+    first for georag_reports points, which do carry it.
+    """
+    for key in ("page", "page_first", "page_number"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+#: Chunk kinds synthesized from ONE project's structured rows (ADR-0012
+#: nl_summaries; the KG narratives were per-project too). They must never
+#: pass the project_or_public "empty project_id" branch — see RAG-9.
+PROJECT_SCOPED_SYNTHESIZED_KINDS: frozenset[str] = frozenset(
+    {"structured_summary", "kg_narrative"}
+)
 
 
 def _build_document_scope_filter(project_id: str):
@@ -1684,6 +2007,7 @@ def _build_document_scope_filter(project_id: str):
             FieldCondition,
             Filter,
             IsEmptyCondition,
+            MatchAny,
             MatchValue,
             PayloadField,
         )
@@ -1702,13 +2026,27 @@ def _build_document_scope_filter(project_id: str):
         return Filter(must=[project_match])
 
     if mode == "project_or_public":
-        # Admit: project_id == caller, OR payload.project_id is empty
-        # (legacy public-report rows), OR project_id == "public".
+        # Admit: project_id == caller, OR project_id == "public", OR
+        # payload.project_id is empty (legacy public-report rows and
+        # public-geoscience synthesis) — EXCEPT for chunk kinds synthesized
+        # from one project's structured rows. Those were written with no
+        # project_id until audit RAG-9 (2026-09-29), and the bare IsEmpty
+        # branch admitted every project's per-hole assay summaries into
+        # every other project's retrieval. Once re-embedded they carry
+        # their project and match the first branch.
         return Filter(
             should=[
                 project_match,
-                IsEmptyCondition(is_empty=PayloadField(key="project_id")),
                 FieldCondition(key="project_id", match=MatchValue(value="public")),
+                Filter(
+                    must=[IsEmptyCondition(is_empty=PayloadField(key="project_id"))],
+                    must_not=[
+                        FieldCondition(
+                            key="chunk_kind",
+                            match=MatchAny(any=list(PROJECT_SCOPED_SYNTHESIZED_KINDS)),
+                        ),
+                    ],
+                ),
             ]
         )
 
@@ -1814,7 +2152,10 @@ async def search_documents(
         logger.info(
             "search_documents: embedding model not loaded — returning empty results"
         )
-        return DocumentSearchResult(chunks=[], count=0, data_source="Qdrant (model not loaded)")
+        return DocumentSearchResult(
+            chunks=[], count=0, data_source="Qdrant (model not loaded)",
+            retrieval_failure="model_not_loaded",
+        )
 
 
     # ADR-0010 — hard flag flip between the legacy and canonical document
@@ -1865,6 +2206,7 @@ async def search_documents(
         return DocumentSearchResult(
             chunks=[], count=0,
             data_source="Qdrant (workspace unresolved — refused)",
+            retrieval_failure="workspace_unresolved",
         )
     _workspace_id = str(_workspace_id)
 
@@ -2008,7 +2350,7 @@ async def search_documents(
                     section_number=section_number,
                     section_title=section_title,
                     section=section_label,
-                    page=payload.get("page"),
+                    page=_payload_page(payload),
                     document_type=payload.get("document_type", "NI43"),
                     report_id=payload.get("report_id", ""),
                     relevance_score=float(point.score),  # overwritten by reranker below
@@ -2036,7 +2378,10 @@ async def search_documents(
             project_id,
             query_hash(query_text),
         )
-        return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (timeout)")
+        return DocumentSearchResult(
+            chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (timeout)",
+            retrieval_failure="timeout",
+        )
     except Exception as exc:
         # SPARSE_ENCODER_UNAVAILABLE is a marker with a CloudWatch alarm on it
         # (deploy/aws/terraform/alerts.tf). Without it a dead sparse sidecar is
@@ -2061,9 +2406,13 @@ async def search_documents(
                 chunks=[],
                 count=0,
                 data_source=f"Qdrant {_doc_collection} (sparse encoder unavailable)",
+                retrieval_failure="sparse_encoder_unavailable",
             )
         logger.exception("search_documents failed for project=%s", project_id)
-        return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (error)")
+        return DocumentSearchResult(
+            chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (error)",
+            retrieval_failure="error",
+        )
 
     if not chunks:
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection}")
@@ -2543,6 +2892,61 @@ async def query_graph_by_label(
     )
 
 
+# Per-table column allowlist for verify_numerical_claim (P0 #2). `column`
+# used to be interpolated raw into the SELECT, letting an LLM-supplied
+# `column="total_depth, (SELECT current_user)"` exfiltrate row contents.
+#
+# Only columns that EXIST and store NUMERIC values belong here — the tool
+# returns a float. tests/test_numeric_claim_allowlist_parity.py checks every
+# entry against database/migrations, because this list has drifted before:
+# audit PG-12 (2026-09-29) found silver.samples.sample_length / .recovery,
+# silver.geochemistry.value / .detection_limit (none exist) and
+# silver.alteration.intensity (text). A claim routed to one of them errored,
+# came back verified=False, and counted toward NUMERIC_RETRY_THRESHOLD — a
+# spurious retry on a correct number.
+#
+# scope_mode drives how the tenancy WHERE clause + FROM clause are built:
+#   "direct"      — table carries workspace_id AND project_id itself.
+#   "collar"      — table carries workspace_id itself; project_id only
+#                   reachable via a join to silver.collars on collar_id.
+#   "collar_full" — table carries neither column; both come from the
+#                   silver.collars join.
+NUMERIC_CLAIM_COLUMNS: dict[str, tuple[str, frozenset[str], str]] = {
+    # (primary_key_column, allowed_value_columns, scope_mode)
+    "silver.collars": ("collar_id", frozenset({
+        "total_depth", "azimuth", "dip", "easting", "northing", "elevation",
+    }), "direct"),
+    # sample_length / recovery removed (PG-12): no such columns. Interval
+    # length is to_depth - from_depth, and both ends are verifiable.
+    "silver.samples": ("sample_id", frozenset({"from_depth", "to_depth"}), "collar"),
+    "silver.lithology_logs": ("log_id", frozenset({
+        "from_depth", "to_depth", "rqd", "recovery",
+    }), "collar"),
+    # pk is "id" (database/migrations/2026_05_20_060400_create_silver_
+    # geological_singulars.php). "intensity" removed (PG-12): it is text.
+    "silver.alteration": ("id", frozenset({"from_depth", "to_depth"}), "collar"),
+    # The singular table replaced "silver.structures" in the same
+    # migration; its angles are alpha/beta/true_dip/true_dip_dir.
+    "silver.structure": ("id", frozenset({
+        "depth", "true_dip", "true_dip_dir", "alpha_angle", "beta_angle",
+    }), "collar"),
+    # value / detection_limit removed (PG-12): geochemistry is wide oxide
+    # columns plus an assay_values_ppm jsonb. The stored numeric columns
+    # are listed instead. The table carries workspace_id and project_id
+    # itself (2026_04_22_140000) and collar_id is NULL for surface samples
+    # (2026_08_25_010000), so it is scoped directly, not through collars.
+    "silver.geochemistry": ("geochem_id", frozenset({
+        "from_depth", "to_depth",
+        "sio2_wt_pct", "al2o3_wt_pct", "fe2o3_wt_pct", "mgo_wt_pct",
+        "cao_wt_pct", "na2o_wt_pct", "k2o_wt_pct",
+        "mg_number", "cia", "eu_anomaly",
+    }), "direct"),
+    "silver.surveys": ("survey_id", frozenset({"depth", "azimuth", "dip"}), "collar_full"),
+    # page_count: migration 2026_08_15_040000_add_page_count_to_silver_reports.
+    "silver.reports": ("report_id", frozenset({"page_count"}), "direct"),
+}
+
+
 @_metered("verify_numerical_claim")
 async def verify_numerical_claim(
     ctx: RunContext[AgentDeps],
@@ -2577,9 +2981,9 @@ async def verify_numerical_claim(
     verification of the LLM's own claims. Every allowlisted table is now scoped by
     ``ctx.deps.workspace_id`` / ``ctx.deps.project_id`` (bound whenever
     present — lenient/absent otherwise, matching ``acquire_scoped()``'s own
-    GUC-bind fallback for single-tenant / no-workspace call paths). Six
+    GUC-bind fallback for single-tenant / no-workspace call paths). Five
     of the eight tables (``silver.samples``, ``silver.lithology_logs``,
-    ``silver.alteration``, ``silver.structure``, ``silver.geochemistry``,
+    ``silver.alteration``, ``silver.structure``,
     ``silver.surveys``) don't carry both tenancy columns directly, so the
     scope is applied via a join to ``silver.collars`` on ``collar_id``.
 
@@ -2593,79 +2997,9 @@ async def verify_numerical_claim(
     Returns:
         NumericalClaimVerification with verified flag and the actual DB value.
     """
-    # Per-table column allowlist (P0 #2). Previously `column` was
-    # interpolated raw into the f-string below, letting an LLM-supplied
-    # `column="total_depth, (SELECT current_user)"` exfiltrate row
-    # contents. Now we whitelist the set of numeric columns any caller
-    # could plausibly want to verify, keyed by table.
-    #
-    # Only columns that store NUMERIC values (not text, geometry, arrays,
-    # or JSON) belong here — verify_numerical_claim returns a float.
-    #
-    # scope_mode drives how the tenancy WHERE clause + FROM clause are
-    # built below:
-    #   "direct"      — table carries workspace_id AND project_id itself.
-    #   "collar"      — table carries workspace_id itself; project_id only
-    #                   reachable via a join to silver.collars on collar_id.
-    #   "collar_full" — table carries neither column; both come from the
-    #                   silver.collars join.
-    allowed_by_table: dict[str, tuple[str, set[str], str]] = {
-        # (primary_key_column, allowed_value_columns, scope_mode)
-        "silver.collars": ("collar_id", {
-            "total_depth", "azimuth", "dip", "easting", "northing", "elevation",
-        }, "direct"),
-        "silver.samples": ("sample_id", {
-            "from_depth", "to_depth", "sample_length", "recovery",
-        }, "collar"),
-        "silver.lithology_logs": ("log_id", {
-            "from_depth", "to_depth", "rqd", "recovery",
-        }, "collar"),
-        # NOTE (2026-08-15 audit): pk_col was previously "alteration_id",
-        # which has never existed on this table — the real schema
-        # (database/migrations/2026_05_20_060400_create_silver_geological_singulars.php)
-        # names the PK "id". Fixed here so the tenancy join added below is
-        # actually functional rather than erroring on every call.
-        "silver.alteration": ("id", {
-            "from_depth", "to_depth", "intensity",
-        }, "collar"),
-        # NOTE (2026-08-15 audit): was "silver.structures" (plural) with
-        # pk_col "structure_id" — that table was DROPPED in the same
-        # migration above (zero rows at the time) in favour of the
-        # singular "silver.structure", whose PK is "id" and whose columns
-        # differ (alpha_angle/beta_angle/true_dip/true_dip_dir, not
-        # dip_direction/apparent_dip). Every call against the old name
-        # failed at the DB with "relation does not exist" — silently
-        # caught below and returned as unverifiable, so this was a dead
-        # entry, not a security issue, but it blocked writing a working
-        # tenancy join. Renamed + column set corrected to match the real
-        # table (see query_coverage_gap's _COVERAGE_ATTRIBUTES, which
-        # already uses "silver.structure").
-        "silver.structure": ("id", {
-            "depth", "true_dip", "true_dip_dir", "alpha_angle", "beta_angle",
-        }, "collar"),
-        "silver.geochemistry": ("geochem_id", {
-            "from_depth", "to_depth", "value", "detection_limit",
-        }, "collar_full"),
-        "silver.surveys": ("survey_id", {
-            "depth", "azimuth", "dip",
-        }, "collar_full"),
-        # NOTE (2026-08-15 audit): was "bronze.reports", which has never
-        # existed as a table (report metadata lives in "silver.reports" —
-        # bronze.* only holds pre-parse raw/manifest data). Renamed to the
-        # real table + its real PK ("report_id"). "version_number" is NOT
-        # a column on silver.reports (it lives on silver.document_versions,
-        # keyed by version_id, not report_id, reachable via
-        # document_versions.document_id -> reports.report_id if ever
-        # needed). Follow-up decision (Kyle, 2026-08-15): added
-        # "page_count" as a real NUMERIC column on silver.reports
-        # (migration 2026_08_15_040000_add_page_count_to_silver_reports),
-        # populated at ingestion time from the PDF page count already
-        # computed in app/hatchet_workflows/ingest_pdf.py's preflight step
-        # (pikepdf) and app/services/ingest/{pdf,tiff_ocr}_ingester.py
-        # (pdfminer.six / Pillow frame count) — previously computed and
-        # discarded rather than persisted.
-        "silver.reports": ("report_id", {"page_count"}, "direct"),
-    }
+    # Allowlist: NUMERIC_CLAIM_COLUMNS (module level, parity-tested against
+    # the migrations since audit PG-12).
+    allowed_by_table = NUMERIC_CLAIM_COLUMNS
 
     if table not in allowed_by_table:
         logger.error("verify_numerical_claim: disallowed table '%s'", table)

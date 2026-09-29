@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Dialog as DialogPrimitive } from 'radix-ui';
 
 /**
  * Foundry primitives — small UI building blocks used across every Foundry
@@ -332,42 +333,57 @@ export function ProgressBar({
 
 /* -------- Modal (foundry-styled) -------- */
 
+/**
+ * Built on the Radix Dialog already shipped for Sheet (FE-24): role=dialog,
+ * aria-modal, Escape to close, focus moved into the dialog, trapped there,
+ * and returned to the trigger on close. The hand-rolled version had the role
+ * but none of the behaviour.
+ *
+ * Deliberately NOT portalled: it renders inside the `.foundry` shell so the
+ * theme's CSS variables (and `.foundry.light`) still apply.
+ */
 export function Modal({
     open,
     onClose,
     children,
     maxWidth = 920,
+    height,
     label,
+    zIndex = 150,
 }: {
     open: boolean;
     onClose: () => void;
     children: React.ReactNode;
     maxWidth?: number;
+    height?: string;
+    /** Accessible name; rendered as a visually hidden dialog title. */
     label?: string;
+    zIndex?: number;
 }) {
-    if (!open) return null;
     return (
-        <div
-            className="fixed inset-0 z-[150] flex items-center justify-center p-4 foundry"
-            style={{ background: 'rgba(8,10,14,0.78)', backdropFilter: 'blur(4px)' }}
-            onClick={onClose}
-            role="dialog"
-            aria-modal="true"
-            aria-label={label}
-        >
-            <div
-                onClick={(e) => e.stopPropagation()}
-                className="rounded-md border overflow-hidden flex flex-col max-h-[96vh]"
+        <DialogPrimitive.Root open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
+            <DialogPrimitive.Overlay
+                data-testid="modal-overlay"
+                className="fixed inset-0"
+                style={{ zIndex, background: 'rgba(8,10,14,0.78)', backdropFilter: 'blur(4px)' }}
+            />
+            <DialogPrimitive.Content
+                aria-describedby={undefined}
+                className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md border overflow-hidden flex flex-col max-h-[96vh] focus:outline-none"
                 style={{
+                    zIndex: zIndex + 1,
                     background: 'var(--bg-0)',
                     borderColor: 'var(--line-2)',
+                    color: 'var(--fg-1)',
                     boxShadow: '0 30px 90px rgba(0,0,0,0.8)',
                     width: `min(${maxWidth}px, 98vw)`,
+                    height,
                 }}
             >
+                <DialogPrimitive.Title className="sr-only">{label ?? 'Dialog'}</DialogPrimitive.Title>
                 {children}
-            </div>
-        </div>
+            </DialogPrimitive.Content>
+        </DialogPrimitive.Root>
     );
 }
 

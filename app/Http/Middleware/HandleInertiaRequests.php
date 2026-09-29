@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Support\Uploads;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Middleware;
@@ -69,6 +70,14 @@ class HandleInertiaRequests extends Middleware
             ],
             'basemap_dem' => config('services.basemap.dem_tiles'),
             'basemap_imagery' => config('services.basemap.imagery_tiles'),
+
+            // The one upload ceiling (Swoole packet cap + every validation
+            // rule), so the upload screens refuse an over-cap file before
+            // sending it instead of after a multi-minute upload (FE-2).
+            'upload_limit' => [
+                'bytes' => Uploads::maxBytes(),
+                'human' => Uploads::maxHuman(),
+            ],
 
             // Foundry shell project-scoped chat threads.
             'project_threads' => fn () => $this->resolveProjectThreads($request),

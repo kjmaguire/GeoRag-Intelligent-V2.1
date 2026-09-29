@@ -83,6 +83,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
+from typing import Any
 
 from app.agent.log_safe import query_hash, text_shape
 
@@ -205,6 +206,75 @@ def _get_sparse_model():  # type: ignore[return]
     return tokenizer, model
 
 
+# ---------------------------------------------------------------------------
+# Long-text windowing (audit RAG-10, 2026-09-29)
+# ---------------------------------------------------------------------------
+# Every encode used to run ONE forward pass with truncation=True,
+# max_length=512. Ingest chunks are WINDOW_CHARS=5000 characters
+# (pdf_report.py) — 1,250+ wordpieces, more with hole IDs and assay numbers
+# — and passage_embedder encodes contextualized_content, a generated header
+# PLUS the text. So the sparse leg saw roughly the first third of each
+# chunk: hole IDs, sample numbers and NTS codes in the rest never reached
+# it, and identifier_boost widened a pool that could not contain them.
+# Nothing errored.
+#
+# SPLADE's aggregation is already a max-pool over positions, so encoding
+# overlapping 512-token windows and max-pooling across them is the same
+# operation over the whole text. Short inputs (every query) take the
+# single-pass path unchanged, so query vectors do not move.
+
+#: Content tokens per window: 512 minus [CLS] and [SEP].
+_WINDOW_CONTENT_TOKENS = 510
+#: Window start stride. 510 - 384 = 126 tokens of overlap, so a term split
+#: by a boundary is seen whole in one window.
+_WINDOW_STRIDE = 384
+#: Windows per forward pass — bounds peak memory on a very long input.
+_WINDOWS_PER_FORWARD = 8
+
+
+def _window_token_ids(tokenizer: Any, text: str) -> list[list[int]] | None:
+    """Content-token windows for ``text``, or None if it fits one pass."""
+    ids = tokenizer(text, add_special_tokens=False, truncation=False)["input_ids"]
+    if len(ids) <= _WINDOW_CONTENT_TOKENS:
+        return None
+    windows: list[list[int]] = []
+    start = 0
+    while True:
+        windows.append(ids[start:start + _WINDOW_CONTENT_TOKENS])
+        if start + _WINDOW_CONTENT_TOKENS >= len(ids):
+            return windows
+        start += _WINDOW_STRIDE
+
+
+def _encode_windows(tokenizer: Any, model: Any, windows: list[list[int]]) -> dict[int, float]:
+    """SPLADE vector for a long text: max-pool over every window's positions."""
+    import torch
+
+    cls_id = tokenizer.cls_token_id
+    sep_id = tokenizer.sep_token_id
+    pad_id = tokenizer.pad_token_id or 0
+    merged: dict[int, float] = {}
+    for start in range(0, len(windows), _WINDOWS_PER_FORWARD):
+        seqs = [[cls_id, *w, sep_id] for w in windows[start:start + _WINDOWS_PER_FORWARD]]
+        width = max(len(s) for s in seqs)
+        input_ids = torch.tensor([s + [pad_id] * (width - len(s)) for s in seqs])
+        attention_mask = torch.tensor(
+            [[1] * len(s) + [0] * (width - len(s)) for s in seqs]
+        )
+        if torch.cuda.is_available():
+            input_ids = input_ids.cuda()
+            attention_mask = attention_mask.cuda()
+        with torch.no_grad():
+            logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+        weights = torch.log1p(torch.relu(logits)) * attention_mask.unsqueeze(-1)
+        pooled = weights.amax(dim=(0, 1))  # over windows AND positions
+        nz = pooled.nonzero(as_tuple=False).squeeze(-1)
+        for tid, w in zip(nz.tolist(), pooled[nz].cpu().float().tolist(), strict=False):
+            if w > merged.get(tid, 0.0):
+                merged[tid] = w
+    return merged
+
+
 def encode_sparse(text: str) -> dict[int, float]:
     """Encode text into a SPLADE++ sparse vector.
 
@@ -212,7 +282,9 @@ def encode_sparse(text: str) -> dict[int, float]:
     sequence dimension, then extract non-zero (token_id, weight) pairs.
 
     Args:
-        text: Raw text to encode. Truncated to 512 tokens if longer.
+        text: Raw text to encode. Longer than 510 content tokens → encoded
+            in overlapping windows and max-pooled (RAG-10); it used to be
+            truncated at 512.
 
     Returns:
         Dict mapping vocabulary token IDs to positive weights.
@@ -230,6 +302,10 @@ def encode_sparse(text: str) -> dict[int, float]:
     import torch
 
     tokenizer, model = _get_sparse_model()
+
+    windows = _window_token_ids(tokenizer, text)
+    if windows is not None:
+        return _encode_windows(tokenizer, model, windows)
 
     inputs = tokenizer(
         text,
@@ -298,13 +374,30 @@ def encode_sparse_batch(texts: list[str], batch_size: int = 32) -> list[dict[int
     if SPARSE_SERVICE_URL:
         return _remote_encode_sparse(texts)
 
-    import torch
-
     tokenizer, model = _get_sparse_model()
     results: list[dict[int, float]] = []
 
     for start in range(0, len(texts), batch_size):
         batch = texts[start : start + batch_size]
+        # RAG-10: long texts are windowed individually; the rest keep the
+        # single batched forward below. Order is preserved.
+        batch_windows = [_window_token_ids(tokenizer, t) for t in batch]
+        short = [t for t, w in zip(batch, batch_windows, strict=True) if w is None]
+        short_vecs = iter(_encode_short_batch(tokenizer, model, short) if short else [])
+        for w in batch_windows:
+            results.append(
+                next(short_vecs) if w is None else _encode_windows(tokenizer, model, w)
+            )
+
+    return results
+
+
+def _encode_short_batch(tokenizer: Any, model: Any, batch: list[str]) -> list[dict[int, float]]:
+    """One batched forward over texts that each fit a single 512 window."""
+    import torch
+
+    results: list[dict[int, float]] = []
+    if batch:
         inputs = tokenizer(
             batch,
             return_tensors="pt",

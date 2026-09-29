@@ -243,7 +243,7 @@ async def test_execute_node_dispatches_primary_tools(monkeypatch) -> None:
         calls.append(("search_documents", (query_text, project_id)))
         return {"chunks": [], "count": 0}
 
-    async def fake_project_id_only(ctx, project_id: str):
+    async def fake_project_id_only(ctx, project_id: str, **_kwargs):
         assert ctx is not None and hasattr(ctx, "deps"), (
             "dispatcher must pass a ctx with .deps"
         )
@@ -292,7 +292,7 @@ async def test_execute_node_runs_adversarial_pass_for_hypothesis(monkeypatch) ->
         queries_seen.append(query_text)
         return {"chunks": [], "count": 0}
 
-    async def fake_project_id_only(ctx, project_id: str):
+    async def fake_project_id_only(ctx, project_id: str, **_kwargs):
         return {"chunks": [], "count": 0}
 
     import app.agent.tools as _tools_mod
@@ -381,7 +381,7 @@ async def test_execute_node_populates_evidence_packet(monkeypatch) -> None:
     ):
         return _FakeDocSearch(chunks_payload)
 
-    async def fake_project_id_only(ctx, project_id: str):
+    async def fake_project_id_only(ctx, project_id: str, **_kwargs):
         return _FakeDocSearch([])
 
     import app.agent.tools as _tools_mod
@@ -559,7 +559,7 @@ async def test_run_agentic_retrieval_returns_geo_rag_response(monkeypatch) -> No
     ):
         return {"chunks": [], "count": 0}
 
-    async def fake_project_id_only(ctx, project_id: str):
+    async def fake_project_id_only(ctx, project_id: str, **_kwargs):
         return {"chunks": [], "count": 0}
 
     import app.agent.tools as _tools_mod
@@ -794,7 +794,7 @@ async def test_run_agentic_retrieval_threads_callbacks_through_state(monkeypatch
     ):
         return {"chunks": [], "count": 0}
 
-    async def fake_project_id_only(ctx, project_id: str):
+    async def fake_project_id_only(ctx, project_id: str, **_kwargs):
         return {"chunks": [], "count": 0}
 
     import app.agent.tools as _tools_mod

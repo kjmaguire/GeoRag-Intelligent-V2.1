@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import GeoPlot from '@/Components/GeoPlot';
+import { buildScene3D, deepestIntervalByCollar, sceneZAxisTitle, type SurveyStationInput } from '@/lib/desurvey';
 
 interface CommoditySample {
     collar_id: string;
@@ -21,11 +22,15 @@ interface CollarPoint {
     easting: number | null;
     northing: number | null;
     total_depth: number | null;
+    azimuth?: number | null;
+    dip?: number | null;
+    elevation?: number | null;
 }
 
 /**
- * CommoditySamples3DView — vertical hole sticks coloured by per-sample
- * commodity grade pulled from silver.samples.commodity_assays. For
+ * CommoditySamples3DView — desurveyed hole traces (lib/desurvey, FE-9)
+ * coloured by per-sample commodity grade pulled from
+ * silver.samples.commodity_assays. For
  * Cameco Shirley Basin this is the only place uranium (U3O8_pct_e)
  * grade surfaces at hole+depth resolution; gold.assay_composites is
  * REE/geochem-heavy and doesn't carry uranium.
@@ -36,11 +41,13 @@ interface CollarPoint {
  */
 export default function CommoditySamples3DView({
     collars,
+    surveys = [],
     samples,
     commodityKeys,
     height = 560,
 }: {
     collars: CollarPoint[];
+    surveys?: Array<SurveyStationInput & { collar_id: string }>;
     samples: CommoditySample[];
     commodityKeys: CommodityKey[];
     height?: number;
@@ -52,7 +59,7 @@ export default function CommoditySamples3DView({
         return samples.filter((s) => Object.prototype.hasOwnProperty.call(s.grades, selected));
     }, [samples, selected]);
 
-    const { data, layout, gradeRange, unit } = useMemo(() => {
+    const { data, layout, gradeRange, unit, caption } = useMemo(() => {
         const valid = collars.filter((c) => c.easting !== null && c.northing !== null);
         if (valid.length === 0 || filtered.length === 0) {
             return {
@@ -60,11 +67,11 @@ export default function CommoditySamples3DView({
                 layout: {} as Record<string, unknown>,
                 gradeRange: [0, 0] as [number, number],
                 unit: '',
+                caption: '',
             };
         }
 
-        const meanE = valid.reduce((s, c) => s + (c.easting ?? 0), 0) / valid.length;
-        const meanN = valid.reduce((s, c) => s + (c.northing ?? 0), 0) / valid.length;
+        const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(filtered));
 
         const grades = filtered.map((s) => s.grades[selected]);
         const gMin = Math.min(...grades);
@@ -88,7 +95,6 @@ export default function CommoditySamples3DView({
         }
 
         const traces: Record<string, unknown>[] = [];
-        const allDepths: number[] = [];
 
         // Guess a unit hint from the key name. Most U3O8_pct_e values are
         // fractions of a percent so we just label as the raw key for now.
@@ -96,17 +102,14 @@ export default function CommoditySamples3DView({
             : selected.endsWith('_ppm') ? 'ppm' : '';
 
         for (const collar of valid) {
-            const x0 = (collar.easting as number) - meanE;
-            const y0 = (collar.northing as number) - meanN;
-            const td = collar.total_depth ?? 0;
+            const path = scene.fullPath(collar.collar_id);
+            if (!path) continue;
 
             // Ghost trace for every hole.
             traces.push({
                 type: 'scatter3d',
                 mode: 'lines',
-                x: [x0, x0],
-                y: [y0, y0],
-                z: [0, -td],
+                ...path,
                 line: { color: 'rgba(155,169,184,0.16)', width: 1.5 },
                 hoverinfo: 'name',
                 showlegend: false,
@@ -116,21 +119,25 @@ export default function CommoditySamples3DView({
             const holeSamples = byCollar.get(collar.collar_id) ?? [];
             if (holeSamples.length === 0) continue;
 
-            const xs: number[] = [];
-            const ys: number[] = [];
-            const zs: number[] = [];
+            const xs: Array<number | null> = [];
+            const ys: Array<number | null> = [];
+            const zs: Array<number | null> = [];
             const colors: string[] = [];
             const text: string[] = [];
             for (const s of holeSamples) {
                 const v = s.grades[selected];
-                xs.push(x0, x0);
-                ys.push(y0, y0);
-                zs.push(-s.from_depth, -s.to_depth);
+                const seg = scene.segment(collar.collar_id, s.from_depth, s.to_depth);
+                if (!seg) continue;
                 const c = colorFor(v);
-                colors.push(c, c);
                 const desc = `${collar.hole_id_canonical || collar.hole_id} · ${s.from_depth.toFixed(1)}–${s.to_depth.toFixed(1)} m · ${selected} = ${v.toFixed(4)}${unitLabel ? ' ' + unitLabel : ''}`;
-                text.push(desc, desc);
-                allDepths.push(s.to_depth);
+                // null gap between samples so the line does not bridge them.
+                xs.push(...seg.x, null);
+                ys.push(...seg.y, null);
+                zs.push(...seg.z, null);
+                for (let i = 0; i <= seg.x.length; i++) {
+                    colors.push(c);
+                    text.push(desc);
+                }
             }
 
             traces.push({
@@ -140,6 +147,7 @@ export default function CommoditySamples3DView({
                 y: ys,
                 z: zs,
                 line: { color: colors, width: 8 },
+                connectgaps: false,
                 text,
                 hoverinfo: 'text',
                 showlegend: false,
@@ -147,12 +155,11 @@ export default function CommoditySamples3DView({
             });
         }
 
-        const maxDepth = Math.max(...allDepths, 100);
         const layoutObj: Record<string, unknown> = {
             scene: {
                 xaxis: { title: { text: 'Easting (m)', font: { color: '#9ba9b8', size: 10 } }, color: '#9ba9b8', gridcolor: 'rgba(155,169,184,0.18)', backgroundcolor: '#0a0e14', showbackground: true },
                 yaxis: { title: { text: 'Northing (m)', font: { color: '#9ba9b8', size: 10 } }, color: '#9ba9b8', gridcolor: 'rgba(155,169,184,0.18)', backgroundcolor: '#0a0e14', showbackground: true },
-                zaxis: { title: { text: 'Depth (m)', font: { color: '#9ba9b8', size: 10 } }, color: '#9ba9b8', gridcolor: 'rgba(155,169,184,0.18)', backgroundcolor: '#0a0e14', showbackground: true, range: [-maxDepth * 1.1, 10] },
+                zaxis: { title: { text: sceneZAxisTitle(scene), font: { color: '#9ba9b8', size: 10 } }, color: '#9ba9b8', gridcolor: 'rgba(155,169,184,0.18)', backgroundcolor: '#0a0e14', showbackground: true },
                 bgcolor: '#0a0e14',
                 aspectmode: 'manual',
                 aspectratio: { x: 1, y: 1, z: 0.6 },
@@ -165,8 +172,8 @@ export default function CommoditySamples3DView({
             hovermode: 'closest',
         };
 
-        return { data: traces, layout: layoutObj, gradeRange: [gMin, gMax] as [number, number], unit: unitLabel };
-    }, [collars, filtered, selected]);
+        return { data: traces, layout: layoutObj, gradeRange: [gMin, gMax] as [number, number], unit: unitLabel, caption: scene.caption };
+    }, [collars, surveys, filtered, selected]);
 
     if (commodityKeys.length === 0) {
         return (
@@ -195,6 +202,9 @@ export default function CommoditySamples3DView({
                     <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
                         {filtered.length} samples · range {gradeRange[0].toFixed(4)}–{gradeRange[1].toFixed(4)}{unit ? ' ' + unit : ''}
                     </span>
+                )}
+                {caption && (
+                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
                 )}
             </div>
             {data.length === 0 ? (

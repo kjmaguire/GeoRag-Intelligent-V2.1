@@ -183,7 +183,57 @@ describe('DrillTrace3D — trace_points', () => {
         const tube = traces.find((t) => t.mode === 'lines' && t.showlegend === false);
         expect(tube!.pointCount).toBe(3);
         expect(tube!.zs).toEqual([1000, 900, 800]);
-        expect(tube!.xs).toEqual([-105.0, -105.001, -105.002]);
+        // GIS-9: x/y are metres east/north of the collar centroid, not
+        // degrees. At 50°N, 0.001° of longitude is ~71.7 m and of latitude
+        // ~111.2 m.
+        const xs = tube!.xs as number[];
+        const ys = tube!.ys as number[];
+        expect(xs[0]).toBeCloseTo(0, 6);
+        expect(xs[1]).toBeCloseTo(-71.7, 0);
+        expect(ys[1]).toBeCloseTo(111.2, 0);
+    });
+
+    it('draws the scene at true scale on all three axes (GIS-9)', () => {
+        render(<DrillTrace3D collars={[COLLAR_WITH_TRACE]} />);
+        const layout = reactCalls[reactCalls.length - 1].layout as { scene: { aspectmode: string; xaxis: { title: { text: string } } } };
+        expect(layout.scene.aspectmode).toBe('data');
+        expect(layout.scene.xaxis.title.text).toMatch(/\(m\)/);
+    });
+});
+
+describe('DrillTrace3D — server metric offsets (GIS-9)', () => {
+    const WITH_OFFSETS: CollarPoint = {
+        ...COLLAR_BASIC,
+        hole_id: 'HOLE-003',
+        collar_id: 'c-003',
+        trace_points: [
+            // lon/lat deliberately inconsistent with east_m/north_m: the
+            // metric offsets must win when every point carries them.
+            { x: -105.0, y: 50.0, z: 1000, depth_m: 0, east_m: 0, north_m: 0 },
+            { x: -105.0, y: 50.0, z: 900, depth_m: 100, east_m: 30, north_m: 40 },
+            { x: -105.0, y: 50.0, z: 850, depth_m: 150, east_m: 45, north_m: 60, extrapolated: true },
+        ],
+    };
+
+    it('uses east_m / north_m when every point has them', () => {
+        render(<DrillTrace3D collars={[WITH_OFFSETS]} />);
+        const tube = getTraces().find((t) => t.mode === 'lines' && t.name === undefined);
+        expect(tube!.xs).toEqual([0, 30]);
+        expect(tube!.ys).toEqual([0, 40]);
+    });
+
+    it('dashes the extrapolated tail past the last survey', () => {
+        render(<DrillTrace3D collars={[WITH_OFFSETS]} />);
+        const raw = reactCalls[reactCalls.length - 1].traces as Array<Record<string, unknown>>;
+        const dashed = raw.find((t) => t.name === 'projected to TD') as { x: number[]; line: { dash: string } };
+        expect(dashed.line.dash).toBe('dash');
+        expect(dashed.x).toEqual([30, 45]);
+    });
+
+    it('falls back to projecting lon/lat when offsets are absent', () => {
+        render(<DrillTrace3D collars={[COLLAR_WITH_TRACE]} />);
+        const tube = getTraces().find((t) => t.mode === 'lines' && t.showlegend === false);
+        expect((tube!.xs as number[])[1]).toBeCloseTo(-71.7, 0);
     });
 });
 

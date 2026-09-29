@@ -82,9 +82,16 @@ def test_project_or_public_admits_legacy_and_public(monkeypatch, _scope_fn):
     has_empty_match = False
     has_public_match = False
     for clause in flt.should:
-        if isinstance(clause, IsEmptyCondition):
-            if clause.is_empty.key == "project_id":
+        if isinstance(clause, Filter):
+            # Audit RAG-9: the empty-project branch is now a nested filter
+            # that also EXCLUDES project-scoped synthesized chunk kinds.
+            (empty,) = clause.must
+            assert isinstance(empty, IsEmptyCondition)
+            if empty.is_empty.key == "project_id":
                 has_empty_match = True
+            (excluded,) = clause.must_not
+            assert excluded.key == "chunk_kind"
+            assert "structured_summary" in excluded.match.any
         else:
             # FieldCondition
             if clause.key == "project_id":

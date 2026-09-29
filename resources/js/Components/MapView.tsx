@@ -22,9 +22,10 @@ import {
 import { buildSilverTileUrl } from '../lib/tileUrl';
 import { createTileFailureWatchdog } from '../lib/tileFailureWatchdog';
 import { escapeHtml } from '../lib/escapeHtml';
-import { useBasemapStyleUrl, useImageryTileUrl, useTerrainDemUrl } from '@/lib/basemap';
+import { demSourceSpec, useBasemapStyleUrl, useImageryTileUrl, useTerrainDemUrl } from '@/lib/basemap';
 import { useEvidenceMapPin } from '@/Hooks/useEvidenceMapPin';
 import { useSilverTileInvalidation } from '@/Hooks/useTileInvalidation';
+import { UNCERTAINTY_RINGS_FILTER, UNCERTAINTY_RINGS_PAINT } from '@/lib/uncertaintyRings';
 import type { PageProps } from '../types';
 
 /**
@@ -261,12 +262,9 @@ function useMapStyles(): Record<string, { label: string; url: string }> {
 // See ops/runbooks/dem-self-host.md for the self-hosting procedure
 // (terrain-RGB encoding via rio-rgbify, Martin raster_sources config,
 // nginx fallback).
-const demSourceConfig = (url: string) => ({
-    type: 'raster-dem' as const,
-    url,
-    tileSize: 512,
-    maxzoom: 14,
-});
+// The DEM source shape lives in @/lib/basemap (demSourceSpec) so WorkspaceMap
+// builds it the same way from the same registry value.
+const demSourceConfig = (url: string) => demSourceSpec(url);
 const satelliteSourceConfig = (tiles: string) => ({
     type: 'raster' as const,
     tiles: [tiles],
@@ -289,37 +287,15 @@ const satelliteSourceConfig = (tiles: string) => ({
 //     cosine-of-latitude correction (Web-Mercator shrink).
 //   - circle-stroke-color: matched against the georef_method vocabulary
 //     (declared/detected/assumed/manual/survey); falls back to gray.
-export const UNCERTAINTY_RINGS_FILTER = ['has', 'spatial_uncertainty_m'] as const;
-
-export const UNCERTAINTY_RINGS_STROKE_COLOR_EXPR = [
-    'match',
-    ['get', 'georef_method'],
-    'declared', '#22c55e',
-    'detected', '#3b82f6',
-    'assumed',  '#f97316',
-    'manual',   '#a855f7',
-    'survey',   '#000000',
-    '#9ca3af',
-] as const;
-
-export const UNCERTAINTY_RINGS_RADIUS_EXPR = [
-    '*',
-    ['get', 'spatial_uncertainty_m'],
-    ['/',
-        ['^', 2, ['zoom']],
-        ['*', 156543.03392, ['cos', ['*', ['get', '_lat'], 0.017453292519943295]]],
-    ],
-] as const;
-
-export const UNCERTAINTY_RINGS_PAINT = {
-    'circle-color': 'rgba(0,0,0,0)',
-    'circle-stroke-width': 1.5,
-    'circle-opacity': 0.25,
-    'circle-stroke-opacity': 0.55,
-    'circle-radius': UNCERTAINTY_RINGS_RADIUS_EXPR,
-    'circle-stroke-color': UNCERTAINTY_RINGS_STROKE_COLOR_EXPR,
-} as const;
-
+// The filter / paint constants now live in @/lib/uncertaintyRings so
+// WorkspaceMap paints the same (valid) expression. Re-exported here for the
+// existing registry-style tests and imports.
+export {
+    UNCERTAINTY_RINGS_FILTER,
+    UNCERTAINTY_RINGS_STROKE_COLOR_EXPR,
+    UNCERTAINTY_RINGS_RADIUS_EXPR,
+    UNCERTAINTY_RINGS_PAINT,
+} from '@/lib/uncertaintyRings';
 // CC-01 Item 2 follow-on — MVT-path layer identifiers. Pinned as exported
 // constants so the registry-style test can assert that the MVT and GeoJSON
 // branches share filter + paint while diverging on source binding.

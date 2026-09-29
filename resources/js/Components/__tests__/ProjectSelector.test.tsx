@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 // ── Inertia mock ───────────────────────────────────────────────────────────
 // ProjectSelector reads `url` from usePage() to sync the dropdown to the
@@ -19,7 +19,7 @@ vi.mock('@inertiajs/react', () => ({
 }));
 
 // Import AFTER the mock is registered.
-import ProjectSelector from '../ProjectSelector';
+import ProjectSelector, { projectSwitchUrl } from '../ProjectSelector';
 
 describe('ProjectSelector — auth surface', () => {
     let getItemSpy: ReturnType<typeof vi.spyOn>;
@@ -63,5 +63,37 @@ describe('ProjectSelector — auth surface', () => {
         expect(init?.credentials).toBe('same-origin');
         const headers = (init?.headers ?? {}) as Record<string, string>;
         expect(headers['Authorization']).toBeUndefined();
+    });
+});
+
+describe('ProjectSelector — FE-14', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('Retry actually refetches after a failure', async () => {
+        const fetchSpy = vi.spyOn(globalThis, 'fetch')
+            .mockResolvedValueOnce(new Response('nope', { status: 500 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ data: [
+                { project_id: 'proj-001', project_name: 'Patterson Lake South', slug: 'pls' },
+            ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+        render(<ProjectSelector />);
+        fireEvent.click(await screen.findByRole('button', { name: /retry/i }));
+
+        await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+        expect(await screen.findByRole('option', { name: /Patterson Lake South/ })).toBeInTheDocument();
+        expect(screen.queryByText(/loading projects/i)).toBeNull();
+    });
+
+    it.each([
+        ['/projects/a/workspace?mode=3d', '/projects/b/workspace'],
+        ['/projects/a/reports/5f0c-uuid', '/projects/b/reports'],
+        ['/projects/a/holes/c-1/detail', '/projects/b'],
+        ['/projects/a/imports/quality', '/projects/b/imports/quality'],
+        ['/projects/a', '/projects/b'],
+        ['/projects', '/projects/b'],
+    ])('switching from %s goes to %s — no record ids across projects', (from, to) => {
+        expect(projectSwitchUrl(from, 'b')).toBe(to);
     });
 });

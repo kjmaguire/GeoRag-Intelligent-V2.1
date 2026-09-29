@@ -111,16 +111,22 @@ final class WorkspaceThreeDPayloadTest extends TestCase
         $response->assertInertia(
             fn (AssertableInertia $page) => $page
                 ->component('Foundry/Workspace')
-                ->has('first_holes_intervals')
                 ->has('intervals_count')
-                ->has('surveys_3d')
-                ->has('structures_3d')
-                ->has('assay_composites_3d')
-                ->has('assay_elements_3d')
-                ->has('significant_intersections_3d')
-                ->has('structures_visual_3d')
-                ->has('commodity_samples_3d')
-                ->has('commodity_keys_3d'),
+                // FE-11: the heavy 3D payload is a deferred group, NOT part
+                // of the initial page — MAP mode never reads it.
+                ->missing('first_holes_intervals')
+                ->missing('surveys_3d')
+                ->loadDeferredProps('viz3d', fn (AssertableInertia $reload) => $reload
+                    ->has('first_holes_intervals')
+                    ->has('surveys_3d')
+                    ->has('structures_3d')
+                    ->has('assay_composites_3d')
+                    ->has('assay_elements_3d')
+                    ->has('significant_intersections_3d')
+                    ->has('structures_visual_3d')
+                    ->has('commodity_samples_3d')
+                    ->has('commodity_keys_3d')
+                    ->has('survey_holes_downsampled')),
         );
     }
 
@@ -140,7 +146,7 @@ final class WorkspaceThreeDPayloadTest extends TestCase
         $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
 
         $response->assertInertia(
-            fn (AssertableInertia $page) => $page->where(
+            fn (AssertableInertia $page) => $page->loadDeferredProps('viz3d', fn (AssertableInertia $reload) => $reload->where(
                 'surveys_3d',
                 function ($surveys) {
                     if (! is_array($surveys) || count($surveys) === 0) {
@@ -157,7 +163,7 @@ final class WorkspaceThreeDPayloadTest extends TestCase
 
                     return true;
                 },
-            ),
+            )),
         );
     }
 
@@ -185,6 +191,26 @@ final class WorkspaceThreeDPayloadTest extends TestCase
                 ->component('Foundry/Workspace')
                 ->has('project_layers'),
         );
+    }
+
+    /**
+     * FE-5 / FE-3: the map needs the tile cache key and, for a project with
+     * no positioned collars, an extent to open on.
+     */
+    public function test_workspace_sends_data_version_and_project_extent(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars(0);
+        DB::statement('UPDATE silver.projects SET data_version = 7 WHERE project_id = ?::uuid', [$project->project_id]);
+
+        $this->actingAs($user)
+            ->get('/projects/'.$project->slug.'/workspace')
+            ->assertStatus(200)
+            ->assertInertia(fn (AssertableInertia $page) => $page
+                ->where('project.data_version', 7)
+                // No collars and no other map data: null, and the client
+                // falls back to its default view instead of no map.
+                ->where('project_extent', null)
+                ->where('empty', true));
     }
 
     /**

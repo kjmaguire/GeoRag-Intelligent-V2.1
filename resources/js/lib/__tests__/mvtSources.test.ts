@@ -14,6 +14,7 @@ import {
     mvtLayerId,
     mvtOutlineLayerId,
     removeMvtLayers,
+    setMvtTileVersion,
     setMvtVisibility,
     type MvtCapableMap,
 } from '../mvtSources';
@@ -218,5 +219,33 @@ describe('removeMvtLayers', () => {
         const firstSource = order.findIndex((o) => o.startsWith('source:'));
         const lastLayer = order.map((o) => o.startsWith('layer:')).lastIndexOf(true);
         expect(lastLayer).toBeLessThan(firstSource);
+    });
+});
+
+describe('setMvtTileVersion (FE-5)', () => {
+    it('re-keys each shared source exactly once with the new &v=', () => {
+        const map = fakeMap();
+        addMvtLayers(map, { ...OPTS, dataVersion: 0 });
+        const calls: Record<string, string[][]> = {};
+        for (const [id, src] of map.sources) {
+            (src as { setTiles?: (t: string[]) => void }).setTiles = (t) => {
+                (calls[id] ??= []).push(t);
+            };
+        }
+
+        const rekeyed = setMvtTileVersion(map, 'p-1', 12);
+
+        // One call per SOURCE, not per layer def: the three imported-* defs
+        // share one source.
+        expect(rekeyed.length).toBe(map.sources.size);
+        for (const [id, list] of Object.entries(calls)) {
+            expect(list, id).toHaveLength(1);
+            expect(list[0][0]).toContain('project_id=p-1&v=12');
+        }
+    });
+
+    it('skips sources that are not on the map', () => {
+        const map = fakeMap();
+        expect(setMvtTileVersion(map, 'p-1', 3)).toEqual([]);
     });
 });

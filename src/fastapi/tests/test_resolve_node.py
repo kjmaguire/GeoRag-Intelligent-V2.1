@@ -197,3 +197,62 @@ def test_run_agentic_retrieval_accepts_history_kwarg():
     sig = inspect.signature(run_agentic_retrieval)
     assert "history" in sig.parameters
     assert sig.parameters["history"].default is None
+
+
+# ---------------------------------------------------------------------------
+# AGT-1 (audit 2026-09-29) — low-confidence rewrites are withheld, and the
+# synthesis model sees the user's own words.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_relativizer_that_leaves_state_query_untouched(monkeypatch):
+    """The audit's first reproduction, end to end through the node: the
+    heuristic path (no entity_mentions — what Laravel actually sends)."""
+    monkeypatch.setattr(_settings, "MULTI_TURN_RESOLUTION_ENABLED", True, raising=False)
+    state = _state(
+        query="Which holes have assays that exceed 2 g/t U3O8?",
+        history=[ConversationTurn(
+            turn_index=0, role="user", text="Tell me about hole PLS-22-08",
+        )],
+    )
+    update = await resolve_node(state)
+    assert "query" not in update
+    assert update["resolution_confidence"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_rewrite_is_withheld(monkeypatch):
+    """One pronoun resolves, the other cannot: overall confidence falls
+    under REWRITE_MIN_CONFIDENCE and the node keeps the user's query."""
+    from app.agent.multi_turn_resolver import REWRITE_MIN_CONFIDENCE
+
+    monkeypatch.setattr(_settings, "MULTI_TURN_RESOLUTION_ENABLED", True, raising=False)
+    state = _state(
+        # "its" resolves; "the same formation" has no formation in history.
+        query="what are its assays in the same formation?",
+        history=[_turn_with_hole(0, "PLS-22-08")],
+    )
+    update = await resolve_node(state)
+    assert update["resolution_confidence"] < REWRITE_MIN_CONFIDENCE
+    assert "query" not in update
+    assert "query_original" not in update
+
+
+def test_llm_question_carries_original_and_rewrite():
+    from app.agent.agentic_retrieval.nodes import _question_for_llm
+
+    state = _state(
+        query="what are PLS-22-08's top assays?",
+        query_original="what are ITS top assays?",
+    )
+    question = _question_for_llm(state)
+    assert question.startswith("what are ITS top assays?")
+    assert "what are PLS-22-08's top assays?" in question
+
+
+def test_llm_question_is_plain_query_without_rewrite():
+    from app.agent.agentic_retrieval.nodes import _question_for_llm
+
+    state = _state(query="deepest hole?")
+    assert _question_for_llm(state) == "deepest hole?"

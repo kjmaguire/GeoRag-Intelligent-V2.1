@@ -62,28 +62,21 @@ describe('uncertainty-rings stroke colour enum', () => {
 describe('uncertainty-rings radius expression', () => {
     const expr = UNCERTAINTY_RINGS_RADIUS_EXPR;
 
-    it('multiplies spatial_uncertainty_m by a per-zoom factor', () => {
-        expect(expr[0]).toBe('*');
-        expect(expr[1]).toEqual(['get', 'spatial_uncertainty_m']);
+    it('is a TOP-LEVEL exponential-base-2 interpolate on zoom (GIS-5)', () => {
+        // ["zoom"] may only be the input of a top-level step/interpolate.
+        // The previous ['*', …, ['^', 2, ['zoom']]] form failed validation,
+        // so addLayer silently dropped the layer.
+        expect(expr[0]).toBe('interpolate');
+        expect(expr[1]).toEqual(['exponential', 2]);
+        expect(expr[2]).toEqual(['zoom']);
+        expect(expr[3]).toBe(0);
+        expect(expr[5]).toBe(24);
     });
 
-    it('divides 2^zoom by the Web-Mercator scale × cos(lat_rad)', () => {
-        const perPixel = expr[2] as ReadonlyArray<unknown>;
-        expect(perPixel[0]).toBe('/');
-        expect(perPixel[1]).toEqual(['^', 2, ['zoom']]);
-
-        const denom = perPixel[2] as ReadonlyArray<unknown>;
-        expect(denom[0]).toBe('*');
-        // 156543.03392 m/px at equator z=0 is the canonical Web-Mercator
-        // scale denominator (used by MapLibre + every Mercator viewer);
-        // changing it without intent would break ring sizing globally.
-        expect(denom[1]).toBe(156543.03392);
-
-        const cosTerm = denom[2] as ReadonlyArray<unknown>;
-        expect(cosTerm[0]).toBe('cos');
-        // The inner factor converts the latitude (degrees) to radians:
-        // π/180 ≈ 0.017453292519943295.
-        expect(cosTerm[1]).toEqual(['*', ['get', '_lat'], 0.017453292519943295]);
+    it('uses the 512-px-tile Web-Mercator constant, not the 256-px one', () => {
+        const flat = JSON.stringify(expr);
+        expect(flat).toContain('78271.517');
+        expect(flat).not.toContain('156543');
     });
 });
 

@@ -302,6 +302,7 @@ WITH grouped AS (
 SELECT
     g.*,
     c.hole_id,
+    c.project_id::text AS project_id,
     p.project_name,
     l.rock_code,
     l.rock_name
@@ -326,6 +327,7 @@ SELECT
     l.colour, l.grain_size, l.texture, l.weathering, l.hardness,
     l.logged_by, l.logged_date,
     c.hole_id,
+    c.project_id::text AS project_id,
     p.project_name
 FROM silver.lithology l
 LEFT JOIN silver.collars c ON c.collar_id = l.collar_id
@@ -345,6 +347,7 @@ SELECT
     c.status, c.hole_status,
     c.purpose,
     c.driller, c.geologist,
+    c.project_id::text AS project_id,
     p.project_name
 FROM silver.collars c
 LEFT JOIN silver.projects p ON p.project_id = c.project_id
@@ -360,20 +363,25 @@ UPSERT_PASSAGE_SQL = """
 INSERT INTO silver.document_passages (
     passage_id, document_id, workspace_id, revision_number,
     text, text_hash, ordinal, chunk_kind, parser_used,
-    created_at, updated_at
+    project_id, created_at, updated_at
 )
-VALUES ($1::uuid, NULL, $2::uuid, 1, $3, $4, 0, $5, $6, NOW(), NOW())
+VALUES ($1::uuid, NULL, $2::uuid, 1, $3, $4, 0, $5, $6, $7::uuid, NOW(), NOW())
 ON CONFLICT (passage_id) DO UPDATE SET
     text        = EXCLUDED.text,
     text_hash   = EXCLUDED.text_hash,
     chunk_kind  = EXCLUDED.chunk_kind,
     parser_used = EXCLUDED.parser_used,
+    project_id  = EXCLUDED.project_id,
     updated_at  = NOW(),
-    -- Re-embed ONLY when the text actually changed. Without this branch a
-    -- re-run would null every embedding_id and put the whole corpus back
-    -- through the embedder for no change in content.
+    -- Re-embed ONLY when the text or the project changed. Without this
+    -- branch a re-run would null every embedding_id and put the whole
+    -- corpus back through the embedder for no change in content. The
+    -- project clause is what re-embeds passages written before project_id
+    -- existed (audit RAG-9): their Qdrant payload has no project, so the
+    -- project filter cannot keep them out of other projects' answers.
     embedding_id = CASE
         WHEN silver.document_passages.text_hash = EXCLUDED.text_hash
+         AND silver.document_passages.project_id IS NOT DISTINCT FROM EXCLUDED.project_id
         THEN silver.document_passages.embedding_id
         ELSE NULL
     END
@@ -471,7 +479,7 @@ nl_summaries = hatchet.workflow(
 
 def build_rows(
     source: str, fetched: list[dict[str, Any]], workspace_id: str,
-) -> list[tuple[str, str, str, str, str, str]]:
+) -> list[tuple[str, str, str, str, str, str, str | None]]:
     """Turn fetched rows into UPSERT_PASSAGE_SQL parameter tuples.
 
     Separated from the I/O so the whole render-and-key step is testable
@@ -480,7 +488,7 @@ def build_rows(
     source row would be re-created on every run.
     """
     source_table, _sql, renderer, id_column = SYNTHESIZERS[source]
-    rows: list[tuple[str, str, str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str, str, str | None]] = []
     for record in fetched:
         row_id = record.get(id_column)
         if row_id is None:
@@ -493,6 +501,11 @@ def build_rows(
             text_hash(text),
             CHUNK_KIND_STRUCTURED,
             PARSER_USED,
+            # Audit RAG-9: the passage's project, from its collar. Without
+            # it the embedder wrote project_id NULL, and project_or_public
+            # retrieval admits an empty project_id — so project B's
+            # question retrieved project A's per-hole summaries.
+            str(record["project_id"]) if record.get("project_id") else None,
         ))
     return rows
 

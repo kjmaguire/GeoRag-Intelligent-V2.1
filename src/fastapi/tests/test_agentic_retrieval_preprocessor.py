@@ -290,7 +290,7 @@ async def test_execute_node_skips_filtered_out_tools(monkeypatch) -> None:
         calls.append("search_documents")
         return {"chunks": [], "count": 0}
 
-    async def fake_project_id_only(ctx, project_id: str):
+    async def fake_project_id_only(ctx, project_id: str, **_kwargs):
         return {"chunks": [], "count": 0}
 
     import app.agent.tools as _tools_mod

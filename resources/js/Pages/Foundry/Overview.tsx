@@ -1,6 +1,5 @@
 import { Head, Link, router } from '@inertiajs/react';
 import { useEffect, useState } from 'react';
-import AppLayout from '@/Layouts/AppLayout';
 import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Stat, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
@@ -155,7 +154,7 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
     }
 
     return (
-        <AppLayout>
+        <>
             <Head title={`${project.project_name} — Overview`} />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
@@ -416,6 +415,6 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                     </section>
                 )}
             </div>
-        </AppLayout>
+        </>
     );
 }
