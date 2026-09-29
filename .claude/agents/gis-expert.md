@@ -88,7 +88,7 @@ exactly like getting them right:
 - **Martin 1.11.0** serves MVT. Config `docker/martin/martin.yaml`; 18 tile
   functions plus a `martin_readonly` database role. In production `martin` is
   its own ECS service.
-- **MapLibre GL 5, never Mapbox GL** (CLAUDE.md rule 8). Licensing matters for
+- **MapLibre GL 6, never Mapbox GL** (CLAUDE.md rule 8). Licensing matters for
   on-prem deployments. If an example uses `mapbox-gl`, translate it.
 - MVT is served in Web Mercator tile coordinates; the source is 4326. That
   reprojection is Martin's job — do not pre-project in the database and hand
