@@ -182,6 +182,10 @@ class PromoteSilverToGoldOutput(BaseModel):
     traces_written: int = 0
     traces_unchanged: int = 0
     traces_skipped_no_geometry: int = 0
+    #: Traces whose azimuths were corrected from a DECLARED reference (true or
+    #: magnetic north, or another projected grid) to the collar's local UTM
+    #: grid. Zero unless silver.projects declares one (GIS-12).
+    traces_azimuth_corrected: int = 0
     intervals_written: int = 0
     #: 'alteration' rows rebuilt this run (a subset of nothing above: they are
     #: rebuilt, not upserted, so the count is the project's whole set).
@@ -622,6 +626,30 @@ async def _promote_traces(
     #
     # A collar with no geom_4326 is skipped rather than guessed at: without a
     # position there is nothing to hang metre offsets on.
+    # The azimuth reference the project DECLARES, if any (GIS-12). With none
+    # recognised, azimuths are taken as grid north of the collar's own UTM
+    # zone — the as-built default Kyle chose to keep (2026-09-29). See
+    # app/services/ingest/azimuth_reference.py.
+    from app.services.ingest.azimuth_reference import (  # noqa: PLC0415
+        apply as apply_azimuth_correction,
+    )
+    from app.services.ingest.azimuth_reference import (  # noqa: PLC0415
+        azimuth_correction,
+    )
+
+    try:
+        project_row = await conn.fetchrow(
+            "SELECT orientation_reference, magnetic_declination, crs_epsg "
+            "FROM silver.projects WHERE project_id = $1::uuid",
+            project_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — unreadable means "none declared", the default
+        log.warning("promote.traces: project azimuth reference unreadable (%s)", exc)
+        project_row = None
+    orientation_reference = project_row["orientation_reference"] if project_row else None
+    magnetic_declination = project_row["magnetic_declination"] if project_row else None
+    project_epsg = project_row["crs_epsg"] if project_row else None
+
     collars = await conn.fetch(
         """
         SELECT c.collar_id, c.elevation,
@@ -664,6 +692,22 @@ async def _promote_traces(
         lon = float(c["lon"])
         lat = float(c["lat"])
         collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
+
+        # Declared azimuth reference -> the local zone's grid (GIS-12). Applied
+        # BEFORE hashing, so declaring (or changing) a reference rebuilds the
+        # trace; with none declared the stations, and the hash, are unchanged.
+        correction = azimuth_correction(
+            orientation_reference=orientation_reference,
+            magnetic_declination=magnetic_declination,
+            project_epsg=project_epsg,
+            local_epsg=_collar_local_utm(lon, lat),
+            lon=lon, lat=lat,
+        )
+        if correction.degrees:
+            stations = [
+                (d, apply_azimuth_correction(a, correction), p) for d, a, p in stations
+            ]
+            out.traces_azimuth_corrected += 1
 
         # Hashed BEFORE the skip test, and over the collar origin as well as
         # the stations — a collar that moves must invalidate its own trace.
