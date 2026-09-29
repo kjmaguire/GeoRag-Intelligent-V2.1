@@ -424,7 +424,13 @@ locals {
     COHERE_CHAT_MODEL  = var.cohere_chat_model
     COHERE_PARSE_MODEL = var.cohere_parse_model
     OCR_ENGINE         = "cohere_parse"
-    PDF_PARSE_MODE     = "ocr_only"
+    # Every page through Parse; the PDF's own text layer is the fallback
+    # (request failed, over OCR_MAX_PAGES_PER_DOC, short/empty output).
+    # Kyle's call, 2026-09-29, after the parse-comparison run matched native
+    # text at 99.5% (synthetic 7-page report; no table pages measured yet).
+    # Slower (~7.5 s/page, 4 in flight) and billed per page — see
+    # pdf_report.py's module docstring for the three modes.
+    PDF_PARSE_MODE = "all"
 
     # SPLADE++ has no managed equivalent anywhere. This is what makes the
     # sparse leg of hybrid retrieval exist; unset, sparse_encoder falls
