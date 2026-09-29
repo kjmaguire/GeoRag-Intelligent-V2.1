@@ -33,7 +33,7 @@ experts** own a body of knowledge and are the ones to ask whether something is
 ├── chat-expert.md               # SSE → Reverb → Echo → React, end to end
 ├── cohere-expert.md             # Command A+, Parse 5, Embed v4, Rerank 3.5
 ├── aws-expert.md                # ECS/RDS/Terraform, cost, the power switch
-├── hatchet-expert.md            # 51 workflows, crons, durable retries
+├── hatchet-expert.md            # 50 workflows, crons, durable retries
 ├── postgres-gis-expert.md       # schemas, RLS, GIST, PgBouncer, RDS
 ├── gis-expert.md                # CRS, datums, dip/azimuth, desurveying
 ├── ingestion-gis-expert.md      # parsers, PDF/OCR, medallion, provenance

@@ -103,7 +103,7 @@ Memory protection:
 
 ## 4. The other ingest workflows
 
-Six workflows accept uploads. The full 51-workflow registry, with every
+Six workflows accept uploads. The full 50-workflow registry, with every
 cron, lives in [Ch 07 §2.2](07-orchestration.md); this table is the ingest
 subset.
 

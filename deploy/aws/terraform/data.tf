@@ -299,7 +299,7 @@ resource "aws_efs_access_point" "redis" {
 #     which is exactly the "could not load encryption service: encryption is
 #     required" the rehearsal hit.
 #
-# All 51 workflows and every cron sit on top of that, so this is the store that
+# All 50 workflows and every cron sit on top of that, so this is the store that
 # looked stateless and was not.
 #
 # posix_user is root because the image runs as root: the same one-off task
