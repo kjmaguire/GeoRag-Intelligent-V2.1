@@ -130,6 +130,46 @@ _MAX_ARCHIVE_ENTRIES = 50_000
 #: statement in memory.
 _INSERT_BATCH = 500
 
+#: The upload timestamp every bronze key carries in front of the user's file
+#: name: ``{Ymd_His}_`` from UploadController, ``%Y%m%d_%H%M%S_%f_`` from the
+#: ZIP fan-out. Mirrored in SQL by ``_UPLOAD_STAMP_SQL``.
+_UPLOAD_STAMP_RE = re.compile(r"^[0-9]{8}_[0-9]{6}(?:_[0-9]{1,6})?_")
+_UPLOAD_STAMP_SQL = "^[0-9]{8}_[0-9]{6}(_[0-9]{1,6})?_"
+
+
+def _logical_source_name(filename: str) -> str:
+    """The file's name as the user gave it, without the upload timestamp.
+
+    The replace-on-re-upload below keys on this (ING-7). ``source_file``
+    itself still stores the full timestamped name, so a row still points at
+    the exact bronze object it came from.
+    """
+    return _UPLOAD_STAMP_RE.sub("", filename, count=1) or filename
+
+
+async def _replace_previous_upload(
+    conn: asyncpg.Connection, *, project_id: str, filename: str,
+) -> int:
+    """Delete the features an earlier upload of the same file wrote.
+
+    Keyed on the name WITHOUT the upload timestamp (ING-7). Every upload gets
+    a fresh ``{Ymd_His}_`` prefix, so ``source_file = filename`` only ever
+    matched a Hatchet retry of the same key: a corrected re-upload of
+    ``geology.shp.zip`` drew every polygon twice. The exact-name arm keeps
+    matching rows written before any prefix existed. Run inside the caller's
+    transaction, so the delete only lands if the re-insert does.
+    """
+    return int(await conn.fetchval(
+        "WITH gone AS ("
+        "  DELETE FROM silver.spatial_features"
+        "   WHERE project_id = $1::uuid"
+        "     AND (source_file = $2"
+        "          OR regexp_replace(source_file, $4, '') = $3)"
+        "  RETURNING 1"
+        ") SELECT count(*) FROM gone",
+        project_id, filename, _logical_source_name(filename), _UPLOAD_STAMP_SQL,
+    ) or 0)
+
 
 # One DSN builder for the whole service — see app/db/dsn.py for why
 # sixty copies of this existed and what the drift cost.
@@ -1129,6 +1169,7 @@ async def run_ingest_spatial(
                 # source_file here, the collars mentioned in ingest_tabular,
                 # the curve names in ingest_well_logs.
                 replaced = 0
+                logical_name = _logical_source_name(filename)
                 async with conn.transaction():
                     # The CRS gate. Inside the transaction on purpose: the
                     # delete-then-reinsert below is what makes a re-upload
@@ -1149,14 +1190,9 @@ async def run_ingest_spatial(
                     if refusal:
                         raise ValueError(refusal)
 
-                    replaced = int(await conn.fetchval(
-                        "WITH gone AS ("
-                        "  DELETE FROM silver.spatial_features"
-                        "   WHERE project_id = $1::uuid AND source_file = $2"
-                        "  RETURNING 1"
-                        ") SELECT count(*) FROM gone",
-                        input.project_id, filename,
-                    ) or 0)
+                    replaced = await _replace_previous_upload(
+                        conn, project_id=input.project_id, filename=filename,
+                    )
                     if replaced:
                         log.info(
                             "ingest_spatial: replacing %d existing feature(s) for "
@@ -1166,8 +1202,8 @@ async def run_ingest_spatial(
                         warnings.append({
                             "code": "features_replaced",
                             "detail": (
-                                f"{replaced} feature(s) from a previous ingest of "
-                                f"{filename} were replaced."
+                                f"{replaced} feature(s) from a previous upload of "
+                                f"{logical_name} were replaced by this one."
                             ),
                         })
 

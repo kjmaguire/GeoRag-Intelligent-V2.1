@@ -259,3 +259,37 @@ async def test_lithology_out_of_range_recovery_is_blanked_not_fatal(project: _Fi
     assert (rows[0]["rqd"], rows[0]["recovery"]) == (85.0, None)
     assert rows[1]["lithology_code"] is None
     assert rows[1]["lithology_description"] == "Very long free-text lithology name"
+
+
+async def test_spatial_reupload_replaces_by_name_not_upload_key(project: _Fixture) -> None:
+    """ING-7: the SQL regexp strips exactly the upload stamp."""
+    from app.hatchet_workflows.ingest_spatial import _replace_previous_upload
+
+    for source_file in (
+        "20260901_100000_geology.zip", "20260915_090000_123456_geology.zip",
+        "geology.zip", "other.zip", "20260901_100000_geology_v2.zip",
+    ):
+        await project.conn.execute(
+            "INSERT INTO silver.spatial_features (feature_id, workspace_id, project_id, "
+            "  feature_type, source_file) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, "
+            "  'boundary', $3)",
+            project.workspace_id, project.project_id, source_file,
+        )
+    try:
+        replaced = await _replace_previous_upload(
+            project.conn, project_id=project.project_id,
+            filename="20260929_081500_geology.zip",
+        )
+        left = sorted(
+            r["source_file"] for r in await project.conn.fetch(
+                "SELECT source_file FROM silver.spatial_features WHERE project_id = $1::uuid",
+                project.project_id,
+            )
+        )
+        assert replaced == 3
+        assert left == ["20260901_100000_geology_v2.zip", "other.zip"]
+    finally:
+        await project.conn.execute(
+            "DELETE FROM silver.spatial_features WHERE project_id = $1::uuid",
+            project.project_id,
+        )
