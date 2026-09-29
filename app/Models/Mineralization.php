@@ -46,6 +46,9 @@ class Mineralization extends Model
         'created_at' => 'datetime',
     ];
 
+    /**
+     * @return BelongsTo<Collar, $this>
+     */
     public function collar(): BelongsTo
     {
         return $this->belongsTo(Collar::class, 'collar_id', 'collar_id');

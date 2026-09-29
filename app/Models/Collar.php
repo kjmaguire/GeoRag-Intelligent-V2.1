@@ -100,6 +100,8 @@ class Collar extends Model
 
     /**
      * Get all mineralization intervals for this collar.
+     *
+     * @return HasMany<Mineralization, $this>
      */
     public function mineralization(): HasMany
     {

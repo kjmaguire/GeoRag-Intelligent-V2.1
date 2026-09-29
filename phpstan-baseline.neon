@@ -446,6 +446,12 @@ parameters:
 			path: app/Http/Resources/CollarResource.php
 
 		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$mineralization\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
 			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$northing\.$#'
 			identifier: property.notFound
 			count: 1
