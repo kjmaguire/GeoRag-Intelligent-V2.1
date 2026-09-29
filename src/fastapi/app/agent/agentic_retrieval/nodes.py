@@ -15,7 +15,6 @@ re-implementing them.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import dataclasses
 import logging
 import re
@@ -2547,13 +2546,21 @@ async def repair_shadow_node(state: AgenticRetrievalState) -> dict[str, Any]:
          ``state.repair_strategy_history`` (the strategies that would
          fire), and ``state.repair_terminal_reason`` (when terminal).
 
-    Crucially, does NOT:
+    In shadow mode (the only mode enabled by default) it does NOT:
 
       - Modify ``state.response``, ``state.retrieval_profile``, or
         ``state.retrieval_filters``.
       - Re-issue any retrieval node.
       - Bump ``state.repair_attempts`` (no actual attempt happened —
         the full loop is what records attempts).
+
+    With REPAIR_LOOP_TERMINAL_ENABLED it stamps ``refusal_payload`` for a
+    terminal plan. With REPAIR_LOOP_LOWCOST_ENABLED / _FULL_ENABLED it may
+    REPLACE the response — but only with a re-issue that has itself been
+    through validate_node and demote_node (``_revalidate_repaired_answer``)
+    and was never streamed; if that re-validation fails, the attempt is
+    discarded (audit AGT-3 / RAG-19, 2026-09-29). All three flags default
+    False.
 
     When the flag is off (default), the node is a no-op pass-through.
     This means the graph wiring can land NOW without changing behaviour,
@@ -2766,6 +2773,9 @@ async def _run_repair_loop(
             break
 
         applied = False
+        # Everything a re-issue can touch, so a failed or rejected attempt
+        # leaves the validated answer exactly as validate/demote left it.
+        before = _repair_checkpoint(state)
 
         # Stage 3 path — LLM-only retry.
         suffix = apply_llm_only_strategy(next_strategy)
@@ -2778,6 +2788,7 @@ async def _run_repair_loop(
                     next_strategy.value,
                 )
             except Exception:
+                _restore_repair_checkpoint(state, before)
                 logger.warning(
                     "repair_loop: LLM-only re-issue failed for %s",
                     next_strategy.value,
@@ -2803,6 +2814,7 @@ async def _run_repair_loop(
                         next_strategy.value,
                     )
                 except Exception:
+                    _restore_repair_checkpoint(state, before)
                     logger.warning(
                         "repair_loop: retrieval re-issue failed for %s",
                         next_strategy.value,
@@ -2815,6 +2827,26 @@ async def _run_repair_loop(
             logger.info(
                 "repair_loop: strategy %s not actionable under current flags; "
                 "exiting loop",
+                next_strategy.value,
+            )
+            break
+
+        # Audit AGT-3 / RAG-19: a re-issued answer goes through the SAME
+        # validate -> demote chain the first answer did before it may
+        # replace it — Layer 2 marker repair, the Layer 5 provenance gate,
+        # Layers 3/4/6, the confidence floor + banner, demotion. It used to
+        # be swapped in straight from assemble_response, and the loop's
+        # re-classification below read the STALE validation_warnings, so it
+        # could declare "no codes fire" about text nothing had checked. If
+        # validation itself fails, the attempt is discarded: the answer
+        # that already passed the guards is what ships.
+        try:
+            await _revalidate_repaired_answer(state)
+        except Exception:
+            _restore_repair_checkpoint(state, before)
+            logger.exception(
+                "repair_loop: re-validation of the %s re-issue failed — "
+                "discarding it and keeping the validated answer",
                 next_strategy.value,
             )
             break
@@ -2889,8 +2921,14 @@ async def _run_repair_loop(
         return {}
 
     return {
+        # Only ever a response that has been through validate + demote
+        # (see _revalidate_repaired_answer) — persist and the `completed`
+        # frame never see an unchecked re-issue.
         "response": state.response,
+        "validation_warnings": list(state.validation_warnings),
+        "demotion_reasons": list(state.demotion_reasons),
         "tool_results": list(state.tool_results),
+        "evidence_packet": state.evidence_packet,
         "retrieval_filters": state.retrieval_filters,
         "retrieval_profile": state.retrieval_profile,
         "repair_attempts": attempts,
@@ -2900,6 +2938,44 @@ async def _run_repair_loop(
             else "loop completed"
         ),
     }
+
+
+_REPAIR_CHECKPOINT_FIELDS = (
+    "response",
+    "validation_warnings",
+    "demotion_reasons",
+    "tool_results",
+    "evidence_packet",
+    "retrieval_filters",
+    "retrieval_profile",
+)
+
+
+def _repair_checkpoint(state: AgenticRetrievalState) -> dict[str, Any]:
+    return {name: getattr(state, name) for name in _REPAIR_CHECKPOINT_FIELDS}
+
+
+def _restore_repair_checkpoint(
+    state: AgenticRetrievalState, checkpoint: dict[str, Any],
+) -> None:
+    for name, value in checkpoint.items():
+        setattr(state, name, value)
+
+
+async def _revalidate_repaired_answer(state: AgenticRetrievalState) -> None:
+    """Run validate_node then demote_node on a re-issued answer, in place.
+
+    The repair loop runs inside repair_shadow_node, AFTER the graph's own
+    validate and demote nodes, so a re-issue has to be pushed through the
+    same two nodes explicitly. Raises if either does; the caller then
+    discards the attempt.
+    """
+    validated = await validate_node(state)
+    state.response = validated["response"]
+    state.validation_warnings = list(validated.get("validation_warnings") or [])
+    demoted = await demote_node(state)
+    state.response = demoted["response"]
+    state.demotion_reasons = list(demoted.get("demotion_reasons") or [])
 
 
 def _snapshot_field(obj: Any) -> dict[str, Any]:
@@ -2929,7 +3005,7 @@ async def _reissue_llm_only(
 
     # Rebuild the context block + system prompt the same way
     # assemble_node would, then append the repair suffix.
-    context_block = _render_tool_results_context(
+    context_block, rendered_results = _render_context_and_evidence(
         state.tool_results,
         query=state.query,
         workspace_id=getattr(state.deps, "workspace_id", None),
@@ -2939,13 +3015,16 @@ async def _reissue_llm_only(
     # prompt variants mid-loop would be repairing against different rules
     # than the answer it is repairing.
     system_prompt = _select_system_prompt(
-        categories=_categories_from_tool_results(state.tool_results),
+        categories=_categories_from_tool_results(rendered_results),
         query=state.query,
     ) + suffix
 
     openai_client = getattr(state.deps, "openai_http_client", None)
     anthropic_client = getattr(state.deps, "anthropic_client", None)
 
+    # No token_callback: this answer is not streamed. It must pass
+    # validate + demote (_revalidate_repaired_answer) before it can replace
+    # the one already on screen, and only the `completed` frame carries it.
     text = await _call_llm(
         query=_question_for_llm(state),
         context=context_block,
@@ -2959,12 +3038,21 @@ async def _reissue_llm_only(
         pg_pool=getattr(state.deps, "pg_pool", None),
     )
 
-    new_response = assemble_response(text, state.tool_results)
-    # Preserve the answer_run_id stamped by persist_node on the prior
-    # attempt (the row already exists; we're re-rendering text only).
-    if state.response is not None:
-        with contextlib.suppress(Exception):
-            new_response.answer_run_id = state.response.answer_run_id
+    # Same card payloads and envelope notes assemble_node attaches — a
+    # Stage 3 answer used to lose its map/viz cards and OIUR notes.
+    map_payload, viz_payload = _build_chat_card_payloads(
+        intent=state.effective_intent or state.intent,
+        tool_results=state.tool_results,
+    )
+    new_response = assemble_response(
+        text, rendered_results, map_payload=map_payload, viz_payload=viz_payload,
+    )
+    new_response = _attach_envelope_notes_to_uncertainty(
+        new_response,
+        envelope_notes=state.envelope_notes,
+        unspecified_descriptions=unspecified_field_descriptions(state.context_envelope),
+    )
+    state.tool_results = rendered_results
     state.response = new_response
 
 
@@ -3001,16 +3089,24 @@ async def _reissue_retrieval(
                 exc_info=True,
             )
 
-    # Re-run execute then assemble.
-    exec_update = await execute_node(state)
-    if "tool_results" in exec_update:
-        state.tool_results = exec_update["tool_results"]
-    if "evidence_packet" in exec_update:
-        state.evidence_packet = exec_update["evidence_packet"]
+    # Re-run execute then assemble on a copy with the SSE callbacks removed:
+    # assemble_node forwards token_callback into _call_llm, and a second
+    # full answer used to stream into the same delta stream after the
+    # first (audit AGT-3). The re-issue is validated before it can replace
+    # anything; it is never streamed.
+    silent = state.model_copy(update={
+        "token_callback": None, "status_callback": None,
+    })
+    exec_update = await execute_node(silent)
+    for name in ("tool_results", "evidence_packet"):
+        if name in exec_update:
+            setattr(silent, name, exec_update[name])
+            setattr(state, name, exec_update[name])
 
-    asm_update = await assemble_node(state)
-    if "response" in asm_update:
-        state.response = asm_update["response"]
+    asm_update = await assemble_node(silent)
+    for name in ("response", "tool_results", "evidence_packet"):
+        if name in asm_update:
+            setattr(state, name, asm_update[name])
 
 
 def _build_terminal_refusal_payload(
