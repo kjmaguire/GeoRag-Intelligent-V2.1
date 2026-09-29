@@ -82,7 +82,11 @@ class EmbedPendingPassagesInput(BaseModel):
     # 2026-08-11: 32 → 64. Cohere Embed's v2 API takes up to 96 texts per
     # request; bigger batches halve the HTTP round-trips and Qdrant
     # upserts per document. SPLADE memory is unaffected (per-text loop).
-    batch_size: int = Field(default=64)
+    # 2026-09-29 (VEN-14): bounded at 96, the Embed v4 per-request limit
+    # ([ASSUMED], vendor docs). _BedrockEmbedding also chunks at 96, so a
+    # larger value would no longer break, but it would stop meaning "texts
+    # per request" -- and a dispatcher asking for 500 is a typo.
+    batch_size: int = Field(default=64, ge=1, le=96)
     max_passages: int | None = Field(
         default=None,
         description="Cap for smoke runs. None = no limit.",
