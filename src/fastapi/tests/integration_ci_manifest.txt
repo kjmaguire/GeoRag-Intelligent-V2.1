@@ -91,8 +91,10 @@ tests/test_usage_events_write_integration.py
 # throughout, because a recording fake accepts any SQL. It surfaced only
 # when the chain was run against Postgres with RedStar's EPSG:26904.
 #
-# This module covers the three claims that need a live database: the geom
-# SRID conforms, a survey station resolves to the collar written moments
+# (That column was retired 2026-09-29; the writer now sets geom_4326 alone.)
+#
+# This module covers the three claims that need a live database: the collar
+# lands in the right place, a survey station resolves to the collar written moments
 # earlier (an orphan is COUNTED, not raised), and a re-ingest REPLACES
 # stations rather than doubling them.
 tests/test_discover_trace_write_integration.py
