@@ -36,6 +36,32 @@ spec:
                 echo "→ $f"
                 PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f "$f" -v ON_ERROR_STOP=1
               done
+              # SEC-1 (2026-09-29): the runtime roles. Every Laravel pod and
+              # the Hatchet worker log in as georag_app, Martin as
+              # martin_readonly — neither may be a superuser or BYPASSRLS,
+              # or RLS does nothing. Same shape as deploy/aws/bootstrap.sql:
+              # create if absent, then (re)set LOGIN + password, so a
+              # rotated Secret takes effect on the next helm upgrade.
+              # $$$$ is how a literal $$ survives kubelet's $(VAR) expansion.
+              echo "Provisioning runtime roles..."
+              PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -v ON_ERROR_STOP=1 \
+                -v app_pw="$PG_APP_PASSWORD" -v martin_pw="$MARTIN_DB_PASSWORD" <<'SQL'
+              SELECT format('CREATE ROLE georag_app LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'app_pw')
+               WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'georag_app')\gexec
+              ALTER ROLE georag_app LOGIN PASSWORD :'app_pw';
+              SELECT format('CREATE ROLE martin_readonly LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'martin_pw')
+               WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'martin_readonly')\gexec
+              ALTER ROLE martin_readonly LOGIN PASSWORD :'martin_pw';
+              DO $$$$
+              BEGIN
+                IF EXISTS (SELECT 1 FROM pg_roles
+                            WHERE rolname IN ('georag_app', 'martin_readonly')
+                              AND (rolsuper OR rolbypassrls)) THEN
+                  RAISE EXCEPTION 'a runtime role is SUPERUSER or BYPASSRLS; RLS would not apply to it';
+                END IF;
+              END
+              $$$$;
+              SQL
               echo "pg-init complete."
           env:
             - name: PGHOST
@@ -49,6 +75,16 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: POSTGRES_PASSWORD
+            - name: PG_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: PG_APP_PASSWORD
+            - name: MARTIN_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: MARTIN_DB_PASSWORD
 {{- end }}
 {{- if .Values.jobs.auditChainVerify.enabled }}
 ---

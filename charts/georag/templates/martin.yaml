@@ -1,5 +1,24 @@
 {{- if .Values.martin.enabled }}
 ---
+# SEC-3 (2026-09-29): Martin used to start with only DATABASE_URL, which
+# turns on auto-publish — every table with a geometry column, served with
+# no project or workspace filter — and connected as the superuser. It now
+# runs the repo's own config (files/martin.yaml, byte-identical to
+# docker/martin/martin.yaml; tests/Unit/HelmTenantIsolationManifestTest.php
+# enforces that), which sets auto_publish: false and publishes only the
+# tenant-fenced *_by_project(project_id, workspace_id) functions, as the
+# read-only martin_readonly role. Martin is reached only through Laravel's
+# tile proxy (no ingress rule; the NetworkPolicy admits laravel-octane only).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-martin-config
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+data:
+  martin.yaml: |
+{{ .Files.Get "files/martin.yaml" | indent 4 }}
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -27,23 +46,32 @@ spec:
   template:
     metadata:
       labels: {{- include "georag.selectorLabels" (dict "component" "martin" "root" .) | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Files.Get "files/martin.yaml" | sha256sum }}
     spec:
       {{- include "georag.imagePullSecrets" . | nindent 6 }}
       containers:
         - name: martin
           image: {{ include "georag.image" (dict "repo" .Values.martin.image.repository "tag" .Values.martin.image.tag "global" .Values.global) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args: ["--config", "/config/martin.yaml"]
           ports:
             - containerPort: 3000
               name: http
           env:
-            - name: DATABASE_URL
-              value: "postgresql://georag:$(DB_PW)@{{ .Release.Name }}-postgresql:5432/georag"
-            - name: DB_PW
+            # Declared before DATABASE_URL: $(VAR) only expands variables
+            # defined earlier in the list.
+            - name: MARTIN_DB_PW
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
-                  key: POSTGRES_PASSWORD
+                  key: MARTIN_DB_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://martin_readonly:$(MARTIN_DB_PW)@{{ .Release.Name }}-postgresql:5432/georag"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
           resources: {{- toYaml .Values.martin.resources | nindent 12 }}
           readinessProbe:
             httpGet:
@@ -51,4 +79,8 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-martin-config
 {{- end }}

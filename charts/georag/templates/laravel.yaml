@@ -45,17 +45,31 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: LARAVEL_APP_KEY
+            # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
+            # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
+            # and talks to Postgres DIRECTLY, as on AWS. A superuser
+            # bypasses RLS even under FORCE ROW LEVEL SECURITY, and
+            # BindWorkspaceRlsContext's session-scoped binding is unsound
+            # behind PgBouncer's transaction pooling (it refuses to serve
+            # when DB_POOLED is true). No Laravel connection is configured
+            # with the superuser; migrations are an operator step.
+            - name: DB_CONNECTION
+              value: pgsql
             - name: DB_HOST
-              value: {{ .Release.Name }}-pgbouncer
+              value: {{ .Release.Name }}-postgresql
             - name: DB_PORT
-              value: "6432"
-            - name: DB_USERNAME
+              value: "5432"
+            - name: DB_POOLED
+              value: "false"
+            - name: DB_DATABASE
               value: georag
+            - name: DB_USERNAME
+              value: georag_app
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
-                  key: POSTGRES_PASSWORD
+                  key: PG_APP_PASSWORD
             - name: REDIS_HOST
               value: {{ .Release.Name }}-redis
             - name: REDIS_PASSWORD
@@ -129,8 +143,31 @@ spec:
           env:
             - name: REDIS_HOST
               value: {{ .Release.Name }}-redis
+            # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
+            # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
+            # and talks to Postgres DIRECTLY, as on AWS. A superuser
+            # bypasses RLS even under FORCE ROW LEVEL SECURITY, and
+            # BindWorkspaceRlsContext's session-scoped binding is unsound
+            # behind PgBouncer's transaction pooling (it refuses to serve
+            # when DB_POOLED is true). No Laravel connection is configured
+            # with the superuser; migrations are an operator step.
+            - name: DB_CONNECTION
+              value: pgsql
             - name: DB_HOST
-              value: {{ .Release.Name }}-pgbouncer
+              value: {{ .Release.Name }}-postgresql
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_POOLED
+              value: "false"
+            - name: DB_DATABASE
+              value: georag
+            - name: DB_USERNAME
+              value: georag_app
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: PG_APP_PASSWORD
           resources: {{- toYaml .Values.laravelHorizon.resources | nindent 12 }}
 {{- end }}
 {{- if .Values.laravelReverb.enabled }}
@@ -175,5 +212,31 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Release.Name }}-secrets
+          env:
+            # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
+            # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
+            # and talks to Postgres DIRECTLY, as on AWS. A superuser
+            # bypasses RLS even under FORCE ROW LEVEL SECURITY, and
+            # BindWorkspaceRlsContext's session-scoped binding is unsound
+            # behind PgBouncer's transaction pooling (it refuses to serve
+            # when DB_POOLED is true). No Laravel connection is configured
+            # with the superuser; migrations are an operator step.
+            - name: DB_CONNECTION
+              value: pgsql
+            - name: DB_HOST
+              value: {{ .Release.Name }}-postgresql
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_POOLED
+              value: "false"
+            - name: DB_DATABASE
+              value: georag
+            - name: DB_USERNAME
+              value: georag_app
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: PG_APP_PASSWORD
           resources: {{- toYaml .Values.laravelReverb.resources | nindent 12 }}
 {{- end }}
