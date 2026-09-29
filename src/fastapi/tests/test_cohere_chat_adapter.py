@@ -190,6 +190,84 @@ async def test_the_output_request_is_capped_against_the_context_window(
 
 
 @pytest.mark.asyncio
+async def test_reasoning_is_capped_below_half_the_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reasoning spends from max_tokens first. Uncapped, the first live AWS
+    query (2026-09-28) spent all 4096 thinking and returned no answer."""
+    sent = _install(monkeypatch, _ok())
+    monkeypatch.setattr(settings, "COHERE_CHAT_MAX_TOKENS", 8_192)
+    monkeypatch.setattr(settings, "COHERE_CHAT_THINKING_BUDGET", 1_024)
+    await call_cohere_llm("q", 0.2)
+    assert sent[0]["thinking"] == {"type": "enabled", "token_budget": 1_024}
+
+    monkeypatch.setattr(settings, "COHERE_CHAT_THINKING_BUDGET", 100_000)
+    await call_cohere_llm("q", 0.2)
+    assert sent[1]["thinking"]["token_budget"] == 4_096, "a cap at or above max_tokens is no cap"
+
+
+@pytest.mark.asyncio
+async def test_a_zero_thinking_budget_disables_reasoning_and_negative_omits_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _install(monkeypatch, _ok())
+    monkeypatch.setattr(settings, "COHERE_CHAT_THINKING_BUDGET", 0)
+    await call_cohere_llm("q", 0.2)
+    assert sent[0]["thinking"] == {"type": "disabled"}
+
+    monkeypatch.setattr(settings, "COHERE_CHAT_THINKING_BUDGET", -1)
+    await call_cohere_llm("q", 0.2)
+    assert "thinking" not in sent[1]
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_thinking_field_is_dropped_once_and_the_call_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The field is [UNVERIFIED] on Command A+: refusing it must not take
+    every chat down with it."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if "thinking" in json.loads(request.content):
+            return httpx.Response(400, json={"message": "invalid request: unknown field `thinking`"})
+        return httpx.Response(200, json={"message": {"content": [{"text": "answered"}]}})
+
+    sent = _install(monkeypatch, _handler)
+    monkeypatch.setattr(settings, "COHERE_CHAT_THINKING_BUDGET", 1_024)
+    assert await call_cohere_llm("q", 0.2) == "answered"
+    assert "thinking" in sent[0] and "thinking" not in sent[1]
+    assert len(sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_thinking_field_is_retried_on_the_streaming_path_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if "thinking" in json.loads(request.content):
+            return httpx.Response(422, json={"message": "thinking is not supported for this model"})
+        return _sse(json.dumps({"type": "content-delta", "delta": {"message": {"content": {"text": "hi"}}}}))(request)
+
+    sent = _install(monkeypatch, _handler)
+    monkeypatch.setattr(settings, "COHERE_CHAT_THINKING_BUDGET", 1_024)
+    deltas: list[str] = []
+    assert await call_cohere_llm("q", 0.2, token_callback=await _collect(deltas)) == "hi"
+    assert deltas == ["hi"]
+    assert "thinking" not in sent[1]
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_400_is_not_retried_as_a_thinking_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _install(monkeypatch, lambda _r: httpx.Response(400, json={"message": "messages must not be empty"}))
+    monkeypatch.setattr(settings, "COHERE_CHAT_THINKING_BUDGET", 1_024)
+    with pytest.raises(httpx.HTTPStatusError):
+        await call_cohere_llm("q", 0.2)
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
 async def test_an_empty_api_key_names_itself(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, _ok(), api_key="   ")
     with pytest.raises(RuntimeError, match="COHERE_API_KEY"):

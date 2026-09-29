@@ -934,7 +934,8 @@ services:
       COHERE_BASE_URL: ${COHERE_BASE_URL:-https://api.cohere.com}
       COHERE_CHAT_MODEL: ${COHERE_CHAT_MODEL:-command-a-plus-05-2026}
       COHERE_CHAT_MAX_MODEL_LEN: ${COHERE_CHAT_MAX_MODEL_LEN:-128000}
-      COHERE_CHAT_MAX_TOKENS: ${COHERE_CHAT_MAX_TOKENS:-4096}
+      COHERE_CHAT_MAX_TOKENS: ${COHERE_CHAT_MAX_TOKENS:-8192}
+      COHERE_CHAT_THINKING_BUDGET: ${COHERE_CHAT_THINKING_BUDGET:-1024}
       COHERE_CHAT_TIMEOUT_S: ${COHERE_CHAT_TIMEOUT_S:-120}
       # Amazon Bedrock (Cohere Command A+) — used when LLM_BACKEND=bedrock.
       # No endpoint and no key: boto3's credential chain signs every call,
