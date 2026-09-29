@@ -40,6 +40,7 @@ from app.hatchet_workflows.field_outcome_learning import field_outcome_learning 
 from app.hatchet_workflows.flow_jwt_key_reaper import flow_jwt_key_reaper
 from app.hatchet_workflows.generate_report import generate_report  # doc-phase 83
 from app.hatchet_workflows.idempotency_keys_cleanup import idempotency_keys_cleanup  # §35.1 TTL cleanup
+from app.hatchet_workflows.ingest_geophysics import ingest_geophysics  # Geosoft XYZ + DCIP2D (ING-19)
 from app.hatchet_workflows.ingest_pdf import ingest_pdf
 from app.hatchet_workflows.ingest_spatial import ingest_spatial  # SHP/GeoJSON/GPKG/QGIS vector ingest
 from app.hatchet_workflows.ingest_tabular import ingest_tabular  # drill CSV + multi-sheet XLSX
@@ -109,6 +110,9 @@ POOLS = {
         ingest_spatial,
         ingest_tabular,
         ingest_well_logs,
+        # 2026-09-29 (ING-19) — Geosoft XYZ and UBC-GIF DCIP2D. The parsers
+        # existed and were tested; nothing called them.
+        ingest_geophysics,
         *INGESTION_AGENT_WORKFLOWS,
     ],
     "ai": [

@@ -2554,6 +2554,158 @@ def _parse_one(
     )
 
 
+#: A radiometric-age table (ING-19, 2026-09-29) -> silver.geochronology_samples.
+#:
+#: Deliberately NOT in WRITE_ORDER: its rows key on a sample, not a hole, so
+#: they neither wait for collars nor appear in the drill classifier. Routed
+#: by ``csv_geochronology.geochronology_signal`` instead: a sample id, an age
+#: and an isotopic-system column ("strong") claim a table even when it also
+#: carries hole/depth columns — a drill-core dating table is still a dating
+#: table — and a sample id, an age and a method column ("weak") claim only a
+#: table no drill layout wanted. The upload category ``geochronology`` sends
+#: the hint.
+GEOCHRONOLOGY_TYPE = "geochronology"
+
+
+def _routes_to_geochronology(
+    headers: list[str], drill_type: str | None, *, hinted: bool = False,
+) -> bool:
+    """Whether a table with these headers is written as radiometric ages."""
+    from app.services.ingest.geochronology_writer import (  # noqa: PLC0415
+        routes_to_geochronology,
+    )
+
+    return routes_to_geochronology(
+        headers, drill_type, drill_types=WRITE_ORDER, hinted=hinted,
+    )
+
+
+def _parse_geochronology(
+    path: str,
+    *,
+    label: str,
+    sheet_name: str | None,
+    rows: list[dict[str, Any]] | None,
+) -> Any:
+    """Parse one table as geochronology: CSV on disk, a worksheet, or rows."""
+    from georag_geoparsers.csv_geochronology import (  # noqa: PLC0415
+        parse_csv_geochronology,
+        parse_geochronology_rows,
+    )
+
+    if rows is not None:
+        return parse_geochronology_rows(rows, source_label=label)
+    if sheet_name is not None:
+        from georag_geoparsers.xlsx_parser import read_sheet_rows  # noqa: PLC0415
+
+        return parse_geochronology_rows(
+            read_sheet_rows(path, sheet_name), source_label=label,
+        )
+    return parse_csv_geochronology(path, source_label=label)
+
+
+async def _land_geochronology(
+    conn: asyncpg.Connection,
+    *,
+    input: IngestTabularInput,
+    path: str,
+    filename: str,
+    work: list[tuple[str, str | None, list[dict[str, Any]] | None]],
+    sha256: str | None,
+    project_epsg: int | None,
+    written: dict[str, dict[str, int]],
+    sheets: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+) -> tuple[list[str], int]:
+    """Write every geochronology table of this upload.
+
+    ``work`` is ``(label, sheet_name, rows)``: a CSV has neither sheet nor
+    rows, a worksheet has its name, a dBASE/Access table its rows.
+
+    Returns ``(labels that wrote nothing, rows landed from table sources)``:
+    the first join the text/table fallback so the table is not lost, the
+    second is the typed copy of rows that ALSO landed as attribute rows.
+    """
+    from app.services.ingest.geochronology_writer import (  # noqa: PLC0415
+        write_geochronology,
+    )
+
+    nothing: list[str] = []
+    shadowing = 0
+    for label, sheet_name, rows in work:
+        result = await asyncio.to_thread(
+            _parse_geochronology, path, label=label, sheet_name=sheet_name, rows=rows,
+        )
+        warnings.extend(getattr(result, "warnings", None) or [])
+        source_file = filename if sheet_name is None else f"{filename}:{sheet_name}"
+        try:
+            stats = await write_geochronology(
+                conn,
+                workspace_id=input.workspace_id,
+                project_id=input.project_id,
+                result=result,
+                label=label,
+                source_file=source_file,
+                source_file_sha256=sha256,
+                source_object_key=input.minio_key,
+                declared_epsg=input.source_epsg,
+                project_epsg=project_epsg,
+                default_epsg=DEFAULT_SOURCE_EPSG,
+            )
+        except _INFRASTRUCTURE_ERRORS:
+            raise
+        except Exception as exc:
+            # One table's failure costs that table only (ING-1); its own
+            # transaction rolled back.
+            log.warning(
+                "ingest_tabular: geochronology write failed for %s: %s",
+                label, exc, exc_info=True,
+            )
+            warnings.append(_sheet_write_failed_warning(
+                label=label, sheet_type=GEOCHRONOLOGY_TYPE, exc=exc,
+                table_source=rows is not None,
+            ))
+            if rows is None:
+                nothing.append(sheet_name or label)
+            continue
+        warnings.extend(stats.warnings)
+        prior = written.setdefault(
+            GEOCHRONOLOGY_TYPE,
+            {"written": 0, "skipped": 0, "orphaned": 0, "replaced": 0},
+        )
+        for key, value in stats.as_counts().items():
+            prior[key] = prior.get(key, 0) + value
+        sheets.append({"sheet": label, "type": GEOCHRONOLOGY_TYPE, "rows": stats.written})
+        rejected_note = _rows_rejected_warning(
+            label=label, write_type=GEOCHRONOLOGY_TYPE, result=result,
+            written=stats.written,
+        )
+        if rejected_note is not None:
+            warnings.append(rejected_note)
+        if stats.written:
+            if rows is not None:
+                shadowing += stats.written
+            continue
+        reason = _refusal_reason(result)
+        warnings.append({
+            "code": "geochron_wrote_nothing",
+            "message": f"{label} looks like a radiometric-age table but no age was written",
+            "detail": (
+                f"{label}'s headers read as geochronology (sample, age and "
+                f"isotopic system or method), but none of its rows could be "
+                f"written"
+                + (f": {reason}" if reason else "")
+                + ". The row reasons are listed beside this note. "
+                + ("The table is kept as attribute rows."
+                   if rows is not None else
+                   "It was kept as searchable text and table rows instead.")
+            ),
+        })
+        if rows is None:
+            nothing.append(sheet_name or label)
+    return nothing, shadowing
+
+
 ingest_tabular = hatchet.workflow(
     name="ingest_tabular",
     input_validator=IngestTabularInput,
@@ -2640,6 +2792,11 @@ async def run_ingest_tabular(
 
             # ── Work out what tables this file holds ────────────────────
             work: list[tuple[str, str | None]] = []   # (sheet_type, sheet_name)
+            #: Radiometric-age tables (ING-19): ``(label, sheet_name, rows)``
+            #: — see _land_geochronology. Never in `work`: not a drill type.
+            geochron_work: list[
+                tuple[str, str | None, list[dict[str, Any]] | None]
+            ] = []
             #: Standalone-.dbf branch state. Empty for every other format.
             attribute_rows: list[dict[str, Any]] = []
             attribute_layer = ""
@@ -2705,7 +2862,13 @@ async def run_ingest_tabular(
                         verdict, _conf = _typed_verdict_for_table(
                             rows, input.column_map,
                         )
-                        if verdict in WRITE_ORDER:
+                        if _routes_to_geochronology(_table_columns(rows), verdict):
+                            # Additive, like the typed drill route: the
+                            # attribute_tables copy below is still written.
+                            geochron_work.append(
+                                (f"{filename}:{table_name}", None, rows),
+                            )
+                        elif verdict in WRITE_ORDER:
                             work.append((verdict, table_name))
                             table_sources[table_name] = (
                                 f"{filename}:{table_name}", rows,
@@ -2748,7 +2911,11 @@ async def run_ingest_tabular(
                         attribute_rows, input.column_map,
                         dbase_side_writes=True,
                     )
-                    if verdict in WRITE_ORDER:
+                    if _routes_to_geochronology(
+                        _table_columns(attribute_rows), verdict,
+                    ):
+                        geochron_work.append((filename, None, attribute_rows))
+                    elif verdict in WRITE_ORDER:
                         work.append((verdict, attribute_layer))
                         table_sources[attribute_layer] = (
                             filename, attribute_rows,
@@ -2770,14 +2937,19 @@ async def run_ingest_tabular(
                     # SheetMeta.name, not .sheet_name — the dataclass names it
                     # `name` while carrying `sheet_type` beside it, which is an
                     # easy pair to mistype.
+                    is_geochron = bool(meta.row_count) and _routes_to_geochronology(
+                        list(getattr(meta, "headers", None) or []), meta.sheet_type,
+                    )
                     sheets.append({
                         "sheet": meta.name,
-                        "type": meta.sheet_type,
+                        "type": GEOCHRONOLOGY_TYPE if is_geochron else meta.sheet_type,
                         "confidence": meta.classify_confidence,
                         "rows": meta.row_count,
                         "hidden": meta.hidden,
                     })
-                    if meta.sheet_type in WRITE_ORDER and meta.row_count:
+                    if is_geochron:
+                        geochron_work.append((meta.name, meta.name, None))
+                    elif meta.sheet_type in WRITE_ORDER and meta.row_count:
                         work.append((meta.sheet_type, meta.name))
                     elif meta.sheet_type not in WRITE_ORDER:
                         unclassified.append(meta.name)
@@ -2788,12 +2960,12 @@ async def run_ingest_tabular(
                 if preamble_note is not None:
                     warnings.append(preamble_note)
                 sheet_type = input.sheet_type
+                headers = _csv_headers(local)
                 if sheet_type not in WRITE_ORDER:
                     from georag_geoparsers._sheet_classifier import (  # noqa: PLC0415
                         classify_sheet_type,
                     )
 
-                    headers = _csv_headers(local)
                     sheet_type, confidence = classify_sheet_type(
                         headers, column_map=input.column_map,
                     )
@@ -2801,7 +2973,12 @@ async def run_ingest_tabular(
                         "sheet": filename, "type": sheet_type,
                         "confidence": confidence,
                     })
-                if sheet_type in WRITE_ORDER:
+                if _routes_to_geochronology(
+                    headers, sheet_type,
+                    hinted=input.sheet_type == GEOCHRONOLOGY_TYPE,
+                ):
+                    geochron_work.append((filename, None, None))
+                elif sheet_type in WRITE_ORDER:
                     work.append((sheet_type, None))
                 else:
                     unclassified.append(filename)
@@ -2809,7 +2986,7 @@ async def run_ingest_tabular(
             # A .dbf/.dat classifies to exactly one thing and never enters
             # `work`, so the drill-sheet advice below would be both wrong
             # and unactionable for it.
-            if not work and suffix not in DBASE_EXTENSIONS:
+            if not work and not geochron_work and suffix not in DBASE_EXTENSIONS:
                 warnings.append({
                     "code": "nothing_classified",
                     "detail": (
@@ -3333,6 +3510,34 @@ async def run_ingest_tabular(
                         # the refusal.
                         _remap_facts(result, sheet_type),
                     ))
+
+                # ── Radiometric ages (ING-19) ────────────────────────────
+                # After the drill tables, before the attribute copy: a table
+                # that could not be written as ages still reaches the
+                # text/table fallback below, never nothing.
+                if geochron_work:
+                    geo_sha = attribute_sha256 or await asyncio.to_thread(
+                        _sha256_file, local,
+                    )
+                    geo_nothing, geo_shadowing = await _land_geochronology(
+                        conn,
+                        input=input,
+                        path=local,
+                        filename=filename,
+                        work=geochron_work,
+                        sha256=geo_sha,
+                        project_epsg=project_epsg,
+                        written=written,
+                        sheets=sheets,
+                        warnings=warnings,
+                    )
+                    typed_rows_shadowing_attribute += geo_shadowing
+                    for geo_label in geo_nothing:
+                        if (
+                            suffix not in TABLE_SOURCE_EXTENSIONS
+                            and geo_label not in unclassified
+                        ):
+                            unclassified.append(geo_label)
 
                 if attribute_rows:
                     written["attribute_table"] = await _write_attribute_rows(

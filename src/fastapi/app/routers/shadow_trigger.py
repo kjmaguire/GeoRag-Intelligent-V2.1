@@ -22,6 +22,10 @@ from pydantic import BaseModel
 from app.config import settings
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import _progress as ingest_progress
+from app.hatchet_workflows.ingest_geophysics import (
+    IngestGeophysicsInput,
+    ingest_geophysics,
+)
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
 from app.hatchet_workflows.ingest_spatial import (
     IngestSpatialInput,
@@ -551,6 +555,46 @@ async def trigger_ingest_well_logs(
     )
     return _respond(
         TriggerIngestWellLogsResponse(
+            workflow_run_id=outcome.workflow_run_id,
+            run_id=outcome.run_id or payload.run_id,
+            dispatched=outcome.dispatched,
+        ),
+    )
+
+
+class TriggerIngestGeophysicsResponse(BaseModel):
+    workflow_run_id: str
+    run_id: str | None
+    dispatched: bool = True
+
+
+@router.post(
+    "/ingest_geophysics/trigger",
+    response_model=TriggerIngestGeophysicsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_check_service_key)],
+)
+async def trigger_ingest_geophysics(
+    payload: IngestGeophysicsInput,
+    request: Request,
+) -> TriggerIngestGeophysicsResponse:
+    """Trigger ingest_geophysics — Geosoft XYZ line data and DCIP2D exports.
+
+    Writes silver.geophysics_surveys plus its lines/channels (XYZ) or its
+    DC/IP readings and inversion models (DCIP2D). A re-upload of the same
+    file replaces its survey in place (ING-19).
+    """
+    log.info(
+        "trigger_ingest_geophysics: workspace_id=%s project_id=%s key=%s",
+        payload.workspace_id, payload.project_id, payload.minio_key,
+    )
+    await _guard_active_project(request, payload)
+
+    outcome = await _claim_and_dispatch(
+        ingest_geophysics, payload, site="ingest_geophysics", request=request,
+    )
+    return _respond(
+        TriggerIngestGeophysicsResponse(
             workflow_run_id=outcome.workflow_run_id,
             run_id=outcome.run_id or payload.run_id,
             dispatched=outcome.dispatched,

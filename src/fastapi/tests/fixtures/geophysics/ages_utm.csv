@@ -1,0 +1,7 @@
+Sample ID,Rock Type,System,Mineral,Age (Ma),±2σ (Ma),Method,Lab,Reference,Easting,Northing
+SK-01,granodiorite,U-Pb,zircon,1845.2,3.1,LA-ICP-MS,PCIGR,doi:10.1/x,495000,6220000
+SK-02,tonalite,,titanite,1810.0,5.0,SHRIMP U-Pb,ANU,,495100,6220100
+SK-03,schist,40Ar/39Ar,muscovite,1750.5,4.2,step heating,UBC,,,
+SK-04,basalt,Carbon-14,whole rock,0.01,0.001,AMS,Lab,,495200,6220200
+SK-05,diorite,U-Pb,zircon,-5,1,,,,,
+SK-06,granite,U–Pb,monazite,99999,1,,,,,
