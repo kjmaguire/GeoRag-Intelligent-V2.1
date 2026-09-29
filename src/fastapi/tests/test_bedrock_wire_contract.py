@@ -240,7 +240,7 @@ def _capture_embed(monkeypatch: pytest.MonkeyPatch, call, *, response: Any = Non
 
     sent: dict[str, Any] = {}
 
-    def _fake_invoke(self, body):  # noqa: ANN001
+    def _fake_invoke(self, body, **_kw):  # noqa: ANN001 -- query_path on the query client
         sent.clear()
         sent.update({"modelId": self._model_id, "body": body})
         return response if response is not None else {

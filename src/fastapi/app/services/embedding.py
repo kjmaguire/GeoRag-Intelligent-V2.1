@@ -21,8 +21,12 @@ harness load their own local models and are intentionally unaffected.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -68,6 +72,21 @@ BEDROCK_EMBED_MODEL_ID = (
 # exactly — no Qdrant migration needed. MUST match settings.EMBEDDING_DIMENSION.
 BEDROCK_EMBED_DIMENSION = int(os.environ.get("BEDROCK_EMBED_DIMENSION", "1024"))
 BEDROCK_EMBED_TIMEOUT_S = float(os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30"))
+
+#: Cohere Embed v4 accepts at most 96 texts per request. [ASSUMED] -- the
+#: vendor documentation figure; the Bedrock probe has only ever sent one text
+#: (bedrock_wire EMBED_TEXT ``body.texts[]``). ``_post`` chunks to this so no
+#: caller can exceed it: reembed_qdrant.py pages 100 points at a time, and a
+#: single 100-text call would be rejected on every page (VEN-3, 2026-09-29).
+EMBED_V4_MAX_TEXTS_PER_CALL = 96
+
+#: Query-path read timeout per attempt. One short query string, so this is
+#: the cold-connection ceiling rather than a batch budget. The total query
+#: budget is BEDROCK_EMBED_TIMEOUT_S (30 s, validated in config.py to sit
+#: under TIMEOUT_QDRANT_S); retry_profile_within_budget turns the pair into
+#: 2 attempts x 10 s rather than the ingest profile's 4 x 30 s (VEN-6).
+_QUERY_READ_TIMEOUT_S = 10.0
+_QUERY_MAX_ATTEMPTS = 3
 
 
 class _BedrockEmbedding:
@@ -119,18 +138,32 @@ class _BedrockEmbedding:
         self._dimension = dimension
         self._timeout_s = timeout_s
 
-    def _client(self):
-        from app.services._bedrock import get_client  # noqa: PLC0415
+    def _client(self, *, query_path: bool = False):
+        from app.services._bedrock import (  # noqa: PLC0415
+            get_client,
+            retry_profile_within_budget,
+        )
 
+        if query_path:
+            # The query path runs under TIMEOUT_QDRANT_S, so it gets a
+            # budgeted client like the reranker's: attempts x read timeout +
+            # botocore backoff fit inside BEDROCK_EMBED_TIMEOUT_S. On the
+            # ingest profile a stalled call could run 4 x 30 s, outliving the
+            # branch deadline and holding a pool thread and quota (VEN-6).
+            attempts, read_timeout_s = retry_profile_within_budget(
+                self._timeout_s,
+                read_timeout_s=min(_QUERY_READ_TIMEOUT_S, self._timeout_s),
+                ceiling=_QUERY_MAX_ATTEMPTS,
+            )
+            return get_client("bedrock-runtime", max_attempts=attempts, read_timeout_s=read_timeout_s)
         # Ingestion has no wall clock, so this client keeps the full adaptive
-        # retry ceiling. Contrast the reranker, which derives its attempt
-        # count from the caller's budget.
+        # retry ceiling.
         return get_client("bedrock-runtime", read_timeout_s=self._timeout_s)
 
-    def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
+    def _invoke(self, body: dict[str, Any], *, query_path: bool = False) -> dict[str, Any]:
         import json  # noqa: PLC0415
 
-        resp = self._client().invoke_model(
+        resp = self._client(query_path=query_path).invoke_model(
             modelId=self._model_id,
             body=json.dumps(body),
             accept="application/json",
@@ -138,16 +171,38 @@ class _BedrockEmbedding:
         )
         return json.loads(resp["body"].read())
 
-    def _post(self, texts: list[str], input_type: str) -> np.ndarray:
-        payload = self._invoke(
-            {
-                "texts": texts,
+    def _post(self, texts: list[str], input_type: str, *, query_path: bool = False) -> np.ndarray:
+        """Embed ``texts``, in requests of at most EMBED_V4_MAX_TEXTS_PER_CALL.
+
+        Chunking here rather than at each caller is what makes every caller
+        safe: ``encode()`` absorbs ``batch_size`` (it is a SentenceTransformer
+        keyword this backend has no use for), so a caller's batch size was
+        never a bound on the request.
+        """
+        if not texts:
+            return np.zeros((0, self._dimension), dtype=np.float32)
+        parts: list[np.ndarray] = []
+        for start in range(0, len(texts), EMBED_V4_MAX_TEXTS_PER_CALL):
+            chunk = texts[start : start + EMBED_V4_MAX_TEXTS_PER_CALL]
+            body = {
+                "texts": chunk,
                 "input_type": input_type,
                 "embedding_types": ["float"],
                 "output_dimension": self._dimension,
             }
-        )
-        return np.asarray(payload["embeddings"]["float"], dtype=np.float32)
+            # The keyword only when it changes something, so the ingest call
+            # keeps the one-argument `_invoke(body)` shape tests fake.
+            payload = self._invoke(body, query_path=True) if query_path else self._invoke(body)
+            vectors = np.asarray(payload["embeddings"]["float"], dtype=np.float32)
+            if vectors.shape[0] != len(chunk):
+                # Concatenating a short answer would silently attach every
+                # later vector to the wrong text.
+                raise RuntimeError(
+                    f"Cohere Embed v4 returned {vectors.shape[0]} vectors for {len(chunk)} texts "
+                    f"(model {self._model_id!r})"
+                )
+            parts.append(vectors)
+        return parts[0] if len(parts) == 1 else np.concatenate(parts, axis=0)
 
     def encode(
         self,
@@ -162,8 +217,11 @@ class _BedrockEmbedding:
         return arr[0] if single else arr
 
     def embed_query(self, text: str) -> np.ndarray:
-        """Query-time embedding using Cohere's recommended input_type="search_query"."""
-        return self._post([text], "search_query")[0]
+        """Query-time embedding using Cohere's recommended input_type="search_query".
+
+        On the budgeted query-path client (VEN-6), not the ingest one.
+        """
+        return self._post([text], "search_query", query_path=True)[0]
 
     # -- multimodal (page-image) embedding -------------------------------
     #
@@ -312,6 +370,127 @@ class _RemoteEmbedding:
             except Exception:  # noqa: BLE001 — encode() also back-fills _dim
                 logger.warning("remote embedding: could not fetch dimension from %s", self._url)
         return self._dim
+
+
+# ---------------------------------------------------------------------------
+# Warm-up and readiness (VEN-1, 2026-09-29)
+# ---------------------------------------------------------------------------
+# main.py used to wrap the warm-up encode in one try/except that set
+# app.state.embedding_model = None on ANY failure, for the life of the
+# process. On the Bedrock backend the model object is stateless, so one
+# transient failure at boot -- throttling, a NAT route not up yet, a
+# credential-provider hiccup, all plausible on the nightly cold start --
+# disabled search on that task until someone restarted it, with /ready still
+# green. Now only a CONFIRMED dimension mismatch disables the model; a failed
+# warm-up keeps it, marks the embedder "warming", retries in the background
+# with backoff, and /ready reports it.
+
+#: Readiness states. Only "ok" is ready.
+EMBEDDING_OK = "ok"
+EMBEDDING_WARMING = "warming"
+EMBEDDING_DISABLED = "disabled"
+
+
+@dataclass
+class EmbeddingReadiness:
+    """What /ready reports about the query-path embedder."""
+
+    state: str = EMBEDDING_WARMING
+    detail: str | None = None
+    failures: int = 0
+    last_attempt_monotonic: float | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.state == EMBEDDING_OK
+
+    def describe(self) -> str:
+        if self.state == EMBEDDING_OK:
+            return "ok"
+        suffix = f" after {self.failures} failed warm-up(s)" if self.failures else ""
+        return f"{self.state}{suffix}: {self.detail or '-'}"
+
+
+def embedding_dimension_mismatch(model: Any, expected_dim: int) -> str | None:
+    """A message if ``model`` reports a dimension other than ``expected_dim``.
+
+    None when they agree OR when the model cannot say (the sidecar proxy
+    returns None while unreachable) -- an unknown dimension is not evidence of
+    a mismatch, and disabling on it would recreate the VEN-1 failure.
+    """
+    loaded = model.get_sentence_embedding_dimension()
+    if loaded is not None and int(loaded) != int(expected_dim):
+        return f"model reports dim={loaded} but EMBEDDING_DIMENSION={expected_dim}"
+    return None
+
+
+def _describe_error(exc: BaseException) -> str:
+    # The exception TYPE only: /ready is unauthenticated, and a botocore
+    # message can carry the account id and role ARN (AccessDenied does).
+    # The full message goes to the log, not the probe.
+    response = getattr(exc, "response", None)
+    error = response.get("Error") if isinstance(response, dict) else None
+    code = error.get("Code") if isinstance(error, dict) else None
+    return f"{type(exc).__name__}({code})" if isinstance(code, str) else type(exc).__name__
+
+
+def warm_up_once(model: Any, readiness: EmbeddingReadiness) -> bool:
+    """One synchronous warm-up encode. Updates ``readiness``; never raises."""
+    readiness.last_attempt_monotonic = time.monotonic()
+    try:
+        model.encode("warm-up", normalize_embeddings=True)
+    except Exception as exc:  # noqa: BLE001 -- recorded, retried, reported by /ready
+        readiness.failures += 1
+        readiness.state = EMBEDDING_WARMING
+        readiness.detail = _describe_error(exc)
+        logger.warning(
+            "embedding warm-up failed (attempt %d): %s: %s -- keeping the model; "
+            "queries still try it and a background re-warm is scheduled",
+            readiness.failures,
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    readiness.state = EMBEDDING_OK
+    readiness.detail = None
+    return True
+
+
+async def rewarm_until_ready(
+    model: Any,
+    readiness: EmbeddingReadiness,
+    *,
+    expected_dim: int,
+    on_disable: Callable[[str], None],
+    initial_backoff_s: float = 5.0,
+    max_backoff_s: float = 300.0,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Retry the warm-up with exponential backoff until it succeeds.
+
+    Runs the blocking encode in a worker thread. On success it re-checks the
+    dimension (the sidecar proxy can only report it once reachable) and calls
+    ``on_disable`` on a confirmed mismatch -- the one failure that SHOULD take
+    the model out of service. Returns once ready or disabled; cancelled at
+    shutdown.
+    """
+    delay = initial_backoff_s
+    while True:
+        await sleep(delay)
+        ok = await asyncio.to_thread(warm_up_once, model, readiness)
+        if ok:
+            mismatch = embedding_dimension_mismatch(model, expected_dim)
+            if mismatch is not None:
+                readiness.state = EMBEDDING_DISABLED
+                readiness.detail = f"dimension mismatch: {mismatch}"
+                on_disable(readiness.detail)
+            else:
+                logger.info(
+                    "embedding warm-up succeeded after %d failed attempt(s)",
+                    readiness.failures,
+                )
+            return
+        delay = min(delay * 2.0, max_backoff_s)
 
 
 def get_embedding_model(
