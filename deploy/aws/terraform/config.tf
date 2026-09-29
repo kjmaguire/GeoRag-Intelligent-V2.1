@@ -29,7 +29,10 @@ resource "aws_secretsmanager_secret" "app" {
 #   FASTAPI_SERVICE_KEY      the X-Service-Key both sides check on every
 #                            internal hop; rotation accepts the previous
 #                            value on both sides simultaneously
-#   FASTAPI_SERVICE_KEY_PREVIOUS
+#   FASTAPI_SERVICE_KEY_KID  the kid Laravel mints with ("primary")
+#   FASTAPI_SERVICE_KEY_PREVIOUS, FASTAPI_SERVICE_KEY_PREVIOUS_KID
+#                            the outgoing key and its kid during a rotation
+#                            overlap; empty the rest of the time
 #   QDRANT_API_KEY           one read-write key
 #   HATCHET_CLIENT_TOKEN
 #   HATCHET_ADMIN_PASSWORD   the seeded Hatchet dashboard admin's password;
@@ -78,9 +81,21 @@ resource "aws_secretsmanager_secret_version" "app_placeholder" {
 locals {
   # Secrets injected into every task, by ARN. The execution role reads
   # them; the container never sees the ARN, only the value.
+  #
+  # The three FASTAPI_SERVICE_KEY_* rotation slots joined on 2026-09-29 (audit
+  # AWS-20). Both sides already accept a previous key during an overlap
+  # (app/services/auth.py, VerifyServiceKey.php) but nothing injected it, so
+  # rotating the service key was a hard cut: 401s on every internal hop until
+  # every task had restarted. Steady state: _KID = "primary", _PREVIOUS and
+  # _PREVIOUS_KID = "" (FastAPI and Laravel both read empty as "no rotation
+  # in progress"). ECS refuses to start a task whose referenced key is ABSENT,
+  # so all three must be written to georag/app BEFORE the apply that adds them.
   _secret_ref = { for key in [
     "APP_KEY",
     "FASTAPI_SERVICE_KEY",
+    "FASTAPI_SERVICE_KEY_KID",
+    "FASTAPI_SERVICE_KEY_PREVIOUS",
+    "FASTAPI_SERVICE_KEY_PREVIOUS_KID",
     "QDRANT_API_KEY",
     "HATCHET_CLIENT_TOKEN",
     "REDIS_PASSWORD",
@@ -431,6 +446,14 @@ locals {
     # Slower (~7.5 s/page, 4 in flight) and billed per page — see
     # pdf_report.py's module docstring for the three modes.
     PDF_PARSE_MODE = "all"
+    # The per-document ceiling on billed Parse pages, stated rather than
+    # inherited from pdf_report.py's default (audit AWS-15, 2026-09-29). With
+    # PDF_PARSE_MODE=all every page is a billed page, so this is the only
+    # per-document cost bound; pages past it keep their text layer (or go to
+    # tesseract) and the run lands in `partial`, which the UI shows. 300 is
+    # the code default and .env.production.example's value. The fleet-wide
+    # signal is the cohere-parse-pages alarm in alerts.tf.
+    OCR_MAX_PAGES_PER_DOC = 300
 
     # SPLADE++ has no managed equivalent anywhere. This is what makes the
     # sparse leg of hybrid retrieval exist; unset, sparse_encoder falls
@@ -523,13 +546,50 @@ locals {
     REVERB_SCALING_CHANNEL = "reverb"
   }
 
+  # ── FastAPI production posture ──────────────────────────────────────
+  # main.py::_assert_production_posture logs CRITICAL when a GEORAG_ENV=
+  # production process has RATE_LIMIT_ENABLED off, and since 2026-09-29 a
+  # CRITICAL line pages (alerts.tf, "posture-critical"). Left off, as the
+  # README used to recommend, that would be an email on every FastAPI boot —
+  # every morning — which is how the one alert channel gets muted.
+  #
+  # So it is ON (audit AWS-10), with the global ceiling raised to something
+  # internal traffic cannot reach. The README's objection still holds for the
+  # DEFAULT: main.py installs slowapi keyed on the caller's IP, and every
+  # caller of this service is a sibling task (two Octane, one Horizon, one
+  # hatchet-worker), so 60/minute would be a cap on the whole platform's
+  # traffic through each of them. At 600/minute per caller per uvicorn
+  # process it is a runaway-loop backstop, not a throttle. The per-user query
+  # limit (RATE_LIMIT_QUERIES, keyed on the JWT's workspace+user) keeps its
+  # 20/minute default. Storage stays in-process: each uvicorn process counts
+  # on its own, which only loosens a ceiling that was deliberately loose.
+  #
+  # On the worker as well as fastapi: app.services.tool_gateway imports
+  # app.main lazily, so the posture check can run in a worker process too.
+  fastapi_posture_environment = {
+    RATE_LIMIT_ENABLED = "true"
+    RATE_LIMIT_DEFAULT = "600/minute"
+  }
+
   # Per-service additions. Everything not listed gets only the common set.
   service_environment = {
     for name, _cfg in local.services : name => merge(
       local.common_environment,
       lookup({
-        fastapi = {
+        fastapi = merge(local.fastapi_posture_environment, {
           FASTAPI_INTERNAL_URL = "http://fastapi.${aws_service_discovery_private_dns_namespace.this.name}:8000"
+
+          # Three uvicorn processes on this 2-vCPU task, not the image
+          # default of 6 (docker/fastapi.Dockerfile, sized for a 32-thread
+          # workstation) — audit AWS-11, 2026-09-29. The number that matters
+          # is the Postgres budget: each process opens an asyncpg pool of up
+          # to 12 (main.py), so 6 processes could hold 72 connections from
+          # fastapi alone on a db.t4g.small with NO pooler, before martin
+          # (20), Horizon, the hatchet worker's per-workflow pools and the
+          # Hatchet engine. Three caps fastapi at 36, and 3 processes per 2
+          # vCPU still leaves headroom for a sync call that blocks one
+          # process's event loop.
+          UVICORN_WORKERS = 3
 
           # The 2026-08-18 incident, which cd.yml's header wrongly claimed
           # could not recur here. It was never set on Azure either, so every
@@ -545,8 +605,8 @@ locals {
           # publishes `laravel-octane.<namespace>`, and nothing makes a bare
           # `laravel.test` resolve inside the VPC.
           LARAVEL_INTERNAL_URL = "http://laravel-octane.${aws_service_discovery_private_dns_namespace.this.name}:80"
-        }
-        hatchet-worker = {
+        })
+        hatchet-worker = merge(local.fastapi_posture_environment, {
           # `all` is what both compose and Azure ran. There is no separate
           # ingestion or AI worker service, and WORKER_POOL exists mainly
           # as the seam that would let the every-minute crons move to a
@@ -585,7 +645,7 @@ locals {
           HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED                            = "true"
           HATCHET_CLIENT_WORKER_HEALTHCHECK_PORT                               = "8001"
           HATCHET_CLIENT_WORKER_HEALTHCHECK_EVENT_LOOP_BLOCK_THRESHOLD_SECONDS = "30"
-        }
+        })
         sparse = {
           # The sidecar serves the model; it must not also try to reach
           # itself over SPARSE_SERVICE_URL.
@@ -614,6 +674,10 @@ locals {
           # stdout/stderr reach CloudWatch, so this is stated.
           LOG_STACK     = "stderr"
           OCTANE_SERVER = "swoole"
+          # What config/services.php reports to /internal/metrics as the
+          # worker count. Must equal --workers in services.tf's octane
+          # command (audit AWS-11).
+          OCTANE_WORKERS = 4
         })
         # Horizon broadcasts too: the queued jobs behind a query dispatch
         # QueryStreamEvent, so it needs the publish credentials as much as

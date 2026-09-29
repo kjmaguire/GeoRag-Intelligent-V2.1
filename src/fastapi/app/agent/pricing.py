@@ -72,6 +72,11 @@ _FALLBACK = Pricing(3.00, 0.30, 3.75, 15.00)
 #: once per call. Process-local by design — a restart re-warns, which
 #: is what you want after a deploy changes the model.
 _UNPRICED_SEEN: set[str] = set()
+#: Separate from _UNPRICED_SEEN on purpose: has_pricing() and
+#: estimate_cost_usd() warn about different consequences (a ceiling that
+#: cannot fire vs. a dashboard on the wrong price sheet), and whichever ran
+#: first must not silence the other.
+_UNPRICED_CEILING_WARNED: set[str] = set()
 
 
 def has_pricing(model: str) -> bool:
@@ -98,8 +103,26 @@ def has_pricing(model: str) -> bool:
     `HAVING SUM(projected_cost_usd) > 0` skips it. The token counts
     are still recorded, so the spend is reconstructible the moment a
     rate is added here.
+
+    2026-09-29 (VEN-12): an unpriced model is now said out loud, once per
+    model per process, at WARNING. Before, this returned False silently, so
+    the default production model (Command A+ on Cohere's own API) recorded
+    $0 on every answer and the spend ceiling could never fire on it with no
+    log line anywhere saying so. The contracted rate is Kyle's to supply --
+    no number is invented here.
     """
-    return model in _PRICE_TABLE
+    if model in _PRICE_TABLE:
+        return True
+    if model and model not in _UNPRICED_CEILING_WARNED:
+        _UNPRICED_CEILING_WARNED.add(model)
+        logger.warning(
+            "pricing: no contracted rate for model=%s -- its cost is recorded "
+            "as 0 and the per-workspace spend ceiling (cost_burn_watcher) "
+            "CANNOT fire on its traffic. Token counts are still recorded, so "
+            "spend is reconstructible once the rate is added to _PRICE_TABLE.",
+            model,
+        )
+    return False
 
 
 def estimate_cost_usd(

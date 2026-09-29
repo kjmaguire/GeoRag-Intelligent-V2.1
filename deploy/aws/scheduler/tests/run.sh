@@ -107,6 +107,34 @@ assert_rc 0
 assert_says "shutdown sweep complete"
 assert_aws_calls "ecs update-service" 10
 
+# Audit AWS-8: the reverse of the startup tiers, each drained before the
+# next, and the database last. First/last line numbers in the call log.
+first_call() { grep -nE -- "$1" "${WORK}/aws.log" | head -1 | cut -d: -f1; }
+last_call()  { grep -nE -- "$1" "${WORK}/aws.log" | tail -1 | cut -d: -f1; }
+
+run shutdown_stops_tiers_in_reverse_order "$SHUTDOWN"
+assert_rc 0
+assert_aws_calls "ecs wait services-stable" 3
+T3_LAST=$(last_call "update-service.*--service laravel-(octane|horizon|reverb) ")
+T2_FIRST=$(first_call "update-service.*--service (hatchet-worker|fastapi|martin) ")
+T2_WAIT=$(first_call "wait services-stable.*hatchet-worker")
+T1_FIRST=$(first_call "update-service.*--service (redis|qdrant|hatchet|sparse) ")
+T1_WAIT=$(first_call "wait services-stable.*redis")
+DB_STOP=$(first_call "rds stop-db-instance")
+[ "${T3_LAST:-0}" -lt "${T2_FIRST:-0}" ] || fail_case "Laravel must stop before the workers"
+[ "${T2_WAIT:-0}" -lt "${T1_FIRST:-0}" ] || fail_case "the workers must drain before the stores stop"
+[ "${T1_WAIT:-0}" -lt "${DB_STOP:-0}" ] || fail_case "the database must stop last, after tier 1 drained"
+
+run shutdown_undrained_tier_is_reported_and_the_sweep_goes_on "$SHUTDOWN" \
+    FAKE_AWS_UNSTABLE="hatchet-worker"
+assert_rc 1
+assert_says "did not drain"
+assert_says "shutdown sweep INCOMPLETE"
+# A worker that will not stop must not keep the stores and RDS running all
+# night: the cost saving is the point of the sweep.
+assert_aws_calls "ecs update-service" 10
+assert_aws_calls "rds stop-db-instance" 1
+
 run shutdown_scales_the_worker_too "$SHUTDOWN"
 assert_rc 0
 # The single biggest thing the Azure sweep could NOT do: hatchet-worker-cc
@@ -207,6 +235,56 @@ assert_rc 0
 assert_aws_calls "sagemaker create-endpoint" 0
 assert_aws_calls "sagemaker describe-endpoint" 0
 assert_silent_about "BEDROCK_ENDPOINT_NOT_INSERVICE"
+
+# ---------------------------------------------------------------------
+# Hatchet token expiry check (audit AWS-12)
+# ---------------------------------------------------------------------
+# No aws calls at all: the token arrives in the environment, the clock is
+# pinned with TOKEN_CHECK_NOW. What is pinned: the marker fires inside the
+# warning window, after expiry, AND when the check cannot read the expiry —
+# and the token itself never reaches the log.
+TOKEN_CHECK="${SCRIPTS}/token-expiry-check.sh"
+NOW_EPOCH=1790000000
+mkjwt() {
+  local p
+  p=$(printf '{"sub":"tenant","exp":%s,"server_url":"x"}' "$1" | base64 | tr -d '\n=' | tr '+/' '-_')
+  printf 'eyJhbGciOiJub25lIn0.%s.c2ln' "$p"
+}
+
+TOK=$(mkjwt $(( NOW_EPOCH + 60 * 86400 )))
+run token_far_from_expiry_is_quiet "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$TOK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 0
+assert_says "60 day(s) left"
+assert_silent_about "HATCHET_TOKEN_EXPIRING"
+assert_silent_about "${TOK#*.}"
+assert_aws_calls "." 0
+
+TOK=$(mkjwt $(( NOW_EPOCH + 10 * 86400 )))
+run token_inside_the_window_alerts "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$TOK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 0
+assert_says "HATCHET_TOKEN_EXPIRING 10 day(s) left"
+assert_says "rotate-hatchet-token.sh"
+assert_silent_about "${TOK#*.}"
+
+TOK=$(mkjwt $(( NOW_EPOCH - 86400 )))
+run token_expired_alerts "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$TOK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING EXPIRED"
+
+run token_absent_is_not_silent "$TOKEN_CHECK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING cannot check"
+
+# The go-live placeholder from deploy/aws/README.md: JWT-shaped, no exp.
+PLACEHOLDER='eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.'
+run token_without_exp_is_not_silent "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$PLACEHOLDER" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING cannot check: no exp claim"
+
+run token_garbage_is_not_silent "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="not-a-jwt" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING cannot check"
+assert_silent_about "not-a-jwt"
 
 # ---------------------------------------------------------------------
 

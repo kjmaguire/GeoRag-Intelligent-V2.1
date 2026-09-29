@@ -225,7 +225,11 @@ return [
          * concurrency limits.
          */
         'supervisor-llm' => [
-            'connection' => env('HORIZON_REDIS_CONNECTION', 'redis'),
+            // NOT the shared `redis` queue connection: that one's 90 s
+            // retry_after is shorter than this supervisor's 360 s timeout,
+            // so long streams were re-queued and failed mid-answer. See the
+            // `redis-llm` entry in config/queue.php for the mechanism.
+            'connection' => env('HORIZON_LLM_QUEUE_CONNECTION', 'redis-llm'),
             'queue' => ['llm'],
             'balance' => 'simple',
             'maxProcesses' => (int) env('HORIZON_LLM_MAX_PROCESSES', 2),
@@ -233,7 +237,9 @@ return [
             'maxJobs' => 0,
             'memory' => 192,
             'tries' => 1,
-            // Must exceed StreamQueryFromFastApi::$timeout (300s) + headroom.
+            // Must exceed StreamQueryFromFastApi::timeoutSeconds() (300 s by
+            // default) AND stay below the `redis-llm` connection's
+            // retry_after (420 s). Asserted by ServiceConfigContractTest.
             'timeout' => 360,
             'nice' => 0,
         ],

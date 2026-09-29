@@ -216,22 +216,21 @@ QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
 # not the configured model. Rows before 2026-09-24 are still NULL, so the
 # harvest keeps attributing those by date window.
 #
-# AUTO-DISCOVERY (Kyle, 2026-09-16). Being pinned to 3.5 should not mean
-# staying pinned to 3.5 forever once AWS adds v4 to Bedrock's catalogue —
-# that would be a second silent regression sitting on top of the first one.
-# So when the operator has NOT set BEDROCK_RERANK_MODEL_ID explicitly (it is
-# unset, using the 3.5 default below), get_reranker_or_none() calls
-# app.services._bedrock.discover_cohere_rerank_v4_model_id() — a cached,
+# AUTO-DISCOVERY (Kyle, 2026-09-16; ADVISORY-ONLY since 2026-09-29, VEN-15).
+# Being pinned to 3.5 should not mean nobody notices once AWS adds v4 to
+# Bedrock's catalogue. get_reranker_or_none() therefore calls
+# app.services._bedrock.discover_cohere_rerank_v4_model_id() -- a cached,
 # fail-safe ListFoundationModels probe on the `bedrock` control-plane client
-# — and prefers whatever v4 id it finds over the hardcoded 3.5 default.
-# Finding one logs a WARNING (not INFO): it means
-# RERANKER_SCORE_THRESHOLD_HOSTED is *re-becoming correct* (it was measured
-# against v4 originally) but that is a claim, not a fact, until someone
-# actually re-measures it against the live v4 score distribution — see the
-# block above. An operator who sets BEDROCK_RERANK_MODEL_ID explicitly
-# (to 3.5, to a v4 id once they know it, or to anything else) is always
-# respected as-is and discovery is skipped entirely for that process — an
-# explicit setting is not something this module second-guesses.
+# -- and logs a WARNING when it finds a v4 id. It NEVER switches the model at
+# runtime. It used to, when BEDROCK_RERANK_MODEL_ID was unset; that could not
+# fire in any deployed topology (Terraform and compose always set the id),
+# and where it could have fired it would have moved to an ARN the task role's
+# InvokeModel grant does not cover (AccessDenied on every rerank) and changed
+# the score distribution under an unvalidated threshold. Moving to v4 is an
+# operator change: the Terraform variable, the IAM grant, and a re-measured
+# RERANKER_SCORE_THRESHOLD_HOSTED. The discovery now runs whether or not the
+# id is pinned, which is what makes it reach the deployed topology at all.
+# _BEDROCK_RERANK_MODEL_ID_EXPLICIT is kept for callers that report it.
 _BEDROCK_RERANK_MODEL_ID_EXPLICIT = bool(
     (os.environ.get("BEDROCK_RERANK_MODEL_ID") or "").strip()
 )
@@ -463,8 +462,8 @@ class _BedrockReranker:
 
     def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
         from app.services._bedrock import (  # noqa: PLC0415
-            attempts_within_budget,
             get_client,
+            retry_profile_within_budget,
         )
 
         groups: dict[str, list[int]] = {}
@@ -481,17 +480,42 @@ class _BedrockReranker:
             if self._total_budget_s is not None
             else None
         )
+        #
+        # Attempts AND read timeout are derived together (VEN-5, 2026-09-29):
+        # counting attempts alone let 3 x 8 s reads plus backoff overrun the
+        # 20 s wait_for, and botocore retries ReadTimeoutError, so the
+        # executor thread kept calling Bedrock after the caller had given up.
+        max_attempts, read_timeout_s = retry_profile_within_budget(
+            per_group_budget,
+            read_timeout_s=self._timeout_s,
+            ceiling=BEDROCK_RERANK_MAX_ATTEMPTS,
+        )
         client = get_client(
             "bedrock-agent-runtime",
-            max_attempts=attempts_within_budget(
-                per_group_budget, ceiling=BEDROCK_RERANK_MAX_ATTEMPTS
-            ),
-            read_timeout_s=self._timeout_s,
+            max_attempts=max_attempts,
+            read_timeout_s=read_timeout_s,
         )
         model_arn = self._model_arn()
 
         scores: list[float] = [0.0] * len(pairs)
-        for query, indices in groups.items():
+        for query, all_indices in groups.items():
+            # VEN-13 (2026-09-29): an empty or whitespace-only text is left
+            # out and scores 0.0 instead of being sent. Bedrock Rerank's
+            # documented minimum is one character ([ASSUMED] -- AWS API
+            # reference, not probed), and one rejected document fails the
+            # WHOLE call, degrading the entire query to cosine order over a
+            # single bad payload. A blank query has nothing to rank against.
+            if not query.strip():
+                continue
+            indices = [i for i in all_indices if str(pairs[i][1]).strip()]
+            if len(indices) < len(all_indices):
+                logger.warning(
+                    "reranker: %d of %d passage(s) had no text -- scored 0.0 without sending",
+                    len(all_indices) - len(indices),
+                    len(all_indices),
+                )
+            if not indices:
+                continue
             documents = [str(pairs[i][1]) for i in indices]
             resp = client.rerank(
                 queries=[{"type": "TEXT", "textQuery": {"text": query}}],
@@ -729,15 +753,13 @@ def get_reranker_or_none() -> (
     wrong one for a deployment that was never repointed off Foundry — that
     should stop, not quietly serve worse answers (ADR-0022 gotcha 3).
 
-    Cohere Rerank v4 auto-discovery: when BEDROCK_RERANK_MODEL_ID was not set
-    explicitly, this also asks app.services._bedrock whether Bedrock's
-    catalogue now serves a v4 model and prefers it over the pinned 3.5
-    default if so (2026-09-16, Kyle). The check itself is cached for the
-    process lifetime and fails safe to "not found" on any error, so it costs
-    at most one extra AWS call per worker and never risks the reranker path.
+    Cohere Rerank v4 discovery (2026-09-16, Kyle; advisory-only since
+    2026-09-29): this also asks app.services._bedrock whether Bedrock's
+    catalogue now serves a v4 model and LOGS a warning if so. It never
+    switches the model id. The check is cached for the process lifetime and
+    fails safe to "not found" on any error, so it costs at most one extra
+    AWS call per worker and never risks the reranker path.
     """
-    global BEDROCK_RERANK_MODEL_ID
-
     from app.services._bedrock import reject_retired_backend  # noqa: PLC0415
 
     reject_retired_backend(RERANKER_BACKEND, setting="RERANKER_BACKEND")
@@ -751,31 +773,37 @@ def get_reranker_or_none() -> (
 
         assert_no_retired_foundry_env(context="RERANKER_BACKEND=bedrock")
 
-        if not _BEDROCK_RERANK_MODEL_ID_EXPLICIT:
-            try:
-                discovered_v4 = discover_cohere_rerank_v4_model_id()
-            except Exception:  # noqa: BLE001 — discovery is advisory, never fatal
-                logger.exception(
-                    "reranker: Cohere Rerank v4 discovery raised unexpectedly "
-                    "-- staying on %s",
-                    BEDROCK_RERANK_MODEL_ID,
-                )
-                discovered_v4 = None
-            if discovered_v4 and discovered_v4 != BEDROCK_RERANK_MODEL_ID:
-                previous_model_id = BEDROCK_RERANK_MODEL_ID
-                BEDROCK_RERANK_MODEL_ID = discovered_v4
-                logger.warning(
-                    "reranker: Bedrock's catalogue now serves Cohere Rerank "
-                    "v4 (%s) -- switching off the pinned 3.5 default (%s). "
-                    "RERANKER_SCORE_THRESHOLD_HOSTED (0.2) was originally "
-                    "measured against v4 on 2026-08-15 and has been carried "
-                    "over UNVALIDATED to 3.5 since ADR-0022 -- now that v4 is "
-                    "back, that threshold is presumptively correct again but "
-                    "MUST be RE-VALIDATED against the live v4 score "
-                    "distribution, not assumed. Set BEDROCK_RERANK_MODEL_ID "
-                    "explicitly to pin a version and skip this auto-switch.",
-                    discovered_v4, previous_model_id,
-                )
+        # ADVISORY ONLY since 2026-09-29 (VEN-15). Discovery used to switch
+        # the model id at runtime when BEDROCK_RERANK_MODEL_ID was unset. That
+        # was dead code in every deployed topology (Terraform and compose both
+        # set the id), and the one topology where it could fire would have
+        # switched to a v4 ARN that the task role's InvokeModel grant does
+        # not cover -- AccessDenied on every rerank, every query degraded.
+        # It also would have moved scores under the unvalidated
+        # RERANKER_SCORE_THRESHOLD_HOSTED without anyone deciding to. So it
+        # now only LOGS, whether or not the id is pinned; changing the model
+        # is an operator decision (Terraform var + IAM grant + threshold
+        # re-measurement), never a runtime one.
+        try:
+            discovered_v4 = discover_cohere_rerank_v4_model_id()
+        except Exception:  # noqa: BLE001 — discovery is advisory, never fatal
+            logger.exception(
+                "reranker: Cohere Rerank v4 discovery raised unexpectedly -- staying on %s",
+                BEDROCK_RERANK_MODEL_ID,
+            )
+            discovered_v4 = None
+        if discovered_v4 and discovered_v4 != BEDROCK_RERANK_MODEL_ID:
+            logger.warning(
+                "reranker: Bedrock's catalogue now lists Cohere Rerank v4 (%s); "
+                "this process stays on %s. Switching is an operator change, not "
+                "a runtime one: set BEDROCK_RERANK_MODEL_ID in Terraform, extend "
+                "the task role's bedrock:InvokeModel grant to cover it, and "
+                "RE-VALIDATE RERANKER_SCORE_THRESHOLD_HOSTED against the live v4 "
+                "score distribution before trusting it (it has been carried over "
+                "unvalidated since ADR-0022).",
+                discovered_v4,
+                BEDROCK_RERANK_MODEL_ID,
+            )
 
         if not BEDROCK_RERANK_MODEL_ID:
             logger.error(

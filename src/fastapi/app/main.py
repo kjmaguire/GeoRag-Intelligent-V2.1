@@ -517,53 +517,92 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # dropped from this deployment entirely in Phase B2.
     logger.info("Loading embedding model: %s", settings.EMBEDDING_MODEL_NAME)
     _t0 = time.perf_counter()
-    try:
-        # Shared embedding sidecar when EMBEDDING_SERVICE_URL is set (one model
-        # for all workers over a localhost hop); else a local CPU model as
-        # before. See app.services.embedding.
-        from app.services.embedding import get_embedding_model  # noqa: PLC0415
+    # Shared embedding sidecar when EMBEDDING_SERVICE_URL is set (one model
+    # for all workers over a localhost hop); else a local CPU model as
+    # before. See app.services.embedding.
+    from app.services.embedding import (  # noqa: PLC0415
+        EMBEDDING_DISABLED,
+        EmbeddingReadiness,
+        get_embedding_model,
+        rewarm_until_ready,
+        warm_up_once,
+    )
 
+    # VEN-1 (2026-09-29): a failed warm-up no longer disables the embedder
+    # for the life of the process. Only a failure to BUILD the model, or a
+    # confirmed dimension mismatch, takes it out of service; a failed warm-up
+    # encode keeps it (queries still try it), retries in the background with
+    # backoff, and /ready reports "warming" until it succeeds.
+    embedding_readiness = EmbeddingReadiness()
+    app.state.embedding_readiness = embedding_readiness
+    app.state.embedding_rewarm_task = None
+    embedding_model: Any = None
+    try:
         embedding_model = get_embedding_model(
             settings.EMBEDDING_MODEL_NAME,
             settings.EMBEDDING_MODEL_REVISION,
         )
+    except Exception as exc:
+        logger.exception(
+            "Failed to load embedding model — search_documents will return empty results"
+        )
+        embedding_readiness.state = EMBEDDING_DISABLED
+        embedding_readiness.detail = f"load failed: {type(exc).__name__}"
+    app.state.embedding_model = embedding_model
+
+    def _disable_embedding(reason: str) -> None:
+        # Audit 2026-06-27 (C1): the fail-fast dimension-parity check. A
+        # model whose dim disagrees with EMBEDDING_DIMENSION (and thus the
+        # live Qdrant collection) would silently break retrieval, so it is
+        # disabled and search_documents returns empty (safe refusal)
+        # instead of querying a mismatched vector space.
+        logger.critical(
+            "Embedding dim mismatch (%s, model %s). Disabling embedding model "
+            "to avoid querying a mismatched Qdrant collection. Fix "
+            "EMBEDDING_MODEL_NAME/EMBEDDING_DIMENSION or re-embed the corpus.",
+            reason,
+            settings.EMBEDDING_MODEL_NAME,
+        )
+        app.state.embedding_model = None
+        embedding_readiness.state = EMBEDDING_DISABLED
+        embedding_readiness.detail = f"dimension mismatch: {reason}"
+
+    if embedding_model is not None:
         # Warm up: encode a dummy string so the first real request does not
-        # pay the JIT/model-init penalty (a no-op round-trip for the sidecar
-        # proxy, which also validates connectivity at startup).
-        embedding_model.encode("warm-up", normalize_embeddings=True)
+        # pay the JIT/model-init penalty (a round-trip for the sidecar proxy
+        # and Bedrock, which also validates connectivity at startup).
+        _warm = warm_up_once(embedding_model, embedding_readiness)
         _elapsed = time.perf_counter() - _t0
-        app.state.embedding_model = embedding_model
-        _loaded_dim = embedding_model.get_sentence_embedding_dimension()
+        try:
+            _loaded_dim = embedding_model.get_sentence_embedding_dimension()
+        except Exception:  # noqa: BLE001 — logged below as unknown
+            logger.debug("embedding dimension unavailable after warm-up", exc_info=True)
+            _loaded_dim = None
         # %s, not %d — the remote-sidecar proxy returns None for the dimension
         # when the sidecar can't be reached, and %d would blow up the log call.
         logger.info(
-            "Embedding model ready: %s (dim=%s) loaded in %.2fs",
+            "Embedding model %s: %s (dim=%s) in %.2fs",
+            "ready" if _warm else "loaded but NOT warm",
             settings.EMBEDDING_MODEL_NAME,
             _loaded_dim,
             _elapsed,
         )
-        # Audit 2026-06-27 (C1): the fail-fast dimension-parity check the
-        # comment on settings.EMBEDDING_DIMENSION claims exists. A model whose
-        # dim disagrees with EMBEDDING_DIMENSION (and thus the live Qdrant
-        # collection) would silently break retrieval. Disable the model so
-        # search_documents returns empty (safe refusal) instead of querying a
-        # mismatched vector space.
-        if _loaded_dim is not None and _loaded_dim != settings.EMBEDDING_DIMENSION:
-            logger.critical(
-                "Embedding dim mismatch: model %s reports dim=%d but "
-                "EMBEDDING_DIMENSION=%d. Disabling embedding model to avoid "
-                "querying a mismatched Qdrant collection. Fix "
-                "EMBEDDING_MODEL_NAME/EMBEDDING_DIMENSION or re-embed the corpus.",
-                settings.EMBEDDING_MODEL_NAME,
-                _loaded_dim,
-                settings.EMBEDDING_DIMENSION,
-            )
-            app.state.embedding_model = None
-    except Exception:
-        logger.exception(
-            "Failed to load embedding model — search_documents will return empty results"
+        _mismatch = (
+            f"model reports dim={_loaded_dim} but EMBEDDING_DIMENSION={settings.EMBEDDING_DIMENSION}"
+            if _loaded_dim is not None and int(_loaded_dim) != settings.EMBEDDING_DIMENSION
+            else None
         )
-        app.state.embedding_model = None
+        if _mismatch is not None:
+            _disable_embedding(_mismatch)
+        elif not _warm:
+            app.state.embedding_rewarm_task = asyncio.create_task(
+                rewarm_until_ready(
+                    embedding_model,
+                    embedding_readiness,
+                    expected_dim=settings.EMBEDDING_DIMENSION,
+                    on_disable=_disable_embedding,
+                )
+            )
 
     # -------------------------------------------------------------------------
     # 5b. Qdrant collection dimension parity
@@ -607,6 +646,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     settings.EMBEDDING_MODEL_NAME,
                 )
                 app.state.embedding_model = None
+                embedding_readiness.state = EMBEDDING_DISABLED
+                embedding_readiness.detail = (
+                    f"Qdrant '{_CHUNKS_COLLECTION}' dim={_collection_dim} != "
+                    f"EMBEDDING_DIMENSION={settings.EMBEDDING_DIMENSION}"
+                )
+                _rewarm = app.state.embedding_rewarm_task
+                if _rewarm is not None:
+                    _rewarm.cancel()
             else:
                 logger.info(
                     "Qdrant collection '%s' dense dim=%s matches "
@@ -901,6 +948,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Teardown — close all pools in reverse init order
     # -------------------------------------------------------------------------
     logger.info("Shutting down — closing database pools")
+
+    # VEN-1 — stop a still-running embedding re-warm loop.
+    _rewarm_task = getattr(app.state, "embedding_rewarm_task", None)
+    if _rewarm_task is not None and not _rewarm_task.done():
+        _rewarm_task.cancel()
 
     # Plan §0e — stop the trace flush loop FIRST so the final drain can
     # write any buffered traces while the pg_pool is still open.
@@ -1269,13 +1321,14 @@ async def health() -> dict[str, str]:
 
 @app.get("/ready")
 async def ready() -> dict[str, str]:
-    """Readiness probe — verifies all database connections are alive.
+    """Readiness probe — verifies stores are alive and the embedder is warm.
 
     Performs a minimal round-trip to each store:
       - asyncpg: SELECT 1
       - Qdrant: collections list
-      - Neo4j: RETURN 1
       - Redis: PING
+    and reports the query-path embedder's warm-up state (VEN-1) without
+    calling it -- a probe must not spend a Bedrock call every few seconds.
 
     Returns 503 if any store fails so the container orchestrator can hold
     traffic until the service is genuinely ready.
@@ -1309,6 +1362,21 @@ async def ready() -> dict[str, str]:
         checks["redis"] = "ok"
     except Exception as exc:
         checks["redis"] = f"error: {exc}"
+
+    # Query-path embedder (VEN-1, 2026-09-29). A task whose warm-up failed
+    # reports "warming" until the background re-warm succeeds, and one whose
+    # model was disabled (load failure, dimension mismatch) reports
+    # "disabled" -- either way it cannot answer a document question, and
+    # this endpoint used to say it was ready regardless.
+    #
+    # NOTE: production ECS container health checks call /health, not
+    # /ready (deploy/aws/terraform/services.tf), so this does NOT make ECS
+    # replace the task -- the background re-warm is the recovery. Pointing
+    # the ECS check at /ready is a separate operator decision: it would also
+    # recycle tasks on a transient Postgres/Redis blip.
+    readiness = getattr(app.state, "embedding_readiness", None)
+    if readiness is not None:
+        checks["embedding"] = readiness.describe()
 
     all_ok = all(v == "ok" for v in checks.values())
     if not all_ok:

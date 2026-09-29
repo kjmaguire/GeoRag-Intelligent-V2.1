@@ -6,7 +6,7 @@
 # exists to reject, and asserts the gate rejects it -- and names the live
 # failure that shape produces.
 #
-# The AWS-side checks (A-06..A-10, A-12, A-15) are not exercised: they need a real
+# The AWS-side checks (A-06..A-10, A-12, A-15, A-16) are not exercised: they need a real
 # account. What IS asserted about them is the property that matters when no
 # account is reachable -- that they report unverified rather than passing.
 #
@@ -336,6 +336,33 @@ fi
 rm -rf "$D"
 
 # ---------------------------------------------------------------------------
+case_ "A-11 — 'newest' is the timestamp in the filename, not the mtime"
+# VEN-16 (2026-09-29). A fresh git checkout gives every report the same
+# mtime; `ls -t` then fell back to name order the wrong way round and picked
+# the OLDER cohere run. So: an older-named report with a newer mtime must not
+# win, and a newer-named report with an older mtime must.
+D=$(make_fixture)
+probe_report cohere nothing >"$D/ops/validation/reports/cohere_probe_20260901T000000Z.json"
+touch -d '2030-01-01' "$D/ops/validation/reports/cohere_probe_20260901T000000Z.json"
+OUT=$(run_gate "$D" | strip_ansi)
+if grep -qE '^✓ A-11' <<<"$OUT"; then
+  ok "an older-named report with a newer mtime is not treated as newest"
+else
+  bad "A-11 judged the older-named report: $(grep A-11 <<<"$OUT" | head -2 | tr '\n' ' ')"
+fi
+rm -rf "$D"
+D=$(make_fixture)
+probe_report cohere nothing >"$D/ops/validation/reports/cohere_probe_20261001T000000Z.json"
+touch -d '2001-01-01' "$D/ops/validation/reports/cohere_probe_20261001T000000Z.json"
+OUT=$(run_gate "$D" | strip_ansi)
+if grep -qE '^✗ A-11' <<<"$OUT" && grep -q "VERIFIED NOTHING:cohere" <<<"$OUT"; then
+  ok "a newer-named report with an older mtime is the one judged"
+else
+  bad "A-11 ignored the newest-named report: $(grep A-11 <<<"$OUT" | head -2 | tr '\n' ' ')"
+fi
+rm -rf "$D"
+
+# ---------------------------------------------------------------------------
 case_ "A-10 — go-live key derivation excludes APP_KEY_NEXT"
 # Live failure in the other direction: rotation.tf relies on APP_KEY_NEXT being
 # ABSENT to make the rotation task unrunnable outside a rotation. A gate that
@@ -398,7 +425,7 @@ case_ "unanswerable AWS checks report unverified, never pass"
 # The property that matters off-account: silence is not assurance.
 D=$(make_fixture)
 OUT=$(run_gate "$D" | strip_ansi)
-for id in A-06 A-07 A-08 A-09 A-10 A-15; do
+for id in A-06 A-07 A-08 A-09 A-10 A-15 A-16; do
   if grep -qE "^⚠ ${id}" <<<"$OUT"; then
     ok "${id} reports unverified without AWS"
   elif grep -qE "^✓ ${id}" <<<"$OUT"; then

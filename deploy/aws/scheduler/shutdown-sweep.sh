@@ -90,46 +90,78 @@
 # strings means guessing error codes. Reading the state afterwards does
 # not — and the converse matters more: an exit code of 0 with the instance
 # still `available` is a failure, and only a state read catches it.
+#
+# ---------------------------------------------------------------------
+# THE TIERS, IN REVERSE, SINCE 2026-09-29 (audit AWS-8)
+# ---------------------------------------------------------------------
+# This used to scale all ten services to 0 in one loop and stop RDS
+# immediately after, on the theory that "nothing here depends on anything
+# else". Shutdown order does matter, just less visibly than startup order:
+# the hatchet worker got SIGTERM at the same instant as the engine, Qdrant
+# and Redis it was writing to, and RDS began stopping while every task
+# still held connections. A report ingesting at 17:00 died mid-upsert —
+# silver rows and Qdrant points half-written, Parse pages billed and then
+# billed again on the morning retry.
+#
+# So it is startup-sweep.sh's tiers backwards: Laravel first (no new work
+# enters), then the workers and fastapi, then the stores and the engine, and
+# RDS last. Each tier is waited on (`services-stable`, i.e. running = 0)
+# before the next goes, which is what lets each task's stopTimeout
+# (services.tf, 120 s on the worker, Horizon, fastapi, Qdrant and Redis)
+# actually be spent draining. Expect the sweep to take a few minutes, not
+# seconds. A tier that does not drain is reported and the sweep carries on:
+# the cost saving still matters more than a clean stop, and the alarm tells
+# a person which service to look at.
+#
+# RESIDUAL RISK, stated: 120 s is Fargate's maximum stopTimeout. Work that
+# needs longer — a 300-page PDF at ~7.5 s/page — is still cut off and left to
+# Hatchet's retry policy the next morning. Nothing blocks uploads near 17:00.
 set -uo pipefail
 
 CLUSTER="${SWEEP_CLUSTER:-georag}"
 DB_INSTANCE="${SWEEP_DB_INSTANCE:-georag-pg}"
 
-# Every service the sweep stops. Order is irrelevant — nothing here
-# depends on anything else, unlike the startup tiers.
-SERVICES=(
-  redis
-  qdrant
-  sparse
-  hatchet-worker
-  hatchet
-  fastapi
-  martin
-  laravel-octane
-  laravel-horizon
-  laravel-reverb
-)
+# startup-sweep.sh's TIER3, TIER2, TIER1 — keep the two files in step.
+TIER3=(laravel-octane laravel-horizon laravel-reverb)
+TIER2=(hatchet-worker fastapi martin)
+TIER1=(redis qdrant hatchet sparse)
+SERVICE_COUNT=$(( ${#TIER1[@]} + ${#TIER2[@]} + ${#TIER3[@]} ))
 
 FAILURES=()
 
 log()  { printf '%s\n' "$*" >&2; }
 fail() { FAILURES+=("$1"); log "FAILED: $1"; }
 
-# --- ECS services -----------------------------------------------------
-log "--- scaling ${#SERVICES[@]} services to desired-count 0 ---"
-for svc in "${SERVICES[@]}"; do
-  # --output text --query: `aws ecs update-service` otherwise dumps the
-  # entire service description, task definition and all. The two Azure
-  # scheduler jobs emitted 13,197 console lines over 2026-08-20..21 that
-  # way, which is what buries the handful of lines that matter.
-  if aws ecs update-service \
-       --cluster "$CLUSTER" --service "$svc" --desired-count 0 \
-       --query 'service.serviceName' --output text >/dev/null; then
-    log "$svc: desired-count 0"
+stop_tier() {
+  local label="$1"; shift
+  log "--- ${label} ---"
+  for svc in "$@"; do
+    # --output text --query: `aws ecs update-service` otherwise dumps the
+    # entire service description, task definition and all. The two Azure
+    # scheduler jobs emitted 13,197 console lines over 2026-08-20..21 that
+    # way, which is what buries the handful of lines that matter.
+    if aws ecs update-service \
+         --cluster "$CLUSTER" --service "$svc" --desired-count 0 \
+         --query 'service.serviceName' --output text >/dev/null; then
+      log "$svc: desired-count 0"
+    else
+      fail "desired-count 0 on $svc"
+    fi
+  done
+  # One waiter call for the whole tier: the tasks drain in parallel, so the
+  # tier costs the slowest stopTimeout, not the sum of them.
+  if aws ecs wait services-stable --cluster "$CLUSTER" --services "$@" 2>/dev/null; then
+    log "${label}: drained"
   else
-    fail "desired-count 0 on $svc"
+    fail "${label} did not drain to 0 running tasks"
   fi
-done
+}
+
+# --- ECS services -----------------------------------------------------
+log "--- scaling ${SERVICE_COUNT} services to desired-count 0, one tier at a time ---"
+stop_tier "tier 3: Laravel (stops new work entering)" "${TIER3[@]}"
+stop_tier "tier 2: hatchet worker, fastapi, martin (drain in-flight work)" "${TIER2[@]}"
+stop_tier "tier 1: redis, qdrant, hatchet engine, sparse (flush and stop)" "${TIER1[@]}"
 
 # --- RDS --------------------------------------------------------------
 log "--- stopping ${DB_INSTANCE} ---"
@@ -156,7 +188,7 @@ case "$db_state" in
 esac
 
 # Services, plus the database. The endpoint term is gone with ADR-0023.
-TOTAL=$(( ${#SERVICES[@]} + 1 ))
+TOTAL=$(( SERVICE_COUNT + 1 ))
 
 if [ ${#FAILURES[@]} -eq 0 ]; then
   log "shutdown sweep complete: ${TOTAL}/${TOTAL} actions succeeded"

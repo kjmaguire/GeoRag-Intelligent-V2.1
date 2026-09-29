@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Dry rehearsal of the two image-upgrade scripts against a fake `aws`.
+# Dry rehearsal of the image-upgrade scripts against a fake `aws`.
+#
+#   roll_*     roll-vendor-services.sh: moves hatchet/redis/qdrant onto the
+#              revision the last `terraform apply` registered, refuses a
+#              qdrant IMAGE change (that is upgrade-qdrant.sh's job), and
+#              refuses the seven services CD owns.
 #
 #   image_*    upgrade-service-image.sh: a dry run changes nothing, --apply
 #              changes ONLY the image (secrets, env, volumes carried over
@@ -174,6 +179,96 @@ check "prints how to go back" 'grep -q "task-definition georag-qdrant:3" <<<"$OU
 new_case "qdrant_scaled_to_zero_is_refused"
 FAKE_DESIRED=0 run "$QDRANT_SH" "$Q18" --apply
 check "exit 1, nothing moved" '[ "$RC" -eq 1 ] && ! moved'
+
+echo "roll-vendor-services.sh"
+# ─────────────────────────────────────────────────────────────────────────────
+# What `terraform apply` leaves behind: a newer revision registered for the
+# family, and the service still on the old one (ignore_changes). The family
+# name resolves to the latest revision, as ECS's describe-task-definition does.
+#
+#   latest SVC REV [IMAGE]   register SVC's family at REV, copied from the
+#                            running revision with a stopTimeout added and,
+#                            if given, a new image.
+#   in_sync SVC              the family's latest IS the running revision.
+ROLL_SH="$UP/roll-vendor-services.sh"
+R_IMG="redis:8.10.0-alpine"
+
+new_roll_case() {
+  new_case "$1" "${2:-$Q19}"
+  jq -n --arg img "$R_IMG" '{family: "georag-redis", taskDefinitionArn: "georag-redis:4", revision: 4,
+      containerDefinitions: [{name: "redis", image: $img,
+        secrets: [{name: "REDIS_PASSWORD", valueFrom: "arn:secret:REDIS_PASSWORD::"}]}]}' \
+    > "$ST/td.georag-redis:4.json"
+  echo "georag-redis:4" > "$ST/svc.redis"
+  for s in hatchet qdrant redis; do in_sync "$s"; done
+}
+in_sync() { cp "$ST/td.$(cat "$ST/svc.$1").json" "$ST/td.georag-$1.json"; }
+latest() {
+  local svc="$1" rev="$2" img="${3:-}" cur
+  cur="$ST/td.$(cat "$ST/svc.$svc").json"
+  jq --arg arn "georag-$svc:$rev" --arg c "$svc" --arg img "$img" '
+      .taskDefinitionArn = $arn
+      | (.containerDefinitions[] | select(.name == $c) | .stopTimeout) = 120
+      | if $img != "" then (.containerDefinitions[] | select(.name == $c) | .image) = $img else . end' \
+    "$cur" > "$ST/td.georag-$svc:$rev.json"
+  cp "$ST/td.georag-$svc:$rev.json" "$ST/td.georag-$svc.json"
+}
+
+new_roll_case "roll_everything_in_sync_is_a_no_op"
+run "$ROLL_SH" --apply
+check "exit 0" '[ "$RC" -eq 0 ]'
+check "nothing moved" '! moved'
+check "says so, per service" '[ "$(grep -c "up to date" <<<"$OUT")" -eq 3 ]'
+
+new_roll_case "roll_dry_run_changes_nothing"
+latest hatchet 8
+run "$ROLL_SH"
+check "exit 0" '[ "$RC" -eq 0 ]'
+check "names the move" 'grep -q "would point hatchet at georag-hatchet:8" <<<"$OUT"'
+check "nothing moved" '! moved'
+
+new_roll_case "roll_apply_moves_the_lagging_services"
+latest hatchet 8
+latest redis 5
+run "$ROLL_SH" --apply
+check "exit 0" '[ "$RC" -eq 0 ]'
+check "hatchet on its latest" '[ "$(cat "$ST/svc.hatchet")" = "georag-hatchet:8" ]'
+check "redis on its latest" '[ "$(cat "$ST/svc.redis")" = "georag-redis:5" ]'
+check "qdrant, already in sync, untouched" '! grep -q "update-service.*--service qdrant" "$ST/calls"'
+check "the stop timeout actually reached the running revision" \
+  '[ "$(jq -r ".containerDefinitions[0].stopTimeout" "$ST/td.$(cat "$ST/svc.redis").json")" = "120" ]'
+check "prints the rollback" 'grep -q "task-definition georag-hatchet:7" <<<"$OUT"'
+
+new_roll_case "roll_qdrant_config_only_change_is_rolled"
+latest qdrant 4
+run "$ROLL_SH" qdrant --apply
+check "exit 0" '[ "$RC" -eq 0 ]'
+check "qdrant on its latest" '[ "$(cat "$ST/svc.qdrant")" = "georag-qdrant:4" ]'
+check "image unchanged" '[ "$(running_image qdrant qdrant)" = "$Q19" ]'
+
+new_roll_case "roll_qdrant_image_change_is_refused" "$Q18"
+latest qdrant 4 "$Q19"
+latest hatchet 8
+run "$ROLL_SH" --apply
+check "exit 1" '[ "$RC" -eq 1 ]'
+check "qdrant NOT moved" '[ "$(cat "$ST/svc.qdrant")" = "georag-qdrant:3" ]'
+check "points at upgrade-qdrant.sh" 'grep -q "upgrade-qdrant.sh" <<<"$OUT"'
+check "a refusal does not strand the others" '[ "$(cat "$ST/svc.hatchet")" = "georag-hatchet:8" ]'
+
+new_roll_case "roll_refuses_first_party_services"
+run "$ROLL_SH" fastapi --apply
+check "exit 2, nothing touched" '[ "$RC" -eq 2 ] && [ ! -s "$ST/calls" ]'
+
+new_roll_case "roll_scaled_to_zero_does_not_wait"
+latest redis 5
+FAKE_DESIRED=0 run "$ROLL_SH" redis --apply
+check "exit 0" '[ "$RC" -eq 0 ] && [ "$(cat "$ST/svc.redis")" = "georag-redis:5" ]'
+check "does not wait for a task that will not start" '! grep -q "wait services-stable" "$ST/calls"'
+
+new_roll_case "roll_unstable_is_a_failure"
+latest hatchet 8
+FAKE_UNSTABLE=1 run "$ROLL_SH" hatchet --apply
+check "exit 1" '[ "$RC" -eq 1 ] && grep -q "did not stabilise" <<<"$OUT"'
 
 echo
 if [ "$FAIL" -eq 0 ]; then

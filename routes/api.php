@@ -114,6 +114,16 @@ Route::prefix('v1')->group(function () {
         Route::post('queries/{queryId}/start', [QueryController::class, 'start'])
             ->middleware('throttle:queries')
             ->where('queryId', '[0-9a-f-]{36}');
+        // Recovery + control for a query already streaming. Not on the
+        // `queries` limiter: neither starts an LLM run. result() serves the
+        // finalised audit row to a tab that lost the terminal frame
+        // (CHAT-8); cancel() lets Stop actually stop the job (CHAT-18).
+        Route::get('queries/{queryId}/result', [QueryController::class, 'result'])
+            ->middleware('throttle:60,1')
+            ->where('queryId', '[0-9a-f-]{36}');
+        Route::post('queries/{queryId}/cancel', [QueryController::class, 'cancel'])
+            ->middleware('throttle:30,1')
+            ->where('queryId', '[0-9a-f-]{36}');
 
         // Chat history sync (localStorage-first, durable server-side store).
         Route::get('conversations', [ChatConversationController::class, 'index']);

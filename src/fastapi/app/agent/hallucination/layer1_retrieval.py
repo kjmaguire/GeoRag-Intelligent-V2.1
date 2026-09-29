@@ -114,6 +114,30 @@ def build_refusal_text() -> str:
     return _REFUSAL_TEXT
 
 
+def build_refusal_payload() -> dict[str, Any]:
+    """``GeoRAGResponse.refusal_payload`` for a hard Layer 1 gate failure.
+
+    The same shape ``_build_terminal_refusal_payload`` in
+    agentic_retrieval/nodes.py produces, so the chat's RefusalPanel and
+    persist's ``rejection_reason`` read it without a special case.
+    ``reason_code`` is ``insufficient_evidence``, the existing
+    ``RefusalReasonCode`` (app/models/answer_run.py) for exactly this
+    outcome; ``strategy`` is None because no repair strategy ran — the
+    gate refused before the LLM was called.
+    """
+    return {
+        "type": "refusal",
+        "reason_code": "insufficient_evidence",
+        "strategy": None,
+        "message": (
+            "No retrieved evidence cleared the relevance threshold for this "
+            "project, so no answer was generated."
+        ),
+        "candidates": [],
+        "guard_codes": [],
+    }
+
+
 def assess_retrieval_quality(
     tool_results: list[tuple[str, Any]],
 ) -> RetrievalQualityVerdict:

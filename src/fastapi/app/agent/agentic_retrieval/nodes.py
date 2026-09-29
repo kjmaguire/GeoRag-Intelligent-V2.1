@@ -1163,6 +1163,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """
     from app.agent.hallucination.layer1_retrieval import (  # noqa: PLC0415
         assess_retrieval_quality,
+        build_refusal_payload,
         build_refusal_text,
     )
     from app.agent.llm_calls import _call_llm  # noqa: PLC0415
@@ -1202,6 +1203,14 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     exc_info=True,
                 )
         response = assemble_response(build_refusal_text(), state.tool_results)
+        # CHAT-10 — stamp the machine-readable refusal UNCONDITIONALLY.
+        # refusal_payload used to be set only by repair_stage2 behind
+        # REPAIR_LOOP_TERMINAL_ENABLED (off everywhere), so this — the
+        # primary refusal path — reached the chat as ordinary answer text
+        # with a "conf 0.10" pill, and RefusalPanel never rendered. This
+        # does not touch the flag's own behaviour (terminal repair
+        # strategies still stamp only when it is on).
+        response.refusal_payload = build_refusal_payload()
         return {"response": response, **_fold_token_usage(state)}
 
     # Plan §3 — when CONTEXT_PREP_ENABLED is set, run the EvidencePacket
@@ -1518,6 +1527,27 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     return {"response": response, **_fold_token_usage(state)}
 
 
+def _round_trace_points_for_card(points: list[dict]) -> list[dict]:
+    """Round a drill trace for the chat card's wire payload only (CHAT-5).
+
+    Full float64 reprs made the 3D card about 95 bytes per point, so a
+    200-hole x 50-point project pushed the `completed` frame past Reverb's
+    1 MB request limit and the chat never received its terminal frame.
+    7 decimal places of a degree is about 1 cm and 2 of a metre is 1 cm,
+    finer than any collar survey; the card is a visual. Tool results — what
+    the §04i guards verify numbers against — are untouched.
+    """
+    rounded: list[dict] = []
+    for p in points:
+        q = dict(p)
+        for key, places in (("x", 7), ("y", 7), ("z", 2), ("depth_m", 2)):
+            v = q.get(key)
+            if isinstance(v, float):
+                q[key] = round(v, places)
+        rounded.append(q)
+    return rounded
+
+
 def _build_chat_card_payloads(
     *,
     intent: str | None,
@@ -1572,7 +1602,7 @@ def _build_chat_card_payloads(
                     "status":      c.status,
                     "azimuth":     c.azimuth,
                     "dip":         c.dip,
-                    "trace_points": c.trace_points,
+                    "trace_points": _round_trace_points_for_card(c.trace_points),
                 }
                 for c in result.collars
             ]

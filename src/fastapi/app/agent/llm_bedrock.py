@@ -62,6 +62,7 @@ gets the same structured fallback the OpenAI path returns.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -70,7 +71,9 @@ from app.agent.llm_common import (
     _SAFETY_MARGIN_TOKENS,
     cap_output_tokens,
     clean_model_text,
+    parse_retry_after,
     record_llm_metrics,
+    wait_before_pre_stream_retry,
 )
 from app.agent.llm_common import (
     BUDGET_EXHAUSTED_FALLBACK as _BUDGET_EXHAUSTED_FALLBACK,
@@ -122,6 +125,19 @@ def _error_code(exc: BaseException) -> str | None:
 
 def _is_transient(exc: BaseException) -> bool:
     return _error_code(exc) in _TRANSIENT_ERROR_CODES
+
+
+def _retry_after_s(exc: BaseException) -> float | None:
+    """``Retry-After`` from a botocore ClientError's HTTP headers, if any."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return None
+    metadata = response.get("ResponseMetadata")
+    headers = metadata.get("HTTPHeaders") if isinstance(metadata, dict) else None
+    if not isinstance(headers, dict):
+        return None
+    value = headers.get("retry-after")
+    return parse_retry_after(value) if isinstance(value, str) else None
 
 
 def _build_request(
@@ -252,6 +268,7 @@ async def call_bedrock_llm(
     session = aioboto3.Session()
 
     attempt = 0
+    started = time.monotonic()
     while True:
         sent_any_token = False
         try:
@@ -295,15 +312,21 @@ async def call_bedrock_llm(
                     reasoning = "".join(reasoning_chunks)
             break
         except Exception as exc:  # noqa: BLE001 — re-raised unless retryable
-            if sent_any_token or not _is_transient(exc) or attempt >= max_retries:
+            if sent_any_token or not _is_transient(exc):
                 raise
             attempt += 1
-            logger.warning(
-                "bedrock chat: transient %s (attempt %d/%d) — retrying before any token reached the user",
-                _error_code(exc),
-                attempt,
-                max_retries,
-            )
+            # botocore is at max_attempts=1 here, so this loop is the ONLY
+            # retry on the path: it must pace itself, honour Retry-After and
+            # charge the per-query budgets (VEN-2/AGT-8, 2026-09-29).
+            if not await wait_before_pre_stream_retry(
+                label=f"bedrock chat ({_error_code(exc)})",
+                attempt=attempt,
+                max_retries=max_retries,
+                started_monotonic=started,
+                retry_after_s=_retry_after_s(exc),
+                error=exc,
+            ):
+                raise
 
     input_tokens = int(usage.get("inputTokens", 0) or 0)
     output_tokens = int(usage.get("outputTokens", 0) or 0)

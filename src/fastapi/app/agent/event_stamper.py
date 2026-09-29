@@ -25,7 +25,10 @@ trace_id (str | None):
 
 Redis ring buffer (per answer run):
     Key:  georag:answer_run_events:<answer_run_id>
-    Op:   RPUSH + EXPIRE(3600) on every emit call
+    Op:   RPUSH + EXPIRE(3600) on every emit call, pipelined (one round trip)
+    Alias: on ``completed`` the list is COPY'd under the persisted
+           silver.answer_runs id, which is the id the replay endpoint
+           authorises and reads by (see :meth:`EventStamper.alias_to`).
     TTL:  3600 seconds — covers realistic reconnect window (seconds-to-minutes)
 
 Architecture reference: Module spec §07f addendum (event_seq / event_id).
@@ -40,6 +43,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
+
+_KEY_PREFIX = "georag:answer_run_events"
+_TTL_S = 3600
 
 
 @dataclass
@@ -99,11 +105,15 @@ class EventStamper:
         """
         if redis is None:
             return
-        key = f"georag:answer_run_events:{self.answer_run_id}"
+        key = f"{_KEY_PREFIX}:{self.answer_run_id}"
         try:
             serialized = json.dumps(enriched, ensure_ascii=False, default=str)
-            await redis.rpush(key, serialized)
-            await redis.expire(key, 3600)
+            # One round trip, not two (API-2): this runs once per SSE frame
+            # — every delta token — on the streaming hot path.
+            pipe = redis.pipeline(transaction=False)
+            pipe.rpush(key, serialized)
+            pipe.expire(key, _TTL_S)
+            await pipe.execute()
         except Exception:
             # Replay store write failure must never break the SSE stream.
             logger.warning(
@@ -112,5 +122,34 @@ class EventStamper:
                 self.answer_run_id,
                 event_name,
                 enriched.get("event_seq", -1),
+                exc_info=True,
+            )
+
+    async def alias_to(self, redis: Any, persisted_run_id: str) -> None:
+        """Copy this stream's ring buffer under the persisted run id.
+
+        The buffer is keyed by the streaming-session UUID because that is
+        the only id that exists before the silver.answer_runs INSERT. The
+        replay endpoint, though, authorises and reads by the PERSISTED id,
+        so without this copy it returned [] for every real run (CHAT-8 /
+        API-2). Called once, on the ``completed`` frame, after which no
+        further frames are written for this stream.
+
+        Best-effort like :meth:`push_to_redis`: replay is a recovery aid and
+        must never break the stream.
+        """
+        if redis is None:
+            return
+        src = f"{_KEY_PREFIX}:{self.answer_run_id}"
+        dst = f"{_KEY_PREFIX}:{persisted_run_id}"
+        try:
+            await redis.copy(src, dst, replace=True)
+            await redis.expire(dst, _TTL_S)
+        except Exception:
+            logger.warning(
+                "EventStamper.alias_to: failed to alias replay buffer "
+                "stream_id=%s answer_run_id=%s",
+                self.answer_run_id,
+                persisted_run_id,
                 exc_info=True,
             )

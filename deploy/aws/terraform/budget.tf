@@ -53,6 +53,21 @@ resource "aws_budgets_budget" "monthly" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
+  # GROSS spend, not spend net of credits (audit AWS-4, 2026-09-29). The
+  # Budgets API defaults IncludeCredit to TRUE, so without this block the
+  # promotional credit is netted out: while the credit covers the bill the
+  # budget sees roughly $0, the 50% and 80% ACTUAL alerts fire only at $50 and
+  # $80 of spend AFTER the credit ($150 and $180 gross at the default), and the
+  # forecast alert waits until real cash is projected past the limit. The one
+  # failure this file exists to catch — power left ON, burning the credit —
+  # would have produced no email until the credit was gone. Refunds are
+  # excluded for the same reason: they arrive late and would understate the
+  # month while it is still running.
+  cost_types {
+    include_credit = false
+    include_refund = false
+  }
+
   # Three thresholds, and the third is the one that matters.
   #
   # ACTUAL at 50% and 80% are review prompts: half the month's credit is gone,

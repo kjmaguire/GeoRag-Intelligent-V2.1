@@ -25,6 +25,8 @@
 #   A-13  state kept locally            — lose the file, orphan every resource
 #   A-15  an invalid Hatchet admin      — the engine is healthy and has no
 #         password                        tenant to mint a client token for
+#   A-16  a Hatchet client token near   — every worker and client fails auth
+#         its 90-day expiry               at once while the engine looks fine
 #
 # Checks that need AWS report `warn`, not `fail`, when the CLI or credentials
 # are absent: an unanswerable question is not a passed one. Run this from a
@@ -498,6 +500,66 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# A-16 — HATCHET_CLIENT_TOKEN is not about to expire
+#
+# The engine mints client tokens with a 90-day lifetime, and when one lapses
+# every worker and client fails auth at once while the engine looks healthy
+# (audit AWS-12, 2026-09-29). The daily token-check task and its alarm
+# (terraform/scheduler.tf, alerts.tf) catch it in production; this catches it
+# at the desk, before a cutover or a long weekend. Under 30 days warns, under
+# 14 or expired fails, and an unreadable expiry fails too — a check that
+# cannot answer is not a pass.
+#
+# Only the day count and date are printed. Never the token, never its claims.
+# ---------------------------------------------------------------------------
+if [ "$AWS_USABLE" = "1" ]; then
+  token_state=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ID" \
+    --query SecretString --output text 2>/dev/null | "$PYTHON" -c '
+import base64, datetime, json, sys, time
+try:
+    tok = json.load(sys.stdin).get("HATCHET_CLIENT_TOKEN")
+except Exception:
+    print("UNREADABLE"); raise SystemExit
+if not tok:
+    print("ABSENT"); raise SystemExit
+try:
+    seg = str(tok).split(".")[1]
+    exp = int(json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))["exp"])
+except Exception:
+    print("NOEXP"); raise SystemExit
+days = (exp - int(time.time())) // 86400
+when = datetime.datetime.fromtimestamp(exp, datetime.timezone.utc).strftime("%Y-%m-%d")
+print("DAYS %d %s" % (days, when))
+' 2>/dev/null || echo "UNREADABLE")
+  case "$token_state" in
+    DAYS*)
+      read -r _ tdays twhen <<<"$token_state"
+      if [ "$tdays" -lt 14 ]; then
+        check "A-16" "HATCHET_CLIENT_TOKEN not near expiry" fail \
+          "${tdays} day(s) left (expires ${twhen}) — rotate now: deploy/aws/rotation/rotate-hatchet-token.sh"
+      elif [ "$tdays" -lt 30 ]; then
+        check "A-16" "HATCHET_CLIENT_TOKEN not near expiry" warn \
+          "${tdays} day(s) left (expires ${twhen}) — schedule deploy/aws/rotation/rotate-hatchet-token.sh"
+      else
+        check "A-16" "HATCHET_CLIENT_TOKEN not near expiry" ok "${tdays} day(s) left (expires ${twhen})"
+      fi
+      ;;
+    ABSENT)
+      check "A-16" "HATCHET_CLIENT_TOKEN not near expiry" fail "absent from ${SECRET_ID}"
+      ;;
+    NOEXP)
+      check "A-16" "HATCHET_CLIENT_TOKEN not near expiry" fail \
+        "no readable exp claim — still the go-live placeholder? (${README} Step 3, \"Minting the real one\")"
+      ;;
+    *)
+      check "A-16" "HATCHET_CLIENT_TOKEN not near expiry" warn "secret unreadable"
+      ;;
+  esac
+else
+  check "A-16" "HATCHET_CLIENT_TOKEN not near expiry" warn "needs AWS access"
+fi
+
+# ---------------------------------------------------------------------------
 # A-11 — a wire-contract probe report is committed
 #
 # Every model adapter says at the top that it was written to documentation and
@@ -537,7 +599,12 @@ probe_worthless=""
 probe_found=""
 
 for probe in bedrock cohere; do
-  newest=$(ls -t "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | head -1)
+  # Newest by the UTC timestamp IN THE FILENAME (…_probe_YYYYMMDDTHHMMSSZ.json,
+  # which sorts lexically in time order), not by mtime. A fresh git checkout
+  # gives every report the same mtime, and `ls -t` then fell back to name
+  # order in the wrong direction — picking the OLDER cohere run, whose pixel
+  # ladder sent byte-identical images (VEN-16, 2026-09-29).
+  newest=$(ls "ops/validation/reports/${probe}_probe_"*.json 2>/dev/null | LC_ALL=C sort | tail -1)
   if [ -z "$newest" ]; then
     probe_missing="${probe_missing}${probe} "
     continue
@@ -598,9 +665,9 @@ c_blu "Not checked here — these are one-time actions with no queryable result:
 echo "  • Step 1  bootstrap.sql run as the RDS master"
 echo "  • Step 2  ALTER ROLE georag_app PASSWORD"
 echo "  • Step 4  scripts/init_qdrant.py (CD's post_deploy_smoke check 4 catches a miss)"
-echo "  • HATCHET_CLIENT_TOKEN swapped from placeholder to the engine-minted value"
+echo "  • HATCHET_CLIENT_TOKEN minted for the RIGHT tenant (A-16 catches the placeholder, not a wrong tenant)"
 echo "  • RERANKER_SCORE_THRESHOLD_HOSTED is Rerank v4's 0.2 carried to 3.5, unvalidated"
-echo "  • TRUST_FORWARDED_FOR / RATE_LIMIT_ENABLED posture decisions (${README})"
+echo "  • TRUST_FORWARDED_FOR posture decision (${README}); RATE_LIMIT_ENABLED is set in config.tf since 2026-09-29"
 echo
 
 if [ "$FAIL" = "0" ] && [ "$WARN" = "0" ]; then

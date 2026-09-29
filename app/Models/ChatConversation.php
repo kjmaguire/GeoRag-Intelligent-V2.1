@@ -41,7 +41,11 @@ class ChatConversation extends Model
 
     public function messages(): HasMany
     {
+        // `position`, not `created_at`: every message of a thread is
+        // re-inserted in the same second by each sync (CHAT-2 / LAR-5).
         return $this->hasMany(ChatMessage::class, 'conversation_id', 'conversation_id')
-            ->orderBy('created_at');
+            ->orderBy('position')
+            ->orderBy('created_at')
+            ->orderBy('message_id');
     }
 }

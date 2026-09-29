@@ -416,12 +416,16 @@ class TestEndToEnd:
         assert rec["recommended"] is None
 
     def test_it_reports_the_model_it_actually_used(self, production_path) -> None:
-        """If discovery switches to v4, the report must say v4, not the pinned 3.5."""
+        """A catalogue listing v4 must not change what is scored or reported.
+
+        Discovery is advisory-only since 2026-09-29 (VEN-15): the report names
+        the pinned 3.5, which is what every call actually used.
+        """
         fake = production_path("with_v4")
         report = _run()
-        assert report["reranker"]["model_id"] == fake_bedrock_rerank.V4
-        assert report["reranker"]["version"] == f"cohere-bedrock:{fake_bedrock_rerank.V4}"
-        assert all(c["model_arn"].endswith(fake_bedrock_rerank.V4) for c in fake.calls)
+        assert report["reranker"]["model_id"] == fake_bedrock_rerank.V35
+        assert report["reranker"]["version"] == f"cohere-bedrock:{fake_bedrock_rerank.V35}"
+        assert fake.calls and all(c["model_arn"].endswith(fake_bedrock_rerank.V35) for c in fake.calls)
 
     def test_the_wrong_backend_refuses(self, production_path, monkeypatch) -> None:
         from app.services import reranker as reranker_module

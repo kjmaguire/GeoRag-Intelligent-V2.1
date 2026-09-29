@@ -131,7 +131,7 @@ def _reembed_collection(
     mismatch). The caller decides whether a skip is fatal — it is for the
     canonical / explicitly-requested collections.
     """
-    from qdrant_client.models import PointStruct  # noqa: PLC0415
+    from qdrant_client.models import PointVectors  # noqa: PLC0415
 
     # Verify the collection exists before attempting to scroll.
     try:
@@ -140,6 +140,9 @@ def _reembed_collection(
     except Exception:
         logger.warning("Collection '%s' not found — skipping", collection_name)
         return 0, True
+
+    # None = an unnamed single-vector collection (legacy georag_reports).
+    dense_name: str | None = None
 
     # 2026-06-04 guard — verify collection vector dim matches the loaded
     # model. The Qwen3-Embedding swap changed dim 384→1024, and an in-place
@@ -154,9 +157,11 @@ def _reembed_collection(
         if hasattr(vectors_cfg, "size"):
             collection_dim = vectors_cfg.size
         elif isinstance(vectors_cfg, dict):
-            # Named vectors — assume single 'default' or take first.
-            first_named = next(iter(vectors_cfg.values()))
-            collection_dim = first_named.size
+            # Named vectors. georag_chunks names its dense slot '' (the
+            # sparse SPLADE++ slot 'text' lives in sparse_vectors); prefer
+            # '' and fall back to the first name.
+            dense_name = "" if "" in vectors_cfg else next(iter(vectors_cfg))
+            collection_dim = vectors_cfg[dense_name].size
         else:
             collection_dim = None
         if collection_dim is not None and collection_dim != EXPECTED_VECTOR_DIM:
@@ -192,6 +197,7 @@ def _reembed_collection(
     offset = None
     total_reembedded = 0
     batch_num = 0
+    skipped_images = 0
 
     while True:
         # Scroll through all points, fetching payload (for the text field) but
@@ -224,6 +230,16 @@ def _reembed_collection(
 
         for point in points_batch:
             payload = point.payload or {}
+            if (payload.get("modality") or "text") == "image":
+                # VEN-4 (2026-09-29): a page-image point's vector is an IMAGE
+                # embedding (Embed v4 puts it in the text space), and its
+                # `text` payload is only a placeholder caption.
+                # passage_embedder._encode_image_sync forbids giving such a
+                # point a text vector -- it would rank on the words "page
+                # image". Re-embedding it here needs the rendered page, so it
+                # is skipped and counted; see the summary log for the route.
+                skipped_images += 1
+                continue
             text = payload.get("text", "")
             if not text:
                 # A point with no text payload cannot be re-embedded; skip it
@@ -264,37 +280,45 @@ def _reembed_collection(
             encode_elapsed,
         )
 
-        # Upsert in sub-batches to avoid large single requests to Qdrant.
+        # Update in sub-batches to avoid large single requests to Qdrant.
+        #
+        # update_vectors, not upsert (2026-09-29): an upsert REPLACES the
+        # whole point, so writing only the dense vector dropped the SPLADE++
+        # sparse vector ('text') that georag_chunks carries alongside it --
+        # the documented recovery silently removed the sparse leg of hybrid
+        # retrieval for every point it touched. update_vectors replaces just
+        # the named dense slot and leaves the sparse vector and the payload
+        # as they were.
         upserted = 0
         for i in range(0, len(texts), UPSERT_BATCH):
             sub_ids = point_ids[i : i + UPSERT_BATCH]
             sub_vectors = vectors[i : i + UPSERT_BATCH]
-            sub_payloads = payloads[i : i + UPSERT_BATCH]
 
-            upsert_points = [
-                PointStruct(
+            update_points = [
+                PointVectors(
                     id=pid,
-                    vector=vec.tolist(),
-                    payload=pay,
+                    vector=(
+                        {dense_name: vec.tolist()}
+                        if dense_name is not None
+                        else vec.tolist()
+                    ),
                 )
                 # strict=True, unlike every other zip in scripts/.
-                # These three are slices of the same index range, so a
-                # length disagreement means the encoder returned fewer
-                # vectors than texts -- and silent truncation would
-                # then pair a vector with the wrong payload, or skip
-                # points entirely, in a re-embed of the whole corpus.
-                # It cannot fire unless something is already wrong.
-                for pid, vec, pay in zip(
-                    sub_ids, sub_vectors, sub_payloads, strict=True,
-                )
+                # These are slices of the same index range, so a length
+                # disagreement means the encoder returned fewer vectors
+                # than texts -- and silent truncation would then pair a
+                # vector with the wrong point, or skip points entirely, in
+                # a re-embed of the whole corpus. It cannot fire unless
+                # something is already wrong.
+                for pid, vec in zip(sub_ids, sub_vectors, strict=True)
             ]
 
-            client.upsert(
+            client.update_vectors(
                 collection_name=collection_name,
-                points=upsert_points,
+                points=update_points,
                 wait=True,
             )
-            upserted += len(upsert_points)
+            upserted += len(update_points)
 
         total_reembedded += upserted
         logger.info(
@@ -314,6 +338,18 @@ def _reembed_collection(
         total_reembedded,
         total_points,
     )
+    if skipped_images:
+        logger.warning(
+            "Collection '%s': %d page-image point(s) were NOT re-embedded "
+            "(modality=image; their vectors come from the rendered page, not "
+            "the caption). If the embedding MODEL changed, set "
+            "silver.document_passages.embedding_id = NULL for the "
+            "modality='image' rows so embed_pending_passages re-embeds them "
+            "through embed_image() (scripts/reset_embeddings_for_reencode.py "
+            "only resets contextualized text passages).",
+            collection_name,
+            skipped_images,
+        )
     return total_reembedded, False
 
 

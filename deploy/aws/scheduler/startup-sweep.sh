@@ -45,6 +45,8 @@ set -uo pipefail
 CLUSTER="${SWEEP_CLUSTER:-georag}"
 DB_INSTANCE="${SWEEP_DB_INSTANCE:-georag-pg}"
 
+# shutdown-sweep.sh stops these same tiers in reverse (since 2026-09-29).
+# A service moved between tiers here must move there too.
 TIER1=(redis qdrant hatchet sparse)
 TIER2=(hatchet-worker fastapi martin)
 TIER3=(laravel-octane laravel-horizon laravel-reverb)

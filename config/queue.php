@@ -67,7 +67,41 @@ return [
             'driver' => 'redis',
             'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 90),
+            // 360, not Laravel's stock 90: GenerateExportJob runs on this
+            // connection with a 300 s timeout, and a reservation older than
+            // retry_after is re-queued and failed (tries=1) while the first
+            // attempt is still running. Must exceed every job timeout on
+            // this connection -- ServiceConfigContractTest asserts it.
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 360),
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        /*
+         * Reserving connection for Horizon's `supervisor-llm` (see
+         * config/horizon.php). Same Redis connection and key space as
+         * `redis` above, so a job dispatched through `redis` onto the
+         * `llm` queue is the same list entry this connection pops -- the
+         * only difference is `retry_after`.
+         *
+         * Why it exists: Laravel's RedisQueue stamps a reserved job with
+         * "now + retry_after" at POP time, using the popping connection's
+         * value, and the next pop on that queue moves every expired
+         * reservation back onto the queue. With the shared 90 s value, any
+         * StreamQueryFromFastApi run longer than 90 s (the job may run for
+         * services.fastapi.stream_timeout + 30 = 300 s) was re-queued while
+         * still streaming; the next llm worker saw attempts=2 > tries=1 and
+         * ran failed(), which broadcast a terminal JOB_FAILED mid-answer
+         * and later overwrote the successful audit row.
+         *
+         * Invariant (tests/Unit/Config/ServiceConfigContractTest):
+         *   retry_after > supervisor-llm timeout > job timeout.
+         */
+        'redis-llm' => [
+            'driver' => 'redis',
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            'queue' => 'llm',
+            'retry_after' => (int) env('REDIS_LLM_QUEUE_RETRY_AFTER', 420),
             'block_for' => null,
             'after_commit' => false,
         ],

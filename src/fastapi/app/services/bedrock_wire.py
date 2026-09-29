@@ -1,7 +1,9 @@
 """The Bedrock wire contract, as data (ADR-0022).
 
 Every Bedrock adapter in this service says ``[UNVERIFIED]`` at the top,
-because none of them has been confirmed against a live endpoint. Those
+because none of them was confirmed against a live endpoint when written
+(and most of each still is not -- see OBSERVED below for the fields one
+committed run has since confirmed, and ONLY those). Those
 notices are prose, one per module, and prose cannot be diffed against a
 probe report. This module is the same claims expressed as **data**: for each
 of the five calls, exactly which fields the adapter sends and which it reads
@@ -40,8 +42,17 @@ lose the most. Three genuinely different situations:
              these: once a live run says which shape arrives, delete the
              loser rather than carrying both forever.
 
-No field is ``OBSERVED`` yet. That value exists so a real report can promote
-one, and so the absence is countable rather than rhetorical.
+  OBSERVED / OBSERVED_COHERE
+             Seen on a live call from this codebase, on Bedrock or on
+             Cohere's own API respectively, and recorded in a COMMITTED probe
+             report that the field names in ``Field.report``. Promoted
+             2026-09-29 (VEN-7) from bedrock_probe_20260916T205112Z.json
+             (Embed v4 text, Rerank 3.5) and cohere_probe_20260924T060435Z.json
+             (Command A+ chat, Parse 5 text path) -- and ONLY the fields those
+             reports show. Everything else, including every image-embed field
+             and every Parse table/figure field, is still assumed.
+             ``tests/test_bedrock_wire_contract.py`` fails if an observed
+             field cites no report, or a report that is not committed.
 
 ----------------------------------------------------------------------------
 THIS FILE IS A CLAIM ABOUT THE ADAPTERS, AND IS TESTED AS ONE
@@ -63,6 +74,7 @@ from typing import Any
 
 __all__ = [
     "CONTRACTS",
+    "OBSERVED_STATUSES",
     "Field",
     "Status",
     "WireContract",
@@ -83,6 +95,14 @@ class Status(StrEnum):
     CARRIED = "carried_from_foundry"
     TOLERATED = "tolerated_alternate"
     OBSERVED = "observed_on_bedrock"
+    #: Observed on Cohere's own API (ADR-0023 host). A separate value
+    #: because "seen on Bedrock" and "seen on api.cohere.com" are different
+    #: claims -- the whole lesson of the Foundry -> Bedrock -> Cohere moves.
+    OBSERVED_COHERE = "observed_on_cohere_api"
+
+
+#: The statuses that claim a live observation, and so must cite a report.
+OBSERVED_STATUSES = frozenset({Status.OBSERVED, Status.OBSERVED_COHERE})
 
 
 @dataclass(frozen=True)
@@ -98,6 +118,11 @@ class Field:
     probe's observed key lists (``content_block_keys``, ``delta_keys``, …).
     A field without one is not something the current probe looks for, and
     ``diff_section`` reports it as ``not_observed`` rather than pretending.
+
+    ``report`` is the filename, under ``ops/validation/reports/``, of the
+    committed probe report that observed this field. Set exactly when the
+    status is ``OBSERVED`` or ``OBSERVED_COHERE``; a test enforces both
+    directions.
     """
 
     path: str
@@ -105,6 +130,7 @@ class Field:
     required: bool
     note: str
     evidence_key: str | None = None
+    report: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +150,10 @@ class WireContract:
     #: out over them rather than name them.
     evidence_paths: tuple[str, ...] = ()
     notes: tuple[str, ...] = field(default_factory=tuple)
+
+
+#: The committed Bedrock probe report the OBSERVED fields below cite.
+BEDROCK_REPORT = "bedrock_probe_20260916T205112Z.json"
 
 
 # ---------------------------------------------------------------------------
@@ -297,42 +327,71 @@ CHAT_CONVERSE_STREAM = WireContract(
 # The body is Cohere's own v2 schema minus `model`, which moves to modelId.
 # That is why the embed adapter is a transport swap and not a rewrite.
 
-_EMBED_RESPONSE: tuple[Field, ...] = (
-    Field(
-        "embeddings.float[][]",
-        Status.ASSUMED,
-        True,
-        "Row-per-input float vectors. Read straight into np.float32.",
-    ),
-)
-
 EMBED_TEXT = WireContract(
     name="embed_text",
     service="bedrock-runtime",
     method="invoke_model",
     probe_section="embed",
+    # The probe records the reply's top-level keys. It saw
+    # [embeddings, id, response_type, texts]; the last three are nothing the
+    # adapter reads, and the diff lists them as undeclared on purpose.
+    evidence_paths=("top_level_keys",),
     request=(
-        Field("modelId", Status.ASSUMED, True, "BEDROCK_EMBED_MODEL_ID."),
-        Field("body.texts[]", Status.ASSUMED, True, "The inputs."),
+        Field(
+            "modelId",
+            Status.OBSERVED,
+            True,
+            "BEDROCK_EMBED_MODEL_ID. 'cohere.embed-v4:0' accepted serverless.",
+            report=BEDROCK_REPORT,
+        ),
+        Field(
+            "body.texts[]",
+            Status.OBSERVED,
+            True,
+            "The inputs. Observed with ONE text only: the 96-per-call limit "
+            "_BedrockEmbedding chunks to is the vendor figure, not probed.",
+            report=BEDROCK_REPORT,
+        ),
         Field(
             "body.input_type",
-            Status.ASSUMED,
+            Status.OBSERVED,
             True,
             "'search_document' for corpus chunks, 'search_query' at query "
             "time. Cohere's asymmetric embedding is a real quality lever the "
-            "plain SentenceTransformer interface has no slot for.",
+            "plain SentenceTransformer interface has no slot for. Only "
+            "'search_document' was sent on 2026-09-16; 'search_query' is the "
+            "same key with a value not yet exercised.",
+            report=BEDROCK_REPORT,
         ),
-        Field("body.embedding_types[]", Status.ASSUMED, True, "Always ['float']."),
+        Field(
+            "body.embedding_types[]",
+            Status.OBSERVED,
+            True,
+            "Always ['float']; the reply carried embeddings.float.",
+            report=BEDROCK_REPORT,
+        ),
         Field(
             "body.output_dimension",
-            Status.ASSUMED,
+            Status.OBSERVED,
             True,
             "1024, matching georag_chunks. A SILENTLY IGNORED dimension is the "
             "worst outcome in this file: 1536-dim vectors written into a "
-            "1024-dim collection, discovered at query time.",
+            "1024-dim collection, discovered at query time. HONOURED on "
+            "2026-09-16 (dimension 1024, dimension_honoured: true).",
+            report=BEDROCK_REPORT,
         ),
     ),
-    response=_EMBED_RESPONSE,
+    response=(
+        Field(
+            "embeddings.float[][]",
+            Status.OBSERVED,
+            True,
+            "Row-per-input float vectors. Read straight into np.float32. "
+            "Seen as the top-level `embeddings` key, read via ['float'].",
+            evidence_key="embeddings",
+            report=BEDROCK_REPORT,
+        ),
+    ),
 )
 
 EMBED_IMAGE = WireContract(
@@ -364,7 +423,18 @@ EMBED_IMAGE = WireContract(
         Field("body.embedding_types[]", Status.ASSUMED, True, "Always ['float']."),
         Field("body.output_dimension", Status.ASSUMED, True, "1024 — the SAME space as text vectors."),
     ),
-    response=_EMBED_RESPONSE,
+    # Evidenced by the probe's `embed.image` variant (added 2026-09-29,
+    # VEN-18); no committed report has one yet, so this stays not_observed.
+    evidence_paths=("image.top_level_keys",),
+    response=(
+        Field(
+            "embeddings.float[][]",
+            Status.ASSUMED,
+            True,
+            "One row for the one image. Never observed: no probe run has sent an image.",
+            evidence_key="embeddings",
+        ),
+    ),
     notes=(
         "Which body shape wins is recorded on first success and reported in "
         "the logs. Collapse this contract to the winner and delete the loser "
@@ -381,54 +451,90 @@ EMBED_IMAGE = WireContract(
 # Cohere's /v2/rerank body did not survive: this is Bedrock's own API, on a
 # different client, and the response field is camelCase.
 
+# Observed 2026-09-16 (bedrock_probe_20260916T205112Z.json): the probe sent
+# exactly this request shape -- four documents, numberOfResults=4 -- and got
+# four results keyed {index, relevanceScore}. That is the WIRE. It says
+# nothing about RERANKER_SCORE_THRESHOLD_HOSTED, which was measured against
+# v4 and is still unvalidated on 3.5: one query is not a calibration.
+_RERANK_SENT = "Sent on the live call and accepted (HTTP 200, four results back)."
+
 RERANK = WireContract(
     name="rerank",
     service="bedrock-agent-runtime",
     method="rerank",
     probe_section="rerank",
+    evidence_paths=("result_keys",),
     request=(
-        Field("queries[].type", Status.ASSUMED, True, "Literal 'TEXT'."),
-        Field("queries[].textQuery.text", Status.ASSUMED, True, "One query per call."),
-        Field("sources[].type", Status.ASSUMED, True, "Literal 'INLINE'."),
-        Field("sources[].inlineDocumentSource.type", Status.ASSUMED, True, "Literal 'TEXT'."),
-        Field("sources[].inlineDocumentSource.textDocument.text", Status.ASSUMED, True, "One candidate."),
+        Field("queries[].type", Status.OBSERVED, True, f"Literal 'TEXT'. {_RERANK_SENT}", report=BEDROCK_REPORT),
+        Field(
+            "queries[].textQuery.text",
+            Status.OBSERVED,
+            True,
+            f"One query per call. {_RERANK_SENT}",
+            report=BEDROCK_REPORT,
+        ),
+        Field("sources[].type", Status.OBSERVED, True, f"Literal 'INLINE'. {_RERANK_SENT}", report=BEDROCK_REPORT),
+        Field(
+            "sources[].inlineDocumentSource.type",
+            Status.OBSERVED,
+            True,
+            f"Literal 'TEXT'. {_RERANK_SENT}",
+            report=BEDROCK_REPORT,
+        ),
+        Field(
+            "sources[].inlineDocumentSource.textDocument.text",
+            Status.OBSERVED,
+            True,
+            "One candidate. Its minimum length (1 character per the AWS API "
+            "reference) is NOT probed; reranker.py leaves blank texts out "
+            f"rather than risk the whole call (VEN-13). {_RERANK_SENT}",
+            report=BEDROCK_REPORT,
+        ),
         Field(
             "rerankingConfiguration.type",
-            Status.ASSUMED,
+            Status.OBSERVED,
             True,
-            "Literal 'BEDROCK_RERANKING_MODEL'.",
+            f"Literal 'BEDROCK_RERANKING_MODEL'. {_RERANK_SENT}",
+            report=BEDROCK_REPORT,
         ),
         Field(
             "rerankingConfiguration.bedrockRerankingConfiguration.modelConfiguration.modelArn",
-            Status.ASSUMED,
+            Status.OBSERVED,
             True,
-            "Rerank 3.5 — NOT v4, which Bedrock does not serve.",
+            "Rerank 3.5 — NOT v4, which Bedrock does not serve. "
+            f"'cohere.rerank-v3-5:0' as a foundation-model ARN. {_RERANK_SENT}",
+            report=BEDROCK_REPORT,
         ),
         Field(
             "rerankingConfiguration.bedrockRerankingConfiguration.numberOfResults",
-            Status.ASSUMED,
+            Status.OBSERVED,
             True,
             "Set to the FULL document count so every candidate is scored back, "
             "not just the model's own top-N. A smaller value silently drops "
             "candidates to 0.0 and the only retrieval-quality gate in the "
-            "system reads those scores.",
+            f"system reads those scores. 4 of 4 came back. {_RERANK_SENT}",
+            report=BEDROCK_REPORT,
         ),
     ),
     response=(
         Field(
             "results[].index",
-            Status.ASSUMED,
+            Status.OBSERVED,
             True,
             "Position in the sources list. The scores are remapped through it "
             "back to the caller's pair order, so a wrong index is a silent "
             "scrambling rather than an error.",
+            evidence_key="index",
+            report=BEDROCK_REPORT,
         ),
         Field(
             "results[].relevanceScore",
-            Status.ASSUMED,
+            Status.OBSERVED,
             True,
             "camelCase, NOT relevance_score — the Cohere spelling does not "
             "survive the move to Bedrock's own API.",
+            evidence_key="relevanceScore",
+            report=BEDROCK_REPORT,
         ),
     ),
 )
@@ -499,13 +605,19 @@ def diff_section(contract: WireContract, section: Any) -> dict[str, Any]:
 
     Verdicts, per declared response field with an ``evidence_key``:
 
-      confirmed    the probe saw that key
-      contradicted the probe looked at a list that should have held it and
-                   it was not there. For a ``required`` field this is the
-                   adapter being wrong, not the contract.
-      not_observed the probe never resolved a list to look in — no evidence
-                   either way. The default, and the honest one, for a run
-                   that could not authenticate.
+      confirmed     the probe saw that key
+      contradicted  the probe looked at a list that should have held it and
+                    it was not there, AND a required field declares it --
+                    the adapter reads something the host does not send.
+      not_exercised an OPTIONAL key the probe looked for and did not see.
+                    Absence here is not evidence against it: a text-only
+                    page cannot show a table block. Until 2026-09-29 these
+                    were reported as contradicted, which labelled every
+                    Parse table/figure field "contradicted" after a run
+                    that simply never sent a table (VEN-9).
+      not_observed  the probe never resolved a list to look in — no evidence
+                    either way. The default, and the honest one, for a run
+                    that could not authenticate.
 
     Plus ``undeclared``: keys the probe saw that nothing here declares. That
     is the discovery half — a field arriving that no adapter reads.
@@ -527,7 +639,7 @@ def diff_section(contract: WireContract, section: Any) -> dict[str, Any]:
 
     declared = declared_response_keys(contract)
     confirmed = sorted(declared & observed)
-    missing = sorted(declared - observed) if looked else []
+    missing = (declared - observed) if looked else set()
     required_keys = {
         f.evidence_key for f in contract.response if f.required and f.evidence_key
     }
@@ -535,7 +647,8 @@ def diff_section(contract: WireContract, section: Any) -> dict[str, Any]:
     return {
         "status": "observed" if looked else "not_observed",
         "confirmed": confirmed,
-        "contradicted": missing,
+        "contradicted": sorted(missing & required_keys),
+        "not_exercised": sorted(missing - required_keys),
         "not_observed": sorted(declared) if not looked else [],
         "undeclared": sorted(observed - declared),
         # The one line an operator needs: a REQUIRED field the probe looked

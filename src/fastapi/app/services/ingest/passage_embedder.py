@@ -121,6 +121,51 @@ def _passage_to_point_id(passage_id: str) -> str:
     return str(passage_id)
 
 
+def _is_request_rejection(exc: BaseException) -> bool:
+    """True when the embedding host refused the REQUEST as invalid.
+
+    Bedrock answers a body it will not take (an over-long or otherwise
+    unacceptable text) with ``ValidationException``; the self-hosted sidecar
+    answers 400/422. Everything else -- throttling, 5xx, auth, a network
+    error -- is about the call, not the texts, and bisecting would only
+    multiply it.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        return isinstance(error, dict) and error.get("Code") == "ValidationException"
+    status = getattr(response, "status_code", None)
+    return status in (400, 422)
+
+
+def encode_isolating_rejections(encode, texts: list[str]) -> list[list[float] | None]:
+    """``encode(texts)``, bisecting on a rejection to isolate the bad text(s).
+
+    VEN-14 (2026-09-29): one text the host rejects used to fail its whole
+    batch on every sweep, and because the batch is always the same
+    oldest-first rows, its good neighbours were never embedded either.
+    Bisection finds the offending text(s) in O(log n) extra calls; their
+    slots come back None and the caller leaves those rows unembedded (the
+    next sweep retries them) while the rest of the batch is written.
+    """
+    try:
+        return list(encode(texts))
+    except Exception as exc:
+        if not _is_request_rejection(exc):
+            raise
+        if len(texts) <= 1:
+            log.warning(
+                "embed_pending.dense_text_rejected chars=%d err=%s",
+                len(texts[0]) if texts else 0,
+                type(exc).__name__,
+            )
+            return [None] * len(texts)
+        mid = len(texts) // 2
+        return encode_isolating_rejections(encode, texts[:mid]) + encode_isolating_rejections(
+            encode, texts[mid:]
+        )
+
+
 # One DSN builder for the whole service — see app/db/dsn.py for why
 # sixty copies of this existed and what the drift cost.
 _dsn = build_dsn
@@ -445,12 +490,19 @@ async def embed_pending_passages(
                 # Dense encode (Cohere Embed v4 / SentenceTransformer)
                 try:
                     dense_vectors = await loop.run_in_executor(
-                        executor, _encode_dense_sync, texts,
+                        executor, encode_isolating_rejections, _encode_dense_sync, texts,
                     )
                 except Exception as e:
                     result.errors.append(f"dense_encode_failed:{type(e).__name__}:{e}")
                     result.passages_skipped += len(batch)
                     return
+                # A rejected text's slot is None; the merge below stores it
+                # and the point builder skips it, so only that row stays
+                # unembedded (VEN-14).
+                _rejected = sum(1 for v in dense_vectors if v is None)
+                if _rejected:
+                    result.passages_skipped += _rejected
+                    result.errors.append(f"dense_text_rejected:{_rejected}")
 
                 # Sparse encode (SPLADE++) — text only. An image passage's
                 # text is a caption or a generated description, so SPLADE on

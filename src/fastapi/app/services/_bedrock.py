@@ -217,6 +217,55 @@ def attempts_within_budget(budget_s: float | None, *, floor: int = 1, ceiling: i
     return max(floor, min(ceiling, int(budget_s // 2)))
 
 
+def _botocore_worst_backoff_s(attempts: int) -> float:
+    """Upper bound of botocore's own backoff across ``attempts`` tries.
+
+    botocore's standard/adaptive ``ExponentialBackoff`` sleeps
+    ``rand(0,1) * min(2 ** (n - 1), 20)`` before retry n, i.e. at most 1, 2,
+    4 ... seconds — so ``attempts`` tries wait at most ``2**(attempts-1) - 1``
+    seconds in total (checked against botocore/retries/standard.py in the
+    venv, 2026-09-29).
+    """
+    return float(2 ** max(attempts - 1, 0) - 1)
+
+
+def retry_profile_within_budget(
+    budget_s: float | None,
+    *,
+    read_timeout_s: float,
+    ceiling: int = 4,
+    min_read_timeout_s: float = 1.0,
+) -> tuple[int, float]:
+    """Return ``(max_attempts, read_timeout_s)`` whose worst case fits ``budget_s``.
+
+    ``attempts_within_budget`` above only counts attempts; it assumed each
+    one costs about a second, so a 19 s budget bought 3 attempts at an 8 s
+    read timeout -- 24 s plus backoff, above the 20 s ``wait_for`` it was
+    meant to fit under (VEN-5, 2026-09-29). This keeps the configured read
+    timeout where it can and drops attempts first, so that
+
+        attempts * read_timeout + botocore's worst backoff <= budget_s
+
+    holds. Only when a single attempt at the configured timeout does not fit
+    is the timeout itself shrunk (never below ``min_read_timeout_s``).
+
+    Not covered, and said so rather than hidden: botocore's connect timeout
+    (a slow-but-successful connect followed by a stalled read adds to one
+    attempt) and adaptive mode's client-side rate limiter, which can sleep
+    before an attempt when the client has itself been throttled. Both are
+    why callers pass a budget a little under their ``wait_for``.
+
+    ``None`` means no clock -- ingestion -- and keeps ``ceiling`` attempts at
+    the configured timeout.
+    """
+    if budget_s is None:
+        return ceiling, read_timeout_s
+    for attempts in range(max(ceiling, 1), 0, -1):
+        if attempts * read_timeout_s + _botocore_worst_backoff_s(attempts) <= budget_s:
+            return attempts, read_timeout_s
+    return 1, max(min_read_timeout_s, min(read_timeout_s, budget_s))
+
+
 # ---------------------------------------------------------------------------
 # Cohere Rerank v4 discovery (control plane) — Kyle, 2026-09-16
 # ---------------------------------------------------------------------------
@@ -300,4 +349,5 @@ __all__ = [
     "get_client",
     "reject_retired_backend",
     "reset_client_cache",
+    "retry_profile_within_budget",
 ]

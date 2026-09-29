@@ -80,17 +80,18 @@ class TestGeoRAGResponseAnswerRunIdField:
         assert str(dumped["answer_run_id"]) == str(run_id)
 
 
-def _override_logic(data: dict[str, Any], stamper: EventStamper) -> str:
-    """Mirror of the inline override block in app/routers/queries.py.
+def _override_logic(
+    data: dict[str, Any], stamper: EventStamper, event_name: str = "completed"
+) -> str | None:
+    """The REAL precedence rule from app/routers/queries.py.
 
-    Kept in lockstep with _stamped_event so this test pins the contract
-    without spinning up the full FastAPI app. If queries.py changes the
-    precedence rule, update both sides.
+    This used to be a hand-written mirror of the inline block "kept in
+    lockstep" with queries.py -- which is exactly how a mirror drifts. It
+    now calls the function _stamped_event uses.
     """
-    payload_run_id = data.get("answer_run_id")
-    if payload_run_id is not None:
-        return str(payload_run_id)
-    return str(stamper.answer_run_id)
+    from app.routers.queries import _effective_answer_run_id
+
+    return _effective_answer_run_id(event_name, data, stamper)
 
 
 class TestStampedEventAnswerRunIdPrecedence:
@@ -113,17 +114,20 @@ class TestStampedEventAnswerRunIdPrecedence:
             "404 again."
         )
 
-    def test_missing_payload_run_id_falls_back_to_stamper(self) -> None:
-        # Pre-INSERT refusal paths (LLM health probe / out-of-scope) return
-        # GeoRAGResponse(answer_run_id=None). The stamper UUID is the only
-        # id we have — accept it as the fallback rather than emit None.
+    def test_missing_payload_run_id_is_null_on_completed(self) -> None:
+        # Pre-INSERT refusal paths (LLM health probe / out-of-scope), a
+        # failed INSERT and a query-cache hit all return
+        # GeoRAGResponse(answer_run_id=None). This used to fall back to the
+        # stamper UUID, which is never a silver.answer_runs row: the chat
+        # then rendered feedback controls that POSTed to a run that 404s
+        # (CHAT-19). No run row, no id.
         stream_run_id = uuid4()
         stamper = EventStamper(answer_run_id=stream_run_id)
 
         response = _make_response(answer_run_id=None)
         emitted = _override_logic(response.model_dump(), stamper)
 
-        assert emitted == str(stream_run_id)
+        assert emitted is None
 
     def test_non_completed_frames_unaffected(self) -> None:
         # status / delta / citation frames carry no answer_run_id field;
@@ -133,8 +137,8 @@ class TestStampedEventAnswerRunIdPrecedence:
         status_payload = {"message": "Analyzing query…"}
         delta_payload = {"token": "hello ", "token_seq": 1}
 
-        assert _override_logic(status_payload, stamper) == str(stream_run_id)
-        assert _override_logic(delta_payload, stamper) == str(stream_run_id)
+        assert _override_logic(status_payload, stamper, "status") == str(stream_run_id)
+        assert _override_logic(delta_payload, stamper, "delta") == str(stream_run_id)
 
 
 if __name__ == "__main__":  # pragma: no cover

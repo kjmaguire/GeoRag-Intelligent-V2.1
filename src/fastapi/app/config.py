@@ -1244,8 +1244,12 @@ class Settings(BaseSettings):
     # 20 s is the arithmetic of one real retry, not a round number:
     # call (<=9.5 s, half the derived budget) + 2 s backoff + call
     # (<=9.5 s) = 21 s of theoretical worst case against a 19 s derived
-    # budget, and reranker.py enforces the deadline rather than trusting
-    # it. The overall request deadline is TIMEOUT_GATHER_S, which every
+    # budget. *Corrected 2026-09-29 (VEN-5):* this used to say reranker.py
+    # "enforces the deadline"; nothing did — botocore has only an attempt
+    # count, and 3 x 8 s reads overran it. _bedrock.retry_profile_within_budget
+    # now sizes attempts x read timeout + botocore backoff to fit the 19 s
+    # (2 x 8 s by default), pinned by test_reranker_retry_budget.py.
+    # The overall request deadline is TIMEOUT_GATHER_S, which every
     # deployed .env sets to 180, so there is ample room. See
     # reranker._caller_budget_s — that function reads THIS setting, so the
     # two budgets cannot drift apart again.
@@ -1283,6 +1287,11 @@ class Settings(BaseSettings):
     # _validate_timeout_ordering below fails startup if a future edit makes
     # an inner budget exceed this again.
     TIMEOUT_GATHER_S: float = 180.0  # hard deadline for parallel fan-out
+    # Seconds of SSE silence after which POST /internal/queries emits a
+    # `status` heartbeat (heartbeat=true, last phase message repeated).
+    # Must stay well under Chat.tsx's 120 s idle watchdog and its 30 s
+    # "still working" hint; Laravel relays it like any status frame.
+    SSE_HEARTBEAT_INTERVAL_S: float = 15.0
 
     # -------------------------------------------------------------------------
     # Embedding and reranker model selection

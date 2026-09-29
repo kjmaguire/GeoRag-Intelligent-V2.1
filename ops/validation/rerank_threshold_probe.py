@@ -80,8 +80,8 @@ OPTIONAL: model-to-model mapping
     at ``--reference-threshold``. That transfers a past decision to a new
     model. It says nothing about whether the past decision was right. Today
     Bedrock serves no v4 (see the 2026-09-16 probe report), so this leg is
-    for the day ``discover_cohere_rerank_v4_model_id`` finds one, or for
-    any future model swap.
+    for the day ``discover_cohere_rerank_v4_model_id`` logs one (it never
+    switches the model itself), or for any future model swap.
 
 WHAT THE REPORT NEVER CONTAINS
     No passage text, no query text, no passage ids. Only scores, counts and
@@ -945,7 +945,9 @@ def _production_reranker() -> tuple[Reranker | None, dict[str, Any]]:
         }
         return None, info
     instance = reranker_module.get_reranker_or_none()
-    # After get_reranker_or_none(), so a discovered v4 id is what is reported.
+    # The id the instance actually scores with. Discovery is advisory-only
+    # since 2026-09-29 (VEN-15), so a listed v4 never changes this; score v4
+    # with --reference-model-id instead.
     info["version"] = reranker_module.active_reranker_version()
     info["model_id"] = reranker_module.BEDROCK_RERANK_MODEL_ID
     if instance is None:

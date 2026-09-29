@@ -10,6 +10,15 @@ import EvidenceInspector from '@/Components/EvidenceInspector';
 import FeedbackControls from '@/Components/FeedbackControls';
 import CitationPGEODetail from '@/Components/PublicGeoscience/CitationPGEODetail';
 import type { Citation as SharedCitation } from '@/types';
+import {
+    createDeltaBuffer,
+    isHeartbeat,
+    isUncitedAnswer,
+    normaliseValidationState,
+    readPromptParam,
+    toPersistedMessage,
+    type ValidationState,
+} from '@/lib/chatStream';
 import { formatTime, formatWhen } from '@/lib/time';
 import {
     ContextEnvelopeForm,
@@ -25,7 +34,16 @@ import {
  *   1. POST /api/v1/queries { query, project_id } → { query_id, channel }
  *   2. Echo.channel(channel).listen('.QueryStreamEvent', handler)
  *   3. POST /api/v1/queries/{id}/start (dispatches the Horizon job)
- *   4. Stream events: status / routing / delta / citation / completed / failed
+ *   4. Stream events — SSE vocabulary: status · bind · delta · citation · completed · failed
+ *      (identical in src/fastapi/app/routers/queries.py and
+ *      app/Jobs/StreamQueryFromFastApi.php; SseVocabularyContractTest pins
+ *      all three). `bind` is additive and not rendered yet; a `status`
+ *      with heartbeat=true only keeps the idle watchdog alive.
+ *
+ * Recovery (CHAT-8): if the terminal frame is lost — reconnect, oversized
+ * frame, idle watchdog — the page asks GET /api/v1/queries/{id}/result for
+ * the finalised answer before declaring failure. Stop calls
+ * POST /api/v1/queries/{id}/cancel so the job and the LLM run actually stop.
  *
  * On `completed`, persists the full conversation via PUT
  * /api/v1/conversations/{uuid} so the threads rail picks it up on next
@@ -75,15 +93,12 @@ interface Citation {
     source_url?: string | null;
     staleness_seconds?: number | null;
 }
-/**
- * What the §04i post-assembly guards concluded about an answer.
- *
- * Deliberately separate from `confidence`, which is a retrieval-strength
- * number: every structured tool contributes a flat 1.0 when it returned any
- * rows, so `conf 0.95` means "PostGIS found some collars", not "this answer
- * is right". Backend: GeoRAGResponse.validation_state.
- */
-type ValidationState = 'clean' | 'unverified' | 'flagged';
+// ValidationState — what the §04i post-assembly guards concluded about an
+// answer — lives in @/lib/chatStream. Deliberately separate from
+// `confidence`, which is a retrieval-strength number: every structured tool
+// contributes a flat 1.0 when it returned any rows, so `conf 0.95` means
+// "PostGIS found some collars", not "this answer is right". Backend:
+// GeoRAGResponse.validation_state.
 
 interface ChatMessage {
     id: string;
@@ -120,6 +135,12 @@ interface ChatMessage {
         guard_codes?: string[];
     } | null;
     isStreaming?: boolean;
+    // CHAT-16 — a completed, non-refused answer that arrived with zero
+    // citations. Rendered with a visible "treat as unverified" warning.
+    citationsMissing?: boolean | null;
+    // CHAT-5 — the job slimmed an oversized `completed` frame and these
+    // fields (e.g. viz_payload) were left out of it.
+    truncatedFields?: string[] | null;
     // M2 P5 visualization payloads — backend emits these on the completed
     // SSE event (src/fastapi/app/agent/agentic_retrieval/nodes.py:_build_chat_card_payloads).
     // Both null until the completed handler captures them. InlineViz no-ops
@@ -183,12 +204,36 @@ function getCsrf(): string | null {
     return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
 }
 
+/** Headers every same-origin JSON call from this page sends. */
+function jsonHeaders(): Record<string, string> {
+    const csrf = getCsrf();
+    return {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}),
+    };
+}
+
+/** The query a stream belongs to — what recovery and Stop address. */
+interface ActiveQuery {
+    queryId: string;
+    assistantId: string;
+    convoId: string;
+}
+
+/** pusher-js connection state_change payload. */
+type ConnectionStateListener = (states: { previous: string; current: string }) => void;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const window: any;
 
 export default function FoundryChat({ project, threads, active_thread_id, active_thread, messages: initialMessages }: ChatPageProps) {
-    const [rawRetrieval, setRawRetrieval] = useState(false);
-    const [composer, setComposer] = useState('');
+    // FE-4 — the Workspace copilot dock navigates here with ?prompt=; the
+    // question is prefilled (not auto-sent) so the user sees and owns it.
+    const [composer, setComposer] = useState(() => (typeof window === 'undefined' ? '' : readPromptParam(window.location.search)));
+    // CHAT-4 — surfaced when a thread sync is rejected.
+    const [persistError, setPersistError] = useState<string | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
     const [streaming, setStreaming] = useState(false);
     const [conversationId, setConversationId] = useState<string>(active_thread_id ?? '');
@@ -238,19 +283,29 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // Echo channel + name held in a ref so the Stop button can leave it
     // without re-binding handlers on every render.
     const echoRef = useRef<{ channel: { stopListening: (e: string) => void }; name: string } | null>(null);
+    // The query currently streaming — what recovery (CHAT-8) and Stop
+    // (CHAT-18) need to address the server about it.
+    const activeQueryRef = useRef<ActiveQuery | null>(null);
+    // The conversation id of the stream in flight, for applyFailed().
+    const activeConvoIdRef = useRef<string>('');
+    // pusher-js connection listener bound for the life of one stream, so a
+    // reconnect can trigger recovery (CHAT-8). Held for unbinding.
+    const connectionListenerRef = useRef<ConnectionStateListener | null>(null);
     const scrollerRef = useRef<HTMLDivElement | null>(null);
     // P0.2 — timeout watchdog, reworked 2026-08-11. The original version
     // armed a single 60s wall-clock timer at send and REPLACED the
     // assistant message content when it fired — on a pipeline whose
     // server-side budget is 270-300s, that destroyed fully-streamed
-    // correct answers whose `completed` frame was late (observed live
+    // correct answers whose completed frame was late (observed live
     // when Reverb rejected oversized terminal frames). Now:
     //   - the timers are IDLE timers, re-armed on every frame received
-    //     (status/delta/citation), so an actively-streaming answer can
-    //     never be killed;
+    //     (status/delta/citation — including FastAPI's status heartbeat,
+    //     sent every 15 s of silence, so a slow first token no longer
+    //     looks like a dead channel: CHAT-6);
     //   - warn  @  30s idle — flip the status line to "still working";
-    //   - fatal @ 120s idle — mark the message failed but PRESERVE any
-    //     streamed content (surface the error via m.error instead).
+    //   - fatal @ 120s idle — ask the server for the finalised answer
+    //     first (CHAT-8); only if there is none, mark the message failed
+    //     but PRESERVE any streamed content.
     // Timers are held in one ref keyed by the owning assistant id so a
     // thread switch or overlapping send can't fire a stale timer against
     // the wrong message.
@@ -269,6 +324,56 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         }
     }
 
+    /** Stop listening, leave the private channel, unbind the reconnect hook. */
+    function leaveChannel() {
+        const ref = echoRef.current;
+        if (ref) {
+            try { ref.channel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
+            try { window.Echo?.leave?.(ref.name); } catch { /* noop */ }
+            echoRef.current = null;
+        }
+        const listener = connectionListenerRef.current;
+        if (listener) {
+            try { window.Echo?.connector?.pusher?.connection?.unbind?.('state_change', listener); } catch { /* noop */ }
+            connectionListenerRef.current = null;
+        }
+    }
+
+    function endStream() {
+        clearWatchdog();
+        leaveChannel();
+        activeQueryRef.current = null;
+        setStreaming(false);
+    }
+
+    /** The fatal-idle outcome when the server has no finished answer either. */
+    function markStalled(assistantId: string) {
+        // Two different situations wear the same timeout. "The answer
+        // above may be incomplete" is only true when there IS an answer;
+        // said over an empty bubble it sends the reader looking for text
+        // that never arrived.
+        const partial = 'The stream went quiet for 2 minutes and the server has no finished answer yet. The text above is unchecked and may be incomplete.';
+        const nothing = 'The stream went quiet for 2 minutes and nothing arrived. Retry the question.';
+        setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
+            ? {
+                  ...m,
+                  // Preserve whatever streamed. Nothing is synthesized
+                  // into content — the error row below the bubble is
+                  // the one place the message belongs.
+                  status: null,
+                  error: m.content ? partial : nothing,
+                  isStreaming: false,
+                  // The text preserved above is the RAW stream. Every
+                  // §04i guard, the Layer-2 orphan-marker strip and the
+                  // confidence floor run server-side after generation
+                  // and only ever reach the browser on the completed
+                  // frame, which never arrived here.
+                  validationState: 'unverified',
+              }
+            : m)));
+        endStream();
+    }
+
     function armWatchdog(assistantId: string) {
         clearWatchdog();
         const warn = setTimeout(() => {
@@ -277,56 +382,32 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 : m)));
         }, 30_000);
         const fatal = setTimeout(() => {
-            // Two different situations wear the same timeout. "The answer
-            // above may be incomplete" is only true when there IS an answer;
-            // said over an empty bubble it sends the reader looking for text
-            // that never arrived.
-            const partial = 'The stream went quiet for 2 minutes — the realtime channel may have dropped. The text above is unchecked and may be incomplete.';
-            const nothing = 'The stream went quiet for 2 minutes and nothing arrived — the realtime channel may have dropped. Retry the question.';
-            setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
-                ? {
-                      ...m,
-                      // Preserve whatever streamed. Nothing is synthesized
-                      // into `content` — the error row below the bubble is
-                      // the one place the message belongs, and writing it
-                      // here too printed it twice.
-                      status: null,
-                      error: m.content ? partial : nothing,
-                      isStreaming: false,
-                      // The text preserved above is the RAW stream. Every
-                      // §04i guard, the Layer-2 orphan-marker strip and the
-                      // confidence floor run server-side after generation
-                      // and only ever reach the browser on the `completed`
-                      // frame, which never arrived here. Unverified is the
-                      // truth about this text, and without it the bubble
-                      // reads exactly like a checked answer.
-                      validationState: 'unverified',
-                  }
-                : m)));
-            const ref = echoRef.current;
-            if (ref) {
-                try { ref.channel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
-                try { window.Echo?.leave?.(ref.name); } catch { /* noop */ }
-                echoRef.current = null;
-            }
             watchdogRef.current = null;
-            setStreaming(false);
+            const active = activeQueryRef.current;
+            if (active && active.assistantId === assistantId) {
+                void recoverFromServer(active).then((settled) => {
+                    if (!settled) markStalled(assistantId);
+                });
+                return;
+            }
+            markStalled(assistantId);
         }, 120_000);
         watchdogRef.current = { assistantId, warn, fatal };
     }
 
     // Snapshot ref for event handlers that need current messages outside
-    // a state updater (see the `completed` branch).
+    // a state updater (see applyCompleted).
     const messagesRef = useRef<ChatMessage[]>(messages);
     useEffect(() => { messagesRef.current = messages; }, [messages]);
     const streamingRef = useRef(streaming);
     useEffect(() => { streamingRef.current = streaming; }, [streaming]);
 
     // Sync to initialMessages on thread switch ONLY. Keying this on the
-    // `initialMessages` array identity re-ran it on every Inertia prop
+    // initialMessages array identity re-ran it on every Inertia prop
     // delivery (partial reloads, workspace hooks), wiping the in-flight
     // streaming bubble and resetting a freshly-minted conversation id
-    // mid-answer. Also bail while a stream is live.
+    // mid-answer. Thread switching is disabled while a stream is live
+    // (CHAT-12), so the bail below is belt and braces.
     useEffect(() => {
         if (streamingRef.current) return;
         setMessages(initialMessages);
@@ -341,25 +422,27 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     }, [messages]);
 
     function selectThread(id: string) {
+        // CHAT-12 — switching mid-answer showed thread B's title over
+        // thread A's transcript, and the next question went into A.
+        if (streamingRef.current) return;
         router.get(`/projects/${project.slug}/chat`, { thread: id }, { preserveState: true });
         setMobileThreadsOpen(false);
     }
 
     function newThread() {
+        // CHAT-3 — "+ New" mid-answer used to clear the transcript while
+        // the listener stayed live; the late completed frame then persisted
+        // the EMPTY transcript under the OLD thread id and the server's
+        // full-replace erased the whole previous conversation.
+        if (streamingRef.current) return;
         // Local reset only. Do NOT navigate — Foundry/ChatController auto-
-        // selects the most recent thread when `?thread=` is missing, so an
+        // selects the most recent thread when ?thread= is missing, so an
         // Inertia visit here would round-trip the page right back to the
-        // previous conversation (the exact bug we're fixing).
-        // sendMessage() mints a fresh conversation_id via
-        // `conversationId || newUuid()` on the next user input, and
-        // persistConversation() then writes the new thread to the server
-        // so it appears in the sidebar on the next navigation.
+        // previous conversation.
         setMessages([]);
         setConversationId('');
         setComposer('');
         setMobileThreadsOpen(false);
-        // Also clear any `?thread=` already in the URL so the browser
-        // address bar matches the empty state.
         if (typeof window !== 'undefined' && window.history && window.location.search) {
             window.history.replaceState(
                 window.history.state,
@@ -370,14 +453,17 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     }
 
     function stopStreaming() {
-        clearWatchdog();
-        const ref = echoRef.current;
-        if (ref) {
-            try { ref.channel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
-            try { window.Echo?.leave?.(ref.name); } catch { /* noop */ }
-            echoRef.current = null;
+        // CHAT-18 — leaving the channel alone left the Horizon job and the
+        // FastAPI run going for up to 180 s, billed and holding an llm slot.
+        const active = activeQueryRef.current;
+        if (active) {
+            void fetch(`/api/v1/queries/${active.queryId}/cancel`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: jsonHeaders(),
+            }).catch(() => { /* best-effort: the job still ends on its own */ });
         }
-        setStreaming(false);
+        endStream();
         // Stopped mid-generation: the partial text on screen never reached
         // validate_node either. Same reasoning as the watchdog path above.
         setMessages((prev) =>
@@ -389,63 +475,187 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         );
     }
 
-    // Clear timers on unmount so a navigation away mid-stream doesn't
-    // leave a fatal-timer ticking against a stale assistant id.
-    useEffect(() => () => clearWatchdog(), []);
+    // CHAT-21 — on unmount (an Inertia navigation away mid-stream) leave the
+    // private channel too, not just the timers; subscriptions used to pile
+    // up per visit until a full reload.
+    useEffect(() => () => {
+        clearWatchdog();
+        leaveChannel();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     async function persistConversation(convoId: string, msgs: ChatMessage[]) {
+        const title = (msgs.find((m) => m.role === 'user')?.content ?? 'New thread').slice(0, 80);
         try {
-            const title = (msgs.find((m) => m.role === 'user')?.content ?? 'New thread').slice(0, 80);
-            await fetch(`/api/v1/conversations/${convoId}`, {
+            const resp = await fetch(`/api/v1/conversations/${convoId}`, {
                 method: 'PUT',
                 credentials: 'same-origin',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    ...(getCsrf() ? { 'X-CSRF-TOKEN': getCsrf() as string } : {}),
-                },
+                headers: jsonHeaders(),
                 body: JSON.stringify({
                     title,
                     project_id: project.project_id,
-                    messages: msgs.map((m) => ({
-                        role: m.role,
-                        content: m.content,
-                        metadata: {
-                            citations: m.citations,
-                            confidence: m.confidence,
-                            // Persisted alongside confidence so a reopened
-                            // thread can show that an answer was flagged.
-                            // Without it the flag lives only in the tab that
-                            // received the stream.
-                            validation_state: m.validationState ?? null,
-                            answer_run_id: m.answer_run_id,
-                        },
-                    })),
+                    messages: msgs.map((m) => toPersistedMessage(m)),
                 }),
             });
+            // CHAT-4 — a rejected sync used to be invisible; every later
+            // turn then silently failed to save too.
+            setPersistError(resp.ok ? null : `This thread could not be saved (HTTP ${resp.status}). Answers above will be lost on reload.`);
         } catch {
-            // Soft-fail: chat works without persistence.
+            setPersistError('This thread could not be saved (network error). Answers above will be lost on reload.');
         }
+    }
+
+    /**
+     * Render a finished answer into the assistant bubble — from the live
+     * completed frame, or from GET /queries/:id/result when the frame was
+     * lost (CHAT-8). Returns false when the bubble no longer exists.
+     */
+    function applyCompleted(event: Record<string, unknown>, assistantId: string, convoId: string, streamedText: string, runningCitations: Citation[]): boolean {
+        // CHAT-3 — the bubble is gone (thread reset): persisting now would
+        // write this transcript under the wrong thread.
+        if (!messagesRef.current.some((m) => m.id === assistantId)) {
+            endStream();
+            return false;
+        }
+        const finalText = String(event.text ?? streamedText);
+        const finalConfidence = typeof event.confidence === 'number' ? event.confidence : null;
+        // Backend: GeoRAGResponse.validation_state, set by validate_node.
+        let finalValidationState: ValidationState = normaliseValidationState(event.validation_state);
+        const finalCitations = (Array.isArray(event.citations) && event.citations.length > 0 ? event.citations : runningCitations) as Citation[];
+        const answerRunId = event.answer_run_id ? String(event.answer_run_id) : null;
+        // M2 P5 — viz_payload (chart hint) + map_payload (GeoJSON) ride on the
+        // completed event. Backend: agentic_retrieval/nodes.py
+        // (_build_chat_card_payloads).
+        const finalMapPayload = (event.map_payload as Record<string, unknown> | null | undefined) ?? null;
+        const finalVizPayload = (event.viz_payload as Record<string, unknown> | null | undefined) ?? null;
+        // Plan §3a/§3b — typed evidence packet (GeoRAGResponse.evidence_packet).
+        const finalEvidencePacket = (event.evidence_packet as Record<string, unknown> | null | undefined) ?? null;
+        // Plan §3e — multi-turn resolution audit for the "Interpreted as:" chip.
+        const finalMultiTurn = (event.multi_turn_resolution as Record<string, unknown> | null | undefined) ?? null;
+        // §10u — structured refusal payload. Layer 1's hard refusal stamps
+        // it unconditionally since CHAT-10.
+        const finalRefusalPayload = (event.refusal_payload as ChatMessage['refusalPayload']) ?? null;
+        // CHAT-16 — citations are mandatory (CLAUDE.md hard rule 4). An
+        // answer that arrives with none is an upstream defect; keep the
+        // answer visible but say plainly it is unverified.
+        const citationsMissing = isUncitedAnswer(finalCitations, finalRefusalPayload);
+        if (citationsMissing) finalValidationState = 'unverified';
+        const truncatedFields = Array.isArray(event.truncated_fields) ? (event.truncated_fields as string[]) : null;
+
+        // Built from the ref snapshot (not inside the state updater) so the
+        // fire-and-forget persistence below is NOT a side effect of a React
+        // updater — updaters are re-invoked under StrictMode/concurrent
+        // renders, which duplicated the PUT per completed answer.
+        const next = messagesRef.current.map((m) =>
+            m.id === assistantId
+                ? {
+                      ...m,
+                      content: finalText,
+                      confidence: finalConfidence,
+                      validationState: finalValidationState,
+                      citations: finalCitations,
+                      answer_run_id: answerRunId,
+                      status: null,
+                      error: null,
+                      errorCode: null,
+                      isStreaming: false,
+                      mapPayload: finalMapPayload,
+                      vizPayload: finalVizPayload,
+                      evidencePacket: finalEvidencePacket,
+                      multiTurnResolution: finalMultiTurn,
+                      refusalPayload: finalRefusalPayload,
+                      citationsMissing,
+                      truncatedFields: event.payload_truncated ? truncatedFields : null,
+                  }
+                : m,
+        );
+        messagesRef.current = next;
+        setMessages(next);
+        void persistConversation(convoId, next);
+        endStream();
+        return true;
+    }
+
+    function applyFailed(event: Record<string, unknown>, assistantId: string) {
+        const errMsg = String(event.error ?? event.message ?? 'Query failed');
+        // Typed code off classify_error() (app/agent/errors.py) or the job.
+        const errCode = event.code !== undefined && event.code !== null ? String(event.code) : null;
+        const next = messagesRef.current.map((m) =>
+            m.id === assistantId
+                ? {
+                      ...m,
+                      errorCode: errCode,
+                      // Keep whatever streamed; the error row below the
+                      // bubble is where the failure is said.
+                      status: null,
+                      error: errMsg,
+                      isStreaming: false,
+                      // Every §04i guard runs server-side and only reaches
+                      // the browser on completed, which never arrived.
+                      validationState: m.content ? ('unverified' as const) : m.validationState,
+                  }
+                : m,
+        );
+        messagesRef.current = next;
+        setMessages(next);
+        endStream();
+        // Persist the failed turn too (CHAT-4): the server now accepts an
+        // empty assistant message carrying its error.
+        const convoId = activeConvoIdRef.current;
+        if (convoId) void persistConversation(convoId, next);
+    }
+
+    /**
+     * CHAT-8 — ask the audit row for the outcome of a query whose terminal
+     * frame never arrived. Resolves true when the bubble was settled
+     * (answer or failure), false when the server has nothing final yet.
+     */
+    async function recoverFromServer(active: ActiveQuery): Promise<boolean> {
+        try {
+            const resp = await fetch(`/api/v1/queries/${active.queryId}/result`, {
+                credentials: 'same-origin',
+                headers: jsonHeaders(),
+            });
+            if (!resp.ok) return false;
+            const body = (await resp.json()) as Record<string, unknown>;
+            if (body.status === 'completed') {
+                const current = messagesRef.current.find((m) => m.id === active.assistantId);
+                return applyCompleted(body, active.assistantId, active.convoId, current?.content ?? '', current?.citations ?? []);
+            }
+            if (body.status === 'failed') {
+                applyFailed(body, active.assistantId);
+                return true;
+            }
+            return false;
+        } catch {
+            return false;
+        }
+    }
+
+    /** Poll recovery a few times — the audit row is written just after the stream drains. */
+    async function recoverWithRetry(active: ActiveQuery, attempts = 5): Promise<boolean> {
+        for (let i = 0; i < attempts; i++) {
+            if (await recoverFromServer(active)) return true;
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+        }
+        return false;
     }
 
     async function sendMessage(text: string) {
         const query = text.trim();
         if (!query || streaming) return;
         if (!window.Echo) {
-            // Surface in-conversation instead of window.alert(): alerts are
-            // auto-dismissed by automation, blockable, and leave no trace —
-            // the send just silently vanished.
+            // Surface in-conversation instead of window.alert().
             console.error('GeoRAG chat: window.Echo unavailable — Reverb may be down.');
             setMessages((prev) => [...prev, {
                 id: newUuid(),
                 role: 'assistant' as const,
-                content: 'Error: realtime channel unavailable (Reverb may be down). Reload the page and try again.',
+                content: '',
                 created_at: new Date().toISOString(),
                 citations: [],
                 confidence: null,
                 answer_run_id: null,
-                error: 'Realtime channel unavailable',
+                error: 'Realtime channel unavailable (Reverb may be down). Reload the page and try again.',
             }]);
             return;
         }
@@ -453,6 +663,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         // First message in this session: mint a conversation id.
         const convoId = conversationId || newUuid();
         if (!conversationId) setConversationId(convoId);
+        activeConvoIdRef.current = convoId;
 
         const userMsg: ChatMessage = {
             id: newUuid(),
@@ -480,32 +691,38 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             multiTurnResolution: null,
             refusalPayload: null,
         };
-        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        const withTurn = [...messagesRef.current, userMsg, assistantMsg];
+        messagesRef.current = withTurn;
+        setMessages(withTurn);
         setComposer('');
         setStreaming(true);
 
         // P0.2 watchdog — idle timers, re-armed on every received frame.
-        // Any terminal event below (completed / failed / error / Stop)
-        // calls clearWatchdog() so they never fire on a successful run.
         armWatchdog(assistantId);
+
+        const failBeforeStream = (msg: string) => {
+            endStream();
+            setMessages((prev) =>
+                prev.map((m) =>
+                    m.id === assistantId ? { ...m, status: null, error: msg, isStreaming: false } : m,
+                ),
+            );
+        };
 
         try {
             // Phase 1: open the query.
             const resp = await fetch('/api/v1/queries', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    ...(getCsrf() ? { 'X-CSRF-TOKEN': getCsrf() as string } : {}),
-                },
+                headers: jsonHeaders(),
                 body: JSON.stringify({
                     query,
                     project_id: project.project_id,
-                    raw_retrieval: rawRetrieval,
                     // Phase 3 / Step 3.2 — context envelope shipped on /queries
-                    // for validation only (the persisted side is /queries/{id}/start).
+                    // for validation only (the persisted side is /start).
+                    // A raw_retrieval flag used to ride here from an "LLM
+                    // synthesis: off" toggle that nothing server-side read
+                    // (CHAT-11). Removed together with the toggle.
                     context_envelope: buildEnvelopePayload(envelope),
                 }),
             });
@@ -514,20 +731,29 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 throw new Error(`Query rejected (${resp.status}): ${detail.slice(0, 200)}`);
             }
             const { query_id, channel } = await resp.json();
+            const active: ActiveQuery = { queryId: String(query_id), assistantId, convoId };
+            activeQueryRef.current = active;
 
             // Phase 2: subscribe to the broadcast channel.
             // QueryStreamEvent broadcasts on a PrivateChannel (see
             // app/Events/QueryStreamEvent.php and routes/channels.php).
-            // Echo.channel() is for PUBLIC channels and silently never
-            // receives private-channel events — must use Echo.private().
             const echoChannel = window.Echo.private(channel);
             echoRef.current = { channel: echoChannel, name: channel };
 
-            let accumulatedText = '';
-            let runningCitations: Citation[] = [];
+            const deltas = createDeltaBuffer();
+            const seenEventIds = new Set<string>();
+            const runningCitations: Citation[] = [];
 
             echoChannel.listen('.QueryStreamEvent', (event: Record<string, unknown>) => {
                 const eventType = String(event.event ?? '');
+
+                // CHAT-15 — a re-delivered frame (reconnect, backplane) is
+                // applied once.
+                const eventId = typeof event.event_id === 'string' ? event.event_id : '';
+                if (eventId) {
+                    if (seenEventIds.has(eventId)) return;
+                    seenEventIds.add(eventId);
+                }
 
                 // Every received frame proves the pipeline is alive —
                 // push the idle watchdog out rather than racing a
@@ -536,15 +762,20 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     armWatchdog(assistantId);
                 }
 
-                // The job wraps non-JSON SSE deltas as {text: raw} while
-                // JSON deltas carry {token} — accept both so no frame
-                // shape is silently dropped.
+                // CHAT-6 — a heartbeat only proves liveness; the phase line
+                // (or the still-working hint) stays as it is.
+                if (isHeartbeat(event)) return;
+
+                // The job wraps non-JSON SSE deltas as text while JSON
+                // deltas carry token — accept both.
                 const deltaToken = event.token ?? event.text;
                 if (eventType === 'status' && event.message) {
                     setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, status: String(event.message) } : m)));
                 } else if (eventType === 'delta' && deltaToken) {
-                    accumulatedText += String(deltaToken);
-                    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: accumulatedText, status: null } : m)));
+                    // CHAT-15 — ordered by token_seq, not arrival.
+                    const assembled = deltas.add(String(deltaToken), event.token_seq ?? event.seq, null);
+                    if (assembled === null) return;
+                    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: assembled, status: null } : m)));
                 } else if (eventType === 'citation') {
                     runningCitations.push({
                         citation_id: String(event.citation_id ?? ''),
@@ -553,10 +784,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         document_title: event.document_title ? String(event.document_title) : undefined,
                         relevance_score: typeof event.relevance_score === 'number' ? event.relevance_score : undefined,
                         // PGEO extensions — carried through so CitationPGEODetail
-                        // can render during live streaming, not just after the
-                        // 'completed' event's bulk citations array overwrites
-                        // this array (which never dropped them, an inconsistency
-                        // this closes).
+                        // can render during live streaming.
                         corpus: (event.corpus as Citation['corpus']) ?? null,
                         jurisdiction_code: event.jurisdiction_code ? String(event.jurisdiction_code) : null,
                         jurisdiction_name: event.jurisdiction_name ? String(event.jurisdiction_name) : null,
@@ -567,145 +795,67 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     });
                     setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, citations: [...runningCitations] } : m)));
                 } else if (eventType === 'completed') {
-                    const finalText = String(event.text ?? accumulatedText);
-                    const finalConfidence = typeof event.confidence === 'number' ? event.confidence : null;
-                    // Backend: GeoRAGResponse.validation_state, set by
-                    // validate_node. Absent on an older backend -> treat as
-                    // unverified rather than clean; the safe default is the
-                    // one that does not claim a check happened.
-                    const rawValidationState = String(event.validation_state ?? '');
-                    const finalValidationState: ValidationState =
-                        rawValidationState === 'clean'
-                            ? 'clean'
-                            : rawValidationState === 'flagged'
-                              ? 'flagged'
-                              : 'unverified';
-                    const finalCitations = Array.isArray(event.citations) && event.citations.length > 0 ? event.citations : runningCitations;
-                    const answerRunId = event.answer_run_id ? String(event.answer_run_id) : null;
-                    // M2 P5 — viz_payload (chart hint) + map_payload (GeoJSON) ride on the
-                    // completed event. Backend: src/fastapi/app/agent/agentic_retrieval/nodes.py
-                    // (_build_chat_card_payloads). Captured here so MessageBubble can render
-                    // <InlineViz> below the answer bubble. Was missing in Foundry/Chat.tsx
-                    // pre-2026-05-26 (see docblock "Not yet ported" list — now ported).
-                    const finalMapPayload = (event.map_payload as Record<string, unknown> | null | undefined) ?? null;
-                    const finalVizPayload = (event.viz_payload as Record<string, unknown> | null | undefined) ?? null;
-                    // Plan §3a/§3b — capture the typed evidence packet
-                    // off the completed event. Shape comes from
-                    // GeoRAGResponse.evidence_packet (model_dump form).
-                    // EvidencePacketBadge no-ops when null / empty.
-                    const finalEvidencePacket =
-                        (event.evidence_packet as Record<string, unknown> | null | undefined) ?? null;
-                    // Plan §3e — multi-turn resolution audit for the
-                    // "Interpreted as:" preview chip.
-                    const finalMultiTurn =
-                        (event.multi_turn_resolution as Record<string, unknown> | null | undefined) ?? null;
-                    // Built 2026-09-24 — structured refusal payload, present
-                    // only when a terminal guard strategy fired (§10u).
-                    // RefusalPanel no-ops when null.
-                    const finalRefusalPayload =
-                        (event.refusal_payload as ChatMessage['refusalPayload']) ?? null;
-                    // Built from the ref snapshot (not inside the state
-                    // updater) so the fire-and-forget persistence below is
-                    // NOT a side effect of a React updater — updaters are
-                    // re-invoked under StrictMode/concurrent renders, which
-                    // duplicated the PUT per completed answer.
-                    const next = messagesRef.current.map((m) =>
-                        m.id === assistantId
-                            ? {
-                                  ...m,
-                                  content: finalText,
-                                  confidence: finalConfidence,
-                                  validationState: finalValidationState,
-                                  citations: finalCitations as Citation[],
-                                  answer_run_id: answerRunId,
-                                  status: null,
-                                  isStreaming: false,
-                                  mapPayload: finalMapPayload,
-                                  vizPayload: finalVizPayload,
-                                  evidencePacket: finalEvidencePacket,
-                                  multiTurnResolution: finalMultiTurn,
-                                  refusalPayload: finalRefusalPayload,
-                              }
-                            : m,
-                    );
-                    setMessages(next);
-                    void persistConversation(convoId, next);
-                    clearWatchdog();
-                    try { echoChannel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
-                    try { window.Echo.leave(channel); } catch { /* noop */ }
-                    echoRef.current = null;
-                    setStreaming(false);
+                    applyCompleted(event, assistantId, convoId, deltas.text(), runningCitations);
                 } else if (eventType === 'failed' || eventType === 'error') {
-                    const errMsg = String(event.error ?? event.message ?? 'Query failed');
-                    // Built 2026-09-24 — typed code off classify_error()
-                    // (app/agent/errors.py). Absent on a client-side error
-                    // that never reached the backend.
-                    const errCode = event.code ? String(event.code) : null;
-                    setMessages((prev) =>
-                        prev.map((m) =>
-                            m.id === assistantId
-                                ? {
-                                      ...m,
-                                      errorCode: errCode,
-                                      // Keep whatever streamed. This used to
-                                      // overwrite `content` with the error
-                                      // string, which threw away a partial
-                                      // answer — three paragraphs of retrieved
-                                      // text discarded because validation
-                                      // failed on the last claim — and then
-                                      // printed the same message twice, once
-                                      // as the answer body and once in the
-                                      // error row below it. The watchdog path
-                                      // in armWatchdog() already got this
-                                      // right; this branch did not.
-                                      status: null,
-                                      error: errMsg,
-                                      isStreaming: false,
-                                      // Same reasoning as the watchdog: every
-                                      // §04i guard runs server-side and only
-                                      // reaches the browser on the `completed`
-                                      // frame, which never arrived. Text that
-                                      // survived here is unchecked, and
-                                      // without saying so it renders exactly
-                                      // like a validated answer.
-                                      validationState: m.content ? 'unverified' : m.validationState,
-                                  }
-                                : m,
-                        ),
-                    );
-                    clearWatchdog();
-                    try { echoChannel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
-                    try { window.Echo.leave(channel); } catch { /* noop */ }
-                    echoRef.current = null;
-                    setStreaming(false);
+                    if (event.recoverable === true) {
+                        // CHAT-5 — the answer exists but its frame could not
+                        // be delivered; fetch it rather than failing.
+                        clearWatchdog();
+                        leaveChannel();
+                        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, status: 'Loading the finished answer…' } : m)));
+                        void recoverWithRetry(active).then((settled) => {
+                            if (!settled) applyFailed(event, assistantId);
+                        });
+                        return;
+                    }
+                    applyFailed(event, assistantId);
                 }
             });
+
+            // CHAT-7 — a denied /broadcasting/auth used to be silent: no
+            // subscription, the 5 s fallback started the (billed) run anyway,
+            // and the user watched "Sending…" for two minutes.
+            let subscriptionFailed = false;
+            const withError = echoChannel as unknown as { error?: (cb: (err: unknown) => void) => void };
+            withError.error?.((err: unknown) => {
+                subscriptionFailed = true;
+                console.error('GeoRAG chat: realtime channel subscription failed', err);
+                failBeforeStream('Could not subscribe to the realtime channel (authorisation failed). Reload the page and try again.');
+            });
+
+            // CHAT-8 — a pusher-js reconnect mid-answer can swallow the
+            // terminal frame. When the socket comes back, ask the server.
+            const pusherConnection = window.Echo?.connector?.pusher?.connection;
+            if (pusherConnection?.bind) {
+                const onStateChange: ConnectionStateListener = (states) => {
+                    if (states.current === 'connected' && states.previous !== 'connected' && activeQueryRef.current?.assistantId === assistantId) {
+                        void recoverFromServer(active);
+                    }
+                };
+                pusherConnection.bind('state_change', onStateChange);
+                connectionListenerRef.current = onStateChange;
+            }
 
             // Phase 3: dispatch the job — but only once the private-channel
             // subscription is ACKed. Echo.private() returns synchronously
             // and merely queues pusher:subscribe; on a fresh page load the
             // websocket itself is often still connecting, so starting
             // immediately let the Horizon job broadcast the whole stream
-            // before the browser was listening (the exact race the
-            // two-phase handshake was meant to fix). A 5s fallback fires
-            // the start anyway so a missed ACK can't dead-lock the send.
+            // before the browser was listening. A 5s fallback fires the
+            // start anyway so a missed ACK can't dead-lock the send — but
+            // only over a CONNECTED socket (CHAT-7): starting with no socket
+            // bills a full LLM run that is broadcast to no one.
             const startQuery = async () => {
                 try {
                     const startResp = await fetch(`/api/v1/queries/${query_id}/start`, {
                         method: 'POST',
                         credentials: 'same-origin',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            Accept: 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest',
-                            ...(getCsrf() ? { 'X-CSRF-TOKEN': getCsrf() as string } : {}),
-                        },
+                        headers: jsonHeaders(),
                         body: JSON.stringify({
                             context_envelope: buildEnvelopePayload(envelope),
                             // Plan §3e — forward the chat thread so the FastAPI
                             // bridge can load prior turns for multi-turn
-                            // resolution. No-op when MULTI_TURN_RESOLUTION_ENABLED
-                            // is False or the conversation has no prior turns.
+                            // resolution.
                             conversation_id: convoId,
                         }),
                     });
@@ -714,38 +864,33 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         throw new Error(`Failed to start query (${startResp.status}): ${detail.slice(0, 200)}`);
                     }
                 } catch (e) {
-                    clearWatchdog();
-                    const msg = e instanceof Error ? e.message : 'Network error';
-                    setMessages((prev) =>
-                        prev.map((m) =>
-                            m.id === assistantId ? { ...m, content: `Error: ${msg}`, status: null, error: msg, isStreaming: false } : m,
-                        ),
-                    );
-                    setStreaming(false);
+                    failBeforeStream(e instanceof Error ? e.message : 'Network error');
                 }
             };
             let startFired = false;
             const fireStart = () => {
-                if (startFired) return;
+                if (startFired || subscriptionFailed) return;
                 startFired = true;
                 void startQuery();
             };
             const subscribable = echoChannel as unknown as { subscribed?: (cb: () => void) => void };
             if (typeof subscribable.subscribed === 'function') {
                 subscribable.subscribed(fireStart);
-                setTimeout(fireStart, 5_000);
+                setTimeout(() => {
+                    if (startFired || subscriptionFailed) return;
+                    const state = window.Echo?.connector?.pusher?.connection?.state;
+                    if (typeof state === 'string' && state !== 'connected') {
+                        startFired = true; // never start this one
+                        failBeforeStream(`Realtime channel unavailable (socket ${state}), so the query was not started. Check your connection and retry.`);
+                        return;
+                    }
+                    fireStart();
+                }, 5_000);
             } else {
                 fireStart();
             }
         } catch (e) {
-            clearWatchdog();
-            const msg = e instanceof Error ? e.message : 'Network error';
-            setMessages((prev) =>
-                prev.map((m) =>
-                    m.id === assistantId ? { ...m, content: `Error: ${msg}`, status: null, error: msg, isStreaming: false } : m,
-                ),
-            );
-            setStreaming(false);
+            failBeforeStream(e instanceof Error ? e.message : 'Network error');
         }
     }
 
@@ -788,7 +933,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         <button
                             type="button"
                             onClick={newThread}
-                            className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
+                            // CHAT-3 — never mid-answer: see newThread().
+                            disabled={streaming}
+                            title={streaming ? 'Wait for the answer (or press Stop) before starting a new thread' : undefined}
+                            className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border disabled:opacity-40 disabled:cursor-not-allowed"
                             style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
                         >
                             + New
@@ -804,7 +952,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                 key={t.id}
                                 type="button"
                                 onClick={() => selectThread(t.id)}
-                                className="w-full text-left px-3 py-2.5 border-b transition-colors"
+                                // CHAT-12 — switching mid-answer split the
+                                // header from the transcript.
+                                disabled={streaming}
+                                className="w-full text-left px-3 py-2.5 border-b transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 style={{
                                     borderColor: 'var(--line-1)',
                                     background: t.id === active_thread_id ? 'var(--accent-bg)' : 'transparent',
@@ -907,10 +1058,16 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     {/* Composer */}
                     <footer className="border-t px-6 py-3 shrink-0" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
                         <div className="flex items-center gap-2 mb-2">
-                            <label className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider cursor-pointer" style={{ color: 'var(--fg-2)' }}>
-                                <input type="checkbox" checked={rawRetrieval} onChange={(e) => setRawRetrieval(e.target.checked)} />
-                                LLM synthesis: {rawRetrieval ? <span style={{ color: 'var(--warn)' }}>off (raw retrieval)</span> : <span style={{ color: 'var(--accent)' }}>on</span>}
-                            </label>
+                            {/* CHAT-11 — an "LLM synthesis: off (raw retrieval)"
+                                toggle lived here. Nothing server-side ever read
+                                it: every query was synthesised by the LLM while
+                                the UI claimed otherwise. Removed rather than
+                                inventing a no-synthesis mode. */}
+                            {persistError && (
+                                <span role="status" className="text-[10px] font-mono" style={{ color: 'var(--warn)' }}>
+                                    {persistError}
+                                </span>
+                            )}
                             {streaming && (
                                 <button
                                     type="button"
@@ -1077,6 +1234,30 @@ function MessageBubble({
                 )}
                 {!isUser && !m.refusalPayload && m.error && (
                     <RefusalPanel variant="failed" message={m.error} code={m.errorCode ?? null} />
+                )}
+                {/* CHAT-16 — CLAUDE.md hard rule 4: every RAG answer carries
+                    citations. One that arrived with none is an upstream
+                    defect; the answer stays visible but must not read like
+                    a checked one. */}
+                {!isUser && !m.isStreaming && m.citationsMissing && (
+                    <div
+                        role="alert"
+                        data-testid="no-citations-warning"
+                        className="mt-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+                        style={{ borderColor: 'var(--warn, #d97706)', color: 'var(--warn, #d97706)' }}
+                    >
+                        No citations were returned for this answer — treat it as unverified.
+                        Nothing above is backed by a source the system could point to.
+                    </div>
+                )}
+                {/* CHAT-5 — the completed frame was too large for the
+                    realtime channel and the job sent a slim one. The answer
+                    and its citations are complete; the visualisation is not. */}
+                {!isUser && m.truncatedFields && m.truncatedFields.length > 0 && (
+                    <div data-testid="payload-truncated-note" className="mt-2 text-[11px]" style={{ color: 'var(--fg-3)' }}>
+                        The chart/map for this answer was too large to deliver over the realtime channel and was left out
+                        ({m.truncatedFields.join(', ')}). The answer text and citations are complete.
+                    </div>
                 )}
                 {/* M2 P5 — inline visualizations (map / strip log / timeline / stereonet /
                     3D drill traces / coverage table) ride on completed event's

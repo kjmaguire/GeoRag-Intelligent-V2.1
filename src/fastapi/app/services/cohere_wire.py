@@ -15,10 +15,17 @@ what "confirmed" means.
 One status value does NOT appear here, and its absence is the point.
 ``CARRIED`` means "observed on Azure AI Foundry by a live call on
 2026-07-30, assumed to survive the host change". Chat has three of those on
-Bedrock. Parse has none, on any host — it has never been empirically
-verified anywhere, which is why its response side is almost entirely
-``TOLERATED`` alternates. The adapter is guessing in three places at once
-and degrading rather than crashing is the whole design.
+Bedrock. Parse has none, on any host.
+
+``OBSERVED_COHERE`` fields (promoted 2026-09-29, VEN-7) are exactly what the
+committed ``cohere_probe_20260924T060435Z.json`` shows: the chat request and
+reply on api.cohere.com, and Parse's TEXT path -- the string-form
+``document.image_url`` accepted, ``pages[].blocks[].text.content`` in blocks
+mode, ``pages[].markdown`` in markdown mode. That run's page held text only.
+Parse's TABLE and FIGURE payloads -- the reason ADR-0019 chose Parse over
+tesseract -- have NEVER been exercised on any host, and every field
+describing them stays assumed or tolerated. The diff reports them as
+``not_exercised``, not ``contradicted``: a text page cannot show a table.
 
 For chat, the three Foundry observations are recorded on ``CHAT_CONVERSE``
 in ``bedrock_wire`` and they do not carry a second time: a different host is
@@ -32,15 +39,20 @@ from typing import Any
 
 from app.services.bedrock_wire import Field, Status, WireContract, diff_section
 
-__all__ = ["CHAT_V2", "CONTRACTS", "PARSE", "diff_report"]
+__all__ = ["CHAT_V2", "CONTRACTS", "COHERE_REPORT", "PARSE", "diff_report"]
+
+#: The committed Cohere probe report the OBSERVED_COHERE fields below cite.
+COHERE_REPORT = "cohere_probe_20260924T060435Z.json"
+_OBS = Status.OBSERVED_COHERE
 
 
 # ---------------------------------------------------------------------------
 # Parse — POST {COHERE_BASE_URL}/v2/parse
 # ---------------------------------------------------------------------------
-# NEVER EMPIRICALLY VERIFIED, on Foundry, on Bedrock, or here. That is a
-# stronger statement than anything in bedrock_wire: for the other calls a
-# previous host at least confirmed a related shape. Here nothing ever has.
+# Until 2026-09-24 never empirically verified on any host. The committed
+# cohere_probe_20260924T060435Z.json then exercised the TEXT path in both
+# output formats (fields marked OBSERVED_COHERE below). Tables and figures
+# were not in the sample page and remain unverified everywhere.
 #
 # The request half is the only part that changed in the move. ``model`` is
 # back in the body — Bedrock had lifted it out to ``modelId`` — which is the
@@ -58,25 +70,31 @@ PARSE = WireContract(
     request=(
         Field(
             "model",
-            Status.ASSUMED,
+            _OBS,
             True,
-            "COHERE_PARSE_MODEL — 'parse-v5.0' by default. A plain model name; there is no endpoint indirection on this host.",
+            "COHERE_PARSE_MODEL — 'parse-v5.0' by default. A plain model name; "
+            "there is no endpoint indirection on this host. Accepted live, "
+            "although /v1/models did not list it (parse_model_listed: false).",
+            report=COHERE_REPORT,
         ),
-        Field("document.type", Status.ASSUMED, True, "Literal 'image_url'."),
+        Field("document.type", _OBS, True, "Literal 'image_url'.", report=COHERE_REPORT),
         Field(
             "document.image_url",
-            Status.ASSUMED,
+            _OBS,
             True,
             "One page as a data: URI, as a bare STRING. Until 2026-09-23 this "
             "was declared as `document.image_url.url` — chat's image object — "
             'and the first live call was refused with HTTP 400 "parameter '
             "'document.image_url' is of type object but should be of type "
-            'string". That rejection is the only live evidence: ASSUMED, '
-            "not observed, until a string-form call succeeds. Oversized plan "
-            "sheets are DOWNSCALED, not tiled — "
-            "Parse returns no word polygons to stitch tiles with.",
+            'string". The string form was accepted on 2026-09-24 (HTTP 200 in '
+            "both output formats and on every pixel-ladder rung up to "
+            "19,996,997 px / 448,863 bytes -- a SYNTHETIC page; the byte limit "
+            "for a real scan is unprobed). Oversized plan sheets are "
+            "DOWNSCALED, not tiled — Parse returns no word polygons to stitch "
+            "tiles with.",
+            report=COHERE_REPORT,
         ),
-        Field("output_format", Status.ASSUMED, True, "'blocks' or 'markdown'."),
+        Field("output_format", _OBS, True, "'blocks' and 'markdown' both accepted.", report=COHERE_REPORT),
     ),
     # The probe records `pages[0]`'s key set per output format, which is
     # exactly the list this diff needs. The Bedrock version of this contract
@@ -87,13 +105,20 @@ PARSE = WireContract(
     # sibling docstring warns about.
     evidence_paths=("formats.*.page0_keys", "formats.*.block_keys", "formats.*.block_payload_keys"),
     response=(
-        Field("pages[]", Status.ASSUMED, True, "One entry; only pages[0] is read."),
+        Field(
+            "pages[]",
+            _OBS,
+            True,
+            "One entry; only pages[0] is read. Top-level keys seen: id, meta, pages.",
+            report=COHERE_REPORT,
+        ),
         Field(
             "pages[].index",
-            Status.ASSUMED,
+            _OBS,
             False,
             "Zero-based page index, per the Cohere SDK's ParsePage. Nothing reads it: one request is one page.",
             evidence_key="index",
+            report=COHERE_REPORT,
         ),
         Field(
             "pages[].blocks[].table",
@@ -144,26 +169,32 @@ PARSE = WireContract(
         ),
         Field(
             "pages[].blocks[].type",
-            Status.ASSUMED,
+            _OBS,
             False,
-            "'text' | 'table' | 'image'; defaults to text.",
+            "'text' | 'table' | 'image'; defaults to text. Only 'text' has "
+            "been seen -- 'table' and 'image' never exercised.",
             evidence_key="type",
+            report=COHERE_REPORT,
         ),
         Field(
             "pages[].blocks[].text",
-            Status.ASSUMED,
+            _OBS,
             False,
             "In the SDK shape, the text block's payload OBJECT; in the flat "
             "one, the text itself. _first_str takes only a string, so the "
-            "object's repr can never become page text again.",
+            "object's repr can never become page text again. Seen as the "
+            "SDK-shape object (block keys {text, type}, payload {content}).",
             evidence_key="text",
+            report=COHERE_REPORT,
         ),
         Field(
             "pages[].blocks[].text.content",
-            Status.ASSUMED,
+            _OBS,
             False,
-            "The text, in the SDK shape — first spelling tried.",
+            "The text, in the SDK shape — first spelling tried. The adapter "
+            "read 275 chars from it live.",
             evidence_key="content",
+            report=COHERE_REPORT,
         ),
         Field(
             "pages[].blocks[].markdown",
@@ -195,10 +226,14 @@ PARSE = WireContract(
         ),
         Field(
             "pages[].markdown",
-            Status.ASSUMED,
+            _OBS,
             False,
-            "Markdown mode, as a bare string.",
+            "Markdown mode. The KEY was observed in page0_keys and the adapter "
+            "read 275 chars; whether it arrived as a bare string or as an "
+            "object (pages[].markdown.content) was not recorded -- "
+            "_page_from_markdown takes both.",
             evidence_key="markdown",
+            report=COHERE_REPORT,
         ),
         Field(
             "pages[].markdown.content",
@@ -267,56 +302,78 @@ CHAT_V2 = WireContract(
     probe_section="chat",
     evidence_paths=("*.content_block_keys", "*.message_sibling_keys"),
     request=(
-        Field("model", Status.ASSUMED, True, "COHERE_CHAT_MODEL — 'command-a-plus-05-2026'."),
+        Field(
+            "model",
+            _OBS,
+            True,
+            "COHERE_CHAT_MODEL — 'command-a-plus-05-2026'. Accepted, and listed by /v1/models.",
+            report=COHERE_REPORT,
+        ),
         Field(
             "messages[].role",
-            Status.ASSUMED,
+            _OBS,
             True,
             "System is a MESSAGE here, not a top-level parameter. That is the "
             "opposite of Bedrock Converse and it fails SILENTLY when reversed: "
             "a system prompt sent as a user turn still returns fluent text, "
-            "just without the grounding rules applied.",
+            "just without the grounding rules applied. role:'system' was "
+            "accepted AND obeyed live (system_is_a_message.obeyed: true).",
+            report=COHERE_REPORT,
         ),
-        Field("messages[].content", Status.ASSUMED, True, "Plain string per message."),
-        Field("temperature", Status.ASSUMED, True, "Caller's value, unmodified."),
+        Field("messages[].content", _OBS, True, "Plain string per message.", report=COHERE_REPORT),
+        Field("temperature", _OBS, True, "Caller's value, unmodified.", report=COHERE_REPORT),
         Field(
             "max_tokens",
-            Status.ASSUMED,
+            _OBS,
             True,
             "Capped by llm_common.cap_output_tokens so prompt + output cannot "
             "overflow COHERE_CHAT_MAX_MODEL_LEN. Providers answer 400 rather "
             "than truncating, so an uncapped request fails AFTER paying to "
-            "build the prompt.",
+            "build the prompt. The overflow 400 itself is not probed.",
+            report=COHERE_REPORT,
         ),
-        Field("stream", Status.ASSUMED, True, "True exactly when a token_callback was supplied."),
+        Field(
+            "stream",
+            _OBS,
+            True,
+            "True exactly when a token_callback was supplied. Both values sent "
+            "live; stream=true answered text/event-stream with text on "
+            "delta.message.content.text.",
+            report=COHERE_REPORT,
+        ),
         Field(
             "response_format.type",
-            Status.ASSUMED,
+            _OBS,
             False,
             "'json_object', sent only when the caller asks for JSON. Unlike "
             "Converse, which has no first-class JSON mode and rides a "
-            "passthrough field, this is a documented top-level parameter — "
-            "which is a reason to expect it to work and not a reason to "
-            "assume it does. Hard rule 4 depends on it being honoured.",
+            "passthrough field, this is a documented top-level parameter. "
+            "ACCEPTED live and the reply parsed as JSON -- but the run "
+            "WITHOUT it also returned JSON (the prompt asked for it), so that "
+            "report does not distinguish 'honoured' from 'ignored'. Hard rule "
+            "4 depends on it being honoured; that part is still unproven.",
+            report=COHERE_REPORT,
         ),
     ),
     response=(
         Field(
             "message.content[].type",
-            Status.ASSUMED,
+            _OBS,
             False,
             "Block discriminator, 'text' for the answer. Declared because a "
             "live-shaped run reported it as an UNDECLARED field — which is "
             "the discovery half of this contract working, on the first "
             "exercise of it.",
             evidence_key="type",
+            report=COHERE_REPORT,
         ),
         Field(
             "message.content[].text",
-            Status.ASSUMED,
+            _OBS,
             True,
             "The answer, concatenated across typed blocks.",
             evidence_key="text",
+            report=COHERE_REPORT,
         ),
         Field(
             "message.content (bare string)",
@@ -333,7 +390,7 @@ CHAT_V2 = WireContract(
         ),
         Field(
             "message.content[].thinking",
-            Status.ASSUMED,
+            _OBS,
             False,
             "Where reasoning lands on this host — question (2) above. The "
             "2026-09-23 run from inside the VPC saw content blocks keyed "
@@ -343,25 +400,41 @@ CHAT_V2 = WireContract(
             "max_tokens; a reply that is all thinking is a budget outcome "
             '(_extract_content returns ""), not an unreadable shape.',
             evidence_key="thinking",
+            report=COHERE_REPORT,
         ),
         Field(
             "message.role",
-            Status.ASSUMED,
+            _OBS,
             False,
             "'assistant'. Nothing reads it; declared because the same run reported it as undeclared.",
             evidence_key="role",
+            report=COHERE_REPORT,
         ),
-        Field("usage.tokens.input_tokens", Status.ASSUMED, False, "v2 nests real counts under `tokens`."),
-        Field("usage.tokens.output_tokens", Status.ASSUMED, False, "Same."),
+        Field(
+            "usage.tokens.input_tokens",
+            _OBS,
+            False,
+            "v2 nests real counts under `tokens`. Seen beside output_tokens "
+            "and reasoning_tokens (the last not accounted anywhere yet).",
+            report=COHERE_REPORT,
+        ),
+        Field("usage.tokens.output_tokens", _OBS, False, "Same.", report=COHERE_REPORT),
         Field(
             "usage.billed_units",
-            Status.TOLERATED,
+            _OBS,
             False,
             "The billing view, which can differ from the token counts. "
-            "_extract_usage prefers `tokens` and falls back to the flat shape.",
+            "_extract_usage prefers `tokens` and falls back to the flat shape. "
+            "Present live beside `tokens` and `cached_tokens` (the latter not "
+            "read -- see VEN-12).",
+            report=COHERE_REPORT,
         ),
     ),
     notes=(
+        "Question (3), the sentinels: cohere_probe_20260924T060435Z.json saw "
+        "NONE in either JSON reply (sentinels_present: []). On this host "
+        "clean_model_text's stripping is therefore not load-bearing -- kept, "
+        "because it costs nothing and one run is not a guarantee.",
         "Streaming is SSE with type-tagged events: text on `content-delta`, "
         "usage on `message-end`. _delta_text is tolerant across the nested "
         "and flat spellings because a missed delta is a silently truncated "

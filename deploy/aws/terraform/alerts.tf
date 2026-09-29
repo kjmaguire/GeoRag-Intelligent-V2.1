@@ -127,6 +127,16 @@ locals {
       pattern     = "COHERE_PARSE_REJECTED"
       description = "Cohere Parse refused the request (401/403/404/413/422). Every scanned page is falling back to tesseract, which extracts no tables. Usually COHERE_API_KEY: absent, invalid, or not entitled to Parse. Retryable statuses are NOT here — those are retried in the adapter and log at WARNING."
     }
+    hatchet-token-expiring = {
+      # Emitted by deploy/aws/scheduler/token-expiry-check.sh, the daily
+      # token-check task (scheduler.tf), which logs to the SCHEDULER group.
+      # Audit AWS-12, 2026-09-29: the token lapses 90 days after minting and
+      # nothing renewed it or alarmed on it. The task logs the marker every
+      # day it applies, so this emails daily until the token is rotated.
+      log_group   = "scheduler"
+      pattern     = "HATCHET_TOKEN_EXPIRING"
+      description = "HATCHET_CLIENT_TOKEN expires within 21 days, has expired, or the daily check could not read its expiry. When it lapses every Hatchet worker and client fails auth at once while the engine looks healthy: all 51 workflows and every cron stop. Rotate with deploy/aws/rotation/rotate-hatchet-token.sh (ops/runbooks/secret-rotation.md §9); the log line in /ecs/georag/scheduler (stream prefix token-check) says which case this is."
+    }
     # bedrock-endpoint-not-inservice was here until 2026-09-15. ADR-0022
     # called it the sharpest edge in this deployment: a Marketplace endpoint
     # that failed to come back after the nightly delete left NO chat and NO
@@ -178,6 +188,248 @@ resource "aws_cloudwatch_metric_alarm" "markers" {
   alarm_actions       = local.alarm_actions
 
   depends_on = [aws_cloudwatch_log_metric_filter.markers]
+}
+
+# ---------------------------------------------------------------------------
+# CRITICAL log lines — the production-posture check, and anything else
+# ---------------------------------------------------------------------------
+# main.py::_assert_production_posture is the only thing in the system that
+# reports a security control being off (GEORAG_ENV=production), and it does
+# so at CRITICAL, with a docstring saying CRITICAL "pages via the
+# georag-fastapi-critical alert". That alert existed on Azure only. Here
+# nothing watched for it until 2026-09-29 (audit AWS-10 / API-5), so an
+# empty COHERE_API_KEY, a disabled hallucination layer or rate limiting off
+# was logged into a group nobody reads.
+#
+# Two terms, either matches:
+#   GEORAG_POSTURE_CRITICAL  the stable token the posture lines carry (added
+#                            on the FastAPI side in the same audit pass)
+#   CRITICAL                 the level itself — the JSON formatter writes
+#                            "level": "CRITICAL", Laravel's stderr stack
+#                            writes production.CRITICAL — so every other
+#                            CRITICAL site (sidecar auth, OCR engine
+#                            misconfiguration, empty service key) pages too,
+#                            and so would the posture line if the token were
+#                            ever dropped.
+# Every CRITICAL site in src/fastapi/app is a misconfiguration logged once per
+# process, so this is not a noisy filter by construction. Keep it that way:
+# CRITICAL means "a person must act", not "worse than ERROR".
+#
+# Deliberately NOT in log_markers: scripts/check-log-marker-alarms.py requires
+# each marker to have exactly one emitter, and a level string has hundreds.
+resource "aws_cloudwatch_log_metric_filter" "posture_critical" {
+  name           = "posture-critical"
+  log_group_name = aws_cloudwatch_log_group.services.name
+  pattern        = "?\"GEORAG_POSTURE_CRITICAL\" ?\"CRITICAL\""
+
+  metric_transformation {
+    name          = "posture-critical"
+    namespace     = "GeoRAG/Markers"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "posture_critical" {
+  count = local.on
+
+  alarm_name          = "${local.name}-posture-critical"
+  alarm_description   = "A service logged at CRITICAL. From FastAPI or the hatchet worker this is usually _assert_production_posture on boot: a security or grounding control is off (RATE_LIMIT_ENABLED, PROMPT_INJECTION_DELIMITING_ENABLED, a hallucination layer), COHERE_API_KEY is empty, or QDRANT_DOCUMENT_PROJECT_SCOPE is cross_project. Search /ecs/georag for GEORAG_POSTURE_CRITICAL, then CRITICAL, in the last 15 minutes; the line names the setting."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "posture-critical"
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.posture_critical]
+}
+
+# ---------------------------------------------------------------------------
+# ECS tasks that crash, fail health checks, or cannot start
+# ---------------------------------------------------------------------------
+# The gap variables.tf's container_insights description names (audit AWS-21,
+# 2026-09-29): ECS replaces a task that crashes or fails its container health
+# check, and no human is told. HealthyHostCount covers only the two ALB
+# services, so a hatchet-worker OOM-restarting every four minutes — Ch 12 §6's
+# "ingestion has stopped moving" — was silent.
+#
+# EventBridge receives every ECS task state change for free. The rule keeps
+# only SERVICE tasks (group "service:*" — not the migrate, smoke, sweep or
+# token-check one-offs, which exit on purpose) that stopped because:
+#   * the essential container exited on its own (a crash, an OOM kill), or
+#   * the task never started (image pull, missing secret key, no Spot
+#     capacity), or
+#   * ECS stopped it for failing a container or ELB health check.
+# Scale-ins (the nightly sweep), deployments and Spot interruptions stop
+# tasks with other codes and reasons, so they do not match.
+#
+# Events go to a log group rather than straight to SNS so the alarm, not the
+# event stream, decides when to email: one message per episode (two or more
+# in 15 minutes) instead of one per restart. The group also keeps the
+# stoppedReason of every one, which is the first thing to read:
+#   aws logs tail /aws/events/georag/task-stops --since 1h
+resource "aws_cloudwatch_log_group" "task_stops" {
+  # EventBridge's CloudWatch Logs target expects the /aws/events/ prefix.
+  name              = "/aws/events/${local.name}/task-stops"
+  retention_in_days = 30
+}
+
+data "aws_iam_policy_document" "events_to_task_stops" {
+  statement {
+    sid     = "EventBridgeWritesTaskStops"
+    effect  = "Allow"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com", "delivery.logs.amazonaws.com"]
+    }
+    resources = ["${aws_cloudwatch_log_group.task_stops.arn}:*"]
+  }
+}
+
+resource "aws_cloudwatch_log_resource_policy" "events_to_task_stops" {
+  policy_name     = "${local.name}-events-to-task-stops"
+  policy_document = data.aws_iam_policy_document.events_to_task_stops.json
+}
+
+resource "aws_cloudwatch_event_rule" "service_task_failed" {
+  name        = "${local.name}-service-task-failed"
+  description = "A service task in the ${local.name} cluster crashed, failed a health check, or failed to start (audit AWS-21)."
+
+  event_pattern = jsonencode({
+    source        = ["aws.ecs"]
+    "detail-type" = ["ECS Task State Change"]
+    detail = {
+      clusterArn = [aws_ecs_cluster.this.arn]
+      lastStatus = ["STOPPED"]
+      group      = [{ prefix = "service:" }]
+      "$or" = [
+        { stopCode = ["EssentialContainerExited", "TaskFailedToStart"] },
+        { stoppedReason = [{ prefix = "Task failed" }] },
+      ]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "service_task_failed" {
+  rule = aws_cloudwatch_event_rule.service_task_failed.name
+  arn  = aws_cloudwatch_log_group.task_stops.arn
+
+  depends_on = [aws_cloudwatch_log_resource_policy.events_to_task_stops]
+}
+
+resource "aws_cloudwatch_log_metric_filter" "service_task_failed" {
+  name           = "service-task-failed"
+  log_group_name = aws_cloudwatch_log_group.task_stops.name
+  pattern        = "{ $.detail.lastStatus = \"STOPPED\" }"
+
+  metric_transformation {
+    name          = "service-task-failed"
+    namespace     = "GeoRAG/Markers"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "service_task_failed" {
+  count = local.on
+
+  alarm_name          = "${local.name}-service-task-crash-loop"
+  alarm_description   = "Two or more ECS service tasks crashed, failed a health check or failed to start within 15 minutes. ECS keeps replacing them, so the service LOOKS present. Read the stoppedReason: aws logs tail /aws/events/${local.name}/task-stops --since 1h. A hatchet-worker loop means ingestion and every cron have stopped moving."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "service-task-failed"
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.service_task_failed]
+}
+
+# ---------------------------------------------------------------------------
+# Cohere Parse pages billed
+# ---------------------------------------------------------------------------
+# Audit AWS-15, 2026-09-29. PDF_PARSE_MODE=all (config.tf) sends every PDF
+# page to Parse on Cohere's own API, billed per page. No AWS budget can see
+# a Cohere invoice, and cost_burn_watcher sums only usage.usage_events, which
+# ingestion does not write. So nothing noticed a bulk ingest of historical
+# NI 43-101s.
+#
+# cohere_parse_client._meter_pages now logs one line per billed page carrying
+# `parse_pages_billed`; this sums it per day. The threshold is PAGES, not
+# dollars: this file does not know Cohere's per-page price, and a number
+# guessed here would be wrong silently. Set it from the price on the account.
+resource "aws_cloudwatch_log_metric_filter" "cohere_parse_pages" {
+  name           = "cohere-parse-pages-billed"
+  log_group_name = aws_cloudwatch_log_group.services.name
+  pattern        = "{ $.parse_pages_billed > 0 }"
+
+  metric_transformation {
+    name          = "cohere-parse-pages-billed"
+    namespace     = "GeoRAG/Markers"
+    value         = "$.parse_pages_billed"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cohere_parse_pages" {
+  count = local.on * (var.cohere_parse_daily_page_alarm > 0 ? 1 : 0)
+
+  alarm_name          = "${local.name}-cohere-parse-pages"
+  alarm_description   = "More than ${var.cohere_parse_daily_page_alarm} pages went to Cohere Parse in 24 hours, each billed on Cohere's account, where no AWS budget can see it. Usually a bulk ingest. Check which documents: search /ecs/georag for COHERE_PARSE_PAGES_BILLED. To stop the spend, set PDF_PARSE_MODE back to ocr_only in config.tf."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "cohere-parse-pages-billed"
+  statistic           = "Sum"
+  period              = 86400
+  evaluation_periods  = 1
+  threshold           = var.cohere_parse_daily_page_alarm
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.cohere_parse_pages]
+}
+
+# Audit VEN-11, 2026-09-29. A page whose Parse call is still 429/5xx after
+# its retries falls back to Tesseract - lower-quality text, silently. The
+# client logs COHERE_PARSE_THROTTLED (WARNING) for each such page; five in an
+# hour means Parse is being throttled or is down, not one unlucky page.
+resource "aws_cloudwatch_log_metric_filter" "cohere_parse_throttled" {
+  name           = "cohere-parse-throttled"
+  log_group_name = aws_cloudwatch_log_group.services.name
+  pattern        = "\"COHERE_PARSE_THROTTLED\""
+
+  metric_transformation {
+    name          = "cohere-parse-throttled"
+    namespace     = "GeoRAG/Markers"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cohere_parse_throttled" {
+  count = local.on
+
+  alarm_name          = "${local.name}-cohere-parse-throttled"
+  alarm_description   = "Five or more PDF pages in an hour exhausted their Cohere Parse retries (429/5xx) and fell back to Tesseract, so their text is lower quality. Search /ecs/georag for COHERE_PARSE_THROTTLED: the line gives the HTTP status. Sustained 429s mean the account's Parse rate limit is too low for the ingest volume; re-ingest the affected documents once it clears."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "cohere-parse-throttled"
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 5
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.cohere_parse_throttled]
 }
 
 # ---------------------------------------------------------------------------
@@ -324,10 +576,28 @@ resource "aws_cloudwatch_composite_alarm" "octane_dead_air_outside_window" {
   # Suppressed while the platform is intentionally stopped. Without this the
   # alarm fires every single night by design, which is how an alert channel
   # becomes noise nobody reads.
+  #
+  # Both periods widened on 2026-09-29 (audit AWS-7), and each covers one end
+  # of the window:
+  #
+  #   extension_period 2700 s (45 min) — the MORNING end. The suppressor is in
+  #     ALARM for exactly the window's length after the shutdown-complete
+  #     marker, so it released the moment the startup sweep FIRED, while the
+  #     platform was still down: RDS starting, three tiers each waiting for
+  #     services-stable (README: ~15 min), then two healthy ALB checks and a
+  #     clean 5-minute HealthyHostCount period. With 60 s the composite
+  #     emailed at about 08:32 every day. 45 min covers a slow start with
+  #     margin; a platform still dead at ~09:15 is a real page.
+  #   wait_period 900 s (15 min) — the EVENING end. The shutdown sweep now
+  #     drains tier by tier (AWS-8), so "shutdown sweep complete" lands
+  #     several minutes after Octane stopped; dead air can reach ALARM before
+  #     the suppressor does. The composite now waits up to 15 min for it.
+  #     Cost: a genuine daytime outage emails up to 15 min later than before
+  #     (on top of the 10 min the dead-air alarm itself needs).
   actions_suppressor {
     alarm            = aws_cloudwatch_metric_alarm.maintenance_window[0].alarm_name
-    wait_period      = 60
-    extension_period = 60
+    wait_period      = 900
+    extension_period = 2700
   }
 }
 
@@ -475,14 +745,23 @@ resource "aws_cloudwatch_metric_alarm" "db_storage" {
   count = local.on
 
   alarm_name        = "${local.name}-pg-storage"
-  alarm_description = "Less than 10 GiB free. Storage autoscaling is on, so this is a warning that it is working, not that it is about to stop."
+  alarm_description = "Postgres free storage is under 15% of the initially allocated size. On the original volume that is just ahead of RDS storage autoscaling's 10%-free trigger; after autoscaling has grown the volume it means autoscaling has not acted (it waits 6 hours between changes). Check FreeStorageSpace and the instance's storage-modification events."
 
-  namespace           = "AWS/RDS"
-  metric_name         = "FreeStorageSpace"
-  statistic           = "Minimum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 10 * 1024 * 1024 * 1024
+  namespace          = "AWS/RDS"
+  metric_name        = "FreeStorageSpace"
+  statistic          = "Minimum"
+  period             = 300
+  evaluation_periods = 1
+  # 15% of var.db_allocated_storage_gb, in bytes: 3 GiB at the 20 GB default.
+  # It was a flat 10 GiB until 2026-09-29 (audit AWS-18) — HALF of a 20 GB
+  # volume, so it fired as soon as the database held 10 GB of ordinary data,
+  # went back to OK every night when the stopped instance stopped reporting
+  # (notBreaching), and re-emailed every morning. RDS publishes no
+  # allocated-storage metric to divide by, so this is relative to the INITIAL
+  # size and stays a fixed floor once autoscaling grows the volume. Past the
+  # first growth it sits below the 10% autoscaling trigger, so from then on it
+  # fires only when autoscaling has NOT acted — the case worth an email.
+  threshold           = floor(var.db_allocated_storage_gb * 0.15 * 1024 * 1024 * 1024)
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions

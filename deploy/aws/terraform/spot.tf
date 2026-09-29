@@ -63,12 +63,27 @@ variable "on_demand_services" {
 }
 
 locals {
+  # Services that are NEVER on Spot, whatever `on_demand_services` says. Not
+  # the variable's default: a tfvars that sets on_demand_services (e.g. to
+  # ["laravel-octane"] for a demo) replaces a default wholesale, and would
+  # silently put these back on Spot.
+  #
+  #   qdrant — its storage is on EFS (NFS), which Qdrant's own installation
+  #            guidance is recalled — not verified here — to rule out for its
+  #            WAL and mmap segments. A Spot reclaim is an abrupt stop with
+  #            two minutes' notice at any time of day, on top of the nightly
+  #            SIGTERM. Moving the storage is the real fix and is NOT done
+  #            here; this removes the unscheduled half of the abrupt stops.
+  #            docs/adr/0024-qdrant-storage-on-efs.md records the decision
+  #            and the cost (audit AWS-14, 2026-09-29).
+  pinned_on_demand = toset(["qdrant"])
+
   # One entry per service, so `capacity_provider_strategy` never has to
   # re-derive the rule inline.
   capacity_for = {
     for name, _ in local.services :
     name => (
-      var.fargate_capacity == "on_demand" || contains(var.on_demand_services, name)
+      var.fargate_capacity == "on_demand" || contains(var.on_demand_services, name) || contains(local.pinned_on_demand, name)
       ? "FARGATE"
       : "FARGATE_SPOT"
     )

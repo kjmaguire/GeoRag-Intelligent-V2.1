@@ -83,6 +83,9 @@ MUST_NOT_GATE = {
     "aws_s3_bucket_server_side_encryption_configuration",
     "aws_s3_bucket_public_access_block",
     "aws_s3_bucket_lifecycle_configuration",
+    # The TLS-only deny policy (data.tf). Free, and it guards the buckets that
+    # survive power=off, so it must survive with them.
+    "aws_s3_bucket_policy",
     "aws_efs_file_system",
     "aws_efs_mount_target",
     "aws_efs_access_point",
@@ -92,6 +95,13 @@ MUST_NOT_GATE = {
     "aws_ecr_lifecycle_policy",
     "aws_cloudwatch_log_group",
     "aws_cloudwatch_log_metric_filter",
+    # The ECS task-failure route (alerts.tf, audit AWS-21): an EventBridge
+    # rule on AWS service events, its log-group target and the resource
+    # policy that lets EventBridge write there. None bills by the hour, and
+    # with the cluster empty they simply see no events.
+    "aws_cloudwatch_event_rule",
+    "aws_cloudwatch_event_target",
+    "aws_cloudwatch_log_resource_policy",
     "aws_sns_topic",
     "aws_sns_topic_subscription",
     "aws_vpc",

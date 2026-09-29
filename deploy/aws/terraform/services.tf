@@ -299,7 +299,16 @@ locals {
   }
 
   service_command = {
-    laravel-octane  = ["php", "artisan", "octane:start", "--host=0.0.0.0", "--port=80"]
+    # Worker counts stated, not left to `--workers=auto` (audit AWS-11,
+    # 2026-09-29). auto resolves to swoole_cpu_num(), the task's vCPU count:
+    # ONE worker on this 1-vCPU task, and a Swoole worker serves one request
+    # at a time, so a tile proxy (15 s timeout), a FastAPI proxy call or a
+    # 512 MB upload blocked the whole task — including the /up health check
+    # the ALB and ECS kill it over. Four matches docker-compose.yml's default,
+    # config/octane.php's upload sizing and OCTANE_WORKERS below (which
+    # /internal/metrics reports). --max-requests recycles a worker the way
+    # compose does, bounding any per-worker leak.
+    laravel-octane  = ["php", "artisan", "octane:start", "--host=0.0.0.0", "--port=80", "--workers=4", "--task-workers=2", "--max-requests=500"]
     laravel-horizon = ["php", "artisan", "horizon"]
     laravel-reverb  = ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
     hatchet-worker  = ["python", "-m", "app.hatchet_workflows.worker"]
@@ -442,6 +451,36 @@ locals {
     martin = 60
     sparse = 120
   }
+
+  # stopTimeout: how long ECS waits between SIGTERM and SIGKILL. Fargate's
+  # default is 30 s and its MAXIMUM is 120 s (ECS API reference); 120 is also
+  # exactly a Spot interruption notice. Set on the services whose shutdown
+  # does real work (audit AWS-8 and CHAT-14, 2026-09-29):
+  #
+  #   hatchet-worker   finishes or releases in-flight workflow steps rather
+  #                    than dying mid-upsert (silver rows and Qdrant points
+  #                    half-written, Parse pages billed twice on retry)
+  #   laravel-horizon  lets a running job finish or reach its own shutdown
+  #                    path; a chat stream is up to 300 s, so 120 does NOT
+  #                    cover the longest — the job's SIGTERM handling is the
+  #                    other half (CHAT-14, application side)
+  #   fastapi          the SSE stream Horizon is reading. uvicorn's own
+  #                    --timeout-graceful-shutdown (30 s, baked into the image
+  #                    CMD) still caps its drain; this only stops ECS cutting
+  #                    in first
+  #   qdrant, redis    flush WAL / AOF on SIGTERM instead of being killed
+  #                    during it
+  #
+  # The nightly shutdown sweep stops the tiers in reverse order and waits for
+  # each, so these timeouts are actually honoured rather than raced by RDS
+  # stopping underneath (deploy/aws/scheduler/shutdown-sweep.sh).
+  service_stop_timeout = {
+    hatchet-worker  = 120
+    laravel-horizon = 120
+    fastapi         = 120
+    qdrant          = 120
+    redis           = 120
+  }
 }
 
 resource "aws_ecs_task_definition" "this" {
@@ -518,6 +557,9 @@ resource "aws_ecs_task_definition" "this" {
           startPeriod = lookup(local.healthcheck_start_period, each.key, 30)
         }
       } : {},
+      lookup(local.service_stop_timeout, each.key, null) != null ? {
+        stopTimeout = local.service_stop_timeout[each.key]
+      } : {},
     )
   ])
 }
@@ -588,8 +630,18 @@ resource "aws_ecs_service" "this" {
   # before starting a replacement, so a routine deploy of the laravel image
   # could drop every live answer stream — the precise failure the second task
   # was paid for to prevent.
-  deployment_minimum_healthy_percent = contains(local.zero_downtime_services, each.key) ? 50 : 0
-  deployment_maximum_percent         = contains(local.zero_downtime_services, each.key) ? 200 : 100
+  #
+  # laravel-horizon and fastapi are the exception among the desired-1 services
+  # since 2026-09-29 (CHAT-14). They are the two halves of every answer stream
+  # — Horizon's job reads fastapi's SSE — and at 0% / 100% a deploy stopped
+  # the only task first and SIGKILLed the stream 30 s later. At 100% / 200%
+  # ECS starts the replacement, waits for it to be healthy, and only then
+  # stops the old task, which then gets its full stopTimeout. Both are
+  # stateless (Redis holds the queue), so two copies for a minute is safe.
+  # NOT extended to hatchet, qdrant or redis: two engines or two stores on
+  # one EFS path is exactly what upgrade-qdrant.sh relies on 0% to prevent.
+  deployment_minimum_healthy_percent = contains(local.zero_downtime_services, each.key) ? 50 : (contains(local.overlap_on_deploy_services, each.key) ? 100 : 0)
+  deployment_maximum_percent         = contains(local.zero_downtime_services, each.key) || contains(local.overlap_on_deploy_services, each.key) ? 200 : 100
 
   # The nightly sweeps own desired_count between 17:00 and 08:30 local.
   # Without this, every `terraform apply` during the window would start
@@ -598,7 +650,22 @@ resource "aws_ecs_service" "this" {
     ignore_changes = [desired_count, task_definition]
   }
 
-  depends_on = [aws_lb_listener.https]
+  # Every listener and rule that attaches the two target groups to the ALB,
+  # in BOTH edge modes (audit AWS-9, 2026-09-29). ECS rejects CreateService
+  # for a target group with no associated load balancer. This listed only
+  # the `alb`-edge HTTPS listener, which has count 0 in the default
+  # `cloudfront` mode — there the octane group is attached by the origin
+  # listener or its verified-header rule and reverb by its path rule, and
+  # nothing ordered the services after them. The first power-on apply could
+  # therefore fail part-way with the ALB, NAT and RDS already created. A
+  # depends_on on a count-0 resource is a no-op, so listing all of them is
+  # correct in either mode.
+  depends_on = [
+    aws_lb_listener.https,
+    aws_lb_listener.origin,
+    aws_lb_listener_rule.origin_verified,
+    aws_lb_listener_rule.reverb,
+  ]
 }
 
 # ---------------------------------------------------------------------------
@@ -665,7 +732,19 @@ resource "aws_ecs_task_definition" "migrate" {
       # "permission denied for schema public" trying to create the
       # `migrations` tracking table, exactly the failure mode the comment
       # below anticipated but the config it points at cannot prevent.
-      "php artisan migrate --force --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations",
+      #
+      # --isolated=1 (audit AWS-1, 2026-09-29): two of these tasks used to be
+      # able to run at once — cd.yml cancelled in-flight deploys, and a
+      # cancelled job does not stop the ECS task it started. The isolation
+      # lock lives in the cache store, which is Redis here and shared by every
+      # task, so a second `migrate` finds it held and exits 1 (the `=1`; the
+      # bare flag exits 0, and `&&` would then run db:apply-raw alongside the
+      # first task's migration). A migrate task killed mid-run leaves the lock
+      # until it expires (an hour); the next deploy fails loudly with "The
+      # [migrate] command is already running" rather than racing. cd.yml's
+      # single-flight gate and non-cancelling concurrency are the other two
+      # layers; this one also covers a task started by hand.
+      "php artisan migrate --force --isolated=1 --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations",
     ]
     environment = [
       for k, v in merge(local.service_environment["laravel-octane"], {

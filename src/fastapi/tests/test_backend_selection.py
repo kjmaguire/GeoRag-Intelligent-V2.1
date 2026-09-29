@@ -211,21 +211,21 @@ def test_reranker_version_string_names_the_model_not_the_host() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cohere Rerank v4 auto-discovery (2026-09-16)
+# Cohere Rerank v4 discovery (2026-09-16; advisory-only since 2026-09-29)
 # ---------------------------------------------------------------------------
 # get_reranker_or_none() asks app.services._bedrock.discover_cohere_rerank_v4_model_id()
-# whether Bedrock's catalogue now serves Cohere Rerank v4, but only when the
-# operator has not pinned BEDROCK_RERANK_MODEL_ID themselves. These tests
-# monkeypatch the discovery function directly — never a real AWS call — so
-# they exercise the wiring in reranker.py, not app.services._bedrock's own
-# fail-safe behaviour (see test__bedrock.py / the module's own docstring for
-# that).
+# whether Bedrock's catalogue now serves Cohere Rerank v4 and LOGS it. It never
+# switches the model id (VEN-15): a runtime switch would move to an ARN the
+# task role's InvokeModel grant does not cover and change scores under an
+# unvalidated threshold. These tests monkeypatch the discovery function
+# directly — never a real AWS call.
 
 
-def test_discovery_switches_to_v4_when_bedrock_now_serves_it(monkeypatch, caplog) -> None:
+@pytest.mark.parametrize("explicit", [False, True])
+def test_discovery_finding_v4_warns_but_never_switches(monkeypatch, caplog, explicit) -> None:
     monkeypatch.setattr(reranker, "RERANKER_BACKEND", "bedrock")
     monkeypatch.setattr(reranker, "BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
-    monkeypatch.setattr(reranker, "_BEDROCK_RERANK_MODEL_ID_EXPLICIT", False)
+    monkeypatch.setattr(reranker, "_BEDROCK_RERANK_MODEL_ID_EXPLICIT", explicit)
     monkeypatch.setattr(
         _bedrock, "discover_cohere_rerank_v4_model_id", lambda: "cohere.rerank-v4:0"
     )
@@ -234,19 +234,16 @@ def test_discovery_switches_to_v4_when_bedrock_now_serves_it(monkeypatch, caplog
         result = reranker.get_reranker_or_none()
 
     assert isinstance(result, reranker._BedrockReranker)
-    assert result._model_id == "cohere.rerank-v4:0"
-    assert reranker.BEDROCK_RERANK_MODEL_ID == "cohere.rerank-v4:0"
-    # answer_runs.reranker_version must reflect the switch too, or v4-scored
-    # and 3.5-scored runs stop being separable after the fact.
-    assert reranker.active_reranker_version() == "cohere-bedrock:cohere.rerank-v4:0"
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert any("RE-VALIDATED" in r.getMessage() for r in warnings), (
-        "switching to v4 must loudly flag RERANKER_SCORE_THRESHOLD_HOSTED for "
-        "re-validation, not just quietly change the model id"
+    assert result._model_id == "cohere.rerank-v3-5:0", "discovery must never switch the model"
+    assert reranker.BEDROCK_RERANK_MODEL_ID == "cohere.rerank-v3-5:0"
+    assert reranker.active_reranker_version() == "cohere-bedrock:cohere.rerank-v3-5:0"
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("cohere.rerank-v4:0" in m and "RE-VALIDATE" in m and "InvokeModel" in m for m in warnings), (
+        "finding v4 must tell the operator what switching actually takes"
     )
 
 
-def test_discovery_stays_on_3_5_when_v4_is_not_found(monkeypatch, caplog) -> None:
+def test_discovery_stays_quiet_when_v4_is_not_found(monkeypatch, caplog) -> None:
     monkeypatch.setattr(reranker, "RERANKER_BACKEND", "bedrock")
     monkeypatch.setattr(reranker, "BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
     monkeypatch.setattr(reranker, "_BEDROCK_RERANK_MODEL_ID_EXPLICIT", False)
@@ -257,34 +254,24 @@ def test_discovery_stays_on_3_5_when_v4_is_not_found(monkeypatch, caplog) -> Non
 
     assert isinstance(result, reranker._BedrockReranker)
     assert result._model_id == "cohere.rerank-v3-5:0"
-    assert reranker.BEDROCK_RERANK_MODEL_ID == "cohere.rerank-v3-5:0"
     assert not [r for r in caplog.records if r.levelname == "WARNING"], (
         "no v4 found should be silent at WARNING level -- this is the "
         "expected steady state until AWS ships v4"
     )
 
 
-def test_explicit_model_id_always_wins_over_discovery(monkeypatch) -> None:
-    """An operator-set BEDROCK_RERANK_MODEL_ID must never be second-guessed,
-    even if discovery would have found a v4 id -- and discovery must not
-    even be called in that case."""
-    calls: list[None] = []
-
-    def _would_find_v4() -> str:
-        calls.append(None)
-        return "cohere.rerank-v4:0"
+def test_a_raising_discovery_never_takes_the_reranker_down(monkeypatch) -> None:
+    def _boom() -> str:
+        raise RuntimeError("catalogue unreachable")
 
     monkeypatch.setattr(reranker, "RERANKER_BACKEND", "bedrock")
     monkeypatch.setattr(reranker, "BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
     monkeypatch.setattr(reranker, "_BEDROCK_RERANK_MODEL_ID_EXPLICIT", True)
-    monkeypatch.setattr(_bedrock, "discover_cohere_rerank_v4_model_id", _would_find_v4)
+    monkeypatch.setattr(_bedrock, "discover_cohere_rerank_v4_model_id", _boom)
 
     result = reranker.get_reranker_or_none()
-
     assert isinstance(result, reranker._BedrockReranker)
     assert result._model_id == "cohere.rerank-v3-5:0"
-    assert reranker.BEDROCK_RERANK_MODEL_ID == "cohere.rerank-v3-5:0"
-    assert calls == [], "discovery must be skipped entirely for an explicit model id"
 
 
 # ---------------------------------------------------------------------------

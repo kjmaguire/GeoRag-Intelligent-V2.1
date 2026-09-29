@@ -1174,7 +1174,12 @@ async def run_deterministic_rag(
                     if status_callback is not None:
                         with contextlib.suppress(Exception):
                             await status_callback("Reusing a recent identical answer…")
-                    return cached_response
+                    # CHAT-19 — the cache is keyed on workspace + project +
+                    # query text, not on the user, so the cached answer's
+                    # answer_run_id is the FIRST asker's run. Serving it made
+                    # user B's feedback land on user A's run. No run row is
+                    # written for a cache hit, so there is no id to give.
+                    return cached_response.model_copy(update={"answer_run_id": None})
 
         logger.info(
             "run_deterministic_rag: AGENTIC_RETRIEVAL_V2_ENABLED — dispatching "

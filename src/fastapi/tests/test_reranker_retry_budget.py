@@ -253,6 +253,66 @@ class TestBedrockRerankerHonoursItsBudget:
         assert scores == [0.1, 0.5, 0.9]
 
 
+class TestRetryProfileFitsTheWaitFor:
+    """VEN-5 (2026-09-29): attempts x read timeout must fit the caller's clock.
+
+    `attempts_within_budget` counted attempts only. With the shipped defaults
+    (19 s budget, 8 s read timeout, 3 attempts) the worst case was
+    3 x 8 s + botocore backoff — over the 20 s wait_for in tools.py, and
+    botocore retries ReadTimeoutError, so the pool thread kept calling
+    Bedrock after search_documents had already degraded to cosine order.
+    """
+
+    @pytest.mark.parametrize("budget", [1.0, 3.0, 8.0, 9.5, 19.0, 45.0])
+    @pytest.mark.parametrize("read_timeout", [1.0, 2.0, 8.0, 30.0])
+    @pytest.mark.parametrize("ceiling", [1, 3, 4])
+    def test_worst_case_never_exceeds_the_budget(self, budget, read_timeout, ceiling) -> None:
+        attempts, timeout = _bedrock.retry_profile_within_budget(
+            budget, read_timeout_s=read_timeout, ceiling=ceiling
+        )
+        assert 1 <= attempts <= ceiling
+        assert timeout <= read_timeout
+        worst = attempts * timeout + _bedrock._botocore_worst_backoff_s(attempts)
+        # A budget below the 1 s floor can only buy one floor-length attempt.
+        assert worst <= max(budget, 1.0)
+
+    def test_the_configured_timeout_is_kept_and_attempts_dropped_first(self) -> None:
+        assert _bedrock.retry_profile_within_budget(19.0, read_timeout_s=8.0, ceiling=3) == (2, 8.0)
+
+    def test_no_budget_keeps_the_ceiling_and_the_timeout(self) -> None:
+        assert _bedrock.retry_profile_within_budget(None, read_timeout_s=30.0, ceiling=4) == (4, 30.0)
+
+    def test_the_shipped_defaults_fit_under_timeout_reranker_s(self, monkeypatch) -> None:
+        """The whole finding in one assertion, against the real wiring."""
+        from app.config import settings
+
+        monkeypatch.setattr(reranker_mod, "RERANKER_BACKEND", "bedrock")
+        monkeypatch.setattr(reranker_mod, "BEDROCK_RERANK_MODEL_ID", "cohere.rerank-v3-5:0")
+        monkeypatch.setattr(reranker_mod, "_BEDROCK_RERANK_MODEL_ID_EXPLICIT", True)
+        client = reranker_mod.get_reranker_or_none()
+        assert isinstance(client, reranker_mod._BedrockReranker)
+
+        seen: list[tuple[int, float]] = []
+
+        def fake_get_client(service, *, max_attempts=4, read_timeout_s=30.0):
+            seen.append((max_attempts, read_timeout_s))
+
+            class _Client:
+                @staticmethod
+                def rerank(**_kwargs):
+                    return {"results": [{"index": 0, "relevanceScore": 0.5}]}
+
+            return _Client()
+
+        monkeypatch.setattr(_bedrock, "get_client", fake_get_client)
+        client.predict([("q", "doc")])
+
+        attempts, read_timeout = seen[0]
+        worst = attempts * read_timeout + _bedrock._botocore_worst_backoff_s(attempts)
+        assert worst < settings.TIMEOUT_RERANKER_S, (attempts, read_timeout, worst)
+        assert attempts >= 2, "the budget must still leave room for one real retry"
+
+
 class TestModelArnResolution:
     def test_a_bare_model_id_becomes_a_foundation_model_arn(self, monkeypatch) -> None:
         monkeypatch.setenv("BEDROCK_REGION", "us-east-1")
@@ -267,3 +327,41 @@ class TestModelArnResolution:
         arn = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/cohere-rerank"
         client = reranker_mod._BedrockReranker(arn, timeout_s=2.0)
         assert client._model_arn() == arn
+
+
+class TestEmptyTextsAreNotSent:
+    """VEN-13: one empty passage must not fail the whole rerank call."""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[dict]:
+        calls: list[dict] = []
+
+        def fake_get_client(service, *, max_attempts=4, read_timeout_s=30.0):
+            class _Client:
+                @staticmethod
+                def rerank(**kwargs):
+                    calls.append(kwargs)
+                    n = len(kwargs["sources"])
+                    return {"results": [{"index": i, "relevanceScore": 0.1 * (i + 1)} for i in range(n)]}
+
+            return _Client()
+
+        monkeypatch.setattr(_bedrock, "get_client", fake_get_client)
+        return calls
+
+    def test_blank_passages_are_left_out_and_score_zero(self, monkeypatch) -> None:
+        calls = self._capture(monkeypatch)
+        client = reranker_mod._BedrockReranker("cohere.rerank-v3-5:0", timeout_s=2.0)
+
+        scores = client.predict([("q", "doc a"), ("q", ""), ("q", "   \n"), ("q", "doc d")])
+
+        sent = [s["inlineDocumentSource"]["textDocument"]["text"] for s in calls[0]["sources"]]
+        assert sent == ["doc a", "doc d"]
+        assert scores == [pytest.approx(0.1), 0.0, 0.0, pytest.approx(0.2)]
+
+    def test_a_group_of_only_blank_passages_makes_no_call(self, monkeypatch) -> None:
+        calls = self._capture(monkeypatch)
+        client = reranker_mod._BedrockReranker("cohere.rerank-v3-5:0", timeout_s=2.0)
+
+        assert client.predict([("q", ""), ("", "doc")]) == [0.0, 0.0]
+        assert calls == []

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -68,7 +69,9 @@ from app.agent.llm_common import (
     BUDGET_EXHAUSTED_FALLBACK,
     cap_output_tokens,
     clean_model_text,
+    parse_retry_after,
     record_llm_metrics,
+    wait_before_pre_stream_retry,
 )
 from app.config import settings
 
@@ -86,6 +89,16 @@ _PRE_STREAM_RETRYABLE_EXCEPTIONS = (
     httpx.PoolTimeout,
     httpx.RemoteProtocolError,
 )
+#: The same list minus ``ReadTimeout``, for the NON-streaming call. A read
+#: timeout there means Cohere accepted the request and was still generating
+#: when the client gave up -- up to COHERE_CHAT_MAX_TOKENS of output that is
+#: billed whether or not anyone reads it. Re-issuing blindly paid for the
+#: same answer up to three times (VEN-2, 2026-09-29). On the streaming call a
+#: read timeout before the first event is still retried: nothing arrived at
+#: all, which is far more likely a stalled connection than a slow answer.
+_NON_STREAM_RETRYABLE_EXCEPTIONS = tuple(
+    exc for exc in _PRE_STREAM_RETRYABLE_EXCEPTIONS if exc is not httpx.ReadTimeout
+)
 
 
 class CoherePreStreamError(RuntimeError):
@@ -95,7 +108,23 @@ class CoherePreStreamError(RuntimeError):
     retrying is safe only while nothing has been streamed. Once a delta has
     been forwarded, a failure propagates as itself so the caller degrades
     rather than emitting a second partial answer on top of the first.
+
+    ``retry_after_s`` carries the host's ``Retry-After`` when it sent one,
+    so the retry waits at least that long instead of earning another 429.
     """
+
+    def __init__(self, message: str, *, status: int | None = None, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after_s = retry_after_s
+
+
+def _pre_stream_error(response: httpx.Response) -> CoherePreStreamError:
+    return CoherePreStreamError(
+        f"HTTP {response.status_code} from Cohere before any output",
+        status=response.status_code,
+        retry_after_s=parse_retry_after(response.headers.get("retry-after")),
+    )
 
 
 class _ThinkingRejectedError(RuntimeError):
@@ -180,9 +209,7 @@ def _build_request(
         body["response_format"] = {"type": "json_object"}
     if thinking_budget is not None:
         body["thinking"] = (
-            {"type": "enabled", "token_budget": thinking_budget}
-            if thinking_budget > 0
-            else {"type": "disabled"}
+            {"type": "enabled", "token_budget": thinking_budget} if thinking_budget > 0 else {"type": "disabled"}
         )
     return body
 
@@ -517,6 +544,8 @@ async def call_cohere_llm(
     timeout = httpx.Timeout(settings.COHERE_CHAT_TIMEOUT_S, connect=10.0, read=settings.COHERE_CHAT_TIMEOUT_S)
 
     attempt = 0
+    started = time.monotonic()
+    retryable_exceptions = _PRE_STREAM_RETRYABLE_EXCEPTIONS if streaming else _NON_STREAM_RETRYABLE_EXCEPTIONS
     while True:
         sent_any_token = False
         content = ""
@@ -526,9 +555,20 @@ async def call_cohere_llm(
                 if not streaming:
                     response = await client.post(url, headers=_headers(), json=body)
                     if response.status_code in _PRE_STREAM_RETRYABLE_STATUS:
-                        raise CoherePreStreamError(f"HTTP {response.status_code} from Cohere before any output")
+                        raise _pre_stream_error(response)
                     if _thinking_rejected(response.status_code, body, response.text):
                         raise _ThinkingRejectedError(response.text[:300])
+                    if response.status_code >= 400:
+                        logger.error(
+                            "cohere chat: refused with HTTP %d: %s",
+                            response.status_code,
+                            response.text[:300],
+                        )
+                        raise httpx.HTTPStatusError(
+                            f"HTTP {response.status_code} from Cohere /v2/chat: {response.text[:300]}",
+                            request=response.request,
+                            response=response,
+                        )
                     response.raise_for_status()
                     payload = response.json()
                     content = _extract_content(payload)
@@ -550,11 +590,27 @@ async def call_cohere_llm(
                     content_type = ""
                     async with client.stream("POST", url, headers=_headers(stream=True), json=body) as response:
                         if response.status_code in _PRE_STREAM_RETRYABLE_STATUS:
-                            raise CoherePreStreamError(f"HTTP {response.status_code} from Cohere before any output")
-                        if response.status_code in (400, 422) and "thinking" in body:
+                            raise _pre_stream_error(response)
+                        if response.status_code >= 400:
+                            # Read the body before raising: Cohere's error
+                            # text is the only thing that says WHY (a context
+                            # overflow answers 400 rather than truncating),
+                            # and raise_for_status() on a stream discards it
+                            # (VEN-17). It carries no key; at most it echoes
+                            # what Cohere says about the request.
                             detail = (await response.aread()).decode(errors="replace")
                             if _thinking_rejected(response.status_code, body, detail):
                                 raise _ThinkingRejectedError(detail[:300])
+                            logger.error(
+                                "cohere chat: stream refused with HTTP %d: %s",
+                                response.status_code,
+                                detail[:300],
+                            )
+                            raise httpx.HTTPStatusError(
+                                f"HTTP {response.status_code} from Cohere /v2/chat (stream): {detail[:300]}",
+                                request=response.request,
+                                response=response,
+                            )
                         response.raise_for_status()
                         content_type = response.headers.get("content-type", "")
                         async for line in response.aiter_lines():
@@ -660,16 +716,22 @@ async def call_cohere_llm(
                 exc,
             )
         except Exception as exc:  # noqa: BLE001 — re-raised unless retryable
-            retryable = isinstance(exc, (CoherePreStreamError, *_PRE_STREAM_RETRYABLE_EXCEPTIONS))
-            if sent_any_token or not retryable or attempt >= max_retries:
+            retryable = isinstance(exc, (CoherePreStreamError, *retryable_exceptions))
+            if sent_any_token or not retryable:
                 raise
             attempt += 1
-            logger.warning(
-                "cohere chat: transient %s (attempt %d/%d) — retrying before any token reached the user",
-                type(exc).__name__,
-                attempt,
-                max_retries,
-            )
+            # Backoff with jitter, Retry-After honoured, each retry charged to
+            # the per-query call budget and bounded by TIMEOUT_GATHER_S --
+            # the same pacing the vLLM path has had all along (VEN-2/AGT-8).
+            if not await wait_before_pre_stream_retry(
+                label="cohere chat",
+                attempt=attempt,
+                max_retries=max_retries,
+                started_monotonic=started,
+                retry_after_s=getattr(exc, "retry_after_s", None),
+                error=exc,
+            ):
+                raise
 
     add_token_usage(input_tokens, output_tokens)
     record_llm_metrics(
