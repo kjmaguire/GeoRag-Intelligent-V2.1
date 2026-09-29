@@ -97,6 +97,68 @@ final class ServiceConfigContractTest extends TestCase
     }
 
     #[Test]
+    public function the_llm_queue_reservation_outlives_the_supervisor_and_the_job(): void
+    {
+        // CHAT-1. Laravel's RedisQueue stamps a reservation with
+        // "now + retry_after" of the POPPING connection and re-queues it
+        // once that passes. If retry_after <= the time a stream may run,
+        // the job is re-queued mid-answer, the next llm worker sees
+        // attempts > tries and runs failed(): a JOB_FAILED terminal while
+        // the real answer is still streaming. It was 90 s against a 300 s
+        // job for as long as supervisor-llm shared the `redis` connection.
+        $supervisor = config('horizon.defaults.supervisor-llm');
+        $this->assertIsArray($supervisor);
+
+        $connectionName = $supervisor['connection'];
+        $connection = config("queue.connections.{$connectionName}");
+        $this->assertIsArray($connection, "supervisor-llm connection '{$connectionName}' is not a queue connection");
+        $this->assertSame('redis', $connection['driver']);
+
+        // Same Redis key space as the connection the job is dispatched
+        // through, or the supervisor would pop a list nobody pushes to.
+        $this->assertSame(
+            config('queue.connections.redis.connection'),
+            $connection['connection'],
+            'redis-llm must reserve from the same Redis connection the job is pushed to',
+        );
+
+        $retryAfter = (int) $connection['retry_after'];
+        $jobTimeout = StreamQueryFromFastApi::timeoutSeconds();
+
+        foreach (['defaults', 'production', 'local'] as $env) {
+            $timeout = $env === 'defaults'
+                ? (int) $supervisor['timeout']
+                : (int) (config("horizon.environments.{$env}.supervisor-llm.timeout") ?? $supervisor['timeout']);
+
+            $this->assertGreaterThan($timeout, $retryAfter, "[{$env}] retry_after must exceed the supervisor-llm timeout");
+            $this->assertGreaterThan($jobTimeout, $timeout, "[{$env}] supervisor-llm timeout must exceed the job timeout");
+        }
+    }
+
+    #[Test]
+    public function the_shared_redis_reservation_outlives_the_export_job(): void
+    {
+        // LAR-1's second half: GenerateExportJob runs on the shared `redis`
+        // connection with a 300 s timeout. Any export slower than
+        // retry_after was re-queued and failed while still running.
+        $retryAfter = (int) config('queue.connections.redis.retry_after');
+        $exportTimeout = (new \ReflectionClass(\App\Jobs\GenerateExportJob::class))
+            ->getProperty('timeout')
+            ->getDefaultValue();
+
+        $this->assertGreaterThan($exportTimeout, $retryAfter);
+    }
+
+    #[Test]
+    public function the_llm_supervisor_does_not_reserve_through_the_shared_redis_connection(): void
+    {
+        // The shared connection's retry_after is sized for 60 s default-queue
+        // jobs. Pointing supervisor-llm back at it reintroduces CHAT-1 even
+        // if the numbers above happen to be overridden by env.
+        $this->assertNotSame('redis', config('horizon.defaults.supervisor-llm.connection'));
+    }
+
+    #[Test]
     public function a_dispatched_job_carries_the_derived_timeout(): void
     {
         Config::set('services.fastapi.stream_timeout', 111);
