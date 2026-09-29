@@ -8,38 +8,65 @@ use App\Events\Admin\AdminSurfaceUpdated;
 use App\Events\Workspace\WorkspaceActivityBroadcast;
 use App\Events\WorkspaceDataUpdated;
 use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
-use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
  * Phase 2 of the reliability spec — debounced per-workspace MV refresh.
  *
- * Dispatched from {@see IngestionProgressBroadcastController}
- * whenever a completed-status ingestion event lands. The job runs after
- * a 30-second delay so a burst of completions for the same workspace
- * coalesces into a single REFRESH MATERIALIZED VIEW call — the Phase 1
- * Ontario Gold re-ingest fired 9 completions inside a minute, and we
- * don't want to pay 9× REFRESH cost when one will do.
+ * Dispatched through {@see self::debounce()} from
+ * {@see IngestionProgressBroadcastController} whenever a completed-status
+ * ingestion event lands. A burst of completions for one workspace coalesces
+ * into exactly ONE refresh, run DEBOUNCE_SECONDS after the LAST completion of
+ * the burst (trailing-edge debounce) — the Phase 1 Ontario Gold re-ingest
+ * fired 9 completions inside a minute, and we don't want to pay 9× REFRESH
+ * cost when one will do.
  *
- * Coalescing works through two layers:
+ * How it coalesces (rewritten 2026-09-29, LAR-3):
  *
- *   1. **ShouldBeUnique** — Laravel's built-in deduper. As long as a job
- *      with the same `uniqueId()` is queued OR running, additional
- *      dispatches are rejected. TTL caps how long the dedup key holds
- *      (so a stuck/dead job doesn't permanently shadow refreshes).
+ *   - Every completion queues its own delayed job carrying a fresh random
+ *     `dispatchToken`, and then writes that token to a per-workspace Redis
+ *     stamp. The stamp therefore always names the newest job.
+ *   - At handle() a job whose token is no longer the stamp bails: a newer
+ *     job exists and will run after its own delay. The newest job finds its
+ *     own token and does the work. Exactly one runs per burst.
  *
- *   2. **Per-workspace Redis "last-dispatch" stamp** — recorded by the
- *      controller before dispatching. The job's first action at handle()
- *      is to check whether a NEWER dispatch arrived during the delay
- *      window. If yes, it bails (a fresher job is queued and will do
- *      the work). This is the "reset the timer on subsequent dispatch"
- *      semantic the spec calls for.
+ * Why not ShouldBeUnique any more: the old design had BOTH a unique lock and
+ * this stamp check, and they cancelled out. The lock (held from dispatch
+ * until the job finished) rejected completion B's dispatch inside A's delay;
+ * then A saw B's newer stamp and bailed for a job the lock had refused to
+ * queue. Any two completions within 30 s produced ZERO refreshes and no
+ * WorkspaceDataUpdated, so open pages never live-reloaded after a multi-file
+ * import. ShouldBeUniqueUntilProcessing would not fix it either — A still
+ * holds the lock while B dispatches during A's delay.
+ *
+ * Every failure mode leans toward refreshing, never toward silence:
+ *   - Redis unreadable at handle() → run.
+ *   - Stamp expired or missing → run.
+ *   - Dispatch succeeds but the stamp write fails → the older job still sees
+ *     its own token and runs (the stamp is written AFTER dispatch for this
+ *     reason; the reverse order could supersede a job with one never queued).
+ * The cost of those paths is at most a redundant refresh, which FastAPI's
+ * per-view advisory try-lock makes cheap.
+ *
+ * Trailing-edge means a completion stream that never pauses for
+ * DEBOUNCE_SECONDS defers the refresh until it does. The 18:00 UTC
+ * `mv_refresh_silver` Hatchet cron is the backstop either way.
+ *
+ * Timeouts (LAR-7): the job runs on supervisor-1, whose worker timeout is
+ * 60 s (config/horizon.php). The FastAPI call used to wait 120 s, so a slow
+ * refresh got the worker SIGKILLed mid-request, left `reserved` until
+ * retry_after, and was retried into the same kill three times. The HTTP
+ * timeout is now HTTP_TIMEOUT_SECONDS (< $timeout), so a slow refresh fails
+ * the attempt cleanly and is retried after $backoff; the retry either finds
+ * the view refreshed or skips it under FastAPI's advisory lock.
+ * tests/Unit/Jobs/DebounceWorkspaceMvRefreshTimeoutTest.php pins the order.
  *
  * When the job decides to run, it POSTs to FastAPI's
  * /internal/v1/mv-refresh/run endpoint, which performs the actual
@@ -48,56 +75,87 @@ use RuntimeException;
  * On successful refresh, the job dispatches a
  * {@see WorkspaceDataUpdated} event so the frontend pages
  * (Overview/Lakehouse/Drillhole/Map) know to re-fetch their data.
+ *
+ * Octane: nothing here is resident — the job is constructed per dispatch and
+ * debounce() is a static function with no static state.
  */
-class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
+class DebounceWorkspaceMvRefresh implements ShouldQueue
 {
     use Queueable;
 
-    /** Refresh debounce window — must match the dispatch delay. */
+    /** Refresh debounce window (quiet period after the last completion). */
     public const DEBOUNCE_SECONDS = 30;
+
+    /**
+     * Upper bound on the FastAPI /mv-refresh/run call. Must stay below
+     * {@see $timeout}, which must not exceed supervisor-1's worker timeout.
+     */
+    public const HTTP_TIMEOUT_SECONDS = 45;
+
+    public const HTTP_CONNECT_TIMEOUT_SECONDS = 5;
+
+    /**
+     * How long the "newest dispatch" stamp outlives the burst. Long enough
+     * that a Horizon backlog cannot expire it before the burst's jobs run;
+     * if it does expire, every waiting job runs (redundant, never zero).
+     */
+    public const STAMP_TTL_SECONDS = 3600;
 
     public int $tries = 3;
 
     public int $backoff = 30;
+
+    /** Matches supervisor-1's worker timeout; see the class docblock. */
+    public int $timeout = 60;
+
+    /**
+     * Identifies this dispatch in the per-workspace stamp. A plain property
+     * with a default (not a promoted readonly one) so a job serialized before
+     * this field existed unserializes with null instead of an uninitialized
+     * property; null takes the legacy timestamp comparison in handle().
+     */
+    public ?string $dispatchToken = null;
 
     public function __construct(
         public readonly string $workspaceId,
         public readonly string $projectId,
         public readonly string $pipelineRunId,
         public readonly int $dispatchedAtUnix,
+        ?string $dispatchToken = null,
     ) {
+        $this->dispatchToken = $dispatchToken;
         $this->delay = now()->addSeconds(self::DEBOUNCE_SECONDS);
         $this->onQueue('default');
     }
 
-    public function uniqueId(): string
+    /**
+     * Record a completion and queue the trailing-edge refresh for it.
+     *
+     * The only supported entry point: dispatching the job directly skips the
+     * stamp, and a job whose token was never stamped runs unconditionally.
+     */
+    public static function debounce(string $workspaceId, string $projectId, string $pipelineRunId): void
     {
-        return "mv_refresh:workspace:{$this->workspaceId}";
+        $token = (string) Str::uuid();
+
+        self::dispatch($workspaceId, $projectId, $pipelineRunId, time(), $token);
+
+        Redis::setex(self::stampKey($workspaceId), self::STAMP_TTL_SECONDS, $token);
     }
 
-    /**
-     * Cap how long the unique-lock holds. Should be longer than the
-     * delay + execution time so a legitimate run can't be displaced
-     * by a sibling, but short enough that a wedged job clears within
-     * a few minutes.
-     */
-    public function uniqueFor(): int
+    public static function stampKey(string $workspaceId): string
     {
-        return 300;
+        return "mv_refresh:last_dispatch:{$workspaceId}";
     }
 
     public function handle(): void
     {
-        $stampKey = "mv_refresh:last_dispatch:{$this->workspaceId}";
-        $latestDispatchedAt = (int) (Redis::get($stampKey) ?? 0);
-
-        // Coalesce: if a later dispatch happened during our 30s delay,
-        // bail — that later job will do the work with fresher data.
-        if ($latestDispatchedAt > $this->dispatchedAtUnix) {
+        $supersededBy = $this->supersedingDispatch();
+        if ($supersededBy !== null) {
             Log::info('mv_refresh.debounce.coalesced', [
                 'workspace_id' => $this->workspaceId,
-                'this_dispatched_at' => $this->dispatchedAtUnix,
-                'latest_dispatched_at' => $latestDispatchedAt,
+                'this_dispatch' => $this->dispatchToken ?? $this->dispatchedAtUnix,
+                'latest_dispatch' => $supersededBy,
             ]);
 
             return;
@@ -128,7 +186,8 @@ class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
             'X-Workspace-Id' => $this->workspaceId,
             'Accept' => 'application/json',
         ])
-            ->timeout(120)
+            ->connectTimeout(self::HTTP_CONNECT_TIMEOUT_SECONDS)
+            ->timeout(self::HTTP_TIMEOUT_SECONDS)
             ->post($url, [
                 'workspace_id' => $this->workspaceId,
                 'triggered_by' => 'ingestion',
@@ -236,6 +295,43 @@ class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
             $latencySeconds = max(0, time() - $this->dispatchedAtUnix);
             $this->recordEmissionLatency($latencySeconds);
         }
+    }
+
+    /**
+     * The stamp value of a NEWER dispatch for this workspace, or null when
+     * this job is the newest (or the stamp cannot be read — fail toward
+     * refreshing, never toward silence).
+     */
+    private function supersedingDispatch(): ?string
+    {
+        try {
+            $latest = Redis::get(self::stampKey($this->workspaceId));
+        } catch (\Throwable $e) {
+            Log::warning('mv_refresh.debounce.stamp_unreadable', [
+                'workspace_id' => $this->workspaceId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        if ($latest === null || $latest === false || $latest === '') {
+            return null;
+        }
+        $latest = (string) $latest;
+
+        if ($this->dispatchToken !== null) {
+            return $latest === $this->dispatchToken ? null : $latest;
+        }
+
+        // Legacy job, queued before dispatch tokens existed: its stamp was a
+        // unix timestamp. A non-numeric stamp is a token written by a newer
+        // dispatch, which will run itself.
+        if (! is_numeric($latest)) {
+            return $latest;
+        }
+
+        return (int) $latest > $this->dispatchedAtUnix ? $latest : null;
     }
 
     private function recordEmissionLatency(int $latencySeconds): void
