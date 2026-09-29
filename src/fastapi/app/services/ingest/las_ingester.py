@@ -175,22 +175,32 @@ async def _get_or_create_collar(
 
     Returns the collar_id (UUID as string).
     """
+    # Canonical form of the LAS ~WELL name: strip separators + uppercase, the
+    # rule in parsers/_hole_id.py::canonicalize. Also stored on insert so the
+    # chat retrieval path can join on silver.collars.hole_id_canonical.
+    hole_id_canonical = re.sub(r"[ \-_./]+", "", (hole_id or "").strip()).upper() or None
+
+    # Exact spelling first, then the canonical form. Matching on the exact
+    # string alone meant a LAS whose ~WELL says "TR-002" beside a collar
+    # ingested as "TR002" (or the reverse) did not find the collar it belongs
+    # to and INSERTED A SECOND ONE — with coordinates derived from
+    # DEFAULT_UTM_FALLBACK (Wyoming), not the hole's. The real hole then had
+    # no curves and the map gained a phantom hole 3,000 km away. ingest_tabular
+    # and ingest_well_logs already resolve hole ids this way
+    # (_collar_index/_resolve_collar); this ingester did not.
     row = await conn.fetchrow(
         """
         SELECT collar_id::text AS collar_id
           FROM silver.collars
-         WHERE project_id = $1::uuid AND hole_id = $2
+         WHERE project_id = $1::uuid
+           AND (hole_id = $2 OR ($3::text IS NOT NULL AND hole_id_canonical = $3))
+         ORDER BY (hole_id = $2) DESC
          LIMIT 1
         """,
-        project_id, hole_id,
+        project_id, hole_id, hole_id_canonical,
     )
     if row:
         return row["collar_id"]
-    # Canonicalize hole_id on insert so the chat retrieval path can join on
-    # silver.collars.hole_id_canonical without waiting on a backfill sweep.
-    # Mirrors the rule baked into the CSV parser
-    # (parsers/_hole_id.py::canonicalize): strip separators + uppercase.
-    hole_id_canonical = re.sub(r"[ \-_./]+", "", (hole_id or "").strip()).upper() or None
 
     row = await conn.fetchrow(
         """
