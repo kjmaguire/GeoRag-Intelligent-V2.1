@@ -420,6 +420,9 @@ async def _get_or_create_project(
     )
     if row:
         return row["project_id"]
+    # orientation_reference: BOH, the platform default (Project::
+    # DEFAULT_ORIENTATION_REFERENCE). This wrote 'grid_north', a north
+    # reference outside the BOH|TOH vocabulary (audit 2026-09-29 PG-14).
     row = await conn.fetchrow(
         """
         INSERT INTO silver.projects
@@ -427,7 +430,7 @@ async def _get_or_create_project(
              orientation_reference, status, workspace_id,
              created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5,
-                'grid_north', 'active', $6::uuid,
+                'BOH', 'active', $6::uuid,
                 NOW(), NOW())
         RETURNING project_id::text AS project_id
         """,

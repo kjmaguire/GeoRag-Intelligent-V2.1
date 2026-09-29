@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Models\Project;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreProjectRequest extends FormRequest
@@ -63,8 +64,35 @@ class StoreProjectRequest extends FormRequest
             'commodity' => ['nullable', 'string', 'max:50'],
             'region' => ['nullable', 'string', 'max:255'],
             'magnetic_declination' => ['nullable', 'numeric', 'between:-180,180'],
-            'orientation_reference' => ['nullable', 'string', 'in:BOH,TOH'],
+            // Always present after prepareForValidation() — see there.
+            'orientation_reference' => ['required', 'string', 'in:BOH,TOH'],
         ];
+    }
+
+    /**
+     * Default orientation_reference to BOH when the client omits it or
+     * sends null.
+     *
+     * silver.projects.orientation_reference is NOT NULL, so a "nullable"
+     * rule let an API client that left it out through validation and into
+     * a 500 on INSERT (database audit 2026-09-29 PG-14). BOH is what every
+     * other writer uses: the New Project form sends it, FastAPI's Project
+     * model defaults to it, and since 2026-09-29 the ingestion project
+     * stubs write it too (they wrote 'grid_north'). The column also has a
+     * DB default of BOH (2026_09_29_210400).
+     *
+     * Vocabulary: BOH / TOH is the core-orientation mark convention
+     * (bottom- / top-of-hole). 'grid_north', found on projects created by
+     * the LAS / cluster ingestion stubs before 2026-09-29, is a north
+     * reference, not an orientation mark — it carries no orientation
+     * information and nothing downstream applies this column (see
+     * UpdateProjectRequest). Those rows are left as they are.
+     */
+    protected function prepareForValidation(): void
+    {
+        if ($this->input('orientation_reference') === null) {
+            $this->merge(['orientation_reference' => Project::DEFAULT_ORIENTATION_REFERENCE]);
+        }
     }
 
     public function messages(): array

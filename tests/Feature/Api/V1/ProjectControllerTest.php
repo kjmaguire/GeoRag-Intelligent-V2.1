@@ -228,6 +228,43 @@ class ProjectControllerTest extends TestCase
             ->assertJsonValidationErrors(['orientation_reference']);
     }
 
+    /**
+     * Database audit 2026-09-29 PG-14: the column is NOT NULL, the rule was
+     * nullable, so omitting it was a 500 on INSERT. It now defaults to BOH.
+     */
+    public function test_store_defaults_orientation_reference_to_boh_when_omitted(): void
+    {
+        $this->actingAsAdmin();
+
+        $this->postJson('/api/v1/projects', ['project_name' => 'No Orientation Given'])
+            ->assertCreated()
+            ->assertJsonPath('data.orientation_reference', 'BOH');
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Null Orientation Given',
+            'orientation_reference' => null,
+        ])->assertCreated()->assertJsonPath('data.orientation_reference', 'BOH');
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Top Of Hole',
+            'orientation_reference' => 'TOH',
+        ])->assertCreated()->assertJsonPath('data.orientation_reference', 'TOH');
+    }
+
+    public function test_update_rejects_null_orientation_reference_instead_of_500(): void
+    {
+        $project = Project::factory()->create(['orientation_reference' => 'TOH']);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['orientation_reference' => null])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['orientation_reference']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['project_name' => 'Kept Orientation'])
+            ->assertOk()
+            ->assertJsonPath('data.orientation_reference', 'TOH');
+    }
+
     // -------------------------------------------------------------------------
     // show
     // -------------------------------------------------------------------------

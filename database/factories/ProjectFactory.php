@@ -35,7 +35,7 @@ class ProjectFactory extends Factory
             'crs_datum' => 'EPSG:32613',
             'company' => $this->faker->company(),
             'magnetic_declination' => $this->faker->randomFloat(2, -30, 30),
-            'orientation_reference' => $this->faker->randomElement(['grid', 'true']),
+            'orientation_reference' => $this->faker->randomElement(['BOH', 'TOH']),
             'commodity' => $this->faker->randomElement([
                 'Au', 'Ag', 'Cu', 'U3O8', 'Zn', 'Pb', 'Ni',
             ]),
