@@ -20,6 +20,12 @@ into the upload UI. This workflow:
                        spatial/ prefix + triggers ingest_spatial
        .geojson / .gpkg / .gml / .gpx / .dxf / .fgb / .qgs / .qgz
                     →  uploaded to bronze spatial/ prefix + ingest_spatial
+       .xyz         →  bronze xyz/ prefix + ingest_geophysics (Geosoft XYZ
+                       line data; ING-19)
+       a directory holding .rdt* files (a UBC-GIF DCIP2D export)
+                    →  its .rdt* / dcinv2d.* / ipinv2d.* / .inp (+ the mesh
+                       and topography files the .inp names) re-zipped as ONE
+                       member, bronze xyz/ prefix + ingest_geophysics
   4. Logs progress every 10 files.
   5. Returns a summary dict with per-extension counts and error tally.
 
@@ -71,6 +77,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -90,6 +97,10 @@ from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
+from app.hatchet_workflows.ingest_geophysics import (
+    IngestGeophysicsInput,
+    ingest_geophysics,
+)
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
 from app.hatchet_workflows.ingest_spatial import (
     QGIS_PROJECT_EXTENSIONS,
@@ -99,6 +110,12 @@ from app.hatchet_workflows.ingest_spatial import (
 )
 from app.hatchet_workflows.ingest_tabular import IngestTabularInput, ingest_tabular
 from app.hatchet_workflows.tiff_normalize import TiffNormalizeInput, tiff_normalize
+from app.services.ingest.dcip_bundle import (
+    DcipExport,
+    find_dcip_exports,
+    relative_dir,
+    write_bundle,
+)
 
 #: Vector + QGIS members this workflow hands off to ingest_spatial, without
 #: the leading dot (ingest_spatial stores them Path.suffix-style).
@@ -154,7 +171,16 @@ _ACCESS_EXTS = frozenset({"mdb", "accdb"})
 #: the rows those members produce are reported by the child runs.
 _DISPATCHED_COUNT_KEYS: tuple[str, ...] = (
     "las", "las_pending", "log", "csv", "xlsx", "tif", "pdf", "spatial", "tabular",
+    "geophysics",
 )
+
+#: Geosoft XYZ line data -> ingest_geophysics (ING-19, 2026-09-29). Fell to
+#: `unknown` before, like every format without a branch here.
+_GEOPHYSICS_XYZ_EXTS = frozenset({"xyz"})
+
+#: A UBC-GIF DCIP2D export is a DIRECTORY whose files are unreadable alone;
+#: it is bundled and dispatched as one member (services/ingest/dcip_bundle) —
+#: the same move the .shp branch makes for a shapefile's sidecars.
 
 #: Every bucket ``_ingest_one`` and the fan-out loop increment. The loop's
 #: ``counts`` dict is built from this so a branch cannot bump a key the dict
@@ -966,7 +992,18 @@ async def run_zip_ingest(
             )
 
             all_files = _collect_members(extract_dir)
-            total = len(all_files)
+            # DCIP2D export directories travel as ONE member each (ING-19):
+            # their files mean nothing alone, so they are claimed here and
+            # never reach the per-extension routing below.
+            dcip_exports, all_files = await asyncio.to_thread(
+                find_dcip_exports, all_files,
+            )
+            for export in dcip_exports:
+                log.info(
+                    "ingest_zip_archive: DCIP2D export %s claims %d file(s)",
+                    relative_dir(export, extract_dir), len(export.members),
+                )
+            total = len(all_files) + len(dcip_exports)
             log.info("ingest_zip_archive: extracted %d files run_id=%s", total, input.run_id)
             if archive_run_id:
                 await _archive_progress.mark_fanning_out(
@@ -1049,6 +1086,34 @@ async def run_zip_ingest(
                             ),
                         )
 
+                # DCIP2D exports first: they need no collar, and each one
+                # failing costs that export only, like any other member.
+                for export in dcip_exports:
+                    try:
+                        await _dispatch_dcip_export(
+                            export, root=extract_dir, store=store, input=input,
+                            children=member_runs,
+                        )
+                        counts["geophysics"] += 1
+                        if archive_run_id:
+                            await _archive_progress.increment_counts(
+                                archive_run_id=archive_run_id, succeeded=1,
+                            )
+                    except Exception as exc:
+                        counts["errors"] += 1
+                        errors.append({
+                            "file": export.directory.name, "ext": "dcip2d",
+                            "error": str(exc),
+                        })
+                        log.warning(
+                            "ingest_zip_archive: DCIP2D export %s failed — %s (continuing)",
+                            export.directory.name, exc,
+                        )
+                        if archive_run_id:
+                            await _archive_progress.increment_counts(
+                                archive_run_id=archive_run_id, failed=1,
+                            )
+
                 for idx, file_path in enumerate(ordered_files, start=1):
                     ext = file_path.suffix.lower().lstrip(".")
                     if idx == first_dependent_idx:
@@ -1098,6 +1163,7 @@ async def run_zip_ingest(
                             dispatched=dispatched_runs,
                             member_warnings=member_warnings,
                             children=member_runs,
+                            archive_root=extract_dir,
                         )
 
                         # This used to read `if ext not in ("skipped",)`.
@@ -1435,6 +1501,7 @@ async def _ingest_one(
     dispatched: list[_MemberRun] | None = None,
     member_warnings: list[dict[str, str]] | None = None,
     children: list[_MemberRun] | None = None,
+    archive_root: Path | None = None,
 ) -> None:
     """Route a single extracted file to its ingester.
 
@@ -1724,6 +1791,29 @@ async def _ingest_one(
         await asyncio.sleep(0.25)
         counts["tabular"] += 1
 
+    elif ext in _GEOPHYSICS_XYZ_EXTS:
+        # Geosoft XYZ line data -> ingest_geophysics (ING-19). Filed under
+        # "<archive>/<path in archive>" so a re-upload of the same archive
+        # replaces the same survey, and two archives that both hold a
+        # `mag.xyz` do not overwrite each other.
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        safe_name = _safe_filename(file_path.name)
+        geo_key = f"xyz/{input.project_id}/{ts}_{safe_name}"
+        await _put_member(store, geo_key, file_path)
+        await _dispatch_member(
+            ingest_geophysics,
+            IngestGeophysicsInput(
+                workspace_id=input.workspace_id,
+                project_id=input.project_id,
+                minio_key=geo_key,
+                source_epsg=input.source_epsg,
+                source_name=_member_source_name(input, file_path, archive_root),
+            ),
+            archive=input, member_name=file_path.name, children=children,
+        )
+        await asyncio.sleep(0.25)
+        counts["geophysics"] += 1
+
     elif ext in _SHAPEFILE_SIDECAR_EXTS:
         # Absorbed by the .shp branch above. Counted, not "unknown".
         counts["sidecar"] += 1
@@ -1845,8 +1935,64 @@ def _has_sibling(path: Path, suffix: str) -> bool:
 
 def _safe_filename(name: str) -> str:
     """Collapse characters that are unsafe in S3 keys to underscores."""
-    import re
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:120]
+
+
+def _archive_display_name(input: IngestZipArchiveInput) -> str:
+    """The archive's name as the user gave it (upload stamp stripped)."""
+    from app.services.ingest.geochronology_writer import (  # noqa: PLC0415
+        logical_source_name,
+    )
+
+    return logical_source_name(input.minio_key.rsplit("/", 1)[-1])
+
+
+def _member_source_name(
+    input: IngestZipArchiveInput, path: Path, root: Path | None,
+) -> str:
+    """``"<archive>/<path inside the archive>"`` — a member's stable identity."""
+    rel = (
+        path.relative_to(root).as_posix()
+        if root is not None and path.is_relative_to(root)
+        else path.name
+    )
+    return f"{_archive_display_name(input)}/{rel}"
+
+
+async def _dispatch_dcip_export(
+    export: DcipExport,
+    *,
+    root: Path,
+    store: ObjectStorage,
+    input: IngestZipArchiveInput,
+    children: list[_MemberRun] | None,
+) -> None:
+    """Bundle one DCIP2D export directory and hand it to ingest_geophysics.
+
+    Members keep their path relative to the archive root inside the bundle
+    (``services/ingest/dcip_bundle.write_bundle``), so the directory names
+    dcip2d_survey reads the line from (``L3750N/export``) survive the trip.
+    """
+    rel_dir = relative_dir(export, root)
+    bundle = root.parent / f"__dcip_{uuid.uuid4().hex}.zip"
+    await asyncio.to_thread(write_bundle, export, root, bundle)
+    try:
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        stem = _safe_filename(rel_dir.replace("/", "_").strip("._") or export.directory.name)
+        key = f"xyz/{input.project_id}/{ts}_{stem}_dcip2d.zip"
+        await _put_member(store, key, bundle)
+    finally:
+        bundle.unlink(missing_ok=True)
+    await _dispatch_member(
+        ingest_geophysics,
+        IngestGeophysicsInput(
+            workspace_id=input.workspace_id,
+            project_id=input.project_id,
+            minio_key=key,
+            source_name=_archive_display_name(input),
+        ),
+        archive=input, member_name=f"{rel_dir} (DCIP2D export)", children=children,
+    )
 
 
 # ---------------------------------------------------------------------------

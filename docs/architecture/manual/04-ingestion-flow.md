@@ -103,16 +103,17 @@ Memory protection:
 
 ## 4. The other ingest workflows
 
-Six workflows accept uploads. The full 50-workflow registry, with every
+Seven workflows accept uploads. The full 51-workflow registry, with every
 cron, lives in [Ch 07 §2.2](07-orchestration.md); this table is the ingest
 subset.
 
 | Workflow | Module | Accepts |
 |---|---|---|
 | `ingest_pdf` | `ingest_pdf.py` | drill reports, NI 43-101 PDFs |
-| `ingest_tabular` | `ingest_tabular.py` | CSV, XLSX, Access MDB, dBASE, MapInfo DAT |
-| `ingest_spatial` | `ingest_spatial.py` | shapefile, GeoJSON, GPKG, QGIS projects, XYZ, DC/IP, Surpac |
+| `ingest_tabular` | `ingest_tabular.py` | CSV, XLSX, Access MDB, dBASE, MapInfo DAT — drill tables, and (since 2026-09-29, ING-19) radiometric-age tables recognised by their headers or uploaded as `geochronology` → `silver.geochronology_samples` |
+| `ingest_spatial` | `ingest_spatial.py` | shapefile, GeoJSON, GPKG, QGIS projects, Surpac |
 | `ingest_well_logs` | `ingest_well_logs.py` | LAS |
+| `ingest_geophysics` | `ingest_geophysics.py` | (2026-09-29, ING-19) Geosoft `.xyz` line data → `silver.geophysics_surveys` + `geophysics_lines` / `geophysics_line_channels`; UBC-GIF DCIP2D export directories (bundled per directory by `ingest_zip_archive`, or a lone `.rdt*`) → `geophysics_surveys` + `geophysics_dcip_observations` / `geophysics_dcip_models`. *Corrected:* this table used to list XYZ and DC/IP under `ingest_spatial`, which never read either |
 | `ingest_zip_archive` | `ingest_zip_archive.py` | ZIP fan-out to the above, with a parent run row in `silver.archive_ingest_runs` |
 | `tiff_normalize` | `tiff_normalize.py` | multi-page TIFF → PDF, then dispatches `ingest_pdf` in-process (ADR-0005) |
 

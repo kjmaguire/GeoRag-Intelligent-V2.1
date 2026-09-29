@@ -56,6 +56,10 @@ class TestKeyPrefixRouting:
             ("samples/{p}/20260821_120000_assays.csv", "ingest_tabular"),
             ("excel/{p}/20260821_120000_book.xlsx", "ingest_tabular"),
             ("tabular/{p}/20260821_120000_from_zip.csv", "ingest_tabular"),
+            # ING-19 (2026-09-29)
+            ("xyz/{p}/20260929_120000_mag.xyz", "ingest_geophysics"),
+            ("xyz/{p}/20260929_120000_L3750N_dcip2d.zip", "ingest_geophysics"),
+            ("geochronology/{p}/20260929_120000_ages.csv", "ingest_tabular"),
         ],
     )
     def test_every_live_bronze_prefix_routes_to_its_own_workflow(
@@ -114,6 +118,8 @@ class TestRecoveryPayloads:
             (f"spatial/{_PJ}/a.gpkg", "ingest_spatial"),
             (f"well_logs/{_PJ}/a.las", "ingest_well_logs"),
             (f"collars/{_PJ}/a.csv", "ingest_tabular"),
+            (f"xyz/{_PJ}/a.xyz", "ingest_geophysics"),
+            (f"xyz/{_PJ}/a_dcip2d.zip", "ingest_geophysics"),
         ],
     )
     def test_builder_returns_the_named_workflow_and_a_valid_input(
@@ -140,6 +146,8 @@ class TestRecoveryPayloads:
             ("surveys", "surveys"),
             ("lithology", "lithology"),
             ("samples", "samples"),
+            # ING-19: the one hint ingest_tabular reads verbatim.
+            ("geochronology", "geochronology"),
             # A workbook classifies every sheet on its own, and `tabular/`
             # is written by the ZIP extractor for a file nobody typed. Both
             # must classify from the header rather than inherit a hint.
@@ -171,6 +179,7 @@ class TestRecoveryPayloads:
             (f"spatial/{_PJ}/a.gpkg", "ingest_spatial"),
             (f"well_logs/{_PJ}/a.las", "ingest_well_logs"),
             (f"collars/{_PJ}/a.csv", "ingest_tabular"),
+            (f"xyz/{_PJ}/a.xyz", "ingest_geophysics"),
         ],
     )
     def test_run_id_taking_workflows_receive_the_reserved_recovery_row(

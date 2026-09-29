@@ -27,7 +27,8 @@ export type Category =
   | 'tables'
   | 'well_logs'
   | 'seismic'
-  | 'xyz';
+  | 'xyz'
+  | 'geochronology';
 
 /** Extensions each category accepts. Mirrors UploadController::CATEGORIES. */
 export const CATEGORY_EXTS: Record<Category, string[]> = {
@@ -82,7 +83,14 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   ],
   well_logs: ['las'],
   seismic: ['sgy', 'segy'],
-  xyz: ['xyz', 'dat', 'txt'],
+  // Live since 2026-09-29 (ING-19): Geosoft XYZ line data -> ingest_geophysics.
+  // Only `.xyz` — `.dat` and `.txt` are tables and live in `tables`/`collars`.
+  // A DCIP2D inversion export is a folder and uploads as an `archive`.
+  xyz: ['xyz'],
+  // Radiometric-age tables -> ingest_tabular with the geochronology hint. A
+  // workbook goes through `excel`, where each sheet is recognised by its
+  // headers.
+  geochronology: ['csv', 'txt', 'tsv'],
 };
 
 export const CATEGORY_LABEL: Record<Category, string> = {
@@ -97,7 +105,8 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, Surpac, ZIP)',
   well_logs: 'Well logs (LAS)',
   seismic: 'Seismic (SEG-Y)',
-  xyz: 'XYZ grids / point data',
+  xyz: 'Geophysics line data (Geosoft XYZ)',
+  geochronology: 'Geochronology / radiometric ages (CSV)',
 };
 
 /**
@@ -108,7 +117,7 @@ export const CATEGORY_LABEL: Record<Category, string> = {
  * is then told no. Filter these out of every picker, and move an entry out of
  * here the moment its workflow ships.
  */
-export const RETIRED_CATEGORIES = new Set<Category>(['seismic', 'xyz']);
+export const RETIRED_CATEGORIES = new Set<Category>(['seismic']);
 
 /** Categories a user may actually choose. */
 export const LIVE_CATEGORIES = (Object.keys(CATEGORY_LABEL) as Category[]).filter(
@@ -161,6 +170,9 @@ export function categoryForExtension(ext: string): Category | null {
     'tables',
     'spatial',
     'well_logs',
+    'xyz',
+    // Never wins for .csv (collars comes first); listed so the order is total.
+    'geochronology',
   ];
 
   for (const cat of preference) {
@@ -265,6 +277,10 @@ export function supportsCrsOverride(category: Category | null): boolean {
     // EPSG:32613. RedStar's Sitka collars landed 3,430 km east of Unga
     // Island, and the run's advice ("re-upload with the correct EPSG
     // code") could not be followed for a file inside an archive.
-    category === 'archive'
+    category === 'archive' ||
+    // ING-19 (2026-09-29): ingest_geophysics declares source_epsg (an XYZ
+    // file states no CRS), and `geochronology` routes to ingest_tabular.
+    category === 'xyz' ||
+    category === 'geochronology'
   );
 }

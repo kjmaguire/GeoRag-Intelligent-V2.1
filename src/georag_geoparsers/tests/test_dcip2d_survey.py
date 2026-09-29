@@ -601,3 +601,47 @@ class TestJoinLandsWhenTheDataAllows:
         assert survey.join.exact_matches == (4600.0, 4700.0)
         reasons = " | ".join(survey.join.unresolved_reasons)
         assert "2 of 3 electrode chainages" in reasons
+
+
+# ---------------------------------------------------------------------------
+# Ingest mode (ING-19, 2026-09-29): a bad row or model costs itself only
+# ---------------------------------------------------------------------------
+
+class TestSkipBadRows:
+    """``skip_bad_rows=True`` is what ingest_geophysics passes.
+
+    The default stays strict — a direct caller still gets the ValueError —
+    but an upload must not lose every reading to one malformed row, and
+    must not lose the readings to one unreadable model.
+    """
+
+    def test_default_is_still_strict(self, tmp_path):
+        export = _minimal_export(tmp_path)
+        (export / "SYN_Vp_XYZ.rdtmd").write_text(
+            "Vp - Line 1200 N\nPole-Dipole\n  100.0  100.0  150.0  200.0  0.5\n  bad\n",
+            encoding="ascii",
+        )
+        with pytest.raises(ValueError):
+            read_dcip2d_survey(export)
+
+    def test_a_malformed_reading_is_skipped_and_listed(self, tmp_path):
+        export = _minimal_export(tmp_path)
+        (export / "SYN_Vp_XYZ.rdtmd").write_text(
+            "Vp - Line 1200 N\nPole-Dipole\n  100.0  100.0  150.0  200.0  0.5\n"
+            "  100.0  150.0  200.0\n  150.0  150.0  200.0  x  0.25\n"
+            "  150.0  150.0  200.0  250.0  0.25\n",
+            encoding="ascii",
+        )
+        survey = read_dcip2d_survey(export, skip_bad_rows=True)
+        split = survey.observed[0]
+        assert split.record_count == 2
+        assert split.source_rows == (3, 6)
+        assert [row for row, _ in split.skipped_rows] == [4, 5]
+
+    def test_an_unreadable_model_is_left_out_not_fatal(self, tmp_path):
+        export = _minimal_export(tmp_path)
+        _write_model(export / "ipinv2d.011", 2, 2, [1.0, 2.0, 3.0])  # one short
+        survey = read_dcip2d_survey(export, skip_bad_rows=True)
+        assert [m.filename for m in survey.models] == ["dcinv2d.010"]
+        assert [name for name, _ in survey.rejected_files] == ["ipinv2d.011"]
+        assert survey.observation_count == 2

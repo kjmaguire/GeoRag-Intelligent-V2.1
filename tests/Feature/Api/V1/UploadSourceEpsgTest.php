@@ -270,4 +270,48 @@ class UploadSourceEpsgTest extends TestCase
         $this->assertNotNull($payload, 'ingest_well_logs was never triggered');
         $this->assertArrayNotHasKey('source_epsg', $payload);
     }
+
+    public function test_xyz_upload_reaches_ingest_geophysics_with_its_crs(): void
+    {
+        // ING-19 (2026-09-29): `xyz` answered 422 retired_pipeline until
+        // ingest_geophysics existed. An XYZ file declares no CRS, so the
+        // override matters exactly as it does for a collar CSV.
+        $xyz = UploadedFile::fake()->createWithContent(
+            'mag.xyz',
+            "/ X Y MAG\nLine 10\n495000 6220000 55432.1\n",
+        );
+
+        $this->actingAs($this->user)
+            ->postJson($this->uploadUrl(), [
+                'file' => $xyz,
+                'category' => 'xyz',
+                'source_epsg' => 26909,
+            ])
+            ->assertCreated();
+
+        $payload = $this->payloadFor('ingest_geophysics');
+        $this->assertNotNull($payload, 'ingest_geophysics was never triggered');
+        $this->assertSame(26909, $payload['source_epsg'] ?? null);
+        $this->assertStringStartsWith('xyz/', (string) ($payload['minio_key'] ?? ''));
+        $this->assertArrayNotHasKey('sheet_type', $payload);
+    }
+
+    public function test_geochronology_upload_sends_its_hint_to_ingest_tabular(): void
+    {
+        $csv = UploadedFile::fake()->createWithContent(
+            'ages.csv',
+            "Sample,System,Mineral,Age (Ma)\nSK-01,U-Pb,zircon,1845.2\n",
+        );
+
+        $this->actingAs($this->user)
+            ->postJson($this->uploadUrl(), [
+                'file' => $csv,
+                'category' => 'geochronology',
+            ])
+            ->assertCreated();
+
+        $payload = $this->payloadFor('ingest_tabular');
+        $this->assertNotNull($payload, 'ingest_tabular was never triggered');
+        $this->assertSame('geochronology', $payload['sheet_type'] ?? null);
+    }
 }

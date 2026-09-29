@@ -56,7 +56,7 @@ Sixteen compose services and ten ECS services. Profiles and images are in
 | `minio` (SeaweedFS) | Live | not deployed | production uses S3 via `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset, so boto3 resolves the region endpoint and the task role |
 | `minio-init` | Live | not deployed | one-shot bucket creation |
 | `hatchet-lite` | Live | `hatchet` | `v0.91.2` in compose, Helm and ECS (`services.tf` `external_image`), bumped 2026-09-24 for CVE-2026-61687 |
-| `hatchet-worker` | Live | `hatchet-worker` | one merged worker, `WORKER_POOL=all`, 50 workflows. Unlike Azure it genuinely stops overnight (`desired-count 0`) |
+| `hatchet-worker` | Live | `hatchet-worker` | one merged worker, `WORKER_POOL=all`, 51 workflows. Unlike Azure it genuinely stops overnight (`desired-count 0`) |
 | `langfuse-web` / `-worker` / `clickhouse` | Opt-in overlay | not deployed | `docker/compose.langfuse.yml`; not in the default `up` |
 
 Two more exist in production only, as EventBridge-scheduled RunTasks rather

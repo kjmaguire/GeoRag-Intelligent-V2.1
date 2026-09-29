@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.hatchet_workflows import _progress
+from app.hatchet_workflows.ingest_geophysics import ingest_geophysics
 from app.hatchet_workflows.ingest_spatial import ingest_spatial
 from app.hatchet_workflows.ingest_tabular import ingest_tabular
 from app.hatchet_workflows.ingest_well_logs import ingest_well_logs
@@ -43,6 +44,7 @@ class TestEveryIngestWorkflowRegistersAFailureHook:
             ingest_spatial,
             ingest_tabular,
             ingest_well_logs,
+            ingest_geophysics,
             # The three that already had one — kept here so a refactor that
             # drops a hook is caught for all six, not just the new three.
             ingest_zip_archive,

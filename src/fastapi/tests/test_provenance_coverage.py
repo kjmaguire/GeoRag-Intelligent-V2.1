@@ -99,6 +99,16 @@ LINEAGE_ON_THE_SILVER_ROW: dict[str, str] = {
         "path, same lineage columns as the PDF path",
     "services/ingest/raster_metadata.py":
         "silver.raster_layers.source_file_sha256, which is NOT NULL there",
+    "services/ingest/geophysics_writer.py":
+        "silver.geophysics_surveys.source_file / source_file_sha256 / "
+        "source_object_key / parser_name / parser_version (ING-19); each "
+        "geophysics_lines row carries source_rows (1-based file lines) and "
+        "each geophysics_dcip_observations row source_file + source_row. "
+        "Channels and models hang off those rows by FK",
+    "services/ingest/geochronology_writer.py":
+        "silver.geochronology_samples.source_file / source_file_sha256 / "
+        "source_object_key / source_row / parser_name / parser_version "
+        "(ING-19) -- row-oriented, so the row number is on the silver row",
 }
 
 #: Modules whose silver writes are not derived from an ingested file at

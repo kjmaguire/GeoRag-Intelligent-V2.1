@@ -221,6 +221,17 @@ class UploadController extends Controller
         // One row per CURVE with depth/value arrays, not a row per sample:
         // a 3,000 m hole logged every 15 cm is 20,000 samples per curve.
         'well_logs' => ['las'],
+        // Restored 2026-09-29 (ING-19): Geosoft XYZ line data ->
+        // ingest_geophysics -> silver.geophysics_surveys / geophysics_lines /
+        // geophysics_line_channels. Only `.xyz`: the retired entry also
+        // listed `.dat` and `.txt`, which are a MapInfo/dBASE table and a
+        // delimited table and already belong to `tables` and `collars`. A
+        // DCIP2D export is a directory, so it arrives as an `archive`.
+        'xyz' => ['xyz'],
+        // Radiometric-age tables -> ingest_tabular with the `geochronology`
+        // hint -> silver.geochronology_samples. A workbook goes through
+        // `excel`: each sheet is recognised by its own headers.
+        'geochronology' => ['csv', 'txt', 'tsv'],
     ];
 
     /**
@@ -235,6 +246,10 @@ class UploadController extends Controller
      *              or workbook found inside an archive so ingest_tabular can
      *              classify it. No user ever picks this category; the files
      *              still need to show up on the Ingestion Runs page.
+     * (`xyz` also receives what ingest_zip_archive fans out to
+     * ingest_geophysics — an `.xyz` member or a bundled DCIP2D export
+     * directory — so it needs no prefix of its own. `geophysics` was avoided
+     * on purpose: it is a RETIRED category name below.)
      *
      * Exposed because IngestionRunsController scans bronze directly as a
      * fallback for uploads whose progress row has not appeared yet, and a
@@ -276,11 +291,10 @@ class UploadController extends Controller
      * @var array<string, list<string>>
      */
     private const RETIRED_CATEGORIES = [
-        // Parsers exist and are tested for both, but neither has a workflow
-        // or a settled silver table shape yet. Wiring them is the same shape
-        // of work ingest_well_logs just did for LAS.
+        // No workflow and no silver table shape yet (and no segyio in the
+        // image). `xyz` left this list on 2026-09-29 when ingest_geophysics
+        // gave it a consumer (ING-19).
         'seismic' => ['sgy', 'segy'],
-        'xyz' => ['xyz', 'dat', 'txt'],
         // Geophysics interpretation summary JSON — was consumed by the Dagster
         // silver_geophysics asset. No parser survives for it.
         'geophysics' => ['json'],
@@ -1040,6 +1054,8 @@ class UploadController extends Controller
         'tables' => 'ingest_tabular',
         'spatial' => 'ingest_spatial',
         'well_logs' => 'ingest_well_logs',
+        'xyz' => 'ingest_geophysics',
+        'geochronology' => 'ingest_tabular',
     ];
 
     /**
@@ -1060,10 +1076,10 @@ class UploadController extends Controller
      *
      * @param int|null $sourceEpsg Operator-supplied CRS for a file that
      *                             declares none. Forwarded to ingest_spatial
-     *                             and ingest_tabular, which both accept
-     *                             `source_epsg` on their input model, and
-     *                             withheld from ingest_well_logs, which does
-     *                             not.
+     *                             ingest_tabular and ingest_geophysics, which
+     *                             accept `source_epsg` on their input model,
+     *                             and withheld from ingest_well_logs, which
+     *                             does not.
      * @param string|null $sourceCrsWkt Donated `.prj` text for a spatial
      *                                  file that cannot carry the copy as a
      *                                  ZIP member. Forwarded to
@@ -1163,6 +1179,7 @@ class UploadController extends Controller
                     'surveys' => 'survey',
                     'lithology' => 'lithology',
                     'samples' => 'sample',
+                    'geochronology' => 'geochronology',
                     default => null,
                 }
             : null;
@@ -1179,7 +1196,7 @@ class UploadController extends Controller
             // ingested silently assumed its DEFAULT_SOURCE_EPSG of 32613
             // (UTM 13N) — correct in Saskatchewan, a continent out in Alaska.
             if ($sourceEpsg !== null
-                && in_array($workflow, ['ingest_tabular', 'ingest_spatial'], true)
+                && in_array($workflow, ['ingest_tabular', 'ingest_spatial', 'ingest_geophysics'], true)
             ) {
                 $payload['source_epsg'] = $sourceEpsg;
             }

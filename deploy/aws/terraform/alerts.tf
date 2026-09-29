@@ -135,7 +135,7 @@ locals {
       # day it applies, so this emails daily until the token is rotated.
       log_group   = "scheduler"
       pattern     = "HATCHET_TOKEN_EXPIRING"
-      description = "HATCHET_CLIENT_TOKEN expires within 21 days, has expired, or the daily check could not read its expiry. When it lapses every Hatchet worker and client fails auth at once while the engine looks healthy: all 50 workflows and every cron stop. Rotate with deploy/aws/rotation/rotate-hatchet-token.sh (ops/runbooks/secret-rotation.md §9); the log line in /ecs/georag/scheduler (stream prefix token-check) says which case this is."
+      description = "HATCHET_CLIENT_TOKEN expires within 21 days, has expired, or the daily check could not read its expiry. When it lapses every Hatchet worker and client fails auth at once while the engine looks healthy: all 51 workflows and every cron stop. Rotate with deploy/aws/rotation/rotate-hatchet-token.sh (ops/runbooks/secret-rotation.md §9); the log line in /ecs/georag/scheduler (stream prefix token-check) says which case this is."
     }
     # bedrock-endpoint-not-inservice was here until 2026-09-15. ADR-0022
     # called it the sharpest edge in this deployment: a Marketplace endpoint

@@ -37,6 +37,7 @@ _INGEST_WORKFLOWS = [
     ("app.hatchet_workflows.ingest_tabular", "ingest_tabular"),
     ("app.hatchet_workflows.ingest_spatial", "ingest_spatial"),
     ("app.hatchet_workflows.ingest_well_logs", "ingest_well_logs"),
+    ("app.hatchet_workflows.ingest_geophysics", "ingest_geophysics"),
     ("app.hatchet_workflows.ingest_zip_archive", "ingest_zip_archive"),
     ("app.hatchet_workflows.promote_silver_to_gold", "promote_silver_to_gold"),
     ("app.hatchet_workflows.ingest_pdf", "ingest_pdf"),

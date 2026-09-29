@@ -221,6 +221,31 @@ the MapLibre drill trace overlay via Martin.
 [2026_05_21_030000_create_silver_geophysics_surveys.php](../../../database/migrations/2026_05_21_030000_create_silver_geophysics_surveys.php).
 PK `survey_id UUID`. Holds magnetic/gravity/electromagnetic survey metadata.
 
+**As built 2026-09-29 (ING-19)** —
+[2026_09_29_231500_wire_geophysics_and_geochronology_ingest_tables.php](../../../database/migrations/2026_09_29_231500_wire_geophysics_and_geochronology_ingest_tables.php)
+adds lineage (`source_file`, `source_file_sha256`, `source_object_key`,
+`parser_name`, `parser_version`) and `georef_method` / `crs_confidence`, and
+replaces UNIQUE (workspace_id, survey_name) with UNIQUE NULLS NOT DISTINCT
+(workspace_id, project_id, survey_name) — the `ingest_geophysics` upsert key.
+Beneath it, four new tables (all `workspace_id` + `project_id`, ENABLE + FORCE
+RLS with a fail-closed `tenant_isolation` policy, cascading from the survey):
+
+- `silver.geophysics_lines` — one row per Geosoft XYZ line / 100k-point
+  segment: `line_id`, `line_type`, `segment`, `x_native`/`y_native` arrays in
+  `source_epsg`, `source_rows`, `geom` (LINESTRING or MULTIPOINT, 4326, GIST).
+- `silver.geophysics_line_channels` — one row per (line, channel), values as
+  an array parallel to the line's points.
+- `silver.geophysics_dcip_observations` — one row per DCIP2D reading: four
+  electrode *chainages* and a value, `source_file` + `source_row`. No geometry
+  column: the export does not place the chainage axis on the ground.
+- `silver.geophysics_dcip_models` — one row per inversion model: `nx`, `nz`,
+  `cell_values` / `air_mask` arrays (row-major, surface first), unit.
+
+`silver.geochronology_samples` (2026-05-24) gains the same lineage columns
+plus `source_row` and `x_native` / `y_native` / `source_epsg`; its unique key
+becomes (workspace_id, project_id, sample_id, isotopic_system, mineral_dated),
+NULLS NOT DISTINCT. It is written by `ingest_tabular`.
+
 ### silver.ingest_progress
 
 [2026_05_24_230000_create_silver_ingest_progress.php](../../../database/migrations/2026_05_24_230000_create_silver_ingest_progress.php) + extension

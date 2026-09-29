@@ -140,6 +140,15 @@ _RECOVERY_WORKFLOW_BY_PREFIX: dict[str, str] = {
     "archive": "ingest_zip_archive",
     "spatial": "ingest_spatial",
     "well_logs": "ingest_well_logs",
+    # 2026-09-29 (ING-19): Geosoft XYZ uploads (`xyz` category), and the
+    # `.xyz` members and bundled DCIP2D exports ingest_zip_archive writes
+    # under the same `xyz/` prefix (`geophysics` is a RETIRED category name,
+    # so it is deliberately not reused). The workflow upserts its survey and
+    # replaces the survey's children in one transaction, so a re-dispatch
+    # replaces rather than accumulates.
+    "xyz": "ingest_geophysics",
+    # Radiometric-age tables: ingest_tabular, with the prefix as the hint.
+    "geochronology": "ingest_tabular",
     # ingest_tabular handles both the typed drill categories and the two
     # generic workbook prefixes. For the typed ones the prefix IS the
     # sheet_type hint the geologist chose at upload time, and passing it back
@@ -161,7 +170,7 @@ _RECOVERY_WORKFLOW_BY_PREFIX: dict[str, str] = {
 
 #: Prefixes that are also a sheet_type hint for ingest_tabular.
 _TABULAR_SHEET_TYPE_PREFIXES: frozenset[str] = frozenset(
-    {"collars", "surveys", "lithology", "samples"}
+    {"collars", "surveys", "lithology", "samples", "geochronology"}
 )
 
 
@@ -447,6 +456,19 @@ def _build_recovery_payload(
         )
 
         return ingest_well_logs, IngestWellLogsInput(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=minio_key,
+            run_id=recovery_run_id,
+        )
+
+    if workflow_name == "ingest_geophysics":
+        from app.hatchet_workflows.ingest_geophysics import (
+            IngestGeophysicsInput,
+            ingest_geophysics,
+        )
+
+        return ingest_geophysics, IngestGeophysicsInput(
             workspace_id=workspace_id,
             project_id=project_id,
             minio_key=minio_key,

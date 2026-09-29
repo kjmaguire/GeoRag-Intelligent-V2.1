@@ -109,6 +109,10 @@ class Dcip2dData:
     title: str          # line 1, free text written by the survey contractor
     array_type: str     # line 2, e.g. "Pole-Dipole"
     records: list[tuple[float, float, float, float, float]]  # C1,C2,P1,P2,value
+    #: 1-based file line number of each record, parallel to ``records``.
+    source_rows: tuple[int, ...] = ()
+    #: Rows skipped under ``skip_bad_rows=True``: ``(line_number, reason)``.
+    skipped_rows: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True, eq=False)
@@ -205,11 +209,17 @@ def _air_mask(values: np.ndarray) -> np.ndarray:
 # Observed data  (.rdt / .rdtmd / .rdtmm / .rdtmp)
 # ---------------------------------------------------------------------------
 
-def read_dcip2d_data(path: str | Path) -> Dcip2dData:
+def read_dcip2d_data(path: str | Path, *, skip_bad_rows: bool = False) -> Dcip2dData:
     """Parse a DCIP2D observed-data file.
 
     Args:
         path: Path to the ``.rdt``-family file.
+        skip_bad_rows: when True, a data row that is not five numbers is
+            SKIPPED and listed in ``skipped_rows`` instead of raising. The
+            ingest workflow uses this: a partial row still cannot be repaired
+            by guessing which electrode it lost, so it is dropped — but it
+            no longer takes the other readings in the file down with it. The
+            default keeps the strict contract for direct callers.
 
     Returns:
         Dcip2dData. ``records`` holds one ``(C1, C2, P1, P2, value)`` tuple per
@@ -235,6 +245,8 @@ def read_dcip2d_data(path: str | Path) -> Dcip2dData:
     array_type = lines[1].strip()
 
     records: list[tuple[float, float, float, float, float]] = []
+    source_rows: list[int] = []
+    skipped: list[tuple[int, str]] = []
     for offset, line in enumerate(lines[2:], start=3):
         if not line.strip():
             continue
@@ -246,19 +258,27 @@ def read_dcip2d_data(path: str | Path) -> Dcip2dData:
         # and breaks the moment a chainage needs one more digit.
         fields = line.split()
         if len(fields) != len(DATA_COLUMNS):
-            raise ValueError(
-                f"DCIP2D data file '{path}' line {offset}: expected "
-                f"{len(DATA_COLUMNS)} fields {DATA_COLUMNS}, got {len(fields)}: {line!r}"
+            reason = (
+                f"line {offset}: expected {len(DATA_COLUMNS)} fields "
+                f"{DATA_COLUMNS}, got {len(fields)}"
             )
+            if skip_bad_rows:
+                skipped.append((offset, reason))
+                continue
+            raise ValueError(f"DCIP2D data file '{path}' {reason}: {line!r}")
 
         try:
             c1, c2, p1, p2, value = (float(field) for field in fields)
         except ValueError as exc:
+            if skip_bad_rows:
+                skipped.append((offset, f"line {offset}: non-numeric field"))
+                continue
             raise ValueError(
                 f"DCIP2D data file '{path}' line {offset}: non-numeric field in {line!r}"
             ) from exc
 
         records.append((c1, c2, p1, p2, value))
+        source_rows.append(offset)
 
     if not records:
         logger.info(
@@ -272,7 +292,13 @@ def read_dcip2d_data(path: str | Path) -> Dcip2dData:
             path, len(records), array_type,
         )
 
-    return Dcip2dData(title=title, array_type=array_type, records=records)
+    return Dcip2dData(
+        title=title,
+        array_type=array_type,
+        records=records,
+        source_rows=tuple(source_rows),
+        skipped_rows=tuple(skipped),
+    )
 
 
 # ---------------------------------------------------------------------------

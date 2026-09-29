@@ -163,11 +163,14 @@ describe('categoryForExtension', () => {
   });
 
   it('never returns a retired category', () => {
-    // .sgy and .xyz map to retired categories, so they must resolve to null
-    // rather than to a category the upload would be refused for.
+    // .sgy maps to a retired category, so it must resolve to null rather
+    // than to a category the upload would be refused for. (.xyz left that
+    // state on 2026-09-29 — ING-19 gave it ingest_geophysics.)
     expect(categoryForExtension('sgy')).toBeNull();
     expect(categoryForExtension('segy')).toBeNull();
-    expect(categoryForExtension('xyz')).toBeNull();
+    expect(categoryForExtension('xyz')).toBe('xyz');
+    // A .csv still defaults to collars, never to geochronology.
+    expect(categoryForExtension('csv')).toBe('collars');
 
     for (const ext of ['csv', 'pdf', 'shp', 'las', 'zip', 'xlsx']) {
       const cat = categoryForExtension(ext);
@@ -332,6 +335,10 @@ describe('supportsCrsOverride', () => {
       // advice that could not be followed, because no control existed.
       // RedStar's Sitka collars landed 3,430 km east of Unga Island.
       'archive',
+      // ING-19 (2026-09-29): IngestGeophysicsInput declares source_epsg and
+      // dispatchGeologyIngest() forwards it; geochronology is ingest_tabular.
+      'xyz',
+      'geochronology',
     ] as Category[]) {
       expect(supportsCrsOverride(cat), cat).toBe(true);
     }

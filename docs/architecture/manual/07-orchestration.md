@@ -2,7 +2,8 @@
 
 > **Reconciled 2026-09-07** against `config/horizon.php`, the three classes
 > in `app/Jobs/`, the `POOLS` registry in
-> `src/fastapi/app/hatchet_workflows/worker.py` (50 workflows since
+> `src/fastapi/app/hatchet_workflows/worker.py` (51 workflows since
+> `ingest_geophysics` joined on 2026-09-29 (ING-19); 50 since
 > `graph_tenant_audit` went on 2026-09-29; 51 before), every
 > `on_crons=` declaration, the two trigger routers, the then-current Azure
 > scheduler jobs, the GitHub Actions schedules, and
@@ -100,9 +101,9 @@ ingress for the default HTTP scaler, and its every-minute crons kept it
 busy — so the largest single line item ran through every "shutdown". ECS
 `desired-count 0` is an off switch rather than a floor (§3.2).
 
-### 2.2 The registry — 50 workflows
+### 2.2 The registry — 51 workflows
 
-`POOLS` in `worker.py` has an `ingestion` list (13) and an `ai` list (37);
+`POOLS` in `worker.py` has an `ingestion` list (14) and an `ai` list (37);
 `all` is their concatenation and the only pool anything runs. The split
 exists so the every-minute crons could one day move to a small always-on
 pool; today it is dormant. `python -m app.hatchet_workflows.worker --list`
@@ -129,7 +130,7 @@ three times and will move again.
 | `ingest_pdf` | — | The PDF pipeline ([Ch 04 §3](04-ingestion-flow.md#3-the-ingest_pdf-hatchet-workflow)); `GROUP_ROUND_ROBIN`, `max_runs=2` per workspace; dispatches `embed_pending_passages` after persist |
 | `tiff_normalize` | — | Lossless TIFF → PDF, then routes into `ingest_pdf` (ADR-0005) |
 | `ingest_zip_archive` | — | Extracts and fans out by extension |
-| `ingest_spatial`, `ingest_tabular`, `ingest_well_logs` | — | Vector, drill CSV/XLSX, LAS ingest ([Ch 04 §4](04-ingestion-flow.md#4-the-other-ingest-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
+| `ingest_spatial`, `ingest_tabular`, `ingest_well_logs`, `ingest_geophysics` | — | Vector, drill CSV/XLSX (+ geochronology tables), LAS, Geosoft XYZ + DCIP2D (2026-09-29) ingest ([Ch 04 §4](04-ingestion-flow.md#4-the-other-ingest-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
 | `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `started` past 15 min: completes finished-but-unmarked embeds, re-dispatches dead parses in-process, times out the rest |
 | `nightly_ingestion_integrity` | `0 17 * * *`, `0 19 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
 | `reliability_metrics_publisher` | `* * * * *` | Refreshes in-process Prometheus gauges that nothing scrapes in production ([Ch 12](12-observability.md)) |
@@ -184,7 +185,7 @@ predates the 2026-08-23 and 2026-08-28 deletions.
 
 | Path | Mechanism | Callers |
 |---|---|---|
-| **Upload trigger endpoints** | `POST /internal/v1/shadow/{ingest_pdf \| tiff_normalize \| ingest_zip_archive \| ingest_spatial \| ingest_tabular \| ingest_well_logs}/trigger` in `app/routers/shadow_trigger.py` → `_claim_and_dispatch`: under a per-file advisory lock it writes the `queued` `silver.ingest_progress` row BEFORE `workflow.aio_run_no_wait(payload)`, and answers `200 dispatched:false` when a non-terminal run for the key (or the caller's `run_id`) already exists, so Laravel's `retry(3, 500)` cannot double-dispatch (HAT-6/HAT-12, 2026-09-29). ZIP members get the same row-before-dispatch treatment inside `ingest_zip_archive` (HAT-4) | Laravel `UploadController` (the `ShadowRouter` is retired), gated per workspace by `app/Services/Ingestion/HatchetDispatchThrottle.php` after the 2026-06-01 burst that lost 529 files to queue-expiry cancellations |
+| **Upload trigger endpoints** | `POST /internal/v1/shadow/{ingest_pdf \| tiff_normalize \| ingest_zip_archive \| ingest_spatial \| ingest_tabular \| ingest_well_logs}/trigger` in `app/routers/shadow_trigger.py` (plus `ingest_geophysics`, 2026-09-29) → `_claim_and_dispatch`: under a per-file advisory lock it writes the `queued` `silver.ingest_progress` row BEFORE `workflow.aio_run_no_wait(payload)`, and answers `200 dispatched:false` when a non-terminal run for the key (or the caller's `run_id`) already exists, so Laravel's `retry(3, 500)` cannot double-dispatch (HAT-6/HAT-12, 2026-09-29). ZIP members get the same row-before-dispatch treatment inside `ingest_zip_archive` (HAT-4) | Laravel `UploadController` (the `ShadowRouter` is retired), gated per workspace by `app/Services/Ingestion/HatchetDispatchThrottle.php` after the 2026-06-01 burst that lost 529 files to queue-expiry cancellations |
 | **Integrations endpoint** | `POST /internal/v1/integrations/{flow}/trigger` in `app/routers/integrations_trigger.py`; per-flow JWT only (`Authorization: Bearer`, `scope=flow:<name>`), keys in `workflow.flow_registry` decrypted with `AUDIT_ENCRYPTION_KEY` | Designed for Kestra. No caller exists; the endpoint and its key machinery (`flow_jwt.py`, `flow_jwt_key_reaper`) remain live |
 | **Workflow trigger endpoint** | `POST /internal/v1/workflows/{workflow}/trigger` in `app/routers/workflow_trigger.py` (HAT-13, 2026-09-29): validates the input against the workflow's own model, then, under `scoped_connection`, refuses (404/422) any project, ticket, audit entry, workflow run or manifest prefix outside the authorised workspace before `aio_run_no_wait` | Laravel `WorkflowTriggerController`, gated by `WorkflowTriggerPolicy`: project members for `generate_report` / `score_targets` (`POST /api/v1/projects/{project}/workflows/{workflow}`); admins who belong to the workspace for `workspace_export`, `restore_workspace`, `lineage_walk`, `support_packet_assemble`, `support_replay` (`POST /api/v1/admin/workspaces/{workspace}/workflows/{workflow}`); admins for `llm_incident_diagnosis_run` (`POST /api/v1/admin/workflows/{workflow}`). 429 on an identical request within 60 s |
 | **In-process dispatch** | `aio_run_no_wait` from inside another workflow | `ingest_pdf` → `embed_pending_passages`; `stale_run_detector` → the owning `ingest_*`; `ingest_tabular` → `promote_silver_to_gold` |

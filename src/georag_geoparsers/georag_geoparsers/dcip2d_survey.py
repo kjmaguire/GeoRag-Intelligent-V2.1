@@ -229,6 +229,10 @@ class ObservedSplit:
     quantity: str          # one of _QUANTITY_RULES' values, or QUANTITY_UNKNOWN
     records: tuple[tuple[float, float, float, float, float], ...]
     chainages: tuple[float, ...]   # distinct electrode positions, ascending
+    #: 1-based file line of each record (parallel to ``records``).
+    source_rows: tuple[int, ...] = ()
+    #: ``(line_number, reason)`` for rows skipped under ``skip_bad_rows``.
+    skipped_rows: tuple[tuple[int, str], ...] = ()
 
     @property
     def record_count(self) -> int:
@@ -320,6 +324,10 @@ class Dcip2dSurvey:
     manifest: dict[str, str]
     join: ChainageJoin
     mesh: MeshGeoreference
+    #: ``(filename, reason)`` for files left out under ``skip_bad_rows`` — a
+    #: model whose cell count disagrees with its header, say. Never silently
+    #: empty: a caller reports each one.
+    rejected_files: tuple[tuple[str, str], ...] = ()
 
     # -- convenience views ------------------------------------------------
 
@@ -841,6 +849,7 @@ def read_dcip2d_survey(
     export_dir: str | Path,
     *,
     station_file: str | Path | None = None,
+    skip_bad_rows: bool = False,
 ) -> Dcip2dSurvey:
     """Assemble one DCIP2D export directory into a persistable survey record.
 
@@ -853,6 +862,11 @@ def read_dcip2d_survey(
             different grid would produce a confident, wrong georeference, which
             is strictly worse than the honest "no station file was supplied"
             this records instead.
+        skip_bad_rows: ingest mode. A malformed observed-data row is skipped
+            and listed on its split; a model file that does not parse is left
+            out and listed in ``rejected_files``. The identity checks below
+            (array type, line) still raise — they are about WHICH survey this
+            is, and no row-level skip can answer that.
 
     Returns:
         Dcip2dSurvey. Check ``is_georeferenced`` before treating any position
@@ -879,7 +893,7 @@ def read_dcip2d_survey(
     for path in entries:
         if not path.suffix.lower().startswith(_OBSERVED_SUFFIX):
             continue
-        data = read_dcip2d_data(path)
+        data = read_dcip2d_data(path, skip_bad_rows=skip_bad_rows)
         chainages = tuple(sorted({v for record in data.records for v in record[:4]}))
         observed.append(
             ObservedSplit(
@@ -889,6 +903,8 @@ def read_dcip2d_survey(
                 quantity=_quantity_from_title(data.title, path.name),
                 records=tuple(data.records),
                 chainages=chainages,
+                source_rows=data.source_rows,
+                skipped_rows=data.skipped_rows,
             )
         )
 
@@ -948,18 +964,27 @@ def read_dcip2d_survey(
 
     # -- models -----------------------------------------------------------
     models: list[ModelFile] = []
+    rejected: list[tuple[str, str]] = []
     for path in entries:
         match = _MODEL_FILE.match(path.name)
         if not match:
             continue
         family, stage = match.group(1).lower(), match.group(2).lower()
+        try:
+            model = read_dcip2d_model(path)
+        except ValueError as exc:
+            if not skip_bad_rows:
+                raise
+            logger.warning("dcip2d_survey: model '%s' left out — %s", path.name, exc)
+            rejected.append((path.name, str(exc)))
+            continue
         models.append(
             ModelFile(
                 filename=path.name,
                 family=family,
                 stage=stage,
                 iteration=int(stage) if stage.isdigit() else None,
-                model=read_dcip2d_model(path),
+                model=model,
             )
         )
 
@@ -997,6 +1022,7 @@ def read_dcip2d_survey(
         manifest=manifest,
         join=join,
         mesh=mesh,
+        rejected_files=tuple(rejected),
     )
 
     logger.info(
