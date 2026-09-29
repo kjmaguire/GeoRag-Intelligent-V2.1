@@ -2,7 +2,8 @@
 
 > **Reconciled 2026-09-07** against `config/horizon.php`, the three classes
 > in `app/Jobs/`, the `POOLS` registry in
-> `src/fastapi/app/hatchet_workflows/worker.py` (51 workflows), every
+> `src/fastapi/app/hatchet_workflows/worker.py` (50 workflows since
+> `graph_tenant_audit` went on 2026-09-29; 51 before), every
 > `on_crons=` declaration, the two trigger routers, the then-current Azure
 > scheduler jobs, the GitHub Actions schedules, and
 > `docs/hatchet_review_2026_08_21.md` for what production was observed to
@@ -99,9 +100,9 @@ ingress for the default HTTP scaler, and its every-minute crons kept it
 busy — so the largest single line item ran through every "shutdown". ECS
 `desired-count 0` is an off switch rather than a floor (§3.2).
 
-### 2.2 The registry — 51 workflows
+### 2.2 The registry — 50 workflows
 
-`POOLS` in `worker.py` has an `ingestion` list (13) and an `ai` list (38);
+`POOLS` in `worker.py` has an `ingestion` list (13) and an `ai` list (37);
 `all` is their concatenation and the only pool anything runs. The split
 exists so the every-minute crons could one day move to a small always-on
 pool; today it is dormant. `python -m app.hatchet_workflows.worker --list`
@@ -136,14 +137,13 @@ three times and will move again.
 | `index_health_check` | `0 */6 * * *` | Phase 0 agent (hypopg what-ifs) |
 | `store_reconciliation_run` | `0 19 * * *` | Phase 0 agent; cross-store counts, consumes outbox dead-letters |
 
-**AI list (38)**
+**AI list (37)**
 
 | Workflow | Cron | Role |
 |---|---|---|
 | `audit_ledger_verify` | `0 17 * * *` | Hash-chain verification of the previous 24 h |
 | `repair_shadow_aggregate` | `15 17 * * *` | Repair-loop shadow telemetry → `gold.repair_shadow_daily` |
 | `tenant_isolation_audit` | `0 17 * * *` | Phase 0 agent; writes outbox rows |
-| `graph_tenant_audit` | `30 17 * * *` | Phase 0 agent for a graph store that no longer exists; runs nightly regardless |
 | `mv_refresh_silver` | `0 18 * * *` | `REFRESH MATERIALIZED VIEW` on the silver fact-source views |
 | `public_geo_sync` | `30 18 * * 0` | Weekly ArcGIS refresh of `public_geo` (the live owner since the Dagster pull went) |
 | `flow_jwt_key_reaper` | `0 19 * * *` | Expires `workflow.flow_jwt_keys` rows |
@@ -155,11 +155,11 @@ three times and will move again.
 | `verbalize_page_images` | `20 * * * *` | Inert unless `IMAGE_VERBALIZATION_ENABLED`; returns before touching Postgres |
 | `qdrant_payload_audit` | `0 * * * *` | Guard 2 payload-shape audit; fail-open when Qdrant is unreachable (§7) |
 | `answer_quality_watch` | `30 21 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
-| `enrich_passage_context` | `45 21 * * *` | Contextual-retrieval headers (one LLM call per passage) |
+| `enrich_passage_context` | `45 21 * * *` | Contextual-retrieval headers (one LLM call per passage); 2 h budget so it ends 23:45, before the 00:00 UTC PDT stop (HAT-14) |
 | `model_cost_summary_run` | `0 22 * * *` | Phase 0 agent |
 | `what_changed_weekly` | `0 17 * * 1` | Fans `what_changed_detector` across active workspaces |
 | `cost_burn_watcher` | `*/5 * * * *` | Emits `cost.burn.alert` audit rows; suspends LLM activity at 2× the ceiling |
-| `promote_silver_to_gold` | — | Silver → gold visual tables; dispatched per project and by the nightly sweep |
+| `promote_silver_to_gold` | — | Silver → gold visual tables; dispatched per project and by the nightly sweep; one run per workspace at a time (`GROUP_ROUND_ROBIN`, HAT-8) |
 | `nl_summaries` | — | One retrievable passage per structured row (ADR-0012); registered, deliberately unscheduled |
 | `external_notification`, `public_geoscience_pull` | — | The two rows in `workflow.flow_registry`, reachable through the integrations endpoint (§2.3); no caller since Kestra went |
 | `phase2_smoke` | — | Placeholder |
@@ -168,7 +168,12 @@ three times and will move again.
 | `support_replay`, `restore_workspace`, `workspace_export` | — | Operator-triggered diagnosis, manifest-backed restore, per-workspace JSONL.gz export |
 | `lineage_walk`, `llm_incident_diagnosis_run`, `support_packet_assemble` | — | On-demand Phase 0 agents |
 
-Totals: 27 workflows carry 29 cron expressions. The shutdown-job header
+`graph_tenant_audit` (`30 17 * * *`, a Phase 0 auditor for the Neo4j
+store removed 2026-07-28) was unregistered on 2026-09-29 (HAT-13); the
+agent module `app/agents/phase0/graph_tenant_auditor.py` is left in place,
+unscheduled.
+
+Totals: 26 workflows carry 28 cron expressions. The shutdown-job header
 and the compose header still say "32 registered crons"; that count
 predates the 2026-08-23 and 2026-08-28 deletions.
 
@@ -176,10 +181,10 @@ predates the 2026-08-23 and 2026-08-28 deletions.
 
 | Path | Mechanism | Callers |
 |---|---|---|
-| **Upload trigger endpoints** | `POST /internal/v1/shadow/{ingest_pdf \| tiff_normalize \| ingest_zip_archive \| ingest_spatial \| ingest_tabular \| ingest_well_logs}/trigger` in `app/routers/shadow_trigger.py` → `workflow.aio_run_no_wait(payload)` | Laravel `UploadController` (the `ShadowRouter` is retired), gated per workspace by `app/Services/Ingestion/HatchetDispatchThrottle.php` after the 2026-06-01 burst that lost 529 files to queue-expiry cancellations |
+| **Upload trigger endpoints** | `POST /internal/v1/shadow/{ingest_pdf \| tiff_normalize \| ingest_zip_archive \| ingest_spatial \| ingest_tabular \| ingest_well_logs}/trigger` in `app/routers/shadow_trigger.py` → `_claim_and_dispatch`: under a per-file advisory lock it writes the `queued` `silver.ingest_progress` row BEFORE `workflow.aio_run_no_wait(payload)`, and answers `200 dispatched:false` when a non-terminal run for the key (or the caller's `run_id`) already exists, so Laravel's `retry(3, 500)` cannot double-dispatch (HAT-6/HAT-12, 2026-09-29). ZIP members get the same row-before-dispatch treatment inside `ingest_zip_archive` (HAT-4) | Laravel `UploadController` (the `ShadowRouter` is retired), gated per workspace by `app/Services/Ingestion/HatchetDispatchThrottle.php` after the 2026-06-01 burst that lost 529 files to queue-expiry cancellations |
 | **Integrations endpoint** | `POST /internal/v1/integrations/{flow}/trigger` in `app/routers/integrations_trigger.py`; per-flow JWT only (`Authorization: Bearer`, `scope=flow:<name>`), keys in `workflow.flow_registry` decrypted with `AUDIT_ENCRYPTION_KEY` | Designed for Kestra. No caller exists; the endpoint and its key machinery (`flow_jwt.py`, `flow_jwt_key_reaper`) remain live |
 | **In-process dispatch** | `aio_run_no_wait` from inside another workflow | `ingest_pdf` → `embed_pending_passages`; `stale_run_detector` → the owning `ingest_*`; `ingest_tabular` → `promote_silver_to_gold` |
-| **Engine crons** | `on_crons=` on the workflow decorator; the engine sends an empty input, so cron-fired workflows must default every field and their CEL concurrency keys must use `has()` (fixed 2026-08-21) | 27 workflows |
+| **Engine crons** | `on_crons=` on the workflow decorator; the engine sends an empty input, so cron-fired workflows must default every field and their CEL concurrency keys must use `has()` (fixed 2026-08-21) | 26 workflows |
 | **Operator** | Hatchet UI on 8889 / `hatchet-cc`, or `hatchet-admin` | ad hoc |
 
 Laravel → FastAPI calls carry `X-Service-Key` plus a short-lived HS256
@@ -192,9 +197,20 @@ bearer from `app/Services/FastApiJwtMinter.php` (signed with the same
   ranges from 2 minutes to 24 hours. `on_failure` hooks exist on
   `ingest_pdf`, `ingest_zip_archive`, `tiff_normalize` and
   `stale_run_detector` only.
-- Five workflows declare `GROUP_ROUND_ROBIN` concurrency keyed on
+- **Cross-workspace sweeps run once per workspace with the scope bound**
+  (`app/db/workspace_sweep.py`, HAT-1, 2026-09-29). On AWS the worker is
+  `georag_app` (NOBYPASSRLS), and an unscoped read of a fail-closed table
+  such as `silver.document_passages` returns nothing; the embed / enrich /
+  verbalize fan-outs, the orphan and stale sweeps, all four nightly
+  integrity tiers, the outbox claim (plus a cleared-scope pass for
+  platform rows) and `cost_burn_watcher` now enumerate `silver.workspaces`
+  (readable unscoped by design) and iterate. A new sweep must do the same;
+  `src/fastapi/tests/test_cron_sweeps_under_app_role.py` runs them as
+  `georag_app` against a raw-applied database in CI.
+- Six workflows declare `GROUP_ROUND_ROBIN` concurrency keyed on
   `workspace_id` (`ingest_pdf` at `max_runs=2`, `embed_pending_passages`
-  at 1, `enrich_passage_context`, `verbalize_page_images` among them).
+  at 1, `enrich_passage_context`, `verbalize_page_images`, and since
+  2026-09-29 `promote_silver_to_gold` at 1, among them).
   The `HatchetDispatchThrottle` docstring still says `ingest_pdf` is
   `max_runs=1`; it was raised to 2 on 2026-08-07.
 - **Three call sites bypass the engine.** `routers/ml_training.py`
@@ -359,7 +375,6 @@ What the window does to orchestration:
 | 17:00 | `audit_ledger_verify`, `nightly_ingestion_integrity` pass 1, `tenant_isolation_audit` |
 | 17:00 Mon | `what_changed_weekly` |
 | 17:15 | `repair_shadow_aggregate` |
-| 17:30 | `graph_tenant_audit` |
 | 18:00 | `mv_refresh_silver`, `storage_tiering_run` |
 | 18:30 Sun | `public_geo_sync` |
 | 19:00 | `nightly_ingestion_integrity` pass 2, `flow_jwt_key_reaper`, `cold_tier_archive`, `store_reconciliation_run` |
