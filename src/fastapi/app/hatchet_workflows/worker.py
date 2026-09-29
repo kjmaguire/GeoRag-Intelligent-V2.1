@@ -158,7 +158,8 @@ POOLS = {
         # Graduated doc-phase 184 — ETL-only (no XGBoost): aggregates
         # hits/misses per workspace + writes targeting.target_backtests +
         # decision_lessons_learned + audit.audit_ledger. Retraining still
-        # gated on train_target_model graduation.
+        # gated on train_target_model graduation. Manual only (Hatchet UI):
+        # nothing writes target_outcomes and a rerun duplicates backtests.
         field_outcome_learning,
         # Doc-phase 94 / Master-plan §9.13 — what_changed_detector
         # delta-detects workspace changes; feeds §7.2 what_changed
@@ -222,7 +223,9 @@ POOLS = {
         # per-workspace source-trust weights.
         train_source_trust,
         # Doc-phase 102 / Master-plan §12.10 — continuous_learning_loop
-        # cron orchestrator tracks retraining readiness.
+        # tracks retraining readiness. Daily 22:30 UTC since 2026-09-29
+        # (HAT-13); it had no on_crons before and never fired. No model
+        # call, so it passes the unattended-spend bar.
         continuous_learning_loop,
         # Master-plan §11.1 nightly backup crons -- backup_postgres,
         # backup_qdrant, backup_redis and backup_seaweedfs -- DELETED

@@ -205,7 +205,10 @@ writes the `text` sparse slot of the Qdrant `georag_chunks` collection
 Hatchet workflow [continuous_learning_loop.py](../../../src/fastapi/app/hatchet_workflows/continuous_learning_loop.py)
 + [field_outcome_learning.py](../../../src/fastapi/app/hatchet_workflows/field_outcome_learning.py).
 Closes the loop on **drilled-target outcomes** → feeds back into
-target-scoring weights. Experimental.
+target-scoring weights. Experimental. `continuous_learning_loop` runs as a
+daily Hatchet cron at 22:30 UTC since 2026-09-29 (HAT-13). It only flags
+retraining as pending and makes no model call. `field_outcome_learning` is
+manual (Hatchet UI only).
 
 ## 11. ML training admin surface
 
