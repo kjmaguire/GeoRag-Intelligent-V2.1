@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\AnswerRunFeedbackController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\ChatConversationController;
 use App\Http\Controllers\Api\V1\CitationController;
+use App\Http\Controllers\Api\V1\ClientErrorController;
 use App\Http\Controllers\Api\V1\CollarController;
 use App\Http\Controllers\Api\V1\ColumnMappingController;
 use App\Http\Controllers\Api\V1\CoverageDensityController;
@@ -66,6 +67,13 @@ Route::prefix('v1')->group(function () {
         Route::post('reset-password', [AuthController::class, 'resetPassword'])
             ->middleware('throttle:5,1');
     });
+
+    // React ErrorBoundary crash telemetry (FE-22). Public — a crash on the
+    // login page counts too — so throttled per IP; the controller bounds
+    // and truncates every field and only writes a log line.
+    Route::post('client-errors', ClientErrorController::class)
+        ->middleware('throttle:10,1')
+        ->name('api.v1.client-errors');
 
     // ── Protected routes (require valid Sanctum token) ───────────────────
     Route::middleware('auth:sanctum')->group(function () {

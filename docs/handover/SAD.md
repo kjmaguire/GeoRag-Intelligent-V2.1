@@ -201,7 +201,7 @@ flowchart TD
 `resources/js/` — React 19 + TypeScript + Inertia v3.
 
 - **Pages**: `resources/js/Pages/` — server-routed via `Inertia::render(...)`. Top-level pages plus `Foundry/` (~33 pages), `Admin/` (~36 pages incl. `Admin/AgentConfig/`, `Admin/ShadowRuns/` subdirs), `Dashboards/`, `Onboarding/`, `PublicGeoscience/`. Full file list: `HANDOVER_MANIFEST.md` §20.
-- **Layouts** (`resources/js/Layouts/`): `AppLayout.tsx`, `DashboardLayout.tsx`, `FoundryShell.tsx`.
+- **Layouts** (`resources/js/Layouts/`): `AppLayout.tsx` (Inertia's persistent default layout via `persistentLayout.ts`), `FoundryShell.tsx`.
 - **Hooks** (`resources/js/Hooks/`): `useWorkspaceDataUpdated`, `useWorkspaceActivity`, `useUserInbox`, `useAdminSurfaceUpdated`, `useTileInvalidation`, `useEventDedup`, `useEvidenceMapPin`, `useFullscreenToggle`.
 - **Shared components** (`resources/js/Components/`): MapView, GeoPlot, KnowledgeGraph, DrillTrace3D, DrillHoleBrowser, HoleDetailSheet, ChatMessage, InlineViz, ProjectSelector, ErrorBoundary, ExperienceModeToggle, plus `Foundry/`, `Admin/`, `Analytics/`, `HoleAnalysis/`, `GuardError/` subdirs.
 - **Inertia shared props** (`app/Http/Middleware/HandleInertiaRequests::share`): `auth.user`, `flash`, `app.{env,debug}`, `basemap_styles` (⚠ references missing config key — see [`HANDOVER_INDEX.md`](HANDOVER_INDEX.md) §5.2), `guard_errors` (i18n catalog from `lang/en/guard_errors.php`), `project_threads`, `project_saved_views`, `inbox_count`, `review_count`.
