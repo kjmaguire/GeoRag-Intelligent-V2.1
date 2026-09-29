@@ -1,3 +1,6 @@
+# Credential values in this dump were replaced with REDACTED-* placeholders on
+# 2026-09-29 (security audit SEC-6). The originals remain in git history;
+# treat them as burned.
 name: georagintelligencev10
 services:
   pgbouncer:
@@ -17,7 +20,7 @@ services:
       AUTH_TYPE: scram-sha-256
       DB_HOST: postgresql
       DB_NAME: georag
-      DB_PASSWORD: georag_dev_password
+      DB_PASSWORD: REDACTED-DB-PASSWORD
       DB_PORT: "5432"
       DB_USER: georag
       DEFAULT_POOL_SIZE: "100"
@@ -124,7 +127,7 @@ services:
     environment:
       POSTGRES_DB: georag
       POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
-      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_PASSWORD: REDACTED-POSTGRES-PASSWORD
       POSTGRES_USER: georag
     expose:
       - "5432"

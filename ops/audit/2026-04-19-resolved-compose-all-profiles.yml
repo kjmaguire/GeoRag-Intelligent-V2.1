@@ -1,3 +1,6 @@
+# Credential values in this dump were replaced with REDACTED-* placeholders on
+# 2026-09-29 (security audit SEC-6). The originals remain in git history;
+# treat them as burned.
 name: georagintelligencev10
 services:
   dagster-daemon:
@@ -26,14 +29,14 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_PG_DB: georag_dagster
       DAGSTER_PG_HOST: postgresql
-      DAGSTER_PG_PASSWORD: georag_dev_password
+      DAGSTER_PG_PASSWORD: REDACTED-DAGSTER-PG-PASSWORD
       DAGSTER_PG_PORT: "5432"
       DAGSTER_PG_USER: georag
       HOME: /opt/dagster/dagster_home
       LOG_LEVEL: debug
       MINIO_BUCKET_BRONZE: georag-bronze
       MINIO_ENDPOINT: http://minio:8333
-      MINIO_ROOT_PASSWORD: georag_minio_dev
+      MINIO_ROOT_PASSWORD: REDACTED-MINIO-ROOT-PASSWORD
       MINIO_ROOT_USER: georag-admin
       NEO4J_AUTH: none
       NEO4J_HOST: neo4j
@@ -41,7 +44,7 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       POSTGRES_DB: georag
       POSTGRES_HOST: pgbouncer
-      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_PASSWORD: REDACTED-POSTGRES-PASSWORD
       POSTGRES_PORT: "6432"
       POSTGRES_USER: georag
       QDRANT_HOST: qdrant
@@ -108,7 +111,7 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_PG_DB: georag_dagster
       DAGSTER_PG_HOST: postgresql
-      DAGSTER_PG_PASSWORD: georag_dev_password
+      DAGSTER_PG_PASSWORD: REDACTED-DAGSTER-PG-PASSWORD
       DAGSTER_PG_PORT: "5432"
       DAGSTER_PG_USER: georag
       HOME: /opt/dagster/dagster_home
@@ -184,7 +187,7 @@ services:
       ANTHROPIC_USE_PRIORITY_TIER: "false"
       FASTAPI_HOST: fastapi
       FASTAPI_PORT: "8000"
-      FASTAPI_SERVICE_KEY: -2INYozn_wT_cyjmed1Tt9hXgAZQ-0Kxwn6liLZ_RY_AVFJ7TVf1P90bk002Ac74
+      FASTAPI_SERVICE_KEY: REDACTED-FASTAPI-SERVICE-KEY
       HF_HOME: /tmp/hf_cache
       LLM_BACKEND: ollama
       LLM_BACKEND_FALLBACK: downshift
@@ -201,14 +204,14 @@ services:
       NEO4J_PORT: "7687"
       POSTGRES_DB: georag
       POSTGRES_HOST: pgbouncer
-      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_PASSWORD: REDACTED-POSTGRES-PASSWORD
       POSTGRES_PORT: "6432"
       POSTGRES_USER: georag
       QDRANT_API_KEY: ""
       QDRANT_HOST: qdrant
       QDRANT_PORT: "6333"
       REDIS_HOST: redis
-      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PASSWORD: REDACTED-REDIS-PASSWORD
       REDIS_PORT: "6379"
       RETRIEVAL_QUALITY_THRESHOLD: "0.5"
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
@@ -263,7 +266,7 @@ services:
       GF_DATASOURCE_TYPE: prometheus
       GF_DATASOURCE_URL: http://prometheus:9090
       GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-clock-panel
-      GF_SECURITY_ADMIN_PASSWORD: georag_grafana_dev
+      GF_SECURITY_ADMIN_PASSWORD: REDACTED-GF-SECURITY-ADMIN-PASSWORD
       GF_SECURITY_ADMIN_USER: admin
       GF_SERVER_ROOT_URL: http://localhost:3000
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -330,29 +333,29 @@ services:
     environment:
       APP_DEBUG: "true"
       APP_ENV: local
-      APP_KEY: base64:YqcpJvkW8MaNtfUv8mUAH8eh8CHo/OzPiypJrx0y6jM=
+      APP_KEY: REDACTED-APP-KEY
       APP_NAME: GeoRAG Intelligence
       APP_URL: http://localhost
-      AWS_ACCESS_KEY_ID: georag-admin
+      AWS_ACCESS_KEY_ID: REDACTED-AWS-ACCESS-KEY-ID
       AWS_BUCKET: georag-bronze
       AWS_DEFAULT_REGION: us-east-1
       AWS_ENDPOINT: http://minio:8333
-      AWS_SECRET_ACCESS_KEY: georag_minio_dev
+      AWS_SECRET_ACCESS_KEY: REDACTED-AWS-SECRET-ACCESS-KEY
       AWS_USE_PATH_STYLE_ENDPOINT: "true"
       DB_CONNECTION: pgsql
       DB_DATABASE: georag
       DB_HOST: pgbouncer
-      DB_PASSWORD: georag_dev_password
+      DB_PASSWORD: REDACTED-DB-PASSWORD
       DB_PORT: "6432"
       DB_USERNAME: georag
       FASTAPI_HOST: fastapi
       FASTAPI_PORT: "8000"
-      FASTAPI_SERVICE_KEY: -2INYozn_wT_cyjmed1Tt9hXgAZQ-0Kxwn6liLZ_RY_AVFJ7TVf1P90bk002Ac74
+      FASTAPI_SERVICE_KEY: REDACTED-FASTAPI-SERVICE-KEY
       LOG_CHANNEL: stack
       LOG_LEVEL: debug
       QUEUE_CONNECTION: redis
       REDIS_HOST: redis
-      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PASSWORD: REDACTED-REDIS-PASSWORD
       REDIS_PORT: "6379"
     healthcheck:
       test:
@@ -403,34 +406,34 @@ services:
     environment:
       APP_DEBUG: "true"
       APP_ENV: local
-      APP_KEY: base64:YqcpJvkW8MaNtfUv8mUAH8eh8CHo/OzPiypJrx0y6jM=
+      APP_KEY: REDACTED-APP-KEY
       APP_NAME: GeoRAG Intelligence
       APP_URL: http://localhost
-      AWS_ACCESS_KEY_ID: georag-admin
+      AWS_ACCESS_KEY_ID: REDACTED-AWS-ACCESS-KEY-ID
       AWS_BUCKET: georag-bronze
       AWS_DEFAULT_REGION: us-east-1
       AWS_ENDPOINT: http://minio:8333
-      AWS_SECRET_ACCESS_KEY: georag_minio_dev
+      AWS_SECRET_ACCESS_KEY: REDACTED-AWS-SECRET-ACCESS-KEY
       AWS_USE_PATH_STYLE_ENDPOINT: "true"
       CACHE_DRIVER: redis
       DB_CONNECTION: pgsql
       DB_DATABASE: georag
       DB_HOST: pgbouncer
-      DB_PASSWORD: georag_dev_password
+      DB_PASSWORD: REDACTED-DB-PASSWORD
       DB_PORT: "6432"
       DB_USERNAME: georag
       FASTAPI_HOST: fastapi
       FASTAPI_PORT: "8000"
-      FASTAPI_SERVICE_KEY: -2INYozn_wT_cyjmed1Tt9hXgAZQ-0Kxwn6liLZ_RY_AVFJ7TVf1P90bk002Ac74
+      FASTAPI_SERVICE_KEY: REDACTED-FASTAPI-SERVICE-KEY
       LOG_CHANNEL: stack
       LOG_LEVEL: debug
       QUEUE_CONNECTION: redis
       REDIS_HOST: redis
-      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PASSWORD: REDACTED-REDIS-PASSWORD
       REDIS_PORT: "6379"
       REVERB_APP_ID: georag-app
-      REVERB_APP_KEY: georag-reverb-key
-      REVERB_APP_SECRET: georag-reverb-secret
+      REVERB_APP_KEY: REDACTED-REVERB-APP-KEY
+      REVERB_APP_SECRET: REDACTED-REVERB-APP-SECRET
       REVERB_HOST: laravel-reverb
       REVERB_PORT: "8080"
       REVERB_SCHEME: http
@@ -487,23 +490,23 @@ services:
     environment:
       APP_DEBUG: "true"
       APP_ENV: local
-      APP_KEY: base64:YqcpJvkW8MaNtfUv8mUAH8eh8CHo/OzPiypJrx0y6jM=
+      APP_KEY: REDACTED-APP-KEY
       APP_NAME: GeoRAG Intelligence
       APP_URL: http://localhost
       DB_CONNECTION: pgsql
       DB_DATABASE: georag
       DB_HOST: pgbouncer
-      DB_PASSWORD: georag_dev_password
+      DB_PASSWORD: REDACTED-DB-PASSWORD
       DB_PORT: "6432"
       DB_USERNAME: georag
       LOG_CHANNEL: stack
       LOG_LEVEL: debug
       REDIS_HOST: redis
-      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PASSWORD: REDACTED-REDIS-PASSWORD
       REDIS_PORT: "6379"
       REVERB_APP_ID: georag-app
-      REVERB_APP_KEY: georag-reverb-key
-      REVERB_APP_SECRET: georag-reverb-secret
+      REVERB_APP_KEY: REDACTED-REVERB-APP-KEY
+      REVERB_APP_SECRET: REDACTED-REVERB-APP-SECRET
       REVERB_HOST: laravel-reverb
       REVERB_PORT: "8080"
       REVERB_SCHEME: http
@@ -549,7 +552,7 @@ services:
         reservations:
           memory: "67108864"
     environment:
-      DATABASE_URL: postgresql://georag:georag_dev_password@postgresql:5432/georag
+      DATABASE_URL: postgresql://georag:REDACTED@postgresql:5432/georag
     # Martin 1.7+ exposes /_/health for liveness checks (replaced /health from
     # 1.5.x). The image ships /usr/bin/wget so a CMD-SHELL probe works without
     # adding a sidecar. Re-enabled 2026-05-07 — see ops/audit/2026-04-19-infra-
@@ -593,7 +596,7 @@ services:
       - sh
       - /usr/local/bin/entrypoint.sh
     environment:
-      MINIO_ROOT_PASSWORD: georag_minio_dev
+      MINIO_ROOT_PASSWORD: REDACTED-MINIO-ROOT-PASSWORD
       MINIO_ROOT_USER: georag-admin
     healthcheck:
       test:
@@ -649,7 +652,7 @@ services:
           mc mb --ignore-existing georag/georag-exports &&
           echo 'Buckets provisioned.'
     environment:
-      MINIO_ROOT_PASSWORD: georag_minio_dev
+      MINIO_ROOT_PASSWORD: REDACTED-MINIO-ROOT-PASSWORD
     image: minio/mc:RELEASE.2025-04-08T15-39-49Z
     networks:
       georag: null
@@ -818,7 +821,7 @@ services:
       AUTH_TYPE: scram-sha-256
       DB_HOST: postgresql
       DB_NAME: georag
-      DB_PASSWORD: georag_dev_password
+      DB_PASSWORD: REDACTED-DB-PASSWORD
       DB_PORT: "5432"
       DB_USER: georag
       DEFAULT_POOL_SIZE: "100"
@@ -925,7 +928,7 @@ services:
     environment:
       POSTGRES_DB: georag
       POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
-      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_PASSWORD: REDACTED-POSTGRES-PASSWORD
       POSTGRES_USER: georag
     expose:
       - "5432"
@@ -1054,15 +1057,15 @@ services:
     environment:
       DB_HOST: pgbouncer
       DB_NAME: georag
-      DB_PASSWORD: georag_dev_password
+      DB_PASSWORD: REDACTED-DB-PASSWORD
       DB_PORT: "6432"
       DB_USER: georag
-      MINIO_ACCESS_KEY: georag-admin
+      MINIO_ACCESS_KEY: REDACTED-MINIO-ACCESS-KEY
       MINIO_HOST: minio
       MINIO_PORT: "8333"
-      MINIO_SECRET_KEY: georag_minio_dev
+      MINIO_SECRET_KEY: REDACTED-MINIO-SECRET-KEY
       REDIS_HOST: redis
-      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PASSWORD: REDACTED-REDIS-PASSWORD
       REDIS_PORT: "6379"
     healthcheck:
       test:
