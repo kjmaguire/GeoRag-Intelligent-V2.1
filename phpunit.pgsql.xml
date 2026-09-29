@@ -213,6 +213,9 @@
                  counts by the samples x lithology cross product). -->
             <file>tests/Feature/Api/V1/ProjectControllerDeleteTypedDrillDataTest.php</file>
             <file>tests/Feature/Database/MvCollarSummaryAggregatesTest.php</file>
+            <!-- 2026-09-29 database audit PG-4: the audit PII / golden-set
+                 commands under production's search_path=public. -->
+            <file>tests/Feature/Console/AuditPiiCommandsUnderPublicSearchPathTest.php</file>
             <file>tests/Feature/Api/V1/PublicGeoscience/PublicGeoscienceMapControllerTest.php</file>
             <!-- 2026-09-29: polygon layers (ST_ClipByBox2D /
                  ST_SimplifyPreserveTopology) and the sync-status counts. -->

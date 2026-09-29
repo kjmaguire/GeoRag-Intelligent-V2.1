@@ -75,7 +75,7 @@ class GoldenSetReport extends Command
 
         // First pass: group-by hash for the audit window. Low-confidence
         // OR explicit-failure rows both count toward the group's weight.
-        $rows = DB::table('query_audit_log')
+        $rows = DB::table((new QueryAuditLog)->getTable())
             ->selectRaw(
                 "query_text_hash AS h,
                  COUNT(*) AS total_count,
