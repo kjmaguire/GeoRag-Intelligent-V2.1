@@ -326,3 +326,135 @@ def test_each_sweep_fires_exactly_once(variable: str) -> None:
         f"{variable} fires at minute {minute_field!r}. One sweep, one fire "
         "time: the window's length is derived from these two fields."
     )
+
+
+# ---------------------------------------------------------------------------
+# End times (HAT-14, 2026-09-29)
+# ---------------------------------------------------------------------------
+# Everything above checks when a cron STARTS. A cron that starts in the open
+# window but whose execution budget runs past the stop is killed mid-run:
+# shutdown-sweep.sh scales the worker to zero with no drain. That is what
+# enrich_passage_context did every summer night, starting at 21:45 UTC with a
+# 3 h budget against a 00:00 UTC (PDT) stop, and nothing here noticed,
+# because only the start was compared.
+
+#: hatchet_sdk's default execution_timeout when a task sets none.
+HATCHET_DEFAULT_EXECUTION_TIMEOUT_MINUTES = 1.0
+
+_WORKFLOW_DECL = re.compile(
+    r'(\w+)\s*=\s*hatchet\.workflow\(\s*name="([^"]+)"(.*?)\n\)', re.S,
+)
+_ON_CRONS_BLOCK = re.compile(r"on_crons\s*=\s*\[([^\]]*)\]", re.S)
+_DURATION_STR = re.compile(r"^(\d+)([smhd])$")
+_DURATION_TIMEDELTA = re.compile(
+    r"timedelta\(\s*(hours|minutes|seconds)\s*=\s*(\d+)\s*\)",
+)
+_UNIT_MINUTES = {"s": 1 / 60, "m": 1.0, "h": 60.0, "d": 1440.0}
+
+
+def _timeout_minutes(decorator_args: str) -> float:
+    """execution_timeout of one task decorator, in minutes."""
+    string_form = re.search(r'execution_timeout\s*=\s*"([^"]+)"', decorator_args)
+    if string_form:
+        match = _DURATION_STR.match(string_form.group(1).strip())
+        assert match, f"unparseable execution_timeout {string_form.group(1)!r}"
+        return int(match.group(1)) * _UNIT_MINUTES[match.group(2)]
+    delta = _DURATION_TIMEDELTA.search(decorator_args)
+    if delta:
+        per = {"hours": 60.0, "minutes": 1.0, "seconds": 1 / 60}[delta.group(1)]
+        return int(delta.group(2)) * per
+    assert "execution_timeout" not in decorator_args, (
+        f"execution_timeout present but not parsed: {decorator_args!r}"
+    )
+    return HATCHET_DEFAULT_EXECUTION_TIMEOUT_MINUTES
+
+
+def cron_budgets() -> list[tuple[str, str, str, list[int], float]]:
+    """(module, workflow, cron, start minutes UTC, execution budget minutes).
+
+    Fixed-hour crons only, one entry per expression, every hour of a comma
+    list. The budget is the SUM of the workflow's task execution_timeouts
+    (on_failure excluded): an upper bound for a DAG, exact for the
+    single-task crons that make up nearly all of these.
+    """
+    found: list[tuple[str, str, str, list[int], float]] = []
+    for path in sorted(WORKFLOWS.glob("*.py")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for decl in _WORKFLOW_DECL.finditer(text):
+            var, name, body = decl.group(1), decl.group(2), decl.group(3)
+            crons = [
+                expression
+                for block in _ON_CRONS_BLOCK.findall(body)
+                for expression in re.findall(r'["\']([^"\']+)["\']', block)
+                if len(expression.split()) == 5
+            ]
+            if not crons:
+                continue
+            tasks = re.findall(
+                rf"@{re.escape(var)}\.(?:task|durable_task)\((.*?)\)\s*\n"
+                r"\s*(?:async\s+)?def\b",
+                text, re.S,
+            )
+            assert tasks, f"{path.name}: workflow {name} has crons but no task found"
+            budget = sum(_timeout_minutes(args) for args in tasks)
+            for expression in crons:
+                minute, hour = expression.split()[:2]
+                if hour == "*" or hour.startswith("*/"):
+                    continue
+                minute_value = (
+                    0 if minute.startswith("*") else int(minute.split(",")[0])
+                )
+                starts = [int(h) * 60 + minute_value for h in hour.split(",")]
+                found.append((path.name, name, expression, starts, budget))
+    return found
+
+
+def test_cron_budgets_are_readable() -> None:
+    """Guards the guard: the end-time scan below found the crons it checks."""
+    budgets = cron_budgets()
+    assert len(budgets) >= 10, f"only {len(budgets)} cron budgets parsed: {budgets}"
+    names = {name for _, name, _, _, _ in budgets}
+    assert "enrich_passage_context" in names
+
+
+def test_no_daily_cron_runs_past_the_shutdown() -> None:
+    """start + execution_timeout must end before the NEXT stop, PDT and PST.
+
+    ``shutdown_window()``'s first element is the earliest the stop lands in
+    UTC across both DST halves (00:00 UTC in PDT), so ending by then is
+    ending by the stop in both. schedule_timeout (queue wait) is not added:
+    a run still queued at the stop never starts, so it wastes nothing.
+    """
+    stop, usable = shutdown_window()
+    offenders = []
+    for module, name, expression, starts, budget in cron_budgets():
+        if module in EXEMPT:
+            continue
+        for start in starts:
+            if stop <= start < usable:
+                continue  # a start inside the window is the test above's job
+            deadline = stop + 1440 if start >= usable else stop
+            end = start + budget
+            if end > deadline:
+                offenders.append(
+                    f"  {name:32s} {expression:16s} starts {_hhmm(start)} UTC, "
+                    f"budget {budget:.0f} min, ends {_hhmm(int(end) % 1440)} "
+                    f"UTC; the stop is {_hhmm(deadline % 1440)} UTC"
+                )
+    assert not offenders, (
+        "These crons start in the open window but their execution budget "
+        "runs into the nightly stop, where shutdown-sweep.sh scales the "
+        "worker to zero with no drain and the run is killed mid-batch:\n"
+        + "\n".join(offenders)
+        + "\n\nMove the cron earlier or cap its execution_timeout so start + "
+          "budget ends by the stop."
+    )
+
+
+def test_the_end_time_check_catches_the_enrich_regression() -> None:
+    """The case HAT-14 found: 21:45 UTC plus a 3 h budget."""
+    stop, usable = shutdown_window()
+    start = 21 * 60 + 45
+    assert usable <= start
+    assert start + 180 > stop + 1440, "a 3 h budget from 21:45 must be caught"
+    assert start + 120 <= stop + 1440, "the 2 h cap must clear the stop"
