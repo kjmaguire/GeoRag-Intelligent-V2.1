@@ -30,6 +30,7 @@
  */
 import { useMemo } from 'react';
 import { usePage } from '@inertiajs/react';
+import type { RasterDEMSourceSpecification } from 'maplibre-gl';
 
 export type BasemapStyleId = 'positron' | 'bright' | 'dark_matter';
 
@@ -138,6 +139,34 @@ export function useTerrainDemUrl(): string {
     const page = usePage<SharedPropsWithBasemap>();
     const baked = import.meta.env.VITE_DEM_TILES_URL as string | undefined;
     return baked || page.props.basemap_dem || DEFAULT_DEM_URL;
+}
+
+/**
+ * MapLibre `raster-dem` source for a configured DEM, shared by MapView and
+ * WorkspaceMap so both honour BASEMAP_DEM_TILES.
+ *
+ * WorkspaceMap used to hard-code the AWS terrarium bucket instead (FE-19), so
+ * an air-gapped deployment's Terrain toggle silently did nothing there.
+ *
+ * Two configured shapes are accepted:
+ *   - a TileJSON URL (the default, and what ops/ self-hosting produces) —
+ *     MapLibre reads `tiles`, zoom range, tileSize AND `encoding` from it, so
+ *     a terrarium DEM declares that in its own TileJSON;
+ *   - a raw `{z}/{x}/{y}` template — no TileJSON to carry `encoding`, so it is
+ *     inferred from the URL (`terrarium` when the path says so, otherwise
+ *     MapLibre's default Mapbox terrain-RGB).
+ */
+export function demSourceSpec(url: string): RasterDEMSourceSpecification {
+    if (url.includes('{z}')) {
+        return {
+            type: 'raster-dem',
+            tiles: [url],
+            tileSize: 256,
+            maxzoom: 15,
+            encoding: /terrarium/i.test(url) ? 'terrarium' : 'mapbox',
+        };
+    }
+    return { type: 'raster-dem', url, tileSize: 512, maxzoom: 14 };
 }
 
 /**

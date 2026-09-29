@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { router } from '@inertiajs/react';
-import { BASEMAP_OPTIONS, useBasemapStyleSpec, type BasemapId } from '@/lib/basemap';
+import { Link, router } from '@inertiajs/react';
+import { BASEMAP_OPTIONS, demSourceSpec, useBasemapStyleSpec, useTerrainDemUrl, type BasemapId } from '@/lib/basemap';
 import { formatU3O8Pct } from '@/lib/grade';
-import { addMvtLayers, setMvtVisibility, type MvtCapableMap } from '@/lib/mvtSources';
+import { addMvtLayers, setMvtTileVersion, setMvtVisibility, type MvtCapableMap } from '@/lib/mvtSources';
+import { UNCERTAINTY_RINGS_FILTER, UNCERTAINTY_RINGS_PAINT } from '@/lib/uncertaintyRings';
+import { useSilverTileInvalidation } from '@/Hooks/useTileInvalidation';
+import { initialMapView, type LonLatBounds } from '@/lib/workspaceMapView';
 
 // CC-01 Item 2 — closed vocabulary for the georef_method column. Mirrors the
 // chk_*_georef_method DB constraint. Kept in sync with the same type in
@@ -83,10 +86,23 @@ export function WorkspaceMap({
     onTerrainChange,
     activeTool,
     onToolChange,
+    dataVersion = 0,
+    projectExtent = null,
     height = '100%',
 }: {
     collars: MapCollar[];
     projectSlug: string;
+    /**
+     * silver.projects.data_version at page load — the `&v=` cache key on
+     * every MVT tile URL. Bumped live from `workspace.data_updated` below.
+     */
+    dataVersion?: number;
+    /**
+     * [west, south, east, north] of the project's non-collar map data. Used
+     * for the initial view when no collar has a position, so a GIS-only
+     * project still gets a map (FE-3).
+     */
+    projectExtent?: LonLatBounds | null;
     /**
      * Project UUID, for the silver MVT tile URLs.
      *
@@ -129,6 +145,27 @@ export function WorkspaceMap({
     // second copy here meant three of the five assets ignored whatever was
     // configured.
     const styleSpec = useBasemapStyleSpec(basemap);
+    // Terrain DEM from the same registry (BASEMAP_DEM_TILES). It was a
+    // hard-coded AWS bucket, so on-prem the Terrain toggle did nothing (FE-19).
+    const demUrl = useTerrainDemUrl();
+    // The live map, once its style has loaded. Held in STATE (mapRef is only
+    // for cleanup) so every effect that styles the map re-runs against a new
+    // instance: a basemap switch rebuilds the map, and the layer toggles,
+    // compare ring, terrain and tool handlers used to stay bound to the
+    // removed one while their controls still read "on" (FE-6).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [map, setMap] = useState<any>(null);
+    // Tile cache key — seeded from the page, bumped by the ingest broadcast
+    // (FE-5). Only ever increases.
+    const [tileVersion, setTileVersion] = useState<number>(dataVersion);
+    useEffect(() => {
+        setTileVersion((prev) => Math.max(prev, dataVersion));
+    }, [dataVersion]);
+    useSilverTileInvalidation(projectId, (next) => {
+        setTileVersion((prev) => Math.max(prev, next));
+    });
+    const tileVersionRef = useRef(tileVersion);
+    tileVersionRef.current = tileVersion;
     const [hoverHole, setHoverHole] = useState<{ hole: MapCollar; x: number; y: number } | null>(null);
     // Drag-box state for the Select tool (screen-space pixel rect).
     const [selectRect, setSelectRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -190,16 +227,13 @@ export function WorkspaceMap({
                 };
             });
 
-        if (points.length === 0) return;
-
-        const lngs = points.map((p) => p.geometry.coordinates[0]);
-        const lats = points.map((p) => p.geometry.coordinates[1]);
-        const bounds: [number, number, number, number] = [
-            Math.min(...lngs) - 0.01,
-            Math.min(...lats) - 0.01,
-            Math.max(...lngs) + 0.01,
-            Math.max(...lats) + 0.01,
-        ];
+        // The map is ALWAYS built. It used to return here when no collar had
+        // a position, which left imported shapefiles, geochem and claims —
+        // already counted in the Layers rail — with no map to draw on (FE-3).
+        const view = initialMapView(
+            points.map((p) => p.geometry.coordinates as [number, number]),
+            projectExtent,
+        );
 
         import('maplibre-gl').then((ml) => {
             if (cancelled || !containerRef.current) return;
@@ -213,8 +247,9 @@ export function WorkspaceMap({
                 container: containerRef.current,
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 style: styleSpec as any,
-                bounds,
-                fitBoundsOptions: { padding: 60, maxZoom: 15 },
+                ...(view.bounds
+                    ? { bounds: view.bounds, fitBoundsOptions: { padding: 60, maxZoom: 15 } }
+                    : { center: view.center, zoom: view.zoom }),
                 attributionControl: false,
                 // Allow zooming much closer than the default 22 maxZoom; the
                 // halo + label interpolation stops at 22 so going past that
@@ -242,10 +277,9 @@ export function WorkspaceMap({
                     try {
                         addMvtLayers(map as unknown as MvtCapableMap, {
                             projectId,
-                            // Server-side ETag derives from
-                            // silver.projects.data_version and is authoritative;
-                            // this is only a client cache key.
-                            dataVersion: 0,
+                            // Client cache key; the proxy's max-age means a
+                            // constant here served day-old tiles (FE-5).
+                            dataVersion: tileVersionRef.current,
                             visibleLayers,
                         });
                     } catch (err) {
@@ -255,18 +289,11 @@ export function WorkspaceMap({
                     }
                 }
 
-                // Terrain DEM source — AWS Open Terrain Tiles (USGS 3DEP /
-                // NASA SRTM, public-domain underlying data). Source is
-                // always added; setTerrain is toggled by the effect below
-                // so users can flip 3D shading on/off without re-styling.
+                // Terrain DEM source from the basemap registry. Always added;
+                // setTerrain is toggled by the effect below so users can flip
+                // 3D shading on/off without re-styling.
                 try {
-                    map.addSource('terrain-dem', {
-                        type: 'raster-dem',
-                        tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-                        tileSize: 256,
-                        maxzoom: 15,
-                        encoding: 'terrarium',
-                    });
+                    map.addSource('terrain-dem', demSourceSpec(demUrl));
                 } catch (e) {
                     // eslint-disable-next-line no-console
                     console.warn('[workspace-map] terrain source add failed', e);
@@ -291,52 +318,12 @@ export function WorkspaceMap({
                     clusterRadius: 50,
                 });
 
-                // Synthetic drillhole-trace lines (one per collar). The trace
-                // points "south" from the collar by a fixed angular offset
-                // scaled to total_depth so deeper holes have longer ticks.
-                // ~0.0001 deg lat ≈ 11 m, so 500 m TD ≈ a 0.0045-deg tick.
-                const traceFeatures = points
-                    .filter((p) => p.properties.total_depth !== null)
-                    .map((p) => {
-                        const td = Number(p.properties.total_depth ?? 0);
-                        const lng = p.geometry.coordinates[0];
-                        const lat = p.geometry.coordinates[1];
-                        const lenDeg = Math.min(0.008, Math.max(0.0008, td * 0.000015));
-
-                        return {
-                            type: 'Feature' as const,
-                            geometry: {
-                                type: 'LineString' as const,
-                                coordinates: [[lng, lat], [lng, lat - lenDeg]],
-                            },
-                            properties: p.properties,
-                        };
-                    });
-                map.addSource('collar-traces', {
-                    type: 'geojson',
-                    data: { type: 'FeatureCollection', features: traceFeatures },
-                });
-                map.addLayer({
-                    id: 'collar-traces-line',
-                    type: 'line',
-                    source: 'collar-traces',
-                    paint: {
-                        'line-color': [
-                            'case',
-                            ['>', ['get', 'ore_bands'], 0], '#7dd97c',
-                            '#5ca4ce',
-                        ],
-                        'line-width': [
-                            'interpolate', ['linear'], ['zoom'],
-                            8, 1,
-                            14, 2.4,
-                            18, 3.5,
-                            22, 5,
-                        ],
-                        'line-opacity': 0.9,
-                    },
-                    layout: { visibility: 'none' },
-                });
+                // There is deliberately NO GeoJSON trace layer here. One used to
+                // draw a tick due SOUTH from every collar, its length scaled
+                // from TD, sharing the `traces` toggle with the real
+                // desurveyed MVT traces (pg_drill_traces_by_project) — so a
+                // hole drilled north showed two contradictory traces
+                // (FE-7 / GIS-10). `traces` now toggles only `mvt-traces`.
 
                 // Project AOI polygon (convex hull of collars).
                 if (projectAoi) {
@@ -560,44 +547,20 @@ export function WorkspaceMap({
                 // stacks). Features without spatial_uncertainty_m are
                 // skipped server-side by the GeoJSON builder above.
                 //
-                // circle-radius converts metres → screen pixels using the
-                // standard Web-Mercator formula:
-                //     pixels = metres * 2^zoom / (156543.03392 * cos(lat))
-                // _lat is attached by the GeoJSON builder when the feature
-                // has spatial_uncertainty_m set.
+                // Paint + filter shared with MapView via @/lib/uncertaintyRings.
+                // The old inline radius expression was invalid (["zoom"]
+                // nested inside "*"), so addLayer rejected it and no ring ever
+                // rendered here (GIS-5).
                 map.addLayer({
                     id: 'uncertainty-rings',
                     type: 'circle',
                     source: 'collars',
-                    filter: ['all',
-                        ['!', ['has', 'point_count']],
-                        ['has', 'spatial_uncertainty_m'],
-                    ],
-                    paint: {
-                        'circle-color': 'rgba(0,0,0,0)',
-                        'circle-stroke-width': 1.5,
-                        'circle-opacity': 0.25,
-                        'circle-stroke-opacity': 0.55,
-                        'circle-radius': [
-                            '*',
-                            ['get', 'spatial_uncertainty_m'],
-                            ['/',
-                                ['^', 2, ['zoom']],
-                                ['*', 156543.03392, ['cos', ['*', ['get', '_lat'], 0.017453292519943295]]],
-                            ],
-                        ],
-                        'circle-stroke-color': [
-                            'match',
-                            ['get', 'georef_method'],
-                            'declared', '#22c55e',
-                            'detected', '#3b82f6',
-                            'assumed',  '#f97316',
-                            'manual',   '#a855f7',
-                            'survey',   '#000000',
-                            '#9ca3af',
-                        ],
-                    },
-                });
+                    filter: ['all', ['!', ['has', 'point_count']], UNCERTAINTY_RINGS_FILTER],
+                    paint: UNCERTAINTY_RINGS_PAINT,
+                    // The shared readonly tuples do not narrow to MapLibre's
+                    // mutable spec unions; lib/__tests__/uncertaintyRings
+                    // validates them against the real style spec instead.
+                } as unknown as Parameters<typeof map.addLayer>[0]);
 
                 map.on('mouseenter', 'collars-dot', () => {
                     map.getCanvas().style.cursor = 'pointer';
@@ -849,6 +812,10 @@ export function WorkspaceMap({
                         collapseSpider();
                     }
                 });
+
+                // Publish the loaded map LAST: every state effect below keys
+                // on it and re-applies itself to this instance.
+                setMap(map);
             });
 
             mapRef.current = map;
@@ -856,18 +823,29 @@ export function WorkspaceMap({
 
         return () => {
             cancelled = true;
+            setMap(null);
             if (mapRef.current?.remove) {
                 mapRef.current.remove();
             }
             mapRef.current = null;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [collars.length, projectSlug, basemap, styleSpec]);
+    }, [collars.length, projectSlug, basemap, styleSpec, demUrl]);
+
+    // New data_version → new tile URLs on the live sources, without rebuilding
+    // the map (FE-5).
+    useEffect(() => {
+        if (!map || !projectId) return;
+        try {
+            setMvtTileVersion(map as unknown as MvtCapableMap, projectId, tileVersion);
+        } catch (err) {
+            console.warn('WorkspaceMap: MVT tile re-key failed', err);
+        }
+    }, [map, projectId, tileVersion]);
 
     // React to layer toggle changes by updating MapLibre layer visibility +
     // filters on the existing map instance (don't tear down on every click).
     useEffect(() => {
-        const map = mapRef.current;
         if (!map || !map.getLayer) return;
 
         const setVis = (id: string, on: boolean) => {
@@ -884,7 +862,6 @@ export function WorkspaceMap({
         const showCollars = visibleLayers.collars ?? true;
         const oreOnly = visibleLayers.samples ?? false;
         const heatmapOn = visibleLayers.ore_heatmap ?? false;
-        const tracesOn = visibleLayers.traces ?? false;
         const aoiOn = visibleLayers.aoi ?? false;
         const tier5 = visibleLayers.tier_5 ?? false;
         const tier10 = visibleLayers.tier_10 ?? false;
@@ -894,11 +871,10 @@ export function WorkspaceMap({
         setVis('collars-halo', showCollars);
         setVis('collars-label', showCollars);
         setVis('collars-heatmap', heatmapOn);
-        setVis('collar-traces-line', tracesOn);
         setVis('project-aoi-fill', aoiOn);
         setVis('project-aoi-line', aoiOn);
 
-        // Compose the dot/halo/trace filter. Tier filters AND together with
+        // Compose the dot filter. Tier filters AND together with
         // each other (highest tier wins because it's strictest), and ore-only
         // narrows to ore_bands > 0.
         const conditions: unknown[] = [];
@@ -921,30 +897,21 @@ export function WorkspaceMap({
         if (map.getLayer('collars-dot')) {
             map.setFilter('collars-dot', filter);
         }
-        if (map.getLayer('collar-traces-line')) {
-            // Traces use the same filter as dots (so tier filters affect both)
-            const traceFilter = minThickness > 0
-                ? ['>=', ['get', 'ore_thickness_m'], minThickness]
-                : null;
-            map.setFilter('collar-traces-line', traceFilter);
-        }
-    }, [visibleLayers]);
+    }, [map, visibleLayers]);
 
     // Sync the compare-queue ring filter whenever the compareSet changes.
     useEffect(() => {
-        const map = mapRef.current;
         if (!map || !map.getLayer || !map.getLayer('collars-compare-ring')) return;
         map.setFilter('collars-compare-ring', [
             'in',
             ['get', 'hole_id'],
             ['literal', compareSet],
         ]);
-    }, [compareSet]);
+    }, [map, compareSet]);
 
     // Terrain on/off — toggle map.setTerrain. The raster-dem source was
     // added on map load; we just flip whether MapLibre uses it for 3D.
     useEffect(() => {
-        const map = mapRef.current;
         if (!map || !map.getSource || !map.getSource('terrain-dem')) return;
         try {
             if (terrainOn) {
@@ -956,13 +923,12 @@ export function WorkspaceMap({
             // eslint-disable-next-line no-console
             console.warn('[workspace-map] setTerrain failed', e);
         }
-    }, [terrainOn]);
+    }, [map, terrainOn]);
 
     // Tool mode — wire Pan (default, no-op) and Measure. Draw + Select
     // are next-phase. The effect attaches/detaches map handlers based on
     // the active tool so handlers don't compound.
     useEffect(() => {
-        const map = mapRef.current;
         if (!map) return;
 
         // Default: ensure drag-pan is enabled so the user can move around.
@@ -1077,11 +1043,10 @@ export function WorkspaceMap({
             // keep the last reading visible. clearMeasure() above runs on
             // next entry to the effect.
         };
-    }, [activeTool]);
+    }, [map, activeTool]);
 
     // Tool mode — Draw + Select (Phase 2).
     useEffect(() => {
-        const map = mapRef.current;
         if (!map) return;
 
         // Clean prior tool layers' data so nothing stale lingers.
@@ -1296,7 +1261,7 @@ export function WorkspaceMap({
             };
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTool]);
+    }, [map, activeTool]);
 
     function jumpToLogs() {
         if (!activeHole) return;
@@ -1658,6 +1623,15 @@ export function WorkspaceMap({
                     >
                         View in LOGS →
                     </button>
+                    {/* FE-15: the per-hole page (strip log, assays, data
+                        quality, spatial confidence) had no inbound link. */}
+                    <Link
+                        href={`/projects/${projectSlug}/holes/${encodeURIComponent(activeHole.collar_id)}/detail`}
+                        className="mt-1.5 block w-full text-center text-[10px] font-mono uppercase tracking-wider px-2 py-1.5 rounded border"
+                        style={{ color: 'var(--fg-1)', borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
+                    >
+                        Open hole page →
+                    </Link>
                 </div>
             )}
         </div>

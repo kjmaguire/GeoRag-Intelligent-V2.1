@@ -171,6 +171,38 @@ export function setMvtVisibility(
 }
 
 /**
+ * Re-key every MVT source's tile URL to a new data_version.
+ *
+ * The proxy serves silver tiles with `Cache-Control: max-age=86400`, so the
+ * browser HTTP cache reuses a tile URL for a day without revalidating. The
+ * `&v=` parameter is the only thing that makes a fresh import visible before
+ * then (FE-5): `setTiles` both swaps the URL and drops MapLibre's in-memory
+ * tile cache for that source. Sources that are absent (or a map that predates
+ * `setTiles`) are skipped.
+ *
+ * @returns the source ids that were re-keyed.
+ */
+export function setMvtTileVersion(
+    map: MvtCapableMap,
+    projectId: string,
+    dataVersion: number,
+    layers: MvtLayerDef[] = MVT_LAYERS,
+): string[] {
+    const rekeyed: string[] = [];
+    const seen = new Set<string>();
+    for (const def of layers) {
+        const sourceId = mvtSourceId(def);
+        if (seen.has(sourceId)) continue;
+        seen.add(sourceId);
+        const source = map.getSource(sourceId) as { setTiles?: (tiles: string[]) => unknown } | undefined;
+        if (!source || typeof source.setTiles !== 'function') continue;
+        source.setTiles([buildSilverTileUrl(def.functionName, projectId, dataVersion)]);
+        rekeyed.push(sourceId);
+    }
+    return rekeyed;
+}
+
+/**
  * Remove every layer and source this module added.
  *
  * Layers before sources: MapLibre refuses to remove a source that a layer
