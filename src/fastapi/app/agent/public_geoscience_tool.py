@@ -52,6 +52,7 @@ Two consequences for anyone reading results:
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from collections.abc import Iterable
@@ -207,6 +208,10 @@ class PublicGeoscienceSearchResult:
     jurisdictions_queried: list[str]
     canonical_types_queried: list[str]
     data_source: str = "public_geo.* (synced from provincial + federal survey APIs)"
+    #: Set when the request itself was unusable (e.g. an impossible bbox), so
+    #: the model is told the search did not run instead of reading an empty
+    #: result as "nothing there" (GIS-20).
+    error: str | None = None
 
 
 def _build_query(types: list[str]) -> str:
@@ -308,6 +313,12 @@ async def search_public_geoscience(
         jurisdictions_queried=juris_list,
         canonical_types_queried=types_to_query,
     )
+
+    bbox_problem = _bbox_error(bbox, bbox_tuple)
+    if bbox_problem is not None:
+        logger.info("search_public_geoscience: bbox rejected — %s", bbox_problem)
+        empty.error = bbox_problem
+        return empty
 
     if not types_to_query:
         logger.info("search_public_geoscience: no valid canonical_types requested")
@@ -478,6 +489,46 @@ def _commodity_tokens(values: Iterable[str] | None) -> list[str]:
             if word and word not in tokens:
                 tokens.append(word)
     return tokens
+
+
+def _bbox_error(
+    raw: Any, bbox: tuple[float, float, float, float] | None,
+) -> str | None:
+    """Why a supplied bbox cannot be searched, or None when it can.
+
+    GIS-20 (audit 2026-09-29): a model that swaps the order
+    ([minLat, minLon, ...]) built an envelope with "latitudes" of -105 and
+    got an empty result it reported as "no records in the area". An
+    impossible box is now refused with a message the model can act on.
+    A box crossing the antimeridian (minLon > maxLon) is refused too: the
+    envelope query cannot express it.
+    """
+    if not raw:
+        return None
+    if bbox is None:
+        return (
+            "bbox must be four numbers [minLon, minLat, maxLon, maxLat] in "
+            f"WGS84 degrees; got {raw!r}."
+        )
+    min_lon, min_lat, max_lon, max_lat = bbox
+    if not all(math.isfinite(v) for v in bbox):
+        return "bbox contains a non-finite number."
+    if abs(min_lat) > 90 or abs(max_lat) > 90:
+        return (
+            f"bbox latitudes {min_lat}, {max_lat} are outside -90..90 — the "
+            "order is [minLon, minLat, maxLon, maxLat]; longitude and latitude "
+            "look swapped."
+        )
+    if abs(min_lon) > 180 or abs(max_lon) > 180:
+        return f"bbox longitudes {min_lon}, {max_lon} are outside -180..180."
+    if min_lat > max_lat:
+        return f"bbox minLat {min_lat} is greater than maxLat {max_lat}."
+    if min_lon > max_lon:
+        return (
+            f"bbox minLon {min_lon} is greater than maxLon {max_lon}; a box "
+            "crossing the antimeridian is not supported — split it in two."
+        )
+    return None
 
 
 def _normalize_bbox(bbox: Any) -> tuple[float, float, float, float] | None:

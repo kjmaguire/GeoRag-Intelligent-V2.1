@@ -59,6 +59,7 @@ collect_images() {
         template georag charts/georag/ -f charts/georag/values-airgap.yaml \
             --set "secrets.postgresPassword=x" \
             --set "secrets.pgAppPassword=x" \
+            --set "secrets.martinDbPassword=x" \
             --set "secrets.redisPassword=x" \
             --set "secrets.fastapiServiceKey=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
             --set "secrets.laravelAppKey=base64:x" \

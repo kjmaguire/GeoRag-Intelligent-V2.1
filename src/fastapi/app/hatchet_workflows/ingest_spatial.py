@@ -130,6 +130,46 @@ _MAX_ARCHIVE_ENTRIES = 50_000
 #: statement in memory.
 _INSERT_BATCH = 500
 
+#: The upload timestamp every bronze key carries in front of the user's file
+#: name: ``{Ymd_His}_`` from UploadController, ``%Y%m%d_%H%M%S_%f_`` from the
+#: ZIP fan-out. Mirrored in SQL by ``_UPLOAD_STAMP_SQL``.
+_UPLOAD_STAMP_RE = re.compile(r"^[0-9]{8}_[0-9]{6}(?:_[0-9]{1,6})?_")
+_UPLOAD_STAMP_SQL = "^[0-9]{8}_[0-9]{6}(_[0-9]{1,6})?_"
+
+
+def _logical_source_name(filename: str) -> str:
+    """The file's name as the user gave it, without the upload timestamp.
+
+    The replace-on-re-upload below keys on this (ING-7). ``source_file``
+    itself still stores the full timestamped name, so a row still points at
+    the exact bronze object it came from.
+    """
+    return _UPLOAD_STAMP_RE.sub("", filename, count=1) or filename
+
+
+async def _replace_previous_upload(
+    conn: asyncpg.Connection, *, project_id: str, filename: str,
+) -> int:
+    """Delete the features an earlier upload of the same file wrote.
+
+    Keyed on the name WITHOUT the upload timestamp (ING-7). Every upload gets
+    a fresh ``{Ymd_His}_`` prefix, so ``source_file = filename`` only ever
+    matched a Hatchet retry of the same key: a corrected re-upload of
+    ``geology.shp.zip`` drew every polygon twice. The exact-name arm keeps
+    matching rows written before any prefix existed. Run inside the caller's
+    transaction, so the delete only lands if the re-insert does.
+    """
+    return int(await conn.fetchval(
+        "WITH gone AS ("
+        "  DELETE FROM silver.spatial_features"
+        "   WHERE project_id = $1::uuid"
+        "     AND (source_file = $2"
+        "          OR regexp_replace(source_file, $4, '') = $3)"
+        "  RETURNING 1"
+        ") SELECT count(*) FROM gone",
+        project_id, filename, _logical_source_name(filename), _UPLOAD_STAMP_SQL,
+    ) or 0)
+
 
 # One DSN builder for the whole service — see app/db/dsn.py for why
 # sixty copies of this existed and what the drift cost.
@@ -528,9 +568,10 @@ def _crs_refusal(
     A parse result carrying ``crs_missing`` -- or, equivalently, no
     ``source_crs`` at all -- has been past both the file's own declaration
     and any ``source_epsg`` the uploader supplied, and past the parser's
-    allowlist of formats that legitimately carry no CRS (DXF, DGN, GeoJSON's
-    RFC 7946 default: all of those return an explicit code). What is left is
-    a file whose numbers have no frame of reference.
+    one legitimate default (GeoJSON's RFC 7946 WGS 84). What is left is a
+    file whose numbers have no frame of reference. Since GIS-11
+    (2026-09-29) that includes a DXF or DGN with no EPSG supplied: CAD
+    model units used to be stored as SRID 4326 and are now refused here.
 
     Both signals are read, and neither is redundant. ``crs_missing`` is the
     parser's own verdict and says WHY; the falsy ``source_crs`` is the state
@@ -628,6 +669,52 @@ def _layer_drops_z(parse_result: Any) -> bool:
     return False
 
 
+def _repair_invalid_wkt(wkt: str) -> tuple[str, str | None]:
+    """``(wkt, None)`` for a valid geometry, else ``(repaired_wkt, reason)``.
+
+    GIS-17 (audit 2026-09-29): hand-digitised outlines self-intersect
+    routinely, and nothing on the silver path checked. An invalid polygon is
+    stored as-is and then breaks ST_Intersects / ST_Area for every map and
+    agent query that touches it (public_geo/sync.py already repairs for this
+    reason). Repaired with shapely's make_valid, keeping only the parts of
+    the ORIGINAL dimension — make_valid can split a bow-tie polygon into a
+    polygon plus a stray line, and a line does not belong in a polygon
+    layer. Unparseable WKT is passed through for PostGIS to judge.
+    """
+    try:
+        import shapely  # noqa: PLC0415
+        from shapely import wkt as shapely_wkt  # noqa: PLC0415
+        from shapely.validation import explain_validity  # noqa: PLC0415
+
+        geom = shapely_wkt.loads(wkt)
+        if geom.is_empty or geom.is_valid:
+            return wkt, None
+        reason = explain_validity(geom)
+        dim = int(shapely.get_dimensions(geom))
+        parts = [
+            p for p in shapely.get_parts(shapely.make_valid(geom))
+            if not p.is_empty and int(shapely.get_dimensions(p)) == dim
+        ]
+        if not parts:
+            return wkt, reason
+        if len(parts) == 1:
+            fixed = parts[0]
+        elif dim == 2:
+            fixed = shapely.multipolygons(
+                [q for p in parts for q in shapely.get_parts(p)],
+            )
+        elif dim == 1:
+            fixed = shapely.multilinestrings(
+                [q for p in parts for q in shapely.get_parts(p)],
+            )
+        else:
+            fixed = shapely.multipoints(parts)
+        return fixed.wkt, reason
+    except Exception:  # noqa: BLE001 — repair is best-effort; PostGIS still validates the WKT
+        log.debug("geometry repair failed; keeping the original WKT", exc_info=True)
+        return wkt, None
+
+
 async def _write_features(
     conn: asyncpg.Connection,
     *,
@@ -640,6 +727,7 @@ async def _write_features(
     layer_override: str | None,
     georef_method: str,
     crs_confidence: float | None,
+    warnings_out: list[dict[str, Any]] | None = None,
 ) -> int:
     """Insert one parse result's features. Returns the row count written.
 
@@ -647,11 +735,16 @@ async def _write_features(
     ``source_file`` -- the archive itself for a zipped delivery, not the
     member. Optional so a caller that genuinely cannot hash its source
     (none today) writes NULL rather than a wrong hash.
+
+    Invalid geometries are repaired (``_repair_invalid_wkt``) and, when
+    ``warnings_out`` is given, reported once per layer with the first
+    ``ST_IsValidReason``-style explanation.
     """
     import json  # noqa: PLC0415
 
     epsg = _crs_epsg(parse_result.source_crs)
     rows = []
+    repaired: list[tuple[str | None, str]] = []
     for feat in parse_result.features:
         props = dict(feat.properties or {})
         # _layer_name is the parser's bookkeeping column, not upstream data.
@@ -677,6 +770,9 @@ async def _write_features(
         # The override still applies where it is the only name available:
         # a lone .shp or .geojson carries no per-feature layer.
         layer_name = parsed_layer or layer_override
+        geometry_wkt, invalid_reason = _repair_invalid_wkt(feat.geometry_wkt)
+        if invalid_reason is not None:
+            repaired.append((feat.name, invalid_reason))
         rows.append((
             workspace_id,
             project_id,
@@ -694,9 +790,28 @@ async def _write_features(
             epsg,
             crs_confidence,
             georef_method,
-            feat.geometry_wkt,
+            geometry_wkt,
             source_file_sha256,
         ))
+
+    if repaired and warnings_out is not None:
+        first_name, first_reason = repaired[0]
+        warnings_out.append({
+            "code": "geometry_repaired",
+            "message": (
+                f"{len(repaired)} invalid geometr(y/ies) in "
+                f"'{layer_override or source_file}' were repaired"
+            ),
+            "detail": (
+                f"{len(repaired)} feature(s) in {source_file} had invalid "
+                f"geometry (typically a self-intersecting, hand-digitised "
+                f"outline) — the first, {first_name or 'unnamed'!r}: "
+                f"{first_reason}. They were repaired with make_valid, keeping "
+                f"only parts of the original dimension, so area and "
+                f"intersection queries work on them. Check the outlines "
+                f"against the source if the exact shape matters."
+            ),
+        })
 
     written = 0
     for start in range(0, len(rows), _INSERT_BATCH):
@@ -712,7 +827,7 @@ ingest_spatial = hatchet.workflow(
 )
 
 
-@ingest_spatial.task(execution_timeout="2h", retries=1)
+@ingest_spatial.task(execution_timeout="2h", schedule_timeout="2h", retries=1)
 async def run_ingest_spatial(
     input: IngestSpatialInput, ctx: Context,
 ) -> IngestSpatialOut:
@@ -1055,6 +1170,7 @@ async def run_ingest_spatial(
                 # source_file here, the collars mentioned in ingest_tabular,
                 # the curve names in ingest_well_logs.
                 replaced = 0
+                logical_name = _logical_source_name(filename)
                 async with conn.transaction():
                     # The CRS gate. Inside the transaction on purpose: the
                     # delete-then-reinsert below is what makes a re-upload
@@ -1075,14 +1191,9 @@ async def run_ingest_spatial(
                     if refusal:
                         raise ValueError(refusal)
 
-                    replaced = int(await conn.fetchval(
-                        "WITH gone AS ("
-                        "  DELETE FROM silver.spatial_features"
-                        "   WHERE project_id = $1::uuid AND source_file = $2"
-                        "  RETURNING 1"
-                        ") SELECT count(*) FROM gone",
-                        input.project_id, filename,
-                    ) or 0)
+                    replaced = await _replace_previous_upload(
+                        conn, project_id=input.project_id, filename=filename,
+                    )
                     if replaced:
                         log.info(
                             "ingest_spatial: replacing %d existing feature(s) for "
@@ -1092,8 +1203,8 @@ async def run_ingest_spatial(
                         warnings.append({
                             "code": "features_replaced",
                             "detail": (
-                                f"{replaced} feature(s) from a previous ingest of "
-                                f"{filename} were replaced."
+                                f"{replaced} feature(s) from a previous upload of "
+                                f"{logical_name} were replaced by this one."
                             ),
                         })
 
@@ -1143,6 +1254,7 @@ async def run_ingest_spatial(
                             layer_override=layer_name,
                             georef_method=georef,
                             crs_confidence=crs_conf,
+                            warnings_out=warnings,
                         )
                         features_written += n
                         layers_written.extend(

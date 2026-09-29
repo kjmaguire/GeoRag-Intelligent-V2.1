@@ -99,6 +99,10 @@ class GuardErrorCode(StrEnum):
 
 
 _WARNING_PATTERNS: tuple[tuple[str, GuardErrorCode], ...] = (
+    # Layer 2 — invented citation markers and rule-4 removals of uncited
+    # claims (layer2_typed_output). First, because the finding text says
+    # "citation" and "source", which later rules would otherwise claim.
+    ("layer 2:", GuardErrorCode.CITATION_INCOMPLETE),
     # Layer 3 — numeric grounding
     ("ungrounded number", GuardErrorCode.NUMERIC_GROUNDING_FAILED),
     ("different unit family", GuardErrorCode.MISSING_ASSAY_UNITS),

@@ -862,25 +862,35 @@ def _resolve_crs(gdf, ext: str, path: str, source_epsg: int | None,
         # with a measured fit, exactly as it does for a .prj-less shapefile.
         gdf = gdf.set_crs(None, allow_override=True)
         if source_epsg is None:
+            # REFUSED, not stored as EPSG:4326 (GIS-11, 2026-09-29). A CAD
+            # drawing is in model units: a point at (512100, 6123100) became
+            # "longitude five hundred thousand degrees" at SRID 4326, and a
+            # local grid at (45, 60) a plausible-looking spot in Russia —
+            # exactly what the crs_required refusal exists to stop for a
+            # .prj-less shapefile. Only a declared EPSG places a CAD file.
             warnings_out.append({
-                "code": "dxf_no_crs",
-                "message": "DXF files have no CRS; caller must georeference.",
+                "code": "crs_required",
+                "message": (
+                    f"{basename} is a CAD drawing with no coordinate system; "
+                    "nothing was imported."
+                ),
                 "detail": (
                     f"{basename} is a CAD drawing in model units — the format "
-                    "has no coordinate system to read. Its features are "
-                    "stored as 'assumed' so the map shows their position as "
-                    "uncertain. Supply an EPSG code at upload time to place "
-                    "them properly; dropping the file loose on the upload "
-                    "screen beside a .prj also carries the coordinate system "
-                    "over, but a .prj zipped in next to a CAD file is not "
-                    "read."
+                    "has no coordinate system to read, and storing its numbers "
+                    "as longitude/latitude puts every feature in the wrong "
+                    "place (or off the planet). Supply the EPSG code the "
+                    "drawing was made in at upload time; dropping the file "
+                    "loose on the upload screen beside a .prj also carries the "
+                    "coordinate system over, but a .prj zipped in next to a "
+                    "CAD file is not read."
                 ),
-                "context": {"path": path},
+                "context": {"path": path, "extension": ext},
             })
             return gdf, _CrsDecision(
-                source_crs=_NO_CRS_DEFAULT,
+                source_crs="",
                 confidence=0.0,
-                reason="DXF carries no CRS; the caller must georeference",
+                reason="DXF carries no CRS and no EPSG was supplied",
+                missing=True,
             )
 
     declared = gdf.crs
@@ -935,25 +945,30 @@ def _resolve_crs(gdf, ext: str, path: str, source_epsg: int | None,
 
     if ext in _NO_CRS_EXTENSIONS:
         if ext == ".dgn":
+            # Refused like DXF (GIS-11): design-file units are not degrees.
             warnings_out.append({
-                "code": "dgn_no_crs",
-                "message": "DGN files have no CRS; caller must georeference.",
+                "code": "crs_required",
+                "message": (
+                    f"{basename} is a MicroStation design file with no "
+                    "coordinate system; nothing was imported."
+                ),
                 "detail": (
                     f"{basename} is a MicroStation design file — the format "
-                    "has no coordinate system to read, so its features are "
-                    "stored as 'assumed' and the map shows their position as "
-                    "uncertain. Supply an EPSG code at upload time to place "
-                    "them properly."
+                    "has no coordinate system to read, and storing its "
+                    "numbers as longitude/latitude puts every feature in the "
+                    "wrong place. Supply the EPSG code at upload time to "
+                    "place it."
                 ),
-                "context": {"path": path},
+                "context": {"path": path, "extension": ext},
             })
             logger.warning(
-                "spatial_parser: '%s' is DGN — no CRS concept in the format", path
+                "spatial_parser: '%s' is DGN with no source_epsg — refused", path
             )
             return gdf, _CrsDecision(
-                source_crs=_NO_CRS_DEFAULT,
+                source_crs="",
                 confidence=0.0,
-                reason="DGN carries no CRS; the caller must georeference",
+                reason="DGN carries no CRS and no EPSG was supplied",
+                missing=True,
             )
         # GeoJSON: RFC 7946 §4 — WGS84 lon/lat is the specified default, not
         # an assumption, so this is not warned about. Scoring still runs: a

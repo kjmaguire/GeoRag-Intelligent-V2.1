@@ -97,8 +97,7 @@ class IngestionRunsController extends Controller
             'column_map.*' => ['required', 'string', 'max:255'],
         ]);
 
-        $expectedPrefix = '/'.$project->project_id.'/';
-        if (! str_contains($validated['minio_key'], $expectedPrefix)) {
+        if (! $this->isKeyOwnedByProject($validated['minio_key'], (string) $project->project_id)) {
             return response()->json([
                 'message' => 'That file does not belong to this project.',
             ], 422);
@@ -124,6 +123,33 @@ class IngestionRunsController extends Controller
         );
 
         return response()->json($result, $result['dispatched'] ? 202 : 502);
+    }
+
+    /**
+     * Whether an object key is one UploadController wrote for this project.
+     *
+     * UploadController builds `<category>/<project_id>/<Ymd_His>_<safe name>`
+     * with the name already reduced to [A-Za-z0-9._-]. Anything else is
+     * refused, rather than searched for the project id anywhere in the
+     * string: a substring test accepted
+     * `collars/<mine>/../<theirs>/x.csv`, and whether a given S3 gateway
+     * normalises `..` is not something tenant isolation should rest on
+     * (SEC-9).
+     */
+    private function isKeyOwnedByProject(string $key, string $projectId): bool
+    {
+        $segments = explode('/', $key);
+        if (count($segments) !== 3) {
+            return false;
+        }
+
+        [$category, $owner, $name] = $segments;
+
+        return preg_match('/^[a-z][a-z0-9_]{0,63}$/', $category) === 1
+            && hash_equals(strtolower($projectId), $owner)
+            && preg_match('/^[A-Za-z0-9._-]{1,255}$/', $name) === 1
+            && $name !== '.'
+            && $name !== '..';
     }
 
     private function loadProject(Request $request, string $slug): Project

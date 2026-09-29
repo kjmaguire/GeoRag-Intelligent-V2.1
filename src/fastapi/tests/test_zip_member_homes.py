@@ -161,6 +161,10 @@ class _Store:
     def put_bytes(self, bucket: Any, key: str, data: bytes) -> None:
         self.objects[key] = data
 
+    def put_file(self, bucket: Any, key: str, file_path: str) -> None:
+        # Members are streamed from disk (ING-17); the double keeps the bytes.
+        self.objects[key] = Path(file_path).read_bytes()
+
 
 def _input() -> Any:
     return module.IngestZipArchiveInput(
@@ -267,3 +271,37 @@ def test_nested_zip_warning_reads_as_one_line_per_archive() -> None:
         {"code": "archive_nested_zip_not_expanded", "detail": "d", "file": "b.zip"},
     ])
     assert "2 zip file(s)" in summary["detail"] and "a.zip" in summary["detail"]
+
+
+# ---------------------------------------------------------------------------
+# ING-16 (audit 2026-09-29): a shapefile's sidecars are bundled whatever
+# their case, under the .shp's own stem
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mixed_case_sidecars_travel_with_the_shp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Veins.SHP beside veins.dbf/.shx/.prj used to bundle only the .shp."""
+    for name in ("Veins.SHP", "veins.dbf", "veins.shx", "VEINS.prj", "other.dbf"):
+        (tmp_path / name).write_bytes(name.encode())
+
+    counts, sent, store = await _route(monkeypatch, tmp_path / "Veins.SHP")
+
+    assert [n for n, _ in sent] == ["spatial"] and counts["spatial"] == 1
+    (payload,) = store.objects.values()
+    with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+        names = sorted(zf.namelist())
+        assert names == ["Veins.SHP", "Veins.dbf", "Veins.prj", "Veins.shx"]
+        assert zf.read("Veins.dbf") == b"veins.dbf"
+    assert not list(tmp_path.glob("__bundle_*")), "the bundle is cleaned up"
+
+
+def test_exact_stem_wins_a_case_collision(tmp_path: Path) -> None:
+    for name in ("Veins.shp", "Veins.dbf", "veins.dbf"):
+        (tmp_path / name).write_bytes(name.encode())
+    members = module._shapefile_members(tmp_path / "Veins.shp")
+    assert [(arc, p.name) for arc, p in members] == [
+        ("Veins.dbf", "Veins.dbf"), ("Veins.shp", "Veins.shp"),
+    ]

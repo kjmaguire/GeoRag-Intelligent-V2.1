@@ -53,7 +53,7 @@ class EncryptExistingAuditPii extends Command
         // Query the raw columns directly — we must NOT read through the
         // encrypted cast, or rows that are already plaintext will throw
         // during the cast's decrypt step and we'd never see them.
-        DB::table('query_audit_log')
+        DB::table((new QueryAuditLog)->getTable())
             ->select(['audit_id', 'query_text', 'response_text', 'query_text_hash'])
             ->orderBy('audit_id')
             ->chunk($chunk, function ($rows) use (&$total, &$rewrote, &$skipped, $dryRun) {
@@ -132,7 +132,7 @@ class EncryptExistingAuditPii extends Command
                         continue;
                     }
 
-                    DB::table('query_audit_log')
+                    DB::table((new QueryAuditLog)->getTable())
                         ->where('audit_id', $row->audit_id)
                         ->update($update);
 

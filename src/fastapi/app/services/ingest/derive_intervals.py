@@ -34,8 +34,18 @@ When this runs -- and when it does not
         derived rows, if an earlier run left any, are removed instead.
 
     Every delete stays scoped to derived rows (``DERIVED-%`` codes,
-    ``derived_composite`` samples). The depth-unit assumption (feet) is
-    unchanged, and is reported in the summary as ``depth_unit_assumed``.
+    ``derived_composite`` samples).
+
+Depth units (GIS-4 / ING-8, 2026-09-29)
+    This module used to multiply every curve depth by 0.3048 on the
+    unconditional assumption of feet, so a metric LAS had every derived
+    ORE/SST band drawn at 30% of its true depth. Curves now carry
+    ``silver.well_log_curves.depth_unit``: both LAS writers normalise to
+    metres at ingest and stamp 'm'. A row stamped 'ft' is converted; a
+    LEGACY row (NULL — written before the column existed, in the file's
+    native unit, which nobody recorded) is SKIPPED as
+    ``depth_unit_unknown`` rather than guessed at. Re-ingesting the LAS
+    records the unit and makes the hole derivable again.
 
 Run via:
     python -m app.services.ingest.derive_intervals --project-id <uuid>
@@ -80,11 +90,16 @@ LITHO_COLOR = {
 }
 
 FT_TO_M = 0.3048
+
+#: silver.well_log_curves.depth_unit -> factor to metres. NULL (a legacy row)
+#: is deliberately absent: its unit is unknown and it is not derived.
+_DEPTH_UNIT_TO_M: dict[str, float] = {"m": 1.0, "ft": FT_TO_M}
 MIN_INTERVAL_M = 0.5          # collapse depth bands shorter than this
 SAMPLE_COMPOSITE_M = 1.5      # ~5 ft composite for sample rows
 
-#: Reported in the summary so an operator can see what was assumed.
-DEPTH_UNIT_ASSUMED = "ft"
+#: Reported in the summary so an operator can see what was assumed — which,
+#: since GIS-4, is nothing: the unit comes from the curve row.
+DEPTH_UNIT_ASSUMED: str | None = None
 
 _URANIUM_WORDS = frozenset({"uranium", "u3o8", "u308"})
 #: A bare "u" only counts as a whole list item ("Au, U"), never as a word
@@ -142,6 +157,8 @@ class CurvePack:
     res: list[float] | None
     sp: list[float] | None
     null_value: float
+    #: True when the GAMMA row has no usable depth_unit; depths_m is empty.
+    depth_unit_unknown: bool = False
 
 
 async def _fetch_curve_pack(conn: asyncpg.Connection, collar_id: str) -> CurvePack | None:
@@ -150,7 +167,7 @@ async def _fetch_curve_pack(conn: asyncpg.Connection, collar_id: str) -> CurvePa
     None if no GAMMA curve exists."""
     rows = await conn.fetch(
         """
-        SELECT curve_name, depths, "values", null_value
+        SELECT curve_name, depths, "values", null_value, depth_unit
           FROM silver.well_log_curves
          WHERE collar_id = $1::uuid
            AND curve_name IN ('GAMMA','GRADE','RES','SP')
@@ -161,11 +178,17 @@ async def _fetch_curve_pack(conn: asyncpg.Connection, collar_id: str) -> CurvePa
     if "GAMMA" not in by_name:
         return None
     g = by_name["GAMMA"]
-    depths_ft = _parse_pg_double_array(g["depths"])
-    if not depths_ft:
+    depths_raw = _parse_pg_double_array(g["depths"])
+    if not depths_raw:
         return None
     null_v = float(g["null_value"])
-    depths_m = [d * FT_TO_M for d in depths_ft]
+    factor = _DEPTH_UNIT_TO_M.get(str(g.get("depth_unit") or "").strip().lower())
+    if factor is None:
+        return CurvePack(
+            depths_m=[], gamma=None, grade=None, res=None, sp=None,
+            null_value=null_v, depth_unit_unknown=True,
+        )
+    depths_m = [d * factor for d in depths_raw]
 
     def _vals(name: str) -> list[float] | None:
         if name not in by_name:
@@ -337,6 +360,11 @@ async def _emit_for_collar(
     pack = await _fetch_curve_pack(conn, collar_id)
     if pack is None:
         return {"hole_id": hole_id, "skipped": True, "reason": "no_gamma_curve"}
+    if pack.depth_unit_unknown:
+        # A legacy curve row: its depths are in whatever unit the LAS used,
+        # which was never recorded. Guessing feet is the bug this replaced.
+        log.warning("derive.depth_unit_unknown hole=%s collar=%s", hole_id, collar_id)
+        return {"hole_id": hole_id, "skipped": True, "reason": "depth_unit_unknown"}
 
     # Classify per-depth-point then collapse to intervals.
     labels: list[str] = []
@@ -443,6 +471,7 @@ def _empty_summary(project_id: str) -> dict[str, Any]:
         "collars_skipped": 0,
         "collars_skipped_logged_lithology": 0,
         "collars_skipped_no_gamma": 0,
+        "collars_skipped_depth_unit_unknown": 0,
         "intervals_total": 0,
         "samples_total": 0,
         "ore_bands_total": 0,
@@ -543,6 +572,9 @@ async def derive_project(project_id: str) -> dict:
             ),
             "collars_skipped_no_gamma": sum(
                 1 for r in out if r.get("reason") == "no_gamma_curve"
+            ),
+            "collars_skipped_depth_unit_unknown": sum(
+                1 for r in out if r.get("reason") == "depth_unit_unknown"
             ),
             "intervals_total": sum(r.get("intervals", 0) for r in out),
             "samples_total": sum(r.get("samples", 0) for r in out),

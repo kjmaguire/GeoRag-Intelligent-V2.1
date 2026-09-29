@@ -17,7 +17,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from app.db import scoped_connection
 from app.services.auth import verify_service_key
+from app.services.source_trust.boost import FEEDBACK_ANCHOR_MODEL_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +70,7 @@ async def list_source_trust_scores(
         where += " AND s.workspace_id = $1::uuid"
         params.append(str(workspace_id))
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""
+    sql = f"""
             SELECT s.trust_score_id::text     AS trust_score_id,
                    s.workspace_id::text       AS workspace_id,
                    s.source_document_id::text AS source_document_id,
@@ -78,17 +78,39 @@ async def list_source_trust_scores(
                    s.trust_score::float       AS trust_score,
                    s.model_version            AS model_version,
                    s.computed_at              AS computed_at,
-                   (SELECT count(*) FROM silver.source_trust_features f
-                     WHERE f.workspace_id = s.workspace_id
-                       AND f.source_document_id = s.source_document_id) AS feedback_event_count
+                   -- Feedback lives on the source's citation_feedback
+                   -- anchor row as one aggregated citation_accuracy
+                   -- feature (routers/citation_feedback.py);
+                   -- source_trust_features has no source_document_id.
+                   (SELECT COALESCE(sum((f.payload->>'event_count')::int), 0)
+                      FROM silver.source_trust_features f
+                      JOIN silver.source_trust_scores a
+                        ON a.trust_score_id = f.trust_score_id
+                     WHERE a.workspace_id = s.workspace_id
+                       AND a.source_document_id = s.source_document_id
+                       AND a.model_version = '{FEEDBACK_ANCHOR_MODEL_VERSION}'
+                       AND f.feature_name = 'citation_accuracy') AS feedback_event_count
               FROM silver.source_trust_scores s
               LEFT JOIN silver.reports r ON r.report_id = s.source_document_id
               {where}
              ORDER BY s.computed_at DESC, s.trust_score DESC
              LIMIT {limit}
-            """,
-            *params,
-        )
+            """
+
+    if workspace_id is not None:
+        # silver.source_trust_features is FORCE RLS with a strict
+        # workspace_id = GUC policy, so on a bare connection the feedback
+        # subquery sees no rows and every count reads 0. Bind the GUC when
+        # the caller names the workspace.
+        async with scoped_connection(
+            pool, workspace_id=str(workspace_id), site="admin.source_trust.list",
+        ) as conn:
+            rows = await conn.fetch(sql, *params)
+    else:
+        # Cross-workspace listing: no single GUC to bind, so under FORCE RLS
+        # feedback_event_count is 0 here. Pass workspace_id for real counts.
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
 
     return SourceTrustList(
         scores=[

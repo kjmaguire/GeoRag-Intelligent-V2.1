@@ -19,6 +19,7 @@ gated by the `continuous_learning_loop` orchestrator.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -130,35 +131,68 @@ async def execute(
                 outcomes_processed=0,
             )
 
-        # Aggregate hit/miss per workspace (model version isn't yet
-        # populated; per doc-phase 184, use a default zero-uuid until
-        # train_target_model graduates and produces real model_version_ids).
+        # Aggregate hit/miss per workspace, for the audit + lesson text.
         hits = sum(1 for o in outcomes if o["hit_or_miss"] == "hit")
         misses = sum(1 for o in outcomes if o["hit_or_miss"] == "miss")
         total = len(outcomes)
         hit_rate = (hits / total) if total > 0 else 0.0
 
-        # Compute window from oldest → newest recorded_at
-        recorded = [o["recorded_at"] for o in outcomes if o["recorded_at"]]
-        window_start = min(recorded) if recorded else datetime.now(tz=UTC)
-        window_end = max(recorded) if recorded else window_start
-
-        # Write a targeting.target_backtests row (zero model_version uuid
-        # as a placeholder until train_target_model lands)
-        ZERO_MODEL_VERSION = "00000000-0000-0000-0000-000000000000"
-        backtest_id = await conn.fetchval(
+        # One targeting.target_backtests row per model version the outcomes'
+        # recommendations were scored with (recommendation -> score ->
+        # model_version_id).
+        #
+        # Database audit 2026-09-29 PG-13: this wrote ONE row with a zero
+        # UUID model_version_id "as a placeholder", which the FK to
+        # targeting.target_model_versions rejects — so any run with outcomes
+        # failed. Outcomes whose recommendation resolves to no model version
+        # are counted but get no backtest row.
+        version_rows = await conn.fetch(
             """
-            INSERT INTO targeting.target_backtests
-                (backtest_id, model_version_id, workspace_id,
-                 window_start, window_end, metrics_payload, computed_at)
-            VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5::jsonb, NOW())
-            RETURNING backtest_id::text
+            SELECT r.recommendation_id::text AS recommendation_id,
+                   s.model_version_id::text  AS model_version_id
+              FROM targeting.target_recommendations r
+              JOIN targeting.target_scores s ON s.score_id = r.score_id
+             WHERE r.recommendation_id = ANY($1::uuid[])
             """,
-            ZERO_MODEL_VERSION, workspace_id,
-            window_start, window_end,
-            f'{{"total":{total},"hits":{hits},"misses":{misses},"hit_rate":{hit_rate}}}',
+            list({o["recommendation_id"] for o in outcomes if o["recommendation_id"]}),
         )
-        backtests_written = 1
+        version_of = {r["recommendation_id"]: r["model_version_id"] for r in version_rows}
+        buckets: dict[str, list] = {}
+        for o in outcomes:
+            version = version_of.get(o["recommendation_id"])
+            if version is not None:
+                buckets.setdefault(version, []).append(o)
+
+        backtest_ids: list[str] = []
+        for model_version_id, bucket in sorted(buckets.items()):
+            b_hits = sum(1 for o in bucket if o["hit_or_miss"] == "hit")
+            b_total = len(bucket)
+            recorded = [o["recorded_at"] for o in bucket if o["recorded_at"]]
+            window_start = min(recorded) if recorded else datetime.now(tz=UTC)
+            window_end = max(recorded) if recorded else window_start
+            if window_end <= window_start:
+                # CHECK (window_end > window_start): a single outcome, or
+                # several recorded at one instant, is a zero-width window.
+                window_end = window_start + timedelta(seconds=1)
+            backtest_ids.append(await conn.fetchval(
+                """
+                INSERT INTO targeting.target_backtests
+                    (backtest_id, model_version_id, workspace_id,
+                     window_start, window_end, metrics_payload, computed_at)
+                VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5::jsonb, NOW())
+                RETURNING backtest_id::text
+                """,
+                model_version_id, workspace_id,
+                window_start, window_end,
+                json.dumps({
+                    "total": b_total,
+                    "hits": b_hits,
+                    "misses": sum(1 for o in bucket if o["hit_or_miss"] == "miss"),
+                    "hit_rate": (b_hits / b_total) if b_total else 0.0,
+                }),
+            ))
+        backtests_written = len(backtest_ids)
+        backtest_id = backtest_ids[0] if backtest_ids else None
 
         # Optionally write a lessons-learned row if a parent decision exists
         # for this project's targeting sign-offs (lookup by project + type)
@@ -178,8 +212,8 @@ async def execute(
             await conn.execute(
                 """
                 INSERT INTO silver.decision_lessons_learned
-                    (lesson_id, decision_id, workspace_id, lesson_text,
-                     created_at)
+                    (lesson_id, decision_id, workspace_id, lesson_markdown,
+                     captured_at)
                 VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, NOW())
                 ON CONFLICT DO NOTHING
                 """,

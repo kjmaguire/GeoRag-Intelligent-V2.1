@@ -1,6 +1,6 @@
 {
   "_doc": "Phase 12 Step 3 (R-P11-l6-config) - SME-editable Layer 6 constraints. Adjusting limits here is a config change, not a code change; reload requires restarting the fastapi container or hot-reloading the module. Each entry maps 1:1 onto the GeologicalConstraint dataclass in layer6_constraints.py. `keywords` and `negative_keywords` are Python regex patterns; remember to escape backslashes per JSON rules. A number is attached to the constraint whose keyword is NEAREST to it - `context_chars` is how far back to look (English names the quantity before the value: 'a dip of -60'), `lookahead_chars` how far forward (for trailing units: '1.85 g/t Au'). Keep both tight; a wide window attaches a number to the neighbouring clause's keyword and flags a correct value against the wrong constraint. Set `absolute_value` when the sign is a reporting convention rather than information. `unit_scales` (added 2026-08-21) maps a unit token written after the number onto a multiplier into the unit the bounds use — 1020 ppb Au was being compared against a 1000 ppm ceiling and reported as impossible, and 2 % Au (20 000 ppm) passed. It is unit arithmetic, not a limit change; the bounds are still yours. `foreign_units` (added 2026-09-23) lists unit tokens that, written right after a number, mark it as a different quantity (contained metal, tonnage) so it is not checked against this constraint at all - '71 million pounds of uranium' was being tested as a 71 % U3O8 grade. Like unit_scales it is unit reading, not a limit change.",
-  "_version": "0.5.0",
+  "_version": "0.6.0",
   "constraints": [
     {
       "name": "depth_max_m",
@@ -21,7 +21,14 @@
         "\\blon\\b",
         "\\blat\\b"
       ],
-      "lookahead_chars": 15
+      "lookahead_chars": 15,
+      "unit_scales": {
+        "ft": 0.3048,
+        "feet": 0.3048,
+        "foot": 0.3048,
+        "km": 1000.0
+      },
+      "_note": "unit_scales added 2026-09-29 (audit RAG-4, approved in the 2026-09-29 guard-fix batch). US projects in the corpus (Wyoming, Shirley Basin) report depth in feet, and 'drilled to a total depth of 5500 ft' (1676 m) was compared as 5500 against the 5000 m ceiling and flagged high severity: confidence floored, fabrication banner on a correct answer. Unit arithmetic only, like grade_gold_max_ppm's ppb/% scales; the 5000 m bound is unchanged. A value followed by 'km' is scaled up, so '5.2 km' is now checked as 5200 m."
     },
     {
       "name": "grade_gold_max_ppm",
@@ -71,8 +78,19 @@
         "oz",
         "ounces",
         "koz",
-        "Moz"
-      ]
+        "Moz",
+        "m",
+        "metres",
+        "meters",
+        "metre",
+        "meter",
+        "ft",
+        "feet",
+        "foot",
+        "km",
+        "cm"
+      ],
+      "_note_length_units": "Length units added to foreign_units 2026-09-29 (audit RAG-3 follow-up). '0.12% eU3O8 from 120-126 m' attached 120 and 126 to the eU3O8 keyword and tested them as a 120 % grade; a number measured in metres or feet is an interval or a depth, not a grade. Unit reading only; the bounds are unchanged."
     },
     {
       "name": "grade_uranium_max_pct",
@@ -109,9 +127,20 @@
         "oz",
         "ounces",
         "koz",
-        "Moz"
+        "Moz",
+        "m",
+        "metres",
+        "meters",
+        "metre",
+        "meter",
+        "ft",
+        "feet",
+        "foot",
+        "km",
+        "cm"
       ],
-      "_note": "foreign_units added 2026-09-23. Resource statements put contained metal beside the grade - '0.85% U3O8, containing about 71 million pounds of uranium' - and 71 attached to the U3O8 keyword and was tested as a 71% grade on a correct answer. A number followed by a magnitude word or a mass or tonnage unit is a quantity, not a grade, and is not checked against this bound. The bound itself is unchanged."
+      "_note": "foreign_units added 2026-09-23. Resource statements put contained metal beside the grade - '0.85% U3O8, containing about 71 million pounds of uranium' - and 71 attached to the U3O8 keyword and was tested as a 71% grade on a correct answer. A number followed by a magnitude word or a mass or tonnage unit is a quantity, not a grade, and is not checked against this bound. The bound itself is unchanged.",
+      "_note_length_units": "Length units added to foreign_units 2026-09-29 (audit RAG-3 follow-up). '0.12% eU3O8 from 120-126 m' attached 120 and 126 to the eU3O8 keyword and tested them as a 120 % grade; a number measured in metres or feet is an interval or a depth, not a grade. Unit reading only; the bounds are unchanged."
     },
     {
       "name": "recovery_max_pct",

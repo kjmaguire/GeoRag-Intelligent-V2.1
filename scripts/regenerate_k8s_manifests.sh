@@ -18,6 +18,7 @@ KUBE_VERSION="${KUBE_VERSION:-1.30.0}"
 SETS=(
     --set "secrets.postgresPassword=CHANGEME"
     --set "secrets.pgAppPassword=CHANGEME"
+    --set "secrets.martinDbPassword=CHANGEME"
     --set "secrets.redisPassword=CHANGEME"
     --set "secrets.fastapiServiceKey=CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
     --set "secrets.laravelAppKey=base64:CHANGEME"
@@ -26,6 +27,12 @@ SETS=(
 mkdir -p "$REPO_ROOT/kubernetes/manifests"
 
 run_helm() {
+    # HELM_BIN=/path/to/helm renders with a local binary instead of Docker
+    # (same chart, same flags) — for hosts with no Docker daemon.
+    if [ -n "${HELM_BIN:-}" ]; then
+        (cd "$REPO_ROOT" && "$HELM_BIN" "$@")
+        return
+    fi
     MSYS_NO_PATHCONV=1 docker run --rm \
         -v "$REPO_ROOT:/work" \
         -w /work \

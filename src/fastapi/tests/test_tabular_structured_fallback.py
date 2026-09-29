@@ -16,6 +16,8 @@ from georag_geoparsers._sheet_classifier import classify_sheet_type
 
 from app.hatchet_workflows.ingest_tabular import (
     _category_corrected_warning,
+    _csv_headers,
+    _csv_preamble_warning,
     _read_delimited_rows,
     _wrote_nothing_warning,
 )
@@ -105,6 +107,30 @@ class TestDelimitedRows:
         rows = _read_delimited_rows(str(p))
 
         assert rows == [{"Sample": "P1", "Au_ppm": "0,016"}]
+
+
+class TestPreambleLines:
+    """ING-13: comment/title lines above a CSV's header are skipped, and said."""
+
+    def test_headers_and_rows_come_from_below_the_comments(self, tmp_path):
+        p = tmp_path / "collars.csv"
+        p.write_text(
+            "# Exported from logging db 2019-03-01\n# Units: metres\n"
+            "Hole_ID,Easting,Northing\nDH-1,1,2\n",
+            encoding="utf-8",
+        )
+        assert _csv_headers(str(p)) == ["Hole_ID", "Easting", "Northing"]
+        assert _read_delimited_rows(str(p)) == [
+            {"Hole_ID": "DH-1", "Easting": "1", "Northing": "2"},
+        ]
+        note = _csv_preamble_warning(str(p), "collars.csv")
+        assert note is not None and note["code"] == "header_row_detected"
+        assert "line 3" in note["detail"]
+
+    def test_an_ordinary_file_gets_no_note(self, tmp_path):
+        p = tmp_path / "plain.csv"
+        p.write_text("Hole_ID,Easting\nDH-1,1\n", encoding="utf-8")
+        assert _csv_preamble_warning(str(p), "plain.csv") is None
 
 
 class TestWroteNothingWording:

@@ -368,10 +368,12 @@ final class WorkspaceRlsCoverageTest extends TestCase
      * ::targets() and RecordDecision.php fixes that shipped alongside it).
      *
      * Still intentionally fail-open and NOT asserted here: audit.
-     * audit_ledger and targeting.target_backtests (both have a
-     * deliberately NULLABLE workspace_id for legitimate platform-wide /
-     * cross-workspace rows — flipping them would silently hide those
-     * rows, a product decision beyond closing the escape hatch) and
+     * audit_ledger (a deliberately NULLABLE workspace_id for legitimate
+     * platform-wide / cross-workspace rows — flipping it would silently
+     * hide those rows, a product decision beyond closing the escape
+     * hatch; targeting.target_backtests had the same shape until
+     * 2026_09_29_190000 kept its NULL rows visible but closed the
+     * unset-GUC branch — see TargetBacktestsRlsTest) and
      * silver.source_trust_scores (its one live reader is an admin
      * cross-workspace listing endpoint that never binds the GUC by
      * design). Also still open: everything from the first pass's "much

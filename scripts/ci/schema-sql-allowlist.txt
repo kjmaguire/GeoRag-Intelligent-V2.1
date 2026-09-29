@@ -1,0 +1,75 @@
+# Allow-list for scripts/ci/check_sql_against_schema.py.
+#
+# One entry per line: <repo-relative file>|<missing name as the checker
+# reports it>. Every entry needs a comment saying WHY it is tolerated and
+# what removes it. This file is a to-do list: it should only get shorter.
+# The checker prints entries that no longer match — delete them.
+#
+# Do not add an entry to make a red build green. A reference to a table,
+# column or function that no migration creates is a 500 or a silently
+# swallowed exception in production (database audit 2026-09-29, PG-3..13).
+
+# ── Being fixed by other PRs from the 2026-09-29 audit ─────────────────────
+# PG-5 (guards): layer5 provenance enrichment joins bronze.source_files on
+# columns it does not have.
+src/fastapi/app/agent/hallucination/layer5_provenance.py|bf.sha256
+# PG-8 / API-1 (fastapi): the trust summary reads silver.answer_run_feedback;
+# the §10p writer writes silver.message_feedback.
+src/fastapi/app/routers/answer_runs.py|silver.answer_run_feedback
+# API-3 (fastapi): GET /v1/evidence/{id} document_passage branch.
+src/fastapi/app/routers/evidence.py|dp.document_revision_id
+src/fastapi/app/routers/evidence.py|passage_text
+# API-7 (fastapi): GET /internal/projects/{id}/collars reads geo.collars.
+src/fastapi/app/routers/projects.py|geo.collars
+# PG-13 / security (laravel): the OAuth ingest callback CREATEs this table at
+# request time; being flag-gated.
+app/Http/Controllers/OAuthIngestController.php|silver.cloud_ingest_connections
+
+# ── PG-13: unmounted 2026-09-29, module kept ───────────────────────────────
+# §04p Stage-3 cache tables were never migrated. Their endpoints
+# (/pdf/extract_text, /pdf/find_tables, /pdf/find_coordinates,
+# /completeness_audit, /assessment_summary) are unmounted and the services
+# are no longer started; re-mounting needs the tables migrated (FORCE RLS +
+# tenant_isolation) first, which is also what removes these lines.
+src/fastapi/app/services/pdf_extract.py|silver.pdf_text_blocks
+src/fastapi/app/services/pdf_extract.py|silver.pdf_table_cells
+src/fastapi/app/services/pdf_coordinates.py|silver.pdf_text_blocks
+src/fastapi/app/services/pdf_coordinates.py|silver.pdf_coordinates
+src/fastapi/app/services/completeness_audit.py|silver.pdf_text_blocks
+src/fastapi/app/services/completeness_audit.py|silver.pdf_coordinates
+src/fastapi/app/services/assessment_summarizer.py|silver.pdf_text_blocks
+# /pdf/summarize_section stays mounted; only its section_kind=layout_region
+# branch reads this never-created table (documented in routers/pdf.py).
+src/fastapi/app/services/pdf_vl.py|silver.pdf_layout_regions
+# Its only caller (tool gateway audit_provenance) was removed; the SQL
+# function it wraps was never migrated.
+src/fastapi/app/services/review_lineage_lookup.py|silver.get_review_lineage
+# Unrouted controller (no route in routes/*.php). silver.evidence_items has
+# no project_id, so its tenancy gate must be rewritten before it is routed.
+app/Http/Controllers/Api/V1/EvidenceController.php|silver.evidence_items.project_id
+# Retired: UploadController posts to the ingest_pdf trigger directly and
+# never calls it. Delete the class with its constructor injection.
+app/Services/Ingestion/ShadowRouter.php|silver.shadow_runs
+
+# ── Guarded, optional, or not this database ───────────────────────────────
+# gold.h3_density_mineral is raw-only (104-section6, not in the db:apply-raw
+# manifest); the target-heatmap fetcher checks _h3_capability_missing()
+# before querying it.
+src/fastapi/app/routers/visualizations.py|gold.h3_density_mineral
+# Extension objects (pg_stat_statements, hypopg), not schema: the migration
+# chain does not install either extension, so the phase0 index-health agent
+# only works on a cluster where an operator has. Not probed first — its
+# slow-query read raises where the extension is absent.
+src/fastapi/app/agents/phase0/index_health.py|pg_stat_statements
+src/fastapi/app/agents/phase0/index_health.py|hypopg_reset
+# pg_partman is only present where the raw partitioning files ran; the
+# workflow reports its own no-op (pg_partman_maintenance.py:83-111).
+src/fastapi/app/hatchet_workflows/pg_partman_maintenance.py|partman.part_config
+# Dagster's own run database (a separate DSN), not the application schema.
+# Dagster was retired 2026-07-28; the metric can go with it.
+app/Http/Controllers/Internal/MetricsController.php|runs
+# SQLite (GeoPackage) catalog query, not Postgres.
+src/georag_geoparsers/georag_geoparsers/spatial_parser.py|sqlite_master
+# One-off operator scripts that predate the current schema.
+src/fastapi/scripts/_extract_domain_vocab.py|silver.terms
+src/fastapi/scripts/populate_source_files.py|source_files.file_path

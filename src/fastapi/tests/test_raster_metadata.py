@@ -63,7 +63,7 @@ def args():
 
 
 def _patch_extract(monkeypatch, value=None, exc=None):
-    def fake(_bytes, _suffix):
+    def fake(_bytes, _suffix, _path=None):
         if exc is not None:
             raise exc
         return value

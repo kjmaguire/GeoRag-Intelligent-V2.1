@@ -4,18 +4,32 @@ Accepts a CSV file path or file-like object, auto-detects column name variations
 across common LIMS/lab exports, validates each row, and returns a list of validated
 sample dicts ready for Silver schema insertion.
 
-Commodity assay columns are auto-detected via regex — any column matching the
-pattern ^(U3O8|Au|Ag|Cu|Pb|Zn|Ni|Fe|Ti|Li)_?(ppm|pct|ppb|pct_|_pct)?$ is
-collected into the `commodity_assays` dict as a JSONB payload.
+Commodity assay columns are recognised by ``_assay_columns.parse_assay_header``:
+any assayable element, oxide or element name, with a unit written as ppm, ppb,
+g/t (gpt), %, pct or oz/t in any of the usual spellings (``Au (g/t)``,
+``Ag_gpt``, ``Cu_%``, ``Pb ppm``). Values are stored under a canonical key
+(``Au_ppm``, ``Cu_pct``) in the stored unit - g/t is ppm, oz/t is converted
+(x34.2857). A bare element (``Mo``) is ASSUMED ppm and reported as such. The
+old literal list (U3O8/Au/Ag/Cu/Pb/Zn/Ni/Fe/Ti/Li, ppm/pct/ppb only) dropped
+every other element and g/t gold on the floor (audit 2026-09-29, ING-3).
 
-Below-detection values ("<0.01", "BDL", etc.) are captured in commodity_assay_flags
-rather than causing row rejection.
+Below-detection values ("<0.01", "BDL", a negated detection limit such as
+"-0.005") are captured in commodity_assay_flags rather than causing row
+rejection; over-limit values (">10") keep the limit as the value and carry an
+over-detection flag; -9999 / -999 / -99999 are "not measured", not grades.
+
+``sample_type`` is optional: most assay exports have no such column. When it is
+absent, or holds a value outside Core/Chip/Grab/Channel/Soil and their common
+synonyms (DD, HQ, RC, rock chip, ...), the row is kept, the type is left blank
+and the blanking is reported (Kyle, 2026-09-29: keep the row, blank the field,
+say so).
 
 Parse quality metrics are emitted as structured log output so the caller can
 record them in Dagster materialisation metadata.
 """
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from io import StringIO
@@ -24,12 +38,14 @@ from typing import IO, Any, Union
 
 import polars as pl
 
+from georag_geoparsers._assay_columns import AssaySpec, parse_assay_header
 from georag_geoparsers._csv_io import (
     SAMPLE_NULL_VALUES,
     detect_delimiter,
     open_csv_with_encoding,
     transform_decimal_comma,
 )
+from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._drill_schema import SAMPLE_ALIASES, SAMPLE_REQUIRED
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
@@ -50,14 +66,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 COLUMN_ALIASES: dict = SAMPLE_ALIASES
 
-# Required fields — rows missing any of these are rejected
-REQUIRED_FIELDS: frozenset = SAMPLE_REQUIRED
+# Required fields — rows missing any of these are rejected.
+#
+# NOT sample_type, although _drill_schema.SAMPLE_REQUIRED (which the sheet
+# classifier scores on) still lists it: most assay exports carry no
+# sample-type column, and requiring one sent them to the text fallback with
+# no samples and no assays (ING-4). The classifier keeps its 3-of-4 reading,
+# so what classifies as a sample sheet is unchanged; the parser just stops
+# refusing it.
+REQUIRED_FIELDS: frozenset = frozenset(SAMPLE_REQUIRED - {"sample_type"})
 
 # Numeric fields
 NUMERIC_FIELDS: frozenset = frozenset({"from_depth", "to_depth"})
 
-# Commodity element / unit regex — matches assay column headers
-# Examples: U3O8_ppm, Au_ppb, Cu_pct, Pb_ppm, U3O8ppm, Fe_pct
+# LEGACY. The ten-element vocabulary assay detection used before 2026-09-29;
+# kept only because it is a public name. Detection is parse_assay_header.
 ASSAY_COLUMN_RE = re.compile(
     r"^(U3O8|Au|Ag|Cu|Pb|Zn|Ni|Fe|Ti|Li)_?(ppm|pct|ppb|pct_|_pct)?$",
     re.IGNORECASE,
@@ -69,8 +92,36 @@ _BDL_LITERALS: frozenset = frozenset({"lod", "bdl", "<lod", "<dl"})
 # Below-detection prefix pattern: "<0.01", "< 0.001", etc.
 _BELOW_DETECT_RE = re.compile(r"^<\s*(\d+(?:\.\d+)?)$")
 
+# Over-limit prefix pattern: ">10", "> 10000" (ING-9). The value above the
+# upper detection limit is not known; the limit is.
+_OVER_DETECT_RE = re.compile(r"^>\s*(\d+(?:\.\d+)?)$")
+
+#: Numeric codes that mean "not measured", not a grade (ING-10). Stored as
+#: absent. Other negative values are negated detection limits (below).
+MISSING_SENTINELS: frozenset[float] = frozenset({-9999.0, -999.0, -99999.0})
+
 # Categorical validation sets
 VALID_SAMPLE_TYPES: frozenset = frozenset({"Core", "Chip", "Grab", "Channel", "Soil"})
+
+#: Spellings that ARE one of the allowed types (ING-4). Matched after
+#: case-folding and collapsing whitespace/punctuation. Nothing is added to
+#: the enum: an RC chip sample is a Chip, a half-core HQ sample is a Core.
+#: Anything not here (Trench, RAB, Aircore, Pulp, ...) is left blank and
+#: reported rather than guessed at.
+SAMPLE_TYPE_SYNONYMS: dict[str, str] = {
+    **{k: "Core" for k in (
+        "core", "dd", "ddh", "diamond", "diamond drill", "diamond core",
+        "half core", "quarter core", "whole core", "full core", "split core",
+        "hq", "nq", "pq", "bq", "hq3", "nq2", "nq3", "pq3",
+    )},
+    **{k: "Chip" for k in (
+        "chip", "chips", "rc", "rc chip", "rc chips", "reverse circulation",
+        "reverse circ", "percussion", "rock chip", "rock chips",
+    )},
+    **{k: "Grab" for k in ("grab", "grab sample", "grabs")},
+    **{k: "Channel" for k in ("channel", "channel sample", "channels")},
+    **{k: "Soil" for k in ("soil", "soils", "soil sample")},
+}
 VALID_QAQC_TYPES: frozenset = frozenset({"Primary", "Duplicate", "Blank", "Standard"})
 
 # QAQC prefix sniff patterns (case-insensitive)
@@ -92,6 +143,12 @@ _CODE_NUMERIC_CAST = "numeric_cast_failed"
 _CODE_DEPTH_ORDER = "depth_order_invalid"
 _CODE_DEPTH_NEG = "depth_negative"
 _CODE_INVALID_SAMPLE_TYPE = "invalid_sample_type"
+_CODE_SAMPLE_TYPE_MISSING = "sample_type_column_missing"
+_CODE_ASSAY_OVER_LIMIT = "assay_over_detection"
+_CODE_ASSAY_SENTINEL = "assay_missing_sentinel"
+_CODE_ASSAY_UNIT_ASSUMED = "assay_unit_assumed"
+_CODE_ASSAY_UNIT_CONVERTED = "assay_unit_converted"
+_CODE_ASSAY_COLUMNS_MERGED = "assay_columns_merged"
 _CODE_INVALID_QAQC = "invalid_qaqc_type"
 _CODE_DECIMAL_COMMA = "decimal_comma_detected"
 
@@ -128,8 +185,8 @@ _UNIT_NORMALIZE: dict[str, str] = {
 
 # Long-format grouping columns — hole_id, from_depth, to_depth, sample_type are required;
 # others are optional but included in the group key when present.
-_LONG_REQUIRED_GROUPING = {"hole_id", "from_depth", "to_depth", "sample_type"}
-_LONG_OPTIONAL_GROUPING = {"sample_id", "lab_id", "qaqc_type"}
+_LONG_REQUIRED_GROUPING = {"hole_id", "from_depth", "to_depth"}
+_LONG_OPTIONAL_GROUPING = {"sample_type", "sample_id", "lab_id", "qaqc_type"}
 
 
 @dataclass
@@ -198,7 +255,7 @@ def _detect_long_format(csv_columns: list) -> bool:
         return False
 
     # Check that no wide-format assay columns are present
-    has_assay_cols = any(ASSAY_COLUMN_RE.match(c) for c in csv_columns)
+    has_assay_cols = any(parse_assay_header(c) for c in csv_columns)
     return not has_assay_cols
 
 
@@ -404,7 +461,7 @@ def _build_column_map(csv_columns: list, *, aliases: dict | None = None) -> tupl
     matched_csv_cols = set(column_map.values())
 
     # Identify assay columns
-    assay_cols = [c for c in unmatched if ASSAY_COLUMN_RE.match(c)]
+    assay_cols = [c for c in unmatched if parse_assay_header(c) is not None]
 
     all_accounted = matched_csv_cols | set(assay_cols)
     unmapped = [c for c in csv_columns if c not in all_accounted]
@@ -436,8 +493,19 @@ def _parse_assay_value(
       None / ""            → (None, None)         — absent, skip
       "0.42"               → (0.42, None)          — normal
       "<0.01"              → (0.005, {...})         — half-detection-limit
+      "-0.01"              → (0.005, {...})         — a NEGATED detection limit
+                                                     is "<0.01" (ING-10)
+      "-9999", "-999"      → (None, {"missing_sentinel": True, ...})
+      ">10"                → (10.0, {"od_flag": True, "od_threshold": 10.0})
+                                                     — above the upper limit
+                                                     (ING-9)
       "BDL", "<LOD", ...   → (None, {...})          — BDL unknown threshold
       "NS", "NR", ...      → (None, {"unparseable": True, ...})
+
+    A concentration cannot be negative, so a negative cell is never stored as
+    a grade: the sentinels are "not measured", and any other negative is the
+    negated detection limit, the same convention ingest_tabular's surface
+    geochemistry path documents (``_is_below_detection``).
     """
     if raw is None:
         return None, None
@@ -447,9 +515,28 @@ def _parse_assay_value(
 
     # Plain numeric
     try:
-        return float(stripped), None
+        number = float(stripped)
     except ValueError:
-        pass
+        number = None
+    if number is not None and math.isfinite(number):
+        if number in MISSING_SENTINELS:
+            return None, {"missing_sentinel": True, "original": stripped}
+        if number >= 0:
+            return number, None
+        limit = abs(number)
+        return (
+            limit / 2.0,
+            {
+                "dl_flag": True,
+                "dl_threshold": limit,
+                "original": stripped,
+                "substitution": "half_dl",
+                "negated_limit": True,
+            },
+        )
+    if number is not None:
+        # NaN / infinity: not a measurement.
+        return None, {"unparseable": True, "original": stripped}
 
     # Below-detection with numeric threshold: "<0.01", "< 0.001"
     m = _BELOW_DETECT_RE.match(stripped)
@@ -463,6 +550,22 @@ def _parse_assay_value(
                 "dl_threshold": threshold,
                 "original": stripped,
                 "substitution": "half_dl",
+            },
+        )
+
+    # Above the upper detection limit: ">10". The limit is the only number
+    # the lab reported, so it is the value, flagged - dropping the cell
+    # removed exactly the highest-grade intervals (ING-9).
+    m = _OVER_DETECT_RE.match(stripped)
+    if m:
+        threshold = float(m.group(1))
+        return (
+            threshold,
+            {
+                "od_flag": True,
+                "od_threshold": threshold,
+                "original": stripped,
+                "substitution": "limit",
             },
         )
 
@@ -480,6 +583,110 @@ def _parse_assay_value(
 
     # Unparseable
     return None, {"unparseable": True, "original": stripped}
+
+
+def canonical_sample_type(value: str | None) -> str | None:
+    """The allowed sample type *value* denotes, or None (ING-4).
+
+    Case, whitespace and punctuation are folded ("CORE", "Half-Core",
+    "R.C."), then the value is looked up among the allowed types and their
+    synonyms. None means "not a type we can name" - the caller blanks it.
+    """
+    if value is None:
+        return None
+    folded = " ".join(re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).split())
+    if not folded:
+        return None
+    if folded.replace(" ", "") == "rc":
+        return "Chip"
+    for allowed in VALID_SAMPLE_TYPES:
+        if allowed.casefold() == folded:
+            return allowed
+    return SAMPLE_TYPE_SYNONYMS.get(folded)
+
+
+def _assay_specs(assay_cols: list) -> dict[str, AssaySpec]:
+    """``{column: AssaySpec}`` for the recognised assay columns."""
+    specs: dict[str, AssaySpec] = {}
+    for col in assay_cols:
+        spec = parse_assay_header(col)
+        if spec is not None:
+            specs[col] = spec
+    return specs
+
+
+def _assay_column_warnings(specs: dict[str, AssaySpec]) -> list[dict]:
+    """File-level notes: units assumed, units converted, columns merged."""
+    out: list[dict] = []
+    assumed = [c for c, s in specs.items() if s.unit_assumed]
+    if assumed:
+        shown = ", ".join(repr(c) for c in assumed[:12])
+        out.append({
+            "row": None,
+            "code": _CODE_ASSAY_UNIT_ASSUMED,
+            "message": (
+                f"{len(assumed)} assay column(s) name no unit and were read as ppm"
+            ),
+            "detail": (
+                f"These assay columns name an element but no unit, so their "
+                f"values were stored as ppm: {shown}. That is an assumption, "
+                f"not something the file says - if a column is in %, g/t or "
+                f"ppb, rename it (e.g. 'Cu_pct', 'Au_ppb') and re-upload."
+            )[:900],
+            "context": {"columns": assumed[:50]},
+        })
+    converted = [(c, s) for c, s in specs.items() if s.converted]
+    if converted:
+        shown = ", ".join(
+            f"{c!r} ({s.source_unit} -> {s.unit}"
+            + (f" x{s.factor:g}" if s.factor != 1.0 else "") + ")"
+            for c, s in converted[:12]
+        )
+        out.append({
+            "row": None,
+            "code": _CODE_ASSAY_UNIT_CONVERTED,
+            "message": f"{len(converted)} assay column(s) stored in a standard unit",
+            "detail": (
+                f"Assays are stored as ppm, ppb or %; these columns were "
+                f"stored in the equivalent unit: {shown}."
+            )[:900],
+            "context": {
+                "columns": {c: [s.source_unit, s.unit, s.factor] for c, s in converted[:50]},
+            },
+        })
+    by_key: dict[str, list[str]] = {}
+    for col, spec in specs.items():
+        by_key.setdefault(spec.key, []).append(col)
+    merged = {k: cols for k, cols in by_key.items() if len(cols) > 1}
+    if merged:
+        shown = "; ".join(f"{k}: {', '.join(repr(c) for c in cols)}" for k, cols in merged.items())
+        out.append({
+            "row": None,
+            "code": _CODE_ASSAY_COLUMNS_MERGED,
+            "message": (
+                f"{len(merged)} element(s) are reported in more than one column"
+            ),
+            "detail": (
+                f"More than one column holds the same element in the same unit "
+                f"({shown}). For each sample the first column with a measured "
+                f"value is kept; a later column only fills a cell the earlier "
+                f"one left empty or reported as below/above detection."
+            )[:900],
+            "context": {"merged": merged},
+        })
+    return out
+
+
+def _scaled_flags(flags: dict, factor: float) -> dict:
+    """*flags* with their thresholds converted to the stored unit."""
+    if factor == 1.0:
+        return flags
+    out = dict(flags)
+    for key in ("dl_threshold", "od_threshold"):
+        if isinstance(out.get(key), (int, float)):
+            out[key] = out[key] * factor
+    out["source_factor"] = factor
+    return out
 
 
 def _detect_qaqc_type(
@@ -512,6 +719,7 @@ def _validate_row(
     qaqc_col_present: bool,
     row_warnings: list,
     blanked: BlankedValues | None = None,
+    assay_specs: dict[str, AssaySpec] | None = None,
 ) -> tuple:
     """Validate a single raw row dict (keyed by canonical names + original assay col names).
 
@@ -522,8 +730,9 @@ def _validate_row(
     *blanked*; it does not reject the row and it is NOT then re-inferred as
     "Primary" - a value the lab wrote that we cannot read must not quietly
     become a plain primary sample (a "CRM" treated as primary would skew
-    every assay statistic). ``sample_type`` is a REQUIRED field and still
-    rejects.
+    every assay statistic). ``sample_type`` is treated the same way since
+    2026-09-29 (ING-4): canonicalised through its synonyms, and blanked -
+    never rejecting the row and its assays - when it names nothing we know.
     """
     # --- Required field presence ---
     for req in REQUIRED_FIELDS:
@@ -595,23 +804,16 @@ def _validate_row(
                 "suggestion": "Swap the from/to columns or check data entry.",
             }
 
-    # --- sample_type validation ---
+    # --- sample_type: canonicalise, or blank and say so (ING-4) ---
     sample_type = record.get("sample_type")
-    if sample_type is not None and sample_type not in VALID_SAMPLE_TYPES:
-        return None, {
-            "row": row_num,
-            "code": _CODE_INVALID_SAMPLE_TYPE,
-            "reason": (
-                f"row {row_num}: sample_type '{sample_type}' not in "
-                f"allowed set {sorted(VALID_SAMPLE_TYPES)}"
-            ),
-            "raw": raw,
-            "expected": f"one of {sorted(VALID_SAMPLE_TYPES)}",
-            "actual": {"value": sample_type},
-            "suggestion": (
-                "Map via COLUMN_ALIASES or consult the lab."
-            ),
-        }
+    if sample_type is not None:
+        if not str(sample_type).strip():
+            record["sample_type"] = None
+        else:
+            canonical_type = canonical_sample_type(sample_type)
+            if canonical_type is None and blanked is not None:
+                blanked.add("sample_type", sample_type)
+            record["sample_type"] = canonical_type
 
     # --- qaqc_type: validate explicit value or detect by prefix ---
     qaqc = record.get("qaqc_type")
@@ -652,16 +854,55 @@ def _validate_row(
     # --- Commodity assays ---
     commodity_assays: dict = {}
     commodity_assay_flags: dict = {}
+    specs = assay_specs if assay_specs is not None else _assay_specs(assay_cols)
+    #: key -> how good the kept reading is: 2 a clean measurement, 1 a
+    #: flagged value (below/above detection), 0 no value. A later column for
+    #: the same element and unit replaces it only with a strictly better one.
+    rank_by_key: dict[str, int] = {}
 
     for col in assay_cols:
         raw_val = raw.get(col)
         if raw_val is None:
             continue  # absent assay value is fine — skip entirely
+        spec = specs.get(col)
+        if spec is None:
+            continue
 
         value, flags = _parse_assay_value(raw_val)
+        if value is not None:
+            value = value * spec.factor
+        if flags is not None:
+            flags = _scaled_flags(flags, spec.factor)
+        key = spec.key
+        rank = 2 if value is not None and flags is None else int(value is not None)
+        if key in rank_by_key and rank <= rank_by_key[key]:
+            continue      # an earlier column already holds as good a reading
+        commodity_assays.pop(key, None)
+        commodity_assay_flags.pop(key, None)
+        rank_by_key[key] = rank
 
         if flags is not None:
-            if flags.get("dl_flag"):
+            if flags.get("od_flag"):
+                row_warnings.append({
+                    "row": row_num,
+                    "code": _CODE_ASSAY_OVER_LIMIT,
+                    "message": (
+                        f"assay '{col}' above the upper detection limit: "
+                        f"'{flags['original']}'; stored as the limit and flagged"
+                    ),
+                    "context": {"column": col, "key": key, **flags},
+                })
+            elif flags.get("missing_sentinel"):
+                row_warnings.append({
+                    "row": row_num,
+                    "code": _CODE_ASSAY_SENTINEL,
+                    "message": (
+                        f"assay '{col}' value '{flags['original']}' is a "
+                        f"'not measured' code — stored as absent, not as a grade"
+                    ),
+                    "context": {"column": col, "key": key, **flags},
+                })
+            elif flags.get("dl_flag"):
                 row_warnings.append({
                     "row": row_num,
                     "code": _CODE_ASSAY_BDL,
@@ -669,7 +910,7 @@ def _validate_row(
                         f"assay '{col}' below detection: '{flags['original']}'; "
                         f"substitution='{flags['substitution']}'"
                     ),
-                    "context": {"column": col, **flags},
+                    "context": {"column": col, "key": key, **flags},
                 })
             elif flags.get("unparseable"):
                 row_warnings.append({
@@ -679,12 +920,12 @@ def _validate_row(
                         f"assay '{col}' value '{flags['original']}' is not numeric — "
                         f"omitting from commodity_assays"
                     ),
-                    "context": {"column": col, **flags},
+                    "context": {"column": col, "key": key, **flags},
                 })
-            commodity_assay_flags[col] = flags
+            commodity_assay_flags[key] = flags
 
         if value is not None:
-            commodity_assays[col] = value
+            commodity_assays[key] = value
         # If value is None (BDL unknown / unparseable), key is omitted — row is NOT rejected
 
     record["commodity_assays"] = commodity_assays
@@ -937,6 +1178,58 @@ def parse_csv_samples(
             detected_encoding=detected_encoding,
         )
 
+    specs = _assay_specs(assay_cols)
+    global_warnings.extend(_assay_column_warnings(specs))
+
+    if "sample_type" not in column_map:
+        if not specs and "sample_id" not in column_map:
+            # No type, no assays, no sample number: nothing says these
+            # intervals are samples, and writing them as such would fill
+            # silver.samples with a geotech or density table's rows.
+            return SampleParseResult(
+                records=[],
+                total_rows=total_rows,
+                valid_rows=0,
+                skipped_rows=total_rows,
+                unmapped_columns=unmapped,
+                column_map=column_map,
+                assay_columns=assay_cols,
+                skipped_details=[{
+                    "row": None,
+                    "code": _CODE_MISSING_REQUIRED,
+                    "reason": (
+                        "file-level: missing required column mapping(s): "
+                        "frozenset({'sample_type'}) - and no assay or sample "
+                        "number column either, so nothing marks these rows "
+                        "as samples"
+                    ),
+                    "raw": {},
+                    "expected": "a sample_type, sample number or assay column",
+                    "actual": None,
+                    "suggestion": (
+                        "Add a sample number or assay column, or upload the "
+                        "table under the category it belongs to."
+                    ),
+                }],
+                warnings=global_warnings,
+                detected_encoding=detected_encoding,
+            )
+        global_warnings.append({
+            "row": None,
+            "code": _CODE_SAMPLE_TYPE_MISSING,
+            "message": (
+                "the file has no sample-type column; samples were kept with "
+                "their type left blank"
+            ),
+            "detail": (
+                "No column in this file says what kind of sample each row is "
+                "(core, chip, grab, channel, soil), so the samples and their "
+                "assays were stored with the type left blank rather than "
+                "guessed. Add a Sample_Type column and re-upload if the type "
+                "matters for your analysis."
+            ),
+        })
+
     qaqc_col_present = "qaqc_type" in column_map
 
     # Rename canonical columns; keep assay columns under their original names
@@ -947,6 +1240,16 @@ def parse_csv_samples(
         c for c in assay_cols if c in df_renamed.columns
     ]
     df_trimmed = df_renamed.select(keep_cols)
+    # "From_ft" / "To_ft" -> metres (GIS-3); the header's unit is honoured.
+    df_trimmed, unit_warning = convert_feet_columns(
+        df_trimmed,
+        columns={"from_depth": "from_depth", "to_depth": "to_depth"},
+        headers=column_map,
+        fields=("from_depth", "to_depth"),
+        parser="csv_sample",
+    )
+    if unit_warning is not None:
+        global_warnings.append(unit_warning)
 
     records: list = []
     skipped: list = []
@@ -962,7 +1265,7 @@ def parse_csv_samples(
         row_warnings: list = []
         record, skip_entry = _validate_row(
             i, raw, column_map, assay_cols, qaqc_col_present, row_warnings,
-            blanked,
+            blanked, specs,
         )
         global_warnings.extend(row_warnings)
         if record is not None:
@@ -973,7 +1276,17 @@ def parse_csv_samples(
                 extra_flags = pivoted_flags[pivot_idx]
                 if extra_flags:
                     existing = record.get("commodity_assay_flags") or {}
-                    merged = {**existing, **extra_flags}
+                    # Pivot flags are keyed by the pivot's column name
+                    # ("Au_gpt"); the record is keyed canonically ("Au_ppm")
+                    # with thresholds in the stored unit.
+                    rekeyed = {}
+                    for col_name, flag in extra_flags.items():
+                        spec = specs.get(col_name)
+                        if spec is None:
+                            rekeyed[col_name] = flag
+                        else:
+                            rekeyed[spec.key] = _scaled_flags(flag, spec.factor)
+                    merged = {**existing, **rekeyed}
                     record["commodity_assay_flags"] = merged if merged else None
             records.append(record)
             pivot_indices_kept.append(pivot_idx)
@@ -1004,7 +1317,17 @@ def parse_csv_samples(
     # CC-01 Item 1 Slice 2 — compute per-record unit ambiguity. Wide-format
     # detector inspects each record's commodity_assays + assay column names;
     # long-format additionally contributes flags collected during pivot.
-    wide_unit_flags = detect_wide_format(assay_cols, records)
+    # The detector reasons about the COLUMN a value came from ("Au" with no
+    # unit), so it is handed the values under their original column names.
+    by_column = [
+        {"commodity_assays": {
+            col: (r.get("commodity_assays") or {}).get(spec.key)
+            for col, spec in specs.items()
+            if spec.key in (r.get("commodity_assays") or {})
+        }}
+        for r in records
+    ]
+    wide_unit_flags = detect_wide_format(assay_cols, by_column)
     outlier_flags: list[dict[str, list[str]]] = []
     for idx in range(len(records)):
         merged_strs = list(wide_unit_flags[idx]) if idx < len(wide_unit_flags) else []

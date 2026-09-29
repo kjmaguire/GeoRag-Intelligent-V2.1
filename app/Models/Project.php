@@ -41,6 +41,14 @@ class Project extends Model
     use HasFactory;
     use HasUuids;
 
+    /**
+     * orientation_reference when nobody says otherwise — what the New
+     * Project form, FastAPI's Project model and the ingestion stubs all
+     * write, and the column's DB default. Vocabulary: BOH | TOH (core
+     * orientation mark); see StoreProjectRequest::prepareForValidation().
+     */
+    public const DEFAULT_ORIENTATION_REFERENCE = 'BOH';
+
     protected $table = 'silver.projects';
 
     protected $primaryKey = 'project_id';

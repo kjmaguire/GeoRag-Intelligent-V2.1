@@ -165,6 +165,9 @@ async def ingest_cluster(
         async with conn.transaction():
             await _set_rls_gucs(conn, workspace_id=workspace_id)
             # Idempotent stub project — refined later by LAS pass
+            # orientation_reference: BOH, the platform default (Project::
+            # DEFAULT_ORIENTATION_REFERENCE). This wrote 'grid_north', a north
+            # reference outside the BOH|TOH vocabulary (audit 2026-09-29 PG-14).
             stub_row = await conn.fetchrow(
                 """
                 INSERT INTO silver.projects
@@ -174,7 +177,7 @@ async def ingest_cluster(
                 VALUES (gen_random_uuid(),
                         $1, $2, $3, $4,
                         $5,
-                        'grid_north', 'active', $6::uuid,
+                        'BOH', 'active', $6::uuid,
                         NOW(), NOW())
                 ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
                 RETURNING project_id::text AS project_id
@@ -261,7 +264,7 @@ async def ingest_cluster(
             # every hole in the format's home zone.
             msg = (
                 f"{len(log_paths)} binary .log file(s) skipped: their coordinates carry "
-                f"no CRS and EPSG:{LOG_COORD_EPSG} was not declared (source_epsg)"
+                f"no CRS and EPSG:{LOG_COORD_EPSG} was not declared (nor EPSG:3736; source_epsg)"
             )
             summary.errors.append({"type": "log", "file": cluster_dir, "err": msg})
             log.warning("cluster_runner.log_skipped %s", msg)

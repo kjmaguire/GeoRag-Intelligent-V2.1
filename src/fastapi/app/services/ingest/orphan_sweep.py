@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
+from app.db import fetch_per_workspace
 from app.hatchet_workflows import _progress as ingest_progress
 
 log = logging.getLogger("georag.ingest.orphan_sweep")
@@ -118,8 +119,15 @@ SELECT_ORPHANS_SQL = f"""
 async def select_orphan_documents(conn: asyncpg.Connection) -> list[OrphanDocument]:
     """Return documents with at least one un-embedded passage older than
     STALE_AFTER_INTERVAL, plus their most recent ingest_progress row for
-    recovery linkage."""
-    rows = await conn.fetch(SELECT_ORPHANS_SQL)
+    recovery linkage.
+
+    HAT-1 (2026-09-29): one pass per workspace with the scope bound.
+    silver.document_passages is fail-CLOSED, so under the worker's AWS role
+    (georag_app, NOBYPASSRLS) the unscoped query found no orphans, ever.
+    """
+    rows = await fetch_per_workspace(
+        conn, SELECT_ORPHANS_SQL, site="orphan_sweep.select",
+    )
     return [
         OrphanDocument(
             document_id=r["document_id"],

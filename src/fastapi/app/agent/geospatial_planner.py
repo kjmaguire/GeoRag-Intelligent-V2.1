@@ -140,13 +140,17 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
         geom_column="geom_4326",
         crs_epsg=4326,
         workspace_scoped=True,
+        # Real column names (database audit 2026-09-29 PG-11): the list used
+        # to carry `spatial_crs` and `total_depth_m`, neither of which
+        # exists, so every plan failed with UndefinedColumn.
+        # tests/test_spatial_plans_prepare_integration.py PREPAREs every
+        # target x operation against a migrated database.
         select_columns=(
             "collar_id",
             "hole_id",
             "easting",
             "northing",
-            "spatial_crs",
-            "total_depth_m",
+            "total_depth",
         ),
     ),
     "silver.spatial_features": SpatialTarget(
@@ -157,9 +161,9 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
         select_columns=(
             "feature_id",
             "feature_type",
-            "feature_label",
-            "spatial_crs",
-            "source_document_id",
+            "feature_name",
+            "source_crs",
+            "source_file",
         ),
     ),
     "public.smdi_deposits": SpatialTarget(
@@ -167,11 +171,12 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
         geom_column="geom",
         crs_epsg=4326,
         workspace_scoped=False,  # public table, intentionally not tenant-scoped
+        # public.smdi_deposits is Saskatchewan-only, so it has no
+        # jurisdiction column to select.
         select_columns=(
-            "smdi_id",
-            "deposit_name",
-            "commodity_primary",
-            "jurisdiction_code",
+            "smdi",
+            "name",
+            "primary_commodities",
         ),
     ),
     # gold.h3_density was here, and could not be repaired in place.
@@ -310,6 +315,21 @@ def plan_spatial_query(spec: SpatialQuerySpec) -> SpatialPlan:
     elif op == "dwithin":
         params.append(float(spec.buffer_m))
         buf_idx = len(params)
+        if target.crs_epsg == 4326:
+            # GIS-16: `col::geography` cannot use the geometry GIST index,
+            # so an index-assisted bounding-box prefilter goes first. The
+            # box is the buffer converted to degrees CONSERVATIVELY — the
+            # longitude span is taken at the highest latitude the query
+            # geometry reaches, and 110,000 m/degree is below the true
+            # length of a degree of latitude — so it never excludes a row
+            # the exact geography test would keep.
+            buf = f"${buf_idx}::double precision"
+            where_clauses.append(
+                f"{target.geom_column} && ST_Expand({geom_expr}, "
+                f"{buf} / (111320.0 * cos(radians(LEAST(89.0, "
+                f"GREATEST(abs(ST_YMin({geom_expr})), abs(ST_YMax({geom_expr}))) "
+                f"+ {buf} / 110000.0)))), {buf} / 110000.0)"
+            )
         where_clauses.append(
             f"ST_DWithin({target.geom_column}::geography, "
             f"{geom_expr}::geography, ${buf_idx}::numeric)"
@@ -338,7 +358,15 @@ def plan_spatial_query(spec: SpatialQuerySpec) -> SpatialPlan:
     # else uses spec.order_by when provided.
     order_clauses: list[str] = []
     if op == "distance":
-        order_clauses.append(f"ST_Distance({target.geom_column}, {geom_expr})")
+        # Metres on geography, not degrees on geometry (GIS-16): at 60 N a
+        # degree of longitude is half a degree of latitude, so ranking by
+        # ST_Distance on 4326 geometry puts the wrong hole first.
+        if target.crs_epsg == 4326:
+            order_clauses.append(
+                f"ST_Distance({target.geom_column}::geography, {geom_expr}::geography)"
+            )
+        else:
+            order_clauses.append(f"ST_Distance({target.geom_column}, {geom_expr})")
     if spec.order_by:
         order_clauses.append(spec.order_by)
     order_sql = "ORDER BY " + ", ".join(order_clauses) if order_clauses else ""

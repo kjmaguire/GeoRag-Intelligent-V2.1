@@ -334,3 +334,51 @@ class TestQueryDrillTraces3D:
             result.collars[0].elevation - result.collars[0].total_depth,
             abs=1e-6,
         )
+
+
+class TestGisAudit20260929:
+    """GIS-8 / GIS-21: geom_4326, no Null Island, dip 0 is horizontal."""
+
+    @pytest.mark.asyncio
+    async def test_collar_sql_reads_geom_4326(self) -> None:
+        pool = _MultiQueryPool(collar_rows=[_collar_row()])
+        await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        first_sql, _ = pool.captured[0]
+        assert "ST_X(c.geom_4326)" in first_sql
+        assert "ST_Transform(c.geom" not in first_sql
+
+    @pytest.mark.asyncio
+    async def test_collar_without_position_is_skipped_not_null_island(self) -> None:
+        row = _collar_row()
+        row["longitude"] = None
+        row["latitude"] = None
+        pool = _MultiQueryPool(collar_rows=[row])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        assert result.collars == []
+
+    @pytest.mark.asyncio
+    async def test_horizontal_hole_stays_horizontal(self) -> None:
+        pool = _MultiQueryPool(collar_rows=[_collar_row(dip=0.0)])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        assert result.collars[0].dip == 0.0
+
+    @pytest.mark.asyncio
+    async def test_trace_depth_is_measured_not_by_index(self) -> None:
+        # Stations at 0, 12, 24 m then 300 m, vertical: index-based labels
+        # would read 0 / 100 / 200 / 300.
+        wkt = (
+            "LINESTRING Z (-108.0 56.0 2000.0, -108.0 56.0 1988.0, "
+            "-108.0 56.0 1976.0, -108.0 56.0 1700.0)"
+        )
+        pool = _MultiQueryPool(collar_rows=[_collar_row(trace_wkt=wkt)])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        depths = [tp["depth_m"] for tp in result.collars[0].trace_points]
+        assert depths == pytest.approx([0.0, 12.0, 24.0, 300.0])

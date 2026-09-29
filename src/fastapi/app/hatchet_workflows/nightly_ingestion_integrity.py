@@ -1,14 +1,24 @@
 """Phase 5 of the reliability spec — three-tier nightly integrity sweep.
 
-Runs at 02:00 (Pass 1) and 04:00 (Pass 2):
+Runs at 17:00 UTC (Pass 1) and 19:00 UTC (Pass 2):
 
-  - **Pass 1 (02:00)** — detect orphans + dispatch recovery across all
+  - **Pass 1 (17:00)** — detect orphans + dispatch recovery across all
     four tiers. Does NOT bump data_version (embeddings dispatched at
-    02:00 may not have landed yet).
-  - **Pass 2 (04:00)** — re-runs detection. For every workspace where
-    Pass 1 dispatched any recovery work, bumps data_version once. By
-    04:00 the embed cron has had two 10-min ticks to catch up and the
-    per-completion MV refresh should have fired for any new completions.
+    17:00 may not have landed yet).
+  - **Pass 2 (19:00)** — re-runs detection. For every workspace where
+    Pass 1 dispatched any recovery work, bumps data_version once, on the
+    workspace AND on each recovered project. By 19:00 the embed cron has
+    had twelve 10-min ticks to catch up and the per-completion MV refresh
+    should have fired for any new completions.
+
+The two passes used to be 02:00 and 04:00. When platform startup moved
+to 08:30 the crons moved to 17:00/19:00 but the pass detection still
+looked for hour 4, so Pass 2 never ran (HAT-7, 2026-09-29).
+
+Every tier reads per workspace with the scope bound (HAT-1, 2026-09-29;
+app/db/workspace_sweep.py). On AWS the worker connects as georag_app
+(NOSUPERUSER NOBYPASSRLS), and an unscoped read of a fail-CLOSED table
+such as silver.document_passages returns nothing.
 
 Tiers:
 
@@ -50,6 +60,12 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
+from app.db import (
+    bind_workspace_scope,
+    fetch_per_workspace,
+    list_workspace_ids,
+    scoped_connection,
+)
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
@@ -100,13 +116,22 @@ def _qdrant_url() -> str:
     return f"http://{host}:{port}"
 
 
-def _detect_pass_number() -> int:
-    """Pass 2 fires at 04:00, Pass 1 at 02:00. Allow override via env
-    for testing."""
+#: UTC hour of the Pass 2 cron below. Pass 1 is every other tick.
+PASS_2_HOUR_UTC = 19
+
+
+def _detect_pass_number(now: datetime | None = None) -> int:
+    """Pass 2 fires at 19:00 UTC, Pass 1 at 17:00. Allow override via env
+    for testing.
+
+    A declarative cron sends no input, so the hour the tick fired in is
+    the only signal. This compared against hour 4, the Pass 2 slot from
+    before the 08:30 startup move, so every tick read as Pass 1.
+    """
     forced = os.environ.get("INTEGRITY_SWEEP_FORCE_PASS")
     if forced in ("1", "2"):
         return int(forced)
-    return 2 if datetime.now(UTC).hour == 4 else 1
+    return 2 if (now or datetime.now(UTC)).hour == PASS_2_HOUR_UTC else 1
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +194,24 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
     # 2. WHAT IT CAN ACTUALLY RECOVER. A prefix with no recovery workflow
     #    is excluded in SQL rather than examined and noted every night.
     #    Skipping in Python appended one permanent `no_project_id:` note
-    #    per non-PDF upload ever made, on both the 02:00 and 04:00 passes,
-    #    which drowned the genuinely actionable entries.
+    #    per non-PDF upload ever made, on both nightly passes, which
+    #    drowned the genuinely actionable entries.
+    #
+    # 3. NEVER RE-BILL A PDF IT CANNOT SEE (HAT-1, 2026-09-29). A PDF
+    #    re-dispatch re-downloads, re-OCRs through Cohere Parse (billed per
+    #    page) and re-persists. The PDF branch used to trust silver.reports
+    #    alone, so anything that hid the report row from this query (an
+    #    unbound scope under a NOBYPASSRLS role was the live case) turned
+    #    EVERY PDF older than 30 minutes into an "orphan", re-ingested up to
+    #    BRONZE_MAX_DISPATCH_ATTEMPTS times. Two defences now:
+    #      * the query runs per workspace with that workspace's scope bound,
+    #        so the report row is visible whatever the policy shape;
+    #      * a PDF also needs the progress ledger to agree. Any run for this
+    #        key that is not failed/timed_out means it landed (completed /
+    #        partial), is in flight (queued / started, which is the stale
+    #        sweep's job), or was cancelled by the user. Only a key with no
+    #        run, or only failed runs, is an orphan, and a failed PDF was
+    #        always eligible for recovery.
     select_sql = f"""
         SELECT b.file_key, b.workspace_id::text AS workspace_id, b.sha256,
                b.dispatch_attempts, b.uploaded_at, b.document_type
@@ -181,6 +222,12 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
         WHERE (
                 CASE WHEN split_part(b.file_key, '/', 1) = 'reports'
                      THEN r.report_id IS NULL
+                          AND NOT EXISTS (
+                                SELECT 1 FROM silver.ingest_progress p
+                                 WHERE p.workspace_id = b.workspace_id
+                                   AND p.minio_key    = b.file_key
+                                   AND p.status NOT IN ('failed', 'timed_out')
+                              )
                      ELSE NOT EXISTS (
                             SELECT 1 FROM silver.ingest_progress p
                              WHERE p.workspace_id = b.workspace_id
@@ -208,7 +255,10 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
     recoverable_prefixes = sorted(recoverable_bronze_prefixes())
 
     async with pool.acquire() as conn:
-        orphans = await conn.fetch(select_sql, recoverable_prefixes)
+        orphans = await fetch_per_workspace(
+            conn, select_sql, recoverable_prefixes,
+            site="nightly_integrity.tier1",
+        )
         report.items_examined = len(orphans)
 
         for orphan in orphans:
@@ -235,21 +285,31 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
                 report.notes.append(f"unroutable_key: {file_key}")
                 continue
 
-            claim = await conn.fetchrow(claim_sql, file_key, workspace_id)
+            async with conn.transaction():
+                await bind_workspace_scope(
+                    conn, workspace_id=workspace_id,
+                    site="nightly_integrity.tier1.claim",
+                )
+                claim = await conn.fetchrow(claim_sql, file_key, workspace_id)
             if claim is None:
                 report.items_skipped += 1
                 report.notes.append(f"claim_failed: {file_key}")
                 continue
 
             try:
-                run_id = await _dispatch_recovery(
+                outcome, run_id = await _dispatch_recovery(
                     workflow_name=workflow_name,
                     workspace_id=workspace_id,
                     project_id=project_id,
                     minio_key=file_key,
                 )
-                if run_id:
+                if outcome == "dispatched":
                     report.items_dispatched += 1
+                elif outcome == "already_active":
+                    # The trigger's dedupe found a run for this key already
+                    # queued or started. Not a failure; nothing to do.
+                    report.items_skipped += 1
+                    report.notes.append(f"already_active: {file_key} run={run_id}")
                 else:
                     report.items_skipped += 1
                     report.notes.append(f"dispatch_returned_none: {file_key}")
@@ -304,10 +364,25 @@ def _recovery_trigger_payload(
     return payload
 
 
+#: The trigger endpoints answer 202 for a fresh dispatch and 200 with
+#: ``dispatched: false`` when their dedupe found the file already in flight.
+_TRIGGER_OK_STATUSES = (200, 202)
+
+#: Tells the trigger endpoint to record the progress row as this sweep's,
+#: so Pass 2 can find the workspaces it recovered (see
+#: _bump_data_version_for_recovered_workspaces).
+INGEST_TRIGGER_HEADER = "X-Ingest-Trigger"
+
+
 async def _dispatch_recovery(
     *, workflow_name: str, workspace_id: str, project_id: str, minio_key: str,
-) -> str | None:
+) -> tuple[str, str | None]:
     """POST to the FastAPI trigger endpoint for the OWNING workflow.
+
+    Returns ``(outcome, run id)``, outcome one of ``dispatched``,
+    ``already_active`` (the endpoint's dedupe answered 200 with
+    ``dispatched: false``; it used to be counted as a failure, HAT-7) or
+    ``failed``.
 
     Was hardwired to ingest_pdf, which is why a geology upload could never
     be recovered even once the orphan detection stopped mis-classifying it.
@@ -321,7 +396,7 @@ async def _dispatch_recovery(
     service_key = os.environ.get("FASTAPI_SERVICE_KEY")
     if not service_key:
         log.warning("tier1.bronze: FASTAPI_SERVICE_KEY missing; cannot dispatch")
-        return None
+        return "failed", None
 
     run_id = str(_uuid.uuid4())
 
@@ -360,17 +435,22 @@ async def _dispatch_recovery(
         "Authorization": f"Bearer {jwt_token}",
         "X-Service-Key": service_key,
         "Content-Type": "application/json",
+        INGEST_TRIGGER_HEADER: "nightly_integrity_sweep",
     }
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.post(url, json=payload, headers=headers)
-    if r.status_code != 202:
+    if r.status_code not in _TRIGGER_OK_STATUSES:
         log.warning(
             "tier1.bronze.trigger non-2xx workflow=%s key=%s status=%s body=%s",
             workflow_name, minio_key, r.status_code, r.text[:200],
         )
-        return None
-    return (r.json() or {}).get("workflow_run_id")
+        return "failed", None
+    body = r.json() or {}
+    run = body.get("workflow_run_id") or body.get("run_id")
+    if body.get("dispatched", True) is False:
+        return "already_active", run
+    return ("dispatched", run) if run else ("failed", None)
 
 
 # ---------------------------------------------------------------------------
@@ -419,32 +499,16 @@ async def _tier_2_qdrant_spotcheck(pool: asyncpg.Pool) -> dict[str, float]:
     50 newest embedding_ids, GET each from Qdrant, return per-workspace
     miss-rate map."""
     miss_rates: dict[str, float] = {}
+    # HAT-1: silver.document_passages is fail-CLOSED, so every read here is
+    # per workspace with the scope bound; the Qdrant calls stay outside the
+    # transaction.
     async with pool.acquire() as conn:
-        workspaces = await conn.fetch(
-            """
-            SELECT DISTINCT workspace_id::text AS ws
-            FROM silver.document_passages
-            WHERE embedding_id IS NOT NULL
-            """,
-        )
-        for ws_row in workspaces:
-            ws_id = ws_row["ws"]
-            random_rows = await conn.fetch(
-                """
-                SELECT embedding_id FROM silver.document_passages
-                WHERE workspace_id = $1::uuid AND embedding_id IS NOT NULL
-                ORDER BY random() LIMIT $2
-                """,
-                ws_id, QDRANT_SAMPLE_SIZE,
-            )
-            newest_rows = await conn.fetch(
-                """
-                SELECT embedding_id FROM silver.document_passages
-                WHERE workspace_id = $1::uuid AND embedding_id IS NOT NULL
-                ORDER BY created_at DESC LIMIT $2
-                """,
-                ws_id, QDRANT_SAMPLE_SIZE,
-            )
+        for ws_id in await list_workspace_ids(conn, site="nightly_integrity.tier2"):
+            async with conn.transaction():
+                await bind_workspace_scope(
+                    conn, workspace_id=ws_id, site="nightly_integrity.tier2",
+                )
+                random_rows, newest_rows = await _qdrant_sample_rows(conn, ws_id)
             sample_ids = list({
                 r["embedding_id"]
                 for r in (list(random_rows) + list(newest_rows))
@@ -455,6 +519,29 @@ async def _tier_2_qdrant_spotcheck(pool: asyncpg.Pool) -> dict[str, float]:
             misses = await _qdrant_count_misses(sample_ids)
             miss_rates[ws_id] = misses / len(sample_ids)
     return miss_rates
+
+
+async def _qdrant_sample_rows(
+    conn: asyncpg.Connection, ws_id: str,
+) -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
+    """50 random + 50 newest embedded passages for one (bound) workspace."""
+    random_rows = await conn.fetch(
+        """
+        SELECT embedding_id FROM silver.document_passages
+        WHERE workspace_id = $1::uuid AND embedding_id IS NOT NULL
+        ORDER BY random() LIMIT $2
+        """,
+        ws_id, QDRANT_SAMPLE_SIZE,
+    )
+    newest_rows = await conn.fetch(
+        """
+        SELECT embedding_id FROM silver.document_passages
+        WHERE workspace_id = $1::uuid AND embedding_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT $2
+        """,
+        ws_id, QDRANT_SAMPLE_SIZE,
+    )
+    return list(random_rows), list(newest_rows)
 
 
 async def _qdrant_count_misses(point_ids: list[str]) -> int:
@@ -544,9 +631,11 @@ async def _tier_3_gold(pool: asyncpg.Pool) -> TierReport:
         async with pool.acquire() as conn:
             workspace_ids = [
                 str(r["workspace_id"])
-                for r in await conn.fetch(
+                for r in await fetch_per_workspace(
+                    conn,
                     "SELECT DISTINCT workspace_id FROM silver.projects "
                     "WHERE workspace_id IS NOT NULL",
+                    site="nightly_integrity.tier3",
                 )
             ]
         # dispatch_promotion never raises, so one unreachable workspace can
@@ -584,47 +673,70 @@ async def _tier_3_gold(pool: asyncpg.Pool) -> TierReport:
 async def _tier_4_outbox(pool: asyncpg.Pool) -> TierReport:
     report = TierReport(tier=4, name="outbox_audit")
 
-    async with pool.acquire() as conn:
-        # Stuck propagations — pending for too long with attempts left.
-        stuck = await conn.fetch(
-            f"""
-            SELECT id::text AS id, target_store, last_attempted_at, enqueued_at
-            FROM outbox.pending_propagations
-            WHERE status = 'pending'
-              AND enqueued_at < now() - interval '{OUTBOX_STUCK_AGE_MINUTES} minutes'
-              AND COALESCE((
-                  SELECT count(*) FROM outbox.propagation_attempts
-                  WHERE propagation_id = outbox.pending_propagations.id
-              ), 0) < {OUTBOX_MAX_ATTEMPTS}
-            """,
-        )
-        report.items_examined = len(stuck)
-        # Re-enqueue is a no-op write (touch updated_at). The dispatcher
-        # workflow picks them up on its next tick. We don't actually
-        # change the status — the existing dispatcher will retry.
-        if stuck:
-            await conn.execute(
-                """
-                UPDATE outbox.pending_propagations
-                SET enqueued_at = now()
-                WHERE id = ANY($1::uuid[])
-                """,
-                [r["id"] for r in stuck],
-            )
-            report.items_dispatched = len(stuck)
+    # HAT-1: once per workspace with the scope bound, then once for the
+    # platform rows (workspace_id NULL) with the scope cleared. The explicit
+    # predicate keeps each pass to its own rows; see outbox_dispatcher.
+    scope_predicate = (
+        "workspace_id IS NOT DISTINCT FROM "
+        "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
+    )
+    stuck_sql = f"""
+        SELECT id::text AS id, target_store, last_attempted_at, enqueued_at
+        FROM outbox.pending_propagations
+        WHERE status = 'pending'
+          AND {scope_predicate}
+          AND enqueued_at < now() - interval '{OUTBOX_STUCK_AGE_MINUTES} minutes'
+          AND COALESCE((
+              SELECT count(*) FROM outbox.propagation_attempts
+              WHERE propagation_id = outbox.pending_propagations.id
+          ), 0) < {OUTBOX_MAX_ATTEMPTS}
+    """
+    dupes_sql = f"""
+        SELECT source_schema, source_table, source_id, count(*) AS n
+        FROM outbox.pending_propagations
+        WHERE status IN ('pending', 'in_flight')
+          AND {scope_predicate}
+        GROUP BY source_schema, source_table, source_id
+        HAVING count(*) > 1
+    """
 
-        # Duplicate-source detection. Log only — re-queue would mask a
-        # real bug. Format: same (source_schema, source_table, source_id)
-        # in pending status more than once.
-        dupes = await conn.fetch(
-            """
-            SELECT source_schema, source_table, source_id, count(*) AS n
-            FROM outbox.pending_propagations
-            WHERE status IN ('pending', 'in_flight')
-            GROUP BY source_schema, source_table, source_id
-            HAVING count(*) > 1
-            """,
-        )
+    async with pool.acquire() as conn:
+        scopes: list[str | None] = [
+            *await list_workspace_ids(conn, site="nightly_integrity.tier4"),
+            None,
+        ]
+        dupes: list[asyncpg.Record] = []
+        for scope in scopes:
+            async with conn.transaction():
+                if scope is None:
+                    await conn.execute(
+                        "SELECT set_config('app.workspace_id', '', true)",
+                    )
+                else:
+                    await bind_workspace_scope(
+                        conn, workspace_id=scope, site="nightly_integrity.tier4",
+                    )
+                # Stuck propagations — pending for too long with attempts left.
+                stuck = await conn.fetch(stuck_sql)
+                report.items_examined += len(stuck)
+                # Re-enqueue is a no-op write (touch enqueued_at). The
+                # dispatcher workflow picks them up on its next tick. We don't
+                # change the status — the existing dispatcher will retry.
+                if stuck:
+                    await conn.execute(
+                        """
+                        UPDATE outbox.pending_propagations
+                        SET enqueued_at = now()
+                        WHERE id = ANY($1::uuid[])
+                        """,
+                        [r["id"] for r in stuck],
+                    )
+                    report.items_dispatched += len(stuck)
+                # Duplicate-source detection. Log only — re-queue would mask
+                # a real bug. Same (source_schema, source_table, source_id)
+                # pending more than once.
+                dupes.extend(await conn.fetch(dupes_sql))
+
         if dupes:
             report.notes.append(f"duplicate_sources: {len(dupes)} pairs")
             report.extras["duplicate_sources"] = [
@@ -647,26 +759,48 @@ async def _bump_data_version_for_recovered_workspaces(
     pool: asyncpg.Pool,
 ) -> list[str]:
     """Workspaces with at least one ingest_progress row triggered by
-    today's integrity sweep get one data_version bump each."""
+    today's integrity sweep get one data_version bump each.
+
+    Both counters, like Laravel's WorkspaceDataVersionBumper: the answer
+    cache reads silver.workspaces.data_version, and the MVT tile functions
+    read silver.projects.data_version (2026_09_16_120000). Bumping only the
+    workspace left every recovered project's map tiles stale (HAT-7).
+    """
     bumped: list[str] = []
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        rows = await fetch_per_workspace(
+            conn,
             """
-            SELECT DISTINCT workspace_id::text AS ws
+            SELECT workspace_id::text AS ws,
+                   array_remove(array_agg(DISTINCT project_id), NULL) AS projects
             FROM silver.ingest_progress
             WHERE triggered_by IN ('nightly_integrity_sweep', 'embed_pending_sweep')
               AND started_at > now() - interval '6 hours'
+            GROUP BY workspace_id
             """,
+            site="nightly_integrity.pass2",
         )
         for row in rows:
             ws_id = row["ws"]
             try:
-                await conn.execute(
-                    "UPDATE silver.workspaces "
-                    "SET data_version = data_version + 1, updated_at = NOW() "
-                    "WHERE workspace_id = $1::uuid",
-                    ws_id,
-                )
+                async with conn.transaction():
+                    await bind_workspace_scope(
+                        conn, workspace_id=ws_id, site="nightly_integrity.pass2",
+                    )
+                    await conn.execute(
+                        "UPDATE silver.workspaces "
+                        "SET data_version = data_version + 1, updated_at = NOW() "
+                        "WHERE workspace_id = $1::uuid",
+                        ws_id,
+                    )
+                    await conn.execute(
+                        "UPDATE silver.projects "
+                        "SET data_version = data_version + 1, updated_at = NOW() "
+                        "WHERE workspace_id = $1::uuid "
+                        "  AND project_id = ANY($2::uuid[])",
+                        ws_id,
+                        list(row["projects"] or []),
+                    )
                 bumped.append(ws_id)
             except Exception as exc:
                 log.warning("pass2.bump_failed ws=%s err=%s", ws_id, exc)
@@ -711,8 +845,11 @@ async def _write_integrity_report_row(
         "workspaces_data_version_bumped": output.workspaces_data_version_bumped,
     }
 
-    async with pool.acquire() as conn:
-        try:
+    try:
+        async with scoped_connection(
+            pool, workspace_id=LEGACY_DEFAULT_TENANT_UUID,
+            site="nightly_integrity.report_row",
+        ) as conn:
             await conn.execute(
                 """
                 INSERT INTO silver.ingest_progress (
@@ -738,10 +875,10 @@ async def _write_integrity_report_row(
                 f"integrity_sweep_pass_{pass_number}",
                 json.dumps(payload),
             )
-        except Exception as exc:
-            # Best-effort logging row — failure here doesn't change the
-            # fact that the actual sweep work completed.
-            log.warning("integrity_report.write_failed pass=%d err=%s", pass_number, exc)
+    except Exception as exc:
+        # Best-effort logging row — failure here doesn't change the
+        # fact that the actual sweep work completed.
+        log.warning("integrity_report.write_failed pass=%d err=%s", pass_number, exc)
 
 
 # ---------------------------------------------------------------------------

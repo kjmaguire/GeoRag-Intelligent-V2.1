@@ -35,7 +35,7 @@
     "TypeError+ValueError": 35,
     "UndefinedColumnError": 1,
     "UniqueViolationError": 1,
-    "ValueError": 33
+    "ValueError": 32
   },
   "files": {
     "src/fastapi/app/agent/agentic_retrieval/nodes.py": 4,
@@ -45,7 +45,7 @@
     "src/fastapi/app/agent/evidence_converter.py": 3,
     "src/fastapi/app/agent/figure_extractor.py": 2,
     "src/fastapi/app/agent/hallucination/layer6_constraints.py": 1,
-    "src/fastapi/app/agent/hallucination/orchestrator_validators.py": 6,
+    "src/fastapi/app/agent/hallucination/orchestrator_validators.py": 5,
     "src/fastapi/app/agent/lineage.py": 1,
     "src/fastapi/app/agent/llm_calls.py": 5,
     "src/fastapi/app/agent/log_safe.py": 1,
@@ -135,5 +135,5 @@
     "src/georag_geoparsers/georag_geoparsers/xlsx_parser.py": 1,
     "src/georag_geoparsers/georag_geoparsers/xyz_parser.py": 1
   },
-  "total": 234
+  "total": 233
 }

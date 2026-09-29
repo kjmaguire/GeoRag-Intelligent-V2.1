@@ -45,6 +45,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db import affected_row_count, bind_workspace_scope, list_workspace_ids
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.qdrant_conn import qdrant_client_kwargs
@@ -63,6 +64,9 @@ class OutboxDispatcherOutput(BaseModel):
     rows_transient_failed: int
     rows_dead_lettered: int
     elapsed_seconds: float
+    #: in_flight rows older than IN_FLIGHT_RECLAIM_MINUTES put back to
+    #: pending at the start of this drain (HAT-11).
+    rows_reclaimed: int = 0
 
 
 outbox_dispatcher = hatchet.workflow(
@@ -297,12 +301,30 @@ _DISPATCHERS = {
 # ---------------------------------------------------------------------------
 # Claim + record loop.
 # ---------------------------------------------------------------------------
-_CLAIM_SQL = """
+#: HAT-1 (2026-09-29) — the claim runs once per workspace with the scope
+#: bound, then once more with the scope cleared for platform rows
+#: (workspace_id NULL: the tenant-isolation auditor's webhook escalation,
+#: for one). The explicit predicate below pins each pass to its own rows,
+#: so the unscoped platform pass cannot sweep up tenant rows even though
+#: phase0/95's policy would let an unset scope see them.
+#:
+#: Why not one unscoped claim: under the worker's AWS role (georag_app,
+#: NOBYPASSRLS) that works only while outbox.pending_propagations keeps
+#: phase0/95's fail-open branch. 2026_08_14_030000 made it strict, and
+#: db:apply-raw re-applies 95 after every migrate, so today it is open by
+#: ordering alone.
+_SCOPE_PREDICATE = (
+    "workspace_id IS NOT DISTINCT FROM "
+    "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
+)
+
+_CLAIM_SQL = f"""
 UPDATE outbox.pending_propagations
    SET status = 'in_flight', last_attempted_at = now()
  WHERE id IN (
         SELECT id FROM outbox.pending_propagations
          WHERE status = 'pending'
+           AND {_SCOPE_PREDICATE}
          ORDER BY enqueued_at
          FOR UPDATE SKIP LOCKED
          LIMIT $1
@@ -311,6 +333,65 @@ RETURNING id, workspace_id, source_schema, source_table, source_id,
           target_store, target_collection, operation, payload,
           idempotency_key, target_store_concurrency_hint
 """
+
+#: HAT-11 (2026-09-29). A row is claimed pending -> in_flight and committed
+#: BEFORE its dispatch, so a worker killed mid-dispatch (the 2 m
+#: execution_timeout, a Spot reclaim, the nightly ECS stop) left it
+#: in_flight forever: nothing moved in_flight back, and the security
+#: webhook it carried was never sent. Five minutes is well past this task's
+#: own 2 m execution_timeout, so a live drain's row is never reclaimed from
+#: under it.
+IN_FLIGHT_RECLAIM_MINUTES = 5
+
+_RECLAIM_SQL = f"""
+UPDATE outbox.pending_propagations
+   SET status = 'pending'
+ WHERE status = 'in_flight'
+   AND last_attempted_at < now() - interval '{IN_FLIGHT_RECLAIM_MINUTES} minutes'
+   AND {_SCOPE_PREDICATE}
+"""
+
+
+async def _bind_row_scope(conn: asyncpg.Connection, workspace_id: Any) -> None:
+    """Scope the current transaction to a row's workspace, or clear it."""
+    if workspace_id is None:
+        await conn.execute("SELECT set_config('app.workspace_id', '', true)")
+    else:
+        await bind_workspace_scope(
+            conn, workspace_id=str(workspace_id), site="outbox_dispatcher.row",
+        )
+
+
+async def _per_scope(
+    pool: asyncpg.Pool,
+    scopes: list[str | None],
+    sql: str,
+    *args: Any,
+    fetch: bool,
+    limit_budget: int | None = None,
+) -> tuple[list[asyncpg.Record], int]:
+    """Run ``sql`` once per scope (a workspace id, or None for platform rows).
+
+    Returns the fetched rows (``fetch``) and the summed affected-row count.
+    With ``limit_budget`` the LIMIT ($1) shrinks as rows are claimed, so the
+    whole pass still claims at most one batch.
+    """
+    out: list[asyncpg.Record] = []
+    affected = 0
+    async with pool.acquire() as conn:
+        for scope in scopes:
+            if limit_budget is not None and limit_budget - len(out) <= 0:
+                break
+            call_args = (
+                (limit_budget - len(out), *args) if limit_budget is not None else args
+            )
+            async with conn.transaction():
+                await _bind_row_scope(conn, scope)
+                if fetch:
+                    out.extend(await conn.fetch(sql, *call_args))
+                else:
+                    affected += affected_row_count(await conn.execute(sql, *call_args))
+    return out, affected
 
 
 async def _record_attempt_and_advance(
@@ -327,6 +408,10 @@ async def _record_attempt_and_advance(
     target = row["target_store"]
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # HAT-1: every write below is to a workspace-scoped table, so it
+            # runs under the row's own workspace (or none, for a platform
+            # row), not whatever the pooled connection happened to carry.
+            await _bind_row_scope(conn, row["workspace_id"])
             attempt_no = (
                 await conn.fetchval(
                     "SELECT COALESCE(MAX(attempt_no), 0) + 1 "
@@ -462,11 +547,23 @@ async def drain(
     rows_succeeded = 0
     rows_transient = 0
     rows_dead = 0
+    rows_reclaimed = 0
 
     try:
+        # Enumerated once per drain, not per poll: a workspace created
+        # mid-drain is picked up on the next minute's tick. None = the
+        # platform rows (workspace_id NULL).
+        async with pool.acquire() as conn:
+            scopes: list[str | None] = [
+                *await list_workspace_ids(conn, site="outbox_dispatcher"),
+                None,
+            ]
+        _, rows_reclaimed = await _per_scope(pool, scopes, _RECLAIM_SQL, fetch=False)
+
         while time.monotonic() - started < input.max_runtime_seconds:
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(_CLAIM_SQL, input.batch_size)
+            rows, _ = await _per_scope(
+                pool, scopes, _CLAIM_SQL, fetch=True, limit_budget=input.batch_size,
+            )
 
             if not rows:
                 await asyncio.sleep(input.poll_interval_seconds)
@@ -524,6 +621,7 @@ async def drain(
         rows_transient_failed=rows_transient,
         rows_dead_lettered=rows_dead,
         elapsed_seconds=time.monotonic() - started,
+        rows_reclaimed=rows_reclaimed,
     )
 
 

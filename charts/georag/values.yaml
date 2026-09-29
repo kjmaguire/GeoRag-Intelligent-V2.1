@@ -42,7 +42,8 @@ global:
 # ─────────────────────────────────────────────────────────────────────
 secrets:
   postgresPassword: ""           # CHANGEME
-  pgAppPassword: ""              # for the georag_app role (RLS user)
+  pgAppPassword: ""              # for the georag_app role (RLS user) — Laravel, FastAPI, Hatchet worker
+  martinDbPassword: ""           # for martin_readonly (tiles) — hex only, it is embedded in a URL
   redisPassword: ""              # CHANGEME
   qdrantApiKey: ""               # optional; empty disables auth
   fastapiServiceKey: ""          # 32+ char shared HMAC for /internal/*

@@ -107,17 +107,20 @@ class IngestWellLogsOut(BaseModel):
     duration_ms: int = 0
 
 
+#: depth_unit is always 'm': parse_las_file normalises every depth to metres
+#: from the file's declared unit (GIS-4), and derive_intervals reads this
+#: column instead of assuming feet.
 _CURVE_SQL = """
 INSERT INTO silver.well_log_curves (
     curve_id, workspace_id, collar_id, curve_name, curve_unit,
     curve_description, min_depth, max_depth, step, null_value,
     sample_count, las_version, source_file, depths, values,
-    created_at, updated_at
+    depth_unit, created_at, updated_at
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4,
     $5, $6, $7, $8, $9,
     $10, $11, $12, $13::double precision[], $14::double precision[],
-    NOW(), NOW()
+    'm', NOW(), NOW()
 )
 """
 
@@ -149,7 +152,7 @@ ingest_well_logs = hatchet.workflow(
 )
 
 
-@ingest_well_logs.task(execution_timeout="1h", retries=1)
+@ingest_well_logs.task(execution_timeout="1h", schedule_timeout="2h", retries=1)
 async def run_ingest_well_logs(
     input: IngestWellLogsInput, ctx: Context,
 ) -> IngestWellLogsOut:
@@ -204,6 +207,8 @@ async def run_ingest_well_logs(
 
             result = await asyncio.to_thread(parse_las_file, local)
             skipped = result.skipped_curves
+            # las_depth_unit_assumed when the file declares no depth unit.
+            warnings.extend(getattr(result, "warnings", None) or [])
             # The caller's hole_id wins over the file's ~W well name: LAS
             # well names are free text ("EAGLE PT #1") and rarely match the
             # collar file's identifier.

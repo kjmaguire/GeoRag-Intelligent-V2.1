@@ -98,7 +98,7 @@ class _FakeConn:
         self._rows = rows
         self._captured = captured
 
-    async def fetch(self, sql: str):
+    async def fetch(self, sql: str, *args):
         self._captured["select_sql"] = sql
         return self._rows
 
@@ -146,8 +146,17 @@ def sweep(monkeypatch):
     async def _pool():
         return _FakePool(rows, captured)
 
+    async def _per_workspace(conn, sql, *args, site, workspace_ids=None):
+        # detect() reads per workspace since HAT-1 (2026-09-29); the scoping
+        # itself is covered against a real Postgres in
+        # test_cron_sweeps_under_app_role.py. One pass is enough here.
+        if "count(*)" in sql:
+            return [{"n": len(rows)}]
+        return await conn.fetch(sql, *args)
+
     monkeypatch.setattr(ingest_progress, "get_pool", _pool)
     monkeypatch.setattr(ingest_progress, "mark_timed_out", timed_out)
+    monkeypatch.setattr(srd, "fetch_per_workspace", _per_workspace)
     monkeypatch.setattr(srd, "post_ingestion_progress", broadcast)
     monkeypatch.setattr(srd, "_hatchet_run_status", _status)
     return SimpleNamespace(

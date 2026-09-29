@@ -251,6 +251,15 @@ def env(monkeypatch):
     parser_mod.enumerate_sheets = lambda _path, **_kw: list(fixture.sheets)
     package = sys.modules.get("georag_geoparsers")
     if package is None:
+        # The writers import the REAL helpers (_hole_id, _header_match) at
+        # call time; only the two modules below are stubbed. Import the
+        # package when it is installed so running this file on its own does
+        # not depend on another test having imported it first.
+        try:
+            import georag_geoparsers as package  # noqa: PLC0415
+        except ImportError:
+            package = None
+    if package is None:
         package = types.ModuleType("georag_geoparsers")
         package.__path__ = []
         monkeypatch.setitem(sys.modules, "georag_geoparsers", package)
@@ -438,7 +447,8 @@ class TestAClassifiedSheetThatWroteNothing:
     ) -> None:
         env.sheets = [_SheetMeta("Collars", "collar", rows=2)]
         env.parsed["Collars"] = _ParseResult(records=[
-            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0},
+            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0,
+             "total_depth": 100.0},
         ])
 
         await env.run("collars.xlsx")
@@ -458,7 +468,8 @@ class TestAClassifiedSheetThatWroteNothing:
             _SheetMeta("Stations", "collar", rows=24),
         ]
         env.parsed["Collars"] = _ParseResult(records=[
-            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0},
+            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0,
+             "total_depth": 100.0},
         ])
         env.parsed["Stations"] = _ParseResult(
             skipped_details=_missing_required("'hole_id'"),
@@ -532,8 +543,10 @@ class TestPassagesCountAsDataWritten:
             _SheetMeta("Dispatch Log", "unknown", rows=9),
         ]
         env.parsed["Collars"] = _ParseResult(records=[
-            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0},
-            {"hole_id": "DDH-2", "easting": 500100.0, "northing": 4500100.0},
+            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0,
+             "total_depth": 100.0},
+            {"hole_id": "DDH-2", "easting": 500100.0, "northing": 4500100.0,
+             "total_depth": 80.0},
         ])
         _text_fallback(monkeypatch, env.it, passages=9)
 
@@ -609,7 +622,8 @@ class TestTheFallbackCannotFailTheRun:
             _SheetMeta("Dispatch Log", "unknown", rows=9),
         ]
         env.parsed["Collars"] = _ParseResult(records=[
-            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0},
+            {"hole_id": "DDH-1", "easting": 500000.0, "northing": 4500000.0,
+             "total_depth": 100.0},
         ])
 
         async def _boom(*a, **kw):
@@ -987,3 +1001,130 @@ class TestCategoryForcedRetry:
         # The classified wording, not the category wording — and no retry.
         assert "matched the collar layout" in warning["detail"]
         assert env.parse_calls == [("collar", "Sheet1")]
+
+
+# ---------------------------------------------------------------------------
+# ING-1 / ING-2 (audit 2026-09-29) — one sheet's failure costs that sheet
+# only, and a second sheet of the same type in one run appends
+# ---------------------------------------------------------------------------
+
+_HOLE = "c3000000-0000-0000-0000-00000000c011"
+
+
+class _ScopedConn(_FakeConn):
+    """Knows one collar, records DELETE scopes, can fail a chosen INSERT."""
+
+    def __init__(self, fail_on: str | None = None, exc: Exception | None = None) -> None:
+        super().__init__()
+        self.fail_on = fail_on
+        self.exc = exc
+        self.deletes: list[tuple[str, list]] = []
+
+    async def executemany(self, sql: str, rows: list) -> None:
+        if self.fail_on and self.fail_on in sql:
+            raise self.exc or RuntimeError("boom")
+        await super().executemany(sql, rows)
+
+    async def fetch(self, sql: str, *_args: Any) -> list:
+        if "element_reference" in sql:
+            return []
+        if "total_depth" in sql:          # _existing_collars_by_canonical
+            return [{"hole_id": "DDH-1", "hole_id_canonical": "DDH1", "total_depth": 100.0}]
+        return [{"collar_id": _HOLE, "hole_id": "DDH-1", "hole_id_canonical": "DDH1"}]
+
+    async def fetchval(self, sql: str, *args: Any) -> int:
+        if sql.lstrip().startswith("WITH d AS (DELETE"):
+            table = sql.split("DELETE FROM ", 1)[1].split()[0]
+            self.deletes.append((table, list(args[0])))
+        return 0
+
+
+def _sample_rec(element_key: str) -> dict:
+    return {
+        "hole_id": "DDH-1", "from_depth": 0.0, "to_depth": 1.0,
+        "sample_id": "S1", "sample_type": "Core",
+        "commodity_assays": {element_key: 1.0},
+    }
+
+
+class TestOneSheetFailureIsIsolated:
+    pytestmark = pytest.mark.asyncio
+
+    async def test_a_failing_sheet_does_not_fail_the_workbook(
+        self, env, monkeypatch,
+    ) -> None:
+        """A workbook used to lose every sheet after the one that raised."""
+        import asyncpg
+
+        env.conn = _ScopedConn(
+            fail_on="INSERT INTO silver.lithology_logs",
+            exc=asyncpg.exceptions.CheckViolationError("chk_litho_depth_order"),
+        )
+        env.sheets = [
+            _SheetMeta("Collars", "collar", rows=1),
+            _SheetMeta("Lith", "lithology", rows=1),
+            _SheetMeta("Assays", "sample", rows=1),
+        ]
+        env.parsed["Collars"] = _ParseResult(records=[
+            {"hole_id": "DDH-1", "easting": 1.0, "northing": 2.0, "total_depth": 100.0},
+        ])
+        env.parsed["Lith"] = _ParseResult(records=[
+            {"hole_id": "DDH-1", "from_depth": 0.0, "to_depth": 1.0, "lithology_code": "SST"},
+        ])
+        env.parsed["Assays"] = _ParseResult(records=[_sample_rec("Au_ppm")])
+        sent: dict[str, Any] = {}
+
+        async def _land(_conn, **kw):
+            sent.update(kw)
+            return None
+
+        monkeypatch.setattr(env.it, "_land_unclassified_as_text", _land)
+
+        async def _rows_landed(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(env.it, "_land_unclassified_as_rows", _rows_landed)
+
+        out = await env.run("book.xlsx")
+
+        assert env.failed == []
+        failed = env.warning("typed_table_write_failed")
+        assert "'Lith'" in failed["message"]
+        assert out.written.get("lithology", {}).get("written", 0) == 0
+        assert out.written["sample"]["written"] == 1, "the sheet AFTER the failure still landed"
+        assert out.written["collar"]["written"] == 1
+        assert sent.get("unclassified") == ["Lith"], "the failed sheet stays searchable"
+
+    async def test_a_lost_database_still_fails_the_run(self, env) -> None:
+        """Infrastructure is not a data problem: Hatchet must retry."""
+        import asyncpg
+
+        env.conn = _ScopedConn(
+            fail_on="INSERT INTO silver.collars",
+            exc=asyncpg.exceptions.ConnectionDoesNotExistError("gone"),
+        )
+        env.sheets = [_SheetMeta("Collars", "collar", rows=1)]
+        env.parsed["Collars"] = _ParseResult(records=[
+            {"hole_id": "DDH-1", "easting": 1.0, "northing": 2.0, "total_depth": 100.0},
+        ])
+        with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
+            await env.run("book.xlsx")
+        assert env.failed
+
+    async def test_second_assay_sheet_does_not_delete_the_first(self, env) -> None:
+        """ING-2: Au_FA then ICP_ME for the same hole, in one workbook."""
+        env.conn = _ScopedConn()
+        env.sheets = [
+            _SheetMeta("Au_FA", "sample", rows=1),
+            _SheetMeta("ICP_ME", "sample", rows=1),
+        ]
+        env.parsed["Au_FA"] = _ParseResult(records=[_sample_rec("Au_ppm")])
+        env.parsed["ICP_ME"] = _ParseResult(records=[_sample_rec("Cu_pct")])
+
+        out = await env.run("assays.xlsx")
+
+        assert env.conn.deletes == [
+            ("silver.samples", [_HOLE]),
+            ("silver.assays_v2", [_HOLE]),
+        ], "the hole is cleared ONCE per table per run, by the first sheet"
+        assert out.written["sample"]["written"] == 2

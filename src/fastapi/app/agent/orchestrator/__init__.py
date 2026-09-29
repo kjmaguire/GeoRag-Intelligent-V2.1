@@ -815,17 +815,22 @@ async def _build_project_facts(
     """P1 #20 — stable per-project HIGH-CONFIDENCE SUMMARIES.
 
     Pulls a small set of project-wide aggregates from
-    `silver.mv_collar_summary` (a materialized view refreshed by the
-    Dagster pipeline after every ingestion). These numbers change at most
-    once per day in normal operations, so they earn their own
-    cache_control ephemeral block.
+    `silver.mv_collar_summary` (a materialized view refreshed after
+    ingestion by Laravel's DebounceWorkspaceMvRefresh ->
+    /internal/v1/mv-refresh/run, and nightly by the `mv_refresh_silver`
+    Hatchet cron; Dagster is gone). The view pre-aggregates samples and
+    lithology per collar — until 2026-09-29 it joined both straight onto
+    collars and every count here was inflated by the cross product
+    (migration 2026_09_29_210300). These numbers change at most once per
+    day in normal operations, so they earn their own cache_control
+    ephemeral block.
 
     Why split this from `_build_project_preamble`?
       - preamble holds NAMES (project, commodity, CRS, top entities)
         — text properties of the project. Changes only when ingestion
         adds new entities or the operator renames the project.
       - facts hold COUNTS (total holes, sample counts, depth aggregates,
-        date range) — numeric properties. Changes after every Dagster run.
+        date range) — numeric properties. Changes after every ingestion.
     Putting them on separate cache blocks means a daily-ingestion update
     only invalidates the facts block; the preamble cache stays warm for
     the full ~5-min ephemeral TTL across multiple user queries.

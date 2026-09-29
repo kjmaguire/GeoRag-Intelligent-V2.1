@@ -16,10 +16,18 @@ declare(strict_types=1);
  * nothing looked at it.
  *
  * This is the repo-side backstop. It is deliberately narrow: it looks at
- * password-shaped assignments and DSN credentials only, and it only complains
- * about values that look random. Placeholders are what belongs in the repo, so
- * they are allowed by name rather than by entropy — which also means adding a
- * new one is a visible, reviewable act.
+ * credential-shaped assignments (PASSWORD/SECRET/TOKEN/…_KEY names), DSN
+ * credentials and Laravel `base64:` keys, and it only complains about values
+ * that look random. Placeholders are what belongs in the repo, so they are
+ * allowed by name or by an obvious marker word rather than by entropy.
+ *
+ * SEC-6 (2026-09-29): a real APP_KEY and FASTAPI_SERVICE_KEY sat in
+ * ops/audit/2026-04-19-resolved-compose-all-profiles.yml while this reported
+ * clean. Two blind spots: `*_KEY` names were never inspected, and any value
+ * containing `-` or `_` was waved through as a placeholder — which is every
+ * `secrets.token_urlsafe()` value ever generated. Both are closed below, and a
+ * hit is now printed as a fingerprint rather than the value, so CI logs stop
+ * being a second copy of whatever it finds.
  *
  * Usage:  php scripts/check-no-committed-secrets.php
  */
@@ -36,6 +44,19 @@ const ALLOWED = [
     'secret',
     'changeme',
     'postgres',
+];
+
+/**
+ * Words that only appear in a value somebody wrote to be replaced. Checked
+ * case-insensitively, on the value and — for `base64:` keys — on what it
+ * decodes to (phpunit.pgsql.xml's key decodes to
+ * "phpunit-testing-key-not-a-secret").
+ */
+const PLACEHOLDER_MARKERS = [
+    'changeme', 'change-me', 'change_me', 'placeholder', 'example', 'replace',
+    'dummy', 'not-a-real', 'not-a-secret', 'not_a_secret', 'notasecret',
+    'your-', 'your_', 'xxxx', 'fake', 'sample', 'test', 'dev-only', 'do-not-use',
+    'rotate', 'insecure', 'redacted',
 ];
 
 /** Paths where an example credential is the whole point. */
@@ -57,12 +78,6 @@ const SKIP_PATHS = [
  */
 function looksGenerated(string $value): bool
 {
-    if (strlen($value) < 16) {
-        return false;
-    }
-    if (str_contains($value, '_') || str_contains($value, '-') || str_contains($value, ' ')) {
-        return false;
-    }
     if (str_contains($value, '$') || str_contains($value, '{')) {
         return false;  // shell / compose interpolation, not a literal
     }
@@ -74,9 +89,102 @@ function looksGenerated(string $value): bool
         return false;
     }
 
-    return preg_match('/[a-z]/', $value) === 1
-        && preg_match('/[A-Z]/', $value) === 1
-        && preg_match('/[0-9]/', $value) === 1;
+    // A Laravel APP_KEY. Judge what it decodes to: 32 random bytes are a
+    // key; "phpunit-testing-key-not-a-secret" and "aaaa…" are not.
+    if (stripos($value, 'base64:') === 0) {
+        $decoded = base64_decode(substr($value, 7), true);
+
+        return $decoded !== false
+            && strlen($decoded) >= 16
+            && ! isPlaceholder($decoded)
+            && count(array_unique(str_split($decoded))) >= 8;
+    }
+
+    if (isPlaceholder($value) || str_contains($value, ' ') || strlen($value) < 16) {
+        return false;
+    }
+
+    // Code, not a literal: `settings.ANTHROPIC_MAX_OUTPUT_TOKENS`,
+    // `CommodityKey3D[]`, `fn(...)`. `_KEY` names made these reachable.
+    if (strpbrk($value, '[]()<>') !== false) {
+        return false;
+    }
+    if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/', $value) === 1
+        && ! str_starts_with($value, 'eyJ')) {
+        return false;
+    }
+
+    // An object-store key or a path (`minio_key="collars/<uuid>/x.csv"`).
+    if (str_contains($value, '/') && preg_match('/\.[A-Za-z0-9]{1,5}$/', $value) === 1) {
+        return false;
+    }
+
+    $classes = preg_match('/[a-z]/', $value) + preg_match('/[A-Z]/', $value) + preg_match('/[0-9]/', $value);
+
+    // 32+ characters: separators no longer mean "placeholder". This is
+    // secrets.token_urlsafe() / openssl rand -hex territory, and those
+    // values contain `-` and `_` as a matter of course. What still reads as
+    // a name rather than a key: lowercase words joined by separators
+    // (including UUIDs), and anything with few distinct characters.
+    if (strlen($value) >= 32) {
+        if (preg_match('#^[A-Za-z0-9_\-+/=.]+$#', $value) !== 1) {
+            return false;
+        }
+        if (isWords($value)) {
+            return false;
+        }
+
+        return $classes >= 2 && count(array_unique(str_split($value))) >= 10;
+    }
+
+    if (str_contains($value, '_') || str_contains($value, '-')) {
+        return false;
+    }
+
+    return $classes === 3;
+}
+
+/**
+ * Words joined by separators — `sidecar-test-key-abc123`,
+ * `REVERB_APP_KEY-for-local`, a UUID — rather than a random token.
+ * Each segment has to read as one word (a single case, digits, or a word
+ * followed by a number); the segments of a random token almost never all do.
+ */
+function isWords(string $value): bool
+{
+    $segments = preg_split('/[._-]+/', $value, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    if (count($segments) < 3) {
+        return false;
+    }
+
+    foreach ($segments as $segment) {
+        if (preg_match('/^(?:[a-z]+|[A-Z]+|[A-Z][a-z]+|[0-9]+|[a-z]+[0-9]+|[0-9a-f]{1,12})$/', $segment) !== 1) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function isPlaceholder(string $value): bool
+{
+    $lower = strtolower($value);
+    foreach (PLACEHOLDER_MARKERS as $marker) {
+        if (str_contains($lower, $marker)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * How a hit is shown: enough to find it and to compare it against a value
+ * you already hold, not enough to use it.
+ */
+function fingerprint(string $value): string
+{
+    return sprintf('<%d chars, sha256:%s>', strlen($value), substr(hash('sha256', $value), 0, 12));
 }
 
 /** @return list<string> */
@@ -92,8 +200,12 @@ function trackedFiles(): array
 }
 
 $patterns = [
-    // KEY: value / KEY=value / "KEY" => "value"
-    '/(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN)[A-Z_]*\s*[:=>]+\s*[\'"]?([^\'"\s,;)]+)/i',
+    // KEY: value / KEY=value / "KEY" => "value". `_KEY` / `APIKEY` names
+    // (APP_KEY, FASTAPI_SERVICE_KEY, COHERE_API_KEY, AWS_SECRET_ACCESS_KEY…)
+    // were outside this until SEC-6.
+    '/(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN|_KEY|APIKEY)[A-Z0-9_]*\s*[:=>]+\s*[\'"]?([^\'"\s,;)]+)/i',
+    // A Laravel encryption key, whatever it is assigned to.
+    '#\b(base64:[A-Za-z0-9+/]{40,}={0,2})#',
     // postgres://user:password@host, redis://…, amqp://…
     '#[a-z][a-z0-9+.-]*://[^:/@\s]+:([^@/\s]+)@#i',
     // ${NEO4J_PASSWORD:-24kNKWLbX20bgHEXAuMSGjCp228LIfUE} — a shell default.
@@ -107,7 +219,7 @@ $patterns = [
     // repo, while this check reported clean. Capture the value itself.
     // Digits belong in the name class: the first credential this caught
     // was NEO4J_PASSWORD, and `[A-Z_]*` cannot match the 4 in NEO4J.
-    '/\$\{[A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN)[A-Z0-9_]*:[-=]([^}\s]+)\}/i',
+    '/\$\{[A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN|_KEY|APIKEY)[A-Z0-9_]*:[-=]([^}\s]+)\}/i',
     // `redis-cli -a <value>` and `--requirepass <value>`.
     //
     // Every pattern above matches an ASSIGNMENT. A credential handed to a
@@ -146,7 +258,7 @@ foreach (trackedFiles() as $path) {
                 if (in_array($value, ALLOWED, true) || ! looksGenerated($value)) {
                     continue;
                 }
-                $hits[] = sprintf('%s:%d  %s', $path, $n + 1, $value);
+                $hits[] = sprintf('%s:%d  %s', $path, $n + 1, fingerprint($value));
             }
         }
     }

@@ -35,6 +35,7 @@ nothing to preserve, so nothing is written.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -170,15 +171,20 @@ def _layer_name(source_key: str) -> str:
     return stem
 
 
-def _extract(source_bytes: bytes, suffix: str) -> Any:
-    """Run the shared raster parser over bytes held in memory.
+def _extract(source_bytes: bytes | None, suffix: str, source_path: str | None = None) -> Any:
+    """Run the shared raster parser over the source.
 
-    ``parse_raster_file`` takes a path because GDAL wants a file, so the
-    bytes go to a temp file first. The workflow is already holding the whole
-    object in memory, so this adds disk I/O but no new peak memory, and the
-    file is removed before returning.
+    ``parse_raster_file`` takes a path because GDAL wants a file. Given
+    ``source_path`` (tiff_normalize now downloads to disk, ING-17) it reads
+    that directly; given bytes, they go to a temp file first, removed before
+    returning.
     """
     from georag_geoparsers.raster_parser import parse_raster_file  # noqa: PLC0415
+
+    if source_path is not None:
+        return parse_raster_file(source_path)
+    if source_bytes is None:
+        raise ValueError("_extract needs source_bytes or source_path")
 
     fd, tmp_path = tempfile.mkstemp(prefix="georag_raster_", suffix=suffix)
     try:
@@ -192,7 +198,8 @@ def _extract(source_bytes: bytes, suffix: str) -> Any:
 
 async def persist_raster_metadata(
     *,
-    source_bytes: bytes,
+    source_bytes: bytes | None = None,
+    source_path: str | None = None,
     source_key: str,
     source_sha256: str,
     project_id: str,
@@ -210,7 +217,11 @@ async def persist_raster_metadata(
     safe to re-run on a workflow retry.
     """
     try:
-        result = _extract(source_bytes, Path(source_key).suffix or ".tif")
+        # Off the event loop: the parser computes per-band statistics, which
+        # on a multi-GB grid is seconds of CPU and I/O (ING-17/18).
+        result = await asyncio.to_thread(
+            _extract, source_bytes, Path(source_key).suffix or ".tif", source_path,
+        )
     except Exception as exc:  # noqa: BLE001 — a non-raster TIFF is normal here
         log.info(
             "raster_metadata: %s is not a readable raster (%s) — no row written",

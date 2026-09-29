@@ -39,8 +39,10 @@ critical, 5x = critical + pager) — out of scope for v1.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import asyncpg
@@ -48,6 +50,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope, fetch_per_workspace
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
@@ -117,6 +120,18 @@ def _env_threshold(default: float) -> float:
         return default
 
 
+@contextlib.asynccontextmanager
+async def _in_workspace(
+    conn: asyncpg.Connection, workspace_id: str,
+) -> AsyncIterator[asyncpg.Connection]:
+    """One short transaction with ``workspace_id``'s scope bound (HAT-1)."""
+    async with conn.transaction():
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="cost_burn_watcher",
+        )
+        yield conn
+
+
 async def _resolve_threshold_for_workspace(
     conn: asyncpg.Connection, workspace_id: str, env_default: float,
 ) -> float:
@@ -182,7 +197,15 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
     try:
         # Per-workspace hourly cost in the trailing window. NULL workspace
         # rows skipped (system-level LLM calls aren't workspace-scoped).
-        rows = await conn.fetch(
+        #
+        # HAT-1 (2026-09-29): read once per workspace with the scope bound.
+        # The worker connects as georag_app (NOBYPASSRLS) on AWS, and an
+        # unscoped read of usage.usage_events sees spend only while that
+        # table keeps phase0/95's fail-open branch (2026_08_14_030000 made
+        # it strict; db:apply-raw re-opens it after every migrate). Under
+        # the strict policy this watcher never saw spend and never alerted.
+        rows = await fetch_per_workspace(
+            conn,
             f"""
             SELECT workspace_id::text     AS workspace_id,
                    SUM(projected_cost_usd)::float AS hourly_spent_usd,
@@ -193,20 +216,26 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
              GROUP BY workspace_id
             HAVING SUM(projected_cost_usd) > 0
             """,
+            site="cost_burn_watcher.spend",
         )
 
         for r in rows:
             workspaces_checked += 1
             ws_id = r["workspace_id"]
             spent = float(r["hourly_spent_usd"])
-            threshold = await _resolve_threshold_for_workspace(
-                conn, ws_id, env_default,
-            )
+            async with _in_workspace(conn, ws_id):
+                threshold = await _resolve_threshold_for_workspace(
+                    conn, ws_id, env_default,
+                )
             if spent <= threshold:
                 continue
             over_threshold += 1
 
-            if await _has_recent_unacked_alert(conn, ws_id, input.window_minutes):
+            async with _in_workspace(conn, ws_id):
+                already_alerted = await _has_recent_unacked_alert(
+                    conn, ws_id, input.window_minutes,
+                )
+            if already_alerted:
                 alerts_suppressed += 1
                 continue
 
@@ -266,7 +295,8 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
             # single big query that puts a workspace 5% over does NOT
             # trigger suspension, only sustained overrun.
             if spent >= threshold * 2.0:
-                await _suspend_workspace(conn, ws_id, spent, threshold)
+                async with _in_workspace(conn, ws_id):
+                    await _suspend_workspace(conn, ws_id, spent, threshold)
             log.warning(
                 "cost.burn.alert ws=%s spent=$%.4f threshold=$%.4f window=%dmin",
                 ws_id, spent, threshold, input.window_minutes,

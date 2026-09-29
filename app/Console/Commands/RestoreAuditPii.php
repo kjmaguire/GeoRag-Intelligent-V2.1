@@ -157,7 +157,7 @@ class RestoreAuditPii extends Command
                 if ($incomingQuery !== null) {
                     $update['query_text_hash'] = QueryAuditLog::hashQueryText($incomingQuery);
                 }
-                DB::table('query_audit_log')
+                DB::table((new QueryAuditLog)->getTable())
                     ->where('audit_id', $auditId)
                     ->update($update);
                 $restored++;

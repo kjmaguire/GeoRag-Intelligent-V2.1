@@ -448,7 +448,7 @@ honoured by both for A/B parity.
 - **Image** `georag/fastapi:latest`; **command**
   `python3 -m app.hatchet_workflows.worker`. The 2026-06-23 sweep removed
   the bootstrap `pip install` shim — everything is in `pyproject.toml`.
-- **Pool** `WORKER_POOL=all`: 51 workflows registered
+- **Pool** `WORKER_POOL=all`: 50 workflows registered
   (`python -m app.hatchet_workflows.worker --list` prints them without
   connecting). That is 13 in the `ingestion` list (`outbox_dispatcher`,
   `ingest_pdf`, `tiff_normalize`, `ingest_zip_archive`, `ingest_spatial`,
@@ -583,7 +583,7 @@ the next compose tidy can clear them without re-deriving the facts.
   connections and "4 uvicorn workers".
 - The hatchet-lite header says "Phase 0 only registers the synthetic
   acceptance-test workflow"; the hatchet-worker header says it "registers
-  two workflows". The worker registers 51.
+  two workflows". The worker registers 50.
 - The hatchet-worker `SEAWEEDFS_S3_ENDPOINT` default names port 9000 and
   its comment describes an "ADR-0001 transitional dual-run" that ended.
 - The RAGFlow-removal note lists "Azure Document Intelligence" and

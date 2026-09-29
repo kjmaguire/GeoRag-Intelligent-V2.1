@@ -12,6 +12,8 @@ routes. Both Laravel and FastAPI know `FASTAPI_SERVICE_KEY`.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -123,73 +125,28 @@ async def trigger_ingest_pdf(
                     project_id=str(payload.project_id), conn=_conn
                 )
 
-    # F4 (2026-08-11) — dedupe against an in-flight run for the same file.
+    # F4 (2026-08-11) / HAT-6+12 (2026-09-29) — dedupe against an in-flight
+    # run for the same file, with the progress row written BEFORE dispatch.
     # Laravel's bridge wraps this call in retry(3, 500): a first dispatch
-    # that succeeded but responded slowly gets re-POSTed, and nothing ever
-    # read correlation_token for dedupe, so bulk imports double-ingested.
-    # A non-terminal ingest_progress row for (workspace, key) means a run
-    # is already queued/started — return its identifiers with 200 instead
-    # of dispatching again. Fails open: a lookup error just dispatches.
-    if payload.workspace_id:
-        try:
-            _pool = await ingest_progress.get_pool()
-            async with _pool.acquire() as _c:
-                # The terminal set comes from _progress, not from a copy of
-                # it. Spelled out by hand, this guard omitted 'partial' —
-                # so the one run a geologist most wants to retry ("N rows
-                # reference a hole_id with no collar; upload the collar
-                # file, then re-run this one") was the one run this dedupe
-                # refused to re-dispatch, silently, with a 200.
-                _existing = await _c.fetchrow(
-                    "SELECT run_id::text AS run_id, workflow_run_id "
-                    "FROM silver.ingest_progress "
-                    "WHERE workspace_id = $1::uuid AND minio_key = $2 "
-                    f"  AND status NOT IN ({ingest_progress.TERMINAL_STATUS_SQL}) "
-                    "LIMIT 1",
-                    str(payload.workspace_id), payload.minio_key,
-                )
-        except Exception as _dedupe_exc:
-            log.warning(
-                "trigger_ingest_pdf: dedupe lookup failed (%s) — dispatching anyway",
-                _dedupe_exc,
-            )
-            _existing = None
-        if _existing is not None:
-            log.info(
-                "trigger_ingest_pdf: dedupe hit run=%s workflow=%s key=%s — "
-                "returning existing run, not re-dispatching",
-                _existing["run_id"], _existing["workflow_run_id"], payload.minio_key,
-            )
-            return JSONResponse(
-                status_code=status.HTTP_200_OK,
-                content=TriggerIngestPdfResponse(
-                    workflow_run_id=_existing["workflow_run_id"] or _existing["run_id"],
-                    correlation_token=payload.correlation_token,
-                    dispatched=False,
-                ).model_dump(),
-            )
-
-    ref = await ingest_pdf.aio_run_no_wait(payload)
-
-    # Cancellation observability — insert the silver.ingest_progress row at
-    # dispatch time (status='queued') so queue-saturation CANCELLED events,
-    # which fire BEFORE the preflight task runs, still leave a breadcrumb the
-    # IngestionRuns UI can render. The on_failure_task hook in ingest_pdf.py
-    # already resolves and transitions whatever row it finds via
-    # lookup_active_run_id; previously that lookup returned None for ~41% of
-    # failures because preflight's mark_started() never fired. See
-    # [[cameco-recovery-2026-06-02]] for the diagnosis.
-    if payload.workspace_id and payload.project_id:
-        await ingest_progress.start_run(
-            workspace_id=str(payload.workspace_id),
-            project_id=str(payload.project_id),
-            minio_key=payload.minio_key,
-            triggered_by="upload",
-            workflow_run_id=ref.workflow_run_id,
+    # that succeeded but responded slowly gets re-POSTed. The old order
+    # (dispatch, then insert the row) let that retry find no row and dispatch
+    # again, and let preflight race the endpoint and mint a second row. See
+    # _claim_and_dispatch.
+    outcome = await _claim_and_dispatch(
+        ingest_pdf, payload, site="ingest_pdf", request=request,
+    )
+    if not outcome.dispatched:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=TriggerIngestPdfResponse(
+                workflow_run_id=outcome.workflow_run_id,
+                correlation_token=payload.correlation_token,
+                dispatched=False,
+            ).model_dump(),
         )
 
     return TriggerIngestPdfResponse(
-        workflow_run_id=ref.workflow_run_id,
+        workflow_run_id=outcome.workflow_run_id,
         correlation_token=payload.correlation_token,
     )
 
@@ -236,25 +193,28 @@ async def trigger_tiff_normalize(
                     project_id=str(payload.project_id), conn=_conn
                 )
 
-    ref = await tiff_normalize.aio_run_no_wait(payload)
-
-    # F6 (2026-08-11) — mirror the ingest_pdf sibling above: insert the
-    # ingest_progress row at dispatch time (status='queued') for the SOURCE
-    # tiff key so a saturation-cancelled or crashed normalize run is visible
-    # in the IngestionRuns UI instead of vanishing. tiff_normalize's
-    # on_failure hook and the normalize task's own terminal writes resolve
-    # this row; the derived PDF gets its own row from ingest_pdf preflight.
-    if payload.workspace_id and payload.project_id:
-        await ingest_progress.start_run(
-            workspace_id=str(payload.workspace_id),
-            project_id=str(payload.project_id),
-            minio_key=payload.minio_key,
-            triggered_by="upload",
-            workflow_run_id=ref.workflow_run_id,
+    # F6 (2026-08-11) — the progress row for the SOURCE tiff key exists from
+    # dispatch time (status='queued'), so a saturation-cancelled or crashed
+    # normalize run is visible in the IngestionRuns UI instead of vanishing.
+    # tiff_normalize's on_failure hook and the normalize task's own terminal
+    # writes resolve this row; the derived PDF gets its own row from
+    # ingest_pdf preflight. HAT-6 (2026-09-29): written before dispatch and
+    # deduped, like every trigger here.
+    outcome = await _claim_and_dispatch(
+        tiff_normalize, payload, site="tiff_normalize", request=request,
+    )
+    if not outcome.dispatched:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=TriggerIngestPdfResponse(
+                workflow_run_id=outcome.workflow_run_id,
+                correlation_token=payload.correlation_token,
+                dispatched=False,
+            ).model_dump(),
         )
 
     return TriggerIngestPdfResponse(
-        workflow_run_id=ref.workflow_run_id,
+        workflow_run_id=outcome.workflow_run_id,
         correlation_token=payload.correlation_token,
     )
 
@@ -262,6 +222,9 @@ async def trigger_tiff_normalize(
 class TriggerZipArchiveResponse(BaseModel):
     workflow_run_id: str
     run_id: str
+    #: False when the endpoint deduped against a run already recorded for
+    #: this archive instead of dispatching (HAT-6).
+    dispatched: bool = True
 
 
 @router.post(
@@ -311,11 +274,15 @@ async def trigger_ingest_zip_archive(
                     project_id=str(payload.project_id), conn=_conn
                 )
 
-    ref = await ingest_zip_archive.aio_run_no_wait(payload)
-    await _record_dispatch(payload, ref)
-    return TriggerZipArchiveResponse(
-        workflow_run_id=ref.workflow_run_id,
-        run_id=payload.run_id,
+    outcome = await _claim_and_dispatch(
+        ingest_zip_archive, payload, site="ingest_zip_archive", request=request,
+    )
+    return _respond(
+        TriggerZipArchiveResponse(
+            workflow_run_id=outcome.workflow_run_id,
+            run_id=outcome.run_id or payload.run_id,
+            dispatched=outcome.dispatched,
+        ),
     )
 
 
@@ -331,42 +298,134 @@ async def trigger_ingest_zip_archive(
 class TriggerIngestSpatialResponse(BaseModel):
     workflow_run_id: str
     run_id: str | None
+    dispatched: bool = True
 
 
 class TriggerIngestTabularResponse(BaseModel):
     workflow_run_id: str
     run_id: str | None
+    dispatched: bool = True
 
 
-async def _record_dispatch(payload, ref) -> None:
-    """Insert the ingest_progress row at DISPATCH time, status=queued.
+@dataclass(frozen=True)
+class _DispatchOutcome:
+    workflow_run_id: str
+    run_id: str | None
+    dispatched: bool
 
-    Queue-saturation CANCELLED events fire BEFORE any task body runs, so
-    a row created inside the workflow does not exist yet when the run is
-    killed — the upload simply vanishes from the Ingestion Runs UI, and
-    the workflow's on_failure hook has nothing to resolve and close.
-    That is the Cameco failure mode (—41% of failures left no row); see
-    [[cameco-recovery-2026-06-02]].
 
-    ingest_pdf and tiff_normalize have done this since 2026-06-02 and
-    2026-08-11 respectively. The four geology triggers below did not,
-    which is also why the nightly bronze sweep could not tell a
-    cancelled geology upload from one that was never dispatched.
+def _respond(body: BaseModel) -> Any:
+    """202 for a fresh dispatch, 200 for a dedupe hit (Laravel accepts both)."""
+    if getattr(body, "dispatched", True):
+        return body
+    return JSONResponse(status_code=status.HTTP_200_OK, content=body.model_dump())
 
-    ``run_id`` is passed through when the caller minted one, so the row
-    lands under the SAME id the workflow will later upsert against
-    rather than creating a second, orphaned row.
+
+#: Lets an internal sweep record the progress row as its own (triggered_by)
+#: rather than as an upload. Validated against _progress.ALLOWED_TRIGGERS.
+INGEST_TRIGGER_HEADER = "X-Ingest-Trigger"
+
+
+def _triggered_by(request: Request | None) -> str:
+    headers = getattr(request, "headers", None)
+    value = headers.get(INGEST_TRIGGER_HEADER) if headers is not None else None
+    return value if value in ingest_progress.ALLOWED_TRIGGERS else "upload"
+
+
+async def _claim_and_dispatch(
+    workflow: Any,
+    payload: Any,
+    *,
+    site: str,
+    request: Request | None = None,
+) -> _DispatchOutcome:
+    """Record the queued progress row, then dispatch, deduping retries.
+
+    HAT-4/6/12 (2026-09-29). Every trigger used to dispatch first and write
+    its ingest_progress row second, and only ingest_pdf deduped at all.
+    Laravel wraps each call in ``timeout(15)->retry(3, 500)``, so a slow
+    ``aio_run_no_wait`` (hatchet-lite's queue is Postgres-backed, so queue
+    pressure is DB pressure) got re-POSTed with the same payload:
+
+    * geology: two ingest_tabular runs for one file each DELETE-then-INSERT
+      in their own READ COMMITTED transaction, and both inserts survive,
+      which doubles the lithology/sample/assay rows. A double ZIP fans the
+      whole archive out twice;
+    * ingest_pdf: the retry arrived while the first request was still inside
+      the slow dispatch, before the row existed, so it dispatched again.
+      Preflight could also beat the endpoint's INSERT and mint its own row.
+
+    Now :func:`_progress.claim_dispatch` takes a per-file advisory lock,
+    returns any non-terminal run for (workspace, key) as a duplicate, and
+    otherwise inserts the queued row, under the caller's run_id when it sent
+    one. A caller run_id that is already recorded is a duplicate even after
+    that run finished. Only a claimed row is dispatched. Its Hatchet id is
+    stamped afterwards, and a dispatch that raises takes its row back out so
+    Laravel's own retry of the failed request is not mistaken for a
+    duplicate.
+
+    The row still exists from dispatch time, which keeps the Cameco
+    guarantee: a run Hatchet cancels before any task body runs still leaves
+    a row for on_failure to close and for the sweeps to see
+    ([[cameco-recovery-2026-06-02]]).
+
+    Fails open on a database error in the claim (dispatch without dedupe,
+    row written afterwards, the pre-2026-09-29 behaviour). Refusing uploads
+    because the progress table is unreachable would be worse than the rare
+    double.
     """
-    if not (payload.workspace_id and payload.project_id):
-        return
-    await ingest_progress.start_run(
-        workspace_id=str(payload.workspace_id),
-        project_id=str(payload.project_id),
-        minio_key=payload.minio_key,
-        triggered_by="upload",
-        workflow_run_id=ref.workflow_run_id,
-        run_id=getattr(payload, "run_id", None),
+    workspace_id = str(payload.workspace_id) if payload.workspace_id else ""
+    project_id = str(payload.project_id) if payload.project_id else ""
+    caller_run_id = getattr(payload, "run_id", None)
+    triggered_by = _triggered_by(request)
+
+    if not (workspace_id and project_id):
+        ref = await workflow.aio_run_no_wait(payload)
+        return _DispatchOutcome(ref.workflow_run_id, caller_run_id, True)
+
+    try:
+        claim = await ingest_progress.claim_dispatch(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=payload.minio_key,
+            run_id=caller_run_id,
+            triggered_by=triggered_by,
+        )
+    except Exception as exc:
+        log.warning(
+            "trigger_%s: dispatch claim failed (%s) — dispatching without dedupe",
+            site, exc,
+        )
+        ref = await workflow.aio_run_no_wait(payload)
+        await ingest_progress.start_run(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=payload.minio_key,
+            triggered_by=triggered_by,
+            workflow_run_id=ref.workflow_run_id,
+            run_id=caller_run_id,
+        )
+        return _DispatchOutcome(ref.workflow_run_id, caller_run_id, True)
+
+    if not claim.claimed:
+        log.info(
+            "trigger_%s: dedupe hit run=%s workflow=%s key=%s — returning the "
+            "existing run, not re-dispatching",
+            site, claim.run_id, claim.workflow_run_id, payload.minio_key,
+        )
+        return _DispatchOutcome(
+            claim.workflow_run_id or claim.run_id, claim.run_id, False,
+        )
+
+    try:
+        ref = await workflow.aio_run_no_wait(payload)
+    except BaseException:
+        await ingest_progress.release_undispatched(run_id=claim.run_id)
+        raise
+    await ingest_progress.stamp_workflow_run_id(
+        run_id=claim.run_id, workflow_run_id=ref.workflow_run_id,
     )
+    return _DispatchOutcome(ref.workflow_run_id, claim.run_id, True)
 
 
 async def _guard_active_project(request: Request, payload) -> None:
@@ -411,11 +470,15 @@ async def trigger_ingest_spatial(
     )
     await _guard_active_project(request, payload)
 
-    ref = await ingest_spatial.aio_run_no_wait(payload)
-    await _record_dispatch(payload, ref)
-    return TriggerIngestSpatialResponse(
-        workflow_run_id=ref.workflow_run_id,
-        run_id=payload.run_id,
+    outcome = await _claim_and_dispatch(
+        ingest_spatial, payload, site="ingest_spatial", request=request,
+    )
+    return _respond(
+        TriggerIngestSpatialResponse(
+            workflow_run_id=outcome.workflow_run_id,
+            run_id=outcome.run_id or payload.run_id,
+            dispatched=outcome.dispatched,
+        ),
     )
 
 
@@ -442,17 +505,22 @@ async def trigger_ingest_tabular(
     )
     await _guard_active_project(request, payload)
 
-    ref = await ingest_tabular.aio_run_no_wait(payload)
-    await _record_dispatch(payload, ref)
-    return TriggerIngestTabularResponse(
-        workflow_run_id=ref.workflow_run_id,
-        run_id=payload.run_id,
+    outcome = await _claim_and_dispatch(
+        ingest_tabular, payload, site="ingest_tabular", request=request,
+    )
+    return _respond(
+        TriggerIngestTabularResponse(
+            workflow_run_id=outcome.workflow_run_id,
+            run_id=outcome.run_id or payload.run_id,
+            dispatched=outcome.dispatched,
+        ),
     )
 
 
 class TriggerIngestWellLogsResponse(BaseModel):
     workflow_run_id: str
     run_id: str | None
+    dispatched: bool = True
 
 
 @router.post(
@@ -478,9 +546,13 @@ async def trigger_ingest_well_logs(
     )
     await _guard_active_project(request, payload)
 
-    ref = await ingest_well_logs.aio_run_no_wait(payload)
-    await _record_dispatch(payload, ref)
-    return TriggerIngestWellLogsResponse(
-        workflow_run_id=ref.workflow_run_id,
-        run_id=payload.run_id,
+    outcome = await _claim_and_dispatch(
+        ingest_well_logs, payload, site="ingest_well_logs", request=request,
+    )
+    return _respond(
+        TriggerIngestWellLogsResponse(
+            workflow_run_id=outcome.workflow_run_id,
+            run_id=outcome.run_id or payload.run_id,
+            dispatched=outcome.dispatched,
+        ),
     )

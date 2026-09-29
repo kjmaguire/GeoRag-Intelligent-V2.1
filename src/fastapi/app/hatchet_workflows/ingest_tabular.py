@@ -49,17 +49,26 @@ data-completeness problem the geologist needs told about.
 
 Coordinates and CRS
 -------------------
-silver.collars stores easting/northing as given plus a geom. The source CRS
-is NOT discoverable from a CSV — there is no header for it — so it comes from
-the caller, defaulting to ``DEFAULT_SOURCE_EPSG``. When that default is used
-rather than supplied, ``georef_method`` records 'assumed', because a UTM
-easting read as WGS84 lands in the Gulf of Guinea and the map has no way to
-know it is wrong.
+silver.collars stores easting/northing as given plus a geom. A projected
+source CRS is NOT discoverable from a CSV — there is no header for it — so
+it comes from the upload, then the project, defaulting to
+``DEFAULT_SOURCE_EPSG``. When that default is used rather than supplied,
+``georef_method`` records 'assumed' and the run carries one prominent
+``collar_crs_assumed`` warning, because a UTM easting read in the wrong zone
+lands hundreds of km away and the map has no way to know it is wrong.
+
+A longitude/latitude table IS discoverable (headers, or degree-like values)
+and is placed as EPSG:4326 whatever the project CRS says (GIS-1,
+2026-09-29) — it used to be read as UTM metres and land on the equator.
+Every placed table is then checked against the project's known extent and
+its CRS's area of use; implausible positions warn (GIS-13). See
+app/services/ingest/collar_crs.py.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as _dt
 import json
 import logging
@@ -79,6 +88,21 @@ from pydantic import BaseModel, Field, field_validator
 from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress, hatchet
+from app.services.ingest.silver_row_guard import (
+    LITHOLOGY_PERCENT_RANGE,
+    LITHOLOGY_TEXT_WIDTHS,
+    MINERALIZATION_PCT_RANGE,
+    SAMPLE_TEXT_WIDTHS,
+    SURVEY_TEXT_WIDTHS,
+    UNKNOWN,
+    RowIssues,
+    finite,
+    fit_text,
+    guard_collar,
+    guard_interval,
+    guard_percent,
+    issue_warnings,
+)
 
 log = logging.getLogger("georag.hatchet.ingest_tabular")
 
@@ -178,16 +202,15 @@ WRITE_ORDER: tuple[str, ...] = (
     "mineralization", "sample",
 )
 
-#: NOT NULL columns the parsers do not guarantee. Defaulting these is the
-#: difference between ingesting a real-world file and rejecting it: plenty of
-#: collar exports carry no Status or HoleType column at all.
-_COLLAR_DEFAULTS = {
-    "hole_type": "unknown",
-    "status": "unknown",
-    "total_depth": 0.0,
-}
-_SURVEY_METHOD_DEFAULT = "unknown"
-_SAMPLE_TYPE_DEFAULT = "unknown"
+#: NOT NULL text columns the parsers do not guarantee. Defaulting these is
+#: the difference between ingesting a real-world file and rejecting it:
+#: plenty of collar exports carry no Status or HoleType column, and most
+#: assay exports carry no sample-type column. ``hole_type`` / ``status``
+#: default inside ``silver_row_guard.guard_collar``. ``total_depth`` is NOT
+#: defaulted any more: it used to be 0.0, which chk_total_depth_positive
+#: refuses — see ``_write_collars``.
+_SURVEY_METHOD_DEFAULT = UNKNOWN
+_SAMPLE_TYPE_DEFAULT = UNKNOWN
 
 _INSERT_BATCH = 500
 
@@ -251,11 +274,13 @@ INSERT INTO silver.collars (
     collar_id, workspace_id, project_id, hole_id, hole_id_canonical,
     easting, northing, elevation, total_depth, azimuth, dip,
     hole_type, drill_date, status, georef_method,
+    drill_type, hole_status,
     created_at, updated_at, geom, geom_4326
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4,
     $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14,
+    $16, $17,
     NOW(), NOW(),
     ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), {COLLAR_GEOM_SRID}),
     ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), 4326)
@@ -271,6 +296,10 @@ ON CONFLICT (project_id, hole_id) DO UPDATE SET
     hole_type   = EXCLUDED.hole_type,
     drill_date  = EXCLUDED.drill_date,
     status      = EXCLUDED.status,
+    -- Only ever the overflow of a too-long hole_type / status (PG-10), so a
+    -- row that did not overflow keeps whatever an earlier writer stored.
+    drill_type  = COALESCE(EXCLUDED.drill_type, silver.collars.drill_type),
+    hole_status = COALESCE(EXCLUDED.hole_status, silver.collars.hole_status),
     geom        = EXCLUDED.geom,
     geom_4326   = EXCLUDED.geom_4326,
     updated_at  = NOW()
@@ -712,8 +741,11 @@ def _surface_geochem_columns(columns: list[str]) -> dict[str, Any] | None:
 
     located, _ = build_column_map(columns, {
         "sample_id": ["sample", "sample_no", "sample_number", "sampleid", "station"],
-        "easting": ["easting", "east", "utm_e", "x", "xcoord"],
-        "northing": ["northing", "north", "utm_n", "y", "ycoord"],
+        # Longitude/latitude are coordinates too (GIS-1): the CRS decision
+        # places a lon/lat survey as EPSG:4326, so it no longer has to be
+        # renamed to x/y to be recognised at all.
+        "easting": ["easting", "east", "utm_e", "x", "xcoord", "longitude", "long", "lon"],
+        "northing": ["northing", "north", "utm_n", "y", "ycoord", "latitude", "lat"],
         "sample_type": ["sample_typ", "sample_type", "samptype", "type"],
     })
 
@@ -773,24 +805,11 @@ def _sample_type_of(raw: Any) -> str:
     return _SAMPLE_TYPE_CODES.get(text, "other")
 
 
-#: Mirrors csv_sample.ASSAY_COLUMN_RE. The parser already restricted
-#: commodity_assays keys to this vocabulary, so a key failing here means the
-#: parser's regex drifted from this one — counted, never raised.
-_ASSAY_KEY_RE = re.compile(
-    r"^(U3O8|Au|Ag|Cu|Pb|Zn|Ni|Fe|Ti|Li)_?(ppm|pct|ppb|pct_|_pct)?$",
-    re.IGNORECASE,
-)
-
-#: Canonical casing for the vocabulary above — headers arrive as the lab
-#: wrote them ("AU_PPM", "u3o8ppm") and silver.assays_v2.element is matched
-#: verbatim by the agent's assay tools.
-_ASSAY_ELEMENT_CASE = {
-    "u3o8": "U3O8", "au": "Au", "ag": "Ag", "cu": "Cu", "pb": "Pb",
-    "zn": "Zn", "ni": "Ni", "fe": "Fe", "ti": "Ti", "li": "Li",
-}
-
 #: Unit → parts-per-million factor. The unit is what the COLUMN SUFFIX
-#: declared; there is no guessing an undeclared unit from the value.
+#: declared; there is no guessing an undeclared unit from the value. The
+#: parser stores every assay in one of these three (g/t is ppm, oz/t is
+#: converted to ppm) under a canonical key such as ``Au_ppm`` — see
+#: georag_geoparsers._assay_columns, which also reads the key back here.
 _UNIT_TO_PPM = {"ppm": 1.0, "ppb": 0.001, "pct": 10000.0}
 
 
@@ -840,15 +859,18 @@ def derive_assay_v2_rows(
     ):
         return [], len(keys)
 
+    from georag_geoparsers._assay_columns import split_assay_key  # noqa: PLC0415
+
     rows: list[tuple] = []
     skipped = 0
     for key in sorted(keys):
-        m = _ASSAY_KEY_RE.match(key)
-        if m is None:
+        parsed = split_assay_key(key)
+        if parsed is None:
+            # Not an assay key the parser could have produced — counted,
+            # never raised.
             skipped += 1
             continue
-        element = _ASSAY_ELEMENT_CASE[m.group(1).lower()]
-        suffix = (m.group(2) or "").strip("_").lower()
+        element, suffix = parsed
         unit = suffix or element_ref.get(element) or "unspecified"
 
         value = assays.get(key)
@@ -860,7 +882,12 @@ def derive_assay_v2_rows(
 
         flag = flags.get(key) if isinstance(flags.get(key), dict) else {}
         under_detection = bool(flag.get("dl_flag"))
+        # ">10": the value is the upper limit, and the row says so (ING-9) —
+        # it used to be hard-coded False and the cell dropped by the parser.
+        over_detection = bool(flag.get("od_flag"))
         detection_limit = flag.get("dl_threshold")
+        if detection_limit is None and over_detection:
+            detection_limit = flag.get("od_threshold")
         half_dl = flag.get("substitution") == "half_dl"
 
         # uuid5 over the natural key: re-uploading the same file rewrites
@@ -874,7 +901,7 @@ def derive_assay_v2_rows(
             str(row_id), workspace_id, collar_id, sample_id,
             from_depth, to_depth,
             element, value, unit, value_ppm, detection_limit,
-            False, under_detection, half_dl,
+            over_detection, under_detection, half_dl,
             rec.get("lab_id"),
         ))
     return rows, skipped
@@ -1124,40 +1151,115 @@ def _resolve_collar(index: dict[str, str], hole_id: Any) -> str | None:
     return index.get(str(canon).strip().upper()) if canon else None
 
 
+async def _existing_collars_by_canonical(
+    conn: asyncpg.Connection, project_id: str,
+) -> dict[str, tuple[str, float | None]]:
+    """``canonical hole id -> (stored hole_id, stored total_depth)``.
+
+    The upsert below is keyed on ``(project_id, hole_id)`` — the only unique
+    constraint the table has — so ``SRE09_6`` from a LAS header on Monday and
+    ``SRE09-6`` from Friday's collar table used to become two collars at two
+    positions for one hole (ING-14). Reading the stored spelling first lets a
+    separator/case variant update the collar that already exists.
+
+    When the project already holds two ghosts of one hole, the one whose
+    stored spelling sorts first wins, so the choice is deterministic; the
+    ghosts themselves are Kyle's to merge (see the detection query in the
+    2026-09-29 ingestion fix report).
+    """
+    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+
+    rows = await conn.fetch(
+        "SELECT hole_id, hole_id_canonical, total_depth FROM silver.collars "
+        "WHERE project_id = $1::uuid ORDER BY hole_id",
+        project_id,
+    )
+    out: dict[str, tuple[str, float | None]] = {}
+    for r in rows:
+        stored = str(r["hole_id"] or "")
+        canon = r["hole_id_canonical"] or canonicalize(stored)
+        if canon and stored:
+            out.setdefault(str(canon).upper(), (stored, r["total_depth"]))
+    return out
+
+
 async def _write_collars(
     conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
     records: list[dict], epsg: int, georef_method: str,
+    issues: RowIssues | None = None,
 ) -> dict[str, int]:
+    """Upsert collars, one bad ROW never failing the batch (ING-1).
+
+    Every row is checked against the table's CHECK constraints and column
+    widths BEFORE it is sent (``silver_row_guard``): an out-of-range optional
+    value is blanked and reported, a row missing a NOT NULL value is skipped
+    and reported, and nothing is defaulted to a number nobody measured —
+    ``total_depth`` used to default to 0.0, which ``chk_total_depth_positive``
+    refuses, so a collar table with no EOH column failed outright.
+
+    All batches go in ONE transaction: a crash on batch 2 no longer leaves
+    batch 1's 500 collars committed. Called inside the per-sheet transaction
+    of ``run_ingest_tabular`` this becomes a savepoint.
+
+    ``issues`` collects what was blanked, skipped and merged so the caller
+    can turn it into the run's warnings.
+    """
+    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+
+    issues = issues if issues is not None else RowIssues()
+    skipped_before = len(issues.skipped)
+    existing = await _existing_collars_by_canonical(conn, project_id)
+    existing_ids = {stored for stored, _td in existing.values()}
+
     rows = []
-    skipped = 0
     for rec in records:
-        easting, northing = _num(rec.get("easting")), _num(rec.get("northing"))
-        if not rec.get("hole_id") or easting is None or northing is None:
-            # NOT NULL on both, and a collar without coordinates cannot be
-            # placed on a map or projected into a section — it is not a
-            # collar, so it is reported rather than written as zeroes.
-            skipped += 1
+        hole_id = str(rec.get("hole_id") or "").strip()
+        # Recomputed rather than trusted from the record: the rule is
+        # _hole_id.canonicalize, and a record whose canonical disagrees with
+        # its own hole_id must not merge two different holes.
+        canon = canonicalize(hole_id)
+        match = existing.get(str(canon).upper()) if canon else None
+        existing_td: float | None = None
+        if match is not None:
+            stored_id, existing_td = match
+            if hole_id and stored_id != hole_id and hole_id not in existing_ids:
+                # Same hole, different separators/case: update the collar
+                # that exists rather than create a ghost beside it.
+                issues.merged.append((rec.get("_source_row"), hole_id, stored_id))
+                rec = {**rec, "hole_id": stored_id}
+        rec = {**rec, "hole_id_canonical": canon}
+        values = guard_collar(rec, issues, existing_total_depth=existing_td)
+        if values is None:
             continue
+        if canon and match is None:
+            # A second spelling of the same hole LATER IN THIS FILE lands on
+            # the collar this row creates, not on a ghost of its own.
+            existing[str(canon).upper()] = (values["hole_id"], values["total_depth"])
+            existing_ids.add(values["hole_id"])
         rows.append((
             workspace_id, project_id,
-            str(rec["hole_id"]), rec.get("hole_id_canonical"),
-            easting, northing, _num(rec.get("elevation")),
-            _num(rec.get("total_depth")) if rec.get("total_depth") is not None
-            else _COLLAR_DEFAULTS["total_depth"],
-            _num(rec.get("azimuth")), _num(rec.get("dip")),
-            rec.get("hole_type") or _COLLAR_DEFAULTS["hole_type"],
+            values["hole_id"], values["hole_id_canonical"],
+            values["easting"], values["northing"], values["elevation"],
+            values["total_depth"], values["azimuth"], values["dip"],
+            values["hole_type"],
             rec.get("drill_date"),
-            rec.get("status") or _COLLAR_DEFAULTS["status"],
+            values["status"],
             georef_method,
             epsg,
+            values["drill_type"], values["hole_status"],
         ))
 
     written = 0
-    for start in range(0, len(rows), _INSERT_BATCH):
-        chunk = rows[start:start + _INSERT_BATCH]
-        await conn.executemany(_COLLAR_SQL, chunk)
-        written += len(chunk)
-    return {"written": written, "skipped": skipped, "orphaned": 0}
+    async with conn.transaction():
+        for start in range(0, len(rows), _INSERT_BATCH):
+            chunk = rows[start:start + _INSERT_BATCH]
+            await conn.executemany(_COLLAR_SQL, chunk)
+            written += len(chunk)
+    return {
+        "written": written,
+        "skipped": len(issues.skipped) - skipped_before,
+        "orphaned": 0,
+    }
 
 
 #: Interval tables have no natural unique key, so re-running an ingest would
@@ -1176,9 +1278,18 @@ async def _write_collars(
 #: hole untouched, which is what a geologist means by "here is the corrected
 #: file".
 #:
+#: Within ONE ingest run the replace happens once per (table, collar): a
+#: workbook with an Au sheet and a Cu/Zn sheet for the same holes, or an
+#: Access database with several assay tables, used to have its second sheet
+#: delete the first (ING-2). ``run_ingest_tabular`` now carries a
+#: ``replaced_scope`` so later sheets of the same run append.
+#:
 #: The caveat, stated because it is a real workflow: if one hole's intervals
-#: are split across two files, loading the second replaces the first. The
-#: replaced count is reported for exactly that reason — it is never silent.
+#: are split across two SEPARATE uploads (two files uploaded one after the
+#: other, or two members of a ZIP — each member is its own run), loading the
+#: second replaces the first. The replaced count is in the run's output; the
+#: tables carry no source-file column, so which upload wrote the replaced
+#: rows cannot be told apart and no warning claims to.
 _INTERVAL_TABLES = {
     "survey": "silver.surveys",
     "lithology": "silver.lithology_logs",
@@ -1212,6 +1323,8 @@ _COMPANION_TYPES: dict[str, tuple[str, ...]] = {
 async def _write_intervals(
     conn: asyncpg.Connection, *, workspace_id: str, sheet_type: str,
     records: list[dict], index: dict[str, str],
+    issues: RowIssues | None = None,
+    replaced_scope: set[tuple[str, str]] | None = None,
 ) -> dict[str, int]:
     """Write survey / lithology / sample (and structure, alteration, mineralization) rows against resolved collars.
 
@@ -1221,7 +1334,25 @@ async def _write_intervals(
     silver.assays_v2, the §04e-canonical assay table every assay-side
     reader queries. Both replace, scoped to the collars the file mentions,
     for the reasons on _INTERVAL_TABLES.
+
+    ``replaced_scope`` (ING-2) is the run's record of which
+    ``(table, collar_id)`` pairs it has ALREADY replaced. A workbook with an
+    ``Au_FA`` and an ``ICP_ME`` sheet, or an Access database with three assay
+    tables, reaches this function once per sheet; replacing per sheet made
+    the second sheet delete the first sheet's rows for the same holes. With
+    a scope, a hole is cleared once per table per ingest run — the first
+    sheet replaces what an EARLIER upload wrote, later sheets append.
+    ``None`` keeps the per-call replace for callers outside a run.
+
+    Rows the tables' constraints would refuse are handled per ROW, never per
+    batch (ING-1): an interval with no readable or an inverted from/to is
+    skipped, an out-of-range optional value (RQD / recovery / abundance
+    outside 0..100) or an over-width text value is blanked, and both are
+    recorded in ``issues``.
     """
+    issues = issues if issues is not None else RowIssues()
+    skipped_before = len(issues.skipped)
+
     element_ref: dict[str, str] = {}
     if sheet_type == "sample":
         element_ref = {
@@ -1235,7 +1366,6 @@ async def _write_intervals(
     assay_rows: list[tuple] = []
     assay_skipped = 0
     orphaned = 0
-    unwritable = 0
     for rec in records:
         collar_id = _resolve_collar(index, rec.get("hole_id"))
         if collar_id is None:
@@ -1245,18 +1375,25 @@ async def _write_intervals(
             continue
 
         if sheet_type == "survey":
+            depth = finite(rec.get("depth"))
+            if depth is None:
+                issues.skip(rec, "survey station has no readable depth")
+                continue
             rows.append((
-                workspace_id, collar_id, _num(rec.get("depth")),
-                _num(rec.get("azimuth")), _num(rec.get("dip")),
-                rec.get("survey_method") or _SURVEY_METHOD_DEFAULT,
+                workspace_id, collar_id, depth,
+                finite(rec.get("azimuth")), finite(rec.get("dip")),
+                fit_text(
+                    rec, "survey_method", SURVEY_TEXT_WIDTHS["survey_method"],
+                    issues, default=_SURVEY_METHOD_DEFAULT,
+                ),
             ))
         elif sheet_type == "structure":
-            depth = _num(rec.get("depth"))
+            depth = finite(rec.get("depth"))
             if depth is None:
                 # NOT NULL, and the parser already rejects such a row; kept
                 # as a guard for records that did not come from it, and
                 # counted rather than dropped in silence.
-                unwritable += 1
+                issues.skip(rec, "structure measurement has no readable depth")
                 continue
             rows.append((
                 workspace_id, collar_id, depth,
@@ -1266,41 +1403,66 @@ async def _write_intervals(
                 rec.get("roughness"), rec.get("infill"), rec.get("notes"),
             ))
         elif sheet_type == "alteration":
-            from_d, to_d = _num(rec.get("from_depth")), _num(rec.get("to_depth"))
-            if from_d is None or to_d is None or not rec.get("alteration_type"):
-                unwritable += 1
+            if not rec.get("alteration_type"):
+                issues.skip(rec, "alteration interval has no alteration type")
+                continue
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
                 continue
             rows.append((
-                workspace_id, collar_id, from_d, to_d,
+                workspace_id, collar_id, bounds[0], bounds[1],
                 rec["alteration_type"], rec.get("intensity"),
                 list(rec["minerals"]) if rec.get("minerals") else None,
                 rec.get("notes"),
             ))
         elif sheet_type == "mineralization":
-            from_d, to_d = _num(rec.get("from_depth")), _num(rec.get("to_depth"))
-            if from_d is None or to_d is None or not rec.get("mineral"):
-                unwritable += 1
+            if not rec.get("mineral"):
+                issues.skip(rec, "mineralization interval has no mineral")
+                continue
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
                 continue
             rows.append((
-                workspace_id, collar_id, from_d, to_d,
-                rec["mineral"], _num(rec.get("abundance_pct")),
+                workspace_id, collar_id, bounds[0], bounds[1],
+                rec["mineral"],
+                guard_percent(rec, "abundance_pct", MINERALIZATION_PCT_RANGE, issues),
                 rec.get("form"), rec.get("grain_size"), rec.get("notes"),
             ))
         elif sheet_type == "lithology":
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
+                continue
+            widths = LITHOLOGY_TEXT_WIDTHS
+            code = fit_text(rec, "lithology_code", widths["lithology_code"], issues)
+            description = rec.get("lithology_description")
+            if code is None and not description and rec.get("lithology_code"):
+                # A free-text "code" too long for varchar(20) is still the
+                # logger's words: keep them in the unbounded description
+                # column rather than lose them with the blanked code.
+                description = str(rec["lithology_code"]).strip() or None
             rows.append((
-                workspace_id, collar_id,
-                _num(rec.get("from_depth")), _num(rec.get("to_depth")),
-                rec.get("lithology_code"), rec.get("lithology_description"),
-                rec.get("grain_size"), rec.get("color"), rec.get("hardness"),
-                _num(rec.get("rqd")), _num(rec.get("recovery")),
-                rec.get("weathering"),
+                workspace_id, collar_id, bounds[0], bounds[1],
+                code,
+                description,
+                fit_text(rec, "grain_size", widths["grain_size"], issues),
+                fit_text(rec, "color", widths["color"], issues),
+                fit_text(rec, "hardness", widths["hardness"], issues),
+                guard_percent(rec, "rqd", LITHOLOGY_PERCENT_RANGE, issues),
+                guard_percent(rec, "recovery", LITHOLOGY_PERCENT_RANGE, issues),
+                fit_text(rec, "weathering", widths["weathering"], issues),
             ))
         else:  # sample
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
+                continue
             rows.append((
-                workspace_id, collar_id,
-                _num(rec.get("from_depth")), _num(rec.get("to_depth")),
-                rec.get("sample_type") or _SAMPLE_TYPE_DEFAULT,
-                rec.get("lab_id"), rec.get("qaqc_type"),
+                workspace_id, collar_id, bounds[0], bounds[1],
+                fit_text(
+                    rec, "sample_type", SAMPLE_TEXT_WIDTHS["sample_type"],
+                    issues, default=_SAMPLE_TYPE_DEFAULT,
+                ),
+                fit_text(rec, "lab_id", SAMPLE_TEXT_WIDTHS["lab_id"], issues),
+                fit_text(rec, "qaqc_type", SAMPLE_TEXT_WIDTHS["qaqc_type"], issues),
                 json.dumps(rec.get("commodity_assays") or {}),
                 (
                     json.dumps(rec["commodity_assay_flags"])
@@ -1327,8 +1489,18 @@ async def _write_intervals(
 
     # Replace, don't append — see _INTERVAL_TABLES. Scoped to the collars this
     # file actually mentions, inside the same transaction as the insert so a
-    # failure cannot leave the holes emptied.
-    touched = sorted({r[1] for r in rows})
+    # failure cannot leave the holes emptied — and, within one run, to the
+    # collars no earlier sheet of this run has already replaced (ING-2).
+    table = _INTERVAL_TABLES[sheet_type]
+    mentioned = sorted({r[1] for r in rows})
+    touched = [
+        cid for cid in mentioned
+        if replaced_scope is None or (table, cid) not in replaced_scope
+    ]
+    assay_touched = [
+        cid for cid in mentioned
+        if replaced_scope is None or ("silver.assays_v2", cid) not in replaced_scope
+    ] if sheet_type == "sample" else []
     replaced = 0
     assay_replaced = 0
     written = 0
@@ -1337,25 +1509,25 @@ async def _write_intervals(
         if touched:
             replaced = int(
                 await conn.fetchval(
-                    f"WITH d AS (DELETE FROM {_INTERVAL_TABLES[sheet_type]} "  # noqa: S608
+                    f"WITH d AS (DELETE FROM {table} "  # noqa: S608
                     "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
                     "SELECT count(*) FROM d",
                     touched,
                 ) or 0
             )
-            if sheet_type == "sample":
-                # Same replace semantics for the canonical assay table —
-                # a corrected sample file must replace its holes' element
-                # rows too, or the doubled-composite failure the interval
-                # tables guard against comes back one table over.
-                assay_replaced = int(
-                    await conn.fetchval(
-                        "WITH d AS (DELETE FROM silver.assays_v2 "
-                        "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
-                        "SELECT count(*) FROM d",
-                        touched,
-                    ) or 0
-                )
+        if assay_touched:
+            # Same replace semantics for the canonical assay table —
+            # a corrected sample file must replace its holes' element
+            # rows too, or the doubled-composite failure the interval
+            # tables guard against comes back one table over.
+            assay_replaced = int(
+                await conn.fetchval(
+                    "WITH d AS (DELETE FROM silver.assays_v2 "
+                    "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
+                    "SELECT count(*) FROM d",
+                    assay_touched,
+                ) or 0
+            )
 
         for start in range(0, len(rows), _INSERT_BATCH):
             chunk = rows[start:start + _INSERT_BATCH]
@@ -1366,9 +1538,16 @@ async def _write_intervals(
             chunk = assay_rows[start:start + _INSERT_BATCH]
             await conn.executemany(_ASSAYS_V2_SQL, chunk)
 
+    if replaced_scope is not None:
+        # Recorded once this call's transaction (or savepoint) has
+        # succeeded. The caller rolls the scope back with the sheet if the
+        # enclosing per-sheet transaction fails afterwards.
+        replaced_scope.update((table, cid) for cid in touched)
+        replaced_scope.update(("silver.assays_v2", cid) for cid in assay_touched)
+
     stats = {
         "written": written,
-        "skipped": unwritable,
+        "skipped": len(issues.skipped) - skipped_before,
         "orphaned": orphaned,
         "replaced": replaced,
     }
@@ -1443,6 +1622,34 @@ def _columns_not_ingested_warning(
             f"re-upload."
         )[:900],
         "columns": shown,
+    }
+
+
+def _csv_preamble_warning(path: str, filename: str) -> dict[str, Any] | None:
+    """Say that title/comment lines above a CSV's header were skipped (ING-13).
+
+    ``_csv_io.open_csv_with_encoding`` drops them for every reader, so the
+    parsers and ``_csv_headers`` see the real header; this is the note that
+    tells the geologist which lines were not read as data.
+    """
+    from georag_geoparsers._csv_io import open_csv_with_encoding  # noqa: PLC0415
+
+    stream, _encoding, _sha, _size = open_csv_with_encoding(path)
+    skipped = int(getattr(stream, "preamble_lines", 0) or 0)
+    if not skipped:
+        return None
+    return {
+        "code": "header_row_detected",
+        "message": (
+            f"{filename}: {skipped} line(s) above the column headers were read "
+            f"as a title or comments and skipped"
+        ),
+        "detail": (
+            f"The first {skipped} line(s) of {filename} are not part of the "
+            f"table (a title, notes or '#' comments), so the column headers "
+            f"were taken from line {skipped + 1} and the lines above it were "
+            f"not read as data."
+        ),
     }
 
 
@@ -1574,23 +1781,195 @@ def _rows_rejected_warning(
     }
 
 
+def _fold_writer_skips(result: Any, issues: RowIssues) -> None:
+    """Record the writer's per-row skips on the parse result (ING-1).
+
+    ``skipped_details`` is where a skipped row's reason lives for every other
+    rejection, and ``_rows_rejected_warning`` summarises from it; a row the
+    writer refused because the table cannot hold it is the same kind of loss
+    and must be counted the same way. A result object that cannot take the
+    update (a test double, a frozen dataclass) is left alone — the
+    ``db_constraint_rows_skipped`` warning still reports the rows.
+    """
+    details = issues.skipped_details()
+    if not details:
+        return
+    existing = getattr(result, "skipped_details", None)
+    if isinstance(existing, list):
+        existing.extend(details)
+    for attr, delta in (("skipped_rows", len(details)), ("valid_rows", -len(details))):
+        current = getattr(result, attr, None)
+        if isinstance(current, int) and not isinstance(current, bool):
+            try:
+                setattr(result, attr, max(0, current + delta))
+            except AttributeError:
+                log.debug(
+                    "ingest_tabular: parse result %s is read-only; the writer "
+                    "skips are reported by their own warning",
+                    type(result).__name__, exc_info=True,
+                )
+                return
+
+
+#: Exceptions that mean the DATABASE or the worker is in trouble, not that
+#: one sheet's data is bad. These still fail the run so Hatchet retries it;
+#: anything else raised while writing one sheet costs that sheet only.
+_INFRASTRUCTURE_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.InterfaceError,
+    asyncpg.PostgresConnectionError,
+    asyncpg.exceptions.OperatorInterventionError,
+    asyncpg.exceptions.InsufficientResourcesError,
+    asyncpg.exceptions.TransactionRollbackError,
+    OSError,
+    TimeoutError,
+    MemoryError,
+)
+
+
+def _sheet_write_failed_warning(
+    *, label: str, sheet_type: str, exc: BaseException, table_source: bool,
+) -> dict[str, Any]:
+    """Say that ONE sheet/table failed to write, and that nothing of it landed."""
+    kept = (
+        "every row is in the attribute table and in bronze"
+        if table_source else
+        "the file is in bronze and the sheet was kept as searchable text"
+    )
+    return {
+        "code": "typed_table_write_failed",
+        "message": (
+            f"'{label}' looks like {sheet_type} data but could not be written "
+            f"as {sheet_type} rows"
+        ),
+        "detail": (
+            f"'{label}' classified as {sheet_type} and writing it as "
+            f"{sheet_type} rows failed: {str(exc)[:300]}. None of its rows "
+            f"were written (the sheet is all-or-nothing) and the other sheets "
+            f"were unaffected. The data is not lost - {kept} - and "
+            f"re-ingesting will retry."
+        ),
+    }
+
+
 def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
-    """Say that these collars were placed by guess, and name the guess."""
+    """Say that these collars were placed by guess, and name the guess.
+
+    GIS-2 (Kyle, 2026-09-29): undeclared projected coordinates are still
+    placed at the platform default rather than refused, so this warning is
+    the only thing standing between the geologist and a hole drawn in the
+    wrong zone. It names the assumption, what it costs when wrong, and the
+    two places a CRS can be declared.
+    """
+    named = " (WGS 84 / UTM zone 13N, the platform default)" if epsg == 32613 else ""
     return {
         "code": "collar_crs_assumed",
         "message": (
-            f"{collars_written} collar(s) placed using an assumed "
-            f"coordinate system (EPSG:{epsg})"
+            f"{collars_written} collar(s) placed using an ASSUMED coordinate "
+            f"system (EPSG:{epsg}) — no CRS was declared"
         ),
         "detail": (
-            f"No coordinate system was supplied with this upload, so its "
-            f"easting/northing were read as EPSG:{epsg}. If the holes were "
-            f"surveyed in a different projection they are now in the wrong "
-            f"place on the map — re-upload with the correct EPSG code to fix "
-            f"it. Nothing in a CSV or spreadsheet declares a projection, so "
-            f"this cannot be detected from the file."
+            f"Neither this upload nor its project declares a coordinate "
+            f"system, so the easting/northing values were read as "
+            f"EPSG:{epsg}{named}. Nothing in a CSV or spreadsheet declares a "
+            f"projection, so this cannot be detected from the file. If the "
+            f"holes were surveyed in any other zone or "
+            f"datum they are now in the wrong place on the map: another UTM "
+            f"zone is hundreds to thousands of kilometres off, NAD27 in the "
+            f"same zone about 200 m. To fix it, re-upload with the correct EPSG "
+            f"code: type it for this file in the Import wizard, or set the "
+            f"project's coordinate system (Edit project -> CRS / EPSG) so every "
+            f"future upload uses it. Re-uploading replaces these collars in "
+            f"place."
         ),
     }
+
+
+async def _resolve_table_crs(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    label: str,
+    records: list[dict[str, Any]],
+    easting_column: str | None,
+    northing_column: str | None,
+    declared_epsg: int | None,
+    project_epsg: int | None,
+    id_key: str = "hole_id",
+    x_key: str = "easting",
+    y_key: str = "northing",
+) -> tuple[Any, set[str]]:
+    """Decide one table's source CRS and check where it puts the rows.
+
+    GIS-1 / GIS-2 / GIS-13 — see app/services/ingest/collar_crs.py. Returns
+    the ``CollarCrsDecision`` (its ``warnings`` already carry the
+    plausibility findings) and the ids of the rows flagged implausible.
+    """
+    from app.services.ingest.collar_crs import (  # noqa: PLC0415
+        decide_collar_crs,
+        plausibility_warnings,
+        project_reference,
+    )
+
+    xs = [_num(r.get(x_key)) for r in records]
+    ys = [_num(r.get(y_key)) for r in records]
+    decision = decide_collar_crs(
+        eastings=xs, northings=ys,
+        easting_column=easting_column, northing_column=northing_column,
+        declared_epsg=declared_epsg, project_epsg=project_epsg,
+        default_epsg=DEFAULT_SOURCE_EPSG, label=label,
+    )
+    if decision.refusal is not None:
+        return decision, set()
+
+    points = [
+        (str(r.get(id_key)), x, y)
+        for r, x, y in zip(records, xs, ys, strict=True)
+        if r.get(id_key) and x is not None and y is not None
+    ]
+    if not points:
+        return decision, set()
+    reference = await project_reference(
+        conn, project_id, exclude_hole_ids=[p[0] for p in points],
+    )
+    found, flagged = await asyncio.to_thread(
+        plausibility_warnings,
+        epsg=decision.epsg, points=points, reference=reference, label=label,
+    )
+    decision.warnings.extend(found)
+    return decision, flagged
+
+
+async def _stamp_crs_confidence(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    hole_ids: list[str],
+    confidence: float,
+    flagged: set[str],
+) -> None:
+    """Record how far each written collar's CRS is to be believed.
+
+    silver.collars.crs_confidence was never written by this path, so the
+    MVT's crs_confidence was NULL for every tabular collar. Flagged
+    (implausible) collars get 0.1. Best-effort in a savepoint: a failure
+    here must not undo collars that are already written.
+    """
+    if not hole_ids:
+        return
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE silver.collars SET crs_confidence = CASE "
+                "WHEN hole_id = ANY($3::text[]) THEN LEAST($4::real, 0.1::real) "
+                "ELSE $4::real END "
+                "WHERE project_id = $1::uuid AND hole_id = ANY($2::text[])",
+                project_id, hole_ids, sorted(flagged), confidence,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort; the collars are already written
+        log.warning(
+            "ingest_tabular: could not record crs_confidence for %s: %s",
+            project_id, exc,
+        )
 
 
 def _remap_facts(result: Any, sheet_type: str) -> dict[str, Any] | None:
@@ -2181,7 +2560,7 @@ ingest_tabular = hatchet.workflow(
 )
 
 
-@ingest_tabular.task(execution_timeout="2h", retries=1)
+@ingest_tabular.task(execution_timeout="2h", schedule_timeout="2h", retries=1)
 async def run_ingest_tabular(
     input: IngestTabularInput, ctx: Context,
 ) -> IngestTabularOut:
@@ -2199,7 +2578,11 @@ async def run_ingest_tabular(
 
     epsg = input.source_epsg or DEFAULT_SOURCE_EPSG
     epsg_assumed = input.source_epsg is None
-    georef_method = "assumed" if epsg_assumed else "declared"
+    #: Collars placed under the ASSUMED default, across every table of this
+    #: run — the source of the one run-level collar_crs_assumed warning
+    #: (GIS-2). Function scope so the warning block after the connection
+    #: closes can always read it.
+    crs_state: dict[str, int] = {"assumed_collars": 0}
 
     # Always create the row, under the run_id the caller minted. Laravel
     # stamps a UUID on every upload, and this used to read
@@ -2399,6 +2782,11 @@ async def run_ingest_tabular(
                     elif meta.sheet_type not in WRITE_ORDER:
                         unclassified.append(meta.name)
             else:
+                preamble_note = await asyncio.to_thread(
+                    _csv_preamble_warning, local, filename,
+                )
+                if preamble_note is not None:
+                    warnings.append(preamble_note)
                 sheet_type = input.sheet_type
                 if sheet_type not in WRITE_ORDER:
                     from georag_geoparsers._sheet_classifier import (  # noqa: PLC0415
@@ -2485,6 +2873,13 @@ async def run_ingest_tabular(
                 # unreadable row must not fail an ingest that would
                 # otherwise succeed — it falls back to the old behaviour,
                 # warning included.
+                #
+                # Since GIS-1 (2026-09-29) that precedence is applied PER
+                # TABLE by _resolve_table_crs, which also recognises a
+                # longitude/latitude table and places it as EPSG:4326
+                # whatever the project says; `epsg` below is only the
+                # fallback for the run-level output fields.
+                project_epsg: int | None = None
                 if input.source_epsg is None:
                     try:
                         project_epsg = await conn.fetchval(
@@ -2499,15 +2894,66 @@ async def run_ingest_tabular(
                             input.project_id, crs_exc,
                         )
                     if project_epsg is not None:
-                        epsg = int(project_epsg)
+                        project_epsg = int(project_epsg)
+                        epsg = project_epsg
                         epsg_assumed = False
-                        georef_method = "declared"
+
+                async def _placed_collars(
+                    label: str, records: list[dict[str, Any]],
+                    easting_column: str | None, northing_column: str | None,
+                    *, trace_export: bool = False,
+                    issues: RowIssues | None = None,
+                ) -> dict[str, int]:
+                    """Decide this table's CRS, write its collars, record confidence."""
+                    decision, flagged = await _resolve_table_crs(
+                        conn,
+                        project_id=input.project_id,
+                        label=label,
+                        records=records,
+                        easting_column=easting_column,
+                        northing_column=northing_column,
+                        declared_epsg=input.source_epsg,
+                        project_epsg=project_epsg,
+                    )
+                    warnings.extend(decision.warnings)
+                    if decision.refusal is not None:
+                        warnings.append(decision.refusal)
+                        return {"written": 0, "skipped": len(records), "orphaned": 0}
+                    method = decision.georef_method
+                    if trace_export and method == "declared":
+                        # A trace export names no CRS itself; see the
+                        # Discover branch below for why this is 'manual'.
+                        method = "manual"
+                    collar_stats = await _write_collars(
+                        conn,
+                        workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                        records=records, epsg=decision.epsg,
+                        georef_method=method,
+                        issues=issues,
+                    )
+                    await _stamp_crs_confidence(
+                        conn,
+                        project_id=input.project_id,
+                        hole_ids=[str(r["hole_id"]) for r in records if r.get("hole_id")],
+                        confidence=decision.crs_confidence,
+                        flagged=flagged,
+                    )
+                    if decision.assumed:
+                        crs_state["assumed_collars"] += collar_stats.get("written", 0)
+                    return collar_stats
 
                 #: Rows the companion tables of the sheet just written landed.
                 #: A lithology sheet the lithology writer refused can still have
                 #: fed alteration or mineralization, and that is not "wrote
                 #: nothing" - so the refusal path reads this.
                 companion_landed: dict[str, int] = {"rows": 0}
+
+                #: (table, collar_id) pairs this run has already replaced
+                #: (ING-2): the first sheet of a type clears what an EARLIER
+                #: upload wrote for its holes, later sheets of the same run
+                #: append instead of deleting the first one's rows.
+                replaced_scope: set[tuple[str, str]] = set()
 
                 async def _write_companions(
                     primary_result: Any, write_type: str,
@@ -2548,12 +2994,18 @@ async def run_ingest_tabular(
                         comp_records = getattr(comp, "records", None) or []
                         if not comp_records:
                             continue
+                        comp_issues = RowIssues()
                         comp_stats = await _write_intervals(
                             conn,
                             workspace_id=input.workspace_id,
                             sheet_type=companion_type,
                             records=comp_records, index=index,
+                            issues=comp_issues,
+                            replaced_scope=replaced_scope,
                         )
+                        warnings.extend(issue_warnings(
+                            comp_issues, label=label, table=companion_type,
+                        ))
                         # The same source rows already reported their unknown
                         # holes under the primary type; counting them again
                         # would double the orphan total.
@@ -2614,14 +3066,21 @@ async def run_ingest_tabular(
                         )
                     records = getattr(result, "records", None) or []
                     warnings.extend(getattr(result, "warnings", None) or [])
+                    label = (
+                        (table[0] if table is not None else None)
+                        or target_sheet or filename
+                    )
 
+                    row_issues = RowIssues()
                     if write_type == "collar":
-                        stats = await _write_collars(
-                            conn,
-                            workspace_id=input.workspace_id,
-                            project_id=input.project_id,
-                            records=records, epsg=epsg,
-                            georef_method=georef_method,
+                        result_map = getattr(result, "column_map", None) or {}
+                        stats = await _placed_collars(
+                            (table[0] if table is not None else None)
+                            or target_sheet or filename,
+                            records,
+                            result_map.get("easting"),
+                            result_map.get("northing"),
+                            issues=row_issues,
                         )
                     else:
                         # Rebuilt per type so collars written moments ago in
@@ -2632,15 +3091,26 @@ async def run_ingest_tabular(
                             workspace_id=input.workspace_id,
                             sheet_type=write_type,
                             records=records, index=index,
+                            issues=row_issues,
+                            replaced_scope=replaced_scope,
                         )
                         if write_type in _COMPANION_TYPES:
                             await _write_companions(
                                 result, write_type, table, target_sheet, index,
                             )
 
+                    # Rows the WRITER refused (a value the table's constraints
+                    # cannot hold) are rejected rows too: fold them into the
+                    # parse result so the rows_rejected summary below counts
+                    # them, and say what was skipped / blanked in their own
+                    # words (ING-1).
+                    _fold_writer_skips(result, row_issues)
+                    warnings.extend(issue_warnings(
+                        row_issues, label=label, table=write_type,
+                    ))
+
                     rejected_note = _rows_rejected_warning(
-                        label=(table[0] if table is not None else None)
-                        or target_sheet or filename,
+                        label=label,
                         write_type=write_type,
                         result=result,
                         written=stats.get("written", 0),
@@ -2656,6 +3126,35 @@ async def run_ingest_tabular(
                         prior[k] = prior.get(k, 0) + v
                     return result, stats
 
+                async def _parse_and_write_atomically(
+                    write_type: str, target_sheet: str | None,
+                ) -> tuple[Any, dict[str, int]]:
+                    """``_parse_and_write`` as ONE transaction per sheet (ING-1).
+
+                    The writers each commit on their own, so a sheet whose
+                    lithology landed and whose companion alteration write then
+                    failed used to leave half of itself behind; and batches of
+                    500 committed one by one before that. Here the whole sheet
+                    - primary table, companions, assays - commits together or
+                    not at all (the writers' own transactions become
+                    savepoints), and the run's accumulators are put back the
+                    way they were so the headline does not count rows that
+                    rolled back.
+                    """
+                    written_before = copy.deepcopy(written)
+                    sheets_before = len(sheets)
+                    scope_before = set(replaced_scope)
+                    try:
+                        async with conn.transaction():
+                            return await _parse_and_write(write_type, target_sheet)
+                    except BaseException:
+                        written.clear()
+                        written.update(written_before)
+                        del sheets[sheets_before:]
+                        replaced_scope.clear()
+                        replaced_scope.update(scope_before)
+                        raise
+
                 for sheet_type, sheet_name in work:
                     # Where this attempt's parser warnings begin and end in
                     # the run's list. Both retry outcomes need the span:
@@ -2667,35 +3166,38 @@ async def run_ingest_tabular(
                     forced_warn_start = len(warnings)
                     is_table_source = suffix in TABLE_SOURCE_EXTENSIONS
                     try:
-                        result, stats = await _parse_and_write(
+                        result, stats = await _parse_and_write_atomically(
                             sheet_type, sheet_name,
                         )
+                    except _INFRASTRUCTURE_ERRORS:
+                        # The database or the worker, not this sheet: fail
+                        # the run so Hatchet retries it whole.
+                        raise
                     except Exception as exc:
-                        if not is_table_source:
-                            raise
-                        # Additive, like the trace and geochemistry writes:
-                        # the attribute copy is written below and holds every
-                        # row, so a typed failure on ONE table must not turn
-                        # the file into a failed run or lose the others.
-                        display = table_sources[sheet_name or ""][0]
+                        # One sheet's failure costs that sheet only (ING-1).
+                        # It rolled back whole, the sheets before it are
+                        # committed, and the ones after it still run - a
+                        # workbook used to lose every survey / lithology /
+                        # assay sheet to one bad collar. A dBASE/Access table
+                        # keeps its attribute copy (written below); a CSV or
+                        # worksheet joins the text fallback so it stays
+                        # searchable.
+                        display = (
+                            table_sources[sheet_name or ""][0]
+                            if is_table_source else (sheet_name or filename)
+                        )
                         log.warning(
                             "ingest_tabular: typed %s write failed for %s: %s",
                             sheet_type, display, exc, exc_info=True,
                         )
-                        warnings.append({
-                            "code": "typed_table_write_failed",
-                            "message": (
-                                f"'{display}' looks like {sheet_type} data but "
-                                f"could not be written as {sheet_type} rows"
-                            ),
-                            "detail": (
-                                f"'{display}' classified as {sheet_type} and "
-                                f"writing it as {sheet_type} rows failed: "
-                                f"{str(exc)[:300]}. The table is not lost - "
-                                f"every row is in the attribute table and in "
-                                f"bronze, and re-ingesting will retry."
-                            ),
-                        })
+                        # Its notes described rows that are not in silver.
+                        del warnings[forced_warn_start:]
+                        warnings.append(_sheet_write_failed_warning(
+                            label=display, sheet_type=sheet_type, exc=exc,
+                            table_source=is_table_source,
+                        ))
+                        if not is_table_source and display not in unclassified:
+                            unclassified.append(display)
                         continue
                     forced_warn_end = len(warnings)
                     if is_table_source and stats.get("written"):
@@ -2772,9 +3274,25 @@ async def run_ingest_tabular(
                             headers_matched is not None
                             and headers_matched != sheet_type
                         ):
-                            retry_result, retry_stats = await _parse_and_write(
-                                headers_matched, None,
-                            )
+                            try:
+                                retry_result, retry_stats = (
+                                    await _parse_and_write_atomically(
+                                        headers_matched, None,
+                                    )
+                                )
+                            except _INFRASTRUCTURE_ERRORS:
+                                raise
+                            except Exception as retry_exc:
+                                # The re-read as another type failed to write;
+                                # the original refusal stands and the file
+                                # still reaches the text/table fallback.
+                                log.warning(
+                                    "ingest_tabular: re-read of %s as %s failed: %s",
+                                    filename, headers_matched, retry_exc,
+                                    exc_info=True,
+                                )
+                                retry_result = None
+                                retry_stats = {}
                             if retry_stats.get("written") or retry_stats.get(
                                 "orphaned",
                             ):
@@ -2864,23 +3382,22 @@ async def run_ingest_tabular(
                 # committed and must not be lost to a typed-write failure.
                 trace_shape = _discover_trace_columns(dbase_columns)
                 if trace_shape is not None:
+                    trace_issues = RowIssues()
                     try:
                         collar_rows = _collapse_discover_traces(
                             attribute_rows, trace_shape,
                         )
                         if collar_rows:
-                            written["collar"] = await _write_collars(
-                                conn,
-                                workspace_id=input.workspace_id,
-                                project_id=input.project_id,
-                                records=collar_rows,
-                                epsg=epsg,
-                                # The coordinates came from the export, not
-                                # from a human typing an EPSG — 'declared'
-                                # would overstate it, since the file itself
-                                # names no CRS. 'assumed' matches what the
-                                # tabular path already records elsewhere.
-                                georef_method="assumed" if epsg_assumed else "manual",
+                            # The coordinates came from the export, not
+                            # from a human typing an EPSG — 'declared'
+                            # would overstate it, since the file itself
+                            # names no CRS, so a declared/project CRS is
+                            # recorded as 'manual' (trace_export=True).
+                            written["collar"] = await _placed_collars(
+                                filename, collar_rows,
+                                trace_shape.get("mid_x"), trace_shape.get("mid_y"),
+                                trace_export=True,
+                                issues=trace_issues,
                             )
                             sheets.append({
                                 "sheet": filename,
@@ -2907,16 +3424,19 @@ async def run_ingest_tabular(
                                     sheet_type="survey",
                                     records=stations,
                                     index=survey_index,
+                                    issues=trace_issues,
                                 )
                                 sheets.append({
                                     "sheet": filename,
                                     "type": "survey",
                                     "rows": written["survey"]["written"],
                                 })
-                            if epsg_assumed:
-                                warnings.append(_assumed_crs_warning(
-                                    epsg, written["collar"]["written"],
-                                ))
+                            warnings.extend(issue_warnings(
+                                trace_issues, label=filename, table="collar",
+                            ))
+                            # An assumed CRS is reported once for the run,
+                            # from crs_state, below — this site used to add
+                            # a second copy of the same warning.
                         skipped_holes = len({
                             str(r.get(trace_shape["hole_id"], "") or "").strip()
                             for r in attribute_rows
@@ -2958,22 +3478,47 @@ async def run_ingest_tabular(
                 geochem_shape = _surface_geochem_columns(dbase_columns)
                 if geochem_shape is not None:
                     try:
-                        written["geochemistry"] = await _write_surface_geochem(
+                        # Same per-table CRS rule as collars (GIS-1): a soil
+                        # survey in lon/lat is placed as EPSG:4326, not read
+                        # as UTM metres at the equator.
+                        located = geochem_shape["located"]
+                        geo_decision, _ = await _resolve_table_crs(
                             conn,
-                            workspace_id=input.workspace_id,
                             project_id=input.project_id,
-                            shape=geochem_shape,
-                            rows=attribute_rows,
-                            source_epsg=epsg,
+                            label=filename,
+                            records=attribute_rows,
+                            easting_column=located["easting"],
+                            northing_column=located["northing"],
+                            declared_epsg=input.source_epsg,
+                            project_epsg=project_epsg,
+                            id_key=located["sample_id"],
+                            x_key=located["easting"],
+                            y_key=located["northing"],
                         )
+                        warnings.extend(geo_decision.warnings)
+                        if geo_decision.refusal is not None:
+                            warnings.append(geo_decision.refusal)
+                            written["geochemistry"] = {
+                                "written": 0, "skipped": len(attribute_rows),
+                                "orphaned": 0,
+                            }
+                        else:
+                            written["geochemistry"] = await _write_surface_geochem(
+                                conn,
+                                workspace_id=input.workspace_id,
+                                project_id=input.project_id,
+                                shape=geochem_shape,
+                                rows=attribute_rows,
+                                source_epsg=geo_decision.epsg,
+                            )
                         sheets.append({
                             "sheet": filename,
                             "type": "geochemistry",
                             "rows": written["geochemistry"]["written"],
                         })
-                        if epsg_assumed:
+                        if geo_decision.assumed:
                             warnings.append(_assumed_crs_warning(
-                                epsg, written["geochemistry"]["written"],
+                                geo_decision.epsg, written["geochemistry"]["written"],
                             ))
                     except Exception as exc:
                         log.warning(
@@ -3135,9 +3680,15 @@ async def run_ingest_tabular(
         #
         # Fires only when collars were actually written: an interval-only
         # upload has no coordinates for the assumption to damage.
-        collars_written = written.get("collar", {}).get("written", 0)
-        if epsg_assumed and collars_written:
-            warnings.append(_assumed_crs_warning(epsg, collars_written))
+        #
+        # Counted per table since GIS-1/GIS-2 (2026-09-29): a lon/lat table
+        # is placed as EPSG:4326 and is not "assumed" even when the run
+        # declares nothing, so the count comes from the decisions made, not
+        # from the run-level fallback.
+        if crs_state["assumed_collars"]:
+            warnings.append(_assumed_crs_warning(
+                DEFAULT_SOURCE_EPSG, crs_state["assumed_collars"],
+            ))
 
         orphans = sum(v.get("orphaned", 0) for v in written.values())
         if orphans:

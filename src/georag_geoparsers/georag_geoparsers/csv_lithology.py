@@ -23,6 +23,7 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
+from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._drill_schema import LITHOLOGY_ALIASES, LITHOLOGY_REQUIRED
 from georag_geoparsers._header_match import alias_skeletons, build_column_map, normalize_header
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
@@ -535,6 +536,16 @@ def parse_csv_lithology(
     df_renamed = df.rename(rename_map)
     canonical_cols = [c for c in df_renamed.columns if c in column_map]
     df_trimmed = df_renamed.select(canonical_cols)
+    # "From_ft" / "To_ft" -> metres (GIS-3); the header's unit is honoured.
+    df_trimmed, unit_warning = convert_feet_columns(
+        df_trimmed,
+        columns={"from_depth": "from_depth", "to_depth": "to_depth"},
+        headers=column_map,
+        fields=("from_depth", "to_depth"),
+        parser="csv_lithology",
+    )
+    if unit_warning is not None:
+        global_warnings.append(unit_warning)
     extra_description_rows = (
         df.select(extra_description_cols).to_dicts() if extra_description_cols else []
     )

@@ -124,18 +124,22 @@ async def _count_postgres_rows(
         ) as conn:
             for output_key, qualified_table, workspace_col in _PG_BASELINE_TABLES:
                 try:
-                    if qualified_table == "silver.workspaces":
-                        n = await conn.fetchval(
-                            "SELECT count(*) FROM silver.workspaces "
-                            "WHERE workspace_id = $1::uuid",
-                            workspace_str,
-                        )
-                    else:
-                        n = await conn.fetchval(
-                            f"SELECT count(*) FROM {qualified_table} "
-                            f"WHERE {workspace_col} = $1::uuid",
-                            workspace_str,
-                        )
+                    # A savepoint per table: a missing table must not abort
+                    # the surrounding (GUC-carrying) transaction and turn
+                    # every later count into -1 as well.
+                    async with conn.transaction():
+                        if qualified_table == "silver.workspaces":
+                            n = await conn.fetchval(
+                                "SELECT count(*) FROM silver.workspaces "
+                                "WHERE workspace_id = $1::uuid",
+                                workspace_str,
+                            )
+                        else:
+                            n = await conn.fetchval(
+                                f"SELECT count(*) FROM {qualified_table} "
+                                f"WHERE {workspace_col} = $1::uuid",
+                                workspace_str,
+                            )
                     counts[output_key] = int(n or 0)
                 except Exception as exc:
                     # Table may not exist in the test DB; record as -1

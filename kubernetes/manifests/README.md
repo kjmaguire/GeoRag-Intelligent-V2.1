@@ -31,6 +31,10 @@ shape without secrets in source control. Before deploying, run
 sed -i 's/CHANGEME/<your-base64-pass>/g' kubernetes/manifests/k3s.yaml
 ```
 
+`MARTIN_DB_PASSWORD` is embedded in Martin's `DATABASE_URL`, so it must be
+URL-safe (hex: `openssl rand -hex 32`) — set it separately rather than
+with the blanket `sed` above if your other values are base64.
+
 Or — strongly recommended — use the Helm chart and pass secrets via
 `--set-file`:
 

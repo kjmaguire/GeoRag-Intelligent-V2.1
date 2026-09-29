@@ -25,20 +25,12 @@ log = logging.getLogger("georag.tool_gateway.impls")
 
 
 # ─── R0 read-only ─────────────────────────────────────────────────────
-async def _audit_provenance(inputs: dict[str, Any]) -> dict[str, Any]:
-    """Read silver.* provenance chain for a single row.
-    Inputs: {table_name: str, silver_pk: uuid}
-    """
-    from app.main import app
-    from app.services.review_lineage_lookup import lookup_review_lineage
-    pg_pool = getattr(app.state, "pg_pool", None)
-    table = inputs.get("table_name", "")
-    pk = inputs.get("silver_pk", "")
-    if not (table and pk):
-        return {"error": "table_name + silver_pk required"}
-    lineage = await lookup_review_lineage(pg_pool, table, pk)
-    return {"lineage": lineage}
-
+# audit_provenance (R0) and validate_schema (R1) — REMOVED 2026-09-29
+# (database audit PG-13). audit_provenance called
+# silver.get_review_lineage(), which no migration creates, with the wrong
+# calling convention; validate_schema read column_mappings.vendor_column /
+# canonical_column, which are source_column / canonical_field. Neither was
+# reachable — invoke_tool() has no callers — and both would have failed.
 
 async def _query_postgis_readonly(inputs: dict[str, Any]) -> dict[str, Any]:
     """Whitelisted read-only SQL against silver/gold/public_geo.
@@ -174,47 +166,14 @@ async def _query_public_geo(inputs: dict[str, Any]) -> dict[str, Any]:
     return {"features": [dict(r) for r in rows], "count": len(rows)}
 
 
-# ─── R1 suggestion ────────────────────────────────────────────────────
-async def _validate_schema(inputs: dict[str, Any]) -> dict[str, Any]:
-    """Suggest canonical-column mapping for a vendor column name.
-    Inputs: {vendor_column: str, vendor_profile_hint: str?}
-    """
-    from app.main import app
-    pg_pool = getattr(app.state, "pg_pool", None)
-    col = (inputs.get("vendor_column") or "").strip().lower()
-    if not col:
-        return {"error": "vendor_column required"}
-
-    # Simple fuzzy: look up existing column_mappings rows with matching
-    # vendor_column. Real shape would call the schema mapping agent.
-    async with pg_pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT canonical_column, count(*) AS n
-              FROM column_mappings
-             WHERE lower(vendor_column) = $1
-             GROUP BY canonical_column
-             ORDER BY n DESC LIMIT 5
-            """,
-            col,
-        )
-    suggestions = [
-        {"canonical_column": r["canonical_column"], "confidence": min(0.99, r["n"] / 10.0)}
-        for r in rows
-    ]
-    return {"vendor_column": col, "suggestions": suggestions}
-
-
 # ─── Boot — call once at FastAPI startup ───────────────────────────
 def register_all_impls() -> None:
     """Register every available impl. Idempotent."""
-    register_tool("audit_provenance",       _audit_provenance)
     register_tool("query_postgis_readonly", _query_postgis_readonly)
     register_tool("query_neo4j_readonly",   _query_neo4j_readonly)
     register_tool("retrieve_qdrant",        _retrieve_qdrant)
     register_tool("query_public_geo",       _query_public_geo)
-    register_tool("validate_schema",        _validate_schema)
-    log.info("tool_gateway: registered 6 R0/R1 impls")
+    log.info("tool_gateway: registered 4 R0 impls")
 
 
 __all__ = ["register_all_impls"]

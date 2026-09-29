@@ -168,21 +168,16 @@ class TestQuerySpatialCollars:
         assert collar.status == "Completed"
 
     @pytest.mark.asyncio
-    async def test_spatial_filter_searches_the_source_grid(self) -> None:
-        """A radius search compares against the easting/northing COLUMNS.
+    async def test_spatial_filter_searches_the_ground_not_a_grid(self) -> None:
+        """A radius search measures metres on the ground, against geom_4326.
 
-        This used to assert `"ST_DWithin" in sql`, which pinned the
-        implementation rather than the behaviour — and the implementation was
-        wrong. `geom` is declared geometry(POINT, 32613) and every collar is
-        transformed into that SRID at insert, so `Find_SRID` returns 32613
-        whatever the project's real CRS is, while the caller's easting and
-        northing are in the PROJECT's grid.
-
-        Measured against a live Postgres with RedStar's Sitka collars
-        (EPSG:26904): a 500 m search around their true coordinates returned
-        0 rows via ST_DWithin on `geom`, and all 5 against the columns. The
-        columns hold the untouched source values, so both sides of the
-        comparison are in one grid and no SRID is involved.
+        History: ST_DWithin on `geom` (declared 32613) missed every Sitka
+        collar (EPSG:26904), so the search moved to the easting/northing
+        COLUMNS. That was wrong too (GIS-6, 2026-09-29): the columns hold
+        whatever each source gave — UTM metres, lon/lat degrees, ftUS — so a
+        metre radius was compared with degrees (every hole matched) or with
+        another zone's numbers. The centre is now transformed from the
+        project's CRS to 4326 and ST_DWithin runs on geography.
         """
         captured_sql: list[str] = []
         captured_args: list[tuple[object, ...]] = []
@@ -214,21 +209,20 @@ class TestQuerySpatialCollars:
         assert captured_sql, "fetch was never called"
         sql = captured_sql[0]
 
-        # A radius filter is applied, over the source-grid columns.
-        assert "easting -" in sql and "northing -" in sql
-        assert "ST_DWithin" not in sql, (
-            "ST_DWithin on `geom` searches SRID 32613, not the project's grid"
-        )
+        # Metres on the ground, against the one column that is always 4326.
+        assert "ST_DWithin(geom_4326::geography" in sql
+        assert "easting -" not in sql, "the columns are not one grid (GIS-6)"
+        assert "ST_DWithin(geom," not in sql
+        # The centre is read in the PROJECT's CRS (else the 32613 default).
+        assert "crs_epsg" in sql and "32613" in sql
         assert "Find_SRID" not in sql, (
             "Find_SRID reads the COLUMN's declared SRID (32613), which is not "
             "the CRS the caller's easting/northing are expressed in"
         )
-        # The radius must be cast: `$n * $n` on two untyped parameters is
-        # `unknown * unknown`, which Postgres rejects outright.
         assert "::double precision" in sql
 
-        # The caller's own numbers reach the query unmodified — no reprojection
-        # is applied to them, because none is needed.
+        # The caller's own numbers reach the query unmodified — PostGIS does
+        # the reprojection.
         assert 512000.0 in captured_args[0]
         assert 6120000.0 in captured_args[0]
         assert 500.0 in captured_args[0]

@@ -1,58 +1,34 @@
-"""Visualizations router (§5 — drillhole strip log, cross-section, stereonet).
+"""Visualizations router (§17.3 chart cards).
 
 Endpoints
 ---------
-GET /v1/viz/strip_log?collar_id=<uuid>&format=<json|png>
-    Returns either an interactive Plotly figure dict (JSON) or a static
-    PNG render of the strip log for one drillhole.
+GET  /v1/viz/chart-kinds — the supported §17.3 chart kinds.
+POST /v1/viz/chart       — render one §17.3 chart (Plotly figure spec).
 
-GET /v1/viz/cross_section?project_id=<uuid>&section_line_id=<uuid>&format=<json|png>
-    Returns a vertical cross-section panel pre-projected onto the
-    requested section line.
-
-GET /v1/viz/stereonet?project_id=<uuid>&format=<json|png>
-    Returns a stereonet projection of structural measurements (foliations,
-    bedding, faults, joints).
-
-doc-phase 186 — Phase H4 §5 strip-log API wire-up.
+The §5 per-drillhole endpoints (GET /v1/viz/strip_log, /cross_section,
+/stereonet) were unmounted on 2026-09-29 (database audit PG-13) — see the
+note below the router definition.
 
 Auth
 ----
-Same pattern as ``evidence.py``: service-key + workspace-id JWT context.
-Workspace scope is enforced via RLS GUC at the asyncpg connection level —
-queries for collars / sections / structures outside the caller's workspace
-return empty result sets, which the renderer turns into a graceful
-"no data" figure.
-
-Performance target: ≤500 ms p95 (renderer is pure-function; only one
-PG round-trip per request).
+Service-key + workspace-id context. Workspace scope is enforced via the
+RLS GUC at the asyncpg connection level — queries outside the caller's
+workspace return empty result sets, which the renderer turns into a
+graceful "no data" figure.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID, WorkspaceContext
 from app.agent.workspace_dependency import OptionalWorkspace
 from app.db.scoped_pool import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.auth import verify_service_key
-from app.services.visualizations import (
-    CrossSectionPanel,
-    StereonetPoint,
-    StripLogInterval,
-    render_cross_section_matplotlib_png,
-    render_cross_section_plotly_figure,
-    render_stereonet_matplotlib_png,
-    render_stereonet_plotly_figure,
-    render_strip_log_matplotlib_png,
-    render_strip_log_plotly_figure,
-)
-from app.services.workspace_resolution import resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -65,464 +41,19 @@ router = APIRouter(
 
 
 # ----------------------------------------------------------------------------
-# §17.4 chart-export contract envelope
+# Removed 2026-09-29: GET /strip_log, /cross_section, /stereonet
 # ----------------------------------------------------------------------------
 #
-# Each chart-producing endpoint can opt into the §17.4 export-contract envelope
-# via the `with_export_metadata=true` query param. The envelope shape is fixed
-# per docs/chart_export_contract_spec.md:
-#
-#   {
-#     "chart": {"type": ..., "format": ..., "content": ...},
-#     "export_metadata": {
-#       "source_data": {"gold_tables": [...], "row_count": N, "row_ids": [...]},
-#       "method": "...",
-#       "filters": {...},
-#       "crs": "EPSG:4326",
-#       "citations": [...],
-#       "confidence_warnings": [...]
-#     }
-#   }
-#
-# Default (without the param) returns the raw figure dict, preserving back-compat
-# with the existing /v1/viz/strip_log + /cross_section + /stereonet callers.
-
-
-def _build_export_envelope(
-    *,
-    chart_type: str,
-    figure: dict[str, Any],
-    gold_tables: list[str],
-    row_ids: list[str],
-    method: str,
-    filters: dict[str, Any],
-    crs: str = "EPSG:4326",
-    citations: list[dict[str, Any]] | None = None,
-    confidence_warnings: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Wrap a Plotly figure in the §17.4 chart-export contract envelope.
-
-    Citations + confidence_warnings default to empty lists until the
-    provenance / QA propagation lands in §10p-i / §5.10 follow-ups. The
-    contract requires the keys be present, not populated.
-    """
-    return {
-        "chart": {
-            "type":    chart_type,
-            "format":  "plotly_json",
-            "content": figure,
-        },
-        "export_metadata": {
-            "source_data": {
-                "gold_tables":      gold_tables,
-                "row_count":        len(row_ids),
-                "row_ids":          row_ids,
-                "external_sources": [],
-            },
-            "method":              method,
-            "filters":             filters,
-            "crs":                 crs,
-            "citations":           citations or [],
-            "confidence_warnings": confidence_warnings or [],
-        },
-    }
-
-
-# ----------------------------------------------------------------------------
-# Strip log
-# ----------------------------------------------------------------------------
-
-
-async def _fetch_strip_log_intervals(
-    *,
-    pg_pool,
-    workspace_id: str,
-    collar_id: UUID,
-) -> list[StripLogInterval]:
-    """Pull pre-joined rows from gold.drillhole_intervals_visual.
-
-    Returns the rows ordered by from_depth_m ascending so the renderer
-    doesn't need to re-sort. Workspace scope is enforced via the
-    `app.workspace_id` GUC that the orchestrator sets on every
-    connection — RLS denies cross-tenant access by default.
-    """
-    async with scoped_connection(
-        pg_pool, workspace_id=workspace_id, site="viz._fetch_strip_log_intervals"
-    ) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT
-                interval_id::text             AS interval_id,
-                collar_id::text               AS collar_id,
-                hole_id,
-                from_depth_m::float           AS from_depth_m,
-                to_depth_m::float             AS to_depth_m,
-                lithology_code,
-                lithology_label,
-                display_label,
-                display_color,
-                assay_element_max,
-                assay_value_max::float        AS assay_value_max,
-                assay_unit_max,
-                is_mineralised
-            FROM gold.drillhole_intervals_visual
-            WHERE collar_id = $1::uuid
-            ORDER BY from_depth_m
-            """,
-            str(collar_id),
-        )
-
-    return [
-        StripLogInterval(
-            interval_id=r["interval_id"],
-            collar_id=r["collar_id"],
-            hole_id=r["hole_id"],
-            from_depth_m=r["from_depth_m"],
-            to_depth_m=r["to_depth_m"],
-            lithology_code=r["lithology_code"],
-            lithology_label=r["lithology_label"],
-            display_label=r["display_label"],
-            display_color=r["display_color"],
-            assay_element_max=r["assay_element_max"],
-            assay_value_max=r["assay_value_max"],
-            assay_unit_max=r["assay_unit_max"],
-            is_mineralised=bool(r["is_mineralised"]),
-        )
-        for r in rows
-    ]
-
-
-@router.get(
-    "/strip_log",
-    summary="Strip log for one drillhole (Plotly JSON or PNG)",
-)
-async def get_strip_log(
-    collar_id: UUID = Query(..., description="silver.collars.collar_id"),
-    fmt: Literal["json", "png"] = Query(
-        "json",
-        alias="format",
-        description="json = Plotly figure dict; png = static raster",
-    ),
-    title: str | None = Query(
-        None,
-        description="Optional custom title; defaults to 'Strip log — <hole_id>'",
-    ),
-    with_export_metadata: bool = Query(
-        False,
-        description="Wrap the JSON response in the §17.4 chart-export contract envelope.",
-    ),
-    workspace_id: str = Depends(resolve_workspace_id),
-):
-    """Render a strip log for one drillhole."""
-    # Late-imported here so the router module loads cleanly even if the
-    # app.state pool isn't yet bound (e.g., during tests that don't
-    # spin up the full lifespan).
-    from app.main import app as _app  # noqa: PLC0415
-
-    pg_pool = getattr(_app.state, "pg_pool", None)
-    if pg_pool is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pg_pool not bound on app.state",
-        )
-
-    try:
-        intervals = await _fetch_strip_log_intervals(
-            pg_pool=pg_pool,
-            workspace_id=workspace_id,
-            collar_id=collar_id,
-        )
-    except Exception:
-        logger.exception(
-            "strip_log_fetch_failed: collar_id=%s workspace_id=%s",
-            collar_id, workspace_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="strip_log_fetch_failed",
-        )
-
-    if fmt == "json":
-        figure = render_strip_log_plotly_figure(intervals, title=title)
-        if with_export_metadata:
-            envelope = _build_export_envelope(
-                chart_type="strip_log",
-                figure=figure,
-                gold_tables=["gold.drillhole_intervals_visual"],
-                row_ids=[i.interval_id for i in intervals],
-                method="depth-ordered intervals from gold.drillhole_intervals_visual",
-                filters={"collar_id": str(collar_id)},
-            )
-            return JSONResponse(content=envelope)
-        return JSONResponse(content=figure)
-
-    # fmt == "png"
-    png_bytes = render_strip_log_matplotlib_png(intervals, title=title)
-    return Response(
-        content=png_bytes,
-        media_type="image/png",
-        headers={
-            "Cache-Control": "private, max-age=60",
-        },
-    )
-
-
-# ----------------------------------------------------------------------------
-# Cross-section (stub — full implementation lands with the cross-section
-# renderer module)
-# ----------------------------------------------------------------------------
-
-
-async def _fetch_cross_section_panels(
-    *,
-    pg_pool,
-    workspace_id: str,
-    section_line_id: UUID,
-) -> list[CrossSectionPanel]:
-    """Pull pre-projected panels from gold.cross_section_panels."""
-    async with scoped_connection(
-        pg_pool, workspace_id=workspace_id, site="viz._fetch_cross_section_panels"
-    ) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT
-                panel_id::text            AS panel_id,
-                section_line_id::text     AS section_line_id,
-                interval_id::text         AS interval_id,
-                collar_id::text           AS collar_id,
-                hole_id,
-                distance_along_m::float   AS distance_along_m,
-                top_elevation_m::float    AS top_elevation_m,
-                bottom_elevation_m::float AS bottom_elevation_m,
-                panel_width_m::float      AS panel_width_m,
-                lithology_code,
-                display_label,
-                display_color,
-                is_mineralised,
-                perpendicular_offset_m::float AS perpendicular_offset_m
-              FROM gold.cross_section_panels
-             WHERE section_line_id = $1::uuid
-             ORDER BY distance_along_m, top_elevation_m DESC
-            """,
-            str(section_line_id),
-        )
-    return [
-        CrossSectionPanel(
-            panel_id=r["panel_id"],
-            section_line_id=r["section_line_id"],
-            interval_id=r["interval_id"],
-            collar_id=r["collar_id"],
-            hole_id=r["hole_id"],
-            distance_along_m=r["distance_along_m"],
-            top_elevation_m=r["top_elevation_m"],
-            bottom_elevation_m=r["bottom_elevation_m"],
-            panel_width_m=r["panel_width_m"],
-            lithology_code=r["lithology_code"],
-            display_label=r["display_label"],
-            display_color=r["display_color"],
-            is_mineralised=bool(r["is_mineralised"]),
-            perpendicular_offset_m=r["perpendicular_offset_m"] or 0.0,
-        )
-        for r in rows
-    ]
-
-
-@router.get(
-    "/cross_section",
-    summary="Vertical cross-section panel (Plotly JSON or PNG)",
-)
-async def get_cross_section(
-    section_line_id: UUID = Query(..., description="silver.section_lines FK"),
-    fmt: Literal["json", "png"] = Query("json", alias="format"),
-    title: str | None = Query(None),
-    with_export_metadata: bool = Query(
-        False,
-        description="Wrap the JSON response in the §17.4 chart-export contract envelope.",
-    ),
-    workspace_id: str = Depends(resolve_workspace_id),
-):
-    """Render a cross-section from pre-projected panels."""
-    from app.main import app as _app  # noqa: PLC0415
-
-    pg_pool = getattr(_app.state, "pg_pool", None)
-    if pg_pool is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pg_pool not bound on app.state",
-        )
-
-    try:
-        panels = await _fetch_cross_section_panels(
-            pg_pool=pg_pool,
-            workspace_id=workspace_id,
-            section_line_id=section_line_id,
-        )
-    except Exception:
-        logger.exception(
-            "cross_section_fetch_failed: section_line_id=%s",
-            section_line_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="cross_section_fetch_failed",
-        )
-
-    if fmt == "json":
-        figure = render_cross_section_plotly_figure(panels, title=title)
-        if with_export_metadata:
-            envelope = _build_export_envelope(
-                chart_type="cross_section",
-                figure=figure,
-                gold_tables=["gold.cross_section_panels", "gold.drillhole_intervals_visual"],
-                row_ids=[p.panel_id for p in panels],
-                method="orthogonal projection of collars + drill_traces onto A→B section line; intervals joined from gold.drillhole_intervals_visual",
-                filters={"section_line_id": str(section_line_id)},
-            )
-            return JSONResponse(content=envelope)
-        return JSONResponse(content=figure)
-    png_bytes = render_cross_section_matplotlib_png(panels, title=title)
-    return Response(content=png_bytes, media_type="image/png",
-                    headers={"Cache-Control": "private, max-age=60"})
-
-
-# ----------------------------------------------------------------------------
-# Stereonet
-# ----------------------------------------------------------------------------
-
-
-async def _fetch_stereonet_points(
-    *,
-    pg_pool,
-    workspace_id: str,
-    project_id: UUID,
-    measurement_kind: str | None = None,
-) -> list[StereonetPoint]:
-    """Pull pre-aggregated structural measurements from
-    gold.structure_measurements_visual."""
-    async with scoped_connection(
-        pg_pool, workspace_id=workspace_id, site="viz._fetch_stereonet_points"
-    ) as conn:
-        if measurement_kind:
-            rows = await conn.fetch(
-                """
-                SELECT
-                    measurement_id::text       AS measurement_id,
-                    measurement_kind,
-                    pole_trend_deg::float      AS pole_trend_deg,
-                    pole_plunge_deg::float     AS pole_plunge_deg,
-                    strike_deg::float          AS strike_deg,
-                    dip_deg::float             AS dip_deg,
-                    depth_m::float             AS depth_m,
-                    confidence,
-                    display_color,
-                    display_symbol
-                  FROM gold.structure_measurements_visual
-                 WHERE project_id = $1::uuid
-                   AND measurement_kind = $2
-                """,
-                str(project_id), measurement_kind,
-            )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT
-                    measurement_id::text       AS measurement_id,
-                    measurement_kind,
-                    pole_trend_deg::float      AS pole_trend_deg,
-                    pole_plunge_deg::float     AS pole_plunge_deg,
-                    strike_deg::float          AS strike_deg,
-                    dip_deg::float             AS dip_deg,
-                    depth_m::float             AS depth_m,
-                    confidence,
-                    display_color,
-                    display_symbol
-                  FROM gold.structure_measurements_visual
-                 WHERE project_id = $1::uuid
-                """,
-                str(project_id),
-            )
-    return [
-        StereonetPoint(
-            measurement_id=r["measurement_id"],
-            measurement_kind=r["measurement_kind"],
-            pole_trend_deg=r["pole_trend_deg"],
-            pole_plunge_deg=r["pole_plunge_deg"],
-            strike_deg=r["strike_deg"],
-            dip_deg=r["dip_deg"],
-            depth_m=r["depth_m"],
-            confidence=r["confidence"],
-            display_color=r["display_color"],
-            display_symbol=r["display_symbol"],
-        )
-        for r in rows
-    ]
-
-
-@router.get(
-    "/stereonet",
-    summary="Stereonet projection of structural measurements",
-)
-async def get_stereonet(
-    project_id: UUID = Query(...),
-    measurement_kind: str | None = Query(
-        None,
-        description="Filter to one of bedding/foliation/joint/fault/vein/other",
-    ),
-    fmt: Literal["json", "png"] = Query("png", alias="format"),
-    title: str | None = Query(None),
-    with_export_metadata: bool = Query(
-        False,
-        description="Wrap the JSON response in the §17.4 chart-export contract envelope.",
-    ),
-    workspace_id: str = Depends(resolve_workspace_id),
-):
-    """Render an equal-area lower-hemisphere stereonet for one project."""
-    from app.main import app as _app  # noqa: PLC0415
-
-    pg_pool = getattr(_app.state, "pg_pool", None)
-    if pg_pool is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pg_pool not bound on app.state",
-        )
-
-    try:
-        points = await _fetch_stereonet_points(
-            pg_pool=pg_pool,
-            workspace_id=workspace_id,
-            project_id=project_id,
-            measurement_kind=measurement_kind,
-        )
-    except Exception:
-        logger.exception(
-            "stereonet_fetch_failed: project_id=%s kind=%s",
-            project_id, measurement_kind,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="stereonet_fetch_failed",
-        )
-
-    if fmt == "json":
-        figure = render_stereonet_plotly_figure(points, title=title)
-        if with_export_metadata:
-            filters: dict[str, Any] = {"project_id": str(project_id)}
-            if measurement_kind:
-                filters["measurement_kind"] = measurement_kind
-            envelope = _build_export_envelope(
-                chart_type="stereonet",
-                figure=figure,
-                gold_tables=["gold.structure_measurements_visual"],
-                row_ids=[p.measurement_id for p in points],
-                method="equal-area lower-hemisphere projection; pole-to-plane for planar measurements",
-                filters=filters,
-            )
-            return JSONResponse(content=envelope)
-        return JSONResponse(content=figure)
-    png_bytes = render_stereonet_matplotlib_png(points, title=title)
-    return Response(content=png_bytes, media_type="image/png",
-                    headers={"Cache-Control": "private, max-age=60"})
-
+# Database audit PG-13. All three read gold columns that do not exist
+# (strip_log: interval_id / from_depth_m / display_color, where
+# gold.drillhole_intervals_visual has visual_id / depth_from / color_hint;
+# cross_section: section_line_id and more; stereonet: measurement_id and
+# more), so every call was a 500. Nothing in Laravel or the React app
+# called them — the Workspace, DrillholeDetail and chat cards read those gold
+# tables through Laravel directly — and the only other reference was the
+# tests/load_k6/viz_strip_log.k6.js load script. Unmounted rather than
+# repaired; the renderers in app/services/visualizations/ are untouched and
+# git history has the handlers if a caller ever needs them back.
 
 # ============================================================================
 # §17.3 — 8 additional chart types (long-section, Harker, spider, REE,
@@ -543,22 +74,46 @@ async def _fetch_long_section_collars(
     *, pg_pool, workspace_id: str, project_id: UUID,
     reference_azimuth_deg: float | None = None,
 ) -> dict[str, Any]:
-    """Pull silver.collars for one project shaped for long_section_figure."""
+    """Pull silver.collars for one project shaped for long_section_figure.
+
+    GIS-6 / GIS-7 (2026-09-29): easting/northing are computed from geom_4326
+    in ONE metric frame — the UTM zone of the project's collar centroid —
+    not read from the easting/northing columns, which hold whatever each
+    source gave (UTM metres of any zone, lon/lat degrees, US survey feet)
+    and so cannot be plotted against each other. azimuth/dip are passed
+    through as NULL when unrecorded; the figure labels those holes instead
+    of inventing a vertical one.
+    """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_long_section_collars"
     ) as conn:
         rows = await conn.fetch(
             """
-            SELECT hole_id,
-                   easting, northing, COALESCE(elevation, 0) AS elevation,
-                   total_depth,
-                   COALESCE(azimuth, 0) AS azimuth,
-                   COALESCE(dip, -90) AS inclination
-              FROM silver.collars
-             WHERE project_id = $1::uuid
-               AND total_depth > 0
-             ORDER BY hole_id
-             LIMIT 100
+            WITH c AS (
+                SELECT hole_id, geom_4326, elevation, total_depth, azimuth, dip
+                  FROM silver.collars
+                 WHERE project_id = $1::uuid
+                   AND total_depth > 0
+                   AND geom_4326 IS NOT NULL
+                 ORDER BY hole_id
+                 LIMIT 100
+            ), frame AS (
+                SELECT CASE WHEN ST_Y(ST_Centroid(ST_Collect(geom_4326))) >= 0
+                            THEN 32600 ELSE 32700 END
+                       + LEAST(60, GREATEST(1,
+                           floor((ST_X(ST_Centroid(ST_Collect(geom_4326))) + 180.0) / 6.0)::int + 1
+                         )) AS srid
+                  FROM c
+            )
+            SELECT c.hole_id,
+                   ST_X(ST_Transform(c.geom_4326, frame.srid)) AS easting,
+                   ST_Y(ST_Transform(c.geom_4326, frame.srid)) AS northing,
+                   COALESCE(c.elevation, 0) AS elevation,
+                   c.total_depth,
+                   c.azimuth,
+                   c.dip AS inclination
+              FROM c CROSS JOIN frame
+             ORDER BY c.hole_id
             """,
             project_id,
         )

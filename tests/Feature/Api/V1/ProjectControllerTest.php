@@ -7,6 +7,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -227,6 +228,43 @@ class ProjectControllerTest extends TestCase
             ->assertJsonValidationErrors(['orientation_reference']);
     }
 
+    /**
+     * Database audit 2026-09-29 PG-14: the column is NOT NULL, the rule was
+     * nullable, so omitting it was a 500 on INSERT. It now defaults to BOH.
+     */
+    public function test_store_defaults_orientation_reference_to_boh_when_omitted(): void
+    {
+        $this->actingAsAdmin();
+
+        $this->postJson('/api/v1/projects', ['project_name' => 'No Orientation Given'])
+            ->assertCreated()
+            ->assertJsonPath('data.orientation_reference', 'BOH');
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Null Orientation Given',
+            'orientation_reference' => null,
+        ])->assertCreated()->assertJsonPath('data.orientation_reference', 'BOH');
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Top Of Hole',
+            'orientation_reference' => 'TOH',
+        ])->assertCreated()->assertJsonPath('data.orientation_reference', 'TOH');
+    }
+
+    public function test_update_rejects_null_orientation_reference_instead_of_500(): void
+    {
+        $project = Project::factory()->create(['orientation_reference' => 'TOH']);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['orientation_reference' => null])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['orientation_reference']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['project_name' => 'Kept Orientation'])
+            ->assertOk()
+            ->assertJsonPath('data.orientation_reference', 'TOH');
+    }
+
     // -------------------------------------------------------------------------
     // show
     // -------------------------------------------------------------------------
@@ -295,6 +333,71 @@ class ProjectControllerTest extends TestCase
 
         $response->assertNoContent();
         $this->assertDatabaseMissing('projects', ['project_id' => $project->project_id]);
+    }
+
+    // -------------------------------------------------------------------------
+    // SEC-5 — only the owner or an admin may edit or delete a whole project
+    // -------------------------------------------------------------------------
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function nonOwnerRoles(): array
+    {
+        return ['member' => ['member'], 'viewer' => ['viewer']];
+    }
+
+    #[DataProvider('nonOwnerRoles')]
+    public function test_a_non_owner_member_cannot_delete_the_project(string $role): void
+    {
+        $project = Project::factory()->create();
+        $this->user->projects()->attach($project->project_id, ['role' => $role]);
+
+        $this->deleteJson("/api/v1/projects/{$project->project_id}")
+            ->assertForbidden();
+
+        $this->assertDatabaseHas('projects', ['project_id' => $project->project_id]);
+    }
+
+    #[DataProvider('nonOwnerRoles')]
+    public function test_a_non_owner_member_cannot_edit_the_project(string $role): void
+    {
+        $project = Project::factory()->create(['project_name' => 'Original Name']);
+        $this->user->projects()->attach($project->project_id, ['role' => $role]);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", [
+            'project_name' => 'Hijacked',
+        ])->assertForbidden();
+
+        $this->assertDatabaseHas('projects', [
+            'project_id' => $project->project_id,
+            'project_name' => 'Original Name',
+        ]);
+    }
+
+    public function test_an_admin_member_can_delete_a_project_they_do_not_own(): void
+    {
+        $this->user->forceFill(['is_admin' => true])->save();
+        $project = Project::factory()->create();
+        $this->user->projects()->attach($project->project_id, ['role' => 'member']);
+
+        $this->deleteJson("/api/v1/projects/{$project->project_id}")
+            ->assertNoContent();
+
+        $this->assertDatabaseMissing('projects', ['project_id' => $project->project_id]);
+    }
+
+    public function test_an_admin_who_is_not_a_member_still_gets_404(): void
+    {
+        // Admin widens what a MEMBER may do; it does not turn the existence
+        // oracle defence into a 403 that confirms the project exists.
+        $this->user->forceFill(['is_admin' => true])->save();
+        $project = Project::factory()->create();
+
+        $this->deleteJson("/api/v1/projects/{$project->project_id}")
+            ->assertNotFound();
+
+        $this->assertDatabaseHas('projects', ['project_id' => $project->project_id]);
     }
 
     public function test_destroy_returns_404_for_nonexistent_project(): void

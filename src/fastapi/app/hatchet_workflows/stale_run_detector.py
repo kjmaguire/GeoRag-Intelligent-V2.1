@@ -46,6 +46,7 @@ from datetime import UTC, datetime
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db import fetch_per_workspace, scoped_connection
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
 from app.services.laravel_bridge import post_ingestion_progress
@@ -262,8 +263,10 @@ async def _workflow_run_is_alive(workflow_run_id: str | None) -> bool:
     queued row has no heartbeat at all. A bulk upload — fifty files in three
     minutes against a worker with a fixed slot count and per-workspace
     concurrency caps — leaves runs waiting in that queue well past the
-    15-minute sweep window while their ``schedule_timeout`` (30 minutes to
-    2 hours) says that wait is legitimate. The sweep used to read those rows
+    15-minute sweep window while their ``schedule_timeout`` (2 hours on
+    every ingest task since HAT-3, 2026-09-29; before that five of the six
+    ingest workflows ran on Hatchet's 5-minute default) says that wait is
+    legitimate. The sweep used to read those rows
     as dead: ``timed_out`` / ``stale_heartbeat`` at step 0 of 5, no retry
     (``queued`` is outside RETRY_STAGES), and when the worker finally ran the
     workflow every terminal write no-op'd against the closed row, so a
@@ -289,9 +292,20 @@ _EMBEDDABLE_OCR_PREDICATE = (
 
 
 async def _project_is_fully_embedded(
-    pool, project_id: str | None, report_id: str | None = None,
+    pool,
+    project_id: str | None,
+    report_id: str | None = None,
+    *,
+    workspace_id: str | None,
 ) -> bool:
     """True when every embeddable passage in scope has an embedding_id.
+
+    HAT-1 (2026-09-29): runs with the row's workspace bound.
+    silver.document_passages is fail-CLOSED, so under the worker's AWS role
+    (georag_app, NOBYPASSRLS) an unscoped read saw no passages at all, the
+    "any unembedded?" EXISTS came back false, and this returned True. That
+    marked a run ``completed`` whose embeddings had not landed. A row with
+    no workspace cannot be checked, so it is not "fully embedded" either.
 
     F2 (2026-08-11): when the run row carries a report_id, scope the test
     to that run's OWN document — embeds serialize per workspace, so a
@@ -305,8 +319,13 @@ async def _project_is_fully_embedded(
     """
     if not project_id and not report_id:
         return False
+    if not workspace_id:
+        return False
     try:
-        async with pool.acquire() as conn:
+        async with scoped_connection(
+            pool, workspace_id=workspace_id,
+            site="stale_run_detector.fully_embedded",
+        ) as conn:
             if report_id:
                 row = await conn.fetchrow(
                     f"""
@@ -508,6 +527,11 @@ async def _dispatch_recovery_run(
             correlation_token=f"stale-sweep-{uuid4()}",
         )
         ref = await workflow.aio_run_no_wait(payload)
+        # Lets the next sweep ask the engine whether this recovery is alive
+        # instead of reading a queued recovery as another carcass.
+        await ingest_progress.stamp_workflow_run_id(
+            run_id=recovery_run_id, workflow_run_id=ref.workflow_run_id,
+        )
         log.info(
             "stale_run_detector: dispatched recovery %s "
             "parent=%s recovery=%s workflow_run_id=%s key=%s",
@@ -573,8 +597,12 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                       ELSE interval '{int(stale_minutes)} minutes'
                  END
     """
+    # HAT-1 (2026-09-29): one pass per workspace, scope bound. See
+    # app/db/workspace_sweep.py.
     async with pool.acquire() as conn:
-        rows = await conn.fetch(select_sql)
+        rows = await fetch_per_workspace(
+            conn, select_sql, site="stale_run_detector.select",
+        )
 
     log.info("stale_run_detector: %d candidate run(s) older than %dm", len(rows), stale_minutes)
 
@@ -584,12 +612,14 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
     try:
         async with pool.acquire() as gauge_conn:
             # F5 — count queued rows too; they're now part of the sweep.
-            active_row = await gauge_conn.fetchrow(
+            active_rows = await fetch_per_workspace(
+                gauge_conn,
                 "SELECT count(*)::int AS n FROM silver.ingest_progress "
-                "WHERE status IN ('queued','started')"
+                "WHERE status IN ('queued','started')",
+                site="stale_run_detector.gauge",
             )
         from app.metrics import INGESTION_STALE_RUNS_DETECTED
-        INGESTION_STALE_RUNS_DETECTED.set(int(active_row["n"]) if active_row else 0)
+        INGESTION_STALE_RUNS_DETECTED.set(sum(int(r["n"]) for r in active_rows))
     except Exception:
         pass
 
@@ -615,6 +645,7 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
         if current_step in {"embed_verify", "embedding"} and \
                 await _project_is_fully_embedded(
                     pool, row["project_id"], report_id=row["report_id"],
+                    workspace_id=row["workspace_id"],
                 ):
             transitioned = await ingest_progress.mark_completed_by_run(run_id=run_id)
             if transitioned:

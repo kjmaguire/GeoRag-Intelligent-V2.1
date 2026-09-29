@@ -239,18 +239,32 @@ class TestValidateNodeWiresIt:
             redis_client: object | None = None
             project_id: str = "test-project"
 
+        # Every marker in SECTION needs a Citation behind it. Until
+        # 2026-09-29 only [NI43-1] had one; Layer 2 stripped the other three
+        # markers and kept their claims, so this passed. An invented marker
+        # now takes its claim with it (RAG-7), which would delete the
+        # conflict lines this test is about.
         response = GeoRAGResponse(
             text=SECTION,
             citations=[
                 Citation(
-                    citation_id="[NI43-1]",
-                    citation_type="NI43",
-                    source_chunk_id="chunk-1",
+                    citation_id=cid,
+                    citation_type=ctype,
+                    source_chunk_id=f"chunk-{n}",
                     document_title="Technical report",
                     relevance_score=0.9,
-                ),
+                )
+                for n, (cid, ctype) in enumerate(
+                    [
+                        ("[NI43-1]", "NI43"),
+                        ("[NI43-2]", "NI43"),
+                        ("[NI43-3]", "NI43"),
+                        ("[PGEO-4]", "PGEO"),
+                    ],
+                    start=1,
+                )
             ],
-            sources_used=["chunk-1"],
+            sources_used=["chunk-1", "chunk-2", "chunk-3", "chunk-4"],
             confidence=0.8,
         )
 

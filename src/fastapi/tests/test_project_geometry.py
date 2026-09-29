@@ -104,9 +104,10 @@ async def test_falls_back_to_envelope_when_bbox_column_missing():
 
 @pytest.mark.asyncio
 async def test_falls_back_to_envelope_when_bbox_column_undefined():
-    """A real production gotcha — silver.projects may not have a bbox
-    column on every deployment. The supplier catches the exception
-    and tries the envelope path."""
+    """A failed boundary lookup falls through to the envelope path. On a
+    real connection that only works because the first query runs in its
+    own savepoint — tests/test_spatial_plans_prepare_integration.py
+    checks that against Postgres, where this mock cannot."""
     wkt = "POLYGON((-106 38, -103 38, -103 41, -106 41, -106 38))"
     pool = _MockPool(
         _MockConn(

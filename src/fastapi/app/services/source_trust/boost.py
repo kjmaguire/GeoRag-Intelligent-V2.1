@@ -23,6 +23,13 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
+# model_version of the anchor rows the citation-feedback writer creates in
+# silver.source_trust_scores (app/routers/citation_feedback.py). Those rows
+# exist only so source_trust_features has a trust_score_id to hang off; their
+# trust_score is a neutral 0.5 placeholder, not a score, so the lookup below
+# must never read one — it would shadow a trained score for the same source.
+FEEDBACK_ANCHOR_MODEL_VERSION = "citation_feedback"
+
 
 async def _trust_lookup(
     conn: asyncpg.Connection,
@@ -39,8 +46,10 @@ async def _trust_lookup(
             SELECT source_document_id::text AS source_document_id, trust_score
               FROM silver.source_trust_scores
              WHERE source_document_id = ANY($1::uuid[])
+               AND model_version <> $2
             """,
             [sid for sid in source_document_ids],  # noqa: C416
+            FEEDBACK_ANCHOR_MODEL_VERSION,
         )
         for r in rows:
             out[r["source_document_id"]] = float(r["trust_score"] or fallback_trust)

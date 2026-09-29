@@ -14,7 +14,6 @@ own head start. The relative order and stagger are what the kickoff
 actually specified, and those survived intact.
 
     tenant_isolation_audit          0 17 * * *     nightly 17:00 UTC
-    graph_tenant_audit              30 17 * * *    nightly 17:30 UTC
     storage_tiering_run             0 18 * * *     daily   18:00 UTC
     store_reconciliation_run        0 19 * * *     nightly 19:00 UTC
     model_upgrade_watch_run         0 20 * * *     daily   20:00 UTC
@@ -27,6 +26,12 @@ On-demand only (no cron — triggered via FastAPI route or manual run):
     llm_incident_diagnosis_run
     support_packet_assemble
 
+Removed 2026-09-29 (HAT-13): ``graph_tenant_audit``, the 17:30 UTC cron
+wrapping ``app.agents.phase0.graph_tenant_auditor``. It audited Neo4j,
+which was removed on 2026-07-28 (CLAUDE.md hard rule 9), and still fired
+nightly, writing an ``auditor='neo4j_graph'`` row for a store that does
+not exist. The agent module itself is left in place, unregistered.
+
 Pool assignment for the worker pool split (Step 2).
 
 This module contributes exactly two tuples, defined at the bottom of the
@@ -36,7 +41,7 @@ file and consumed by ``worker.py``'s ``POOLS``:
         storage_tiering_run, index_health_check, store_reconciliation_run
 
     AI_AGENT_WORKFLOWS:
-        tenant_isolation_audit, graph_tenant_audit, lineage_walk,
+        tenant_isolation_audit, lineage_walk,
         model_upgrade_watch_run, model_cost_summary_run,
         llm_incident_diagnosis_run, support_packet_assemble
 
@@ -69,9 +74,6 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents import AgentContext, register_runtime
-from app.agents.phase0 import (
-    graph_tenant_audit as _graph_tenant_audit_agent,
-)
 from app.agents.phase0 import (
     index_health_check as _index_health_check_agent,
 )
@@ -196,29 +198,6 @@ async def _run_tenant_isolation(
     async with _agent_runtime():
         r = await _tenant_isolation_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
         return TenantIsolationAuditOutput.model_validate(r.value or {})
-
-
-# =============================================================================
-# 1b. Graph Tenant Auditor — Z-roadmap Z.9, nightly 17:30 UTC
-#
-# Sibling to tenant_isolation_audit (PG-side, 17:00 UTC). Offset by 30
-# minutes so the two auditors don't contend for the Hatchet ai-pool
-# slot or write to silver.tenant_isolation_audit at the same instant.
-# =============================================================================
-graph_tenant_audit = hatchet.workflow(
-    name="graph_tenant_audit",
-    on_crons=["30 17 * * *"],
-    input_validator=AgentRunInput,
-)
-
-
-@graph_tenant_audit.task(execution_timeout="10m")
-async def _run_graph_tenant_audit(input: AgentRunInput, ctx: Context) -> dict:
-    async with _agent_runtime():
-        r = await _graph_tenant_audit_agent(
-            ctx=_ctx_from(input, ctx), **input.kwargs
-        )
-        return r.value or {}
 
 
 # =============================================================================
@@ -535,7 +514,6 @@ INGESTION_AGENT_WORKFLOWS: tuple = (
 
 AI_AGENT_WORKFLOWS: tuple = (
     tenant_isolation_audit,
-    graph_tenant_audit,
     lineage_walk,
     model_upgrade_watch_run,
     model_cost_summary_run,
@@ -547,7 +525,6 @@ ALL_AGENT_WORKFLOWS = INGESTION_AGENT_WORKFLOWS + AI_AGENT_WORKFLOWS
 
 __all__ = [
     "tenant_isolation_audit",
-    "graph_tenant_audit",
     "lineage_walk",
     "storage_tiering_run",
     "index_health_check",

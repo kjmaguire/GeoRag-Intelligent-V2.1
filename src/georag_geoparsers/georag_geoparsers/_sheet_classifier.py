@@ -369,7 +369,53 @@ def classify_sheet_type(
     return (best_type, best_coverage)
 
 
+#: How far down a sheet a header row is looked for (ING-13).
+HEADER_SCAN_ROWS: int = 15
+
+
+def detect_header_row(
+    rows: list,
+    *,
+    column_map=None,
+    max_scan: int = HEADER_SCAN_ROWS,
+) -> int:
+    """Index of the row that holds a sheet's column headers (ING-13).
+
+    Row 0 unless row 0 classifies as nothing AND a later row, within the
+    first ``max_scan``, classifies as a drill layout - a branded export with
+    "Acme Gold Corp - Drill Collar Table" in A1 and the header in row 3 used
+    to classify ``unknown`` and reach only the text fallback. The best-scoring
+    row wins; on a tie, the earlier one.
+
+    Row 0 is only ever left behind when it matches nothing, so a sheet that
+    classifies today classifies identically.
+    """
+    def cells(row) -> list[str]:
+        return [
+            str(c).strip() for c in (row or [])
+            if c is not None and str(c).strip()
+        ]
+
+    if not rows:
+        return 0
+    first = cells(rows[0])
+    if len(first) >= 2 and classify_sheet_type(first, column_map=column_map)[0] != "unknown":
+        return 0
+
+    best_index, best_confidence = 0, 0.0
+    for index, row in enumerate(rows[1:max_scan], start=1):
+        found = cells(row)
+        if len(found) < 2:
+            continue
+        sheet_type, confidence = classify_sheet_type(found, column_map=column_map)
+        if sheet_type != "unknown" and confidence > best_confidence:
+            best_index, best_confidence = index, confidence
+    return best_index
+
+
 __all__ = [
+    "HEADER_SCAN_ROWS",
     "MIN_REQUIRED_COVERAGE",
     "classify_sheet_type",
+    "detect_header_row",
 ]

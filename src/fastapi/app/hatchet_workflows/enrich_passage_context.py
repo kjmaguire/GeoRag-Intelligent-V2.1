@@ -22,6 +22,7 @@ passage_embedder.py in place of the raw text.
 from __future__ import annotations
 
 import logging
+import time
 
 import asyncpg
 from hatchet_sdk import (
@@ -31,6 +32,7 @@ from hatchet_sdk import (
 )
 from pydantic import BaseModel, Field, model_validator
 
+from app.db import fetch_per_workspace
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.ingest.context_enricher import enrich_passage_context
@@ -159,7 +161,23 @@ enrich_passage_context_wf = hatchet.workflow(
 )
 
 
-@enrich_passage_context_wf.task(execution_timeout="3h", schedule_timeout="3h", retries=0)
+#: HAT-14 (2026-09-29) — 3h -> 2h. The cron fires at 21:45 UTC and the
+#: nightly stop is 00:00 UTC in PDT (01:00 in PST), so a 3 h budget ran its
+#: last 45 minutes into the closed window every summer night, and
+#: shutdown-sweep.sh scales the worker to zero with no drain: a long first
+#: run over a backlog was killed mid-batch, wasting the in-flight LLM spend.
+#: 21:45 + 2 h = 23:45, inside the open window in both halves of the year;
+#: tests/test_crons_avoid_the_shutdown_window.py now checks end times.
+#: Nothing is lost by stopping early: the fan-out picks passages with
+#: contextualized_content IS NULL, so the next night resumes the backlog.
+ENRICH_EXECUTION_TIMEOUT_S = 2 * 3600
+
+#: Stop STARTING projects this long before the hard timeout, so the run ends
+#: between projects rather than being cancelled inside one.
+_ENRICH_SOFT_DEADLINE_MARGIN_S = 15 * 60
+
+
+@enrich_passage_context_wf.task(execution_timeout="2h", schedule_timeout="3h", retries=0)
 async def run(
     input: EnrichPassageContextInput, ctx: Context
 ) -> EnrichPassageContextOutput:
@@ -173,12 +191,17 @@ async def run(
     if input.project_id == "*":
         conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
         try:
-            rows = await conn.fetch(
+            # HAT-1 (2026-09-29): per workspace, scope bound. The passages
+            # table is fail-CLOSED, so the unscoped read found nothing under
+            # the worker's AWS role (georag_app, NOBYPASSRLS).
+            rows = await fetch_per_workspace(
+                conn,
                 "SELECT DISTINCT r.project_id::text AS pid, "
                 "       dp.workspace_id::text AS wid "
                 "  FROM silver.document_passages dp "
                 "  JOIN silver.reports r ON r.report_id = dp.document_id "
-                " WHERE dp.contextualized_content IS NULL AND r.project_id IS NOT NULL"
+                " WHERE dp.contextualized_content IS NULL AND r.project_id IS NOT NULL",
+                site="enrich_passage_context.targets",
             )
             targets = [(r["wid"], r["pid"]) for r in rows if r["wid"]]
         finally:
@@ -195,8 +218,18 @@ async def run(
     total_enriched = 0
     total_skipped = 0
     errors: list[str] = []
+    soft_deadline = time.monotonic() + (
+        ENRICH_EXECUTION_TIMEOUT_S - _ENRICH_SOFT_DEADLINE_MARGIN_S
+    )
 
-    for wid, pid in targets:
+    for index, (wid, pid) in enumerate(targets):
+        if time.monotonic() >= soft_deadline:
+            log.warning(
+                "enrich_passage_context.soft_deadline reached with %d of %d "
+                "project(s) left; the next run resumes them",
+                len(targets) - index, len(targets),
+            )
+            break
         try:
             r = await enrich_passage_context(
                 workspace_id=wid,

@@ -952,6 +952,40 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Database audit 2026-09-29 PG-15. The step above guards one table's two
+      # columns; the audit found a dozen live surfaces naming tables, columns
+      # or functions that no migration creates (a chat history query on a
+      # column that does not exist, APP_KEY rotation on an unqualified
+      # audit.* table, a feedback writer on three phantom columns...). Each
+      # was a 500 or a swallowed exception, and none could fail a build.
+      #
+      # So: build the database the way the AWS migrate task does (migrate,
+      # above, then the db:apply-raw manifest), then PREPARE every SQL literal
+      # in src/**/*.py and app/**/*.php against it and check every
+      # DB::table() chain and Eloquent $table against its catalog, with
+      # search_path=public like production. Undefined table / column /
+      # function / schema fails the build unless allow-listed, with a reason,
+      # in scripts/ci/schema-sql-allowlist.txt. PREPARE never executes, so
+      # this cannot write anything.
+      - name: Apply the db:apply-raw manifest (as the AWS migrate task does)
+        run: php artisan db:apply-raw
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Code names only schema objects the migrations create (§04e)
+        run: uv run --no-project --with asyncpg python scripts/ci/check_sql_against_schema.py
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGDATABASE: georag_test
+          PGUSER: georag
+          PGPASSWORD: test_password
+
       # The concrete check for the second live incident: init_qdrant.py IS
       # the bootstrap script, but nothing in this deployment's runtime path
       # ever calls it automatically — provisioning has always been a manual
@@ -1442,6 +1476,100 @@ jobs:
           # workspace/project that the state-machine module provisions, so
           # order is load-bearing.
           uv run pytest -v --tb=short -m integration -p no:randomly $FILES
+
+  # ─── Cron sweeps under the worker's AWS role ──────────────────────────
+  # HAT-1 (2026-09-29 Hatchet audit, §07b). On AWS the Hatchet worker
+  # connects as georag_app (NOSUPERUSER NOBYPASSRLS, deploy/aws/bootstrap.sql);
+  # everywhere else, this CI included, it connects as a superuser that
+  # bypasses RLS. So a sweep that read a fail-closed table unscoped (the embed
+  # fan-out on silver.document_passages, the orphan sweep, the stale sweep's
+  # "fully embedded?" check) looked fine in every environment but production,
+  # where it read nothing.
+  #
+  # This job reproduces production's order, `migrate` THEN `db:apply-raw`
+  # (services.tf's migrate task), and runs the real sweep code with every
+  # sweep connection doing `SET ROLE georag_app`. Separate from
+  # integration-postgres on purpose: that job's manifest is verified against
+  # a database WITHOUT the raw RLS layer, and applying raw there would change
+  # what 27 other files run against.
+  cron-sweeps-app-role:
+    name: Cron sweeps under georag_app (raw RLS applied)
+    runs-on: ubuntu-latest
+    needs: python-lint
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      PG_DSN: postgresql://georag:test_password@localhost:5432/georag_test
+      PG_APP_ROLE: georag_app
+      POSTGRES_USER: georag
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: georag_test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DIRECT_HOST: localhost
+      POSTGRES_DIRECT_PORT: "5432"
+      POSTGRES_SSLMODE: disable
+      FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
+      # Same module-level ClientConfig() singleton as python-test — needs a
+      # JWT-*shaped* token at import even though nothing dials Hatchet.
+      HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Migrate, then apply the raw RLS layer (production order)
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+          php artisan migrate --force
+          php artisan db:apply-raw
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Run the sweeps as georag_app
+        working-directory: src/fastapi
+        run: |
+          uv run pytest -v --tb=short -m integration -p no:randomly \
+            tests/test_cron_sweeps_under_app_role.py \
+            tests/test_citation_feedback_integration.py
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:

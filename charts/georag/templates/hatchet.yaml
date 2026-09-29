@@ -109,6 +109,19 @@ spec:
               value: {{ .Release.Name }}-postgresql
             - name: POSTGRES_DIRECT_PORT
               value: "5432"
+            # SEC-1 (2026-09-29): georag_app, as on AWS. Without these the
+            # DSN fell back to POSTGRES_USER=georag — the superuser, which
+            # bypasses RLS — with the superuser password from envFrom.
+            # Explicit env wins over the envFrom Secret for the same key.
+            - name: POSTGRES_USER
+              value: georag_app
+            - name: POSTGRES_DB
+              value: georag
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: PG_APP_PASSWORD
             - name: REDIS_HOST
               value: {{ .Release.Name }}-redis
             - name: QDRANT_HOST

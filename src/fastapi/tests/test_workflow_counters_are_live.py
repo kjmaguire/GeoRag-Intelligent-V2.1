@@ -70,6 +70,12 @@ def _mutated_names(tree: ast.AST) -> set[str]:
             mutated.add(node.target.id)
         elif isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
+            if isinstance(target, (ast.Tuple, ast.List)):
+                # `_, n = await f()` computes n from a call: a live value.
+                for elt in target.elts:
+                    if isinstance(elt, ast.Name):
+                        mutated.add(elt.id)
+                continue
             if not isinstance(target, ast.Name):
                 continue
             value = node.value

@@ -50,7 +50,9 @@ class UpdateProjectRequest extends FormRequest
             'commodity' => ['nullable', 'string', 'max:50'],
             'region' => ['nullable', 'string', 'max:255'],
             'magnetic_declination' => ['nullable', 'numeric', 'between:-180,180'],
-            'orientation_reference' => ['nullable', 'string', 'in:BOH,TOH'],
+            // Not nullable: the column is NOT NULL, so an explicit null
+            // was a 500 on UPDATE. Omit the field to leave it unchanged.
+            'orientation_reference' => ['sometimes', 'string', 'in:BOH,TOH'],
         ];
     }
 

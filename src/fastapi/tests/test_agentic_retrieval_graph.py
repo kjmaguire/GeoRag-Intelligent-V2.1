@@ -1117,7 +1117,11 @@ async def test_assemble_node_calls_llm_when_document_search_ran_but_structured_d
 ) -> None:
     """Regression guard against over-refusal: a real (empty)
     DocumentSearchResult plus a structured tool that DID return data must
-    NOT trip the Layer 1 hard gate."""
+    NOT trip the Layer 1 hard gate — for a question about that data. (Since
+    2026-09-29, RAG-13, project-wide collars do not count for a
+    document-centric question that is not about the drill data; that half
+    is tested in test_guard_audit_2026_09_29.py. The query here used to be
+    the literal "q".)"""
     import app.agent.llm_calls as _llm_mod
     from app.agent.agentic_retrieval.state import AgenticRetrievalState
     from app.agent.tools import DocumentSearchResult
@@ -1136,7 +1140,9 @@ async def test_assemble_node_calls_llm_when_document_search_ran_but_structured_d
 
     empty_docs = DocumentSearchResult(chunks=[], count=0, data_source="qdrant (reranked)")
 
-    state = AgenticRetrievalState(query="q", deps=_FakeDeps())
+    state = AgenticRetrievalState(
+        query="Summarise the 2022 drilling at the Rowan zone", deps=_FakeDeps()
+    )
     state = state.model_copy(update={
         "intent": "synthesis",
         "effective_intent": "synthesis",

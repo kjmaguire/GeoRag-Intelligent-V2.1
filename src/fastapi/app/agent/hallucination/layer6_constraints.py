@@ -59,13 +59,13 @@ from pydantic_ai import ModelRetry, RunContext
 from app.agent.deps import AgentDeps
 from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
 from app.agent.hole_id_patterns import (
-    HOLE_CONTEXT_RE as _HOLE_CONTEXT_RE,
+    DESIGNATION_RE as _DESIGNATION_RE,
 )
 from app.agent.hole_id_patterns import (
     HOLE_ID_RE as _HOLE_ID_RE,
 )
 from app.agent.hole_id_patterns import (
-    NUMERIC_HOLE_ID_RE as _NUMERIC_HOLE_ID_RE,
+    find_numeric_hole_ids as _find_numeric_hole_ids,
 )
 from app.config import settings
 from app.models.rag import GeoRAGResponse
@@ -197,8 +197,20 @@ def _load_constraints_from_json() -> list[GeologicalConstraint]:
 GEOLOGICAL_CONSTRAINTS: list[GeologicalConstraint] = _load_constraints_from_json()
 
 # Compiled number-plus-context extractor.
-# Captures: optional sign, digits, optional decimal.
-_NUMBER_WITH_CONTEXT_RE = re.compile(r"(-?\d+(?:\.\d+)?)")
+#
+# Captures a number as prose writes it (audit 2026-09-29, RAG-2):
+#   * thousands separators belong to the number — "a total depth of
+#     12,400 m" is 12400, and used to be read as 12 and 400, neither of
+#     which breaks the 5000 m ceiling;
+#   * a "-" is a sign only when nothing word-like precedes it — the dash in
+#     "from 120-126 m" is a range, and used to yield a -126 m "depth";
+#   * digits glued to letters ("U3O8", "eU3O8") are a formula, not a value.
+_NUMBER_WITH_CONTEXT_RE = re.compile(
+    r"((?:(?<![\w.,])-)?(?<![\w.])(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.\d+)?)"
+)
+
+# The second half of a range written with a dash: "120-126", "5,500 - 6,000".
+_RANGE_PARTNER_RE = re.compile(r"\s*[-\u2013]\s*\d[\d,]*(?:\.\d+)?")
 
 # Citation marker pattern — numbers inside citation markers are never content
 # numbers and must not be checked against geological constraints. The Layer 3
@@ -305,13 +317,20 @@ def _check_value_against_constraint(
     number_start: int,
     number_end: int,
     constraint: GeologicalConstraint,
+    *,
+    unit_end: int | None = None,
 ) -> bool:
     """Return True if this value violates this constraint.
 
     The caller has already established that ``constraint`` is the one
     governing this number (see :func:`_governing_constraint`); this decides
     only whether the value is out of bounds.
+
+    ``unit_end`` is where to read the number's unit from, when that is not
+    straight after it: in a range ("120-126 m") the unit is written once,
+    after the second number, and belongs to both.
     """
+    unit_at = number_end if unit_end is None else unit_end
     # Negative keywords still use a wide window: "easting" or "UTM" anywhere
     # near a number is reason to leave it alone regardless of what governs it.
     if constraint.negative_keywords:
@@ -324,11 +343,11 @@ def _check_value_against_constraint(
         ):
             return False
 
-    if any(_unit_follows(text, number_end, unit) for unit in constraint.foreign_units):
+    if any(_unit_follows(text, unit_at, unit) for unit in constraint.foreign_units):
         return False
 
     compared = abs(value) if constraint.absolute_value else value
-    compared *= _unit_scale(text, number_end, constraint)
+    compared *= _unit_scale(text, unit_at, constraint)
 
     if constraint.min_value is not None and compared < constraint.min_value:
         return True
@@ -357,15 +376,21 @@ def _masked_ranges(text: str) -> list[tuple[int, int]]:
       sentence said anything about depth at all.
 
     Numeric-only hole IDs (36-1085) are masked only when the text actually
-    talks about holes, matching the gate viz_builder puts on the same
-    pattern — otherwise a depth interval like "20-30 m" would be masked.
+    talks about holes, and never when the "ID" is really a measured interval
+    or a reference ("from 120-126 m", "pages 12-14") — see
+    ``hole_id_patterns.find_numeric_hole_ids``. The bare pattern used to mask
+    "120-126" as a hole name in any answer that also said "hole", so the
+    interval's depths were never checked at all (RAG-3).
+
+    * Standard designations — "NI 43-101" is a name; its 43 and 101 are not
+      values.
     """
     ranges: list[tuple[int, int]] = [
         (m.start(), m.end()) for m in _CITATION_MARKER_RE.finditer(text)
     ]
+    ranges.extend((m.start(), m.end()) for m in _DESIGNATION_RE.finditer(text))
     ranges.extend((m.start(), m.end()) for m in _HOLE_ID_RE.finditer(text))
-    if _HOLE_CONTEXT_RE.search(text):
-        ranges.extend((m.start(), m.end()) for m in _NUMERIC_HOLE_ID_RE.finditer(text))
+    ranges.extend((c.start, c.end) for c in _find_numeric_hole_ids(text))
     return ranges
 
 
@@ -382,7 +407,7 @@ def _find_violations(text: str) -> list[ConstraintViolation]:
 
     for m in _NUMBER_WITH_CONTEXT_RE.finditer(text):
         try:
-            value = float(m.group(1))
+            value = float(m.group(1).replace(",", ""))
         except ValueError:
             continue
 
@@ -398,7 +423,11 @@ def _find_violations(text: str) -> list[ConstraintViolation]:
             continue
         constraint, _keyword = governing
 
-        if _check_value_against_constraint(value, text, start, end, constraint):
+        partner = _RANGE_PARTNER_RE.match(text, end)
+        if _check_value_against_constraint(
+            value, text, start, end, constraint,
+            unit_end=partner.end() if partner else None,
+        ):
             snippet_start = max(0, start - 30)
             snippet_end = min(len(text), end + 30)
             snippet = text[snippet_start:snippet_end].replace("\n", " ").strip()

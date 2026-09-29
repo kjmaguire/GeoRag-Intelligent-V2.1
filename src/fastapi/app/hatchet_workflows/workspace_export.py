@@ -187,10 +187,11 @@ async def _export_one_table(
 ) -> list[dict[str, Any]]:
     """Walk one tenant table for the target workspace + return list of dicts.
 
-    Uses the `set_config('app.workspace_id', $1, false)` GUC contract
-    so RLS does the workspace scoping rather than relying on every
-    table having a literal workspace_id column (some tables join through
-    a parent).
+    The caller has already bound ``app.workspace_id`` for this workspace on
+    ``conn`` (session scope, dedicated direct connection — see run_export),
+    so RLS scopes every read here; the explicit ``WHERE workspace_id`` is
+    belt and braces. Tables without that column fall back to the RLS-scoped
+    read alone.
     """
     if qualified_table == "silver.workspaces":
         # Special case — the workspace row keyed on workspace_id PK.
@@ -207,9 +208,7 @@ async def _export_one_table(
                 workspace_id,
             )
         except asyncpg.exceptions.UndefinedColumnError:
-            await bind_workspace_scope(
-                conn, workspace_id=workspace_id, site="hatchet.workspace_export"
-            )
+            # Already bound by run_export(); RLS alone scopes this read.
             rows = await conn.fetch(f"SELECT * FROM {qualified_table}")
         except Exception as exc:  # noqa: BLE001
             log.warning(
@@ -319,6 +318,22 @@ async def run_export(
 
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)
     try:
+        # SEC-4: bind the tenant BEFORE the first read. This connection is
+        # georag_app (NOBYPASSRLS) in production, and four of the tables
+        # below — silver.hypotheses, silver.decision_records,
+        # silver.document_passages, targeting.target_recommendations — have
+        # fail-closed policies, so without the GUC they returned zero rows
+        # and the export reported success with them silently empty.
+        # Session scope (is_local=False) is right here and only here: a
+        # dedicated connection to the DIRECT host (build_dsn defaults to
+        # direct=True), autocommit statements, closed in the finally below.
+        await bind_workspace_scope(
+            conn,
+            workspace_id=workspace_id,
+            site="hatchet.workspace_export",
+            is_local=False,
+        )
+
         # Verify workspace exists.
         ws_row = await conn.fetchrow(
             "SELECT workspace_id::text AS id FROM silver.workspaces "

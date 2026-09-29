@@ -138,6 +138,13 @@ CREATE OR REPLACE FUNCTION audit.run_verification(
 ) RETURNS uuid
 LANGUAGE plpgsql AS $$
 DECLARE
+    -- HAT-2 (2026-09-29): platform verification runs belong to the default
+    -- workspace, the id 98-rls-tenant-isolation-block3.sql back-fills with.
+    -- The scope is bound only around the writes; the ledger reads keep the
+    -- caller's scope so verify_hash_chain walks the whole chain. Kept in
+    -- lockstep with migration 2026_09_29_200000.
+    c_platform_workspace CONSTANT uuid := 'a0000000-0000-0000-0000-000000000001';
+    v_caller_scope text := COALESCE(current_setting('app.workspace_id', true), '');
     v_run_id uuid := gen_random_uuid();
     v_rows_total bigint;
     v_breaks bigint;
@@ -147,9 +154,12 @@ DECLARE
     v_last_hash bytea;
     v_broken_ids uuid[];
 BEGIN
+    PERFORM set_config('app.workspace_id', c_platform_workspace::text, true);
     INSERT INTO audit.audit_ledger_verification_runs
-        (id, partition_date, status, started_at, workflow_run_id)
-    VALUES (v_run_id, p_start_at::date, 'in_progress', now(), p_workflow_run_id);
+        (id, workspace_id, partition_date, status, started_at, workflow_run_id)
+    VALUES (v_run_id, c_platform_workspace, p_start_at::date, 'in_progress',
+            now(), p_workflow_run_id);
+    PERFORM set_config('app.workspace_id', v_caller_scope, true);
 
     -- Postgres has no min/max aggregate for uuid, so use scalar subqueries.
     SELECT count(*) INTO v_rows_total
@@ -170,6 +180,7 @@ BEGIN
       INTO v_broken_ids, v_breaks
     FROM audit.verify_hash_chain(p_start_at, p_end_at);
 
+    PERFORM set_config('app.workspace_id', c_platform_workspace::text, true);
     UPDATE audit.audit_ledger_verification_runs
        SET status        = CASE WHEN v_breaks = 0 THEN 'clean' ELSE 'break' END,
            rows_verified = COALESCE(v_rows_total, 0),
@@ -180,6 +191,7 @@ BEGIN
            broken_ids    = v_broken_ids,
            completed_at  = now()
      WHERE id = v_run_id;
+    PERFORM set_config('app.workspace_id', v_caller_scope, true);
 
     RETURN v_run_id;
 END $$;

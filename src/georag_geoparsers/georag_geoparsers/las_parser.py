@@ -33,6 +33,109 @@ def _sha256_file(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Depth unit (GIS-4 / ING-8, 2026-09-29)
+# ---------------------------------------------------------------------------
+#
+# Every silver depth column is metres. The LAS index (DEPT) and STRT/STOP/STEP
+# carry their unit in the header (".M" / ".F" / ".FT"), and until this fix
+# nothing read it: a Wyoming log with STOP.F 1257.5 became a 1,257 m hole,
+# while derive_intervals multiplied every depth by 0.3048 on the unconditional
+# assumption of feet — so a metric log's derived intervals sat at 30% of
+# their true depth. Both LAS paths now normalise to metres here.
+#
+# A file that declares no unit, or one this table does not know, is read as
+# METRES (the LAS/SI default) with a loud ``las_depth_unit_assumed`` warning —
+# never silently as feet (decision relayed 2026-09-29).
+
+FEET_TO_METRES = 0.3048
+
+_METRE_UNITS = frozenset({"M", "METER", "METERS", "METRE", "METRES", "MTR"})
+_FEET_UNITS = frozenset({"F", "FT", "FEET", "FOOT", "FT.", "FTUS", "USFT"})
+
+
+def _unit_token(raw: Any) -> str:
+    return str(raw or "").strip().upper().replace(" ", "")
+
+
+def unit_to_metres_factor(raw: Any) -> float | None:
+    """0.3048 for a feet unit, 1.0 for metres, None for blank/unknown."""
+    token = _unit_token(raw)
+    if token in _METRE_UNITS:
+        return 1.0
+    if token in _FEET_UNITS:
+        return FEET_TO_METRES
+    return None
+
+
+@dataclass
+class LasDepthUnit:
+    """How a LAS file's depths convert to metres."""
+
+    #: Multiply every index/STRT/STOP/STEP value by this to get metres.
+    factor: float
+    #: The unit text the file declared (index curve first, then STRT/STOP),
+    #: or None when it declared none.
+    declared: str | None
+    #: True when the unit was absent or unrecognised and metres was assumed.
+    assumed: bool
+    #: 'ft' or 'm' — what the source was read as.
+    source_unit: str
+
+
+def resolve_las_depth_unit(las: Any) -> LasDepthUnit:
+    """The depth unit of a ``lasio.LASFile``: index curve, then STRT, STOP."""
+    candidates: list[Any] = []
+    try:
+        if las.curves:
+            candidates.append(las.curves[0].unit)
+    except Exception:  # noqa: BLE001 — a malformed ~C section is reported elsewhere
+        logger.debug("LAS ~C section unreadable for depth unit", exc_info=True)
+    for mnemonic in ("STRT", "STOP", "STEP"):
+        try:
+            if mnemonic in las.well:
+                candidates.append(las.well[mnemonic].unit)
+        except Exception:  # noqa: BLE001
+            logger.debug("LAS %s unit unreadable", mnemonic, exc_info=True)
+            continue
+
+    declared: str | None = None
+    for raw in candidates:
+        token = _unit_token(raw)
+        if not token:
+            continue
+        if declared is None:
+            declared = str(raw).strip()
+        factor = unit_to_metres_factor(raw)
+        if factor is not None:
+            return LasDepthUnit(
+                factor=factor, declared=str(raw).strip(), assumed=False,
+                source_unit="ft" if factor != 1.0 else "m",
+            )
+    return LasDepthUnit(factor=1.0, declared=declared, assumed=True, source_unit="m")
+
+
+def las_depth_unit_warning(unit: LasDepthUnit, *, file_name: str, well: str | None) -> dict | None:
+    """The ``las_depth_unit_assumed`` warning for an undeclared unit, else None."""
+    if not unit.assumed:
+        return None
+    what = (
+        f"declares its depth unit as {unit.declared!r}, which is not a length unit "
+        f"this platform recognises"
+        if unit.declared else "declares no depth unit (DEPT / STRT / STOP carry none)"
+    )
+    return {
+        "code": "las_depth_unit_assumed",
+        "message": f"{file_name}: depth unit not declared — depths read as METRES",
+        "detail": (
+            f"{file_name} (well {well or '?'}) {what}, so its depths were read as "
+            f"metres, the LAS default. If the log is in feet every depth, the "
+            f"total depth and every curve are 3.28x too deep. Fix the unit on the "
+            f"DEPT curve (e.g. 'DEPT.F') or STRT/STOP and upload it again."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
 
@@ -69,6 +172,12 @@ class LasParseResult:
     parse_quality_pct: float  # 0.0 – 1.0
     skipped_details: list[dict] = field(default_factory=list)
     provenance: dict[str, Any] = field(default_factory=dict)
+    #: Every depth in this result (curve depths, min/max, step) is METRES.
+    #: ``depth_unit_source`` is what the file was read as ('ft' / 'm');
+    #: ``depth_unit_assumed`` is True when the file declared none (GIS-4).
+    depth_unit_source: str = "m"
+    depth_unit_assumed: bool = False
+    warnings: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +262,16 @@ def parse_las_file(path: str) -> LasParseResult:
 
     if not depths:
         raise ValueError(f"LAS file '{path}' has an empty depth curve.")
+
+    # Normalise to metres (GIS-4): the header's unit, not an assumption.
+    depth_unit = resolve_las_depth_unit(las)
+    if depth_unit.factor != 1.0:
+        depths = [d * depth_unit.factor for d in depths]
+        if step_value is not None:
+            step_value = step_value * depth_unit.factor
+    unit_warning = las_depth_unit_warning(
+        depth_unit, file_name=path.split("/")[-1], well=well_name,
+    )
 
     depth_min = min(depths)
     depth_max = max(depths)
@@ -254,5 +373,9 @@ def parse_las_file(path: str) -> LasParseResult:
             "parser_name": PARSER_NAME,
             "parser_version": PARSER_VERSION,
             "source_col_map": None,
+            "depth_unit_declared": depth_unit.declared,
         },
+        depth_unit_source=depth_unit.source_unit,
+        depth_unit_assumed=depth_unit.assumed,
+        warnings=[unit_warning] if unit_warning is not None else [],
     )

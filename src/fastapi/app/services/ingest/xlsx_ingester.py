@@ -25,6 +25,8 @@ from pathlib import Path
 
 import asyncpg
 
+from app.services.ingest.file_hash import sha256_file
+
 log = logging.getLogger("georag.ingest.xlsx")
 
 
@@ -283,7 +285,8 @@ async def land_sheets_as_text(
     """
     # SHA + dedupe
     p = path
-    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    # Off the event loop, streamed (ING-18).
+    sha = await asyncio.to_thread(sha256_file, p)
     # Scoped to the project. The lookup had no project or workspace
     # predicate, so the same workbook uploaded into a SECOND project found
     # the FIRST project's report and wrote its passages under it — invisible

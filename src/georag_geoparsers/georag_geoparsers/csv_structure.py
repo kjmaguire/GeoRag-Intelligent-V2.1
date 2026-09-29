@@ -60,6 +60,7 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
+from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._drill_schema import (
     STRUCTURE_ALIASES,
     STRUCTURE_REQUIRED,
@@ -567,6 +568,16 @@ def parse_csv_structures(
     df_trimmed = df.rename(rename_map).select(
         [c for c in df.rename(rename_map).columns if c in column_map],
     )
+    # "Depth_ft" -> metres (GIS-3); the header's unit is honoured.
+    df_trimmed, unit_warning = convert_feet_columns(
+        df_trimmed,
+        columns={"depth": "depth", "to_depth": "to_depth"},
+        headers=column_map,
+        fields=("depth", "to_depth"),
+        parser="csv_structure",
+    )
+    if unit_warning is not None:
+        global_warnings.append(unit_warning)
 
     records: list = []
     skipped: list = []

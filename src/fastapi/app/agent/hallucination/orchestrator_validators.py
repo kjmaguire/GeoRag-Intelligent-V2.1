@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import json
 import logging
 import re
 import time
@@ -49,9 +48,12 @@ from app.agent.hallucination.citation_markers import (
     CITATION_PREFIXES,
 )
 from app.agent.hole_id_patterns import (
+    DESIGNATION_RE,
     HOLE_CONTEXT_RE,
     HOLE_ID_RE,
     NUMERIC_HOLE_ID_RE,
+    canonical_hole_id,
+    find_numeric_hole_ids,
 )
 from app.config import settings
 from app.models.rag import GeoRAGResponse
@@ -152,7 +154,59 @@ async def _get_known_formations(
 # Layer 3 — Numerical Claim Verification (orchestrator version)
 # ---------------------------------------------------------------------------
 
-_NUMBER_RE = re.compile(r"[-+]?\d+\.?\d*")
+#: A number as prose writes it.
+#:
+#: * Thousands separators are part of the number: "12,400 m" is 12400, not
+#:   12 and 400 (audit 2026-09-29, RAG-2). The old ``[-+]?\d+\.?\d*`` split
+#:   every comma-formatted tonnage, ounce count and depth in an NI 43-101
+#:   into small pieces, and a fabricated "12,345,000 tonnes" was invisible
+#:   to Layer 3 and Layer 6 alike.
+#: * A sign is a sign only when nothing word-like precedes it: the "-" in
+#:   "120-126 m" or "36-1085" is a range dash or part of a name, and used to
+#:   produce a spurious -126 / -1085.
+#: * Digits glued to letters ("U3O8", "NI43", "BH12", "eU3O8") are part of a
+#:   name or a formula, not a quantity.
+_NUMBER_PATTERN = (
+    r"(?:(?<![\w.,])[-+])?(?<![\w.])(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.\d+)?"
+)
+_NUMBER_RE = re.compile(_NUMBER_PATTERN)
+
+
+def _parse_number(token: str) -> float:
+    return float(token.replace(",", ""))
+
+
+def _written_tolerance(token: str) -> tuple[float, float]:
+    """How far a value may sit from the one it was rounded from.
+
+    Returns ``(exact, rounded)``: ``exact`` is half a unit in the last
+    written place; ``rounded`` additionally reads trailing zeros as
+    rounding. The wider ``rounded`` window is only ever compared against
+    the evidence's own values, never against their unit conversions —
+    "1,300 m" is how an answer rounds a stated 1,340 m, but "5,000" is not
+    how it states 154 x 31.1035.
+
+    Half a unit in the last place the number was written to: "7.4" stands
+    for anything in [7.35, 7.45], "7.44" for [7.435, 7.445]. Trailing zeros
+    on an integer are read as rounding ("12,400" for 12,350..12,450, "1,300"
+    for the 1,340 m a report states) but never wider than 5 % of the value,
+    so "1,000" may stand for 987 but not for 500.
+
+    Replaces a flat ``abs(num - g) < 0.1``, which grounded EVERY value below
+    about 0.1 against the ``g / 10000`` and ``g / 31.1`` entries the unit
+    expansion adds for every grounded number — including a typical roll-front
+    grade such as 0.087 % eU3O8 — and was far too tight for rounded large
+    values at the other end (RAG-1).
+    """
+    digits = token.lstrip("+-").replace(",", "")
+    if "." in digits:
+        exact = 0.5 * 10 ** -len(digits.split(".", 1)[1])
+        return exact, exact
+    trailing_zeros = len(digits) - len(digits.rstrip("0"))
+    if trailing_zeros and len(digits) > trailing_zeros:
+        value = abs(float(digits))
+        return 0.5, max(0.5, min(0.5 * 10**trailing_zeros, 0.05 * value))
+    return 0.5, 0.5
 
 #: Drill-hole and sample identifiers, removed before any number extraction.
 #:
@@ -221,7 +275,7 @@ _SMALL_NUMBERS = {0.0, 1.0, 2.0, 3.0}  # too common to verify
 # 5 metres), and anything else — space, period, comma, end of string —
 # ends the token.
 _NUMBER_WITH_UNIT_RE = re.compile(
-    r"([-+]?\d+\.?\d*)\s*"
+    r"(" + _NUMBER_PATTERN + r")\s*"
     r"(g/t|oz/t|ppm|ppb|wt%|%|m|ft|km|kt|Mt|mt|tonnes?|lbs?|kg)"
     r"(?![A-Za-z0-9/])",
     re.IGNORECASE,
@@ -289,11 +343,11 @@ _UNIT_FAMILIES: dict[str, str] = {
 
 def _extract_number_unit_tuples(text: str) -> list[tuple[float, str]]:
     """Pairs numbers with their immediately-following unit token (lower-cased)."""
-    clean = _CITATION_MARKER_RE.sub("", text)
+    clean = _strip_non_claims(text)
     out: list[tuple[float, str]] = []
     for match in _NUMBER_WITH_UNIT_RE.finditer(clean):
         try:
-            val = float(match.group(1))
+            val = _parse_number(match.group(1))
             unit = match.group(2).lower()
             if val not in _SMALL_NUMBERS:
                 out.append((val, unit))
@@ -305,19 +359,43 @@ def _extract_number_unit_tuples(text: str) -> list[tuple[float, str]]:
 def _collect_grounded_tuples(
     tool_results: list[tuple[str, Any]],
 ) -> list[tuple[float, str]]:
-    """Same shape as _extract_number_unit_tuples but over tool_results JSON."""
+    """Same shape as _extract_number_unit_tuples, over the CONTENT strings of
+    the tool results (identifier / score / metadata fields skipped, the same
+    walk Layer 3's grounded set uses — see `_content_strings`)."""
     out: list[tuple[float, str]] = []
     for _tool_name, result in tool_results:
         try:
-            if hasattr(result, "model_dump"):
-                text = json.dumps(result.model_dump(), default=str)
-            elif hasattr(result, "__dict__"):
-                text = json.dumps(result.__dict__, default=str)
-            else:
-                text = str(result)
-            out.extend(_extract_number_unit_tuples(text))
+            for text in _content_strings(result):
+                out.extend(_extract_number_unit_tuples(text))
         except Exception:
             continue
+    return out
+
+
+def _content_strings(obj: Any, key: str = "") -> list[str]:
+    """String values under content keys only (see `_NON_CONTENT_KEYS`)."""
+    lowered = key.lower()
+    if lowered and (
+        lowered in _NON_CONTENT_KEYS
+        or _NON_CONTENT_KEY_RE.search(lowered)
+        or _IDENTIFIER_KEY_RE.search(lowered)
+    ):
+        return []
+    out: list[str] = []
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        for f in dataclasses.fields(obj):
+            out.extend(_content_strings(getattr(obj, f.name), f.name))
+    elif isinstance(obj, BaseModel):
+        for name in type(obj).model_fields:
+            out.extend(_content_strings(getattr(obj, name), name))
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            out.extend(_content_strings(v, str(k)))
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        for v in obj:
+            out.extend(_content_strings(v, key))
+    elif isinstance(obj, str):
+        out.append(obj)
     return out
 
 
@@ -368,9 +446,11 @@ def _detect_unit_mismatches(
         if family_r is None:
             # Unknown unit — skip; we only flag mismatches across known families.
             continue
+        # Relative, not the old flat 0.1: that matched every grounded value
+        # below 0.1 to every other one, whatever its unit.
         candidates = [
             (g, unit_g) for (g, unit_g) in grounded_tuples
-            if abs(g - v) < 0.1
+            if abs(g - v) <= 0.005 * max(abs(g), abs(v)) + 1e-9
         ]
         if not candidates:
             # No same-value grounded tuple at all → falls under the
@@ -394,91 +474,214 @@ def _detect_unit_mismatches(
     return warnings
 
 
+#: Page / figure / table / section / item references in the answer. The
+#: number in "Section 14.2" or "page 112" is a pointer, not a claim, and the
+#: evidence side no longer grounds section numbers and pages (they are
+#: metadata, see _NON_CONTENT_KEY_RE).
+_REFERENCE_RE = re.compile(
+    r"\b(?:sections?|tables?|figs?\.?|figures?|pages?|pp?\.|appendix|appendices|"
+    r"chapters?|items?|plates?)\s+\d+(?:[.\-]\d+)*[A-Za-z]?\b",
+    re.IGNORECASE,
+)
+
+#: Keys whose values are identifiers, scores or provenance metadata rather
+#: than evidence. Their digits used to be regexed straight out of the
+#: serialised tool result: a chunk UUID "44a67709-..." contributed 44 and
+#: 67709, document_type "NI43" contributed 43, and relevance_score,
+#: ocr_confidence, section_number and page filled in the rest. With the
+#: derivation window accepting anything within 2x of any grounded value,
+#: that covered almost every magnitude, so an invented "7.44 g/t Au over
+#: 12.6 m" in a document-grounded answer produced no warning (RAG-1).
+_NON_CONTENT_KEYS: frozenset[str] = frozenset((
+    "id", "chunk_id", "report_id", "source_document_id", "collar_id",
+    "workspace_id", "project_id", "relevance_score", "ocr_confidence",
+    "ocr_method", "ocr_status", "section_number", "data_source",
+    "document_type", "rerank_degraded", "modality", "image_object_key",
+    "pg_id", "source_id", "source_feature_id", "staleness_seconds",
+    "source_row_id", "source_row_ids", "log_id", "entity_id", "slug",
+    "license_url", "source_url", "license_summary", "canonical_type",
+))
+_NON_CONTENT_KEY_RE = re.compile(
+    r"(?:_id|_ids|_uuid|_url|_at|_key|_sha256|_hash)$|^page|score|confidence|"
+    r"base64|b64|png|image"
+)
+
+#: Keys whose string values are hole / sample names. Their digits are not
+#: evidence either, but the names themselves are removed from the answer
+#: before its numbers are read, so a numeric hole ID the evidence names
+#: ("36-1085") is not mistaken for two numerical claims.
+_IDENTIFIER_KEY_RE = re.compile(r"hole|sample_id|sample_number|sample_name")
+
+#: Tool results that are document prose. Their numbers ground only what they
+#: literally say (after rounding and unit conversion). The 2x "derived
+#: statistic" window is for structured rows -- a mean of collar depths is
+#: near some collar depth -- and applying it to every number in 5,000
+#: characters of report text is what let a fabricated grade pass whenever
+#: the chunk happened to contain any value of the same magnitude.
+_DOCUMENT_TOOL_NAMES: frozenset[str] = frozenset((
+    "search_documents", "search_documents_adversarial", "search_public_geoscience",
+))
+
+
+@dataclasses.dataclass
+class _Evidence:
+    literal: set[float] = dataclasses.field(default_factory=set)
+    derivable: list[float] = dataclasses.field(default_factory=list)
+    identifiers: set[str] = dataclasses.field(default_factory=set)
+
+
+def _is_document_result(tool_name: str, result: Any) -> bool:
+    if tool_name in _DOCUMENT_TOOL_NAMES:
+        return True
+    if isinstance(result, dict):
+        return "chunks" in result or "records" in result
+    from app.agent.public_geoscience_tool import (  # noqa: PLC0415
+        PublicGeoscienceSearchResult,
+    )
+    from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
+
+    return isinstance(result, (DocumentSearchResult, PublicGeoscienceSearchResult))
+
+
+def _numbers_in(text: str) -> list[float]:
+    text = DESIGNATION_RE.sub(" ", text)
+    text = _IDENTIFIER_TOKEN_RE.sub(" ", HOLE_ID_RE.sub(" ", text))
+    out: list[float] = []
+    for m in _NUMBER_RE.finditer(text):
+        with contextlib.suppress(ValueError):
+            out.append(_parse_number(m.group()))
+    return out
+
+
+def _walk_evidence(obj: Any, ev: _Evidence, *, structured: bool, key: str = "") -> None:
+    """Collect content numbers from ``obj``, skipping non-content keys."""
+    lowered = key.lower()
+    if lowered and _IDENTIFIER_KEY_RE.search(lowered):
+        for value in _collect_value_strings(obj):
+            if value and value != "None":
+                ev.identifiers.add(value)
+        return
+    if lowered and (lowered in _NON_CONTENT_KEYS or _NON_CONTENT_KEY_RE.search(lowered)):
+        return
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        for f in dataclasses.fields(obj):
+            _walk_evidence(getattr(obj, f.name), ev, structured=structured, key=f.name)
+    elif isinstance(obj, BaseModel):
+        for name in type(obj).model_fields:
+            _walk_evidence(getattr(obj, name), ev, structured=structured, key=name)
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            _walk_evidence(v, ev, structured=structured, key=str(k))
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        if structured:
+            # A row count is a number the answer may state ("12 samples").
+            ev.literal.add(float(len(obj)))
+        for v in obj:
+            _walk_evidence(v, ev, structured=structured, key=key)
+    elif isinstance(obj, bool) or obj is None:
+        return
+    elif isinstance(obj, (int, float)):
+        number = float(obj)
+        ev.literal.add(number)
+        if structured:
+            ev.derivable.append(number)
+    elif isinstance(obj, str):
+        ev.literal.update(_numbers_in(obj))
+
+
+def _collect_evidence(tool_results: list[tuple[str, Any]]) -> _Evidence:
+    ev = _Evidence()
+    for tool_name, result in tool_results:
+        try:
+            _walk_evidence(
+                result, ev, structured=not _is_document_result(tool_name, result)
+            )
+        except Exception:
+            logger.debug("Layer 3: evidence walk failed for %s", tool_name, exc_info=True)
+            continue
+    return ev
+
+
+def _strip_non_claims(text: str, identifiers: set[str] | frozenset[str] = frozenset()) -> str:
+    """Remove everything in the answer whose digits are not a claim."""
+    clean = _CITATION_MARKER_RE.sub(" ", text)
+    clean = DESIGNATION_RE.sub(" ", clean)
+    clean = _REFERENCE_RE.sub(" ", clean)
+    for ident in sorted(identifiers, key=len, reverse=True):
+        if any(ch.isdigit() for ch in ident) and len(ident) <= 40:
+            pattern = r"(?<![\w-])" + re.escape(ident) + r"(?![\w-])"
+            clean = re.sub(pattern, " ", clean, flags=re.IGNORECASE)
+    return _IDENTIFIER_TOKEN_RE.sub(" ", HOLE_ID_RE.sub(" ", clean))
+
+
+def _extract_number_tokens(
+    text: str, identifiers: set[str] | frozenset[str] = frozenset()
+) -> list[tuple[float, float, float]]:
+    """(value, exact tolerance, rounded tolerance) for every numerical claim
+    in ``text`` — see `_written_tolerance`."""
+    out: list[tuple[float, float, float]] = []
+    for match in _NUMBER_RE.finditer(_strip_non_claims(text, identifiers)):
+        try:
+            val = _parse_number(match.group())
+        except ValueError:
+            continue
+        if val not in _SMALL_NUMBERS:
+            exact, rounded = _written_tolerance(match.group())
+            out.append((val, exact, rounded))
+    return out
+
+
 def _extract_numbers_from_text(text: str) -> list[float]:
     """Extract all numbers from response text.
 
-    Citation markers and drill-hole identifiers are removed first — neither
-    is a numerical claim, and both parse as one. See `_IDENTIFIER_TOKEN_RE`.
+    Citation markers, drill-hole identifiers, standard designations
+    ("NI 43-101") and page/figure/section references are removed first --
+    none is a numerical claim, and all parse as one. See `_NUMBER_RE` and
+    `_IDENTIFIER_TOKEN_RE`.
     """
-    clean = _IDENTIFIER_TOKEN_RE.sub(" ", _CITATION_MARKER_RE.sub("", text))
-    numbers = []
-    for match in _NUMBER_RE.finditer(clean):
-        try:
-            val = float(match.group())
-            if val not in _SMALL_NUMBERS:
-                numbers.append(val)
-        except ValueError:
-            continue
-    return numbers
+    return [value for value, _exact, _rounded in _extract_number_tokens(text)]
 
 
 def _collect_grounded_numbers(tool_results: list[tuple[str, Any]]) -> set[float]:
-    """Collect all numbers from tool results for grounding verification.
+    """Every content number in the tool results (identifiers, scores, pages
+    and other metadata excluded -- see `_NON_CONTENT_KEYS`)."""
+    return _collect_evidence(tool_results).literal
 
-    Hole IDs are stripped here too, and this is the half that mattered: the
-    response mentions a handful of holes, the serialised evidence carries one
-    `hole_id` per collar row. See `_IDENTIFIER_TOKEN_RE` for what those false
-    numbers did to the derivation tolerance.
-    """
-    grounded: set[float] = set()
 
-    for _tool_name, result in tool_results:
-        # Serialize the result to JSON and extract all numbers
-        try:
-            if hasattr(result, '__dict__'):
-                text = json.dumps(result.__dict__, default=str)
-            elif hasattr(result, 'model_dump'):
-                text = json.dumps(result.model_dump(), default=str)
-            else:
-                text = str(result)
-
-            text = _IDENTIFIER_TOKEN_RE.sub(" ", text)
-            for match in _NUMBER_RE.finditer(text):
-                try:
-                    grounded.add(float(match.group()))
-                except ValueError:
-                    continue
-        except Exception:
-            continue
-
-    return grounded
+#: Conversion factors applied to every grounded value, both directions:
+#: ppm and % (10 000), g/t and oz/t (31.1035), m and ft (3.28084), and
+#: the x1000 steps (m and km, ppb and ppm, t and kt).
+_CONVERSION_FACTORS: tuple[float, ...] = (10_000.0, 31.1035, 3.28084, 1_000.0)
 
 
 def _expand_grounded_with_conversions(grounded: set[float]) -> set[float]:
     """Expand the grounded set with all valid unit-conversion derivatives.
 
-    V1 conversions in scope (per Module 6 spec B2 scope gate):
-      ppm  ↔ %         divide/multiply by 10 000
-      g/t  ↔ oz/t      divide/multiply by 31.1035
-      m    ↔ ft        divide/multiply by 3.28084
-
-    For each grounded value we add both directions of every conversion.
-    This lets the guard accept "1.2 oz/t" when the tool returned "37.3 g/t"
-    (37.3 / 31.1035 ≈ 1.20).  The tolerance in _is_grounded_strict() handles
-    floating-point rounding.
+    For each grounded value we add both directions of every conversion in
+    `_CONVERSION_FACTORS`. This lets the guard accept "1.2 oz/t" when the
+    tool returned "37.3 g/t" (37.3 / 31.1035 = 1.20). Rounding is handled
+    on the ANSWER side by `_written_tolerance`, so the rounded / truncated
+    copies of every expanded value this used to add (``round(v, 1)``,
+    ``round(v, 2)``, ``int(v)``) are gone -- they multiplied the grounded set
+    several-fold, and ``int()`` is not rounding.
     """
     expanded: set[float] = set(grounded)
     for g in grounded:
         if abs(g) < 1e9:  # skip sentinel values
-            # ppm ↔ %
-            expanded.add(g / 10_000.0)
-            expanded.add(g * 10_000.0)
-            # g/t ↔ oz/t
-            expanded.add(g / 31.1035)
-            expanded.add(g * 31.1035)
-            # m ↔ ft
-            expanded.add(g / 3.28084)
-            expanded.add(g * 3.28084)
-    # Also add integer and one/two-decimal-place variants of all originals.
-    extras = set()
-    for v in expanded:
-        if abs(v) < 1e9:
-            extras.add(round(v, 1))
-            extras.add(round(v, 2))
-            with contextlib.suppress(OverflowError, ValueError):
-                extras.add(float(int(v)))
-    expanded |= extras
+            for factor in _CONVERSION_FACTORS:
+                expanded.add(g / factor)
+                expanded.add(g * factor)
     return expanded
+
+
+def _matches_grounded(value: float, tolerance: float, grounded: list[float]) -> bool:
+    """Is ``value`` (as written, give or take its rounding) a grounded value?
+
+    Compared by magnitude: a dip written -60 in one place and 60 in another
+    is the same measurement under two sign conventions.
+    """
+    target = abs(value)
+    return any(abs(target - abs(g)) <= tolerance + 1e-9 * max(1.0, abs(g)) for g in grounded)
 
 
 def verify_numbers(
@@ -540,75 +743,41 @@ def verify_numbers(
     except Exception:
         logger.debug("L3 tuple guard: extractor raised — skipping", exc_info=True)
 
-    raw_grounded = _collect_grounded_numbers(tool_results)
-    # Expand with unit-conversion derivatives (V1 in-scope conversions).
-    grounded = _expand_grounded_with_conversions(raw_grounded)
-
-    # Phase 5 follow-up (2026-05-19) — derivation tolerance.
-    # Bare "is X literally grounded?" check misclassifies legitimate
-    # computed values (averages, medians, counts, range bounds) as
-    # fabrications. The Qwen3-14B smoke matrix rejected an answer of
-    # the form "average depth is 375.3 m" because 375.3 was the mean of
-    # 66 in-evidence collar depths — not literally in the tool_results
-    # but trivially derivable from them.
+    # Grounding (reworked 2026-09-29, audit RAG-1).
     #
-    # Policy: an "ungrounded" number is allowed if it is plausibly
-    # DERIVED from the grounded set — either it matches the count, or
-    # it falls inside the [min, max] of grounded values at a comparable
-    # scale. Numbers OUTSIDE the evidence range remain flagged
-    # (that's the real fabrication failure mode).
-    # Audit 2026-06-27: the range/count DERIVATION tolerance below must be based
-    # on the RAW grounded evidence values, NOT the unit-conversion-expanded set.
-    # A single grounded value (e.g. count=10) expands to ~[0, 100000] via
-    # conversions (10% -> 100000 ppm, 10 m -> 10000 mm, …), so using the expanded
-    # set as [min,max] made the "inside grounded range" tolerance swallow
-    # clearly-fabricated numbers (5000 vs count=10) — effectively disabling
-    # Layer 3 whenever any evidence number existed. The literal is_grounded check
-    # above still uses the expanded set, so genuine unit conversions still pass.
-    grounded_finite = sorted(g for g in raw_grounded if abs(g) < 1e6)
-    g_count = len(grounded_finite)
+    # 1. Literal: the answer's number, give or take the rounding it was
+    #    written with (`_written_tolerance`), equals a CONTENT number from
+    #    the evidence or a unit conversion of one. Identifiers, scores,
+    #    pages and section numbers are no longer content (`_NON_CONTENT_KEYS`).
+    # 2. Derived: only against STRUCTURED rows. A mean / median / percentile
+    #    of collar depths or assay values sits within 0.5x-2x of some row
+    #    value, the Phase 5 follow-up (2026-05-19) case of "average depth is
+    #    375.3 m" over 66 collars. Document prose gets no such allowance:
+    #    with every number of a 5,000-character chunk in the window, almost
+    #    any invented grade had a same-magnitude neighbour and passed.
+    #
+    #    The window is still over RAW values, never the conversion-expanded
+    #    set (audit 2026-06-27: one count of 10 expands to roughly 0..100000).
+    #
+    # The old "equals the number of distinct grounded values" rule is gone:
+    # that count is an artefact of serialisation, not of the data. Row
+    # counts ARE grounded now; every list in a structured result adds its
+    # length (`_walk_evidence`).
+    evidence = _collect_evidence(tool_results)
+    literal = [g for g in evidence.literal if abs(g) < 1e9]
+    grounded = [
+        g for g in _expand_grounded_with_conversions(evidence.literal) if abs(g) < 1e9
+    ]
+    derivable = sorted(g for g in evidence.derivable if abs(g) < 1e6)
 
     warnings = []
-    for num in response_numbers:
-        # Check if number (or close approximation) exists in grounded set.
-        # Tolerance 0.1 covers floating-point rounding in unit conversions.
-        is_grounded = (
-            num in grounded
-            or any(abs(num - g) < 0.1 for g in grounded if abs(g) < 1e6)
-        )
-        if is_grounded:
+    for num, exact, rounded in _extract_number_tokens(text, evidence.identifiers):
+        if _matches_grounded(num, rounded, literal) or _matches_grounded(num, exact, grounded):
             continue
-
-        # Derivation tolerance — value plausibly computed from evidence.
-        if g_count and abs(num - float(g_count)) < 0.5:
+        if _is_same_order_as_any(num, derivable):
             logger.debug(
-                "Layer 3 derivation tolerance: %s ~ count(grounded)=%d",
-                num,
-                g_count,
-            )
-            continue
-        # An average or median sits between two grounded values of the SAME
-        # kind. It does not sit anywhere at all inside [min, max] of every
-        # number that appeared in the serialised evidence.
-        #
-        # That was the previous rule, and _collect_grounded_numbers regexes
-        # digit runs straight out of the JSON blob — ISO timestamps, UTM
-        # eastings, UUID fragments. One realistic collar row
-        # ({"ingested_at": "2026-08-20T14:03:11+00:00", "easting": 512345.7,
-        # "relevance_score": 0.82, "page": 12}) yields a grounded range of
-        # roughly [-20, 512345.7], so every plausible geological value on
-        # earth fell inside it and was accepted as "likely average/median".
-        # The guard only ever fired on numbers larger than the biggest
-        # coordinate in the payload — that is to say, essentially never for
-        # the grades, depths, widths and tonnages it exists to protect.
-        #
-        # Same order of magnitude as some individual grounded value is the
-        # property a derived statistic actually has. A mean of values around
-        # 400 is around 400; it is not 4, and it is not 512345.
-        if _is_same_order_as_any(num, grounded_finite):
-            logger.debug(
-                "Layer 3 derivation tolerance: %s is the scale of a grounded "
-                "value — likely average/median/percentile",
+                "Layer 3 derivation tolerance: %s is the scale of a structured "
+                "value, likely average/median/percentile",
                 num,
             )
             continue
@@ -922,6 +1091,98 @@ def _commodity_grounded(sym: str, bag: set[str]) -> bool:
     )
 
 
+#: "BH 12", "DDH 7" — the spaced form of a lettered hole ID as reports and
+#: OCR text often write it. Only used on the EVIDENCE side, to recognise a
+#: hole the evidence names; never on the answer.
+_SPACED_HOLE_ID_RE = re.compile(r"\b[A-Z]{2,6}\d{0,4} \d{1,6}\b")
+_ID_LIKE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./-]{0,23}$")
+
+
+def _evidence_hole_ids(tool_results: list[tuple[str, Any]]) -> set[str]:
+    """Canonical forms (see `canonical_hole_id`) of every hole the evidence names.
+
+    Reads tool-result VALUES only: lettered IDs and bare numeric IDs found
+    in any text (chunk prose, titles), their spaced variants, and short
+    ID-shaped values in their own right (the ``hole_id`` of a collar row).
+    Deliberately generous — it only ever DOWNGRADES a Layer 4 finding.
+    """
+    out: set[str] = set()
+    for _tool_name, result in tool_results:
+        try:
+            if hasattr(result, "model_dump"):
+                payload: Any = result.model_dump()
+            elif hasattr(result, "__dict__"):
+                payload = result.__dict__
+            else:
+                payload = result
+            for value in _collect_value_strings(payload):
+                if not any(ch.isdigit() for ch in value):
+                    continue
+                for m in HOLE_ID_RE.finditer(value):
+                    out.add(canonical_hole_id(m.group(1)))
+                for m in NUMERIC_HOLE_ID_RE.finditer(value):
+                    out.add(canonical_hole_id(m.group(1)))
+                for m in _SPACED_HOLE_ID_RE.finditer(value.upper()):
+                    out.add(canonical_hole_id(m.group(0)))
+                if _ID_LIKE_VALUE_RE.match(value.strip()):
+                    out.add(canonical_hole_id(value))
+        except Exception:
+            continue
+    return out
+
+
+def _measured_holes(answer: str, hole_ids: list[str]) -> set[str]:
+    """Canonical ids of the holes the answer attributes a measured value to.
+
+    A measured value is a number with a unit (`_NUMBER_WITH_UNIT_RE`). Each
+    is attributed to the nearest hole mention BEFORE it in the same
+    sentence — "Unlike BH-21, BH-12 intersected 7.4 g/t" gives 7.4 g/t to
+    BH-12 — or, when none precedes it, to the first one after it.
+    """
+    from app.agent.hallucination.claim_sentences import split_units  # noqa: PLC0415
+
+    measured: set[str] = set()
+    for unit in split_units(answer):
+        sentence = unit.text
+        mentions: list[tuple[int, int, str]] = []
+        for hid in hole_ids:
+            for m in re.finditer(r"(?<![\w-])" + re.escape(hid) + r"(?![\w-])", sentence, re.IGNORECASE):
+                mentions.append((m.start(), m.end(), canonical_hole_id(hid)))
+        if not mentions:
+            continue
+        masked = [(a, b) for a, b, _ in mentions] + [
+            (m.start(), m.end()) for m in _ALL_MARKER_RE.finditer(sentence)
+        ]
+        for m in _NUMBER_WITH_UNIT_RE.finditer(sentence):
+            if any(a < m.end() and m.start() < b for a, b in masked):
+                continue
+            before = [x for x in mentions if x[1] <= m.start()]
+            owner = max(before, key=lambda x: x[1]) if before else min(mentions, key=lambda x: x[0])
+            measured.add(owner[2])
+    return measured
+
+
+def _not_in_evidence_warning(hole_id: str, answer: str, hole_ids: list[str]) -> str:
+    """Layer 4 finding for a real hole the retrieved evidence never mentions.
+
+    Critical when the answer attributes a measured value (a number with a
+    unit) to the hole: that is the swapped-hole shape — BH-12's intercept
+    reported against BH-21 — and nothing else would catch it, because BH-21
+    exists and the number exists. Otherwise advisory: a hole named in
+    passing ("unlike BH-21, ...") is not a claim about it.
+    """
+    if canonical_hole_id(hole_id) in _measured_holes(answer, hole_ids):
+        return (
+            f"Layer 4: Drill-hole ID '{hole_id}' exists in silver.collars but "
+            f"appears in none of the evidence retrieved for this answer, and the "
+            f"answer attributes a measured value to it"
+        )
+    return (
+        f"Layer 4 advisory: Hole '{hole_id}' exists in silver.collars but is "
+        f"not in any evidence retrieved for this answer"
+    )
+
+
 async def verify_entities(
     text: str,
     project_id: str,
@@ -963,41 +1224,37 @@ async def verify_entities(
     clean = _ALL_MARKER_RE.sub("", text)
 
     # --- Hole IDs (original check) ---
+    # Standard designations first: "NI43-101" would match the lettered
+    # pattern and the "43-101" of "NI 43-101" the numeric one.
+    clean = DESIGNATION_RE.sub(" ", clean)
     candidates = list(_HOLE_ID_RE.findall(clean))
-    # Bare numeric IDs (36-1085, the Cameco Shirley Basin shape) only when
-    # the answer is actually talking about holes — the same gate viz_builder
-    # puts on this pattern, so a depth interval like "20-30 m" is not read
-    # as a hole name.
-    if _HOLE_CONTEXT_RE.search(clean):
-        # …but NOT the numeric tail of an alphanumeric ID already matched
-        # above. `\b` sits between the "-" and the "22" of "PLS-22-08", so
-        # NUMERIC_HOLE_ID_RE extracts "22-08" from it as though it were a
-        # second, separate hole. That hole is not in silver.collars, and the
-        # warning it produced starts with "Layer 4: Drill-hole ID" — the ONE
-        # prefix the severity classifier treats as critical on its own. So a
-        # perfectly grounded answer naming a real hole in the ordinary
-        # PREFIX-YY-NN format got its confidence floored and should_retry
-        # set, for a hole nobody mentioned.
-        #
-        # It hid because every fixture in tests/test_layer_golden_outputs.py
-        # passed pg_pool=None, so the lookup never ran there; the file even
-        # carried a test asserting the resulting silence. Giving those
-        # fixtures a working pool is what surfaced it.
-        #
-        # Containment, not suffix-matching: a numeric candidate is dropped
-        # whenever it appears inside any alphanumeric ID from the same
-        # answer. That is deliberately conservative — an answer naming both
-        # "PLS-22-08" and a genuinely separate hole "22-08" loses the check
-        # on the latter. Missing one check is recoverable; flooring
-        # confidence on correct answers is how a guard gets ignored, and
-        # then it is not a guard (see this file's own header on the
-        # false-positive cost).
-        _alpha = [hid.upper() for hid in candidates]
-        candidates.extend(
-            hid
-            for hid in _NUMERIC_HOLE_ID_RE.findall(clean)
-            if not any(hid.upper() in alpha for alpha in _alpha)
-        )
+    # Bare numeric IDs (36-1085, the Cameco Shirley Basin shape), only when
+    # the answer talks about holes, and never the numeric tail of an
+    # alphanumeric ID already matched above: "22-08" inside "PLS-22-08" was
+    # reported as a second, fabricated hole — critical on its own — on
+    # correct answers (fixed 2026-09-15; containment is deliberately
+    # conservative, an answer naming both "PLS-22-08" and a separate "22-08"
+    # loses the check on the latter).
+    #
+    # `find_numeric_hole_ids` also drops the shapes that are not holes at
+    # all: a depth interval followed by its unit ("120-126 m"), a page /
+    # figure / section / item reference, an interval preposition ("from
+    # 120-126") and a bare year range. Each of those was reported as a
+    # critical fabricated drill hole on correct answers (audit 2026-09-29,
+    # RAG-3). A candidate with no hole word shortly before it is kept but
+    # only ever advisory — see `numeric_far` below.
+    _alpha = [hid.upper() for hid in candidates]
+    numeric_far: set[str] = set()
+    for cand in find_numeric_hole_ids(clean):
+        if any(cand.value.upper() in alpha for alpha in _alpha):
+            continue
+        candidates.append(cand.value)
+        if not cand.near_context:
+            numeric_far.add(cand.value.upper())
+    # A numeric ID seen both near and far is near.
+    numeric_far -= {
+        c.value.upper() for c in find_numeric_hole_ids(clean) if c.near_context
+    }
 
     hole_ids = [
         hid.upper() for hid in dict.fromkeys(candidates)
@@ -1013,35 +1270,69 @@ async def verify_entities(
     grounded_tokens: set[str] = (
         _extract_entities_from_tool_results(tool_results) if tool_results else set()
     )
+    # Holes named anywhere in the evidence, separator-free and upper-cased
+    # (so "BH-12", "BH12" and "bh 12" are one hole — RAG-16).
+    evidence_holes: set[str] = (
+        _evidence_hole_ids(tool_results) if tool_results else set()
+    )
 
     # --- Hole ID resolution via PostGIS ---
     if hole_ids:
         try:
+            canon_ids = [canonical_hole_id(h) for h in hole_ids]
             async with pg_pool.acquire() as conn:
                 rows = await asyncio.wait_for(
                     conn.fetch(
-                        "SELECT hole_id FROM silver.collars "
-                        "WHERE hole_id = ANY($1) AND project_id = $2::uuid",
+                        # Case- and separator-insensitive (RAG-16): a hole
+                        # stored "Gh08-212" or "BH12" is the hole the answer
+                        # calls "GH08-212" / "BH-12". hole_id_canonical is
+                        # the ingest-side normal form (same rule as
+                        # canonical_hole_id); the regexp_replace arm covers
+                        # rows ingested before that column was populated.
+                        "SELECT hole_id, hole_id_canonical FROM silver.collars "
+                        "WHERE project_id = $2::uuid AND ("
+                        "UPPER(hole_id) = ANY($1) "
+                        "OR hole_id_canonical = ANY($3) "
+                        "OR regexp_replace(UPPER(hole_id), '[[:space:]_./-]+', '', 'g') = ANY($3))",
                         hole_ids,
                         project_id,
+                        canon_ids,
                     ),
                     timeout=settings.TIMEOUT_POSTGIS_S,
                 )
-            found = {r["hole_id"] for r in rows}
-            missing = [hid for hid in hole_ids if hid not in found]
-            for hid in missing:
+            found: set[str] = set()
+            for r in rows:
+                found.add(canonical_hole_id(r["hole_id"]))
+                canonical = r.get("hole_id_canonical") if hasattr(r, "get") else None
+                if canonical:
+                    found.add(str(canonical).upper())
+            for hid in hole_ids:
+                canon = canonical_hole_id(hid)
+                in_evidence = canon in evidence_holes or hid.lower() in grounded_tokens
+                if canon in found:
+                    # Exists in the project — but is it the hole the
+                    # EVIDENCE is about? An answer that moves BH-12's
+                    # intercept onto real hole BH-21 used to pass silently
+                    # (RAG-16).
+                    if tool_results and not in_evidence:
+                        warnings.append(_not_in_evidence_warning(hid, clean, hole_ids))
+                    continue
+                if hid in numeric_far:
+                    warnings.append(
+                        f"Layer 4 advisory: '{hid}' has the shape of a numeric "
+                        f"hole ID but no hole reference governs it and it is "
+                        f"not in silver.collars — not treated as a hole claim"
+                    )
+                    continue
                 # RAG-quality audit 2026-08-14 (finding 3, the "ZRY" case):
                 # a hole named verbatim in retrieved document chunks but
                 # absent from silver.collars is NOT a fabrication — the
-                # structured drill database simply doesn't cover it. Check
-                # the same tool-result token bag the commodity check uses
-                # before escalating. Only a hole absent from BOTH the DB
-                # and the retrieved evidence stays critical (the prefix
-                # "Layer 4: Drill-hole ID" is what
-                # run_post_assembly_validation classifies as critical /
-                # confidence-floor-worthy — the advisory prefix below is
-                # deliberately different so it never trips that bucket).
-                if hid.lower() in grounded_tokens:
+                # structured drill database simply doesn't cover it. Only a
+                # hole absent from BOTH the DB and the retrieved evidence
+                # stays critical (the prefix "Layer 4: Drill-hole ID" is
+                # what run_post_assembly_validation classifies as critical;
+                # the advisory prefix is deliberately different).
+                if in_evidence:
                     warnings.append(
                         f"Layer 4 advisory: Hole '{hid}' is not in the "
                         f"structured drill database (silver.collars) for "
@@ -1254,9 +1545,10 @@ def verify_constraints(
 # below are a small fixed vocabulary rather than a model.
 # ---------------------------------------------------------------------------
 
-# Sentence splitter — splits on . ! ? followed by whitespace.
-# Simple regex is intentional: no nltk dep, no spacy dep.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+# Sentences come from claim_sentences.split_units (shared with Layers 2 and
+# 5 since 2026-09-29): it does not break on "approx." / "Fig." / "e.g."
+# (RISK-4) and folds a trailing marker-only fragment onto its sentence.
+# Still regex-based: no nltk dep, no spacy dep.
 
 # Refusal phrases that are exempt from the completeness guard.
 # These sentences contain no factual claims and thus need no citation marker.
@@ -1358,16 +1650,34 @@ def verify_completeness(
         See the tolerance note in that function.
     """
     from app.agent.anomaly_detector import strip_proactive_insights  # noqa: PLC0415
+    from app.agent.hallucination.claim_sentences import (  # noqa: PLC0415
+        is_non_claim,
+        split_units,
+    )
+    from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
+        _is_system_text,
+    )
+    from app.agent.response_assembler import _is_refusal  # noqa: PLC0415
 
     answer_text = strip_proactive_insights(answer_text, proactive_insights_offset)
 
-    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(answer_text) if s.strip()]
+    # A refusal makes no claims (RAG-21). The Layer 1 refusal is three
+    # sentences, none of which matched the exemption list, so every refused
+    # query was persisted with three "uncited declarative sentence" findings
+    # and rendered as validation_state="flagged". A refusal that DOES carry
+    # markers is a qualified answer and is still checked.
+    if _is_system_text(answer_text) or (
+        _is_refusal(answer_text) and not ALL_MARKER_RE.search(answer_text)
+    ):
+        return []
+
+    sentences = [u.text.strip() for u in split_units(answer_text) if u.text.strip()]
 
     uncited: list[str] = []
 
     for i, sentence in enumerate(sentences):
         # Skip exempt sentences.
-        if _is_exempt(sentence):
+        if _is_exempt(sentence) or is_non_claim(sentence):
             continue
 
         # Does this sentence contain a marker?
@@ -1577,18 +1887,25 @@ async def run_post_assembly_validation(
     # on real corpora is unmeasured. Promoting it to a retry trigger is a
     # calibration decision, not a code change: add "Completeness:" to a
     # severity bucket once the warning rate has been observed.
+    #
+    # Since 2026-09-29 the ENFORCING half of this rule runs earlier, in
+    # validate_node (layer2_typed_output.enforce_claim_citations): uncited
+    # claim sentences are removed before this function sees the text, so on
+    # the live path this check is a backstop. Findings inside the tolerance
+    # are no longer thrown away — they still reach the warnings list, so the
+    # answer is "flagged" rather than "clean" (RAG-7c); the tolerance only
+    # governs the log line.
     completeness_warnings = verify_completeness(
         response.text, proactive_insights_offset=_insights_offset
     )
-    if len(completeness_warnings) <= tolerances["completeness"]:
-        if completeness_warnings:
-            logger.info(
-                "post_assembly_validation: completeness guard within "
-                "tolerance — %d uncited sentence(s) <= tolerance=%d",
-                len(completeness_warnings),
-                tolerances["completeness"],
-            )
-        completeness_warnings = []
+    if completeness_warnings and len(completeness_warnings) <= tolerances["completeness"]:
+        logger.info(
+            "post_assembly_validation: completeness guard within "
+            "tolerance — %d uncited sentence(s) <= tolerance=%d (still "
+            "reported; flags the answer)",
+            len(completeness_warnings),
+            tolerances["completeness"],
+        )
     all_warnings.extend(completeness_warnings)
 
     # NOTE on the numeric/entity tolerances.

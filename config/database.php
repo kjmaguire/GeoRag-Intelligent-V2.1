@@ -100,6 +100,14 @@ return [
             // can find and drop tables across every application schema.
             'search_path' => env('DB_SEARCH_PATH', 'public'),
             'sslmode' => env('DB_SSLMODE', 'prefer'),
+            // Set DB_POOLED=true whenever a transaction-mode pooler sits in
+            // front of this connection — PgBouncer, RDS Proxy, anything that
+            // hands a different backend to each transaction. RDS Proxy
+            // listens on 5432, so the port cannot be trusted to say so.
+            // BindWorkspaceRlsContext binds app.workspace_id per SESSION and
+            // refuses to serve requests (503) when this is true, rather than
+            // arm RLS on one backend and run the query on another (SEC-2).
+            'pooled' => (bool) env('DB_POOLED', false),
         ],
 
         // Dedicated migration connection (added 2026-05-22).

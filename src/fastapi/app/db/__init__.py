@@ -12,11 +12,21 @@ from app.db.scoped_pool import (
     lookup_and_rescope,
     scoped_connection,
 )
+from app.db.workspace_sweep import (
+    affected_row_count,
+    execute_per_workspace,
+    fetch_per_workspace,
+    list_workspace_ids,
+)
 
 __all__ = [
     "BareConnectionError",
     "UUID_RE",
+    "affected_row_count",
     "bind_workspace_scope",
+    "execute_per_workspace",
+    "fetch_per_workspace",
+    "list_workspace_ids",
     "lookup_and_rescope",
     "scoped_connection",
 ]

@@ -14,6 +14,7 @@ helm install georag charts/georag/ \
   --create-namespace --namespace georag \
   --set secrets.postgresPassword="$(openssl rand -base64 32)" \
   --set secrets.pgAppPassword="$(openssl rand -base64 32)" \
+  --set secrets.martinDbPassword="$(openssl rand -hex 32)" \
   --set secrets.redisPassword="$(openssl rand -base64 32)" \
   --set secrets.fastapiServiceKey="$(openssl rand -base64 48)" \
   --set secrets.laravelAppKey="base64:$(openssl rand -base64 32)"
@@ -21,6 +22,23 @@ helm install georag charts/georag/ \
 # 3. Watch pods come up
 kubectl -n georag get pods -w
 ```
+
+### Database roles (tenant isolation)
+
+Postgres RLS only applies to a role that is neither SUPERUSER nor
+BYPASSRLS. The chart's `postgresql` image creates `georag` as a superuser;
+that role is for the `pg-init` Job and operator migrations only. Every
+Laravel pod and the Hatchet worker connect as `georag_app` (password
+`secrets.pgAppPassword`), Martin as `martin_readonly`
+(`secrets.martinDbPassword` — hex, because it is embedded in a URL). The
+`pg-init` Job creates or re-passwords both on every install/upgrade and
+fails if either can bypass RLS. Laravel talks to Postgres directly, not
+through PgBouncer: its per-request `app.workspace_id` binding is
+session-scoped (see `BindWorkspaceRlsContext`, which refuses to serve when
+`DB_POOLED=true`). The ingress routes only to Laravel — map tiles go through
+Laravel's authenticating `/tiles/...` proxy, and `/internal` is never
+exposed. Laravel migrations (`php artisan migrate`) are an operator step,
+run with the `georag` credentials, not from a runtime pod.
 
 ## Quick start (vanilla)
 
@@ -31,6 +49,7 @@ helm install georag charts/georag/ \
   --set ingress.host=georag.your-domain.com \
   --set secrets.postgresPassword="$(openssl rand -base64 32)" \
   --set secrets.pgAppPassword="$(openssl rand -base64 32)" \
+  --set secrets.martinDbPassword="$(openssl rand -hex 32)" \
   --set secrets.redisPassword="$(openssl rand -base64 32)" \
   --set secrets.fastapiServiceKey="$(openssl rand -base64 48)" \
   --set secrets.laravelAppKey="base64:$(openssl rand -base64 32)"

@@ -10,13 +10,13 @@ matches the destination pod's port, not the Service port — pgbouncer
 listens on 5432 named `pgbouncer` behind a 6432 Service).
 
 Traffic map (→ = egress from the row's component):
-  ingress-controller → laravel-octane:http, fastapi:http (/internal),
-                       martin:http (/tiles), laravel-reverb:ws
-  laravel-octane     → fastapi, pgbouncer, redis, laravel-reverb,
-                       seaweedfs:s3, martin, internet:443
-  laravel-horizon    → fastapi, pgbouncer, redis, laravel-reverb,
+  ingress-controller → laravel-octane:http, laravel-reverb:ws
+                       (only — SEC-3: no /tiles or /internal bypass)
+  laravel-octane     → fastapi, postgresql (direct, SEC-2), redis,
+                       laravel-reverb, seaweedfs:s3, martin, internet:443
+  laravel-horizon    → fastapi, postgresql (direct), redis, laravel-reverb,
                        seaweedfs:s3, internet:443
-  laravel-reverb     → pgbouncer, redis
+  laravel-reverb     → postgresql (direct), redis
   fastapi            → pgbouncer, postgresql (direct), redis, qdrant,
                        seaweedfs:s3, hatchet, laravel-octane (service-key
                        callbacks), internet:443
@@ -87,7 +87,7 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
 {{- $components := list
   (dict "name" "fastapi" "enabled" .Values.fastapi.enabled
         "ingressFrom" (concat (list "laravel-octane" "laravel-horizon") $hatchetWorkers)
-        "fromIngressController" true "ingressPorts" (list "http")
+        "fromIngressController" false "ingressPorts" (list "http")
         "egress" (list
           (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
           (dict "to" "postgresql" "ports" (list "postgres"))
@@ -102,7 +102,7 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
         "fromIngressController" true "ingressPorts" (list "http")
         "egress" (list
           (dict "to" "fastapi" "ports" (list "http"))
-          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "postgresql" "ports" (list "postgres"))
           (dict "to" "redis" "ports" (list "redis"))
           (dict "to" "laravel-reverb" "ports" (list "ws"))
           (dict "to" "seaweedfs" "ports" (list "s3"))
@@ -111,7 +111,7 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
   (dict "name" "laravel-horizon" "enabled" .Values.laravelHorizon.enabled
         "egress" (list
           (dict "to" "fastapi" "ports" (list "http"))
-          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "postgresql" "ports" (list "postgres"))
           (dict "to" "redis" "ports" (list "redis"))
           (dict "to" "laravel-reverb" "ports" (list "ws"))
           (dict "to" "seaweedfs" "ports" (list "s3")))
@@ -120,7 +120,7 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
         "ingressFrom" (list "laravel-octane" "laravel-horizon")
         "fromIngressController" true "ingressPorts" (list "ws")
         "egress" (list
-          (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
+          (dict "to" "postgresql" "ports" (list "postgres"))
           (dict "to" "redis" "ports" (list "redis"))))
   (dict "name" "hatchet-engine" "enabled" .Values.hatchet.enabled
         "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
@@ -137,14 +137,14 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
         "external" true)
   (dict "name" "martin" "enabled" .Values.martin.enabled
         "ingressFrom" (list "laravel-octane")
-        "fromIngressController" true "ingressPorts" (list "http")
+        "fromIngressController" false "ingressPorts" (list "http")
         "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
   (dict "name" "pgbouncer" "enabled" .Values.pgbouncer.enabled
-        "ingressFrom" (concat $appTier $hatchetWorkers)
+        "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
         "ingressPorts" (list "pgbouncer")
         "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
   (dict "name" "postgresql" "enabled" .Values.postgresql.enabled
-        "ingressFrom" (concat (list "pgbouncer" "fastapi" "martin" "pg-init" "audit-chain-verify") $hatchetWorkers)
+        "ingressFrom" (concat (list "pgbouncer" "fastapi" "martin" "pg-init" "audit-chain-verify" "laravel-octane" "laravel-horizon" "laravel-reverb") $hatchetWorkers)
         "ingressPorts" (list "postgres"))
   (dict "name" "qdrant" "enabled" .Values.qdrant.enabled
         "ingressFrom" (concat (list "fastapi") $hatchetWorkers)

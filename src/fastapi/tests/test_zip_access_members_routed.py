@@ -57,8 +57,10 @@ async def test_access_member_is_dispatched_to_ingest_tabular(
 
     assert counts["tabular"] == 1
     assert counts["unknown"] == 0 and counts["sidecar"] == 0
-    store.put_bytes.assert_called_once()
-    key = store.put_bytes.call_args.args[1]
+    # Streamed from disk, not read into memory first (ING-17).
+    store.put_file.assert_called_once()
+    store.put_bytes.assert_not_called()
+    key = store.put_file.call_args.args[1]
     assert key.startswith(f"tables/{_PJ}/")
     assert key.lower().endswith((".mdb", ".accdb"))
     dispatch.assert_awaited_once()

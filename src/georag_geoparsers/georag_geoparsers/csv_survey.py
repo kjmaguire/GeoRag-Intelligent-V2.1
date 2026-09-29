@@ -25,7 +25,8 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
-from georag_geoparsers._dip_convention import DipConvention, detect_dip_convention, normalize_dip
+from georag_geoparsers._depth_units import convert_feet_columns
+from georag_geoparsers._dip_convention import DipConvention, normalize_dip, resolve_dip_convention
 from georag_geoparsers._drill_schema import SURVEY_ALIASES, SURVEY_REQUIRED
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
@@ -185,7 +186,7 @@ def _validate_row(
             record[canonical] = str(raw_val).strip() if raw_val is not None else None
 
     # --- Dip normalisation ---
-    if record.get("dip") is not None and dip_convention == "down_positive":
+    if record.get("dip") is not None:
         record["dip"] = normalize_dip(record["dip"], dip_convention)
 
     # --- Range checks ---
@@ -384,45 +385,32 @@ def parse_csv_surveys(
     canonical_cols = [c for c in df_renamed.columns if c in column_map]
     df_trimmed = df_renamed.select(canonical_cols)
 
+    # --- Length units named in the header (GIS-3): "Depth_ft" -> metres ---
+    df_trimmed, unit_warning = convert_feet_columns(
+        df_trimmed,
+        columns={"depth": "depth"},
+        headers=column_map,
+        fields=("depth",),
+        parser="csv_survey",
+    )
+    if unit_warning is not None:
+        global_warnings.append(unit_warning)
+
     # --- Dip convention detection (first pass) ---
     dip_convention: DipConvention = "down_negative"
     if "dip" in column_map:
         raw_dips = df_trimmed["dip"].to_list()
         numeric_dips = [_cast_float(v) for v in raw_dips]
         numeric_dips = [d for d in numeric_dips if d is not None]
-        dip_convention = detect_dip_convention(numeric_dips)
-
-        if dip_convention == "down_positive":
-            global_warnings.append({
-                "row": None,
-                "code": _CODE_DIP_CONVENTION,
-                "message": (
-                    "detected down_positive dip convention — flipping sign to down_negative"
-                ),
-                "context": {
-                    "source_convention": dip_convention,
-                    "sample_count": len(numeric_dips),
-                },
-            })
+        dip_resolution = resolve_dip_convention(
+            numeric_dips, header=column_map["dip"], parser="csv_survey",
+        )
+        dip_convention = dip_resolution.convention
+        global_warnings.extend(dip_resolution.warnings)
+        if dip_convention != "down_negative":
             logger.info(
-                "csv_survey: down_positive dip convention detected (%d samples) — normalising",
-                len(numeric_dips),
-            )
-        elif dip_convention == "ambiguous":
-            global_warnings.append({
-                "row": None,
-                "code": _CODE_DIP_AMBIGUOUS,
-                "message": (
-                    "dip convention is ambiguous — no sign flip applied"
-                ),
-                "context": {
-                    "source_convention": dip_convention,
-                    "sample_count": len(numeric_dips),
-                },
-            })
-            logger.warning(
-                "csv_survey: ambiguous dip convention (%d samples) — no normalisation",
-                len(numeric_dips),
+                "csv_survey: dip convention %s (%d samples)",
+                dip_convention, len(numeric_dips),
             )
 
     records: list = []

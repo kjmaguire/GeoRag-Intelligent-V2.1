@@ -32,7 +32,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ValidationError
 
-from app.config import settings
+from app.services.auth import verify_service_key
 from app.services.flow_jwt import averify_flow_jwt_token
 from app.services.flow_registry import get_flow, list_flow_names
 
@@ -54,25 +54,6 @@ router = APIRouter(prefix="/internal/v1/integrations", tags=["integrations"])
 # =============================================================================
 # Auth — per-flow JWT only (Phase 3 Step 7 — Kestra sunset)
 # =============================================================================
-def _check_diagnostic_auth(x_service_key: str | None = Header(default=None)) -> None:
-    """Auth dep for the diagnostic listing endpoint. The shared
-    X-Service-Key remains the auth here — there's no specific flow
-    being triggered, so per-flow JWTs don't apply. The shared key is
-    used only for read-only listing and remains scoped to internal
-    operators."""
-    expected = settings.FASTAPI_SERVICE_KEY
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="FASTAPI_SERVICE_KEY not configured",
-        )
-    if x_service_key != expected:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid X-Service-Key",
-        )
-
-
 async def _check_trigger_auth(
     flow_name: str, authorization: str | None,
 ) -> None:
@@ -116,7 +97,9 @@ class FlowListResponse(BaseModel):
 @router.get(
     "/flows",
     response_model=FlowListResponse,
-    dependencies=[Depends(_check_diagnostic_auth)],
+    # The shared service key, through the canonical constant-time check that
+    # also honours FASTAPI_SERVICE_KEY_PREVIOUS during a rotation (SEC-11).
+    dependencies=[Depends(verify_service_key)],
 )
 async def list_flows() -> FlowListResponse:
     """Diagnostic — list registered flow names. Used by the Step 6

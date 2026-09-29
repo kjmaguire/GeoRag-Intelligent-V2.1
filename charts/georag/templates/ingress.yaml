@@ -23,24 +23,13 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          # Internal FastAPI routes — for ops / Hatchet integrations.
-          # NOT exposed by default; the Laravel front door is what users hit.
-          - path: /internal
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Release.Name }}-fastapi
-                port:
-                  number: {{ .Values.fastapi.service.port }}
-          # Map tiles
-          - path: /tiles
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Release.Name }}-martin
-                port:
-                  number: {{ .Values.martin.service.port }}
-          # Default: Laravel webapp
+          # Laravel is the only front door (SEC-3, 2026-09-29). There used
+          # to be a /tiles rule straight to Martin, which shadowed Laravel's
+          # tile proxy — the thing that authenticates, checks membership
+          # and resolves workspace_id server-side — and an unconditional
+          # /internal rule straight to FastAPI whose comment said "NOT
+          # exposed by default". Neither may come back: tiles go through
+          # /tiles/... on Laravel, and /internal is service-to-service only.
           - path: /
             pathType: Prefix
             backend:

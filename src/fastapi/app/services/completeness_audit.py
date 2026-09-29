@@ -265,9 +265,15 @@ class CompletenessAudit:
         # If the table is empty for this pdf_id the check is a noop.
         async with self._pool.acquire() as conn:
             try:
+                # latitude/longitude are the writer's column names
+                # (pdf_coordinates.py). This read `lat, lon`, which do not
+                # exist, so the UndefinedColumn below was swallowed on every
+                # run and coords_unmappable never fired (GIS-18).
                 coords = await conn.fetch(
-                    "SELECT page, lat, lon FROM silver.pdf_coordinates"
-                    " WHERE pdf_id = $1 AND lat IS NOT NULL AND lon IS NOT NULL"
+                    "SELECT page, latitude AS lat, longitude AS lon"
+                    " FROM silver.pdf_coordinates"
+                    " WHERE pdf_id = $1 AND latitude IS NOT NULL"
+                    " AND longitude IS NOT NULL"
                     " LIMIT 50",
                     pdf_id,
                 )
