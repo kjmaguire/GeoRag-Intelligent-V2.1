@@ -448,11 +448,11 @@ honoured by both for A/B parity.
 - **Image** `georag/fastapi:latest`; **command**
   `python3 -m app.hatchet_workflows.worker`. The 2026-06-23 sweep removed
   the bootstrap `pip install` shim — everything is in `pyproject.toml`.
-- **Pool** `WORKER_POOL=all`: 50 workflows registered
+- **Pool** `WORKER_POOL=all`: 51 workflows registered
   (`python -m app.hatchet_workflows.worker --list` prints them without
-  connecting). That is 13 in the `ingestion` list (`outbox_dispatcher`,
+  connecting). That is 14 in the `ingestion` list (`outbox_dispatcher`,
   `ingest_pdf`, `tiff_normalize`, `ingest_zip_archive`, `ingest_spatial`,
-  `ingest_tabular`, `ingest_well_logs`, `stale_run_detector`,
+  `ingest_tabular`, `ingest_well_logs`, `ingest_geophysics`, `stale_run_detector`,
   `nightly_ingestion_integrity`, `reliability_metrics_publisher` and the
   three Phase 0 ingestion agents) and 38 in the `ai` list (crons such as
   `audit_ledger_verify`, `retention_sweep`, `mv_refresh_silver`,

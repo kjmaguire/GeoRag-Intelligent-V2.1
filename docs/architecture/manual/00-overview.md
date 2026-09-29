@@ -64,7 +64,7 @@ The repo is a single monorepo containing:
   worker (`hatchet-worker`, `WORKER_POOL=all`,
   [worker.py](../../../src/fastapi/app/hatchet_workflows/worker.py)) for
   durable file ingestion, every scheduled cron, outbox dispatch, embedding,
-  audit verification and report generation — 50 registered workflows,
+  audit verification and report generation — 51 registered workflows,
   inventoried in the architecture doc §07b.
 - The **`georag_geoparsers`** package
   ([src/georag_geoparsers/](../../../src/georag_geoparsers/)) — the format
