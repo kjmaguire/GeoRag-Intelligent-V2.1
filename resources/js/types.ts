@@ -79,9 +79,11 @@ export interface CollarRecord {
     easting: number;
     northing: number;
     elevation: number;
-    total_depth: number;
+    /** Optional since 2026-09-29 (§04e): null when the source had no EOH. */
+    total_depth: number | null;
     hole_type: string;
     azimuth: number;
+    /** Degrees from horizontal, negative = down, positive = up-hole (§04e). */
     dip: number;
     drill_date: string | null;
     status: string;

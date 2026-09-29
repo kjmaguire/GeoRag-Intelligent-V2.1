@@ -286,9 +286,12 @@ class CollarRecord:
     easting: float
     northing: float
     elevation: float
-    total_depth: float
+    #: None when the collar records no total depth — the column is optional
+    #: since 2026-09-29 (§04e, SME-approved). Never read as 0.
+    total_depth: float | None
     hole_type: str
     azimuth: float
+    #: Degrees from horizontal, negative = down; positive = up-hole (§04e).
     dip: float
     status: str
     drill_date: str | None
@@ -4311,7 +4314,8 @@ class DrillTraceCollar:
     longitude: float
     latitude: float
     elevation: float
-    total_depth: float
+    #: None when the collar records no total depth (§04e, 2026-09-29).
+    total_depth: float | None
     hole_type: str
     status: str
     azimuth: float
@@ -4493,7 +4497,7 @@ async def query_drill_traces_3d(
             c.hole_type                                         AS hole_type,
             c.status                                            AS status,
             COALESCE(c.elevation, 0.0)::float                   AS elevation,
-            COALESCE(c.total_depth, 0.0)::float                 AS total_depth,
+            c.total_depth::float                                AS total_depth,
             COALESCE(c.azimuth, 0.0)::float                     AS azimuth,
             COALESCE(c.dip, -90.0)::float                       AS dip,
             ST_X(c.geom_4326)::float                            AS longitude,
@@ -4560,7 +4564,10 @@ async def query_drill_traces_3d(
         lon = float(r["longitude"])
         lat = float(r["latitude"])
         elev = float(r["elevation"]) if r.get("elevation") is not None else 0.0
-        td = float(r["total_depth"]) if r.get("total_depth") is not None else 0.0
+        # None when the collar has no total depth (§04e, 2026-09-29): the
+        # stored trace (if any) is drawn as-is, and the placeholder below
+        # collapses to the collar point rather than inventing a length.
+        td = float(r["total_depth"]) if r.get("total_depth") is not None else None
         az = float(r["azimuth"]) if r.get("azimuth") is not None else 0.0
         dip = float(r["dip"]) if r.get("dip") is not None else -90.0
 
@@ -4578,9 +4585,10 @@ async def query_drill_traces_3d(
             # Fallback when silver.drill_traces has no row for this
             # collar (e.g. unusable orientation). Emit a 2-point vertical
             # placeholder so the card still renders the hole position.
+            placeholder_td = td or 0.0
             trace_points = [
                 {"x": lon, "y": lat, "z": elev, "depth_m": 0.0},
-                {"x": lon, "y": lat, "z": elev - td, "depth_m": td},
+                {"x": lon, "y": lat, "z": elev - placeholder_td, "depth_m": placeholder_td},
             ]
 
         collars.append(DrillTraceCollar(

@@ -29,6 +29,7 @@ from app.agent.workspace_dependency import OptionalWorkspace
 from app.db.scoped_pool import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.auth import verify_service_key
+from app.services.collar_depth import EFFECTIVE_TOTAL_DEPTH_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -87,15 +88,19 @@ async def _fetch_long_section_collars(
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_long_section_collars"
     ) as conn:
+        # total_depth is optional since 2026-09-29 (§04e): a collar without one
+        # is drawn to its deepest survey/interval instead of being dropped.
         rows = await conn.fetch(
-            """
+            f"""
             WITH c AS (
-                SELECT hole_id, geom_4326, elevation, total_depth, azimuth, dip
-                  FROM silver.collars
-                 WHERE project_id = $1::uuid
-                   AND total_depth > 0
-                   AND geom_4326 IS NOT NULL
-                 ORDER BY hole_id
+                SELECT c.hole_id, c.geom_4326, c.elevation,
+                       {EFFECTIVE_TOTAL_DEPTH_SQL} AS total_depth,
+                       c.azimuth, c.dip
+                  FROM silver.collars c
+                 WHERE c.project_id = $1::uuid
+                   AND {EFFECTIVE_TOTAL_DEPTH_SQL} > 0
+                   AND c.geom_4326 IS NOT NULL
+                 ORDER BY c.hole_id
                  LIMIT 100
             ), frame AS (
                 SELECT CASE WHEN ST_Y(ST_Centroid(ST_Collect(geom_4326))) >= 0

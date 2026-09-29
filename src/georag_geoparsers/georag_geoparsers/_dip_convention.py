@@ -1,9 +1,15 @@
 """Dip sign-convention detection and normalisation.
 
-The silver.collars table enforces dip >= -90 AND dip <= 0 (down-negative).
+silver.collars stores dip from horizontal, down-negative: -90 is vertical
+down, 0 horizontal, and — since 2026-09-29 (§04e, SME-approved, Kyle) — a
+positive dip up to +90 is an UP-HOLE, stored as measured
+(``chk_dip_range``: ``dip BETWEEN -90 AND 90``).
 Some CSV exports use down-positive convention (positive values for downward dip).
-This module detects which convention a batch of dip values uses and normalises
-them to down-negative before insertion.
+This module detects which convention a FILE uses and normalises it to
+down-negative before insertion. The decision is per file, never per value: a
+file whose dips are mostly positive is a down-positive file and every value is
+flipped; an individual positive dip in a down-negative file is an up-hole and
+is left alone.
 """
 
 from __future__ import annotations
@@ -155,10 +161,13 @@ def resolve_dip_convention(
     * Everything else -> :func:`detect_dip_convention`, with the result
       reported (and marked ``low_confidence`` for a small file).
 
-    Up-holes (dip above horizontal) cannot be represented: the database
-    CHECK is ``dip BETWEEN -90 AND 0``. A fan of up-holes recorded
-    down-negative therefore looks down-positive and is flipped; that is a
-    schema decision, not something this function can detect.
+    Up-holes (dip above horizontal) are stored as measured since
+    2026-09-29 (§04e): a positive dip in a down-negative file survives. The
+    one case this function cannot tell apart is a file made up MOSTLY of
+    up-holes recorded down-negative (an underground fan drilled upward): it
+    looks down-positive and is flipped, with the
+    ``dip_convention_normalized`` warning saying so. Kyle kept the heuristic
+    knowing that; the warning is how a geologist spots it.
     """
     from georag_geoparsers._header_match import normalize_header  # noqa: PLC0415
 
@@ -210,8 +219,8 @@ def resolve_dip_convention(
             "code": CODE_AMBIGUOUS,
             "message": (
                 "dip convention is ambiguous (mix of positive and negative "
-                "values) — no sign flip applied; a dip above horizontal "
-                "fails the range check"
+                "values) — no sign flip applied; positive values are stored "
+                "as up-holes (dip above horizontal)"
             ),
             "context": {
                 "source_convention": convention,

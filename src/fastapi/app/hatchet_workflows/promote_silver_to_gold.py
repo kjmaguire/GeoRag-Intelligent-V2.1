@@ -135,6 +135,7 @@ from pydantic import BaseModel, Field
 from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
+from app.services.collar_depth import EFFECTIVE_TOTAL_DEPTH_SQL
 
 log = logging.getLogger("georag.promote_silver_to_gold")
 
@@ -585,9 +586,11 @@ def _clean_stations(
 ) -> list[tuple[float, float, float]]:
     """Usable survey stations, deduplicated by depth and sorted.
 
-    Rejects the four cases the retired asset enumerated: a NULL azimuth or
-    dip, a dip above horizontal or past vertical, and a duplicate depth
-    (last row wins, matching "keep latest updated_at").
+    Rejects a NULL azimuth or dip, a dip past vertical in either direction
+    (outside -90..90), and a duplicate depth (last row wins, matching "keep
+    latest updated_at"). A dip above horizontal is NOT rejected any more: it
+    is an up-hole, stored as measured since 2026-09-29 (§04e, SME-approved),
+    and ``minimum_curvature`` desurveys it upward.
     """
     by_depth: dict[float, tuple[float, float, float]] = {}
     for r in rows:
@@ -595,7 +598,7 @@ def _clean_stations(
         dip = r["dip"]
         if az is None or dip is None:
             continue
-        if dip > 0 or dip < -90:
+        if dip > 90 or dip < -90:
             continue
         depth = float(r["depth"])
         by_depth[depth] = (depth, float(az), float(dip))
@@ -690,10 +693,14 @@ async def _promote_traces(
     magnetic_declination = project_row["magnetic_declination"] if project_row else None
     project_epsg = project_row["crs_epsg"] if project_row else None
 
+    # total_depth is optional since 2026-09-29 (§04e): a collar without one
+    # traces its straight-line fallback to the deepest survey station or
+    # interval on record (app/services/collar_depth.py), not to 0 and not
+    # to nothing.
     collars = await conn.fetch(
-        """
+        f"""
         SELECT c.collar_id, c.elevation,
-               c.total_depth, c.azimuth, c.dip,
+               {EFFECTIVE_TOTAL_DEPTH_SQL} AS total_depth, c.azimuth, c.dip,
                ST_X(c.geom_4326) AS lon,
                ST_Y(c.geom_4326) AS lat,
                t.survey_hash AS existing_hash

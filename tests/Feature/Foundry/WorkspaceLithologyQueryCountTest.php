@@ -6,6 +6,7 @@ namespace Tests\Feature\Foundry;
 
 use App\Models\Project;
 use App\Models\User;
+use App\Support\HoleId;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -166,7 +167,11 @@ final class WorkspaceLithologyQueryCountTest extends TestCase
                         }
                         foreach ($hole['bands'] as $ordinal => $band) {
                             // Grouping: every band belongs to its own hole.
-                            if ($band['code'] !== $hole['hole_id'].'-B'.$ordinal) {
+                            // hole_id is the canonical id (always derived
+                            // since §04e 2026-09-29); the band codes were
+                            // seeded from the stored spelling.
+                            if (HoleId::canonicalize(explode('-B', $band['code'])[0]) !== $hole['hole_id']
+                                || ! str_ends_with($band['code'], '-B'.$ordinal)) {
                                 return false;
                             }
                             // Ordering: ROW_NUMBER's ORDER BY depth_from.

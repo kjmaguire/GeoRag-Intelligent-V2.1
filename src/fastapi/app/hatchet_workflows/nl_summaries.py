@@ -239,7 +239,12 @@ def render_collar_passage(row: dict[str, Any]) -> str:
         + "."
     )
 
-    depth = f" Total depth {row['total_depth']} m."
+    # Optional since 2026-09-29 (§04e): never "None m".
+    depth = (
+        f" Total depth {row['total_depth']} m."
+        if row.get("total_depth") is not None
+        else " Total depth not recorded."
+    )
     drilled = f" Drilled {row['drill_date']}." if row.get("drill_date") else ""
 
     status_value = row.get("hole_status") or row.get("status")

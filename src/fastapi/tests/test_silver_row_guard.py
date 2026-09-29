@@ -86,18 +86,38 @@ class TestBoundsMatchMigrations:
             f"mirrors {bounds}; update the guard with the migration"
         )
 
+    #: Later migrations that redefine a mirrored CHECK AND that this module
+    #: has already followed. Adding one here is the acknowledgement.
+    _FOLLOWED: dict[str, frozenset[str]] = {
+        # §04e, SME-approved 2026-09-29: up-holes allowed, -90..90.
+        "chk_dip_range": frozenset({"2026_09_29_230000_allow_up_hole_dips_on_collars.php"}),
+    }
+
     @pytest.mark.parametrize("name", [
         "chk_total_depth_positive", "chk_elevation_range", "chk_azimuth_range",
         "chk_dip_range", "chk_rqd_range", "chk_recovery_range",
     ])
     def test_no_later_migration_redefines_it(self, name: str) -> None:
         """A drop outside the hardening migration's own down() means a change."""
+        followed = self._FOLLOWED.get(name, frozenset())
         for filename, text in _migration_texts():
-            if filename.startswith("2026_04_13_100000_database_hardening"):
+            if filename.startswith("2026_04_13_100000_database_hardening") or filename in followed:
                 continue
             assert not re.search(rf"DROP\s+CONSTRAINT\s+(IF\s+EXISTS\s+)?{name}\b", text), (
                 f"{filename} drops {name}: silver_row_guard must be updated to match"
             )
+
+    def test_dip_range_allows_up_holes(self) -> None:
+        """§04e 2026-09-29: the widened CHECK is the one the guard mirrors."""
+        assert guard.COLLAR_DIP_RANGE == (-90.0, 90.0)
+        assert tuple(_numbers(_check_clause("chk_dip_range"))) == (-90.0, 90.0)
+
+    def test_total_depth_is_nullable(self) -> None:
+        """§04e 2026-09-29: the migration drops NOT NULL, keeps > 0."""
+        text = (MIGRATIONS / "2026_09_29_230100_make_collar_total_depth_optional.php").read_text()
+        assert re.search(r"ALTER\s+COLUMN\s+total_depth\s+DROP\s+NOT\s+NULL", text)
+        # The > 0 CHECK is kept, not dropped: a present depth is still positive.
+        assert not re.search(r"DROP\s+CONSTRAINT\s+(IF\s+EXISTS\s+)?chk_total_depth_positive", text)
 
     @pytest.mark.parametrize(("migration", "widths"), [
         ("2026_04_09_180100_create_collars_table.php",
@@ -139,12 +159,29 @@ class TestGuardCollar:
         assert values["hole_type"] == values["status"] == "unknown"
         assert not issues
 
-    @pytest.mark.parametrize("td", [None, "", 0, 0.0, -5, float("nan")])
-    def test_missing_total_depth_skips_the_row_never_zero(self, td: object) -> None:
+    @pytest.mark.parametrize("td", [None, "", float("nan"), "n/a"])
+    def test_missing_total_depth_keeps_the_row_with_null(self, td: object) -> None:
+        """§04e 2026-09-29: optional — stored NULL, never 0, row kept."""
         issues = RowIssues()
-        assert guard_collar(_collar(total_depth=td), issues) is None
-        assert len(issues.skipped) == 1
-        assert issues.skipped[0][0] == 2   # source row carried through
+        values = guard_collar(_collar(total_depth=td), issues)
+        assert values is not None and values["total_depth"] is None
+        assert not issues.skipped and not issues.blanked
+
+    @pytest.mark.parametrize("td", [0, 0.0, -5])
+    def test_non_positive_total_depth_is_blanked_not_zero(self, td: object) -> None:
+        issues = RowIssues()
+        values = guard_collar(_collar(total_depth=td), issues)
+        assert values is not None and values["total_depth"] is None
+        assert [b[0] for b in issues.blanked] == ["total_depth"]
+        assert not issues.skipped
+
+    @pytest.mark.parametrize("dip", [0.5, 30.0, 60.0])
+    def test_up_hole_dip_is_kept_as_measured(self, dip: float) -> None:
+        """§04e 2026-09-29: a positive dip is an up-hole, not an error."""
+        issues = RowIssues()
+        values = guard_collar(_collar(dip=dip), issues)
+        assert values is not None and values["dip"] == dip
+        assert not issues
 
     def test_missing_total_depth_keeps_the_stored_one(self) -> None:
         issues = RowIssues()
@@ -156,7 +193,7 @@ class TestGuardCollar:
         ("elevation", 9650.0),     # mine-grid RL offset
         ("elevation", 12000.0),    # feet
         ("elevation", -600.0),
-        ("dip", 60.0),             # up-hole / positive-down convention
+        ("dip", 91.0),             # past vertical-up
         ("dip", -91.0),
         ("azimuth", 361.0),
         ("azimuth", -1.0),
@@ -172,7 +209,7 @@ class TestGuardCollar:
 
     @pytest.mark.parametrize(("fld", "value"), [
         ("elevation", 9000.0), ("elevation", -500.0), ("dip", 0.0),
-        ("dip", -90.0), ("azimuth", 0.0), ("azimuth", 360.0),
+        ("dip", -90.0), ("dip", 90.0), ("azimuth", 0.0), ("azimuth", 360.0),
     ])
     def test_boundaries_are_inclusive_like_the_check(self, fld: str, value: float) -> None:
         issues = RowIssues()
@@ -227,8 +264,8 @@ def test_finite_treats_nan_and_inf_as_missing() -> None:
 def test_warnings_have_message_and_detail() -> None:
     """The Ingestion Runs page renders ``detail`` (falling back to ``code``)."""
     issues = RowIssues()
-    guard_collar(_collar(total_depth=None), issues)
-    guard_collar(_collar(dip=55.0), issues)
+    guard_collar(_collar(easting=None), issues)        # NOT NULL: skipped
+    guard_collar(_collar(dip=95.0), issues)            # past vertical: blanked
     issues.merged.append((4, "SRE09-6", "SRE09_6"))
     warnings = issue_warnings(issues, label="collars.csv", table="collar")
     assert [w["code"] for w in warnings] == [

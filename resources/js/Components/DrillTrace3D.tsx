@@ -60,7 +60,8 @@ export interface CollarPoint {
     longitude: number;
     latitude: number;
     elevation: number;
-    total_depth: number;
+    /** Null when the collar records no total depth (§04e, 2026-09-29). */
+    total_depth: number | null;
     hole_id: string;
     hole_type: string;
     status: string;
@@ -131,7 +132,8 @@ function effectiveTrace(c: CollarPoint): TracePoint[] {
         return c.trace_points;
     }
     const top = c.elevation || 0;
-    const td = c.total_depth || 0;
+    // No TD (§04e: optional) and no trace -> the collar is drawn as a point.
+    const td = c.total_depth ?? 0;
     return [
         { x: c.longitude, y: c.latitude, z: top, depth_m: 0 },
         { x: c.longitude, y: c.latitude, z: top - td, depth_m: td },

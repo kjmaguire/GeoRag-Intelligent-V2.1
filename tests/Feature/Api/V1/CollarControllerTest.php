@@ -171,6 +171,35 @@ class CollarControllerTest extends TestCase
             ->assertJsonValidationErrors(['hole_id']);
     }
 
+    /**
+     * §04e (SME-approved, 2026-09-29): one collar per (project, canonical
+     * hole id). A separator/case variant is the same hole — refused with a
+     * 422, not a 500 off the unique index.
+     */
+    public function test_store_returns_422_for_a_spelling_variant_of_an_existing_hole(): void
+    {
+        $this->postJson("/api/v1/projects/{$this->project->project_id}/collars", [
+            'hole_id' => 'LEB-23-001',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'RC',
+            'status' => 'Active',
+        ])->assertCreated();
+
+        $this->assertSame(
+            'LEB23001',
+            DB::table('silver.collars')->where('hole_id', 'LEB-23-001')->value('hole_id_canonical'),
+        );
+
+        $this->postJson("/api/v1/projects/{$this->project->project_id}/collars", [
+            'hole_id' => 'leb 23 001',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'RC',
+            'status' => 'Active',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['hole_id']);
+    }
+
     public function test_store_allows_same_hole_id_in_different_projects(): void
     {
         $other = Project::factory()->create();
@@ -204,12 +233,77 @@ class CollarControllerTest extends TestCase
                 'northing' => 6790000.0,
                 'total_depth' => 100.0,
                 'hole_type' => 'RC',
-                'dip' => 45.0, // positive — invalid, must be -90 to 0
+                'dip' => 95.0, // past vertical — invalid, must be -90 to 90
             ],
         );
 
         $response->assertUnprocessable()
             ->assertJsonValidationErrors(['dip']);
+    }
+
+    /**
+     * §04e (SME-approved, Kyle, 2026-09-29): an up-hole is stored as measured.
+     */
+    public function test_store_accepts_an_up_hole_dip(): void
+    {
+        $response = $this->postJson(
+            "/api/v1/projects/{$this->project->project_id}/collars",
+            [
+                'hole_id' => 'UG-UP-01',
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
+                'total_depth' => 40.0,
+                'hole_type' => 'Diamond',
+                'azimuth' => 10.0,
+                'dip' => 45.0,
+                'status' => 'Active',
+            ],
+        );
+
+        $response->assertCreated();
+        $this->assertSame(
+            45.0,
+            (float) DB::table('silver.collars')->where('hole_id', 'UG-UP-01')->value('dip'),
+        );
+    }
+
+    /**
+     * §04e (SME-approved, Kyle, 2026-09-29): total depth is optional and is
+     * stored as NULL, never 0.
+     */
+    public function test_store_accepts_a_collar_without_total_depth(): void
+    {
+        $response = $this->postJson(
+            "/api/v1/projects/{$this->project->project_id}/collars",
+            [
+                'hole_id' => 'NO-EOH-01',
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
+                'hole_type' => 'RC',
+                'status' => 'Active',
+            ],
+        );
+
+        $response->assertCreated()->assertJsonPath('data.total_depth', null);
+        $this->assertNull(
+            DB::table('silver.collars')->where('hole_id', 'NO-EOH-01')->value('total_depth'),
+        );
+    }
+
+    public function test_store_rejects_a_zero_total_depth(): void
+    {
+        $response = $this->postJson(
+            "/api/v1/projects/{$this->project->project_id}/collars",
+            [
+                'hole_id' => 'ZERO-01',
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
+                'total_depth' => 0,
+                'hole_type' => 'RC',
+            ],
+        );
+
+        $response->assertUnprocessable()->assertJsonValidationErrors(['total_depth']);
     }
 
     // -------------------------------------------------------------------------

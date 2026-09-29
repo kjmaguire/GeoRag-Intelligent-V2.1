@@ -76,10 +76,14 @@ class CollarCreate(BaseModel):
     easting: float
     northing: float
     elevation: float
-    total_depth: float = Field(..., gt=0.0)
+    # §04e (SME-approved, Kyle, 2026-09-29): total depth is optional — NULL
+    # when the source has no EOH value, never 0 — and positive when present.
+    total_depth: float | None = Field(default=None, gt=0.0)
     hole_type: Literal["Diamond", "RC", "RAB", "Rotary", "Percussion"]
     azimuth: float = Field(..., ge=0.0, le=360.0)
-    dip: float = Field(..., ge=-90.0, le=0.0)
+    # Dip from horizontal, negative = down; a positive dip is an up-hole
+    # (§04e, 2026-09-29), matching chk_dip_range (-90..90).
+    dip: float = Field(..., ge=-90.0, le=90.0)
     drill_date: date | None = None
     status: Literal["Active", "Completed", "Abandoned"] = "Active"
 
@@ -101,7 +105,7 @@ class SurveyCreate(BaseModel):
     collar_id: UUID
     depth: float = Field(..., ge=0.0)
     azimuth: float = Field(..., ge=0.0, le=360.0)
-    dip: float = Field(..., ge=-90.0, le=0.0)
+    dip: float = Field(..., ge=-90.0, le=90.0)  # > 0 = up-hole (§04e, 2026-09-29)
     survey_method: Literal["Reflex", "Gyro", "Magnetic", "Acid Test"]
 
 

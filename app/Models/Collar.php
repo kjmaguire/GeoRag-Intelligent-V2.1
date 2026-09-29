@@ -29,6 +29,9 @@ class Collar extends Model
 
     protected $fillable = [
         'hole_id',
+        // Unique per project (§04e, 2026-09-29); Postgres derives it from
+        // hole_id on every write (trg_collars_hole_id_canonical).
+        'hole_id_canonical',
         'project_id',
         'easting',
         'northing',

@@ -381,15 +381,24 @@ async def test_a_canonical_hole_id_match_finds_the_collar(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop", ["0.0", "-5.0"])
+@pytest.mark.parametrize("stop", ["0.0", "-5.0", "n/a"])
 async def test_a_non_positive_stop_is_a_warning_naming_the_file(tmp_path: Path, stop: str) -> None:
-    las = _las(tmp_path / "bad_stop.las", well="SB-9", stop=stop, loc="36 28 79")
+    """§04e 2026-09-29: total depth is optional — the curves still load.
+
+    The collar is created with total_depth NULL (never 0), and the warning
+    still names the file and well so STOP can be fixed.
+    """
+    las = _las(
+        tmp_path / "bad_stop.las", well="SB-9", stop=stop,
+        extra_well="X    .M    471234.5 : X\nY    .M   4657321.0 : Y\nEPSG .    26913 : CRS\n",
+    )
     conn = _Conn()
 
     result = await ingest_las_file(conn, str(las), workspace_id=_WS, project_id_override=_PJ)
 
-    assert result.skipped and result.skipped_reason == "invalid_total_depth"
-    assert _codes(result) == ["las_invalid_stop_depth"]
-    detail = result.warnings[0]["detail"]
+    assert not result.skipped
+    assert "las_invalid_stop_depth" in _codes(result)
+    detail = next(w["detail"] for w in result.warnings if w["code"] == "las_invalid_stop_depth")
     assert "bad_stop.las" in detail and "SB-9" in detail and "STOP" in detail
-    assert conn.collar_insert is None and conn.curve_writes == 0
+    assert _insert(conn)["total_depth"] is None
+    assert conn.curve_writes >= 1

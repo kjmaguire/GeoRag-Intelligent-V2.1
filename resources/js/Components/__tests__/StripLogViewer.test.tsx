@@ -52,6 +52,30 @@ describe('StripLogViewer — auth surface', () => {
         expect(offending).toEqual([]);
     });
 
+    it('a collar with no total depth is scaled to its deepest interval, not to zero (§04e 2026-09-29)', async () => {
+        const noTd = {
+            ...collarPayload,
+            total_depth: null,
+            lithology_logs: [
+                { log_id: 'l1', from_depth: 0, to_depth: 120, lithology_code: 'SST' },
+            ],
+        };
+        // First the collar index (a list), then the collar itself.
+        fetchSpy.mockImplementation(async (url: RequestInfo | URL) => new Response(
+            JSON.stringify({ data: String(url).includes('?per_page') ? [noTd] : noTd }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ));
+
+        const { container } = render(<StripLogViewer holeId="DH-001" projectId="proj-abc" />);
+        await waitFor(() => expect(container.textContent).toContain('SST'));
+
+        // The depth axis reaches the 100 m tick (and stops before 150): the
+        // scale came from the 120 m interval, and no "m TD" is claimed.
+        expect(container.textContent).toContain('100');
+        expect(container.textContent).not.toContain('150');
+        expect(container.textContent).not.toContain('m TD');
+    });
+
     it('collar fetch uses same-origin credentials', async () => {
         render(<StripLogViewer holeId="DH-001" projectId="proj-abc" />);
         await waitFor(() => expect(fetchSpy).toHaveBeenCalled());

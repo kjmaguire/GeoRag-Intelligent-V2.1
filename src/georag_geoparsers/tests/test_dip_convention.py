@@ -247,3 +247,64 @@ class TestSurveyDipConventionIntegration:
             w for w in result.warnings if w["code"] == "dip_convention_normalized"
         ]
         assert len(convention_warnings) == 1
+
+
+# ---------------------------------------------------------------------------
+# Up-holes (§04e, SME-approved, Kyle, 2026-09-29)
+# ---------------------------------------------------------------------------
+
+class TestUpHoles:
+    """A positive dip in a down-negative file is an up-hole, stored as measured.
+
+    The convention decision stays per FILE: a file that is mostly positive is
+    a down-positive file and every value is flipped. Only the individual
+    positive value in a down-negative file survives as an up-hole.
+    """
+
+    def test_up_hole_station_in_a_down_negative_survey_is_kept(self):
+        rows = [
+            _survey_row("UG-01", 10.0, -60),
+            _survey_row("UG-01", 20.0, -61),
+            _survey_row("UG-01", 30.0, -62),
+            _survey_row("UG-01", 40.0, -63),
+            _survey_row("UG-02", 10.0, 35),   # the up-hole
+            _survey_row("UG-02", 20.0, -60),
+        ]
+        result = parse_csv_surveys(_csv(_SURVEY_HEADER, *rows))
+        assert result.dip_convention == "down_negative"
+        dips = {(r["hole_id"], r["depth"]): r["dip"] for r in result.records}
+        assert dips[("UG-02", 10.0)] == pytest.approx(35.0)
+        assert len(result.records) == len(rows), "no station rejected for a positive dip"
+
+    def test_up_hole_collar_in_a_down_negative_file_is_kept(self):
+        rows = [
+            _collar_row("DH-01", -60),
+            _collar_row("DH-02", -55),
+            _collar_row("DH-03", -70),
+            _collar_row("DH-04", -65),
+            _collar_row("DH-05", -50),
+            _collar_row("UG-UP", 30),
+        ]
+        result = parse_csv_collars(_csv(_COLLAR_HEADER, *rows))
+        assert result.dip_convention == "down_negative"
+        by_hole = {r["hole_id"]: r["dip"] for r in result.records}
+        assert by_hole["UG-UP"] == pytest.approx(30.0)
+
+    def test_a_mostly_positive_file_is_still_flipped(self):
+        """The heuristic Kyle kept: mostly positive = a down-positive file."""
+        rows = [_survey_row("DH-01", 10.0 * i, 60) for i in range(1, 6)]
+        result = parse_csv_surveys(_csv(_SURVEY_HEADER, *rows))
+        assert result.dip_convention == "down_positive"
+        assert all(r["dip"] == pytest.approx(-60.0) for r in result.records)
+
+    def test_past_vertical_survey_dip_is_still_rejected(self):
+        rows = [_survey_row("DH-01", 10.0, -60), _survey_row("DH-01", 20.0, -95)]
+        result = parse_csv_surveys(_csv(_SURVEY_HEADER, *rows))
+        assert [r["depth"] for r in result.records] == [10.0]
+
+    def test_ambiguous_warning_says_positive_values_are_up_holes(self):
+        from georag_geoparsers._dip_convention import resolve_dip_convention
+
+        res = resolve_dip_convention([-45, 50, -60, 70, 45], header="Dip", parser="t")
+        assert res.convention == "ambiguous"
+        assert "up-holes" in res.warnings[0]["message"]

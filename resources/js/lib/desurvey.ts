@@ -26,8 +26,11 @@
  * Conventions:
  *   - azimuth: degrees clockwise from north, in whatever north the data uses
  *     (declination / grid convergence are NOT applied — see GIS-12);
- *   - dip: inclination below horizontal; the sign is ignored (-60 and 60 are
- *     both "60° down"), matching the previous behaviour and the silver data;
+ *   - dip: degrees from horizontal in the silver convention — negative is
+ *     below horizontal (-60 = 60° down), positive is an UP-HOLE (+30 = 30°
+ *     up). The sign used to be ignored, which drew every up-hole downward;
+ *     up-holes are stored as measured since 2026-09-29 (§04e, SME-approved),
+ *     so the sign is honoured;
  *   - output: x = east, y = north, z = up, metres relative to the collar.
  *
  * ## Holes without surveys
@@ -50,7 +53,12 @@ export interface SurveyStationInput {
 export interface DesurveyCollar {
     azimuth: number | null;
     dip: number | null;
-    /** Total depth; the path is extended to max(TD, extendTo). */
+    /**
+     * Total depth, or null when the collar has none (§04e 2026-09-29: the
+     * column is optional). The path is extended to max(TD, extendTo, last
+     * station), so a hole with no TD still reaches its deepest survey
+     * station and — through `extendTo` — its deepest interval.
+     */
     totalDepth: number | null;
 }
 
@@ -86,11 +94,14 @@ interface Station {
 
 type Vec = [number, number, number];
 
-/** Unit direction vector (east, north, up) for an azimuth / dip. */
+/**
+ * Unit direction vector (east, north, up) for an azimuth / dip.
+ * Dip is signed: negative goes down, positive (an up-hole) goes up.
+ */
 export function directionVector(azimuthDeg: number, dipDeg: number): Vec {
     const a = azimuthDeg * DEG;
-    const d = Math.abs(dipDeg) * DEG;
-    return [Math.cos(d) * Math.sin(a), Math.cos(d) * Math.cos(a), -Math.sin(d)];
+    const d = dipDeg * DEG;
+    return [Math.cos(d) * Math.sin(a), Math.cos(d) * Math.cos(a), Math.sin(d)];
 }
 
 function vecToAttitude(v: Vec): { azimuth: number; dip: number } {

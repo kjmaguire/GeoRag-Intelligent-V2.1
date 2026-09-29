@@ -228,17 +228,17 @@ class TestWriteCollars:
         assert result["skipped"] == 1
 
     @pytest.mark.parametrize("td", [None, "", 0.0])
-    async def test_missing_total_depth_skips_the_row_never_zero(self, td) -> None:
+    async def test_missing_total_depth_is_null_never_zero(self, td) -> None:
         """ING-1: 0.0 violated chk_total_depth_positive and failed the batch.
 
-        total_depth is NOT NULL, so with no stored depth for the hole the
-        row is skipped (and reported) rather than written with a depth
+        total_depth is optional since 2026-09-29 (§04e, SME-approved): the
+        collar is WRITTEN, with NULL — not skipped, and not given a depth
         nobody measured.
         """
         conn = FakeConn()
         result = await self._write(conn, [collar(total_depth=td), collar(hole_id="EL-002")])
-        assert result == {"written": 1, "skipped": 1, "orphaned": 0}
-        assert [r[2] for r in conn.rows] == ["EL-002"]
+        assert result == {"written": 2, "skipped": 0, "orphaned": 0}
+        assert [(r[2], r[7]) for r in conn.rows] == [("EL-001", None), ("EL-002", 150.0)]
 
     async def test_zero_elevation_survives(self) -> None:
         """Distinguish "no value" from "the value is zero"."""

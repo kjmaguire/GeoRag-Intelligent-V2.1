@@ -184,7 +184,9 @@ final class WorkspaceCompareMergeTest extends TestCase
             ->getJson('/projects/'.$project->slug.'/holes/HC-LEFT/payload');
 
         $response->assertStatus(200);
-        $response->assertJsonPath('hole_id', 'HC-LEFT');
+        // Answered with the canonical id, which the database always derives
+        // since §04e (2026-09-29); the requested spelling still resolves.
+        $response->assertJsonPath('hole_id', 'HCLEFT');
     }
 
     /**

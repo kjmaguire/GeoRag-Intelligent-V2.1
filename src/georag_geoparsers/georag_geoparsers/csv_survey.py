@@ -61,7 +61,7 @@ VALID_SURVEY_METHODS: frozenset = frozenset({"Reflex", "Gyro", "Magnetic", "Acid
 RANGE_CHECKS: dict = {
     "depth":   (0.0,   10_000.0),
     "azimuth": (0.0,   360.0),
-    "dip":     (-90.0, 0.0),
+    "dip":     (-90.0, 90.0),   # §04e 2026-09-29: a positive dip is an up-hole
 }
 
 # Warning / skip codes
@@ -206,7 +206,7 @@ def _validate_row(
                 "actual": {field_name: val},
                 "suggestion": (
                     f"Check that '{field_name}' is in the expected unit. "
-                    f"Depth range [{lo}, {hi}] m; azimuth 0–360; dip -90–0."
+                    f"Depth range [{lo}, {hi}] m; azimuth 0–360; dip -90–90 (negative = down)."
                 ),
             }
 

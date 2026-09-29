@@ -272,11 +272,13 @@ async def upsert_collar_from_log(
     FT_TO_M = _US_FT_TO_M
 
     # total_depth lives in feet on the .log filename; convert to metres
-    # to align with silver.collars.total_depth (metres per §04e).
-    # 0.01 m floor satisfies chk_collars_total_depth_positive when the
-    # filename's depth field is missing or zero — better than dropping
-    # the collar entirely.
-    td_m = parsed.total_depth_ft * FT_TO_M if parsed.total_depth_ft and parsed.total_depth_ft > 0 else 0.01
+    # to align with silver.collars.total_depth (metres per §04e). A missing
+    # or zero depth field is NULL — total_depth is optional since 2026-09-29
+    # (§04e, SME-approved); it used to be floored to an invented 0.01 m.
+    td_m = (
+        parsed.total_depth_ft * FT_TO_M
+        if parsed.total_depth_ft and parsed.total_depth_ft > 0 else None
+    )
 
     row = await conn.fetchrow(
         """
@@ -285,13 +287,14 @@ async def upsert_collar_from_log(
              easting, northing, total_depth, hole_type, status, georef_method,
              geom_4326, created_at, updated_at)
         VALUES (
-            gen_random_uuid(), $1, $1, $2::uuid, $3::uuid,
+            gen_random_uuid(), $1, silver.canonical_hole_id($1), $2::uuid, $3::uuid,
             $7, $8,
             $6, 'exploration', 'historical', 'declared',
             ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), $9::int), 4326),
             NOW(), NOW()
         )
-        ON CONFLICT (project_id, hole_id) DO UPDATE SET
+        ON CONFLICT (project_id, hole_id_canonical) WHERE hole_id_canonical IS NOT NULL
+        DO UPDATE SET
             easting = EXCLUDED.easting,
             northing = EXCLUDED.northing,
             geom_4326 = EXCLUDED.geom_4326,

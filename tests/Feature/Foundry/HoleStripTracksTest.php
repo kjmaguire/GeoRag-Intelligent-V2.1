@@ -413,8 +413,11 @@ final class HoleStripTracksTest extends TestCase
 
         $props = $this->workspaceProps($user, $project);
 
-        $this->assertSame(['HST-LOGGED'], $props['log_hole_options']);
-        $this->assertSame('HST-LOGGED', $props['log_hole_id']);
+        // The panel keys and labels holes by hole_id_canonical, which the
+        // database now always derives (trg_collars_hole_id_canonical, §04e
+        // 2026-09-29) — it used to be NULL for a collar written without one.
+        $this->assertSame(['HSTLOGGED'], $props['log_hole_options']);
+        $this->assertSame('HSTLOGGED', $props['log_hole_id']);
         $this->assertSame([], $props['log_tracks'], 'no curves: the strip is still drawn from the geology');
         $this->assertSame(['GRN'], array_column($props['log_lithology_intervals'], 'code'));
         $this->assertSame(['Chlorite (Strong)'], array_column($props['log_alteration_intervals'], 'label'));
@@ -431,10 +434,14 @@ final class HoleStripTracksTest extends TestCase
         $this->seedLithology($project, $b, 0, 5, 'SST', 'b', null);
         $this->seedMineralization($project, $b, 1, 2, [['mineral' => 'Galena']]);
 
+        // The stored spelling, not the canonical option value: both must select.
         $props = $this->workspaceProps($user, $project, '?log_hole=HST-B');
 
-        $this->assertSame(['HST-A', 'HST-B'], $props['log_hole_options']);
-        $this->assertSame('HST-B', $props['log_hole_id']);
+        // The panel keys and labels holes by hole_id_canonical, which the
+        // database now always derives (trg_collars_hole_id_canonical, §04e
+        // 2026-09-29) — it used to be NULL for a collar written without one.
+        $this->assertSame(['HSTA', 'HSTB'], $props['log_hole_options']);
+        $this->assertSame('HSTB', $props['log_hole_id']);
         $this->assertSame(['SST'], array_column($props['log_lithology_intervals'], 'code'));
         $this->assertSame(['Galena'], array_column($props['log_mineralization_intervals'], 'mineral'));
     }

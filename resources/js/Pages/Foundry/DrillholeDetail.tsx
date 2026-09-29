@@ -155,7 +155,7 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
                     <PageHeader
                         eyebrow={`HOLE · ${project.project_name.toUpperCase()}`}
                         title={collar.hole_id}
-                        sub={`${Number(totalDepth ?? 0).toFixed(1)} m total depth · ${azimuth ?? '—'}° az · ${dip ?? '—'}° dip`}
+                        sub={`${totalDepth != null ? `${Number(totalDepth).toFixed(1)} m` : '—'} total depth · ${azimuth ?? '—'}° az · ${dip ?? '—'}° dip`}
                         actions={
                             <div className="flex items-center gap-2">
                                 {/* Plan §6a — data-quality flags badge.

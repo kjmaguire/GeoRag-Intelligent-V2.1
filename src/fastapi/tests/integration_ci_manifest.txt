@@ -103,6 +103,10 @@ tests/test_discover_trace_write_integration.py
 # a batch failure leaves nothing half-written, a second sheet in one run
 # appends, and a separator variant updates the existing collar.
 tests/test_ingest_constraint_rows_integration.py
+# §04e schema decisions (SME-approved 2026-09-29): up-holes traced upward,
+# NULL total depth traced to the deepest interval, the database-derived
+# canonical hole id and the canonical-key upsert.
+tests/test_sme_schema_decisions_integration.py
 
 # ── Agent spatial SQL (2026-09-29 database audit PG-11) ───────────────
 # Planner SQL is built at runtime from SPATIAL_TARGETS, so only a PREPARE

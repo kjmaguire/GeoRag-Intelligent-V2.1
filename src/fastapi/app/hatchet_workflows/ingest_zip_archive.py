@@ -662,9 +662,9 @@ _MEMBER_WARNING_TEXT: dict[str, str] = {
         "project's CRS or WGS84 was assumed ({names})."
     ),
     "las_invalid_stop_depth": (
-        "{n} LAS file(s) were skipped because STOP (bottom depth) in the "
-        "~WELL section is not a positive number ({names}). Correct it and "
-        "upload them again."
+        "{n} LAS file(s) have no positive STOP (bottom depth) in the ~WELL "
+        "section ({names}); their curves were loaded without a total depth. "
+        "Correct STOP and upload them again to record one."
     ),
 }
 

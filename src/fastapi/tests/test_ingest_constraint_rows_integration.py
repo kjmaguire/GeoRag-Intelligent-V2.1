@@ -123,24 +123,32 @@ async def test_guard_matches_live_constraints(project: _Fixture) -> None:
     assert live["chk_total_depth_positive"] == [guard.COLLAR_TOTAL_DEPTH_EXCLUSIVE_MIN]
 
 
-async def test_no_total_depth_skips_rows_and_does_not_raise(project: _Fixture) -> None:
+async def test_no_total_depth_lands_the_collar_with_null(project: _Fixture) -> None:
+    """§04e 2026-09-29: a collar table with no EOH column lands its collars."""
     issues = RowIssues()
     stats = await project.collars(
         [_collar("A-1", 2, total_depth=None), _collar("A-2", 3)], issues,
     )
-    assert stats == {"written": 1, "skipped": 1, "orphaned": 0}
-    assert await project.count(_N_COLLARS) == 1
-    assert issues.skipped[0][:2] == (2, "A-1")
+    assert stats == {"written": 2, "skipped": 0, "orphaned": 0}
+    tds = {
+        r["hole_id"]: r["total_depth"] for r in await project.conn.fetch(
+            "SELECT hole_id, total_depth FROM silver.collars WHERE project_id = $1::uuid",
+            project.project_id,
+        )
+    }
+    assert tds == {"A-1": None, "A-2": 100.0}
+    assert not issues.skipped
 
 
 async def test_out_of_range_values_are_blanked_and_collars_kept(project: _Fixture) -> None:
     issues = RowIssues()
     stats = await project.collars([
         _collar("RL-1", 2, elevation=9650.0),        # mine grid RL
-        _collar("UP-1", 3, dip=60.0),                # up-hole
+        _collar("UP-1", 3, dip=60.0),                # up-hole: kept (§04e 2026-09-29)
+        _collar("PV-1", 5, dip=95.0),                # past vertical: blanked
         _collar("AZ-1", 4, azimuth=400.0),
     ], issues)
-    assert stats["written"] == 3
+    assert stats["written"] == 4
     rows = {
         r["hole_id"]: r for r in await project.conn.fetch(
             "SELECT hole_id, elevation, dip, azimuth FROM silver.collars "
@@ -148,14 +156,15 @@ async def test_out_of_range_values_are_blanked_and_collars_kept(project: _Fixtur
         )
     }
     assert rows["RL-1"]["elevation"] is None
-    assert rows["UP-1"]["dip"] is None
+    assert rows["UP-1"]["dip"] == 60.0
+    assert rows["PV-1"]["dip"] is None
     assert rows["AZ-1"]["azimuth"] is None
     assert sorted(b[0] for b in issues.blanked) == ["azimuth", "dip", "elevation"]
 
 
 async def test_one_bad_row_in_700_writes_the_other_699(project: _Fixture) -> None:
     records = [_collar(f"H-{i:04d}", i + 2) for i in range(700)]
-    records[650]["total_depth"] = None
+    records[650]["easting"] = None   # NOT NULL: the one row that cannot land
     stats = await project.collars(records)
     assert stats["written"] == 699 and stats["skipped"] == 1
     assert await project.count(_N_COLLARS) == 699

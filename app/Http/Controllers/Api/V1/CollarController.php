@@ -10,6 +10,7 @@ use App\Http\Resources\CollarResource;
 use App\Models\Collar;
 use App\Models\Project;
 use App\Support\AuthorizationAuditLogger;
+use App\Support\HoleId;
 use App\Support\PaginationLimit;
 use App\Support\SafeErrorMessage;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -102,6 +103,9 @@ class CollarController extends Controller
 
             $data = array_merge($request->validated(), [
                 'project_id' => $project->project_id,
+                // The database derives it too (trg_collars_hole_id_canonical);
+                // set here so the model and any non-Postgres test DB agree.
+                'hole_id_canonical' => HoleId::canonicalize((string) $request->validated('hole_id')),
             ]);
 
             $collar = Collar::create($data);
