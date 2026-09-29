@@ -1,7 +1,7 @@
 """Sheet-type classifier for multi-sheet Excel workbooks.
 
 Given a sheet's header row, decides whether the sheet looks like
-``collar`` / ``survey`` / ``lithology`` / ``sample`` data — or
+``collar`` / ``survey`` / ``lithology`` / ``sample`` / ``structure`` data — or
 ``unknown`` if no schema matches confidently.
 
 Used by ``silver_xlsx`` to auto-dispatch each sheet of a multi-sheet
@@ -121,6 +121,55 @@ def _alias_skeletons(canonical: str, alias_list: list[str]) -> set[str]:
     return alias_skeletons(canonical, alias_list)
 
 
+#: Canonical fields that carry an ORIENTATION. A structural table must have
+#: at least one; a bare "Structure" column beside from/to depths is a
+#: lithology log's texture descriptor as often as it is a structure log.
+_STRUCTURE_ORIENTATION_FIELDS: frozenset[str] = frozenset({
+    "true_dip", "true_dip_dir", "alpha_angle", "beta_angle",
+})
+
+
+#: Structural evidence no other drill table ever carries: alpha/beta are
+#: measured against the core axis, and a dip DIRECTION is not a hole bearing.
+_STRUCTURE_STRONG_FIELDS: frozenset[str] = frozenset({
+    "alpha_angle", "beta_angle", "true_dip_dir",
+})
+
+
+def _structure_evidence(
+    headers: set[str],
+    matched: set[str],
+    user_fields: dict,
+) -> str:
+    """How strongly the headers say "structure": ``""``, ``"explicit"`` or ``"strong"``.
+
+    Both halves are needed, because survey and structure share hole, depth
+    and dip: (1) an orientation column, and (2) a column that only a
+    structural log has - an explicit structure-type name (``explicit``), or
+    alpha / beta / a dip-DIRECTION spelling (``strong``). The weak spellings
+    (``Type``, ``Azimuth``) do not count on their own; a column the user
+    named for a structure field does, since that is a confirmed statement
+    rather than a guess.
+
+    ``strong`` may take a tie from any other type (no lithology or sample
+    table has an alpha angle); ``explicit`` takes a tie only from survey (a
+    lithology log with a ``Structure`` column and a dip is still lithology).
+    """
+    from georag_geoparsers._drill_schema import STRUCTURE_SIGNAL_ALIASES
+
+    if not matched & _STRUCTURE_ORIENTATION_FIELDS:
+        return ""
+    verdict = ""
+    for canonical, explicit in STRUCTURE_SIGNAL_ALIASES.items():
+        named = user_fields.get(canonical)
+        extra = [named] if isinstance(named, str) and named.strip() else []
+        if headers & _alias_skeletons(canonical, [*extra, *explicit]):
+            if canonical in _STRUCTURE_STRONG_FIELDS:
+                return "strong"
+            verdict = "explicit"
+    return verdict
+
+
 def classify_sheet_type(
     headers: list[str],
     *,
@@ -151,7 +200,7 @@ def classify_sheet_type(
     Returns
     -------
     (sheet_type, confidence) : tuple[str, float]
-        ``sheet_type`` is one of ``collar`` / ``survey`` / ``lithology``
+        ``sheet_type`` is one of ``collar`` / ``survey`` / ``lithology`` / ``structure``
         / ``sample`` / ``unknown``. ``confidence`` is the fraction of
         the winning type's REQUIRED_FIELDS that were matched — 0.0 when
         the result is ``unknown``.
@@ -175,6 +224,7 @@ def classify_sheet_type(
     best_type: str = "unknown"
     best_coverage: float = 0.0
     best_total_matches: int = 0
+    best_matched: set[str] = set()
 
     for sheet_type, (aliases, required) in schemas.items():
         user_fields = (column_map or {}).get(sheet_type) or {}
@@ -196,6 +246,35 @@ def classify_sheet_type(
         if _IDENTITY_FIELD in required and _IDENTITY_FIELD not in matched_canonicals:
             continue
 
+        # Structure shares hole + depth + dip (+ azimuth) with survey, so
+        # coverage alone can never tell them apart. It is a candidate only
+        # when the headers carry EXPLICIT structural evidence; otherwise the
+        # table is left to survey (or whatever else claims it).
+        if sheet_type == "structure":
+            evidence = _structure_evidence(
+                headers_lower, matched_canonicals, user_fields,
+            )
+            if not evidence:
+                continue
+            if best_type == "survey" and (
+                # A survey_method column is a survey's own fingerprint, so a
+                # sheet carrying one stays a survey whatever else it has.
+                "survey_method" in best_matched
+                # Otherwise the explicit evidence above lets structure take
+                # an exact tie with survey (both are 100% covered) - but not
+                # a win it has not earned.
+                or coverage < best_coverage
+            ):
+                continue
+            if best_type in ("collar", "lithology", "sample") and (
+                coverage < best_coverage
+                or (coverage == best_coverage and evidence != "strong")
+            ):
+                # These win a tie unless the evidence is alpha/beta/dip
+                # direction: a lithology log with a "Structure" column and a
+                # dip is still a lithology log.
+                continue
+
         # Hard discriminator override — if a unique-to-this-type field
         # matched, lock the classification regardless of coverage. This
         # rescues sheets where some required fields use exotic header
@@ -211,17 +290,29 @@ def classify_sheet_type(
                 best_type = sheet_type
                 best_coverage = coverage
                 best_total_matches = total
+                best_matched = matched_canonicals
             continue
 
         if coverage < min_required_coverage:
             continue
 
-        if coverage > best_coverage or (
-            coverage == best_coverage and total > best_total_matches
+        # Structure was screened above; on an exact coverage tie it has
+        # already been cleared to take over, so `total` must not be allowed
+        # to hand the win back on match count.
+        structure_takes_survey_tie = (
+            sheet_type == "structure"
+            and best_type != "unknown"
+            and coverage == best_coverage
+        )
+        if (
+            structure_takes_survey_tie
+            or coverage > best_coverage
+            or (coverage == best_coverage and total > best_total_matches)
         ):
             best_type = sheet_type
             best_coverage = coverage
             best_total_matches = total
+            best_matched = matched_canonicals
 
     if best_type == "unknown":
         return ("unknown", 0.0)
