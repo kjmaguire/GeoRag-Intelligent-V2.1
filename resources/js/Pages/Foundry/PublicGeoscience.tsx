@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Head } from '@inertiajs/react';
+import { Head, usePage } from '@inertiajs/react';
 import maplibregl from 'maplibre-gl';
 import type { Map as MapLibreMap, Popup, GeoJSONSource, AddLayerObject } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -13,11 +13,27 @@ import {
     type PublicGeoFeature,
     type PublicGeoFeatureCollection,
 } from '@/Components/MapView';
+import PolygonLayerToggles from '@/Components/PublicGeoscience/PolygonLayerToggles';
+import PublicGeoSyncControls from '@/Components/PublicGeoscience/PublicGeoSyncControls';
+import {
+    DEFAULT_POLYGON_LAYERS,
+    POLYGON_COLOR_MATCH,
+    polygonPopupHtml,
+    type PolygonFeatureProperties,
+    type PolygonLayerKey,
+    type PolygonResponseFields,
+} from '@/Components/PublicGeoscience/polygonLayers';
+import type { PageProps } from '@/types';
 
 const SOURCE_ID = 'public-geoscience';
 const POINT_LAYER_ID = 'public-geoscience-points';
 const CLUSTER_LAYER_ID = 'public-geoscience-clusters';
 const CLUSTER_COUNT_LAYER_ID = 'public-geoscience-cluster-counts';
+const POLYGON_SOURCE_ID = 'public-geoscience-polygons';
+const POLYGON_FILL_LAYER_ID = 'public-geoscience-polygon-fill';
+const POLYGON_LINE_LAYER_ID = 'public-geoscience-polygon-line';
+
+type MapResponse = PublicGeoFeatureCollection & PolygonResponseFields;
 
 /** How long the map must sit still before we re-query. */
 const MOVE_DEBOUNCE_MS = 350;
@@ -56,22 +72,44 @@ interface Viewport {
  *     differ, so "1,240 features" can never be mistaken for "that's all
  *     there is".
  *
- * See PublicGeoscienceMapController for the data scope (4 point-geometry
- * public_geo tables; polygons excluded) and for the empty-in-production
- * caveat — as of 2026-08-19 Azure has the schema but none of the rows.
+ * See PublicGeoscienceMapController for the data scope and for the
+ * empty-in-production caveat.
+ *
+ * 2026-09-29 — polygon overlays and operator controls:
+ *
+ *   - the four polygon tables (tenure, resource potential, assessment
+ *     surveys, bedrock) are toggleable fill + outline layers, requested via
+ *     `layers=` and drawn UNDER the points; tenure is on by default. Each
+ *     layer's legend entry says when the server capped it or wants a closer
+ *     zoom. Clicking a polygon opens a popup with its key attributes and the
+ *     source's licence.
+ *   - a freshness line (rows + last sync) and, for admins only, "Sync now",
+ *     which queues the public_geo_sync Hatchet workflow and toasts its run id.
+ *
+ * Point behaviour is unchanged.
  */
 export default function PublicGeoscience() {
     const mapContainer = useRef<HTMLDivElement | null>(null);
     const mapRef = useRef<MapLibreMap | null>(null);
     const popupRef = useRef<Popup | null>(null);
+    const polygonPopupRef = useRef<Popup | null>(null);
     const [mapReady, setMapReady] = useState(false);
-    const [data, setData] = useState<PublicGeoFeatureCollection | null>(null);
+    const [data, setData] = useState<MapResponse | null>(null);
+    const [polygonLayers, setPolygonLayers] = useState<PolygonLayerKey[]>(DEFAULT_POLYGON_LAYERS);
+    const isAdmin = Boolean(usePage<PageProps>().props.auth?.user?.is_admin);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [jurisdiction, setJurisdiction] = useState('');
     const [viewport, setViewport] = useState<Viewport | null>(null);
 
     const styleUrl = useBasemapStyleUrl('positron');
+
+    // The click handler is bound once per map; it reads the latest response
+    // (for source attribution) through a ref rather than re-binding per fetch.
+    const dataRef = useRef<MapResponse | null>(null);
+    useEffect(() => {
+        dataRef.current = data;
+    }, [data]);
 
     // Jurisdiction codes accumulate across fetches instead of being derived
     // from the current response. Deriving them per-response would make the
@@ -139,6 +177,7 @@ export default function PublicGeoscience() {
             zoom: String(viewport.zoom),
         });
         if (jurisdiction) params.set('jurisdiction', jurisdiction);
+        if (polygonLayers.length) params.set('layers', polygonLayers.join(','));
 
         fetch(`/api/v1/public-geoscience/map?${params.toString()}`, {
             credentials: 'same-origin',
@@ -147,7 +186,7 @@ export default function PublicGeoscience() {
         })
             .then((res) => {
                 if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-                return res.json() as Promise<PublicGeoFeatureCollection>;
+                return res.json() as Promise<MapResponse>;
             })
             .then((body) => {
                 setData(body);
@@ -171,7 +210,52 @@ export default function PublicGeoscience() {
             });
 
         return () => controller.abort();
-    }, [viewport, jurisdiction]);
+    }, [viewport, jurisdiction, polygonLayers]);
+
+    // ── Polygon overlays (declared before the point layers so they draw under them) ──
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !mapReady || !data) return;
+
+        const geojson = {
+            type: 'FeatureCollection' as const,
+            features: data.polygons?.features ?? [],
+        };
+
+        const existing = map.getSource(POLYGON_SOURCE_ID) as GeoJSONSource | undefined;
+        if (existing) {
+            existing.setData(geojson);
+            return;
+        }
+
+        map.addSource(POLYGON_SOURCE_ID, { type: 'geojson', data: geojson });
+        const beforeId = map.getLayer(POINT_LAYER_ID) ? POINT_LAYER_ID : undefined;
+        map.addLayer(
+            {
+                id: POLYGON_FILL_LAYER_ID,
+                type: 'fill',
+                source: POLYGON_SOURCE_ID,
+                paint: { 'fill-color': POLYGON_COLOR_MATCH, 'fill-opacity': 0.18 },
+            } as unknown as AddLayerObject,
+            beforeId,
+        );
+        map.addLayer(
+            {
+                id: POLYGON_LINE_LAYER_ID,
+                type: 'line',
+                source: POLYGON_SOURCE_ID,
+                paint: { 'line-color': POLYGON_COLOR_MATCH, 'line-width': 1, 'line-opacity': 0.85 },
+            } as unknown as AddLayerObject,
+            beforeId,
+        );
+
+        return () => {
+            for (const id of [POLYGON_LINE_LAYER_ID, POLYGON_FILL_LAYER_ID]) {
+                if (map.getLayer(id)) map.removeLayer(id);
+            }
+            if (map.getSource(POLYGON_SOURCE_ID)) map.removeSource(POLYGON_SOURCE_ID);
+        };
+    }, [data, mapReady]);
 
     // ── Source + layers ─────────────────────────────────────────────────────
     useEffect(() => {
@@ -306,13 +390,35 @@ export default function PublicGeoscience() {
             map.easeTo({ center: coords, zoom: Math.min(map.getZoom() + 2, 18) });
         };
 
+        // Polygons answer a click (not hover — they tile the map, so a hover
+        // popup would follow the cursor everywhere). A click on a point or
+        // cluster belongs to that marker, not to the parcel under it.
+        const onPolygonClick = (e: maplibregl.MapMouseEvent) => {
+            if (!map.getLayer(POLYGON_FILL_LAYER_ID)) return;
+            const markers = [POINT_LAYER_ID, CLUSTER_LAYER_ID].filter((id) => map.getLayer(id));
+            if (markers.length && map.queryRenderedFeatures(e.point, { layers: markers }).length) return;
+            const hits = map.queryRenderedFeatures(e.point, { layers: [POLYGON_FILL_LAYER_ID] });
+            polygonPopupRef.current?.remove();
+            polygonPopupRef.current = null;
+            if (!hits.length) return;
+            const props = hits[0].properties as PolygonFeatureProperties;
+            polygonPopupRef.current = new maplibregl.Popup({ closeButton: true, closeOnClick: false, maxWidth: '300px' })
+                .setLngLat(e.lngLat)
+                .setHTML(polygonPopupHtml(props, dataRef.current?.sources))
+                .addTo(map);
+        };
+
         map.on('mousemove', onMove);
         map.on('mouseout', onLeave);
         map.on('click', onClusterClick);
+        map.on('click', onPolygonClick);
         return () => {
             map.off('mousemove', onMove);
             map.off('mouseout', onLeave);
             map.off('click', onClusterClick);
+            map.off('click', onPolygonClick);
+            polygonPopupRef.current?.remove();
+            polygonPopupRef.current = null;
         };
     }, [mapReady]);
 
@@ -341,7 +447,7 @@ export default function PublicGeoscience() {
                     sub={
                         <span>
                             {error ? <span className="text-red-400">{error}</span> : summary}
-                            {' · mines, mineral occurrences, public drillholes, rock samples'}
+                            {' · mines, mineral occurrences, public drillholes, rock samples, tenure & geology overlays'}
                         </span>
                     }
                 />
@@ -389,6 +495,16 @@ export default function PublicGeoscience() {
                     {loading && data && (
                         <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>Updating…</span>
                     )}
+                </div>
+
+                <div className="px-8 py-2 flex items-center gap-4 border-b flex-wrap" style={{ borderColor: 'var(--line-1)' }}>
+                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                        Overlays
+                    </span>
+                    <PolygonLayerToggles enabled={polygonLayers} onChange={setPolygonLayers} meta={data?.polygon_layers} />
+                    <div className="ml-auto">
+                        <PublicGeoSyncControls isAdmin={isAdmin} />
+                    </div>
                 </div>
 
                 <div className="flex-1 relative">
