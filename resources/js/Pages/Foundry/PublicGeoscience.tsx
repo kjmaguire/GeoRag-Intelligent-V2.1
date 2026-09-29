@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Head, usePage } from '@inertiajs/react';
-import maplibregl from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
+import { configureMaplibreWorker } from '@/lib/maplibreWorker';
 import type { Map as MapLibreMap, GeoJSONSource, AddLayerObject, FilterSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { PageHeader } from '@/Components/Foundry/primitives';
@@ -157,6 +158,7 @@ export default function PublicGeoscience() {
     useEffect(() => {
         if (!mapContainer.current) return;
 
+        configureMaplibreWorker(maplibregl);
         const map = new maplibregl.Map({
             container: mapContainer.current,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any

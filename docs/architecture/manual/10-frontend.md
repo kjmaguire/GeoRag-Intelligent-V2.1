@@ -201,7 +201,7 @@ There is no `Components/Charts/` directory.
 
 ## 10. Maps
 
-MapLibre GL 5 (never Mapbox GL — licensing, CLAUDE.md hard rule 8).
+MapLibre GL 6 (never Mapbox GL — licensing, CLAUDE.md hard rule 8).
 `Components/MapView.tsx` plus the `lib/` helpers: `mvtSources.ts`,
 `mvtLayers.ts`, `tileUrl.ts`, `basemap.ts`, `layerVisibilityStorage.ts` and
 `tileFailureWatchdog.ts`, which surfaces a tile-server failure instead of

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { usePage } from '@inertiajs/react';
-import maplibregl from 'maplibre-gl';
+import * as maplibregl from 'maplibre-gl';
+import { configureMaplibreWorker } from '@/lib/maplibreWorker';
 import type {
     Map as MapLibreMap,
     Marker,
@@ -637,6 +638,7 @@ export default function MapView({
     useEffect(() => {
         if (!mapContainer.current) return;
 
+        configureMaplibreWorker(maplibregl);
         const map = new maplibregl.Map({
             container: mapContainer.current,
             style: mapStyles.default.url,

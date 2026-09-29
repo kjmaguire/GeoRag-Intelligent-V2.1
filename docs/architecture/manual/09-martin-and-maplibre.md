@@ -140,7 +140,7 @@ etc. for tools like `significant_intersections_by_project`).
 
 ## 6. MapLibre frontend integration
 
-Library: `maplibre-gl` 5.x (peer of `react-map-gl` is **not** in play here —
+Library: `maplibre-gl` 6.x — ESM-only, so import it as `import * as maplibregl from 'maplibre-gl'` (no default export) (peer of `react-map-gl` is **not** in play here —
 this stack uses MapLibre directly). All map components live under
 [resources/js/Components/Map/](../../../resources/js/Components/MapView.tsx).
 
