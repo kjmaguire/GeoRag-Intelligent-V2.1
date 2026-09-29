@@ -41,6 +41,7 @@ from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
     Context,
+    NonRetryableException,
 )
 from pydantic import BaseModel, Field
 
@@ -306,14 +307,15 @@ _PDF_BODY_CACHE_DIR = "/tmp/georag_ingest_pdf_cache"
 
 #: Delete anything in the cache dir older than this. Every path that
 #: creates a file there also deletes it, but only when its frame actually
-#: runs: a preflight that rejects the file, a parse that dies at the
-#: 3300 s hard timeout, a broken pool, a worker SIGKILLed by the cgroup,
+#: runs: a preflight that rejects the file, a parse that dies at its
+#: hard timeout, a broken pool, a worker SIGKILLed by the cgroup,
 #: and a workflow whose preflight and parse landed on DIFFERENT workers
 #: all leave a body behind. A few orphaned 1.5 GB atlases fill a worker's
-#: ephemeral disk. Six hours is comfortably longer than the 60-minute
-#: parse timeout plus Hatchet's retry backoff, so this cannot delete a
-#: file a live run is still using.
-_PDF_BODY_CACHE_TTL_S = 6 * 3600
+#: ephemeral disk. Eight hours is longer than the parse task's 2 h
+#: schedule_timeout plus its longest page-scaled cap (3 h 55 min, HAT-9)
+#: plus Hatchet's retry backoff, so this cannot delete a file a live run is
+#: still using. It was six hours when the parse cap was a flat 55 minutes.
+_PDF_BODY_CACHE_TTL_S = 8 * 3600
 
 
 def _reap_pdf_body_cache(ttl_s: int = _PDF_BODY_CACHE_TTL_S) -> int:
@@ -910,7 +912,57 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
 
 
 # ---- Step 2: parse — single call to v1.49 parse_pdf_report ------------------
-@ingest_pdf.task(execution_timeout="60m", schedule_timeout="2h", retries=1, parents=[preflight])
+#: HAT-9 (2026-09-29) — the parse wall cap scales with page count.
+#:
+#: It was a flat 3300 s (55 min) whatever the document. Cohere Parse OCRs one
+#: page per request, PDF_OCR_PAGE_CONCURRENCY at a time, so a large scanned
+#: NI 43-101 (1,000+ image pages) could not finish inside it. It timed out,
+#: the retry re-OCRed from page 1 (nothing is cached between attempts), timed
+#: out again, and the document failed after ~2 h having paid for Parse twice.
+#:
+#: The cap is now ``max(base, overhead + pages * seconds_per_page)``, bounded
+#: by PARSE_WALL_CAP_MAX_S, which sits just under the task's execution_timeout
+#: so our own timeout (which resets the pool) still fires before Hatchet's.
+#: Nothing has measured Parse throughput yet (its wire shape is unverified;
+#: CLAUDE.md), so the per-page figure is an env-tunable guess. Set it from
+#: the first real Parse run (ops/validation/cohere_probe.py).
+PARSE_WALL_CAP_BASE_S = 3300
+PARSE_WALL_CAP_MAX_S = 14_100  # 3 h 55 min, under execution_timeout="4h"
+_PARSE_OVERHEAD_S = 600
+_DEFAULT_PARSE_SECONDS_PER_PAGE = 6.0
+
+
+def _parse_wall_cap_s(page_count: int | None) -> int:
+    """Seconds the parse subprocess may run for a document of ``page_count``.
+
+    Never below the old flat 3300 s, never above PARSE_WALL_CAP_MAX_S.
+    ``PDF_PARSE_SECONDS_PER_PAGE`` tunes the slope.
+    """
+    try:
+        per_page = float(
+            os.environ.get("PDF_PARSE_SECONDS_PER_PAGE", _DEFAULT_PARSE_SECONDS_PER_PAGE),
+        )
+    except ValueError:
+        log.warning(
+            "ingest_pdf: PDF_PARSE_SECONDS_PER_PAGE=%r is not a number; using %s",
+            os.environ.get("PDF_PARSE_SECONDS_PER_PAGE"),
+            _DEFAULT_PARSE_SECONDS_PER_PAGE,
+        )
+        per_page = _DEFAULT_PARSE_SECONDS_PER_PAGE
+    if per_page <= 0:
+        per_page = _DEFAULT_PARSE_SECONDS_PER_PAGE
+    pages = max(int(page_count or 0), 0)
+    scaled = int(_PARSE_OVERHEAD_S + pages * per_page)
+    return max(PARSE_WALL_CAP_BASE_S, min(scaled, PARSE_WALL_CAP_MAX_S))
+
+
+# execution_timeout 60m -> 4h (HAT-9): the outer bound for the scaled cap
+# above. The in-process cap is what normally fires; this only has to be
+# larger. A static bound rather than ctx.refresh_timeout, because nothing
+# here has confirmed the pinned hatchet-lite engine honours a refresh, and a
+# silently ignored refresh would let Hatchet kill the task mid-parse with a
+# poisoned pool, the exact failure the in-process cap exists to prevent.
+@ingest_pdf.task(execution_timeout="4h", schedule_timeout="2h", retries=1, parents=[preflight])
 async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
     """Call the canonical v1.49 ``parse_pdf_report`` end to end.
 
@@ -1038,13 +1090,15 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
             )
 
     _relay_task = asyncio.create_task(_relay_progress())
+    wall_cap_s = _parse_wall_cap_s(pre.get("page_count"))
     try:
         # F12 (2026-08-11) — hard wall-clock cap on the parse subprocess.
-        # 3300 s (55 min) sits just under the task's execution_timeout="60m"
-        # so a hung parser (e.g. the §04p subprocess-pool instability on
-        # image-only PDFs) fails from OUR side with a pool reset, letting
-        # Hatchet's retries=1 re-run against a fresh pool instead of the
-        # task dying opaquely at the Hatchet timeout with a poisoned pool.
+        # It sits under the task's execution_timeout so a hung parser (e.g.
+        # the §04p subprocess-pool instability on image-only PDFs) fails
+        # from OUR side with a pool reset, letting Hatchet's retries=1
+        # re-run against a fresh pool instead of the task dying opaquely at
+        # the Hatchet timeout with a poisoned pool. Scaled by page count
+        # since HAT-9; see _parse_wall_cap_s.
         result_dict = await asyncio.wait_for(
             loop.run_in_executor(
                 pool,
@@ -1053,15 +1107,31 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
                 pre.get("sha256", ""),
                 _progress_path,
             ),
-            timeout=3300,
+            timeout=wall_cap_s,
         )
-    except TimeoutError:
-        log.error(
-            "ingest_pdf.parse: subprocess exceeded the 3300s hard timeout "
-            "key=%s — resetting parse pool and re-raising so Hatchet retries.",
-            input.minio_key,
-        )
+    except TimeoutError as exc:
         _reset_parse_pool()
+        if wall_cap_s > PARSE_WALL_CAP_BASE_S:
+            # A document big enough to need the scaled budget and still
+            # over it is slow, not hung. A retry starts from page 1 and
+            # re-bills every OCR page for the same outcome, so stop here.
+            log.error(
+                "ingest_pdf.parse: subprocess exceeded its %ds page-scaled "
+                "cap (page_count=%s) key=%s — pool reset, NOT retrying: a "
+                "retry re-OCRs every page. Raise PDF_PARSE_SECONDS_PER_PAGE "
+                "if this is a genuine throughput limit.",
+                wall_cap_s, pre.get("page_count"), input.minio_key,
+            )
+            raise NonRetryableException(
+                f"parse exceeded its {wall_cap_s}s page-scaled cap "
+                f"(page_count={pre.get('page_count')}); not retried, a retry "
+                "would re-OCR every page",
+            ) from exc
+        log.error(
+            "ingest_pdf.parse: subprocess exceeded the %ds hard timeout "
+            "key=%s — resetting parse pool and re-raising so Hatchet retries.",
+            wall_cap_s, input.minio_key,
+        )
         raise
     except BrokenProcessPool as exc:
         # 2026-05-23 — kill the in-process fallback. The original
@@ -1883,21 +1953,29 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         _img_text = _page_placeholder_text(
                             int(page_no), parsed.get("title"),
                         )
+                        # HAT-10 (2026-09-29): a SAVEPOINT per row. This
+                        # loop runs inside persist's single transaction, and
+                        # a failed statement aborts a Postgres transaction:
+                        # without the savepoint the `continue` below carried
+                        # on into InFailedSQLTransactionError on every later
+                        # statement, and persist (retries=2) lost the whole
+                        # document, the opposite of "fail-soft per page".
                         try:
-                            _img_status = await conn.execute(
-                                INSERT_IMAGE_PASSAGE_SQL,
-                                report_id,
-                                workspace_id_str,
-                                _img_text,
-                                hashlib.sha256(_img_text.encode("utf-8")).hexdigest(),
-                                # $5 ordinal and $6 page number are both the
-                                # page: an image passage's position in the
-                                # document IS its page, unlike a text chunk
-                                # whose ordinal counts sections.
-                                int(page_no),
-                                int(page_no),
-                                dest,
-                            )
+                            async with conn.transaction():
+                                _img_status = await conn.execute(
+                                    INSERT_IMAGE_PASSAGE_SQL,
+                                    report_id,
+                                    workspace_id_str,
+                                    _img_text,
+                                    hashlib.sha256(_img_text.encode("utf-8")).hexdigest(),
+                                    # $5 ordinal and $6 page number are both
+                                    # the page: an image passage's position
+                                    # in the document IS its page, unlike a
+                                    # text chunk whose ordinal counts sections.
+                                    int(page_no),
+                                    int(page_no),
+                                    dest,
+                                )
                         except Exception as _img_exc:  # noqa: BLE001
                             log.warning(
                                 "ingest_pdf: page-image row insert failed "

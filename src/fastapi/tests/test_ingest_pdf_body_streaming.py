@@ -352,13 +352,19 @@ class TestCacheReaper:
         assert fresh.exists(), "reaped a file a live parse could still be using"
 
     def test_the_ttl_outlives_the_longest_possible_parse(self) -> None:
-        """3300 s hard subprocess cap + Hatchet's retry backoff.
+        """Queue wait + the longest page-scaled parse cap + retry backoff.
 
         If the TTL ever drops below that, the reaper starts deleting bodies
         out from under running parses, which fails as a confusing
         FileNotFoundError inside the parser rather than as a cache problem.
+        The parse task's schedule_timeout is 2 h, and HAT-9 lets the cap
+        reach PARSE_WALL_CAP_MAX_S.
         """
-        assert mod._PDF_BODY_CACHE_TTL_S > 3300 * 1.5
+        two_hour_queue_wait_s = 2 * 3600
+        assert (
+            two_hour_queue_wait_s + mod.PARSE_WALL_CAP_MAX_S
+        ) < mod._PDF_BODY_CACHE_TTL_S
+        assert mod._PDF_BODY_CACHE_TTL_S > mod.PARSE_WALL_CAP_BASE_S * 1.5
 
     def test_a_missing_cache_dir_is_not_an_error(
         self, tmp_path, monkeypatch,
