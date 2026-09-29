@@ -892,10 +892,19 @@ which looks exactly like success. Chain the read, the edit and the write with
 placeholder before moving on.
 
 **The token expires.** `exp - iat` on the minted JWT is 7776000 seconds — 90
-days. Nothing in this deployment renews it and nothing alarms on it; a token
-minted at go-live simply stops working one quiet morning about three months
-later, and the symptom is every worker and client failing auth at once while
-the engine looks healthy. Note the date when you mint it.
+days. Nothing in this deployment renews it; a token minted at go-live simply
+stops working one quiet morning about three months later, and the symptom is
+every worker and client failing auth at once while the engine looks healthy.
+Note the date when you mint it.
+
+Since 2026-09-29 something at least **alarms** on it (audit AWS-12). A daily
+`georag-token-check` task (`terraform/scheduler.tf`, 10:00 local) reads the
+`exp` claim from the injected token and never prints the token itself. Inside
+21 days of expiry, or when it cannot read `exp` at all, it logs
+`HATCHET_TOKEN_EXPIRING`, and the `hatchet-token-expiring` alarm emails that
+day and every day after until the token is rotated. `aws-preflight.sh` A-16
+runs the same check from a workstation. It warns under 30 days and fails
+under 14, or when the secret still holds the no-`exp` placeholder.
 
 Then restart the five services that hold the token. **The ECS service names
 are bare**, not prefixed — `services.tf` sets `name = each.key`, which is what

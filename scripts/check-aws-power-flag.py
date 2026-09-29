@@ -95,6 +95,13 @@ MUST_NOT_GATE = {
     "aws_ecr_lifecycle_policy",
     "aws_cloudwatch_log_group",
     "aws_cloudwatch_log_metric_filter",
+    # The ECS task-failure route (alerts.tf, audit AWS-21): an EventBridge
+    # rule on AWS service events, its log-group target and the resource
+    # policy that lets EventBridge write there. None bills by the hour, and
+    # with the cluster empty they simply see no events.
+    "aws_cloudwatch_event_rule",
+    "aws_cloudwatch_event_target",
+    "aws_cloudwatch_log_resource_policy",
     "aws_sns_topic",
     "aws_sns_topic_subscription",
     "aws_vpc",

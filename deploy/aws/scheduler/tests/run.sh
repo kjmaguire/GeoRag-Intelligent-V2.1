@@ -237,6 +237,56 @@ assert_aws_calls "sagemaker describe-endpoint" 0
 assert_silent_about "BEDROCK_ENDPOINT_NOT_INSERVICE"
 
 # ---------------------------------------------------------------------
+# Hatchet token expiry check (audit AWS-12)
+# ---------------------------------------------------------------------
+# No aws calls at all: the token arrives in the environment, the clock is
+# pinned with TOKEN_CHECK_NOW. What is pinned: the marker fires inside the
+# warning window, after expiry, AND when the check cannot read the expiry —
+# and the token itself never reaches the log.
+TOKEN_CHECK="${SCRIPTS}/token-expiry-check.sh"
+NOW_EPOCH=1790000000
+mkjwt() {
+  local p
+  p=$(printf '{"sub":"tenant","exp":%s,"server_url":"x"}' "$1" | base64 | tr -d '\n=' | tr '+/' '-_')
+  printf 'eyJhbGciOiJub25lIn0.%s.c2ln' "$p"
+}
+
+TOK=$(mkjwt $(( NOW_EPOCH + 60 * 86400 )))
+run token_far_from_expiry_is_quiet "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$TOK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 0
+assert_says "60 day(s) left"
+assert_silent_about "HATCHET_TOKEN_EXPIRING"
+assert_silent_about "${TOK#*.}"
+assert_aws_calls "." 0
+
+TOK=$(mkjwt $(( NOW_EPOCH + 10 * 86400 )))
+run token_inside_the_window_alerts "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$TOK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 0
+assert_says "HATCHET_TOKEN_EXPIRING 10 day(s) left"
+assert_says "rotate-hatchet-token.sh"
+assert_silent_about "${TOK#*.}"
+
+TOK=$(mkjwt $(( NOW_EPOCH - 86400 )))
+run token_expired_alerts "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$TOK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING EXPIRED"
+
+run token_absent_is_not_silent "$TOKEN_CHECK" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING cannot check"
+
+# The go-live placeholder from deploy/aws/README.md: JWT-shaped, no exp.
+PLACEHOLDER='eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.'
+run token_without_exp_is_not_silent "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="$PLACEHOLDER" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING cannot check: no exp claim"
+
+run token_garbage_is_not_silent "$TOKEN_CHECK" HATCHET_CLIENT_TOKEN="not-a-jwt" TOKEN_CHECK_NOW="$NOW_EPOCH"
+assert_rc 1
+assert_says "HATCHET_TOKEN_EXPIRING cannot check"
+assert_silent_about "not-a-jwt"
+
+# ---------------------------------------------------------------------
 
 printf '\n%d case(s) run, %d failure(s)\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

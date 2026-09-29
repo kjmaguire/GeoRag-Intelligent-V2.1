@@ -465,6 +465,13 @@ variable "container_insights" {
     Closing it does NOT require this setting: AWS/ECS carries per-service
     CPUUtilization and MemoryUtilization for free. That is a deliberate
     follow-up, not a silent omission.
+
+    CLOSED 2026-09-29 (audit AWS-21), still without this setting: alerts.tf
+    routes ECS "Task State Change" events for crashed, health-check-failed or
+    never-started SERVICE tasks through EventBridge into a log group and
+    alarms on two or more in 15 minutes (`service-task-crash-loop`). A task
+    that is running but wedged with a passing health check is still not
+    caught — that remains the health checks' job.
   EOT
   type        = string
   default     = "disabled"
@@ -478,6 +485,28 @@ variable "container_insights" {
 # ---------------------------------------------------------------------------
 # Alerting
 # ---------------------------------------------------------------------------
+
+variable "cohere_parse_daily_page_alarm" {
+  description = <<-EOT
+    Pages sent to Cohere Parse in 24 hours above which alerts.tf emails
+    (`cohere-parse-pages`). 0 disables the alarm; the metric is still
+    recorded.
+
+    In PAGES, because this repository does not hold Cohere's per-page price
+    and a guessed dollar figure would be silently wrong. Multiply the price
+    on the account by this number to get the day's spend it represents. The
+    default, 3000, is ten documents at the OCR_MAX_PAGES_PER_DOC ceiling of
+    300 (config.tf); a bulk ingest of historical reports crosses it on the
+    first day, which is the point.
+  EOT
+  type        = number
+  default     = 3000
+
+  validation {
+    condition     = var.cohere_parse_daily_page_alarm >= 0
+    error_message = "cohere_parse_daily_page_alarm must be 0 (off) or a positive page count."
+  }
+}
 
 variable "alert_email" {
   description = <<-EOT

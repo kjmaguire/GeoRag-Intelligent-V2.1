@@ -600,6 +600,26 @@ class TestMetering:
 
         assert counter._value.get() == before
 
+    def test_billed_pages_reach_the_log_line_cloudwatch_counts(self, monkeypatch, blocks_payload, caplog) -> None:
+        """alerts.tf's cohere-parse-pages alarm sums `parse_pages_billed`
+        from these lines (audit AWS-15). The field name and the marker are
+        its contract."""
+        _capture_invoke(monkeypatch, [_body(blocks_payload)])
+
+        with caplog.at_level(logging.INFO, logger="georag.ingest.cohere_parse"):
+            cpc.ocr_page_block_sync("/x.pdf", [1, 2, 3])
+
+        billed = [r for r in caplog.records if "COHERE_PARSE_PAGES_BILLED" in r.getMessage()]
+        assert sum(r.parse_pages_billed for r in billed) == 3
+
+    def test_failed_requests_log_no_billed_pages(self, monkeypatch, caplog) -> None:
+        _capture_invoke(monkeypatch, [_http_error(422, "bad")])
+
+        with caplog.at_level(logging.INFO, logger="georag.ingest.cohere_parse"):
+            cpc.ocr_page_sync("/x.pdf", 1)
+
+        assert not [r for r in caplog.records if "COHERE_PARSE_PAGES_BILLED" in r.getMessage()]
+
 
 class TestRetryLadder:
     """Back after a host change removed the thing that owned it.

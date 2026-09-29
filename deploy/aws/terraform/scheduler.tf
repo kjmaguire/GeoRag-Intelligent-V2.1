@@ -103,6 +103,80 @@ resource "aws_ecs_task_definition" "startup_sweep" {
   }])
 }
 
+# The daily Hatchet client-token expiry check (audit AWS-12, 2026-09-29).
+# deploy/aws/scheduler/token-expiry-check.sh says why; alerts.tf's
+# `hatchet-token-expiring` marker alarm is what emails.
+#
+# Its own task and schedule rather than a step in the startup sweep, on
+# purpose: this task needs a secret injected, and a sweep that needed one
+# would fail to START on any Secrets Manager hiccup — leaving the whole
+# platform down for the day over a reminder. Here a failure to start costs
+# one day's reminder. No task role: the script makes no AWS calls, and the
+# execution role already reads georag/app for every application task.
+resource "aws_ecs_task_definition" "token_check" {
+  count = local.on
+
+  family                   = "${local.name}-token-check"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.execution.arn
+
+  container_definitions = jsonencode([{
+    name      = "token-check"
+    essential = true
+    # Same pin as the two sweeps; see shutdown_sweep above.
+    image      = "public.ecr.aws/aws-cli/aws-cli:2.36.46"
+    entryPoint = ["/bin/bash", "-c"]
+    command    = [file("${path.module}/../scheduler/token-expiry-check.sh")]
+    secrets = [
+      { name = "HATCHET_CLIENT_TOKEN", valueFrom = local._secret_ref["HATCHET_CLIENT_TOKEN"] },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.scheduler.name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "token-check"
+      }
+    }
+  }])
+}
+
+resource "aws_scheduler_schedule" "token_check" {
+  count = local.on
+
+  name = "${local.name}-token-check"
+  # 10:00 local, inside the running window. The task itself needs nothing
+  # from the platform, but the email should land when someone is working.
+  schedule_expression          = "cron(0 10 * * ? *)"
+  schedule_expression_timezone = var.maintenance_timezone
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_ecs_cluster.this.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = aws_ecs_task_definition.token_check[0].arn_without_revision
+      launch_type         = "FARGATE"
+      network_configuration {
+        subnets          = aws_subnet.private[*].id
+        security_groups  = [aws_security_group.tasks.id]
+        assign_public_ip = false
+      }
+    }
+
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
+}
+
 locals {
   # The maintenance window's length, derived from the two cron expressions
   # rather than configured separately. `cron(0 17 * * ? *)` -> 17:00,

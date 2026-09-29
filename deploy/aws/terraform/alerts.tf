@@ -127,6 +127,16 @@ locals {
       pattern     = "COHERE_PARSE_REJECTED"
       description = "Cohere Parse refused the request (401/403/404/413/422). Every scanned page is falling back to tesseract, which extracts no tables. Usually COHERE_API_KEY: absent, invalid, or not entitled to Parse. Retryable statuses are NOT here — those are retried in the adapter and log at WARNING."
     }
+    hatchet-token-expiring = {
+      # Emitted by deploy/aws/scheduler/token-expiry-check.sh, the daily
+      # token-check task (scheduler.tf), which logs to the SCHEDULER group.
+      # Audit AWS-12, 2026-09-29: the token lapses 90 days after minting and
+      # nothing renewed it or alarmed on it. The task logs the marker every
+      # day it applies, so this emails daily until the token is rotated.
+      log_group   = "scheduler"
+      pattern     = "HATCHET_TOKEN_EXPIRING"
+      description = "HATCHET_CLIENT_TOKEN expires within 21 days, has expired, or the daily check could not read its expiry. When it lapses every Hatchet worker and client fails auth at once while the engine looks healthy: all 51 workflows and every cron stop. Rotate with deploy/aws/rotation/rotate-hatchet-token.sh (ops/runbooks/secret-rotation.md §9); the log line in /ecs/georag/scheduler (stream prefix token-check) says which case this is."
+    }
     # bedrock-endpoint-not-inservice was here until 2026-09-15. ADR-0022
     # called it the sharpest edge in this deployment: a Marketplace endpoint
     # that failed to come back after the nightly delete left NO chat and NO
@@ -178,6 +188,213 @@ resource "aws_cloudwatch_metric_alarm" "markers" {
   alarm_actions       = local.alarm_actions
 
   depends_on = [aws_cloudwatch_log_metric_filter.markers]
+}
+
+# ---------------------------------------------------------------------------
+# CRITICAL log lines — the production-posture check, and anything else
+# ---------------------------------------------------------------------------
+# main.py::_assert_production_posture is the only thing in the system that
+# reports a security control being off (GEORAG_ENV=production), and it does
+# so at CRITICAL, with a docstring saying CRITICAL "pages via the
+# georag-fastapi-critical alert". That alert existed on Azure only. Here
+# nothing watched for it until 2026-09-29 (audit AWS-10 / API-5), so an
+# empty COHERE_API_KEY, a disabled hallucination layer or rate limiting off
+# was logged into a group nobody reads.
+#
+# Two terms, either matches:
+#   GEORAG_POSTURE_CRITICAL  the stable token the posture lines carry (added
+#                            on the FastAPI side in the same audit pass)
+#   CRITICAL                 the level itself — the JSON formatter writes
+#                            "level": "CRITICAL", Laravel's stderr stack
+#                            writes production.CRITICAL — so every other
+#                            CRITICAL site (sidecar auth, OCR engine
+#                            misconfiguration, empty service key) pages too,
+#                            and so would the posture line if the token were
+#                            ever dropped.
+# Every CRITICAL site in src/fastapi/app is a misconfiguration logged once per
+# process, so this is not a noisy filter by construction. Keep it that way:
+# CRITICAL means "a person must act", not "worse than ERROR".
+#
+# Deliberately NOT in log_markers: scripts/check-log-marker-alarms.py requires
+# each marker to have exactly one emitter, and a level string has hundreds.
+resource "aws_cloudwatch_log_metric_filter" "posture_critical" {
+  name           = "posture-critical"
+  log_group_name = aws_cloudwatch_log_group.services.name
+  pattern        = "?\"GEORAG_POSTURE_CRITICAL\" ?\"CRITICAL\""
+
+  metric_transformation {
+    name          = "posture-critical"
+    namespace     = "GeoRAG/Markers"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "posture_critical" {
+  count = local.on
+
+  alarm_name          = "${local.name}-posture-critical"
+  alarm_description   = "A service logged at CRITICAL. From FastAPI or the hatchet worker this is usually _assert_production_posture on boot: a security or grounding control is off (RATE_LIMIT_ENABLED, PROMPT_INJECTION_DELIMITING_ENABLED, a hallucination layer), COHERE_API_KEY is empty, or QDRANT_DOCUMENT_PROJECT_SCOPE is cross_project. Search /ecs/georag for GEORAG_POSTURE_CRITICAL, then CRITICAL, in the last 15 minutes; the line names the setting."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "posture-critical"
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.posture_critical]
+}
+
+# ---------------------------------------------------------------------------
+# ECS tasks that crash, fail health checks, or cannot start
+# ---------------------------------------------------------------------------
+# The gap variables.tf's container_insights description names (audit AWS-21,
+# 2026-09-29): ECS replaces a task that crashes or fails its container health
+# check, and no human is told. HealthyHostCount covers only the two ALB
+# services, so a hatchet-worker OOM-restarting every four minutes — Ch 12 §6's
+# "ingestion has stopped moving" — was silent.
+#
+# EventBridge receives every ECS task state change for free. The rule keeps
+# only SERVICE tasks (group "service:*" — not the migrate, smoke, sweep or
+# token-check one-offs, which exit on purpose) that stopped because:
+#   * the essential container exited on its own (a crash, an OOM kill), or
+#   * the task never started (image pull, missing secret key, no Spot
+#     capacity), or
+#   * ECS stopped it for failing a container or ELB health check.
+# Scale-ins (the nightly sweep), deployments and Spot interruptions stop
+# tasks with other codes and reasons, so they do not match.
+#
+# Events go to a log group rather than straight to SNS so the alarm, not the
+# event stream, decides when to email: one message per episode (two or more
+# in 15 minutes) instead of one per restart. The group also keeps the
+# stoppedReason of every one, which is the first thing to read:
+#   aws logs tail /aws/events/georag/task-stops --since 1h
+resource "aws_cloudwatch_log_group" "task_stops" {
+  # EventBridge's CloudWatch Logs target expects the /aws/events/ prefix.
+  name              = "/aws/events/${local.name}/task-stops"
+  retention_in_days = 30
+}
+
+data "aws_iam_policy_document" "events_to_task_stops" {
+  statement {
+    sid     = "EventBridgeWritesTaskStops"
+    effect  = "Allow"
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com", "delivery.logs.amazonaws.com"]
+    }
+    resources = ["${aws_cloudwatch_log_group.task_stops.arn}:*"]
+  }
+}
+
+resource "aws_cloudwatch_log_resource_policy" "events_to_task_stops" {
+  policy_name     = "${local.name}-events-to-task-stops"
+  policy_document = data.aws_iam_policy_document.events_to_task_stops.json
+}
+
+resource "aws_cloudwatch_event_rule" "service_task_failed" {
+  name        = "${local.name}-service-task-failed"
+  description = "A service task in the ${local.name} cluster crashed, failed a health check, or failed to start (audit AWS-21)."
+
+  event_pattern = jsonencode({
+    source        = ["aws.ecs"]
+    "detail-type" = ["ECS Task State Change"]
+    detail = {
+      clusterArn = [aws_ecs_cluster.this.arn]
+      lastStatus = ["STOPPED"]
+      group      = [{ prefix = "service:" }]
+      "$or" = [
+        { stopCode = ["EssentialContainerExited", "TaskFailedToStart"] },
+        { stoppedReason = [{ prefix = "Task failed" }] },
+      ]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "service_task_failed" {
+  rule = aws_cloudwatch_event_rule.service_task_failed.name
+  arn  = aws_cloudwatch_log_group.task_stops.arn
+
+  depends_on = [aws_cloudwatch_log_resource_policy.events_to_task_stops]
+}
+
+resource "aws_cloudwatch_log_metric_filter" "service_task_failed" {
+  name           = "service-task-failed"
+  log_group_name = aws_cloudwatch_log_group.task_stops.name
+  pattern        = "{ $.detail.lastStatus = \"STOPPED\" }"
+
+  metric_transformation {
+    name          = "service-task-failed"
+    namespace     = "GeoRAG/Markers"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "service_task_failed" {
+  count = local.on
+
+  alarm_name          = "${local.name}-service-task-crash-loop"
+  alarm_description   = "Two or more ECS service tasks crashed, failed a health check or failed to start within 15 minutes. ECS keeps replacing them, so the service LOOKS present. Read the stoppedReason: aws logs tail /aws/events/${local.name}/task-stops --since 1h. A hatchet-worker loop means ingestion and every cron have stopped moving."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "service-task-failed"
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.service_task_failed]
+}
+
+# ---------------------------------------------------------------------------
+# Cohere Parse pages billed
+# ---------------------------------------------------------------------------
+# Audit AWS-15, 2026-09-29. PDF_PARSE_MODE=all (config.tf) sends every PDF
+# page to Parse on Cohere's own API, billed per page. No AWS budget can see
+# a Cohere invoice, and cost_burn_watcher sums only usage.usage_events, which
+# ingestion does not write. So nothing noticed a bulk ingest of historical
+# NI 43-101s.
+#
+# cohere_parse_client._meter_pages now logs one line per billed page carrying
+# `parse_pages_billed`; this sums it per day. The threshold is PAGES, not
+# dollars: this file does not know Cohere's per-page price, and a number
+# guessed here would be wrong silently. Set it from the price on the account.
+resource "aws_cloudwatch_log_metric_filter" "cohere_parse_pages" {
+  name           = "cohere-parse-pages-billed"
+  log_group_name = aws_cloudwatch_log_group.services.name
+  pattern        = "{ $.parse_pages_billed > 0 }"
+
+  metric_transformation {
+    name          = "cohere-parse-pages-billed"
+    namespace     = "GeoRAG/Markers"
+    value         = "$.parse_pages_billed"
+    default_value = 0
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cohere_parse_pages" {
+  count = local.on * (var.cohere_parse_daily_page_alarm > 0 ? 1 : 0)
+
+  alarm_name          = "${local.name}-cohere-parse-pages"
+  alarm_description   = "More than ${var.cohere_parse_daily_page_alarm} pages went to Cohere Parse in 24 hours, each billed on Cohere's account, where no AWS budget can see it. Usually a bulk ingest. Check which documents: search /ecs/georag for COHERE_PARSE_PAGES_BILLED. To stop the spend, set PDF_PARSE_MODE back to ocr_only in config.tf."
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "cohere-parse-pages-billed"
+  statistic           = "Sum"
+  period              = 86400
+  evaluation_periods  = 1
+  threshold           = var.cohere_parse_daily_page_alarm
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.cohere_parse_pages]
 }
 
 # ---------------------------------------------------------------------------

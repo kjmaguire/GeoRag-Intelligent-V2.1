@@ -614,11 +614,28 @@ def _parse_png(png_bytes: bytes, *, log_page: int | None) -> PageOcrResult:
 
 
 def _meter_pages(count: int) -> None:
-    """Best-effort billed-page metering; must never fail an OCR result."""
+    """Best-effort billed-page metering; must never fail an OCR result.
+
+    Two sinks. The Prometheus counter is what the code has always had, and
+    nothing scrapes it in production. The log line is what production can
+    actually see: deploy/aws/terraform/alerts.tf turns
+    ``parse_pages_billed`` into a CloudWatch metric and alarms on a daily
+    page count (audit AWS-15, 2026-09-29). With PDF_PARSE_MODE=all every page
+    is billed on Cohere's own API, which no AWS budget can see. The marker
+    string and the ``extra`` field name are that alarm's contract; change
+    them together.
+    """
+    billed = max(0, count)
     with contextlib.suppress(Exception):
         from app.metrics import OCR_PAGES_TOTAL  # noqa: PLC0415
 
-        OCR_PAGES_TOTAL.labels(engine=OCR_METHOD).inc(max(0, count))
+        OCR_PAGES_TOTAL.labels(engine=OCR_METHOD).inc(billed)
+    with contextlib.suppress(Exception):
+        logger.info(
+            "COHERE_PARSE_PAGES_BILLED pages=%d",
+            billed,
+            extra={"parse_pages_billed": billed},
+        )
 
 
 # ---------------------------------------------------------------------------

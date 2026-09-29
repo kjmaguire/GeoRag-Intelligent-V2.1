@@ -374,6 +374,9 @@ data "aws_iam_policy_document" "scheduler" {
     resources = coalescelist(compact([
       try(one(aws_ecs_task_definition.shutdown_sweep).arn_without_revision, ""),
       try(one(aws_ecs_task_definition.startup_sweep).arn_without_revision, ""),
+      # The daily Hatchet token check (scheduler.tf, audit AWS-12). It runs
+      # with the execution role only, which PassRole below already covers.
+      try(one(aws_ecs_task_definition.token_check).arn_without_revision, ""),
     ]), ["arn:aws:ecs:::task-definition/none"])
     condition {
       test     = "ArnLike"
