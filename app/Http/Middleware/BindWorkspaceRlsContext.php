@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\HttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 /**
@@ -27,22 +28,28 @@ use Throwable;
  * remembered, and two live cross-tenant IDOR bugs of that shape were found in
  * a single audit pass.
  *
- * ## Why a session GUC and not a transaction
+ * ## Why a session GUC, and why it refuses to run behind a pooler
  *
  * SetsWorkspaceRlsContext uses `SET LOCAL` inside an explicit transaction,
- * which is the correct shape under PgBouncer transaction pooling — only
- * within one transaction are all statements guaranteed the same backend.
- * Hoisting that into middleware would wrap every request in a transaction,
- * including the streaming query responses, and hold a pooled connection open
- * for the length of an LLM answer.
+ * which is the correct shape under transaction pooling — only within one
+ * transaction are all statements guaranteed the same backend. Hoisting that
+ * into middleware would wrap every request in one transaction: a query error
+ * a controller catches and carries on from would abort the rest of the
+ * request (25P02), a StreamedResponse body runs after this middleware has
+ * already returned, and the pooled backend is held for the whole request.
  *
- * It is also unnecessary here. Verified 2026-08-21: laravel-octane-cc
- * connects to `georag-pg-cc.postgres.database.azure.com:5432`, the direct
- * Postgres port. Azure's PgBouncer listens on 6432 and nothing points at it,
- * so each Laravel connection is a real session and a session-scoped GUC holds
- * for the whole request. `assertNotPooled()` fails loudly if that stops being
- * true, because the mechanism would then be unsound rather than merely
- * different.
+ * So this binds per SESSION, which is only sound when every Laravel
+ * connection is a real Postgres session: the AWS deployment (no pooler —
+ * config.tf points Laravel straight at RDS:5432), compose and the Helm
+ * chart (both point Laravel at Postgres directly since SEC-2). Behind a
+ * transaction pooler a session GUC set by one statement stays on a backend
+ * the next statement — or the next tenant's request — may land on, and
+ * PgBouncer does not run server_reset_query in transaction mode. That is a
+ * cross-tenant read, not a no-op, so refusePooled() fails CLOSED with a 503
+ * on every request when `database.connections.<default>.pooled`
+ * (DB_POOLED) is true. It is an explicit flag, not port sniffing: RDS Proxy
+ * listens on 5432. Port 6432 is still treated as pooled, as a second
+ * signal, because refusing costs nothing there.
  *
  * ## Why it always writes
  *
@@ -64,11 +71,13 @@ use Throwable;
  */
 class BindWorkspaceRlsContext
 {
-    /** PgBouncer's port on Azure Database for PostgreSQL Flexible Server. */
+    /** PgBouncer's conventional port — a secondary signal; DB_POOLED is the contract. */
     private const POOLER_PORT = '6432';
 
     public function handle(Request $request, Closure $next): Response
     {
+        $this->refusePooled();
+
         $workspaceId = $this->resolveWorkspaceId($request);
 
         $this->bind($workspaceId);
@@ -108,7 +117,6 @@ class BindWorkspaceRlsContext
         }
 
         try {
-            $this->assertNotPooled();
             DB::statement(
                 "SELECT set_config('app.workspace_id', ?, false)",
                 [$workspaceId ?? ''],
@@ -175,25 +183,43 @@ class BindWorkspaceRlsContext
     }
 
     /**
-     * A session GUC does not survive PgBouncer's transaction pooling.
+     * A session GUC is unsound behind a transaction pooler — refuse, do not
+     * warn.
      *
-     * If the connection is ever repointed at the pooler, every statement in a
-     * request can land on a different backend and this middleware becomes a
-     * no-op that looks like protection. Say so.
+     * This used to Log::critical and carry on, which under PgBouncer's
+     * transaction mode meant binding tenant X on one backend and running the
+     * controller's queries on whichever backend came next — possibly one
+     * still carrying tenant Y from an earlier request (SEC-2). Nothing is
+     * written to the session before this runs, so there is nothing to sever.
      */
-    private function assertNotPooled(): void
+    private function refusePooled(): void
+    {
+        if (! $this->isPostgres() || ! $this->isPooled()) {
+            return;
+        }
+
+        Log::critical(
+            'BindWorkspaceRlsContext: the pgsql connection is behind a transaction '
+            .'pooler (DB_POOLED=true or port 6432). app.workspace_id is bound per '
+            .'session and would not follow the request across backends, so every '
+            .'request is refused. Point Laravel at Postgres directly.',
+            ['event' => 'rls.pooled_connection'],
+        );
+
+        throw new HttpException(
+            503,
+            'Row-level security cannot be armed through a transaction pooler; '
+            .'refusing to serve this request without tenant isolation. '
+            .'(log event: rls.pooled_connection)',
+        );
+    }
+
+    private function isPooled(): bool
     {
         $connection = (string) config('database.default');
-        if ((string) config("database.connections.{$connection}.port") === self::POOLER_PORT) {
-            Log::critical(
-                'app.workspace_id is bound as a SESSION GUC, but the pgsql '
-                .'connection points at PgBouncer (port 6432). Under transaction '
-                .'pooling the GUC does not survive between statements, so RLS is '
-                .'effectively unarmed. Use SetsWorkspaceRlsContext::withWorkspaceRls '
-                .'(SET LOCAL inside a transaction) instead.',
-                ['event' => 'rls.pooled_connection'],
-            );
-        }
+
+        return (bool) config("database.connections.{$connection}.pooled", false)
+            || (string) config("database.connections.{$connection}.port") === self::POOLER_PORT;
     }
 
     /**
@@ -212,16 +238,36 @@ class BindWorkspaceRlsContext
             return null;
         }
 
-        // 1. The route names a project. That covers the Foundry pages and the
-        //    project-scoped API, which is most of the surface.
-        $projectId = $this->projectIdFromRoute($request);
-        if ($projectId !== null) {
-            $workspaceId = $this->workspaceForProject($projectId);
+        // 1. The route names a project — by id on the project API, by slug
+        //    on every Foundry page (/projects/{slug}/...). Most of the
+        //    surface. Slug routes used to fall through to step 2 (SEC-8).
+        $project = $this->projectFromRoute($request);
+        if ($project !== null) {
+            $workspaceId = $project['workspace_id'];
+
+            // A project with no workspace cannot be bound, and binding ''
+            // instead is fail-open on most policies. Refuse rather than serve
+            // it with RLS disarmed (SEC-10): 409 to a member, the same answer
+            // RasterLayersController::workspaceIdOrFail() gives; 404 to anyone
+            // else, so the refusal is not an existence oracle. Postgres only:
+            // SQLite has no RLS to disarm, and the suite's factory projects
+            // carry no workspace.
+            if ($workspaceId === null) {
+                if ($this->isPostgres()) {
+                    if ($this->userIsMemberOf($user, $project['project_id'])) {
+                        throw new HttpException(409, 'This project has no workspace assigned, so tenant-scoped data cannot be read safely.');
+                    }
+
+                    throw new NotFoundHttpException('Project not found.');
+                }
+
+                return null;
+            }
 
             // Only if the user actually belongs to it. Reading the workspace
             // off a project the caller has no membership in would bind them
             // into someone else's tenant — the bug this exists to prevent.
-            if ($workspaceId !== null && $this->userBelongsTo($user, $workspaceId)) {
+            if ($this->userBelongsTo($user, $workspaceId)) {
                 return $workspaceId;
             }
 
@@ -235,7 +281,16 @@ class BindWorkspaceRlsContext
         return count($owned) === 1 ? $owned[0] : null;
     }
 
-    private function projectIdFromRoute(Request $request): ?string
+    /**
+     * The project the route names, or null when it names none or the project
+     * does not exist (the controller's own 404 handles that).
+     *
+     * `{slug}` is a project slug on every route that declares it, and
+     * silver.projects.slug is globally unique (projects_slug_unique).
+     *
+     * @return array{project_id: string, workspace_id: ?string}|null
+     */
+    private function projectFromRoute(Request $request): ?array
     {
         $route = $request->route();
         if ($route === null) {
@@ -245,39 +300,73 @@ class BindWorkspaceRlsContext
         foreach (['project', 'project_id', 'projectId'] as $name) {
             $value = $route->parameter($name);
             if ($value instanceof Project) {
-                return (string) $value->getKey();
+                return [
+                    'project_id' => (string) $value->getKey(),
+                    'workspace_id' => $value->workspace_id !== null ? (string) $value->workspace_id : null,
+                ];
             }
             if (is_string($value) && $value !== '') {
-                return $value;
+                return $this->lookupProject('project_id', $value);
             }
+        }
+
+        $slug = $route->parameter('slug');
+        if (is_string($slug) && $slug !== '') {
+            return $this->lookupProject('slug', $slug);
         }
 
         return null;
     }
 
-    private function workspaceForProject(string $projectId): ?string
+    /**
+     * @param 'project_id'|'slug' $column
+     *
+     * @return array{project_id: string, workspace_id: ?string}|null
+     */
+    private function lookupProject(string $column, string $value): ?array
     {
         // Short TTL: a project's workspace effectively never changes, and this
         // runs on every request. Long enough to matter, short enough that a
-        // re-scoped project corrects itself without a deploy.
+        // re-scoped project corrects itself without a deploy. A missing
+        // project returns null, which Cache::remember does not store.
         return Cache::remember(
-            "rls:project-workspace:{$projectId}",
+            "rls:project-workspace:{$column}:{$value}",
             now()->addSeconds(60),
-            static function () use ($projectId): ?string {
+            static function () use ($column, $value): ?array {
                 try {
                     // Through the model, not raw SQL against silver.projects:
                     // the model knows its own table, which is what lets the
                     // test suite point it at an unqualified name on SQLite.
-                    $workspaceId = Project::query()
-                        ->whereKey($projectId)
-                        ->value('workspace_id');
+                    $row = Project::query()
+                        ->where($column === 'slug' ? 'slug' : (new Project)->getKeyName(), $value)
+                        ->first(['project_id', 'workspace_id']);
                 } catch (Throwable) {
                     return null;
                 }
 
-                return $workspaceId !== null ? (string) $workspaceId : null;
+                if ($row === null) {
+                    return null;
+                }
+
+                $workspaceId = $row->getAttribute('workspace_id');
+
+                return [
+                    'project_id' => (string) $row->getAttribute('project_id'),
+                    'workspace_id' => $workspaceId !== null && $workspaceId !== '' ? (string) $workspaceId : null,
+                ];
             },
         );
+    }
+
+    private function userIsMemberOf(mixed $user, string $projectId): bool
+    {
+        try {
+            return $user->projects()
+                ->where('silver.projects.project_id', $projectId)
+                ->exists();
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     private function userBelongsTo(mixed $user, string $workspaceId): bool

@@ -48,6 +48,10 @@ final class BindWorkspaceRlsContextTest extends TestCase
             '/_test/rls/echo/{project}',
             fn (Request $r) => ['workspace_id' => $r->attributes->get('workspace_id')],
         );
+        Route::middleware(['api'])->get(
+            '/_test/rls/slug/{slug}',
+            fn (Request $r) => ['workspace_id' => $r->attributes->get('workspace_id')],
+        );
     }
 
     public function test_anonymous_requests_resolve_to_no_workspace(): void
@@ -125,6 +129,93 @@ final class BindWorkspaceRlsContextTest extends TestCase
             ->getJson("/_test/rls/echo/{$stranger->project_id}")
             ->assertOk()
             ->assertJsonPath('workspace_id', null);
+    }
+
+    /**
+     * SEC-8: every Foundry page is /projects/{slug}/..., and the middleware
+     * only read project/project_id/projectId — so for a user in two
+     * workspaces every Foundry page bound nothing (fail-open on most
+     * policies) while the docblock said "that covers the Foundry pages".
+     */
+    public function test_a_slug_route_binds_the_workspace_of_that_project(): void
+    {
+        $user = User::factory()->create();
+        $mine = Project::factory()->create([
+            'workspace_id' => 'b0000000-0000-0000-0000-0000000000ff',
+        ]);
+        $other = Project::factory()->create([
+            'workspace_id' => 'c0000000-0000-0000-0000-0000000000ff',
+        ]);
+        $user->projects()->attach($mine->project_id, ['role' => 'owner']);
+        $user->projects()->attach($other->project_id, ['role' => 'member']);
+
+        $this->actingAs($user)
+            ->getJson("/_test/rls/slug/{$other->slug}")
+            ->assertOk()
+            ->assertJsonPath('workspace_id', 'c0000000-0000-0000-0000-0000000000ff');
+    }
+
+    public function test_a_slug_for_a_project_the_user_does_not_belong_to_binds_nothing(): void
+    {
+        $user = User::factory()->create();
+        foreach (['b0000000-0000-0000-0000-0000000000ff', 'c0000000-0000-0000-0000-0000000000ff'] as $ws) {
+            $project = Project::factory()->create(['workspace_id' => $ws]);
+            $user->projects()->attach($project->project_id, ['role' => 'owner']);
+        }
+        $stranger = Project::factory()->create([
+            'workspace_id' => 'd0000000-0000-0000-0000-0000000000ff',
+        ]);
+
+        $this->actingAs($user)
+            ->getJson("/_test/rls/slug/{$stranger->slug}")
+            ->assertOk()
+            ->assertJsonPath('workspace_id', null);
+    }
+
+    /**
+     * SEC-2: behind a transaction pooler the session-scoped bind is unsound
+     * (proved live in tests/Feature/Tenancy/PooledRlsBindingTest.php). The
+     * middleware used to Log::critical and carry on; it now refuses.
+     */
+    public function test_a_pooled_connection_is_refused_before_the_controller(): void
+    {
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            $this->markTestSkipped('Covered on a real Postgres by PooledRlsBindingTest.');
+        }
+
+        $default = (string) config('database.default');
+        config()->set("database.connections.{$default}.driver", 'pgsql');
+        config()->set("database.connections.{$default}.pooled", true);
+
+        $reached = false;
+        Route::middleware(['api'])->get('/_test/rls/pooled', function () use (&$reached): array {
+            $reached = true;
+
+            return ['ok' => true];
+        });
+
+        $this->getJson('/_test/rls/pooled')->assertStatus(503);
+        $this->assertFalse($reached, 'The controller ran behind a pooler with a session-scoped RLS bind.');
+    }
+
+    public function test_the_pooler_port_alone_is_also_refused(): void
+    {
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            $this->markTestSkipped('Would repoint the live connection.');
+        }
+
+        $default = (string) config('database.default');
+        config()->set("database.connections.{$default}.driver", 'pgsql');
+        config()->set("database.connections.{$default}.port", '6432');
+
+        $this->getJson('/_test/rls/echo')->assertStatus(503);
+    }
+
+    public function test_an_unpooled_connection_is_served(): void
+    {
+        config()->set('database.connections.'.config('database.default').'.pooled', false);
+
+        $this->getJson('/_test/rls/echo')->assertOk();
     }
 
     /**

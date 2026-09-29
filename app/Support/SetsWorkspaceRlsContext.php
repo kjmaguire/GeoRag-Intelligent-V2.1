@@ -6,6 +6,7 @@ namespace App\Support;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
  * Set the `app.workspace_id` Postgres GUC so RLS policies on silver / gold
@@ -50,6 +51,8 @@ trait SetsWorkspaceRlsContext
      */
     protected function withWorkspaceRls(string $workspaceId, \Closure $callback): mixed
     {
+        $this->assertBindableWorkspace($workspaceId);
+
         return DB::transaction(function () use ($workspaceId, $callback) {
             DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
 
@@ -163,6 +166,35 @@ trait SetsWorkspaceRlsContext
             );
         }
 
+        $this->assertBindableWorkspace($workspaceId);
+
         DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
+    }
+
+    /**
+     * Refuse to "arm" RLS with a value that disarms it (SEC-10).
+     *
+     * silver.projects.workspace_id is nullable, and callers pass
+     * `(string) $project->workspace_id` — so a project with no workspace used
+     * to bind '', which the fail-open policy shape reads as "every
+     * workspace". That is a 404 for the request, not a quietly unscoped read.
+     * Postgres only: SQLite has no RLS, and the suite's factory projects
+     * carry no workspace. The driver is read from config, not the resolved
+     * connection, for the reason BindWorkspaceRlsContext::bind() gives: some
+     * suites swap the DatabaseManager for a mock.
+     */
+    private function assertBindableWorkspace(string $workspaceId): void
+    {
+        $connection = (string) config('database.default');
+        if ((string) config("database.connections.{$connection}.driver") !== 'pgsql') {
+            return;
+        }
+
+        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $workspaceId) !== 1) {
+            throw new NotFoundHttpException(
+                'Refusing to bind app.workspace_id to a missing or malformed workspace; '
+                .'an empty binding disarms row-level security.',
+            );
+        }
     }
 }
