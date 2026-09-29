@@ -78,6 +78,14 @@ _UNPRICED_SEEN: set[str] = set()
 #: first must not silence the other.
 _UNPRICED_CEILING_WARNED: set[str] = set()
 
+#: Models that run with no contracted rate BY DECISION, so the missing
+#: price is expected and is logged at INFO rather than WARNING. Kyle,
+#: 2026-09-29: Cohere does not publish a per-token price for Command A+ and
+#: production runs without a spend ceiling on it. Token counts are still
+#: recorded, so spend stays reconstructible if a rate is ever added to
+#: _PRICE_TABLE (which also re-arms the ceiling for that model).
+_UNPRICED_BY_DECISION: frozenset[str] = frozenset({"command-a-plus-05-2026"})
+
 
 def has_pricing(model: str) -> bool:
     """True when `model` has a published rate in :data:`_PRICE_TABLE`.
@@ -110,11 +118,24 @@ def has_pricing(model: str) -> bool:
     $0 on every answer and the spend ceiling could never fire on it with no
     log line anywhere saying so. The contracted rate is Kyle's to supply --
     no number is invented here.
+
+    2026-09-29 (Kyle): production runs without a spend ceiling on Command
+    A+, whose price is not published. Models in _UNPRICED_BY_DECISION are
+    therefore reported at INFO, as the expected state; any other unpriced
+    model is still a WARNING.
     """
     if model in _PRICE_TABLE:
         return True
     if model and model not in _UNPRICED_CEILING_WARNED:
         _UNPRICED_CEILING_WARNED.add(model)
+        if model in _UNPRICED_BY_DECISION:
+            logger.info(
+                "pricing: model=%s runs without a spend ceiling by decision "
+                "(no published rate) -- cost is recorded as 0 and token "
+                "counts are kept.",
+                model,
+            )
+            return False
         logger.warning(
             "pricing: no contracted rate for model=%s -- its cost is recorded "
             "as 0 and the per-workspace spend ceiling (cost_burn_watcher) "
@@ -152,7 +173,8 @@ def estimate_cost_usd(
         # every cost figure for it is Sonnet-priced fiction.
         if model not in _UNPRICED_SEEN:
             _UNPRICED_SEEN.add(model)
-            logger.warning(
+            log = logger.info if model in _UNPRICED_BY_DECISION else logger.warning
+            log(
                 "estimate_cost_usd: no pricing for model=%s — falling back to "
                 "STANDARD-tier rates. Every cost figure for this model is an "
                 "estimate against the wrong price sheet. Add it to _PRICE_TABLE.",

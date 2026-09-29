@@ -451,8 +451,9 @@ locals {
     # PDF_PARSE_MODE=all every page is a billed page, so this is the only
     # per-document cost bound; pages past it keep their text layer (or go to
     # tesseract) and the run lands in `partial`, which the UI shows. 300 is
-    # the code default and .env.production.example's value. The fleet-wide
-    # signal is the cohere-parse-pages alarm in alerts.tf.
+    # the code default and .env.production.example's value. There is no
+    # fleet-wide page alarm by default (cohere_parse_daily_page_alarm = 0,
+    # Kyle 2026-09-29); the metric is still logged.
     OCR_MAX_PAGES_PER_DOC = 300
 
     # SPLADE++ has no managed equivalent anywhere. This is what makes the
