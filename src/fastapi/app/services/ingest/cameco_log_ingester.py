@@ -24,13 +24,15 @@ silver.collars.easting/northing keep the file's own E=/N= numbers (GIS-6).
 """
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import asyncpg
+
+from app.services.ingest.file_hash import sha256_file
 
 log = logging.getLogger("georag.ingest.cameco_log")
 
@@ -313,7 +315,8 @@ async def emit_log_provenance(
     target_id: str,
 ) -> None:
     """Tag the collar with the binary log as a provenance source."""
-    sha = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
+    # Off the event loop, streamed (ING-18).
+    sha = await asyncio.to_thread(sha256_file, file_path)
     await conn.execute(
         """
         INSERT INTO bronze.provenance

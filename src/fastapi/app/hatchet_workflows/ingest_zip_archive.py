@@ -1479,8 +1479,7 @@ async def _ingest_one(
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
         tabular_key = f"tabular/{input.project_id}/{ts}_{safe_name}"
-        file_bytes = await asyncio.to_thread(file_path.read_bytes)
-        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, tabular_key, file_bytes)
+        await _put_member(store, tabular_key, file_path)
         tabular_ref = await ingest_tabular.aio_run_no_wait(
             IngestTabularInput(
                 workspace_id=input.workspace_id,
@@ -1502,14 +1501,13 @@ async def _ingest_one(
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
         tiff_key = f"tiff/{input.project_id}/{ts}_{safe_name}"
-        file_bytes = await asyncio.to_thread(file_path.read_bytes)
-        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, tiff_key, file_bytes)
+        tiff_size = await _put_member(store, tiff_key, file_path)
         await tiff_normalize.aio_run_no_wait(
             TiffNormalizeInput(
                 workspace_id=input.workspace_id,  # type: ignore[arg-type]
                 project_id=input.project_id,
                 minio_key=tiff_key,
-                file_size=len(file_bytes),
+                file_size=tiff_size,
                 correlation_token=f"zip-{input.run_id}-{file_path.name}",
             )
         )
@@ -1525,14 +1523,13 @@ async def _ingest_one(
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
         pdf_key = f"reports/{input.project_id}/{ts}_{safe_name}"
-        file_bytes = await asyncio.to_thread(file_path.read_bytes)
-        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, pdf_key, file_bytes)
+        pdf_size = await _put_member(store, pdf_key, file_path)
         await ingest_pdf.aio_run_no_wait(
             IngestPdfInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
                 minio_key=pdf_key,
-                file_size=len(file_bytes),
+                file_size=pdf_size,
                 correlation_token=f"zip-{input.run_id}-{file_path.name}",
             )
         )
@@ -1549,18 +1546,14 @@ async def _ingest_one(
         # that and pyogrio reads the .prj it needs to know the CRS.
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         if ext == "shp":
-            members = sorted(
-                sib for sib in file_path.parent.iterdir()
-                if sib.is_file() and sib.stem == file_path.stem
-            )
+            members = _shapefile_members(file_path)
             bundle_path = file_path.parent / f"__bundle_{file_path.stem}.zip"
             def _write_bundle() -> None:
                 with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for m in members:
-                        zf.write(m, arcname=m.name)
+                    for arcname, m in members:
+                        zf.write(m, arcname=arcname)
             await asyncio.to_thread(_write_bundle)
-            payload_bytes = await asyncio.to_thread(bundle_path.read_bytes)
-            bundle_path.unlink(missing_ok=True)
+            payload_path = bundle_path
             safe_name = _safe_filename(f"{file_path.stem}.zip")
         elif file_path.is_dir():
             # An Esri File Geodatabase is a folder. Zip it with its own name as
@@ -1576,15 +1569,18 @@ async def _ingest_one(
                         zf.write(f, arcname=str(Path(file_path.name) / f.relative_to(file_path)))
 
             await asyncio.to_thread(_write_gdb_bundle)
-            payload_bytes = await asyncio.to_thread(gdb_bundle.read_bytes)
-            gdb_bundle.unlink(missing_ok=True)
+            payload_path = gdb_bundle
             safe_name = _safe_filename(f"{file_path.stem}.zip")
         else:
-            payload_bytes = await asyncio.to_thread(file_path.read_bytes)
+            payload_path = file_path
             safe_name = _safe_filename(file_path.name)
 
         spatial_key = f"spatial/{input.project_id}/{ts}_{safe_name}"
-        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, spatial_key, payload_bytes)
+        try:
+            await _put_member(store, spatial_key, payload_path)
+        finally:
+            if payload_path != file_path:
+                payload_path.unlink(missing_ok=True)
         await ingest_spatial.aio_run_no_wait(
             IngestSpatialInput(
                 workspace_id=input.workspace_id,
@@ -1616,9 +1612,8 @@ async def _ingest_one(
         # was not there, on the exact format this branch was added for.
         ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
-        file_bytes = await asyncio.to_thread(file_path.read_bytes)
         table_key = f"tables/{input.project_id}/{ts}_{safe_name}"
-        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, table_key, file_bytes)
+        await _put_member(store, table_key, file_path)
         table_ref = await ingest_tabular.aio_run_no_wait(
             IngestTabularInput(
                 workspace_id=input.workspace_id,
@@ -1692,6 +1687,45 @@ async def _keep_las_for_later(
         )
         return False
     return True
+
+
+async def _put_member(store: ObjectStorage, key: str, path: Path) -> int:
+    """Upload one extracted member to bronze without holding it in memory.
+
+    ING-17: members used to be ``read_bytes()`` then ``put_bytes`` - a whole
+    multi-GB GeoTIFF or geodatabase bundle in RAM on a worker that runs many
+    slots, while the archive allows 5 GiB uncompressed. ``put_file`` streams
+    from disk (boto3 ``upload_file``). Returns the size in bytes.
+    """
+    size = (await asyncio.to_thread(path.stat)).st_size
+    await asyncio.to_thread(store.put_file, Bucket.BRONZE, key, str(path))
+    return size
+
+
+def _shapefile_members(shp: Path) -> list[tuple[str, Path]]:
+    """``(name in the bundle, file)`` for a shapefile and its same-stem sidecars.
+
+    ING-16: matched case-INSENSITIVELY, like ``_has_sibling`` below, and
+    renamed to the .shp's own stem inside the bundle. ``Veins.SHP`` beside
+    ``veins.dbf`` / ``veins.shx`` / ``veins.prj`` used to bundle only the
+    .shp - the .dbf was still counted as a handled sidecar - so ingest_spatial
+    either failed or refused for want of a CRS, and the attributes were lost.
+    GDAL looks the sidecars up by the .shp's exact stem (either extension
+    case), which the rename provides. When two files differ only in stem
+    case, the exact spelling wins.
+    """
+    stem = shp.stem.lower()
+    chosen: dict[str, Path] = {}
+    for sib in sorted(shp.parent.iterdir()):
+        if not sib.is_file() or sib.stem.lower() != stem:
+            continue
+        suffix = sib.suffix.lower()
+        if suffix not in chosen or sib.stem == shp.stem:
+            chosen[suffix] = sib
+    return sorted(
+        ((f"{shp.stem}{member.suffix}", member) for member in chosen.values()),
+        key=lambda pair: pair[0],
+    )
 
 
 def _has_sibling(path: Path, suffix: str) -> bool:

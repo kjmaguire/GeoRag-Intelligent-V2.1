@@ -18,6 +18,7 @@ The dtype strings are the ones rasterio's ``src.dtypes`` actually yields.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -206,6 +207,12 @@ class _FakeStore:
         self.get_bytes_calls += 1
         return self.payload
 
+    def get_file(self, bucket: Any, key: str, file_path: str) -> None:
+        # tiff_normalize streams the source to disk (ING-17); counted with
+        # the other downloads.
+        self.get_bytes_calls += 1
+        Path(file_path).write_bytes(self.payload)
+
     def put_bytes(self, *a: Any, **kw: Any) -> None:
         self.put_bytes_calls += 1
 
@@ -301,6 +308,36 @@ class TestTheWorkflowActsOnTheClassification:
         assert store.put_bytes_calls == 0, "a derived PDF was uploaded anyway"
         assert out.ingest_pdf_workflow_run_id is None
         assert out.derived_minio_key == ""
+
+    @pytest.mark.asyncio
+    async def test_a_data_raster_is_read_from_disk_not_memory(
+        self, tiff_env, monkeypatch,
+    ) -> None:
+        """ING-17: the header is parsed from the downloaded file; the bytes
+        of a multi-GB grid are never loaded, and the temp file is removed."""
+        from app.services.ingest.raster_metadata import RasterCaptureResult
+
+        tn, _store, _calls, _set_capture = tiff_env
+        seen: dict = {}
+
+        async def _capture(**kw):
+            seen.update(kw)
+            seen["exists"] = Path(kw["source_path"]).exists()
+            return RasterCaptureResult(
+                written=True, reason="recorded", crs="EPSG:32613",
+                raster_id="r-1", is_measurement_raster=True,
+            )
+
+        monkeypatch.setattr(tn, "persist_raster_metadata", _capture)
+
+        out = await tn.normalize.fn(_input(tn), object())
+
+        assert seen["source_bytes"] is None
+        assert seen["exists"] is True
+        assert not Path(seen["source_path"]).exists(), "temp file left behind"
+        import hashlib
+
+        assert out.source_sha256 == hashlib.sha256(b"II*\x00fake-tiff").hexdigest()
 
     @pytest.mark.asyncio
     async def test_the_reason_reaches_the_run(self, tiff_env) -> None:

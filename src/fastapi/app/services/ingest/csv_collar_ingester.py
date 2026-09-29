@@ -117,6 +117,7 @@ single bad row can't take down the rest of the file.
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import io
@@ -628,14 +629,16 @@ async def ingest_csv_collar_file(
     """
     p = Path(csv_path)
     try:
-        raw = p.read_bytes()
+        # Off the event loop (ING-18): the whole file is needed below for
+        # encoding detection, so it is read once - in a worker thread.
+        raw = await asyncio.to_thread(p.read_bytes)
     except OSError as e:
         return CSVCollarIngestResult(
             file_path=csv_path, total_rows=0, valid_rows=0, skipped_rows=0,
             skipped=True, skipped_reason=f"read_failed:{type(e).__name__}",
         )
 
-    sha = hashlib.sha256(raw).hexdigest()
+    sha = await asyncio.to_thread(lambda: hashlib.sha256(raw).hexdigest())
     encoding = _detect_encoding(raw)
     try:
         text = raw.decode(encoding, errors="replace")

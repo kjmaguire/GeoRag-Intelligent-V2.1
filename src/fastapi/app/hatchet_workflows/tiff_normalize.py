@@ -21,8 +21,6 @@ every backend so the S3/MinIO path rejects them identically.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import hashlib
 import logging
 import os
 import re
@@ -37,8 +35,10 @@ from pydantic import BaseModel, Field
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
+from app.services.ingest.file_hash import sha256_file
 from app.services.ingest.raster_metadata import persist_raster_metadata
 from app.services.ingest.tiff_to_pdf import (
+    MAX_TIFF_BYTES,
     TiffNormalizeError,
     tiff_to_pdf,
 )
@@ -189,11 +189,29 @@ async def normalize(
     # round-trip in this task goes off-loop via asyncio.to_thread so a slow
     # SeaweedFS/SMB call can't starve the Hatchet worker's event loop
     # (same pattern as ingest_pdf.py's figure-persist block).
-    # 1. Stream the source TIFF down.
-    source_bytes = await asyncio.to_thread(
-        store.get_bytes, Bucket.BRONZE, input.minio_key,
-    )
-    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    # 1. Stream the source TIFF down — to DISK (ING-17). It used to be
+    # get_bytes of the whole object: a multi-GB DEM or magnetics grid held in
+    # memory on a worker that runs many slots, only for its header to be read.
+    # Now the header is read from the file, and the bytes are loaded only for
+    # the one path that needs them (the scanned-sheet wrap, capped at
+    # MAX_TIFF_BYTES).
+    with tempfile.TemporaryDirectory(prefix="georag_tiff_") as tmpdir:
+        source_path = str(
+            Path(tmpdir) / f"source{Path(input.minio_key).suffix or '.tif'}"
+        )
+        await asyncio.to_thread(
+            store.get_file, Bucket.BRONZE, input.minio_key, source_path,
+        )
+        return await _normalize_downloaded(input, store, source_path)
+
+
+async def _normalize_downloaded(
+    input: TiffNormalizeInput, store: ObjectStorage, source_path: str,
+) -> TiffNormalizeOutput:
+    """Everything after the download; *source_path* is removed by the caller."""
+    source_sha256 = await asyncio.to_thread(sha256_file, source_path)
+    #: The source's bytes, loaded only where a step needs them in memory.
+    source_bytes: bytes | None = None
 
     # An ERDAS .rrd joins the raster path here rather than getting a workflow
     # of its own: the finest pyramid level is extracted to TIFF bytes and
@@ -210,14 +228,8 @@ async def normalize(
     if Path(input.minio_key).suffix.lower() == ".rrd":
         from georag_geoparsers.erdas_rrd import rrd_to_tiff_bytes  # noqa: PLC0415
 
-        with tempfile.NamedTemporaryFile(suffix=".rrd", delete=False) as handle:
-            handle.write(source_bytes)
-            rrd_path = handle.name
-        try:
-            source_bytes = await asyncio.to_thread(rrd_to_tiff_bytes, rrd_path)
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(rrd_path)
+        # The download is already a file; the pyramid read needs no copy.
+        source_bytes = await asyncio.to_thread(rrd_to_tiff_bytes, source_path)
 
         log.info(
             "tiff_normalize.rrd_extracted key=%s tiff_bytes=%d",
@@ -242,6 +254,9 @@ async def normalize(
     # docstring for why it lives outside this module.
     capture = await persist_raster_metadata(
         source_bytes=source_bytes,
+        # An .rrd's extracted TIFF is in memory; anything else is read from
+        # the downloaded file, never loaded whole.
+        source_path=None if source_bytes is not None else source_path,
         source_key=input.minio_key,
         source_sha256=source_sha256,
         project_id=str(input.project_id),
@@ -323,7 +338,15 @@ async def normalize(
         )
 
     if not normalize_skipped:
-        # 3. Wrap to PDF (lossless, in-memory).
+        # 3. Wrap to PDF (lossless, in-memory). The size cap is checked on
+        # the file first so an oversized scan is refused without loading it.
+        if source_bytes is None:
+            size = (await asyncio.to_thread(os.stat, source_path)).st_size
+            if size > MAX_TIFF_BYTES:
+                raise TiffNormalizeError(
+                    f"input exceeds {MAX_TIFF_BYTES} bytes ({size})"
+                )
+            source_bytes = await asyncio.to_thread(Path(source_path).read_bytes)
         try:
             result = tiff_to_pdf(source_bytes)
         except TiffNormalizeError as exc:

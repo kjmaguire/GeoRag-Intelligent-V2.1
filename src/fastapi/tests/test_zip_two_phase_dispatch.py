@@ -242,6 +242,10 @@ class _Store:
     def put_bytes(self, bucket: Any, key: str, data: bytes) -> None:
         self.objects[key] = data
 
+    def put_file(self, bucket: Any, key: str, file_path: str) -> None:
+        # Members are streamed from disk (ING-17); the double keeps the bytes.
+        self.objects[key] = Path(file_path).read_bytes()
+
 
 class _Conn:
     def is_in_transaction(self) -> bool:
