@@ -543,22 +543,46 @@ async def _fetch_long_section_collars(
     *, pg_pool, workspace_id: str, project_id: UUID,
     reference_azimuth_deg: float | None = None,
 ) -> dict[str, Any]:
-    """Pull silver.collars for one project shaped for long_section_figure."""
+    """Pull silver.collars for one project shaped for long_section_figure.
+
+    GIS-6 / GIS-7 (2026-09-29): easting/northing are computed from geom_4326
+    in ONE metric frame — the UTM zone of the project's collar centroid —
+    not read from the easting/northing columns, which hold whatever each
+    source gave (UTM metres of any zone, lon/lat degrees, US survey feet)
+    and so cannot be plotted against each other. azimuth/dip are passed
+    through as NULL when unrecorded; the figure labels those holes instead
+    of inventing a vertical one.
+    """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_long_section_collars"
     ) as conn:
         rows = await conn.fetch(
             """
-            SELECT hole_id,
-                   easting, northing, COALESCE(elevation, 0) AS elevation,
-                   total_depth,
-                   COALESCE(azimuth, 0) AS azimuth,
-                   COALESCE(dip, -90) AS inclination
-              FROM silver.collars
-             WHERE project_id = $1::uuid
-               AND total_depth > 0
-             ORDER BY hole_id
-             LIMIT 100
+            WITH c AS (
+                SELECT hole_id, geom_4326, elevation, total_depth, azimuth, dip
+                  FROM silver.collars
+                 WHERE project_id = $1::uuid
+                   AND total_depth > 0
+                   AND geom_4326 IS NOT NULL
+                 ORDER BY hole_id
+                 LIMIT 100
+            ), frame AS (
+                SELECT CASE WHEN ST_Y(ST_Centroid(ST_Collect(geom_4326))) >= 0
+                            THEN 32600 ELSE 32700 END
+                       + LEAST(60, GREATEST(1,
+                           floor((ST_X(ST_Centroid(ST_Collect(geom_4326))) + 180.0) / 6.0)::int + 1
+                         )) AS srid
+                  FROM c
+            )
+            SELECT c.hole_id,
+                   ST_X(ST_Transform(c.geom_4326, frame.srid)) AS easting,
+                   ST_Y(ST_Transform(c.geom_4326, frame.srid)) AS northing,
+                   COALESCE(c.elevation, 0) AS elevation,
+                   c.total_depth,
+                   c.azimuth,
+                   c.dip AS inclination
+              FROM c CROSS JOIN frame
+             ORDER BY c.hole_id
             """,
             project_id,
         )

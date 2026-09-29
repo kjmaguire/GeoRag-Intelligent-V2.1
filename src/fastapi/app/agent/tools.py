@@ -661,9 +661,11 @@ async def query_spatial_collars(
 
     Args:
         project_id: UUID of the project to scope the query.
-        center_easting: UTM easting of the search centre (metres).
-        center_northing: UTM northing of the search centre (metres).
-        radius_m: Search radius in metres around the centre point.
+        center_easting: Easting of the search centre in the project's CRS
+            (or a longitude, for a lon/lat project).
+        center_northing: Northing of the search centre in the project's CRS
+            (or a latitude).
+        radius_m: Search radius in metres on the ground around the centre.
         hole_type: Optional filter — "Diamond", "RC", "RAB", "Rotary", or "Percussion".
         status_filter: Optional filter — "Active", "Completed", or "Abandoned".
         limit: Maximum number of collar records to return (default 50, max 200).
@@ -691,32 +693,30 @@ async def query_spatial_collars(
         param_idx += 1
 
     if center_easting is not None and center_northing is not None and radius_m is not None:
-        # Compared against the easting/northing COLUMNS, not against `geom`.
+        # Measured on the ground, against geom_4326 (GIS-6, 2026-09-29).
         #
-        # `geom` is declared geometry(POINT, 32613) and, since 2026-08-25,
-        # every collar is ST_Transform-ed into that SRID at insert so a
-        # non-Athabasca project can be written at all. `Find_SRID` reads the
-        # column's declared SRID, so it returns 32613 whatever the project's
-        # real CRS is — and the caller's center_easting/center_northing are
-        # in the PROJECT's grid. For an EPSG:26904 project that builds the
-        # search point roughly 3,400 km from where the collars actually sit,
-        # and ST_DWithin returns nothing for a query that should match.
+        # This used to compare the easting/northing COLUMNS in "the
+        # project's grid". They are not one grid: they hold whatever each
+        # source gave (UTM metres from a CSV, lon/lat degrees from a
+        # lat/lon table, US survey feet from a Cameco .log), so a radius in
+        # metres was compared with degrees (every hole matched) or with
+        # another zone's numbers (half the holes missed).
         #
-        # The easting/northing columns hold the untouched source values, so
-        # both sides of this comparison are in the same grid and no SRID is
-        # involved. UTM units are metres, which is what radius_m already
-        # assumes. Squared distance to keep it to one sqrt-free expression;
-        # this gives up the GIST index, which is the right trade for a table
-        # holding thousands of collars per project rather than millions.
-        # The radius is cast explicitly: `$n * $n` on two untyped parameters
-        # is `unknown * unknown`, which Postgres rejects with
-        # "operator is not unique". The easting/northing terms need no cast —
-        # the column on the left of each subtraction types them.
+        # The centre is the caller's easting/northing in the PROJECT's CRS
+        # (silver.projects.crs_epsg, else the 32613 default), or lon/lat
+        # when it is inside +/-180/+/-90 — the same rule ingestion uses for
+        # a lon/lat table. It is transformed to 4326 and ST_DWithin runs on
+        # geography, so radius_m is metres wherever the project is. The
+        # geography cast gives up the GIST index; a project holds thousands
+        # of collars, not millions, and the project_id filter bounds it.
         spatial_filter = (
-            f" AND (easting - ${param_idx}) * (easting - ${param_idx})"
-            f" + (northing - ${param_idx + 1}) * (northing - ${param_idx + 1})"
-            f" <= ${param_idx + 2}::double precision"
-            f" * ${param_idx + 2}::double precision"
+            f" AND ST_DWithin(geom_4326::geography, ST_Transform(ST_SetSRID("
+            f"ST_MakePoint(${param_idx}::double precision, ${param_idx + 1}::double precision),"
+            f" CASE WHEN abs(${param_idx}::double precision) <= 180"
+            f" AND abs(${param_idx + 1}::double precision) <= 90 THEN 4326"
+            f" ELSE COALESCE((SELECT p.crs_epsg FROM silver.projects p"
+            f" WHERE p.project_id = $1::uuid), 32613) END), 4326)::geography,"
+            f" ${param_idx + 2}::double precision)"
         )
         bind_args.extend([center_easting, center_northing, radius_m])
         param_idx += 3
@@ -4169,8 +4169,8 @@ async def query_drill_traces_3d(
             COALESCE(c.total_depth, 0.0)::float                 AS total_depth,
             COALESCE(c.azimuth, 0.0)::float                     AS azimuth,
             COALESCE(c.dip, -90.0)::float                       AS dip,
-            ST_X(ST_Transform(c.geom, 4326))::float             AS longitude,
-            ST_Y(ST_Transform(c.geom, 4326))::float             AS latitude,
+            ST_X(c.geom_4326)::float                            AS longitude,
+            ST_Y(c.geom_4326)::float                            AS latitude,
             ST_AsText(t.geom)                                   AS trace_wkt
         FROM silver.collars c
         LEFT JOIN silver.drill_traces t
@@ -4224,29 +4224,29 @@ async def query_drill_traces_3d(
         cid = str(r.get("collar_id") or "")
         if not cid:
             continue
-        lon = float(r.get("longitude") or 0.0)
-        lat = float(r.get("latitude") or 0.0)
-        elev = float(r.get("elevation") or 0.0)
-        td = float(r.get("total_depth") or 0.0)
-        az = float(r.get("azimuth") or 0.0)
-        dip = float(r.get("dip") or -90.0)
+        # GIS-8/GIS-21: position from geom_4326, and a collar without one is
+        # skipped — `or 0.0` drew it on Null Island. `is None`, not `or`,
+        # for the attitude too: `dip or -90.0` turned a horizontal hole
+        # (dip 0.0) into a vertical one.
+        if r.get("longitude") is None or r.get("latitude") is None:
+            continue
+        lon = float(r["longitude"])
+        lat = float(r["latitude"])
+        elev = float(r["elevation"]) if r.get("elevation") is not None else 0.0
+        td = float(r["total_depth"]) if r.get("total_depth") is not None else 0.0
+        az = float(r["azimuth"]) if r.get("azimuth") is not None else 0.0
+        dip = float(r["dip"]) if r.get("dip") is not None else -90.0
 
         wkt_points = _parse_linestring_z_points(r.get("trace_wkt") or "")
         if wkt_points:
-            wkt_points = _downsample_trace_points(wkt_points)
-            # Approximate per-point depth by linear interpolation along
-            # total_depth — the WKT itself doesn't carry MD. Sufficient
-            # for the visual interval-overlay binding.
-            n = max(len(wkt_points) - 1, 1)
-            trace_points = [
-                {
-                    "x": float(p[0]),
-                    "y": float(p[1]),
-                    "z": float(p[2]),
-                    "depth_m": float(td * (i / n)),
-                }
-                for i, p in enumerate(wkt_points)
-            ]
+            # Measured depth per vertex from the trace's own length, computed
+            # before decimation (GIS-8) — it used to be td * i / n by vertex
+            # INDEX, which misplaced every interval on unevenly spaced surveys.
+            from app.agent.trace_depth import trace_points_with_depth  # noqa: PLC0415
+
+            trace_points = trace_points_with_depth(
+                wkt_points, td, max_points=_DRILL_TRACE_MAX_POINTS_PER_TRACE,
+            )
         else:
             # Fallback when silver.drill_traces has no row for this
             # collar (e.g. unusable orientation). Emit a 2-point vertical

@@ -83,30 +83,42 @@ def long_section_figure(
         }
 
     for c in collars:
-        e = float(c.get("easting", 0))
-        n = float(c.get("northing", 0))
-        elev = float(c.get("elevation", 0))
-        td = float(c.get("total_depth", 0))
-        inc = float(c.get("inclination", -90))  # vertical hole default
-        az = float(c.get("azimuth", reference_azimuth_deg))
+        e = float(c.get("easting") or 0)
+        n = float(c.get("northing") or 0)
+        elev = float(c.get("elevation") or 0)
+        td = float(c.get("total_depth") or 0)
+        # A hole with no recorded orientation is still drawn (its collar and
+        # depth are real) but as a DASHED vertical line whose name says so —
+        # COALESCE(dip, -90) used to invent a vertical hole silently (GIS-7).
+        raw_inc = c.get("inclination")
+        raw_az = c.get("azimuth")
+        oriented = raw_inc is not None and raw_az is not None
+        inc = float(raw_inc) if raw_inc is not None else -90.0
+        az = float(raw_az) if raw_az is not None else reference_azimuth_deg
 
         # Project collar onto reference axis
         x_collar = e * sin_az + n * cos_az
         y_collar = elev
 
-        # Project end-of-hole (simple straight-line approximation in 3D)
-        end_e = e + td * math.cos(math.radians(inc)) * math.sin(math.radians(az))
-        end_n = n + td * math.cos(math.radians(inc)) * math.sin(math.radians(az))
+        # End of hole, straight line. Northing is the COSINE of azimuth
+        # (azimuth is clockwise from north); it was sin() for both, which
+        # drew a north-pointing hole as vertical on a N-S section (GIS-7).
+        horizontal = td * math.cos(math.radians(inc))
+        end_e = e + horizontal * math.sin(math.radians(az))
+        end_n = n + horizontal * math.cos(math.radians(az))
         end_elev = elev + td * math.sin(math.radians(inc))
         x_end = end_e * sin_az + end_n * cos_az
 
+        name = str(c.get("hole_id", "?"))
+        if not oriented:
+            name += " (orientation not recorded — drawn vertical)"
         traces.append({
             "x": [x_collar, x_end],
             "y": [y_collar, end_elev],
             "type": "scatter",
             "mode": "lines+markers",
-            "name": c.get("hole_id", "?"),
-            "line": {"width": 2},
+            "name": name,
+            "line": {"width": 2, **({} if oriented else {"dash": "dash"})},
             "marker": {"size": [10, 4]},
             "hovertemplate": "%{fullData.name}<br>x=%{x:.0f} m<br>elev=%{y:.0f} m<extra></extra>",
         })

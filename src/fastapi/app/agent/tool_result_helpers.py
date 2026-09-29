@@ -58,10 +58,28 @@ def _build_collar_aggregates(collars: list) -> list[str]:
     avg_depth = sum(c.total_depth for c in depth_collars) / len(depth_collars) if depth_collars else None
     deepest = max(depth_collars, key=lambda c: c.total_depth) if depth_collars else None
     shallowest = min(depth_collars, key=lambda c: c.total_depth) if depth_collars else None
-    easternmost = max(east_collars, key=lambda c: c.easting) if east_collars else None
-    westernmost = min(east_collars, key=lambda c: c.easting) if east_collars else None
-    northernmost = max(north_collars, key=lambda c: c.northing) if north_collars else None
-    southernmost = min(north_collars, key=lambda c: c.northing) if north_collars else None
+    # Ranked by GROUND position (longitude/latitude off geom_4326) whenever
+    # every candidate has one (GIS-6, 2026-09-29). easting/northing hold what
+    # each source gave — metres in one zone, degrees, feet — so max(easting)
+    # across a project that mixes sources compares different grids. The
+    # quoted value is still the source easting/northing, which is what the
+    # geologist's own tables say.
+    def _east_key(c: Any) -> float:
+        return float(c.longitude) if lon_ranked else float(c.easting)
+
+    def _north_key(c: Any) -> float:
+        return float(c.latitude) if lat_ranked else float(c.northing)
+
+    lon_ranked = bool(east_collars) and all(
+        getattr(c, "longitude", None) is not None for c in east_collars
+    )
+    lat_ranked = bool(north_collars) and all(
+        getattr(c, "latitude", None) is not None for c in north_collars
+    )
+    easternmost = max(east_collars, key=_east_key) if east_collars else None
+    westernmost = min(east_collars, key=_east_key) if east_collars else None
+    northernmost = max(north_collars, key=_north_key) if north_collars else None
+    southernmost = min(north_collars, key=_north_key) if north_collars else None
 
     # Group by hole_type
     by_type: dict[str, int] = {}
