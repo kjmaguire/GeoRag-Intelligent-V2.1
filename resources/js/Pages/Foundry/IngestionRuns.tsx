@@ -1,6 +1,5 @@
 import { Head, Link } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
-import AppLayout from '@/Layouts/AppLayout';
 import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Card, Pill, Stat, EmptyState, ProgressBar } from '@/Components/Foundry/primitives';
 import { formatTime } from '@/lib/time';
@@ -617,7 +616,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
     const empty = runs.in_flight.length === 0 && runs.totals.completed === 0;
 
     return (
-        <AppLayout>
+        <>
             <Head title={`Ingestion runs · ${project.project_name}`} />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
@@ -881,7 +880,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     </section>
                 )}
             </div>
-        </AppLayout>
+        </>
     );
 }
 

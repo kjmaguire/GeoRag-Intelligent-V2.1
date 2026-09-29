@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Head } from '@inertiajs/react';
 import JSZip from 'jszip';
-import AppLayout from '@/Layouts/AppLayout';
 import { filesFromDataTransfer } from '@/lib/dropFiles';
 import { PageHeader, Card } from '@/Components/Foundry/primitives';
 import { COMMODITIES, Field, inputStyle } from '@/Components/Foundry/projectFormFields';
@@ -773,7 +772,7 @@ export default function FoundryNewProject() {
     }
 
     return (
-        <AppLayout>
+        <>
             <Head title="New project — GeoRAG" />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
@@ -1357,6 +1356,6 @@ export default function FoundryNewProject() {
                     )}
                 </div>
             </div>
-        </AppLayout>
+        </>
     );
 }

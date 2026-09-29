@@ -10,13 +10,15 @@ import '@fontsource/jetbrains-mono/600.css';
 import { createInertiaApp, type ResolvedComponent } from '@inertiajs/react';
 import { createRoot, hydrateRoot } from 'react-dom/client';
 import { ErrorBoundary } from './Components/ErrorBoundary';
+import { resolvePageLayout } from './Layouts/persistentLayout';
 
 /**
  * GeoRAG Intelligence — Inertia.js entry point.
  *
- * Layout pattern: each Page component is responsible for wrapping itself in
- * AppLayout. This keeps page-level concerns (project state, chat state)
- * colocated with the layout rather than hoisted into a global wrapper.
+ * Layout pattern: Foundry pages get AppLayout as a PERSISTENT default layout
+ * (Layouts/persistentLayout), so the shell survives navigation instead of
+ * remounting per page (FE-13). A few pages still wrap themselves; see
+ * SELF_WRAPPED_PAGES.
  *
  * Code splitting: pages are resolved via `import.meta.glob` WITHOUT
  * `eager: true` so each page ships as its own Vite chunk. The login page no
@@ -28,8 +30,12 @@ import { ErrorBoundary } from './Components/ErrorBoundary';
  * blank screen.
  */
 createInertiaApp({
+    layout: (name: string) => resolvePageLayout(name),
     resolve: (name: string) => {
-        const pages = import.meta.glob('./Pages/**/*.tsx') as Record<
+        // The negative pattern keeps page specs (Pages/**/__tests__) out of
+        // the production bundle — one shipped as a 442 KB chunk with vitest
+        // and testing-library inside it (FE-12).
+        const pages = import.meta.glob(['./Pages/**/*.tsx', '!./Pages/**/__tests__/**']) as Record<
             string,
             () => Promise<{ default: ResolvedComponent }>
         >;

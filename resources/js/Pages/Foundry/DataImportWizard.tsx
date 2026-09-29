@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { filesFromDataTransfer } from '@/lib/dropFiles';
 import { Head, Link, router } from '@inertiajs/react';
 import JSZip from 'jszip';
-import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
 import {
     acceptedExtensions,
@@ -801,7 +800,7 @@ export default function FoundryDataImportWizard() {
     const failedCount = outcomes.filter((o) => !o.ok).length;
 
     return (
-        <AppLayout>
+        <>
             <Head title="Data import — GeoRAG" />
 
             <div
@@ -1336,6 +1335,6 @@ export default function FoundryDataImportWizard() {
                     </footer>
                 </div>
             </div>
-        </AppLayout>
+        </>
     );
 }

@@ -3,7 +3,6 @@ import { Head, usePage } from '@inertiajs/react';
 import maplibregl from 'maplibre-gl';
 import type { Map as MapLibreMap, GeoJSONSource, AddLayerObject, FilterSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader } from '@/Components/Foundry/primitives';
 import { BASEMAP_OPTIONS, useBasemapStyleSpec, type BasemapId } from '@/lib/basemap';
 import {
@@ -490,7 +489,7 @@ export default function PublicGeoscience() {
     const clustered = data ? Object.values(data.modes).includes('clustered') : false;
 
     return (
-        <AppLayout>
+        <>
             <Head title="Public Geoscience" />
             <div className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
                 <PageHeader
@@ -616,6 +615,6 @@ export default function PublicGeoscience() {
                     </div>
                 </div>
             </div>
-        </AppLayout>
+        </>
     );
 }

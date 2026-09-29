@@ -6,7 +6,6 @@ import { Deferred, Head, Link, router } from '@inertiajs/react';
 // (SavedMapViewController) was a pure stub whose every method threw
 // LogicException even before deletion, and saved map views were never in
 // this restoration's scope. Everything else below is unmodified.
-import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, Segmented, EmptyState } from '@/Components/Foundry/primitives';
 import { StereonetMini, RoseMini, DownholeMultiLog, ChronoColumn, LithologyStripColumn, type StratUnit, type LithologyInterval, type StereonetPole } from '@/Components/Foundry/Charts';
 import type { StripAlterationBand, StripMineralBand } from '@/lib/stripLog';
@@ -533,7 +532,7 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
     }
 
     return (
-        <AppLayout>
+        <>
             <Head title={`Workspace · ${project.project_name}`} />
 
             <div className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
@@ -1376,7 +1375,7 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                     onClose={closeCompareKeepOriginal}
                 />
             )}
-        </AppLayout>
+        </>
     );
 }
 
