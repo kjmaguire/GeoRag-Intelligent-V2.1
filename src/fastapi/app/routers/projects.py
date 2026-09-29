@@ -14,7 +14,7 @@ Routes
 
   GET /internal/projects/{project_id}/collars was REMOVED 2026-09-29
   (API-7): it queried ``geo.collars`` and a ``location`` column, neither of
-  which exists (the table is silver.collars, geometry column ``geom``), so
+  which exists (the table is silver.collars, geometry column ``geom_4326``), so
   every call 500'd — and nothing called it. The agent's spatial tools query
   PostGIS directly.
 

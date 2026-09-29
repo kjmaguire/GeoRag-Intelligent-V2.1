@@ -77,7 +77,9 @@ BEGIN
     JOIN silver.collars b ON a.workspace_id <> b.workspace_id
     WHERE a.workspace_id = '11111111-aaaa-4aaa-8aaa-111111111111'
       AND b.workspace_id = '22222222-bbbb-4bbb-8bbb-222222222222'
-      AND ST_DWithin(ST_Transform(a.geom, 3857), ST_Transform(b.geom, 3857), 2000);
+      -- geography, so 2000 is metres (Web Mercator metres are ~1.9x
+      -- ground metres at 58 N). geom_4326 is the only collar geometry.
+      AND ST_DWithin(a.geom_4326::geography, b.geom_4326::geography, 2000);
 
     IF n_shared = 0 THEN
         RAISE EXCEPTION

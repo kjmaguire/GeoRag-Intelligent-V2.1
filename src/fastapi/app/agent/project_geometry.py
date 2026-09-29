@@ -25,7 +25,8 @@ genuinely falls through.
 GIS-16 (audit 2026-09-29): this used to read ``silver.projects.bbox`` and
 ``silver.collars.collar_geom``. Neither column exists, so both queries
 raised, the error was swallowed, and the supplier always returned None.
-Both now read real 4326 columns — never ``collars.geom``, which is 32613.
+Both now read real 4326 columns (``collars.geom``, the SRID-32613 twin, was
+retired 2026-09-29).
 
 Returns a WKT polygon string or None when neither path resolves
 (no boundary, no collars, DB error). The §2g tool refuses to

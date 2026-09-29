@@ -34,8 +34,9 @@ A collar is placed only from, in order:
      alone. The refusal is not a loss: callers that hold the file keep it and
      attach it when the collar is written (services/ingest/las_pending.py).
 
-The geom is constructed at insert time via PostGIS ST_MakePoint +
-ST_Transform (to 32613 for `geom`, 4326 for the mirror column).
+The geometry is constructed at insert time via PostGIS ST_MakePoint +
+ST_Transform, straight from the source CRS to EPSG:4326 (`geom_4326`, the
+only collar geometry since the 32613 `geom` column was retired 2026-09-29).
 """
 from __future__ import annotations
 
@@ -59,8 +60,9 @@ from georag_geoparsers.las_parser import (
 
 log = logging.getLogger("georag.ingest.las")
 
-#: silver.collars.geom is geometry(Point, 32613) — see the create migration.
-COLLAR_GEOM_SRID = 32613
+#: silver.collars.geom_4326 is geometry(Point, 4326) — the only collar
+#: geometry (the 32613 `geom` column was retired 2026-09-29, §04e).
+COLLAR_GEOM_SRID = 4326
 
 #: ~WELL mnemonics that carry a location. Deliberately not "E" / "N" / "LOC":
 #: LOC is free text, not a coordinate, and single letters collide with other
@@ -222,6 +224,7 @@ def _within_crs_area(epsg: int, x: float, y: float) -> bool:
 
 
 def _to_collar_srid(epsg: int, x: float, y: float) -> tuple[float, float]:
+    """(lon, lat) in the collar geometry's SRID (4326), axis order x/y."""
     from pyproj import Transformer  # noqa: PLC0415
 
     e, n = Transformer.from_crs(
@@ -286,7 +289,7 @@ async def _placement_from_header(
             # the source gave them" on every path, geom_4326 is the truth).
             e, n = _to_collar_srid(epsg, lon, lat)
             if not (math.isfinite(e) and math.isfinite(n)):
-                notes.append("the position does not transform to a projected coordinate")
+                notes.append("the position does not transform to WGS84 (EPSG:4326)")
             else:
                 warning = None
                 if not declared:
@@ -511,10 +514,9 @@ async def _create_collar(
         INSERT INTO silver.collars
             (collar_id, hole_id, hole_id_canonical, project_id, easting, northing, total_depth,
              hole_type, status, drill_date, georef_method,
-             geom, geom_4326, workspace_id, created_at, updated_at)
+             geom_4326, workspace_id, created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3::uuid, $4, $5, $6,
                 'exploration', 'active', $7, $8,
-                ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 32613),
                 ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 4326),
                 $12::uuid, NOW(), NOW())
         ON CONFLICT (project_id, hole_id) DO UPDATE SET updated_at = silver.collars.updated_at

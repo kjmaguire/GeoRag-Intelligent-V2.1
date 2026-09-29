@@ -38,6 +38,10 @@
 --
 -- Idempotent. Re-running is a no-op because every UPDATE filters on
 -- georef_method IS NULL.
+--
+-- 2026-09-29: silver.collars reads geom_4326 — its SRID-32613 `geom` twin
+-- was retired (2026_09_30_100000_drop_silver_collars_geom). spatial_features
+-- keeps its own `geom` (EPSG:4326).
 
 \set ON_ERROR_STOP on
 
@@ -49,9 +53,9 @@ BEGIN;
 CREATE TEMP TABLE _cc01_audit_before ON COMMIT DROP AS
 SELECT
     (SELECT COUNT(*) FROM silver.collars
-        WHERE georef_method IS NULL AND geom IS NOT NULL)                              AS collars_geom_null_method,
+        WHERE georef_method IS NULL AND geom_4326 IS NOT NULL)                        AS collars_geom_null_method,
     (SELECT COUNT(*) FROM silver.collars
-        WHERE georef_method IS NULL AND geom IS NULL
+        WHERE georef_method IS NULL AND geom_4326 IS NULL
           AND easting IS NOT NULL AND northing IS NOT NULL)                            AS collars_en_null_method,
     (SELECT COUNT(*) FROM silver.spatial_features
         WHERE georef_method IS NULL AND geom IS NOT NULL)                              AS sf_geom_null_method;
@@ -62,7 +66,7 @@ WITH updated AS (
        SET georef_method  = 'detected',
            crs_confidence = COALESCE(crs_confidence, 0.7)
      WHERE georef_method IS NULL
-       AND geom IS NOT NULL
+       AND geom_4326 IS NOT NULL
     RETURNING 1
 )
 SELECT COUNT(*) AS collars_detected_rows FROM updated \gset
@@ -73,7 +77,7 @@ WITH updated AS (
        SET georef_method  = 'assumed',
            crs_confidence = COALESCE(crs_confidence, 0.3)
      WHERE georef_method IS NULL
-       AND geom IS NULL
+       AND geom_4326 IS NULL
        AND easting IS NOT NULL
        AND northing IS NOT NULL
     RETURNING 1
@@ -115,7 +119,7 @@ BEGIN
     SELECT COUNT(*) INTO leftover_collars
       FROM silver.collars
      WHERE georef_method IS NULL
-       AND (geom IS NOT NULL
+       AND (geom_4326 IS NOT NULL
             OR (easting IS NOT NULL AND northing IS NOT NULL));
 
     SELECT COUNT(*) INTO leftover_spatial

@@ -48,7 +48,7 @@ class CollarController extends Controller
             $project = Project::findOrFail($projectId);
 
             $query = Collar::withCount(['surveys', 'samples'])
-                ->selectRaw('*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude')
+                ->selectRaw('*, ST_X(geom_4326) AS longitude, ST_Y(geom_4326) AS latitude')
                 ->where('project_id', $project->project_id);
 
             if ($request->filled('hole_type')) {
@@ -158,7 +158,7 @@ class CollarController extends Controller
                 'wellLogCurves',
             ])
                 ->withCount(['surveys', 'samples'])
-                ->selectRaw('*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude')
+                ->selectRaw('*, ST_X(geom_4326) AS longitude, ST_Y(geom_4326) AS latitude')
                 ->where('project_id', $projectId)
                 ->findOrFail($collarId);
 

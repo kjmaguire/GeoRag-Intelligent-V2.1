@@ -490,10 +490,12 @@ def _collar_local_utm(lon: float, lat: float) -> int:
     WHY THIS EXISTS
         The trace is metre offsets from the collar, so it has to be assembled
         in a projected CRS — but there is no column recording which one the
-        collar's easting/northing were surveyed in. `silver.collars.geom` is
-        no help: it is declared ``geometry(POINT, 32613)`` and every collar is
-        ST_Transform-ed into that zone on insert, so ``ST_SRID(geom)`` returns
-        32613 for a hole anywhere on earth.
+        collar's easting/northing were surveyed in. The old
+        `silver.collars.geom` was no help: it was declared
+        ``geometry(POINT, 32613)`` and every collar was ST_Transform-ed into
+        that zone on insert, so ``ST_SRID(geom)`` returned 32613 for a hole
+        anywhere on earth. It was retired 2026-09-29; geom_4326 is the only
+        collar geometry.
 
         v1 of this module read ``ST_SRID(c.geom)`` as the SOURCE srid and fed
         it the raw easting/northing. For Athabasca that is accidentally right.

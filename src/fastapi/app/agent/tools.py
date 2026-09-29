@@ -275,13 +275,10 @@ class CollarRecord:
     orchestrator can build GeoJSON map payloads without duplicating projection
     logic. They are nullable because pre-M2 rows may not have valid geometries.
 
-    easting / northing are the source-grid columns, NOT ``ST_X/ST_Y(geom)``.
-    ``geom`` is declared ``geometry(POINT, 32613)`` and every collar is
-    transformed into that SRID at insert so a non-Athabasca project can be
-    written at all, which means ``ST_X(geom)`` is not the easting the file
-    supplied unless the project happens to be UTM 13N. The columns hold the
-    untouched values, and the agent is instructed to cite these numerics
-    verbatim.
+    easting / northing are the source-grid columns: the untouched values the
+    file supplied, in whatever CRS it used. The only collar geometry is
+    ``geom_4326`` (the SRID-32613 ``geom`` twin was retired 2026-09-29), and
+    the agent is instructed to cite these numerics verbatim.
     """
 
     hole_id: str
@@ -910,11 +907,10 @@ async def query_spatial_collars(
 
     sql = (
         "SELECT collar_id::text, hole_id, project_id::text, "
-        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
-        # declared 32613 and every collar is transformed into it at insert,
-        # so for a non-Athabasca project ST_X(geom) is not the easting the
-        # file supplied. The columns hold the untouched source values, and
-        # the agent is instructed to cite returned numerics verbatim.
+        # easting/northing from the COLUMNS: they hold the untouched source
+        # values (the only geometry is geom_4326, lon/lat; the 32613 `geom`
+        # twin was retired 2026-09-29), and the agent is instructed to cite
+        # returned numerics verbatim.
         "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, "
         "drill_date::text, "
@@ -1163,11 +1159,10 @@ async def query_downhole_logs(
     # pinned to this single hole.
     collar_sql = (
         "SELECT collar_id::text, hole_id, project_id::text, "
-        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
-        # declared 32613 and every collar is transformed into it at insert,
-        # so for a non-Athabasca project ST_X(geom) is not the easting the
-        # file supplied. The columns hold the untouched source values, and
-        # the agent is instructed to cite returned numerics verbatim.
+        # easting/northing from the COLUMNS: they hold the untouched source
+        # values (the only geometry is geom_4326, lon/lat; the 32613 `geom`
+        # twin was retired 2026-09-29), and the agent is instructed to cite
+        # returned numerics verbatim.
         "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, drill_date::text, "
         "ST_X(geom_4326) AS longitude, "
@@ -1379,11 +1374,10 @@ async def query_collar_details(
     norm_hole_sql_c2 = _hole_norm_sql("c2.hole_id")
     collar_sql = (
         "SELECT collar_id::text, hole_id, hole_id_canonical, project_id::text, "
-        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
-        # declared 32613 and every collar is transformed into it at insert,
-        # so for a non-Athabasca project ST_X(geom) is not the easting the
-        # file supplied. The columns hold the untouched source values, and
-        # the agent is instructed to cite returned numerics verbatim.
+        # easting/northing from the COLUMNS: they hold the untouched source
+        # values (the only geometry is geom_4326, lon/lat; the 32613 `geom`
+        # twin was retired 2026-09-29), and the agent is instructed to cite
+        # returned numerics verbatim.
         "easting, northing, elevation, "
         "total_depth, drill_type, hole_type, azimuth, dip, "
         "drill_date::text, geologist, match_priority "
@@ -3788,8 +3782,7 @@ async def query_coverage_gap(
     # data on this collar) so it can colour-code green / red / partial.
     #
     # The geometry source is silver.collars.geom_4326 — the WGS84
-    # column that pre-existed the §6b work; the SRID=32613 raw `geom`
-    # column is UTM-specific and not suitable for GeoJSON.
+    # column and, since 2026-09-29, the only collar geometry.
     def _collar_geojson_sql(selected: set[str] | None) -> str:
         """Build the per-collar coverage SQL, including only the EXISTS
         subqueries for attributes the caller asked about. When dimensions

@@ -8,9 +8,9 @@ asking a spatial question got a confident answer built from everything
 EXCEPT the spatial data, with nothing anywhere saying a table was missing.
 
   silver.collars   declared `collar_geom`. It exists in no migration and no
-                   raw file. The real columns are `geom` (EPSG:32613) and
-                   `geom_4326`, and eleven other production paths already
-                   read the latter.
+                   raw file. The real columns were `geom` (EPSG:32613,
+                   retired 2026-09-29) and `geom_4326`, which every other
+                   production path already read.
 
   gold.h3_density  declared table and column both fictional. The real table
                    is gold.h3_density_mineral and it has no geometry at all
@@ -88,24 +88,17 @@ def test_the_table_exists_somewhere_in_the_schema(
 def test_collars_does_not_declare_4326_over_the_32613_column() -> None:
     """The repair that would have been worse than the bug.
 
-    silver.collars.geom is EPSG:32613 (2026_04_09_180100 creates it with
-    AddGeometryColumn(..., 32613)). geom_4326 is its WGS84 twin. Pointing
-    this target at `geom` while leaving crs_epsg=4326 turns a swallowed
-    UndefinedColumn into a silent wrong answer, because the plan-time guard
-    validates the spec against this declared value and would wave a 4326
-    spec straight onto UTM metres.
+    silver.collars.geom was EPSG:32613 (2026_04_09_180100 created it with
+    AddGeometryColumn(..., 32613)) until it was retired on 2026-09-29
+    (2026_09_30_100000_drop_silver_collars_geom). Pointing this target at
+    `geom` with crs_epsg=4326 turned a swallowed UndefinedColumn into a
+    silent wrong answer; now `geom` does not exist at all, so geom_4326 /
+    4326 is the only correct declaration.
     """
     target = SPATIAL_TARGETS["silver.collars"]
 
-    if target.geom_column == "geom":
-        assert target.crs_epsg == 32613, (
-            "silver.collars.geom is EPSG:32613, not 4326. Declaring 4326 "
-            "over it makes the CRS guard validate against a fiction and "
-            "every predicate evaluate in the wrong units."
-        )
-    else:
-        assert target.geom_column == "geom_4326"
-        assert target.crs_epsg == 4326
+    assert target.geom_column == "geom_4326"
+    assert target.crs_epsg == 4326
 
 
 def test_the_h3_target_is_gone_and_stays_gone() -> None:

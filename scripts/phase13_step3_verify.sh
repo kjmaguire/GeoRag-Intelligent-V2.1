@@ -79,10 +79,10 @@ easting_bounds=$(q "SELECT round(min(easting)::numeric, 1) || '/' || round(max(e
     || check "easting bounds" fail "got $easting_bounds"
 
 # 7) Geometry populated
-null_geom=$(q "SELECT count(*) FROM silver.collars WHERE project_id = '$PROJ' AND hole_id LIKE 'PLS-%' AND (geom IS NULL OR geom_4326 IS NULL);")
+null_geom=$(q "SELECT count(*) FROM silver.collars WHERE project_id = '$PROJ' AND hole_id LIKE 'PLS-%' AND geom_4326 IS NULL;")
 [ "$null_geom" = "0" ] \
-    && check "All 10 rows have both geom + geom_4326 populated" ok \
-    || check "geom nulls" fail "$null_geom rows with NULL geom"
+    && check "All 10 rows have geom_4326 populated" ok \
+    || check "geom_4326 nulls" fail "$null_geom rows with NULL geom_4326"
 
 # 8) Idempotent re-apply
 docker exec -i georag-postgresql psql -U georag -d georag -v ON_ERROR_STOP=1 \

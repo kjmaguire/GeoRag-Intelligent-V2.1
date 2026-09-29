@@ -93,9 +93,10 @@ because the value is draped from a DEM later.
 
 easting/northing are interpreted in the owning project's CRS
 (``silver.projects.crs_epsg``, defaulting to EPSG:32613 / UTM Zone 13N
-when unset) and transformed to EPSG:32613 for ``silver.collars.geom``
-— mirrors how ``las_ingester`` / ``cameco_log_ingester`` populate the
-same column. Coordinate range checks are chosen per file from the
+when unset) and transformed straight to EPSG:4326 for
+``silver.collars.geom_4326`` — mirrors how ``las_ingester`` /
+``cameco_log_ingester`` populate the same column (the 32613 ``geom`` twin
+was retired 2026-09-29). Coordinate range checks are chosen per file from the
 values (degrees vs a projected grid) rather than assuming UTM. dip sign
 convention (down-positive vs down-negative) is auto-detected across
 the file and normalised to the DB's down-negative convention
@@ -524,12 +525,11 @@ async def _upsert_collar(
             (collar_id, hole_id, hole_id_canonical, project_id, workspace_id,
              easting, northing, elevation, total_depth, hole_type, status,
              azimuth, dip, drill_date, georef_method,
-             geom, geom_4326, created_at, updated_at)
+             geom_4326, created_at, updated_at)
         VALUES (
             gen_random_uuid(), $1, $2, $3::uuid, $4::uuid,
             $5, $6, $7, $8, $9, $10,
             $11, $12, $13, 'declared',
-            ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $14::int), 32613),
             ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $14::int), 4326),
             NOW(), NOW()
         )
@@ -545,7 +545,6 @@ async def _upsert_collar(
             dip                = EXCLUDED.dip,
             drill_date         = EXCLUDED.drill_date,
             georef_method      = EXCLUDED.georef_method,
-            geom               = EXCLUDED.geom,
             geom_4326          = EXCLUDED.geom_4326,
             updated_at         = NOW()
         RETURNING collar_id::text AS collar_id

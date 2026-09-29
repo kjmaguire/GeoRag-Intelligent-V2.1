@@ -127,16 +127,12 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
         # working, and a user asking a spatial question got a confident
         # empty answer.
         #
-        # The obvious repair is the trap. silver.collars.geom is EPSG:32613
-        # (2026_04_09_180100 creates it with AddGeometryColumn(..., 32613)),
-        # so renaming this to `geom` while leaving crs_epsg=4326 below would
-        # turn a loud-but-swallowed UndefinedColumn into a silent wrong
-        # answer -- the guard at plan time compares spec.crs_epsg against
-        # THIS declared value, so it would wave a 4326 spec through onto
-        # UTM metres and every predicate would be evaluated in the wrong
-        # units. geom_4326 is the WGS84 twin added by 2026_08_19_010000,
-        # and it is what the eleven other production paths already read,
-        # including tools.py's spatial retrieval and the agentic nodes.
+        # silver.collars.geom used to exist as well, pinned to EPSG:32613;
+        # pointing this target at it while leaving crs_epsg=4326 below would
+        # have waved a 4326 spec through onto UTM metres. It was retired
+        # 2026-09-29 (2026_09_30_100000_drop_silver_collars_geom). geom_4326
+        # (added by 2026_08_19_010000) is the only collar geometry and what
+        # every other production path reads.
         geom_column="geom_4326",
         crs_epsg=4326,
         workspace_scoped=True,

@@ -139,12 +139,16 @@ These are the **§04e schema contracts** (Hard Rule #6 — don’t invent fields
 ### silver.collars
 
 [2026_04_09_180100_create_collars_table.php:15](../../../database/migrations/2026_04_09_180100_create_collars_table.php).
-PK `collar_id UUID`. UTM Zone 13N geometry by default (EPSG:32613).
+PK `collar_id UUID`. Geometry is `geom_4326` (EPSG:4326, transformed at
+insert from the source CRS); the EPSG:32613 `geom` column was retired
+2026-09-29 by
+[2026_09_30_100000_drop_silver_collars_geom.php](../../../database/migrations/2026_09_30_100000_drop_silver_collars_geom.php).
 
 Columns include: `hole_id VARCHAR(50)`, `project_id` (CASCADE),
 `easting`/`northing`/`elevation`/`total_depth` FLOAT, `hole_type`/`status`
 VARCHAR(20), `azimuth`/`dip`/`drill_date`. Unique `(project_id, hole_id)`.
-GIST index `idx_collars_geom` (line 35). `workspace_id` added in
+GIST index `idx_collars_geom_4326`
+([2026_08_19_010000_add_geom_4326_to_collars.php](../../../database/migrations/2026_08_19_010000_add_geom_4326_to_collars.php)). `workspace_id` added in
 [phase0/96-rls-tenant-isolation-block1.sql:79-84](../../../database/raw/phase0/96-rls-tenant-isolation-block1.sql).
 Extended by
 [2026_05_20_060200_extend_silver_collars_drillhole.php](../../../database/migrations/2026_05_20_060200_extend_silver_collars_drillhole.php) and

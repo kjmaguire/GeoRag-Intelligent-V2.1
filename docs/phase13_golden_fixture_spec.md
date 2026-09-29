@@ -87,10 +87,10 @@ hole IDs, min/max). LLM-phrased average is a stretch goal.
 
 ## 3. CRS + geometry
 
-- `geom` is `Point(32613)` — UTM Zone 13N. The seed inserts
-  `ST_SetSRID(ST_MakePoint(easting, northing), 32613)`.
-- `geom_4326` is derived via `ST_Transform(geom, 4326)`.
-- Phase 13's seed migration computes both at INSERT time.
+- easting/northing are UTM Zone 13N (EPSG:32613) source coordinates.
+- `geom_4326` is `ST_Transform(ST_SetSRID(ST_MakePoint(easting, northing), 32613), 4326)`,
+  computed at INSERT time. (The `geom` Point(32613) column the seed used to
+  fill as well was retired 2026-09-29.)
 
 ---
 

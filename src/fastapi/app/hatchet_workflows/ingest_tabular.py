@@ -49,7 +49,7 @@ data-completeness problem the geologist needs told about.
 
 Coordinates and CRS
 -------------------
-silver.collars stores easting/northing as given plus a geom. A projected
+silver.collars stores easting/northing as given plus geom_4326. A projected
 source CRS is NOT discoverable from a CSV — there is no header for it — so
 it comes from the upload, then the project, defaulting to
 ``DEFAULT_SOURCE_EPSG``. When that default is used rather than supplied,
@@ -155,38 +155,13 @@ TABLE_SOURCE_EXTENSIONS = DBASE_EXTENSIONS | ACCESS_EXTENSIONS
 #: centred. A default, not a detection: see the module docstring.
 DEFAULT_SOURCE_EPSG = 32613
 
-#: The SRID `silver.collars.geom` is DECLARED as, which is not the same fact
-#: as the default above and is why this constant exists separately.
-#:
-#: The column was created with `AddGeometryColumn(..., 32613, 'POINT', 2)`,
-#: so PostGIS REJECTS any other SRID outright:
-#:
-#:     InvalidParameterValueError: Geometry SRID (26904) does not match
-#:     column SRID (32613)
-#:
-#: _COLLAR_SQL used to insert `ST_SetSRID(ST_MakePoint(...), <source epsg>)`
-#: unchanged, so the tabular collar write had never worked for ANY project
-#: outside zone 13N — not a trace-specific problem, the whole CSV/Excel
-#: collar path. It went unnoticed because every corpus so far was Athabasca.
-#: RedStar's Sitka trenches are EPSG:26904 (NAD83 / UTM 4N, Alaska).
-#:
-#: cameco_log_ingester.py already conforms the same way, transforming its
-#: 32155 source to 32613 at insert. So the column's contract is "the project
-#: CRS", and this path was the one violating it.
-#:
-#: Reprojecting far outside a UTM zone is exact, not approximate: Sitka's
-#: point round-trips 26904 -> 32613 -> 3857 to the same location 4326 gives
-#: directly (verified against POINT(-158.099 56.122), Unga Island). The
-#: easting/northing COLUMNS still hold the untouched source values, and
-#: geom_4326 is transformed straight from the source SRID, so nothing is
-#: lost — only `geom` is expressed in the column's declared projection.
-#:
-#: Kyle: the cleaner fix is to unpin the column so `geom` really does hold
-#: source-CRS geometry. That is a production schema change to a §04e table,
-#: so it is yours to call, not mine. The tile functions already use
-#: ST_Transform(c.geom, 3857), which reads the geometry's own SRID and would
-#: keep working either way.
-COLLAR_GEOM_SRID = 32613
+#: silver.collars carries ONE geometry, `geom_4326` (geometry(Point, 4326)),
+#: transformed at insert straight from the source CRS above. The old
+#: `geom` column — pinned to SRID 32613 for every collar on earth, which
+#: made the whole CSV/Excel collar path fail outside zone 13N until it was
+#: conformed — was retired 2026-09-29 (Kyle, §04e;
+#: 2026_09_30_100000_drop_silver_collars_geom). The easting/northing COLUMNS
+#: keep the untouched source values.
 
 #: Order matters — see the module docstring. Anything not in this tuple is
 #: reported as an unclassified sheet rather than guessed at.
@@ -266,23 +241,19 @@ class IngestTabularOut(BaseModel):
     duration_ms: int = 0
 
 
-# f-string ONLY so the geom SRID comes from the constant above rather than
-# becoming another hardcoded copy. COLLAR_GEOM_SRID is an int literal in this
-# module — never user input, so there is no injection surface here.
-_COLLAR_SQL = f"""
+_COLLAR_SQL = """
 INSERT INTO silver.collars (
     collar_id, workspace_id, project_id, hole_id, hole_id_canonical,
     easting, northing, elevation, total_depth, azimuth, dip,
     hole_type, drill_date, status, georef_method,
     drill_type, hole_status,
-    created_at, updated_at, geom, geom_4326
+    created_at, updated_at, geom_4326
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4,
     $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14,
     $16, $17,
     NOW(), NOW(),
-    ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), {COLLAR_GEOM_SRID}),
     ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), 4326)
 )
 ON CONFLICT (project_id, hole_id) DO UPDATE SET
@@ -300,7 +271,6 @@ ON CONFLICT (project_id, hole_id) DO UPDATE SET
     -- row that did not overflow keeps whatever an earlier writer stored.
     drill_type  = COALESCE(EXCLUDED.drill_type, silver.collars.drill_type),
     hole_status = COALESCE(EXCLUDED.hole_status, silver.collars.hole_status),
-    geom        = EXCLUDED.geom,
     geom_4326   = EXCLUDED.geom_4326,
     updated_at  = NOW()
 """

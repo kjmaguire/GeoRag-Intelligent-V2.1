@@ -31,7 +31,7 @@ BEGIN;
 -- with a correct project_id), workspace B sees its own data, and a missing
 -- or malformed workspace_id raises rather than silently returning an empty
 -- tile. Total: 85 assertions.
-SELECT plan(85);
+SELECT plan(87);
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- SETUP — test project + fixture rows
@@ -82,14 +82,14 @@ INSERT INTO silver.projects (
 INSERT INTO silver.collars (
     collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, status,
-    geom, created_at, updated_at
+    geom_4326, created_at, updated_at
 ) VALUES (
     'c1111111-1111-1111-1111-111111111111',
     'DDH-001', 'a1111111-1111-1111-1111-111111111111',
     'f0000000-0000-0000-0000-000000000001',
     500000, 5900000, 1000,
     250, 'DD', 180, -60, 'completed',
-    ST_SetSRID(ST_MakePoint(500000, 5900000), 32613),
+    ST_Transform(ST_SetSRID(ST_MakePoint(500000, 5900000), 32613), 4326),
     NOW(), NOW()
 ) ON CONFLICT DO NOTHING;
 
@@ -97,14 +97,14 @@ INSERT INTO silver.collars (
 INSERT INTO silver.collars (
     collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, status,
-    geom, created_at, updated_at
+    geom_4326, created_at, updated_at
 ) VALUES (
     'c2222222-2222-2222-2222-222222222222',
     'DDH-002', 'a1111111-1111-1111-1111-111111111111',
     'f0000000-0000-0000-0000-000000000001',
     500100, 5900100, 1010,
     180, 'DD', 270, -45, 'completed',
-    ST_SetSRID(ST_MakePoint(500100, 5900100), 32613),
+    ST_Transform(ST_SetSRID(ST_MakePoint(500100, 5900100), 32613), 4326),
     NOW(), NOW()
 ) ON CONFLICT DO NOTHING;
 
@@ -112,14 +112,14 @@ INSERT INTO silver.collars (
 INSERT INTO silver.collars (
     collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, status,
-    geom, created_at, updated_at
+    geom_4326, created_at, updated_at
 ) VALUES (
     'c3333333-3333-3333-3333-333333333333',
     'DDH-003', 'a1111111-1111-1111-1111-111111111111',
     'f0000000-0000-0000-0000-000000000001',
     500200, 5900200, 1020,
     300, 'DD', 90, -70, 'completed',
-    ST_SetSRID(ST_MakePoint(500200, 5900200), 32613),
+    ST_Transform(ST_SetSRID(ST_MakePoint(500200, 5900200), 32613), 4326),
     NOW(), NOW()
 ) ON CONFLICT DO NOTHING;
 
@@ -627,15 +627,26 @@ SELECT is(
     'seismic: etag_hash is deterministic (same call twice)'
 );
 
--- Test 42: GIST index audit — verify all three source table indexes exist
+-- Test 42: GIST index audit — verify all three source table indexes exist.
+-- The collar tile source reads geom_4326 (2026_09_29_200100), so its index
+-- is idx_collars_geom_4326; idx_collars_geom went with the retired column.
 SELECT ok(
     (SELECT count(*) = 3 FROM pg_indexes
      WHERE schemaname = 'silver'
        AND tablename IN ('collars', 'drill_traces', 'seismic_surveys')
        AND indexdef ILIKE '%gist%'
-       AND indexname IN ('idx_collars_geom', 'idx_drill_traces_geom', 'idx_seismic_surveys_bbox')),
+       AND indexname IN ('idx_collars_geom_4326', 'idx_drill_traces_geom', 'idx_seismic_surveys_bbox')),
     'GIST indexes exist on all 3 implemented silver function source tables'
 );
+
+-- Test 42a: silver.collars.geom (EPSG:32613 for every collar on earth) is
+-- retired — 2026_09_30_100000_drop_silver_collars_geom. EPSG:4326 at rest.
+SELECT hasnt_column('silver', 'collars', 'geom',
+    'silver.collars.geom (SRID 32613) is retired');
+
+-- Test 42b: geom_4326 is the collar geometry, typed and SRID-pinned.
+SELECT col_type_is('silver', 'collars', 'geom_4326', 'geometry(Point,4326)',
+    'silver.collars.geom_4326 is geometry(Point,4326)');
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- BLOCK 9 — Chunk 8.2b: fixture setup for the 4 newly-unblocked functions
@@ -1117,14 +1128,14 @@ INSERT INTO silver.projects (
 INSERT INTO silver.collars (
     collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, status,
-    geom, created_at, updated_at
+    geom_4326, created_at, updated_at
 ) VALUES (
     'c9999999-9999-9999-9999-999999999999',
     'DDH-B01', 'a9999999-9999-9999-9999-999999999999',
     'f0000000-0000-0000-0000-000000000002',
     500000, 5900000, 1000,
     150, 'DD', 45, -55, 'completed',
-    ST_SetSRID(ST_MakePoint(500000, 5900000), 32613),
+    ST_Transform(ST_SetSRID(ST_MakePoint(500000, 5900000), 32613), 4326),
     NOW(), NOW()
 ) ON CONFLICT DO NOTHING;
 

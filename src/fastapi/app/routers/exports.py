@@ -39,6 +39,39 @@ router = APIRouter(
 )
 
 
+#: The projected CRS each exported collar's easting/northing/epsg are given
+#: in: the PROJECT's declared ``crs_epsg`` when it is a projected system
+#: (its spatial_ref_sys WKT is a PROJCS — so its epsg and unit agree with the
+#: numbers, feet for a US state plane), else the UTM zone the collar
+#: itself sits in — 326xx north / 327xx south, longitude clamped so +180 is
+#: zone 60 (same rule as promote_silver_to_gold._collar_local_utm). Never a
+#: hard-coded zone: a fixed 32613 is what put Alaskan holes in "UTM 13N"
+#: metres a modelling tool would then misplace if it trusted the epsg.
+_COLLAR_EXPORT_SQL = """
+SELECT c.collar_id::text, c.hole_id, c.total_depth, c.elevation, c.azimuth,
+       c.dip, c.hole_type, c.status, c.drill_date::text,
+       ST_X(ST_Transform(c.geom_4326, m.epsg)) AS easting,
+       ST_Y(ST_Transform(c.geom_4326, m.epsg)) AS northing,
+       m.epsg                                  AS epsg,
+       ST_X(c.geom_4326)                       AS longitude,
+       ST_Y(c.geom_4326)                       AS latitude
+  FROM silver.collars c
+  LEFT JOIN LATERAL (
+      SELECT COALESCE(
+          (SELECT s.srid
+             FROM silver.projects p
+             JOIN public.spatial_ref_sys s ON s.srid = p.crs_epsg
+            WHERE p.project_id = c.project_id
+              AND s.srtext LIKE 'PROJCS%'),
+          CASE WHEN ST_Y(c.geom_4326) >= 0 THEN 32600 ELSE 32700 END
+            + LEAST(60, GREATEST(1, floor((ST_X(c.geom_4326) + 180.0) / 6.0)::int + 1))
+      ) AS epsg
+  ) m ON c.geom_4326 IS NOT NULL
+ WHERE c.project_id = $1
+ ORDER BY c.hole_id
+"""
+
+
 class ExportRequest(BaseModel):
     project_id: str
     format: str = "shapefile"  # "shapefile" | "geopackage"
@@ -51,16 +84,15 @@ async def _fetch_collars(project_id: str, pg_pool):
     # needs to place and desurvey a hole in 3D. The export used to carry only
     # the WGS84 point and total_depth, so a hole could be drawn on a map but
     # not reconstructed. Native coordinates come from the geometry itself
-    # (not the float easting/northing columns) so they always agree with
-    # the ``epsg`` reported next to them.
-    sql = (
-        "SELECT collar_id::text, hole_id, total_depth, elevation, azimuth, dip, "
-        "hole_type, status, drill_date::text, "
-        "ST_X(geom) AS easting, ST_Y(geom) AS northing, ST_SRID(geom) AS epsg, "
-        "ST_X(ST_Transform(geom, 4326)) AS longitude, "
-        "ST_Y(ST_Transform(geom, 4326)) AS latitude "
-        "FROM silver.collars WHERE project_id = $1 ORDER BY hole_id"
-    )
+    # (not the float easting/northing columns, which hold whatever each
+    # source file used) so they always agree with the ``epsg`` reported
+    # next to them.
+    #
+    # CRS at every hop: source -> geom_4326 (ingest) -> _COLLAR_EXPORT_SQL's
+    # metric CRS here. That used to be ST_X/ST_Y of silver.collars.geom,
+    # which was pinned to EPSG:32613 for every collar on earth; the column
+    # was retired 2026-09-29, so the export now projects geom_4326 itself.
+    sql = _COLLAR_EXPORT_SQL
     async with pg_pool.acquire() as conn:
         # Bind the tenant before reading. This used to be a bare acquire on
         # a query filtered by project_id alone, so the caller's project_id

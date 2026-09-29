@@ -18,7 +18,7 @@ Spatial uncertainty added by [2026_05_23_050000](../../../database/migrations/20
 | `collar_id` | UUID | no | (PK) | Primary key |
 | `hole_id` | VARCHAR(50) | no | — | Vendor / operator hole ID; unique within project |
 | `project_id` | UUID | no | — | FK `silver.projects` ON DELETE CASCADE |
-| `easting` | FLOAT | no | — | In project CRS (default EPSG:32613) |
+| `easting` | FLOAT | no | — | As the source file gave it (project CRS, default EPSG:32613) |
 | `northing` | FLOAT | no | — | In project CRS |
 | `elevation` | FLOAT | yes | — | metres ASL |
 | `total_depth` | FLOAT | no | — | metres |
@@ -27,14 +27,14 @@ Spatial uncertainty added by [2026_05_23_050000](../../../database/migrations/20
 | `dip` | FLOAT | yes | — | degrees from horizontal |
 | `drill_date` | DATE | yes | — | |
 | `status` | VARCHAR(20) | no | — | `planned`, `drilling`, `completed`, `abandoned` |
-| `geom` | `GEOMETRY(POINT, 32613)` | yes | — | PostGIS; GIST index `idx_collars_geom` |
+| `geom_4326` | `GEOMETRY(POINT, 4326)` | yes | — | PostGIS; GIST index `idx_collars_geom_4326`. The 32613 `geom` was retired 2026-09-29 |
 | `workspace_id` | UUID | no | — | RLS fence; FK `silver.workspaces` ON DELETE CASCADE |
 | `spatial_uncertainty_m` | NUMERIC(8,2) | yes | — | Added 2026-05-23 |
 | `data_version` | BIGINT | no | 1 | Captured at write time |
 | `created_at`, `updated_at` | TIMESTAMPTZ | no | `clock_timestamp()` | |
 
 **Indexes:** `silver_collars_project_hole_key` UNIQUE `(project_id, hole_id)`;
-`idx_collars_geom` GIST `(geom)`.
+`idx_collars_geom_4326` GIST `(geom_4326)`.
 
 **RLS:** enabled + FORCE; policy
 `workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid`.

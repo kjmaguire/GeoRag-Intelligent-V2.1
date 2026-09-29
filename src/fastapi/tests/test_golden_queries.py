@@ -13,7 +13,7 @@ database state:
   Drill years: 2020 (4 holes), 2021 (3 holes), 2022 (3 holes)
 
 Ground-truth verification query used to derive these values:
-    SELECT hole_id, hole_type, status, total_depth, ST_X(geom) as easting,
+    SELECT hole_id, hole_type, status, total_depth, easting,
            EXTRACT(YEAR FROM drill_date) as year
     FROM silver.collars
     WHERE project_id = '019d74a1-fba8-7165-9ae6-a5bf93eef97d'

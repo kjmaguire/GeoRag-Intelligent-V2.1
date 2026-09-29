@@ -19,7 +19,8 @@ Strategy:
 The E=/N= pair is NAD83 / Wyoming East in US survey feet. The operator
 declares it as EPSG:3736 (the ftUS code, used as-is) or EPSG:32155 (the
 metre code; the feet are converted to metres first) — see LOG_COORD_EPSGS.
-PostGIS transforms from the declared system to geom (32613) and geom_4326;
+PostGIS transforms from the declared system straight to geom_4326 (the
+32613 ``geom`` twin was retired 2026-09-29, §04e);
 silver.collars.easting/northing keep the file's own E=/N= numbers (GIS-6).
 """
 from __future__ import annotations
@@ -192,8 +193,8 @@ async def update_collar_with_log_coords(
     source_epsg: int | None = None,
 ) -> bool:
     """Update an existing collar's coordinates with the surveyed state-plane
-    values from the .log header. Transforms state plane WY East (EPSG:32155)
-    to UTM Zone 13N (EPSG:32613) via PostGIS.
+    values from the .log header. Transforms the declared state-plane system
+    (EPSG:3736 / 32155) straight to EPSG:4326 (geom_4326) via PostGIS.
 
     Returns True if the collar was found and updated; False if not found --
     and False, touching nothing, unless ``source_epsg`` is one of
@@ -227,7 +228,6 @@ async def update_collar_with_log_coords(
         UPDATE silver.collars SET
             easting = $4,
             northing = $5,
-            geom = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), $6::int), 32613),
             geom_4326 = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), $6::int), 4326),
             georef_method = 'declared',
             updated_at = NOW()
@@ -283,19 +283,17 @@ async def upsert_collar_from_log(
         INSERT INTO silver.collars
             (collar_id, hole_id, hole_id_canonical, project_id, workspace_id,
              easting, northing, total_depth, hole_type, status, georef_method,
-             geom, geom_4326, created_at, updated_at)
+             geom_4326, created_at, updated_at)
         VALUES (
             gen_random_uuid(), $1, $1, $2::uuid, $3::uuid,
             $7, $8,
             $6, 'exploration', 'historical', 'declared',
-            ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), $9::int), 32613),
             ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), $9::int), 4326),
             NOW(), NOW()
         )
         ON CONFLICT (project_id, hole_id) DO UPDATE SET
             easting = EXCLUDED.easting,
             northing = EXCLUDED.northing,
-            geom = EXCLUDED.geom,
             geom_4326 = EXCLUDED.geom_4326,
             georef_method = EXCLUDED.georef_method,
             total_depth = GREATEST(silver.collars.total_depth, EXCLUDED.total_depth),
