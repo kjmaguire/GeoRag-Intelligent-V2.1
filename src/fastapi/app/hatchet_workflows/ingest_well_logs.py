@@ -122,6 +122,27 @@ INSERT INTO silver.well_log_curves (
 """
 
 
+async def _keep_for_later(
+    conn: Any, *, input: IngestWellLogsInput, hole_id: str, filename: str,
+) -> bool:
+    """Record this bronze LAS as waiting for its collar. False if that failed."""
+    from app.services.ingest.las_pending import record_pending  # noqa: PLC0415
+
+    try:
+        await record_pending(
+            conn,
+            workspace_id=input.workspace_id,
+            project_id=input.project_id,
+            hole_id=hole_id,
+            bronze_key=input.minio_key,
+            source_name=filename,
+        )
+    except Exception as exc:  # noqa: BLE001 — the warning then says the file was not kept
+        log.warning("ingest_well_logs: could not record %s as pending: %s", filename, exc)
+        return False
+    return True
+
+
 ingest_well_logs = hatchet.workflow(
     name="ingest_well_logs",
     input_validator=IngestWellLogsInput,
@@ -208,13 +229,26 @@ async def run_ingest_well_logs(
                     # NULL and a log with no hole is not interpretable. Report
                     # it as orphaned rather than inventing a collar.
                     orphaned = True
+                    # Keep it: the LAS is already in bronze, so record it as
+                    # waiting and it attaches when a collar with this hole id
+                    # is written (services/ingest/las_pending.py).
+                    kept = await _keep_for_later(
+                        conn, input=input, hole_id=hole_id, filename=filename,
+                    )
+                    tail = (
+                        "The file is KEPT and its curves will attach "
+                        "automatically when a collar with that hole_id is "
+                        "uploaded"
+                        if kept else
+                        "Upload the collar file first, then upload this LAS again"
+                    )
                     warnings.append({
                         "code": "no_matching_collar",
                         "detail": (
                             f"No collar in this project matches hole_id "
-                            f"{hole_id!r}. Upload the collar file first, or "
-                            f"pass hole_id explicitly — LAS well names are "
-                            f"free text and often differ from the collar id."
+                            f"{hole_id!r}. {tail} — or pass hole_id explicitly: "
+                            f"LAS well names are free text and often differ "
+                            f"from the collar id."
                         ),
                     })
                 else:

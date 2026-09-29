@@ -31,7 +31,8 @@ A collar is placed only from, in order:
      easting / northing are NOT NULL (2026_04_09_180100_create_collars_table),
      and a 0 or any other placeholder there is the same fabrication, so there
      is no "collar without a location" to fall back to and the schema is left
-     alone. Upload the collar table first, then the LAS.
+     alone. The refusal is not a loss: callers that hold the file keep it and
+     attach it when the collar is written (services/ingest/las_pending.py).
 
 The geom is constructed at insert time via PostGIS ST_MakePoint +
 ST_Transform (to 32613 for `geom`, 4326 for the mirror column).
@@ -582,6 +583,7 @@ async def ingest_las_file(
     ingest_run_id: str | None = None,
     project_id_override: str | None = None,
     source_epsg: int | None = None,
+    hole_id_override: str | None = None,
 ) -> LASIngestResult:
     """Ingest one LAS file into silver.* + bronze.provenance.
 
@@ -594,6 +596,8 @@ async def ingest_las_file(
         ingest_run_id: optional bronze.ingest_runs link
         source_epsg: CRS the operator declared for the upload; used for
             projected X/Y in the LAS header when the header names none.
+        hole_id_override: the hole this file belongs to when the operator (or a
+            kept-for-later record) says so, instead of the header's WELL item.
 
     Returns:
         LASIngestResult describing what landed. A file whose collar cannot
@@ -616,7 +620,9 @@ async def ingest_las_file(
 
     # Well metadata
     well = las.well
-    hole_id = str(well.get("WELL", lasio.HeaderItem("WELL", value="")).value).strip()
+    hole_id = (hole_id_override or str(
+        well.get("WELL", lasio.HeaderItem("WELL", value="")).value,
+    )).strip()
     if not hole_id:
         return LASIngestResult(
             file_path=las_path, hole_id="", project_id=None, collar_id=None,
@@ -687,8 +693,9 @@ async def ingest_las_file(
             why = "; ".join(header_notes) or "its ~WELL section carries no coordinates"
             detail = (
                 f"{p.name}: well {hole_id!r} has no collar in this project and cannot be "
-                f"located ({why}). Nothing was loaded for it. Upload the "
-                "collar table first, then upload this LAS again."
+                f"located ({why}). Its curves were not loaded by this call; the caller "
+                "decides whether to keep the file until the collar exists "
+                "(see las_pending.py)."
             )
             log.warning("las_ingester.collar_unlocated file=%s well=%s why=%s", p.name, hole_id, why)
             return LASIngestResult(

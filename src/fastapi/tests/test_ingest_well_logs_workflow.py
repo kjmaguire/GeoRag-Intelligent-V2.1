@@ -369,7 +369,7 @@ class TestOrphanedFixture:
         assert codes == ["no_matching_collar"]
         detail = out.warnings[0]["detail"]
         assert "hole_id" in detail
-        assert "collar file first" in detail
+        assert "KEPT" in detail
 
     async def test_the_warning_is_persisted_not_just_returned(self) -> None:
         """Warnings returned only in the Hatchet run object never reach the

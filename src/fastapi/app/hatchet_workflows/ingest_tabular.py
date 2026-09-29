@@ -2835,6 +2835,18 @@ async def run_ingest_tabular(
                     if rows_landed:
                         warnings.append(rows_landed)
                         table_rows += int(rows_landed.get("rows") or 0)
+
+                # Collars were just written: LAS files kept in bronze because
+                # their hole had no collar attach now (never raises).
+                if written.get("collar", {}).get("written"):
+                    from app.services.ingest.las_pending import (  # noqa: PLC0415
+                        attach_pending_las,
+                    )
+
+                    await attach_pending_las(
+                        conn, store=store, workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                    )
             finally:
                 await conn.close()
 

@@ -77,6 +77,10 @@ PROVENANCE_WRITERS_OUTSIDE_SILVER: dict[str, str] = {
 #: refactor drops them, the entry is a lie and this file is where someone
 #: will look.
 LINEAGE_ON_THE_SILVER_ROW: dict[str, str] = {
+    "services/ingest/las_pending.py":
+        "silver.las_pending_collar.bronze_key / source_name -- the record IS "
+        "the pointer to the kept LAS file; the curves it later writes carry "
+        "their own source_file via las_ingester",
     "hatchet_workflows/ingest_spatial.py":
         "silver.spatial_features.source_file / source_file_sha256 / "
         "source_layer / source_feature_id / source_crs",

@@ -329,7 +329,7 @@ async def test_no_coordinates_and_no_plss_is_refused_with_a_named_warning(tmp_pa
     assert _codes(result) == ["las_collar_unlocated"]
     detail = result.warnings[0]["detail"]
     assert "SIT-007" in detail and "Sitka_hole7.las" in detail
-    assert "Upload the collar table first" in detail
+    assert "kept" in detail or "las_pending" in detail
     # Nothing was written: no collar, no curves, no provenance.
     assert conn.collar_insert is None
     assert conn.curve_writes == 0 and conn.provenance_writes == 0

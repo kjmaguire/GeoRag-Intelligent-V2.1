@@ -253,6 +253,9 @@ class _Conn:
     async def execute(self, *_: Any, **__: Any) -> str:
         return "OK"
 
+    async def fetch(self, *_: Any, **__: Any) -> list[Any]:
+        return []  # no LAS waiting for a collar
+
     async def close(self) -> None:
         return None
 
@@ -352,6 +355,7 @@ class _Harness:
         monkeypatch.setattr(module, "bind_workspace_scope", noop)
         monkeypatch.setattr(module.ingest_tabular, "aio_run_no_wait", aio_run_no_wait)
         monkeypatch.setattr(module.ingest_pdf, "aio_run_no_wait", aio_run_no_wait)
+        monkeypatch.setattr(module.ingest_spatial, "aio_run_no_wait", aio_run_no_wait)
         monkeypatch.setattr(module, "_run_status", run_status)
         monkeypatch.setattr("app.services.ingest.las_ingester.ingest_las_file", fake_ingest_las)
         monkeypatch.setattr("app.services.ingest.derive_intervals.derive_project", fake_derive)
@@ -501,7 +505,8 @@ async def test_las_warnings_reach_the_archive_row_as_one_line_per_code(
     by_code = {w["code"]: w["detail"] for w in h.completed["warnings"]}
     assert "4 LAS well(s)" in by_code["las_collar_crs_assumed"]
     assert "no stated CRS" in by_code["las_collar_crs_assumed"]
-    assert "1 LAS file(s) were NOT loaded" in by_code["las_collar_unlocated"]
+    assert "1 LAS file(s) have no collar" in by_code["las_collar_unlocated"]
+    assert "KEPT" in by_code["las_collar_unlocated"]
     assert "z_bad.las" in by_code["las_collar_unlocated"]
     # One entry per code, however many files raised it.
     assert [w["code"] for w in h.completed["warnings"]].count("las_collar_crs_assumed") == 1
@@ -534,3 +539,29 @@ def test_the_logged_lithology_skip_is_summarised_once() -> None:
     assert module._derive_warnings(None) == []
     (failed,) = module._derive_warnings({"error": "boom"})
     assert failed["code"] == "derive_intervals_failed"
+
+
+async def test_nested_zips_gdb_folders_and_txt_all_reach_an_ingester(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import io
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("collars.csv", COLLAR_CSV)
+        zf.writestr("more/readme.txt", "field notes")
+    members: dict[str, Any] = {
+        "delivery/part1.zip": inner.getvalue(),
+        "Site.gdb/a00000001.gdbtable": b"table",
+        "Site.gdb/gdb": b"x",
+        "._junk.csv": b"\x00",
+    }
+    h = _Harness(monkeypatch, tmp_path, members)
+
+    result = await h.run()
+
+    dispatched = [name for kind, name in h.events if kind == "dispatch"]
+    assert sorted(dispatched) == ["Site.zip", "collars.csv", "readme.txt"]
+    assert result["counts"]["unknown"] == 0 and result["counts"]["errors"] == 0
+    assert result["counts"]["spatial"] == 1 and result["counts"]["csv"] == 2
+    assert not [w for w in result["warnings"] if w["code"] == "archive_member_unhandled"]

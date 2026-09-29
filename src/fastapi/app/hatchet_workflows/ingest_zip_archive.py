@@ -142,13 +142,9 @@ _RASTER_EXTS = frozenset({"tif", "tiff", "rrd", "jpg", "jpeg"})
 #: they were counted as handled and then nothing opened them.
 _DBASE_EXTS = frozenset({"dbf", "dat"})
 
-#: Microsoft Access databases. ingest_tabular reads these (mdbtools; one
-#: Access table becomes one silver.attribute_tables layer) and the upload
-#: controller's `tables` category accepts them, but this dispatcher did not
-#: list them, so an .mdb inside a ZIP fell through to `unknown` and was
-#: never opened — the same "works uploaded alone, vanishes inside an archive"
-#: failure `.rrd` and `.jpg` had. Never a shapefile sidecar, so no sibling
-#: test is needed.
+#: Microsoft Access databases. ingest_tabular reads them through mdbtools and
+#: lands one layer per Access table; before this they fell to `unknown` inside a
+#: ZIP although the same file uploaded on its own ingests.
 _ACCESS_EXTS = frozenset({"mdb", "accdb"})
 
 #: The ``counts`` buckets that mean "this member was handed to an ingester".
@@ -156,7 +152,7 @@ _ACCESS_EXTS = frozenset({"mdb", "accdb"})
 #: ``rows_written`` — for an archive the unit of work is a member file, and
 #: the rows those members produce are reported by the child runs.
 _DISPATCHED_COUNT_KEYS: tuple[str, ...] = (
-    "las", "log", "csv", "xlsx", "tif", "pdf", "spatial", "tabular",
+    "las", "las_pending", "log", "csv", "xlsx", "tif", "pdf", "spatial", "tabular",
 )
 
 #: Every bucket ``_ingest_one`` and the fan-out loop increment. The loop's
@@ -274,7 +270,7 @@ _PHASE_PRODUCERS = 1
 _PHASE_DEPENDENTS = 2
 
 #: Extensions ingest_tabular classifies by header, and so can be sniffed.
-_SNIFFED_CSV_EXTS = frozenset({"csv", "tsv"})
+_SNIFFED_CSV_EXTS = frozenset({"csv", "tsv", "txt"})
 _SNIFFED_WORKBOOK_EXTS = frozenset({"xlsx", "xls", "xlsm"})
 
 _TERMINAL_RUN_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
@@ -496,9 +492,19 @@ def _wait_warnings(
 #: per file (a 400-file archive would otherwise bury the row).
 _MEMBER_WARNING_TEXT: dict[str, str] = {
     "las_collar_unlocated": (
-        "{n} LAS file(s) were NOT loaded: their wells have no collar in this "
-        "project and no usable coordinates in the header ({names}). Upload the "
-        "collar table first, then upload these LAS files again."
+        "{n} LAS file(s) have no collar in this project and no usable coordinates "
+        "in the header ({names}). Their curves are KEPT and will attach "
+        "automatically when each hole's collar is uploaded."
+    ),
+    "archive_nested_zip_not_expanded": (
+        "{n} zip file(s) inside the archive could not be unpacked ({names}); "
+        "they were left as they are. Each stays in the original archive, which "
+        "is kept in bronze; upload it on its own to retry."
+    ),
+    "las_pending_not_kept": (
+        "{n} LAS file(s) had no collar and could NOT be kept for later ({names}); "
+        "their curves were not loaded. Upload the collar table, then upload these "
+        "LAS files again."
     ),
     "log_collar_crs_undeclared": (
         "{n} binary .log file(s) were NOT loaded: their E=/N= coordinates state "
@@ -571,6 +577,154 @@ def _derive_warnings(summary: dict[str, Any] | None) -> list[dict[str, str]]:
             ),
         }]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Extraction: safe, nested archives, geodatabase folders
+# ---------------------------------------------------------------------------
+
+_MAX_ENTRIES = 50_000
+_MAX_TOTAL_UNCOMPRESSED = 5 * 1024 ** 3  # 5 GiB
+#: How many zips deep a delivery may nest before the inner one is left alone.
+_MAX_NESTED_DEPTH = 3
+
+
+class _ExtractBudget:
+    """Entry and byte totals shared by the outer zip and every nested one."""
+
+    def __init__(self) -> None:
+        self.entries = 0
+        self.bytes = 0
+
+
+def _extract_zip_into(zip_path: Path, dest_dir: Path, budget: _ExtractBudget) -> None:
+    """Extract ``zip_path`` into ``dest_dir`` under the shared ``budget``.
+
+    Audit 2026-06-28: safe extraction. A bare zf.extractall() is vulnerable to
+    (a) zip-bombs (unbounded decompressed size / entry count exhausts disk) and
+    (b) zip-slip path traversal (an entry named '../../etc/x' escapes the
+    destination). Guard both: cap entry count + total declared uncompressed
+    size, and verify every resolved destination stays inside ``dest_dir``
+    before writing. Raises ValueError on a breach.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    root = dest_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        infos = zf.infolist()
+        if budget.entries + len(infos) > _MAX_ENTRIES:
+            raise ValueError(
+                f"ingest_zip_archive: {budget.entries + len(infos)} entries exceeds "
+                f"{_MAX_ENTRIES} (zip-bomb guard); refusing."
+            )
+        declared = sum(i.file_size for i in infos)
+        if budget.bytes + declared > _MAX_TOTAL_UNCOMPRESSED:
+            raise ValueError(
+                f"ingest_zip_archive: uncompressed size "
+                f"{budget.bytes + declared} B exceeds "
+                f"{_MAX_TOTAL_UNCOMPRESSED} B (zip-bomb guard); refusing."
+            )
+        # Validate every path BEFORE writing any of them, so a slip aborts a
+        # nested archive cleanly instead of leaving half of it on disk.
+        targets: list[tuple[zipfile.ZipInfo, Path]] = []
+        for info in infos:
+            if info.is_dir():
+                continue
+            dest = (dest_dir / info.filename).resolve()
+            if dest != root and not str(dest).startswith(str(root) + os.sep):
+                raise ValueError(
+                    f"ingest_zip_archive: unsafe path {info.filename!r} "
+                    "escapes extract dir (zip-slip guard); refusing."
+                )
+            targets.append((info, dest))
+        budget.entries += len(infos)
+        budget.bytes += declared
+        for info, dest in targets:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(dest, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+
+def _is_junk(path: Path, root: Path) -> bool:
+    """macOS AppleDouble forks, which mirror the real file names."""
+    rel = path.relative_to(root).parts
+    return "__MACOSX" in rel or path.name.startswith("._")
+
+
+def _expand_nested_archives(root: Path, budget: _ExtractBudget) -> list[dict[str, str]]:
+    """Unpack every ``.zip`` inside ``root`` in place, up to ``_MAX_NESTED_DEPTH``.
+
+    A nested archive is expanded into a sibling directory named after it and
+    the ``.zip`` itself is removed, so its members are ingested like any other
+    and the zip is not reported as an unhandled member. One that cannot be
+    expanded (corrupt, over the shared budget, too deep) is LEFT IN PLACE and
+    named in a warning: it stays visible as an unhandled member rather than
+    vanishing. Never raises for a single nested archive.
+    """
+    warnings: list[dict[str, str]] = []
+    failed: set[Path] = set()  # left in place; must not be retried every pass
+    depth = 0
+    while depth < _MAX_NESTED_DEPTH:
+        nested = sorted(
+            p for p in root.rglob("*")
+            if p.is_file() and p.suffix.lower() == ".zip"
+            and not _is_junk(p, root) and p not in failed
+        )
+        if not nested:
+            return warnings
+        depth += 1
+        for zpath in nested:
+            target = zpath.parent / f"{zpath.stem}__unzipped"
+            try:
+                _extract_zip_into(zpath, target, budget)
+            except (zipfile.BadZipFile, ValueError, OSError) as exc:
+                failed.add(zpath)
+                warnings.append({
+                    "code": "archive_nested_zip_not_expanded",
+                    "file": zpath.name,
+                    "detail": (
+                        f"{zpath.name}: a zip inside the archive could not be unpacked "
+                        f"({exc}); it was left as it is."
+                    ),
+                })
+                log.warning("ingest_zip_archive: nested zip %s not expanded: %s", zpath.name, exc)
+                continue
+            zpath.unlink()
+    leftovers = [
+        p for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() == ".zip"
+        and not _is_junk(p, root) and p not in failed
+    ]
+    for zpath in leftovers:
+        warnings.append({
+            "code": "archive_nested_zip_not_expanded",
+            "file": zpath.name,
+            "detail": (
+                f"{zpath.name}: nested more than {_MAX_NESTED_DEPTH} zips deep; "
+                "it was left as it is."
+            ),
+        })
+    return warnings
+
+
+def _collect_members(root: Path) -> list[Path]:
+    """Every ingestible member under ``root``, in filesystem order.
+
+    An Esri File Geodatabase is a DIRECTORY (``name.gdb``) whose contents
+    (a00000001.gdbtable, ...) match no extension and are not members in their
+    own right: the folder is the member, returned once as a directory, and its
+    files are left out. AppleDouble junk is dropped.
+    """
+    gdb_dirs = [
+        p for p in root.rglob("*")
+        if p.is_dir() and p.suffix.lower() == ".gdb" and not _is_junk(p, root)
+    ]
+    members: list[Path] = []
+    for p in root.rglob("*"):
+        if _is_junk(p, root):
+            continue
+        if p.is_file() and not any(g in p.parents for g in gdb_dirs):
+            members.append(p)
+    return [*members, *gdb_dirs]
 
 
 # ---------------------------------------------------------------------------
@@ -671,16 +825,6 @@ async def run_zip_ingest(
                     run_id=progress_run_id, stage="parse",
                 )
 
-            # Audit 2026-06-28: safe extraction. A bare zf.extractall() is
-            # vulnerable to (a) zip-bombs (unbounded decompressed size / entry
-            # count exhausts disk) and (b) zip-slip path traversal (an entry
-            # named '../../etc/x' escapes extract_dir). Guard both: cap entry
-            # count + total declared uncompressed size, and verify every
-            # resolved destination stays inside extract_dir before writing.
-            _MAX_ENTRIES = 50_000
-            _MAX_TOTAL_UNCOMPRESSED = 5 * 1024 ** 3  # 5 GiB
-            extract_root = extract_dir.resolve()
-
             # Hard rule 2. Extraction is CPU-bound zlib plus disk I/O with no
             # await point anywhere in it — on a 5 GiB archive that is minutes
             # of blocking on the worker's event loop, during which Hatchet's
@@ -690,39 +834,17 @@ async def run_zip_ingest(
             # wrapped for exactly this reason; the extraction next to it was
             # not. Same failure the subprocess pool in ingest_pdf.py exists
             # to avoid, reintroduced in the sibling workflow.
-            def _extract_all() -> None:
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    infos = zf.infolist()
-                    if len(infos) > _MAX_ENTRIES:
-                        raise ValueError(
-                            f"ingest_zip_archive: {len(infos)} entries exceeds "
-                            f"{_MAX_ENTRIES} (zip-bomb guard); refusing."
-                        )
-                    total_uncompressed = sum(i.file_size for i in infos)
-                    if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
-                        raise ValueError(
-                            f"ingest_zip_archive: uncompressed size "
-                            f"{total_uncompressed} B exceeds "
-                            f"{_MAX_TOTAL_UNCOMPRESSED} B (zip-bomb guard); refusing."
-                        )
-                    for info in infos:
-                        if info.is_dir():
-                            continue
-                        dest = (extract_dir / info.filename).resolve()
-                        if dest != extract_root and not str(dest).startswith(
-                            str(extract_root) + os.sep
-                        ):
-                            raise ValueError(
-                                f"ingest_zip_archive: unsafe path {info.filename!r} "
-                                "escapes extract dir (zip-slip guard); refusing."
-                            )
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(info) as src, open(dest, "wb") as out:
-                            shutil.copyfileobj(src, out)
+            #
+            # _extract_zip_into carries the 2026-06-28 audit guards (entry cap,
+            # total-size cap, zip-slip) and shares ONE budget with every nested
+            # archive, so a zip-of-zips cannot multiply past them.
+            budget = _ExtractBudget()
+            await asyncio.to_thread(_extract_zip_into, zip_path, extract_dir, budget)
+            nested_warnings = await asyncio.to_thread(
+                _expand_nested_archives, extract_dir, budget,
+            )
 
-            await asyncio.to_thread(_extract_all)
-
-            all_files = [p for p in extract_dir.rglob("*") if p.is_file()]
+            all_files = _collect_members(extract_dir)
             total = len(all_files)
             log.info("ingest_zip_archive: extracted %d files run_id=%s", total, input.run_id)
             if archive_run_id:
@@ -769,7 +891,7 @@ async def run_zip_ingest(
                 errors: list[dict[str, str]] = []
                 unhandled: list[str] = []
                 #: Per-file LAS warnings, collapsed to one per code at the end.
-                member_warnings: list[dict[str, str]] = []
+                member_warnings: list[dict[str, str]] = list(nested_warnings)
                 #: Dependency-wait warnings (timeouts, failed collar runs).
                 wait_warnings: list[dict[str, str]] = []
                 #: Every ingest_tabular child run started, in dispatch order.
@@ -827,6 +949,11 @@ async def run_zip_ingest(
                             len(wait1.not_completed), len(wait1.pending),
                             wait1.waited_s,
                         )
+                    if idx == first_dependent_idx:
+                        # Collars now exist that earlier uploads' LAS files
+                        # were waiting for (this archive's own .log headers and
+                        # phase-1 tables). Attach those before phase 2.
+                        await _attach_waiting_las(conn, store, input)
                     try:
                         # Snapshot the buckets _ingest_one may bump, so
                         # "did this file actually land" is answered by what
@@ -908,6 +1035,9 @@ async def run_zip_ingest(
                                     "their ingesters"
                                 ),
                             )
+
+                # The last members may have been collar sources (.log headers).
+                await _attach_waiting_las(conn, store, input)
 
             finally:
                 await conn.close()
@@ -1002,6 +1132,7 @@ async def run_zip_ingest(
             dispatched = sum(counts[k] for k in _DISPATCHED_COUNT_KEYS)
             archive_warnings = _archive_warnings(
                 total=total, counts=counts, errors=errors, unhandled=unhandled,
+                archive_key=input.minio_key,
                 extra=[
                     *_member_warning_summaries(member_warnings),
                     *wait_warnings,
@@ -1105,6 +1236,7 @@ def _archive_warnings(
     errors: list[dict[str, str]],
     unhandled: list[str],
     extra: list[dict[str, str]] | None = None,
+    archive_key: str | None = None,
 ) -> list[dict[str, str]]:
     """The archive row's warnings — what did NOT reach an ingester, and why.
 
@@ -1134,8 +1266,11 @@ def _archive_warnings(
             "code": "archive_member_unhandled",
             "detail": (
                 f"{len(unhandled)} member file(s) had no ingester and were "
-                f"left out: {_names(unhandled)}. Upload them on their own "
-                "under the matching category if they hold data."
+                f"left out: {_names(unhandled)}. They were NOT loaded, but they "
+                "are not lost: the original archive stays in bronze"
+                + (f" ({archive_key})" if archive_key else "")
+                + ". Upload them on their own under the matching category "
+                "if they hold data."
             ),
         })
     if counts.get("skipped"):
@@ -1195,7 +1330,24 @@ async def _ingest_one(
             member_warnings.extend(
                 {**w, "file": file_path.name} for w in result.warnings
             )
-        if result.skipped:
+        if result.skipped and result.skipped_reason == "collar_unlocated":
+            # No collar and no usable header coordinates: the curves cannot be
+            # placed honestly yet. Keep the file in bronze and record it, so it
+            # attaches when the hole's collar is written (las_pending.py).
+            if await _keep_las_for_later(
+                file_path=file_path, hole_id=result.hole_id, conn=conn, store=store,
+                input=input,
+            ):
+                counts["las_pending"] += 1
+            else:
+                counts["skipped"] += 1
+                if member_warnings is not None:
+                    member_warnings.append({
+                        "code": "las_pending_not_kept",
+                        "detail": f"{file_path.name}: could not be kept for later",
+                        "file": file_path.name,
+                    })
+        elif result.skipped:
             counts["skipped"] += 1
             # WARNING, not debug: this is a member that loaded nothing.
             log.warning(
@@ -1249,11 +1401,13 @@ async def _ingest_one(
             else:
                 counts["log"] += 1
 
-    # No ".txt": inside an archive that is almost always a readme, and
-    # routing one into ingest_tabular spawns a workflow whose only output is
-    # a `nothing_classified` warning. Drill data arriving as .txt comes in
-    # under an explicit upload category, where the user has said what it is.
-    elif ext in ("csv", "tsv", "xlsx", "xls", "xlsm"):
+    # ".txt" goes to ingest_tabular like any delimited table: it classifies the
+    # header (a delimited drill table lands typed) and text that matches no
+    # drill layout is indexed as searchable passages by its text fallback. A
+    # readme therefore lands as text rather than being dropped, which is what
+    # the old "no .txt" exclusion did to it and to every drill table shipped as
+    # .txt.
+    elif ext in ("csv", "tsv", "txt", "xlsx", "xls", "xlsm"):
         # Tabular data — re-upload to bronze and hand off to ingest_tabular,
         # the same pattern .pdf, .tif and the vector branch use.
         #
@@ -1292,7 +1446,7 @@ async def _ingest_one(
         # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch below
         # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
         await asyncio.sleep(0.25)
-        counts["csv" if ext in ("csv", "tsv") else "xlsx"] += 1
+        counts["csv" if ext in ("csv", "tsv", "txt") else "xlsx"] += 1
 
     elif ext in _RASTER_EXTS:
         # TIFF scans → upload to bronze tiff/ prefix + trigger tiff_normalize
@@ -1359,6 +1513,23 @@ async def _ingest_one(
             payload_bytes = await asyncio.to_thread(bundle_path.read_bytes)
             bundle_path.unlink(missing_ok=True)
             safe_name = _safe_filename(f"{file_path.stem}.zip")
+        elif file_path.is_dir():
+            # An Esri File Geodatabase is a folder. Zip it with its own name as
+            # the top-level entry (ingest_spatial's archive path looks for a
+            # `<name>.gdb` directory) and hand that off, the same way a
+            # shapefile's sidecars are bundled.
+            gdb_files = sorted(f for f in file_path.rglob("*") if f.is_file())
+            gdb_bundle = file_path.parent / f"__bundle_{file_path.name}.zip"
+
+            def _write_gdb_bundle() -> None:
+                with zipfile.ZipFile(gdb_bundle, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in gdb_files:
+                        zf.write(f, arcname=str(Path(file_path.name) / f.relative_to(file_path)))
+
+            await asyncio.to_thread(_write_gdb_bundle)
+            payload_bytes = await asyncio.to_thread(gdb_bundle.read_bytes)
+            gdb_bundle.unlink(missing_ok=True)
+            safe_name = _safe_filename(f"{file_path.stem}.zip")
         else:
             payload_bytes = await asyncio.to_thread(file_path.read_bytes)
             safe_name = _safe_filename(file_path.name)
@@ -1378,9 +1549,7 @@ async def _ingest_one(
         await asyncio.sleep(0.25)
         counts["spatial"] += 1
 
-    elif (
-        ext in _DBASE_EXTS and not _has_sibling(file_path, ".shp")
-    ) or ext in _ACCESS_EXTS:
+    elif (ext in _DBASE_EXTS and not _has_sibling(file_path, ".shp")) or ext in _ACCESS_EXTS:
         # A dBASE table with NO same-stem .shp beside it is not a sidecar — it
         # is a standalone attribute table, and ingest_tabular reads one
         # directly. It reached the sidecar branch below and was counted as
@@ -1420,6 +1589,60 @@ async def _ingest_one(
     else:
         counts["unknown"] += 1
         log.debug("ingest_zip_archive: unknown ext .%s for %s — skipping", ext, file_path.name)
+
+
+async def _attach_waiting_las(
+    conn: asyncpg.Connection,
+    store: ObjectStorage,
+    input: IngestZipArchiveInput,
+) -> None:
+    """Ingest LAS files kept from earlier uploads whose collar now exists."""
+    from app.services.ingest.las_pending import attach_pending_las  # noqa: PLC0415
+
+    summary = await attach_pending_las(
+        conn, store=store, workspace_id=input.workspace_id, project_id=input.project_id,
+    )
+    if summary.attached:
+        log.info(
+            "ingest_zip_archive: attached %d waiting LAS file(s) run_id=%s",
+            len(summary.attached), input.run_id,
+        )
+
+
+async def _keep_las_for_later(
+    *,
+    file_path: Path,
+    hole_id: str,
+    conn: asyncpg.Connection,
+    store: ObjectStorage,
+    input: IngestZipArchiveInput,
+) -> bool:
+    """Store an unplaceable LAS in bronze and record it as waiting for its collar.
+
+    Returns False (after logging) if it could not be kept, so the caller can say
+    so instead of implying it was.
+    """
+    from app.services.ingest.las_pending import record_pending  # noqa: PLC0415
+
+    try:
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        key = f"las/{input.project_id}/{ts}_{_safe_filename(file_path.name)}"
+        data = await asyncio.to_thread(file_path.read_bytes)
+        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, key, data)
+        await record_pending(
+            conn,
+            workspace_id=input.workspace_id,
+            project_id=input.project_id,
+            hole_id=hole_id,
+            bronze_key=key,
+            source_name=file_path.name,
+        )
+    except Exception as exc:  # noqa: BLE001 — reported by the caller as las_pending_not_kept
+        log.warning(
+            "ingest_zip_archive: could not keep LAS %s for later: %s", file_path.name, exc,
+        )
+        return False
+    return True
 
 
 def _has_sibling(path: Path, suffix: str) -> bool:
