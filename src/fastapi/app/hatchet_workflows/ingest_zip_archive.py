@@ -262,8 +262,9 @@ _build_dsn = build_dsn
 # ---------------------------------------------------------------------------
 
 #: Tables that FK to a collar. A member that classifies to these ONLY has
-#: nothing to write until its collars exist.
-_INTERVAL_SHEET_TYPES = frozenset({"survey", "lithology", "sample"})
+#: nothing to write until its collars exist. ``structure`` is one: its rows
+#: resolve to a collar by hole id exactly like an interval table's.
+_INTERVAL_SHEET_TYPES = frozenset({"survey", "lithology", "sample", "structure"})
 _WRITE_SHEET_TYPES = frozenset({"collar"}) | _INTERVAL_SHEET_TYPES
 
 _PHASE_PRODUCERS = 1
@@ -272,6 +273,12 @@ _PHASE_DEPENDENTS = 2
 #: Extensions ingest_tabular classifies by header, and so can be sniffed.
 _SNIFFED_CSV_EXTS = frozenset({"csv", "tsv", "txt"})
 _SNIFFED_WORKBOOK_EXTS = frozenset({"xlsx", "xls", "xlsm"})
+#: Standalone dBASE / MapInfo DAT tables and Access databases. ingest_tabular
+#: now routes their tables through the same classifier (typed collar /
+#: survey / lithology / sample / structure writes), so an Access database of
+#: nothing but lithology has to wait for its collars like a CSV would.
+_SNIFFED_DBASE_EXTS = frozenset({"dbf", "dat"})
+_SNIFFED_ACCESS_EXTS = frozenset({"mdb", "accdb"})
 
 _TERMINAL_RUN_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
 
@@ -398,7 +405,7 @@ async def _await_runs(
 
 
 def _sniff_sheet_types(path: Path, ext: str) -> set[str] | None:
-    """Which drill tables (collar/survey/lithology/sample) a member holds.
+    """Which drill tables (collar/survey/lithology/sample/structure) a member holds.
 
     Uses the classifiers ingest_tabular itself uses, so the phase a member is
     put in and the table it is later written to cannot disagree. Returns None
@@ -422,6 +429,35 @@ def _sniff_sheet_types(path: Path, ext: str) -> set[str] | None:
                 meta.sheet_type for meta in enumerate_sheets(str(path))
                 if meta.row_count
             } & _WRITE_SHEET_TYPES
+        if ext in _SNIFFED_DBASE_EXTS or ext in _SNIFFED_ACCESS_EXTS:
+            from app.hatchet_workflows.ingest_tabular import (  # noqa: PLC0415
+                MAPINFO_DAT_EXTENSIONS,
+                _read_dbf_table,
+                _read_mapinfo_dat_table,
+                _typed_verdict_for_table,
+            )
+
+            if ext in _SNIFFED_ACCESS_EXTS:
+                from georag_geoparsers.access_mdb import (  # noqa: PLC0415
+                    list_tables,
+                    read_table,
+                )
+
+                tables = [read_table(str(path), name) for name in list_tables(str(path))]
+            else:
+                reader = (
+                    _read_mapinfo_dat_table
+                    if f".{ext}" in MAPINFO_DAT_EXTENSIONS
+                    else _read_dbf_table
+                )
+                tables = [reader(str(path))]
+            # dbase_side_writes as ingest_tabular applies it: a Discover trace
+            # export or surface-geochem table goes to its own writer, which
+            # needs no existing collar, so it must not be deferred.
+            return {
+                _typed_verdict_for_table(rows, dbase_side_writes=True)[0]
+                for rows in tables if rows
+            } & _WRITE_SHEET_TYPES
     except Exception as exc:  # noqa: BLE001 — a failed sniff must never fail the member
         log.warning(
             "ingest_zip_archive: could not sniff %s (%s); dispatching it in "
@@ -434,12 +470,18 @@ async def _member_phase(file_path: Path, ext: str) -> int:
     """Phase a member is dispatched in (see the module docstring).
 
     Deferred to phase 2: LAS (attaches curves to existing collars), and a
-    csv/tsv/workbook whose sniffed tables are ALL interval types. Everything
-    else -- including anything unsniffable -- is phase 1.
+    csv/tsv/workbook, standalone dBASE/DAT table or Access database whose
+    sniffed tables are ALL collar-dependent types. Everything else --
+    including anything unsniffable -- is phase 1.
     """
     if ext == "las":
         return _PHASE_DEPENDENTS
-    if ext in _SNIFFED_CSV_EXTS | _SNIFFED_WORKBOOK_EXTS:
+    sniffable = ext in _SNIFFED_CSV_EXTS | _SNIFFED_WORKBOOK_EXTS | _SNIFFED_ACCESS_EXTS or (
+        # A .dbf beside a same-stem .shp is that shapefile's sidecar and
+        # travels with it; only a standalone table is its own member.
+        ext in _SNIFFED_DBASE_EXTS and not _has_sibling(file_path, ".shp")
+    )
+    if sniffable:
         types = await asyncio.to_thread(_sniff_sheet_types, file_path, ext)
         if types and "collar" not in types and types <= _INTERVAL_SHEET_TYPES:
             return _PHASE_DEPENDENTS

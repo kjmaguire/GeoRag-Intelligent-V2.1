@@ -2843,10 +2843,24 @@ async def run_ingest_tabular(
                         attach_pending_las,
                     )
 
-                    await attach_pending_las(
-                        conn, store=store, workspace_id=input.workspace_id,
-                        project_id=input.project_id,
-                    )
+                    try:  # a hook defect costs a warning, never these collars
+                        await attach_pending_las(
+                            conn, store=store, workspace_id=input.workspace_id,
+                            project_id=input.project_id,
+                        )
+                    except Exception as attach_exc:  # noqa: BLE001
+                        log.warning(
+                            "ingest_tabular: pending LAS attach failed for %s: %s",
+                            filename, attach_exc,
+                        )
+                        warnings.append({
+                            "code": "las_pending_attach_failed",
+                            "message": (
+                                "LAS files waiting for these collars were not "
+                                "attached this run; they stay kept and attach "
+                                f"on the next collar upload ({attach_exc})"
+                            )[:500],
+                        })
             finally:
                 await conn.close()
 

@@ -136,8 +136,13 @@ async def attach_pending_las(
     from app.services.ingest.las_ingester import ingest_las_file  # noqa: PLC0415
 
     for row in candidates:
-        pending_id, key, name = row["pending_id"], row["bronze_key"], row["source_name"]
-        hole_id = row["hole_id"]
+        try:
+            pending_id, key, name = row["pending_id"], row["bronze_key"], row["source_name"]
+            hole_id = row["hole_id"]
+        except (KeyError, TypeError) as exc:
+            log.warning("las_pending.bad_candidate_row project=%s err=%s", project_id, exc)
+            summary.errors.append(f"candidate row: {exc}")
+            continue
         try:
             claimed = await conn.fetchval(_CLAIM_SQL, pending_id)
             if not claimed:

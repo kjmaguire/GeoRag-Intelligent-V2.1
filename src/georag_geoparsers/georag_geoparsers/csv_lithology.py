@@ -266,6 +266,13 @@ def _validate_row(
             record[field_name] = None
             if blanked is not None:
                 blanked.add(field_name, value)
+            # Keep the geologist's word on the interval itself: the field is
+            # blanked because it is not in the vocabulary, not because it is
+            # wrong, and silver.lithology_logs.lithology_description is the
+            # free-text home for it (e.g. "... [grain_size: porphyritic]").
+            kept = f"[{field_name}: {value.strip()}]"
+            prior = (record.get("lithology_description") or "").strip()
+            record["lithology_description"] = f"{prior} {kept}".strip() if prior else kept
         else:
             record[field_name] = canonical
 

@@ -56,6 +56,22 @@ class TestLithology:
         assert (second["hole_id"], second["from_depth"], second["to_depth"],
                 second["lithology_code"]) == ("D1", 5.0, 9.0, "Tuff")
 
+    def test_the_blanked_value_is_kept_in_the_description(self) -> None:
+        """Blanked from the vocabulary field, not from the record: the raw
+        word lands in lithology_description so nothing the geologist wrote
+        is lost."""
+        result = parse_csv_lithology(io.StringIO(
+            "HoleID,From,To,Lithology,Description,Texture\n"
+            "D1,0,5,Tuff,welded,porphyritic\n"
+            "D1,5,9,Tuff,,glassy\n"
+            "D1,9,12,Tuff,crystal tuff,Fine\n"
+        ))
+
+        first, second, third = result.records
+        assert first["lithology_description"] == "welded [grain_size: porphyritic]"
+        assert second["lithology_description"] == "[grain_size: glassy]"
+        assert third["lithology_description"] == "crystal tuff"  # nothing blanked
+
     def test_the_warning_counts_per_field_with_examples(self) -> None:
         result = parse_csv_lithology(io.StringIO(_LITH))
 
