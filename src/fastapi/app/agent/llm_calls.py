@@ -62,9 +62,55 @@ logger = logging.getLogger(__name__)
 # `run_deterministic_rag` resets the counter at the start of every run.
 # `_call_llm` increments and enforces the cap.
 
-_llm_call_counter: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "georag_llm_call_counter", default=0
+#
+# Audit AGT-12 (2026-09-29): the counter used to be a ContextVar[int].
+# LangGraph runs every node in its own asyncio Task, and a Task gets a COPY
+# of the context, so classify / assemble / repair each started from the
+# parent's value (0) and their increments vanished with the Task — the
+# 8-call cap never spanned nodes. The count now lives in a mutable cell;
+# the ContextVar holds a REFERENCE to it, which the copied contexts share.
+# `begin_run_llm_call_budget()` (called by run_agentic_retrieval) installs a
+# fresh cell per run. Callers outside a run get a cell created on first
+# `set`, context-local exactly as before.
+
+
+class _RunCallCount:
+    __slots__ = ("n",)
+
+    def __init__(self) -> None:
+        self.n = 0
+
+
+_llm_call_cell: contextvars.ContextVar[_RunCallCount | None] = contextvars.ContextVar(
+    "georag_llm_call_cell", default=None
 )
+
+
+class _LLMCallCounter:
+    """ContextVar-shaped (``get``/``set``) facade over the per-run cell."""
+
+    def get(self) -> int:
+        cell = _llm_call_cell.get()
+        return cell.n if cell is not None else 0
+
+    def set(self, value: int) -> None:
+        cell = _llm_call_cell.get()
+        if cell is None:
+            cell = _RunCallCount()
+            _llm_call_cell.set(cell)
+        cell.n = int(value)
+
+
+_llm_call_counter = _LLMCallCounter()
+
+
+def begin_run_llm_call_budget() -> None:
+    """Start a fresh per-query LLM-call count shared by every graph node.
+
+    Must be called in the context the graph is invoked from (before
+    ``ainvoke``), so each node Task's copied context points at this cell.
+    """
+    _llm_call_cell.set(_RunCallCount())
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -154,7 +200,9 @@ def reset_run_token_usage() -> None:
 
 #: `audit_label` values for calls that CANNOT have produced the answer.
 #: Everything else is treated as answer-producing.
-NON_ANSWER_AUDIT_LABELS: frozenset[str] = frozenset({"intent_classifier"})
+NON_ANSWER_AUDIT_LABELS: frozenset[str] = frozenset(
+    {"intent_classifier", "phase0_llm_incident_diagnosis"}
+)
 
 _run_llm_model: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "georag_run_llm_model", default=None
@@ -1490,6 +1538,8 @@ async def _call_llm(
         "agentic_retrieval_repair_stage3"   — re-synthesis after a guard
                                               failure; produces the answer
         "intent_classifier"                 — routing only, never the answer
+        "phase0_llm_incident_diagnosis"     — ops incident triage (phase-0
+                                              agent), never a chat answer
 
     This paragraph previously listed "primary", "retry", "failover",
     "follow_ups" and "classifier". None of those five strings appears
@@ -1545,6 +1595,16 @@ async def _call_llm(
     sanitized_query = _sanitize_query(query)
     user_message = _build_user_message(context, sanitized_query)
 
+    # Audit AGT-13: this function documents response_format="json", the
+    # vLLM path honours only "json", and the Cohere/Bedrock adapters honour
+    # only "json_object" — so a caller following the docstring silently got
+    # no JSON mode on the default backend. Accept either spelling and hand
+    # each transport the one it reads.
+    _rf = (response_format or "").strip().lower()
+    wants_json = _rf in ("json", "json_object")
+    hosted_response_format = "json_object" if wants_json else response_format
+    vllm_response_format = "json" if wants_json else response_format
+
     if settings.LLM_BACKEND in ("cohere", "bedrock"):
         # Two hosts, one model. Cohere's v2 API and Bedrock Converse each
         # have their own wire shape — neither is OpenAI-compatible — so both
@@ -1578,7 +1638,7 @@ async def _call_llm(
             project_facts=project_facts,
             user_id=user_id,
             token_callback=token_callback,
-            response_format=response_format,
+            response_format=hosted_response_format,
         )
 
     if settings.LLM_BACKEND == "anthropic":
@@ -1621,13 +1681,14 @@ async def _call_llm(
         http_client=openai_http_client,
         token_callback=token_callback,
         enable_thinking=enable_thinking,
-        response_format=response_format,
+        response_format=vllm_response_format,
         guided_json=guided_json,
     )
 
 
 __all__ = [
     "_llm_call_counter",
+    "begin_run_llm_call_budget",
     "LLMCallBudgetExceeded",
     "NON_ANSWER_AUDIT_LABELS",
     "_build_user_message",

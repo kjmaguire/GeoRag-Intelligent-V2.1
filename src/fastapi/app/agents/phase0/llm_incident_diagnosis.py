@@ -5,9 +5,10 @@ on-demand endpoint at ``/api/v1/incidents/diagnose``.
 
 Pulls last 1h of Langfuse traces (HTTP API), recent ``workflow_runs``,
 and prompt_versions in production at the time of the alert. Sends the
-context to the project's vLLM via ``_call_openai_compatible_llm`` using
-the ``chat_deep`` profile. Returns structured JSON validated by
-Pydantic.
+context to the configured chat backend via ``llm_calls._call_llm`` (it
+used to call the vLLM-only ``_call_openai_compatible_llm`` directly, which
+raised on every other backend — audit AGT-10). Returns structured JSON
+validated by Pydantic.
 
 Refusal contract: if the supplied context is empty AND the alert label
 is unfamiliar, the agent raises ``AgentRefusalError`` so the wrapper
@@ -179,27 +180,33 @@ async def llm_incident_diagnosis_run(
     }
 
     # ---- LLM call ---------------------------------------------------------
-    # Local import to avoid the orchestrator's module-level import surface
-    # being pulled in for non-LLM agent paths.
-    from app.agent.orchestrator import _call_openai_compatible_llm
+    # Audit AGT-10 (2026-09-29): this called _call_openai_compatible_llm
+    # directly, which resolves settings.effective_llm_url — a RuntimeError on
+    # cohere (the default), bedrock and anthropic. It goes through the
+    # backend dispatcher now, which also applies the per-query call cap and
+    # the §35.1 suspended-workspace check. response_format="json" is
+    # normalised per transport by _call_llm (AGT-13).
+    from app.agent.llm_calls import _call_llm  # noqa: PLC0415
 
     parameters = pinned.get("parameters") or {}
     if isinstance(parameters, str):
         parameters = json.loads(parameters)
     temperature = float(parameters.get("temperature", 0.1))
 
-    user_message = (
-        "Diagnose this incident from the supplied context. "
-        "Return JSON only.\n\n"
-        f"```json\n{json.dumps(context_blob, default=str)}\n```"
-    )
+    context_json = f"```json\n{json.dumps(context_blob, default=str)}\n```"
+    question = "Diagnose this incident from the supplied context. Return JSON only."
+    user_message = f"{question}\n\n{context_json}"  # for the usage estimate
 
-    raw = await _call_openai_compatible_llm(
-        user_message=user_message,
+    raw = await _call_llm(
+        query=question,
+        context=context_json,
         temperature=temperature,
         system_prompt=pinned["text"],
         enable_thinking=False,
         response_format="json",
+        audit_label="phase0_llm_incident_diagnosis",
+        workspace_id=str(ctx.workspace_id) if getattr(ctx, "workspace_id", None) else None,
+        pg_pool=rt.pg_pool,
     )
 
     # Tally token usage for the wrapper to write a usage_events row.

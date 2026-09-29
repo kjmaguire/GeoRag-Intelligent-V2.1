@@ -318,3 +318,61 @@ def test_intent_result_is_frozen_dataclass() -> None:
     assert isinstance(r, IntentResult)
     with pytest.raises(Exception):  # dataclass(frozen=True) → FrozenInstanceError
         r.intent = "synthesis"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Audit AGT-9 (2026-09-29) — bounded, and billed/gated like any other call
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_llm_fallback_is_time_bounded(monkeypatch) -> None:
+    import asyncio
+
+    import app.agent.agentic_retrieval.intent_classifier as _ic
+    import app.agent.llm_calls as _llm_mod
+
+    async def slow_call_llm(*args, **kwargs):
+        await asyncio.Event().wait()  # never returns
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", slow_call_llm)
+    monkeypatch.setattr(_ic, "_LLM_FALLBACK_TIMEOUT_S", 0.05)
+    got = await asyncio.wait_for(
+        classify_intent(
+            "Tell me about the geology of the Athabasca basin.",
+            openai_http_client=_FakeAsyncClient(),
+        ),
+        timeout=5,
+    )
+    assert got.used_llm_fallback is False
+    assert got.intent == "synthesis"
+
+
+@pytest.mark.asyncio
+async def test_llm_fallback_passes_workspace_and_clients(monkeypatch) -> None:
+    seen: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        seen.update(kwargs)
+        return "synthesis"
+
+    import app.agent.llm_calls as _llm_mod
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    class _Deps:
+        workspace_id = "ws-9"
+        redis_client = object()
+        pg_pool = object()
+        anthropic_client = object()
+
+    deps = _Deps()
+    await classify_intent(
+        "Tell me about the geology of the Athabasca basin.",
+        openai_http_client=_FakeAsyncClient(),
+        deps=deps,
+    )
+    assert seen["workspace_id"] == "ws-9"
+    assert seen["redis_client"] is deps.redis_client
+    assert seen["pg_pool"] is deps.pg_pool
+    assert seen["anthropic_client"] is deps.anthropic_client

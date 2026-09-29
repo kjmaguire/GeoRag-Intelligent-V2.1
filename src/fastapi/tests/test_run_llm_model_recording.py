@@ -106,7 +106,7 @@ def _audit_labels_in_tree() -> set[str]:
 #: the implementation — NON_ANSWER_AUDIT_LABELS is the denylist under test,
 #: and asserting a denylist against itself proves nothing.
 ANSWER_LABELS = {"agentic_retrieval", "agentic_retrieval_repair_stage3"}
-NON_ANSWER_LABELS = {"intent_classifier"}
+NON_ANSWER_LABELS = {"intent_classifier", "phase0_llm_incident_diagnosis"}
 
 
 def test_every_audit_label_is_classified():

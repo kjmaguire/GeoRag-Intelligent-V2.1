@@ -154,7 +154,9 @@ async def classify_node(state: AgenticRetrievalState) -> dict[str, Any]:
         except Exception:  # pragma: no cover — status is a UX affordance
             logger.debug("agentic_retrieval.classify: status_callback raised", exc_info=True)
     openai_client = getattr(state.deps, "openai_http_client", None)
-    result = await classify_intent(state.query, openai_http_client=openai_client)
+    result = await classify_intent(
+        state.query, openai_http_client=openai_client, deps=state.deps,
+    )
     logger.info(
         "agentic_retrieval.classify: intent=%s confidence=%.2f used_llm=%s triggers=%s",
         result.intent,

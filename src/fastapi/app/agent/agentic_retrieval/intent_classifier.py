@@ -29,10 +29,11 @@ LangGraph node or unit test without setup.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from app.agent.decision_support_classifier import classify as classify_decision_support
 
@@ -386,10 +387,19 @@ Reply with ONE WORD only: the chosen label. No explanation, no punctuation.
 """.strip()
 
 
+#: Wall-clock cap on the classifier's LLM escalation (audit AGT-9). It runs
+#: before retrieval on every low-keyword-confidence query — including every
+#: no-signal one — and without a cap a slow provider spent most of
+#: TIMEOUT_GATHER_S on a one-word label before synthesis even started. On
+#: timeout the keyword answer (or the synthesis default) stands.
+_LLM_FALLBACK_TIMEOUT_S = 4.0
+
+
 async def _llm_fallback(
     query: str,
     *,
     openai_http_client,
+    deps: Any = None,
 ) -> Intent | None:
     """Ask a small Qwen model to pick an intent.
 
@@ -409,14 +419,31 @@ async def _llm_fallback(
         logger.exception("intent_classifier: _call_llm import failed")
         return None
     try:
-        raw = await _call_llm(
-            query=query,
-            context="(no context — intent classification only)",
-            temperature=0.0,
-            openai_http_client=openai_http_client,
-            system_prompt=_LLM_FALLBACK_SYSTEM_PROMPT,
-            audit_label="intent_classifier",
+        async with asyncio.timeout(_LLM_FALLBACK_TIMEOUT_S):
+            raw = await _call_llm(
+                query=query,
+                context="(no context — intent classification only)",
+                temperature=0.0,
+                openai_http_client=openai_http_client,
+                # AGT-9: these were never passed, so the §35.1 suspended-
+                # workspace check was a no-op here (a suspended workspace
+                # was billed a classifier call per query before assemble
+                # refused it), and on LLM_BACKEND=anthropic the call always
+                # failed for want of a client and a workspace.
+                anthropic_client=getattr(deps, "anthropic_client", None),
+                workspace_id=getattr(deps, "workspace_id", None),
+                redis_client=getattr(deps, "redis_client", None),
+                pg_pool=getattr(deps, "pg_pool", None),
+                system_prompt=_LLM_FALLBACK_SYSTEM_PROMPT,
+                audit_label="intent_classifier",
+            )
+    except TimeoutError:
+        logger.warning(
+            "intent_classifier: LLM fallback exceeded %.1fs — keeping the "
+            "keyword classification",
+            _LLM_FALLBACK_TIMEOUT_S,
         )
+        return None
     except Exception:
         logger.exception("intent_classifier: LLM fallback call failed")
         return None
@@ -443,6 +470,7 @@ async def classify_intent(
     query: str,
     *,
     openai_http_client=None,
+    deps: Any = None,
 ) -> IntentResult:
     """Classify *query* into one of six intents.
 
@@ -523,7 +551,9 @@ async def classify_intent(
     # 0) — the plan's "if intent_confidence < 0.6" rule applies uniformly.
     used_llm = False
     if confidence < _LLM_FALLBACK_THRESHOLD and openai_http_client is not None:
-        llm_choice = await _llm_fallback(query, openai_http_client=openai_http_client)
+        llm_choice = await _llm_fallback(
+            query, openai_http_client=openai_http_client, deps=deps,
+        )
         if llm_choice is not None and llm_choice != top:
             logger.info(
                 "intent_classifier: LLM fallback %s → %s (kw conf=%.2f)",
