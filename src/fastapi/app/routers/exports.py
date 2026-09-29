@@ -16,7 +16,7 @@ import shutil
 import tempfile
 import zipfile
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -46,9 +46,17 @@ class ExportRequest(BaseModel):
 
 async def _fetch_collars(project_id: str, pg_pool):
     """Fetch collar records and return as a GeoDataFrame in WGS84."""
+    # elevation / azimuth / dip / total_depth plus the native-CRS easting,
+    # northing and EPSG are what a modelling tool (Leapfrog, QGIS, Micromine)
+    # needs to place and desurvey a hole in 3D. The export used to carry only
+    # the WGS84 point and total_depth, so a hole could be drawn on a map but
+    # not reconstructed. Native coordinates come from the geometry itself
+    # (not the float easting/northing columns) so they always agree with
+    # the ``epsg`` reported next to them.
     sql = (
-        "SELECT collar_id::text, hole_id, total_depth, hole_type, status, "
-        "drill_date::text, "
+        "SELECT collar_id::text, hole_id, total_depth, elevation, azimuth, dip, "
+        "hole_type, status, drill_date::text, "
+        "ST_X(geom) AS easting, ST_Y(geom) AS northing, ST_SRID(geom) AS epsg, "
         "ST_X(ST_Transform(geom, 4326)) AS longitude, "
         "ST_Y(ST_Transform(geom, 4326)) AS latitude "
         "FROM silver.collars WHERE project_id = $1 ORDER BY hole_id"
@@ -91,6 +99,40 @@ async def _fetch_collars(project_id: str, pg_pool):
     return gdf
 
 
+# DBF (the shapefile attribute table) caps field names at 10 characters and
+# GDAL silently truncates longer ones — ``total_depth`` used to arrive in the
+# modelling tool as ``total_dept``. Rename explicitly for the shapefile path
+# only; the GeoPackage keeps the full column names.
+_SHAPEFILE_FIELD_NAMES: dict[str, str] = {
+    "total_depth": "tot_depth",
+}
+
+
+def _shapefile_columns(gdf):  # type: ignore[no-untyped-def]
+    """Return ``gdf`` with every attribute name fitting the DBF 10-char cap."""
+    renamed = gdf.rename(columns=_SHAPEFILE_FIELD_NAMES)
+    too_long = [
+        c for c in renamed.columns if c != renamed.geometry.name and len(c) > 10
+    ]
+    if too_long:  # pragma: no cover — guard against a future column addition
+        raise ValueError(f"shapefile field names exceed 10 chars: {too_long}")
+    return renamed
+
+
+def _no_collars() -> HTTPException:
+    """404 for a project with no collars.
+
+    Used to be ``{"error": ...}`` with HTTP 200, which Laravel's exporters
+    saved verbatim as a ``.zip`` / ``.gpkg`` the user then downloaded as a
+    corrupt file. A non-2xx makes GenerateExportJob mark the export failed
+    with this message instead.
+    """
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="No collar data found for this project",
+    )
+
+
 def _cleanup(tmpdir: str) -> BackgroundTask:
     """Delete the working directory once the response has been sent.
 
@@ -113,7 +155,7 @@ async def export_shapefile(body: ExportRequest, request: Request):
     gdf = await _fetch_collars(body.project_id, request.app.state.pg_pool)
 
     if gdf.empty:
-        return {"error": "No collar data found for this project"}
+        raise _no_collars()
 
     tmpdir = tempfile.mkdtemp(prefix="georag_shp_")
     shp_path = os.path.join(tmpdir, "georag_collars.shp")
@@ -121,8 +163,10 @@ async def export_shapefile(body: ExportRequest, request: Request):
     # Hard rule 2 — GeoPandas writes through GDAL/OGR, which is sync and
     # CPU-bound. A 40,000-collar project is seconds of blocking on the
     # event loop that serves every other request in this worker.
+    shp_gdf = _shapefile_columns(gdf)
+
     def _write_bundle() -> str:
-        gdf.to_file(shp_path, driver="ESRI Shapefile")
+        shp_gdf.to_file(shp_path, driver="ESRI Shapefile")
         zip_path = os.path.join(tmpdir, "georag_collars_shapefile.zip")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg"):
@@ -158,7 +202,7 @@ async def export_geopackage(body: ExportRequest, request: Request):
     gdf = await _fetch_collars(body.project_id, request.app.state.pg_pool)
 
     if gdf.empty:
-        return {"error": "No collar data found for this project"}
+        raise _no_collars()
 
     tmpdir = tempfile.mkdtemp(prefix="georag_gpkg_")
     gpkg_path = os.path.join(tmpdir, "georag_collars.gpkg")

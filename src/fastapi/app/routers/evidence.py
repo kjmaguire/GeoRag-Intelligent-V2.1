@@ -79,7 +79,7 @@ from app.services.workspace_resolution import resolve_workspace_id  # noqa: E402
 class EvidencePassagePayload(BaseModel):
     """Payload for evidence_type='document_passage'.
 
-    Hydrated from silver.document_passages + silver.document_revisions.
+    Hydrated from silver.document_passages + silver.reports.
     context_before / context_after are adjacent passage texts (ordinal ±1).
     deep_link is a Laravel document-viewer URL (None when ambiguous).
     """
@@ -93,7 +93,13 @@ class EvidencePassagePayload(BaseModel):
     context_after: str = Field(
         "", description="Up to 2 sentences after the passage in the same revision"
     )
-    document_revision_id: UUID
+    # silver.document_passages has no document_revision_id column — a
+    # passage is identified by (document_id, revision_number). The old
+    # required ``document_revision_id`` field could never be populated.
+    document_id: UUID | None = Field(
+        default=None, description="silver.reports.report_id the passage belongs to"
+    )
+    revision_number: int | None = None
     source_uri: str
     source_date: str | None = None
     page: int | None = None
@@ -230,55 +236,82 @@ async def _fetch_evidence_row(
 
 
 async def _fetch_passage_with_context(
-    pg_pool: object, passage_id: UUID
+    pg_pool: object, passage_id: UUID, workspace_id: UUID
 ) -> dict[str, Any]:
-    """Fetch passage text + adjacent passage context + document_revision metadata.
+    """Fetch passage text + adjacent passage context + source report metadata.
 
     Grabs ordinal ±1 rows from the same document revision for context.
+
+    Queries the live ``silver.document_passages`` columns (``document_id``,
+    ``revision_number``, ``text``, ``page_first``) and joins
+    ``silver.reports`` for the source object key / filing date. This used to
+    select ``document_revision_id`` / ``passage_text`` / ``page_number`` and
+    join ``silver.document_revisions`` — none of which exist on the live
+    table — so every document_passage evidence lookup 500'd.
+
+    Runs inside ``scoped_connection`` because ``silver.document_passages``
+    is FORCE RLS fail-closed since 2026_08_15_030000: without the
+    ``app.workspace_id`` GUC even correct SQL returns zero rows.
     """
-    # Fetch the target passage and its document_revision_id + ordinal.
+    from app.db.scoped_pool import scoped_connection  # noqa: PLC0415
+
+    # Fetch the target passage, its document + ordinal, and the report row.
+    # LEFT JOIN: document_id is nullable on document_passages.
     passage_sql = """
         SELECT
             dp.passage_id,
-            dp.document_revision_id,
+            dp.document_id,
+            dp.revision_number,
             dp.ordinal,
-            dp.passage_text,
-            dp.page_number,
-            dr.source_uri,
-            dr.source_date
+            dp.text,
+            dp.page_first,
+            r.source_object_key,
+            r.filing_date
         FROM silver.document_passages dp
-        JOIN silver.document_revisions dr
-            ON dr.document_revision_id = dp.document_revision_id
+        LEFT JOIN silver.reports r
+            ON r.report_id = dp.document_id
         WHERE dp.passage_id = $1
+          AND dp.workspace_id = $2
     """
-    # Fetch context passages (ordinal ±1).
+    # Fetch context passages (ordinal ±1) from the same document revision.
     context_sql = """
-        SELECT ordinal, passage_text
+        SELECT ordinal, text
         FROM silver.document_passages
-        WHERE document_revision_id = $1
-          AND ordinal IN ($2, $3)
+        WHERE document_id = $1
+          AND revision_number = $2
+          AND workspace_id = $3
+          AND ordinal IN ($4, $5)
         ORDER BY ordinal
     """
     try:
-        async with pg_pool.acquire() as conn:  # type: ignore[union-attr]
-            row = await conn.fetchrow(passage_sql, passage_id)
+        async with scoped_connection(
+            pg_pool,  # type: ignore[arg-type]
+            workspace_id=str(workspace_id),
+            site="evidence.passage",
+        ) as conn:
+            row = await conn.fetchrow(passage_sql, passage_id, workspace_id)
             if not row:
                 return {}
             ordinal = row["ordinal"] or 0
-            context_rows = await conn.fetch(
-                context_sql,
-                row["document_revision_id"],
-                ordinal - 1,
-                ordinal + 1,
-            )
-        ctx_map = {r["ordinal"]: r["passage_text"] or "" for r in context_rows}
+            context_rows: list[Any] = []
+            if row["document_id"] is not None:
+                context_rows = await conn.fetch(
+                    context_sql,
+                    row["document_id"],
+                    row["revision_number"],
+                    workspace_id,
+                    ordinal - 1,
+                    ordinal + 1,
+                )
+        ctx_map = {r["ordinal"]: r["text"] or "" for r in context_rows}
         return {
-            "passage_text": row["passage_text"] or "",
-            "document_revision_id": row["document_revision_id"],
-            "page": row["page_number"],
-            "source_uri": row["source_uri"] or "",
+            "passage_text": row["text"] or "",
+            "document_id": row["document_id"],
+            "revision_number": row["revision_number"],
+            "page": row["page_first"],
+            "source_uri": row["source_object_key"] or "",
             "source_date": (
-                str(row["source_date"]) if row["source_date"] else None
+                str(row["filing_date"]) if row["filing_date"] else None
             ),
             "context_before": ctx_map.get(ordinal - 1, ""),
             "context_after": ctx_map.get(ordinal + 1, ""),
@@ -407,7 +440,9 @@ async def _assemble_passage(
             detail="evidence_fetch_failed",
         )
 
-    passage_data = await _fetch_passage_with_context(pg_pool, UUID(str(passage_id)))
+    passage_data = await _fetch_passage_with_context(
+        pg_pool, UUID(str(passage_id)), workspace_id
+    )
     if not passage_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -429,7 +464,12 @@ async def _assemble_passage(
         passage_text=passage_data.get("passage_text", ""),
         context_before=passage_data.get("context_before", ""),
         context_after=passage_data.get("context_after", ""),
-        document_revision_id=UUID(str(passage_data["document_revision_id"])),
+        document_id=(
+            UUID(str(passage_data["document_id"]))
+            if passage_data.get("document_id") is not None
+            else None
+        ),
+        revision_number=passage_data.get("revision_number"),
         source_uri=source_uri,
         source_date=passage_data.get("source_date"),
         page=page,
@@ -600,7 +640,7 @@ async def get_evidence(
       1. Resolve workspace_id from X-Workspace-Id header or JWT fallback.
       2. Fetch evidence_items row (workspace-scoped).
       3. Branch on evidence_type:
-           document_passage → fetch passage + context + document_revision
+           document_passage → fetch passage + context + source report
            structured_record → fetch structured_ref + lineage
            graph_edge → hydrate Neo4j nodes + described_in
            map_feature → parse tile_function / bbox / properties
