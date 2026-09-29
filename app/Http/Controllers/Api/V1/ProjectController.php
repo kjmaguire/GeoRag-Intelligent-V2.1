@@ -18,6 +18,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
@@ -191,7 +192,8 @@ class ProjectController extends Controller
      * PUT/PATCH /api/v1/projects/{project}
      *
      * Returns 404 (not 403) when the user lacks membership — existence oracle
-     * defence. The membership check fires BEFORE findOrFail.
+     * defence. The membership check fires BEFORE findOrFail. A member who is
+     * not the owner (or an admin) gets 403 — see canManageProject().
      */
     public function update(UpdateProjectRequest $request, string $projectId): JsonResponse
     {
@@ -205,6 +207,17 @@ class ProjectController extends Controller
             );
 
             return response()->json(['message' => 'Project not found.'], 404);
+        }
+
+        if (! $this->canManageProject($request, $projectId)) {
+            AuthorizationAuditLogger::deny(
+                actor: $request->user(),
+                targetResource: "project:{$projectId}",
+                reason: 'not_project_owner',
+                context: ['action' => 'update', 'path' => $request->path()],
+            );
+
+            return response()->json(['message' => 'Only the project owner or an administrator can edit this project.'], 403);
         }
 
         try {
@@ -235,7 +248,8 @@ class ProjectController extends Controller
      * DELETE /api/v1/projects/{project}
      *
      * Returns 404 (not 403) when the user lacks membership — existence oracle
-     * defence. The membership check fires BEFORE findOrFail.
+     * defence. The membership check fires BEFORE findOrFail. A member who is
+     * not the owner (or an admin) gets 403 — see canManageProject().
      */
     public function destroy(Request $request, string $projectId): JsonResponse
     {
@@ -249,6 +263,17 @@ class ProjectController extends Controller
             );
 
             return response()->json(['message' => 'Project not found.'], 404);
+        }
+
+        if (! $this->canManageProject($request, $projectId)) {
+            AuthorizationAuditLogger::deny(
+                actor: $request->user(),
+                targetResource: "project:{$projectId}",
+                reason: 'not_project_owner',
+                context: ['action' => 'destroy', 'path' => $request->path()],
+            );
+
+            return response()->json(['message' => 'Only the project owner or an administrator can delete this project.'], 403);
         }
 
         try {
@@ -401,5 +426,23 @@ class ProjectController extends Controller
                 'error' => SafeErrorMessage::forResponse($e),
             ]);
         }
+    }
+
+    /**
+     * Whether the caller may edit or delete a whole project (SEC-5, §06b).
+     *
+     * Membership alone used to be enough, so any `member` — the pivot's
+     * default role, and what real users are seeded as — could hard-delete a
+     * project and every child row, recoverable only by a cluster-wide PITR.
+     * Only the pivot `owner` and an administrator (the `admin` gate, i.e.
+     * users.is_admin — the only admin role this codebase has) may. Callers
+     * have already passed hasProjectAccess(), so this never widens who can
+     * see the project.
+     */
+    private function canManageProject(Request $request, string $projectId): bool
+    {
+        $user = $request->user();
+
+        return $user->isProjectOwner($projectId) || Gate::forUser($user)->allows('admin');
     }
 }
