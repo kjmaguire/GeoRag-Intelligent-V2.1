@@ -665,7 +665,19 @@ resource "aws_ecs_task_definition" "migrate" {
       # "permission denied for schema public" trying to create the
       # `migrations` tracking table, exactly the failure mode the comment
       # below anticipated but the config it points at cannot prevent.
-      "php artisan migrate --force --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations",
+      #
+      # --isolated=1 (audit AWS-1, 2026-09-29): two of these tasks used to be
+      # able to run at once — cd.yml cancelled in-flight deploys, and a
+      # cancelled job does not stop the ECS task it started. The isolation
+      # lock lives in the cache store, which is Redis here and shared by every
+      # task, so a second `migrate` finds it held and exits 1 (the `=1`; the
+      # bare flag exits 0, and `&&` would then run db:apply-raw alongside the
+      # first task's migration). A migrate task killed mid-run leaves the lock
+      # until it expires (an hour); the next deploy fails loudly with "The
+      # [migrate] command is already running" rather than racing. cd.yml's
+      # single-flight gate and non-cancelling concurrency are the other two
+      # layers; this one also covers a task started by hand.
+      "php artisan migrate --force --isolated=1 --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations",
     ]
     environment = [
       for k, v in merge(local.service_environment["laravel-octane"], {

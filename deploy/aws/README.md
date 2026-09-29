@@ -380,12 +380,34 @@ power-off ever ran.
 | `scheduler/tests/` | Behavioural tests for the sweeps, run against a fake `aws` CLI |
 | `rotation/` | The `APP_KEY` rotation, and the script it runs inside a one-off task (`terraform/rotation.tf`) |
 | `rotation/tests/` | Behavioural tests for the rotation, against a fake `aws` CLI and a fake `php artisan` |
+| `upgrade/` | Image moves for the vendor services (`upgrade-service-image.sh`, `upgrade-qdrant.sh`) and `roll-vendor-services.sh`, the step after every apply |
 
 ```bash
 cd deploy/aws/terraform
 terraform init
 terraform plan -var-file=production.tfvars
 ```
+
+### After every apply: roll the three vendor services
+
+Every ECS service ignores `task_definition` in Terraform, so CD owns what the
+seven first-party services run. CD never touches `hatchet`, `qdrant` or
+`redis`, so for those three an apply that changes their task definition
+(env, secrets, mounts, stop timeout, image pin) registers a new revision and
+**leaves the service on the old one**. The apply still reports success.
+`--force-new-deployment` does not fix it, because it restarts the *current*
+revision. Straight after the apply:
+
+```bash
+bash deploy/aws/upgrade/roll-vendor-services.sh            # dry run: what lags
+bash deploy/aws/upgrade/roll-vendor-services.sh --apply    # roll it
+```
+
+Each roll is a gap of a minute or two (minimum healthy 0%). A Qdrant **image**
+change is refused and sent to `upgrade-qdrant.sh`, which takes a snapshot
+first. cd.yml warns on every deploy while any of the three lags. The seven
+first-party services pick up a changed task definition on the next CD run,
+because CD copies each family's latest revision and swaps only the image.
 
 `production.tfvars` is not in the repository. The variables with no default
 are the three a deployment must decide: `reverb_app_key`, `alert_email` and

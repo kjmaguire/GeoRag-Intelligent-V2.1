@@ -66,11 +66,22 @@ on:
         required: false
 
 concurrency:
-  # One deploy at a time; a newer push should win over a stale one still
-  # queued, so cancel-in-progress is on (unlike a rolling multi-env
-  # pipeline, there's only one target here).
+  # One deploy at a time, and NEVER cancel one that is already running.
+  #
+  # This was `cancel-in-progress: true` until 2026-09-29 (audit AWS-1), on
+  # the theory that a newer push should win. It cannot win cleanly: cancelling
+  # the GitHub job does not stop the `georag-migrate` ECS task the job already
+  # started, so the next run's migration ran against the same database at the
+  # same time, and a cancel during "Deploy services" left some services on the
+  # old SHA and some on the new one.
+  #
+  # With it off, GitHub still keeps at most ONE pending run per group and
+  # replaces it with any newer one, so a burst of merges deploys the running
+  # SHA and then the newest, in trigger order. Kept at the workflow level, not
+  # on the deploy job: a job-level group would let a slower build of an OLDER
+  # SHA queue its deploy behind a newer one and then roll production back.
   group: deploy-georag
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
@@ -302,6 +313,39 @@ jobs:
             exit 1
           fi
 
+      # ── Single-flight gate: is a schema task already running? ─────────
+      # Migrations must never overlap (audit AWS-1). Three layers make sure:
+      #
+      #   1. this workflow never cancels an in-progress run (concurrency
+      #      above), so a newer merge cannot start a second migration while
+      #      an older run is mid-way through its own;
+      #   2. this gate — a run cancelled BY HAND still leaves its ECS task
+      #      running, and so does a GitHub runner that died. Nothing on the
+      #      GitHub side can see that task; ECS can. run-seeder.yml runs the
+      #      same `georag-migrate` family, so a seeder in flight blocks here
+      #      too, which is also correct;
+      #   3. `migrate --isolated=1` in the task definition (services.tf), a
+      #      Redis lock that makes a second concurrent `migrate` exit 1
+      #      instead of racing, whoever started it.
+      #
+      # `--desired-status RUNNING` covers PENDING and PROVISIONING tasks as
+      # well: their desired status is RUNNING from the moment run-task
+      # accepts them.
+      - name: Single-flight gate (no schema task already running)
+        run: |
+          set -euo pipefail
+          RUNNING=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" \
+            --family georag-migrate --desired-status RUNNING \
+            --query 'taskArns' --output text)
+          if [ -n "$RUNNING" ] && [ "$RUNNING" != "None" ]; then
+            echo "::error::a georag-migrate task is already running: ${RUNNING}"
+            echo "Another deploy's migration, or a run-seeder dispatch, is still in flight."
+            echo "Wait for it to stop (aws ecs wait tasks-stopped --cluster ${ECS_CLUSTER} --tasks <arn>),"
+            echo "check its exit code, then re-run this deploy."
+            exit 1
+          fi
+          echo "no schema task running — proceeding"
+
       # ── Schema ────────────────────────────────────────────────────────
       # Migrations AND the raw SQL layer, in that order, as one task. The
       # Azure job ran migrations only, which is why database/raw/ objects
@@ -423,6 +467,40 @@ jobs:
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" \
             --services laravel-octane laravel-horizon laravel-reverb \
                        fastapi hatchet-worker sparse martin
+
+      # ── The three services this workflow does NOT roll ───────────────
+      # hatchet, qdrant and redis run vendor images that CD never builds, and
+      # services.tf ignores `task_definition` on every service so that CD owns
+      # the running revision. The consequence (audit AWS-2): a `terraform
+      # apply` that changes one of their task definitions registers a new
+      # revision and leaves the service on the old one, forever.
+      #
+      # This step REPORTS that drift and deliberately does not fix it. Rolling
+      # the Hatchet engine or Redis is a dispatch/queue gap, and rolling Qdrant
+      # onto a new image must go through upgrade-qdrant.sh (snapshot first,
+      # one minor version per hop) — neither belongs as a side effect of an
+      # unrelated application merge. The fix is one command, run right after
+      # the apply that caused it:
+      #   bash deploy/aws/upgrade/roll-vendor-services.sh --apply
+      # Read-only and never fails the deploy: a question it cannot answer is
+      # a warning, not a verdict.
+      - name: Vendor services on their latest task definition?
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          for svc in hatchet qdrant redis; do
+            running=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$svc" \
+                        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "")
+            latest=$(aws ecs describe-task-definition --task-definition "georag-${svc}" \
+                        --query 'taskDefinition.taskDefinitionArn' --output text 2>/dev/null || echo "")
+            if [ -z "$running" ] || [ -z "$latest" ] || [ "$running" = "None" ]; then
+              echo "::warning::could not compare ${svc}'s running and latest task definitions"
+            elif [ "$running" != "$latest" ]; then
+              echo "::warning::${svc} runs ${running##*/} but the latest registered is ${latest##*/}. A terraform apply changed it and nothing rolled it: run deploy/aws/upgrade/roll-vendor-services.sh."
+            else
+              echo "${svc}: on ${latest##*/}"
+            fi
+          done
 
       # ── Does the product actually work? ───────────────────────────────
       # Everything above verifies that containers STARTED. None of it
