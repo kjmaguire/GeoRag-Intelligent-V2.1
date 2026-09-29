@@ -13,6 +13,8 @@ into the upload UI. This workflow:
                        ingest_tabular, which classifies the header
        .tif / .tiff →  re-uploads to bronze tiff/ prefix + triggers tiff_normalize
        .xlsx / .xls →  ingest_tabular (every sheet classified separately)
+       .mdb / .accdb / standalone .dbf / .dat
+                    →  ingest_tabular (one attribute_tables layer per table)
        .pdf         →  re-uploads to bronze reports/ prefix + triggers ingest_pdf
        .shp + kin   →  re-zipped with its sidecars, uploaded to bronze
                        spatial/ prefix + triggers ingest_spatial
@@ -100,6 +102,15 @@ _RASTER_EXTS = frozenset({"tif", "tiff", "rrd", "jpg", "jpeg"})
 #: table that ingest_tabular reads directly. Being in the sidecar bucket meant
 #: they were counted as handled and then nothing opened them.
 _DBASE_EXTS = frozenset({"dbf", "dat"})
+
+#: Microsoft Access databases. ingest_tabular reads these (mdbtools; one
+#: Access table becomes one silver.attribute_tables layer) and the upload
+#: controller's `tables` category accepts them, but this dispatcher did not
+#: list them, so an .mdb inside a ZIP fell through to `unknown` and was
+#: never opened — the same "works uploaded alone, vanishes inside an archive"
+#: failure `.rrd` and `.jpg` had. Never a shapefile sidecar, so no sibling
+#: test is needed.
+_ACCESS_EXTS = frozenset({"mdb", "accdb"})
 
 #: The ``counts`` buckets that mean "this member was handed to an ingester".
 #: Their sum is what the archive's own silver.ingest_progress row reports as
@@ -882,7 +893,9 @@ async def _ingest_one(
         await asyncio.sleep(0.25)
         counts["spatial"] += 1
 
-    elif ext in _DBASE_EXTS and not _has_sibling(file_path, ".shp"):
+    elif (
+        ext in _DBASE_EXTS and not _has_sibling(file_path, ".shp")
+    ) or ext in _ACCESS_EXTS:
         # A dBASE table with NO same-stem .shp beside it is not a sidecar — it
         # is a standalone attribute table, and ingest_tabular reads one
         # directly. It reached the sidecar branch below and was counted as

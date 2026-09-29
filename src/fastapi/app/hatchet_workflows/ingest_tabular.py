@@ -1312,6 +1312,64 @@ def _refusal_reason(result: Any) -> str | None:
     return None
 
 
+def _rows_rejected_warning(
+    *, label: str, write_type: str, result: Any, written: int,
+) -> dict[str, Any] | None:
+    """Say how many rows of a PARTLY-landed sheet the parser rejected, and why.
+
+    The parsers validate row by row and drop the rows that fail — a
+    lithology interval whose optional ``Texture`` or ``Weathering`` value is
+    outside the fixed vocabulary, a survey station with a positive dip in a
+    file too short to detect the convention, a from/to pair that is inverted,
+    a collar with no coordinates. Each drop is recorded in
+    ``skipped_details``, but this workflow only read that list when NOTHING
+    was written (``_refusal_reason``). A 3,000-row lithology log that landed
+    1,100 rows therefore closed with the same headline as one that landed all
+    3,000, and the strip logs for the other holes were simply missing.
+
+    Returns None when nothing was rejected, or when nothing was written — the
+    all-rejected case already has the ``wrote_nothing`` warning and its
+    reason.
+    """
+    if not written:
+        return None
+    details = [
+        d for d in (getattr(result, "skipped_details", None) or [])
+        if isinstance(d, dict) and d.get("row") is not None
+    ]
+    total_rows = int(getattr(result, "total_rows", 0) or 0)
+    valid_rows = int(getattr(result, "valid_rows", 0) or 0)
+    rejected = int(getattr(result, "skipped_rows", 0) or 0) or len(details)
+    if rejected <= 0:
+        return None
+
+    by_code: dict[str, int] = {}
+    for d in details:
+        by_code[str(d.get("code") or "unknown")] = (
+            by_code.get(str(d.get("code") or "unknown"), 0) + 1
+        )
+    breakdown = ", ".join(
+        f"{code} x{n}" for code, n in sorted(by_code.items(), key=lambda kv: -kv[1])
+    )
+    first = next((str(d["reason"]) for d in details if d.get("reason")), "")
+    of_total = f" of {total_rows}" if total_rows else ""
+    return {
+        "code": "rows_rejected",
+        "message": (
+            f"{rejected}{of_total} {write_type} row(s) in {label} were rejected "
+            f"({valid_rows or written} kept)"
+        ),
+        "detail": (
+            f"{label} was read as {write_type} data and {written} row(s) "
+            f"landed, but {rejected} failed validation and were left out"
+            + (f" ({breakdown})" if breakdown else "")
+            + (f". First: {first}" if first else "")
+            + ". The rejected rows are not in silver; fix the values (or map "
+            "the columns) and re-upload the file to replace this hole's rows."
+        )[:900],
+    }
+
+
 def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
     """Say that these collars were placed by guess, and name the guess."""
     return {
@@ -2120,6 +2178,15 @@ async def run_ingest_tabular(
                             sheet_type=write_type,
                             records=records, index=index,
                         )
+
+                    rejected_note = _rows_rejected_warning(
+                        label=target_sheet or filename,
+                        write_type=write_type,
+                        result=result,
+                        written=stats.get("written", 0),
+                    )
+                    if rejected_note is not None:
+                        warnings.append(rejected_note)
 
                     prior = written.setdefault(
                         write_type,
