@@ -9,6 +9,7 @@ record them in Dagster materialisation metadata.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
@@ -23,7 +24,7 @@ from georag_geoparsers._csv_io import (
     transform_decimal_comma,
 )
 from georag_geoparsers._drill_schema import LITHOLOGY_ALIASES, LITHOLOGY_REQUIRED
-from georag_geoparsers._header_match import build_column_map
+from georag_geoparsers._header_match import alias_skeletons, build_column_map, normalize_header
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 from georag_geoparsers._optional_enum import BlankedValues, canonical_choice
 from georag_geoparsers._vendor_aliases import merge_vendor_aliases
@@ -60,6 +61,31 @@ RANGE_CHECKS: dict = {
     "recovery":   (0.0, 100.0),
 }
 
+#: Widths of the silver.lithology_logs columns (2026_04_09_180300:
+#: lithology_code varchar(20), color varchar(50); grain_size / hardness /
+#: weathering are held inside varchar(20) by their vocabularies). A longer
+#: value does not fit and would fail the WHOLE batch insert, taking every
+#: interval of the file with it, so it is handled here, with the full text
+#: kept in the description.
+LITHOLOGY_CODE_MAX = 20
+COLOR_MAX = 50
+
+#: Whole-word spellings of a vocabulary value that mean exactly that value.
+#: These are the same word, not a nearest-match: "Fine grained" IS "Fine", and
+#: "Slightly weathered" IS the ISRM grade "Slight". Anything else is still
+#: blanked, with the geologist's text kept in the description.
+_GRAIN_SUFFIX = re.compile(r"[\s-]+grain(?:ed)?$", re.IGNORECASE)
+_WEATHERING_SPELLINGS: dict = {
+    "slightly weathered": "Slight",
+    "slightly": "Slight",
+    "moderately weathered": "Moderate",
+    "moderately": "Moderate",
+    "highly weathered": "High",
+    "highly": "High",
+    "completely weathered": "Complete",
+    "completely": "Complete",
+}
+
 # Warning / skip codes
 _CODE_ENCODING_NON_UTF8 = "encoding_non_utf8"
 _CODE_MISSING_REQUIRED = "missing_required"
@@ -75,7 +101,7 @@ _CODE_DECIMAL_COMMA = "decimal_comma_detected"
 # Parse result dataclass
 # ---------------------------------------------------------------------------
 
-PARSER_VERSION = "2.0.0"
+PARSER_VERSION = "2.1.0"
 
 
 @dataclass
@@ -148,11 +174,29 @@ _OPTIONAL_ENUMS: dict = {
 }
 
 
+def _keep_in_description(record: dict, field_name: str, value: str) -> None:
+    """Append ``[field: value]`` to the description, so the text is not lost."""
+    kept = f"[{field_name}: {' '.join(str(value).split())[:200]}]"
+    prior = (record.get("lithology_description") or "").strip()
+    record["lithology_description"] = f"{prior} {kept}".strip() if prior else kept
+
+
+def _spell_enum(field_name: str, value: str) -> str:
+    """The vocabulary spelling of *value*, before it is checked against it."""
+    text = " ".join(value.split())
+    if field_name == "grain_size":
+        return _GRAIN_SUFFIX.sub("", text)
+    if field_name == "weathering":
+        return _WEATHERING_SPELLINGS.get(text.casefold(), text)
+    return text
+
+
 def _validate_row(
     row_num: int,
     raw: dict,
     column_map: dict,
     blanked: BlankedValues | None = None,
+    truncated: BlankedValues | None = None,
 ) -> tuple:
     """Validate a single raw row dict (keyed by canonical names).
 
@@ -183,10 +227,22 @@ def _validate_row(
 
     # --- Numeric casting ---
     record: dict = {}
+    kept_numbers: list = []
     for canonical in column_map:
         raw_val = raw.get(canonical)
         if canonical in NUMERIC_FIELDS:
-            casted = _cast_float(raw_val)
+            if canonical in REQUIRED_FIELDS:
+                casted = _cast_float(raw_val)
+            else:
+                # rqd / recovery: a trailing "%" is a unit, not a defect
+                # ("85%" used to be read as no value at all, silently). What
+                # is still not a number is blanked, counted and kept.
+                text = str(raw_val).strip() if raw_val is not None else ""
+                casted = _cast_float(text[:-1] if text.endswith("%") else text)
+                if casted is None and text:
+                    if blanked is not None:
+                        blanked.add(f"{canonical} (not a number)", text)
+                    kept_numbers.append((canonical, text))
             if casted is None and canonical in REQUIRED_FIELDS:
                 return None, {
                     "row": row_num,
@@ -239,6 +295,16 @@ def _validate_row(
         if field_name in ("from_depth", "to_depth"):
             continue  # already checked above with ordering logic
         val = record.get(field_name)
+        if val is not None and not (lo <= val <= hi) and field_name not in REQUIRED_FIELDS:
+            # rqd / recovery are OPTIONAL: an out-of-range value (RQD 140) is
+            # a data-entry error in one attribute, and silver's CHECK (0-100)
+            # would refuse the row anyway. Keep the interval, blank the value,
+            # keep the number in the description and say so.
+            record[field_name] = None
+            if blanked is not None:
+                blanked.add(f"{field_name} (outside {lo:g}-{hi:g})", val)
+            kept_numbers.append((field_name, f"{val:g}"))
+            continue
         if val is not None and not (lo <= val <= hi):
             return None, {
                 "row": row_num,
@@ -261,7 +327,7 @@ def _validate_row(
         if not value.strip():
             record[field_name] = None
             continue
-        canonical = canonical_choice(value, valid)
+        canonical = canonical_choice(_spell_enum(field_name, value), valid)
         if canonical is None:
             record[field_name] = None
             if blanked is not None:
@@ -270,11 +336,29 @@ def _validate_row(
             # blanked because it is not in the vocabulary, not because it is
             # wrong, and silver.lithology_logs.lithology_description is the
             # free-text home for it (e.g. "... [grain_size: porphyritic]").
-            kept = f"[{field_name}: {value.strip()}]"
-            prior = (record.get("lithology_description") or "").strip()
-            record["lithology_description"] = f"{prior} {kept}".strip() if prior else kept
+            _keep_in_description(record, field_name, value.strip())
         else:
             record[field_name] = canonical
+
+    # --- text values wider than their silver column ---------------------------
+    # Kept whole in the description; the column gets what fits (the code, which
+    # is required) or nothing (the colour). Never silently cut.
+    code = record.get("lithology_code")
+    if code and len(code) > LITHOLOGY_CODE_MAX:
+        _keep_in_description(record, "lithology_code", code)
+        record["lithology_code"] = code[:LITHOLOGY_CODE_MAX].rstrip()
+        if truncated is not None:
+            truncated.add("lithology_code", code)
+    colour = record.get("color")
+    if colour and len(colour) > COLOR_MAX:
+        _keep_in_description(record, "color", colour)
+        record["color"] = None
+        if truncated is not None:
+            truncated.add("color", colour)
+
+    # --- optional numbers that did not fit: keep the text --------------------
+    for field_name, text in kept_numbers:
+        _keep_in_description(record, field_name, text)
 
     # --- hole_id canonicalization ---
     record["hole_id_canonical"] = canonicalize(record.get("hole_id"))
@@ -433,18 +517,43 @@ def parse_csv_lithology(
             detected_encoding=detected_encoding,
         )
 
+    # A SECOND description column ("Comments" beside "Lith_Desc") is the same
+    # kind of text the first one holds. Only one column can be THE description,
+    # and the other used to be dropped unread; its text is kept in the
+    # description instead, labelled with the column it came from.
+    description_skeletons = alias_skeletons(
+        "lithology_description", effective_aliases.get("lithology_description", []),
+    )
+    extra_description_cols = [
+        c for c in unmapped
+        if "lithology_description" in column_map
+        and normalize_header(c) in description_skeletons
+    ]
+    unmapped = [c for c in unmapped if c not in extra_description_cols]
+
     rename_map = {v: k for k, v in column_map.items()}
     df_renamed = df.rename(rename_map)
     canonical_cols = [c for c in df_renamed.columns if c in column_map]
     df_trimmed = df_renamed.select(canonical_cols)
+    extra_description_rows = (
+        df.select(extra_description_cols).to_dicts() if extra_description_cols else []
+    )
 
     records: list = []
     skipped: list = []
     blanked = BlankedValues()
+    truncated = BlankedValues()
 
     rows_as_dicts = df_trimmed.to_dicts()
     for i, raw in enumerate(rows_as_dicts, start=2):
-        record, skip_entry = _validate_row(i, raw, column_map, blanked)
+        if extra_description_rows:
+            for col, text in extra_description_rows[i - 2].items():
+                text = " ".join(str(text).split()) if text is not None else ""
+                if text:
+                    kept = f"[{col}: {text}]"
+                    prior = (raw.get("lithology_description") or "").strip()
+                    raw["lithology_description"] = f"{prior} {kept}".strip() if prior else kept
+        record, skip_entry = _validate_row(i, raw, column_map, blanked, truncated)
         if record is not None:
             records.append(record)
         else:
@@ -470,6 +579,24 @@ def parse_csv_lithology(
             "csv_lithology: %d optional value(s) blanked (%s)",
             blanked.total, ", ".join(blanked_warning["fields"]),
         )
+
+    truncated_warning = truncated.as_warning(parser="csv_lithology")
+    if truncated_warning is not None:
+        truncated_warning["code"] = "lithology_values_too_long"
+        truncated_warning["message"] = (
+            f"{truncated.total} lithology value(s) are longer than their column "
+            f"({', '.join(truncated_warning['fields'])}); the full text was kept "
+            f"in the description"
+        )
+        truncated_warning["detail"] = (
+            "silver.lithology_logs holds a lithology code in 20 characters and "
+            "a colour in 50. Longer values were not cut silently: the full text "
+            "is in the interval's description ('[lithology_code: ...]'), the "
+            "code column holds its first 20 characters, and a too-long colour "
+            "is left empty. This usually means a description was mapped as the "
+            "code - map the column explicitly if so."
+        )
+        global_warnings.append(truncated_warning)
 
     # --- hole_id collision detection ---
     all_raw_hole_ids = [r["hole_id"] for r in records if r.get("hole_id")]
@@ -503,6 +630,8 @@ def parse_csv_lithology(
         "parser_version": PARSER_VERSION,
         "source_col_map": column_map,
     }
+    if extra_description_cols:
+        provenance["extra_description_columns"] = extra_description_cols
 
     result = LithologyParseResult(
         records=records,
