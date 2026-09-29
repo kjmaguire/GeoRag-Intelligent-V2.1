@@ -31,16 +31,22 @@ Shape notes that cost time if you rediscover them:
 
 Every function degrades to empty/None rather than raising, matching the
 convention in ``app.agent.tools`` — one unreachable survey must not fail a
-whole answer.
+whole answer. Degrading is not the same as hiding: ``_get_json`` records the
+reason (transport error, HTTP status, non-JSON body, in-band ArcGIS error)
+into an optional ``FetchReport`` and logs it, and the sync copies that into
+the feed's ``error`` field.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
+
+from app.services.public_geo import fetch_report
+from app.services.public_geo.fetch_report import FetchReport, describe_exception
 from app.services.public_geo.registry import PublicGeoSource
 
 logger = logging.getLogger(__name__)
@@ -68,16 +74,21 @@ def _query_url(source: PublicGeoSource) -> str:
     return f"{base}/query"
 
 
-def _check_arcgis_body(payload: dict[str, Any], *, source_id: str) -> bool:
+def _check_arcgis_body(
+    payload: dict[str, Any], *, source_id: str, report: FetchReport | None = None
+) -> bool:
     """ArcGIS signals failure in-band with HTTP 200. Return True if usable."""
     err = payload.get("error")
     if err:
-        logger.warning(
-            "public_geo: %s returned an ArcGIS error: %s %s",
-            source_id,
-            err.get("code"),
-            (err.get("message") or "")[:200],
-        )
+        err_obj = err if isinstance(err, dict) else {"message": str(err)}
+        details = err_obj.get("details") or []
+        detail_text = "; ".join(str(d) for d in details if d)[:200] if isinstance(details, list) else ""
+        message = f"ArcGIS error {err_obj.get('code')}: {(err_obj.get('message') or '')[:200]}"
+        if detail_text:
+            message = f"{message} ({detail_text})"
+        if report is not None:
+            report.fail("arcgis_error", message)
+        logger.warning("public_geo: %s returned an %s", source_id, message)
         return False
     return True
 
@@ -125,23 +136,54 @@ async def _get_json(
     *,
     timeout_s: float,
     source_id: str,
+    report: FetchReport | None = None,
+    client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any] | None:
-    import httpx  # noqa: PLC0415
+    """GET one ArcGIS REST resource. None on any failure — with the reason
+    recorded in ``report`` and logged, never swallowed.
 
-    def _do() -> dict[str, Any] | None:
-        try:
-            resp = httpx.get(url, params=params, timeout=timeout_s)
-            resp.raise_for_status()
-            body: dict[str, Any] = resp.json()
-            return body
-        except Exception as exc:  # noqa: BLE001 — degrade, never propagate
-            logger.warning("public_geo: %s request failed: %s", source_id, exc)
-            return None
-
-    payload = await asyncio.to_thread(_do)
-    if payload is None:
+    Four distinct failures are told apart because they need different fixes:
+    a transport error (DNS, timeout, proxy refusal), an HTTP status >= 400, a
+    body that is not JSON (an HTML error page from a gateway), and ArcGIS's
+    in-band ``{"error": {...}}`` returned with HTTP 200.
+    """
+    sink = report if report is not None else FetchReport()
+    try:
+        if client is None:
+            async with fetch_report.make_client(timeout_s) as own:
+                resp = await own.get(url, params=params)
+        else:
+            resp = await client.get(url, params=params, timeout=timeout_s)
+    except Exception as exc:  # noqa: BLE001 — degrade, never propagate; reason is recorded
+        sink.fail("transport", describe_exception(exc))
+        logger.warning("public_geo: %s request failed: %s", source_id, sink.error)
         return None
-    if not _check_arcgis_body(payload, source_id=source_id):
+
+    if resp.status_code >= 400:
+        sink.fail(
+            "http_status",
+            f"HTTP {resp.status_code} {resp.reason_phrase}".strip(),
+            http_status=resp.status_code,
+        )
+        logger.warning("public_geo: %s request failed: %s", source_id, sink.error)
+        return None
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        sink.fail(
+            "invalid_json",
+            f"non-JSON body ({resp.headers.get('content-type', '?')}): {resp.text[:160]!r}",
+            http_status=resp.status_code,
+        )
+        logger.warning("public_geo: %s returned a non-JSON body: %s", source_id, sink.error)
+        return None
+    if not isinstance(payload, dict):
+        sink.fail("invalid_json", f"JSON body is {type(payload).__name__}, not an object")
+        logger.warning("public_geo: %s: %s", source_id, sink.error)
+        return None
+
+    if not _check_arcgis_body(payload, source_id=source_id, report=sink):
         return None
     return payload
 
@@ -238,6 +280,7 @@ async def iter_all_features(
     page_size: int = 1000,
     max_features: int | None = None,
     timeout_s: float = 60.0,
+    report: FetchReport | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield every feature in a layer, paging until exhausted.
 
@@ -256,57 +299,66 @@ async def iter_all_features(
 
     A longer default timeout than the interactive path: bulk pages are large
     and this runs on a schedule, not in a user's request.
+
+    ``report`` receives the reason the walk ended early, if it did (HTTP
+    status, transport error, non-JSON body, in-band ArcGIS error). The walk
+    still ends quietly from the caller's point of view — one dead survey must
+    not stop the others — but the reason is no longer lost.
     """
     offset = 0
     seen: set[str] = set()
     yielded = 0
+    sink = report if report is not None else FetchReport()
 
-    while True:
-        params: dict[str, Any] = {
-            "where": "1=1",
-            "outFields": "*",
-            "returnGeometry": "true",
-            "outSR": 4326,
-            "f": "geojson",
-            "resultOffset": offset,
-            "resultRecordCount": int(page_size),
-        }
-        payload = await _get_json(
-            _query_url(source), params, timeout_s=timeout_s, source_id=source.source_id
-        )
-        if not payload:
-            return
+    async with fetch_report.make_client(timeout_s) as client:
+        while True:
+            params: dict[str, Any] = {
+                "where": "1=1",
+                "outFields": "*",
+                "returnGeometry": "true",
+                "outSR": 4326,
+                "f": "geojson",
+                "resultOffset": offset,
+                "resultRecordCount": int(page_size),
+            }
+            payload = await _get_json(
+                _query_url(source), params, timeout_s=timeout_s,
+                source_id=source.source_id, report=sink, client=client,
+            )
+            if not payload:
+                return
+            sink.pages += 1
 
-        features = list(payload.get("features") or [])
-        if not features:
-            return
-
-        fresh = 0
-        for f in features:
-            oid = object_id_of(f)
-            key = oid or f"{offset}:{fresh}"
-            if key in seen:
-                continue
-            seen.add(key)
-            fresh += 1
-            yielded += 1
-            yield f
-            if max_features is not None and yielded >= max_features:
+            features = list(payload.get("features") or [])
+            if not features:
                 return
 
-        if fresh == 0:
-            logger.warning(
-                "public_geo: %s returned only already-seen features at offset %d "
-                "— the service is likely ignoring resultOffset; stopping",
-                source.source_id, offset,
-            )
-            return
+            fresh = 0
+            for f in features:
+                oid = object_id_of(f)
+                key = oid or f"{offset}:{fresh}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                fresh += 1
+                yielded += 1
+                yield f
+                if max_features is not None and yielded >= max_features:
+                    return
 
-        # Advance by what the service actually gave us, not what we asked for.
-        offset += len(features)
+            if fresh == 0:
+                logger.warning(
+                    "public_geo: %s returned only already-seen features at offset %d "
+                    "— the service is likely ignoring resultOffset; stopping",
+                    source.source_id, offset,
+                )
+                return
 
-        if payload.get("properties", {}).get("exceededTransferLimit") is False:
-            return
+            # Advance by what the service actually gave us, not what we asked for.
+            offset += len(features)
+
+            if payload.get("properties", {}).get("exceededTransferLimit") is False:
+                return
 
 
 async def fetch_feature(

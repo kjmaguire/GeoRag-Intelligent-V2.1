@@ -71,6 +71,7 @@ from app.routers import outlier_assist as outlier_assist_router
 from app.routers import pdf as pdf_router
 from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
+from app.routers import public_geo_trigger as public_geo_trigger_router
 from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
@@ -1168,6 +1169,7 @@ app.include_router(answer_runs_router.router)
 app.include_router(pdf_router.router)
 app.include_router(phase0_ops_router.router)
 app.include_router(shadow_trigger_router.router)
+app.include_router(public_geo_trigger_router.router)  # operator "Sync now" for public_geo_sync
 app.include_router(mv_refresh_trigger_router.router)  # Phase 2 reliability spec
 app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliability spec
 app.include_router(integrations_trigger_router.router)

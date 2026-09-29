@@ -45,6 +45,13 @@ most of Saskatchewan, 3005 for BC). Writing the native code beside a 4326
 geometry — which the stored pipeline did — is worse than useless: it says the
 coordinates are in a projection they are not in.
 
+**Nothing fails quietly.** A feed that fetched nothing, or stopped on an HTTP
+status / transport error / in-band ArcGIS error, carries an ``error``
+(+ ``error_kind``) in its stats and is logged at WARNING/ERROR with its
+source_id; row-write failures carry a count and the ``first_error``.
+``sync_all`` rolls those up into ``failed_feeds`` and ``all_empty``, and the
+Hatchet workflow fails the run when ``all_empty`` is true.
+
 **source_geom_wkt is populated for point feeds only.** It is a debugging
 convenience that duplicates ``geom``; on the polygon feeds (dispositions,
 assessment surveys, potential zones) a single ring set can run to hundreds of
@@ -64,6 +71,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.services.public_geo import arcgis
+from app.services.public_geo.fetch_report import FetchReport, describe_exception
 from app.services.public_geo.registry import PublicGeoSource, sources_for
 
 logger = logging.getLogger(__name__)
@@ -152,6 +160,20 @@ SPECS: dict[str, TableSpec] = {
             "disposition_number", "disposition_type", "status", "holder_name",
             "issue_date", "expiry_date", "area_ha", "commodity_codes",
             "geographic_area",
+        ),
+        page_size=250,
+    ),
+    # Synced since 2026-09-29. The table has existed since 2026-04-18 but had
+    # no mapper, so CA-SK-GEOLOGY-BEDROCK-250K was reported as skipped on
+    # every run and the table never filled. It is NOT in
+    # registry.CANONICAL_TYPES (the chat tool has no bedrock branch), which is
+    # why sync_all defaults to every type in SPECS rather than to that tuple.
+    "bedrock_geology": TableSpec(
+        table="public_geo.pg_bedrock_geology",
+        geom_kind="MULTIPOLYGON",
+        columns=(
+            "unit_code", "unit_name", "eon", "era", "period", "group_name",
+            "formation", "member", "structural_domain", "lithology", "scale",
         ),
         page_size=250,
     ),
@@ -516,13 +538,17 @@ def _map_mine(
 def _map_mineral_occurrence(
     src: PublicGeoSource, feature: dict[str, Any], aliases: AliasTables
 ) -> dict[str, Any] | None:
-    """public_geo.pg_mineral_occurrence — CA-SK-SMDI and CA-BC-MINFILE.
+    """public_geo.pg_mineral_occurrence — CA-SK-SMDI (and formerly CA-BC-MINFILE).
 
     The two feeds are shaped very differently: SMDI publishes delimited
     PRIMARYCOMMODITIES/ASSOCIATEDCOMMODITIES strings and a GROUPING column,
     MINFILE spreads eight numbered COMMODITY_DESCRIPTION columns and has no
     grouping at all. Both are handled here rather than in two near-identical
     mappers because everything downstream of the field lookup is the same.
+
+    CA-BC-MINFILE is no longer in the registry (BC is not synced since
+    2026-09-29). Its field names stay here because they are how the MINFILE
+    rows already stored were mapped, and they cost nothing on SMDI features.
     """
     row = _core(src, feature)
     if row is None:
@@ -761,9 +787,46 @@ def _map_mineral_disposition(
     return row
 
 
+def _map_bedrock_geology(
+    src: PublicGeoSource, feature: dict[str, Any], aliases: AliasTables
+) -> dict[str, Any] | None:
+    """public_geo.pg_bedrock_geology — CA-SK-GEOLOGY-BEDROCK-250K.
+
+    Field names come from the 2026-04-18 table migration's field map
+    (ROCK_CODE, NAME, EON, ERA, PERIOD, GROUP_, FORMATION, MEMBER, DOMAIN,
+    LITHOLOGY); any that is absent degrades to NULL, and everything is kept
+    in source_attributes regardless. unit_code is NOT NULL, so a feature with
+    no unit code at all is unmapped rather than invented. scale is NOT NULL
+    too, and the one bedrock feed is SK's 1:250k compilation.
+    """
+    row = _core(src, feature)
+    if row is None:
+        return None
+    props = feature.get("properties") or {}
+
+    unit_code = arcgis.first_present(props, ["ROCK_CODE"])
+    if not unit_code:
+        return None
+    row.update({
+        "unit_code": unit_code,
+        "unit_name": arcgis.first_present(props, ["NAME"]),
+        "eon": arcgis.first_present(props, ["EON"]),
+        "era": arcgis.first_present(props, ["ERA"]),
+        "period": arcgis.first_present(props, ["PERIOD"]),
+        "group_name": arcgis.first_present(props, ["GROUP_"]),
+        "formation": arcgis.first_present(props, ["FORMATION"]),
+        "member": arcgis.first_present(props, ["MEMBER"]),
+        "structural_domain": arcgis.first_present(props, ["DOMAIN"]),
+        "lithology": arcgis.first_present(props, ["LITHOLOGY"]),
+        "scale": "250K",
+    })
+    return row
+
+
 MAPPERS: dict[
     str, Callable[[PublicGeoSource, dict[str, Any], AliasTables], dict[str, Any] | None]
 ] = {
+    "bedrock_geology": _map_bedrock_geology,
     "mine": _map_mine,
     "mineral_occurrence": _map_mineral_occurrence,
     "drillhole_collar": _map_drillhole_collar,
@@ -895,8 +958,8 @@ async def sync_source(
     if mapper is None or spec is None:
         # Loud skip. Writing a partial row into a typed table would look like
         # a successful sync while silently losing the type-specific columns.
-        # bedrock_geology is the live example: it is addressable in the
-        # registry but has no canonical table, so it is reported, not written.
+        # (bedrock_geology used to be the live example; it has had a mapper
+        # since 2026-09-29.)
         stats["skipped_reason"] = f"no mapper for canonical_type={src.canonical_type}"
         logger.warning("public_geo.sync: %s", stats["skipped_reason"])
         return stats
@@ -908,9 +971,13 @@ async def sync_source(
     limits = await text_limits(conn, spec.table)
     unmapped_statuses: dict[str, int] = {}
     truncated = 0
+    report = FetchReport()
 
     async for feature in arcgis.iter_all_features(
-        src, page_size=page_size or spec.page_size, max_features=max_features
+        src,
+        page_size=page_size or spec.page_size,
+        max_features=max_features,
+        report=report,
     ):
         stats["fetched"] += 1
         row = mapper(src, feature, aliases)
@@ -949,7 +1016,46 @@ async def sync_source(
                     "public_geo.sync: %s feature %s failed: %s",
                     src.source_id, row.get("source_feature_id"), exc,
                 )
-                stats.setdefault("first_error", str(exc)[:400])
+            if "first_error" not in stats:
+                stats["first_error"] = (
+                    f"feature {row.get('source_feature_id')}: {describe_exception(exc)}"
+                )[:400]
+
+    # Fetch outcome. `error` says WHY a feed stopped early (HTTP status,
+    # transport, in-band ArcGIS error); `pages` says how far it got. A
+    # partial walk keeps what it wrote — upsert, never truncate — but is
+    # reported as failed, not as a short clean feed.
+    stats.update(report.as_stats())
+    stats["pages"] = report.pages
+    if report.error is not None:
+        logger.error(
+            "public_geo.sync: %s FETCH FAILED after %d feature(s) / %d page(s): %s",
+            src.source_id, stats["fetched"], report.pages, report.error,
+        )
+    elif stats["fetched"] == 0:
+        stats["error"] = "service answered but returned 0 features"
+        stats["error_kind"] = "empty"
+        logger.warning(
+            "public_geo.sync: %s fetched 0 features with no fetch error — the "
+            "layer is empty, filtered to nothing, or no longer what the "
+            "registry says it is",
+            src.source_id,
+        )
+
+    if stats["fetched"] and stats["upserted"] == 0:
+        # Every row either failed to write or failed to map: a schema drift
+        # upstream, not a data property. Logged at ERROR with the evidence.
+        logger.error(
+            "public_geo.sync: %s fetched %d feature(s) but upserted none "
+            "(unmapped=%d, row errors=%d, first_error=%s)",
+            src.source_id, stats["fetched"], stats["unmapped"], stats["errors"],
+            stats.get("first_error"),
+        )
+    elif stats["errors"]:
+        logger.warning(
+            "public_geo.sync: %s had %d row write error(s); first: %s",
+            src.source_id, stats["errors"], stats.get("first_error"),
+        )
 
     if truncated:
         # Reported so a systematically-too-narrow column is visible rather
@@ -980,9 +1086,20 @@ async def sync_all(
     source_ids: list[str] | None = None,
     max_features_per_source: int | None = None,
 ) -> dict[str, Any]:
-    """Sync every queryable feed matching the filters."""
+    """Sync every queryable feed matching the filters.
+
+    With no ``canonical_types`` every type that has a TableSpec is synced —
+    including bedrock_geology, which registry.CANONICAL_TYPES (the chat
+    tool's browsable set) deliberately omits.
+
+    The summary carries ``failed_feeds`` (feeds that fetched nothing or hit a
+    fetch error, each with its reason) and ``all_empty`` (no feed fetched a
+    single feature). The Hatchet workflow fails the run on ``all_empty``;
+    this function never raises for a feed-level problem.
+    """
     feeds = sources_for(
-        canonical_types=canonical_types, jurisdiction_codes=jurisdiction_codes
+        canonical_types=canonical_types or list(SPECS),
+        jurisdiction_codes=jurisdiction_codes,
     )
     if source_ids:
         wanted = set(source_ids)
@@ -1008,16 +1125,51 @@ async def sync_all(
                 "source_id": src.source_id,
                 "canonical_type": src.canonical_type,
                 "fetched": 0, "upserted": 0, "unmapped": 0, "errors": 1,
-                "aborted_reason": str(exc)[:400],
+                "aborted_reason": describe_exception(exc)[:400],
+                "error": describe_exception(exc)[:400],
+                "error_kind": "aborted",
+                "first_error": describe_exception(exc)[:400],
             })
+
+    failed_feeds = [
+        {
+            "source_id": s["source_id"],
+            "fetched": s["fetched"],
+            "reason": s.get("error") or s.get("skipped_reason") or "unknown",
+        }
+        for s in per_source
+        if s.get("error") or "skipped_reason" in s
+    ]
+    row_errors = sum(s["errors"] for s in per_source)
+    first_row_error = next(
+        (f"{s['source_id']}: {s['first_error']}" for s in per_source if s.get("first_error")),
+        None,
+    )
+    fetched = sum(s["fetched"] for s in per_source)
 
     return {
         "started_at": started.isoformat(),
         "finished_at": datetime.now(UTC).isoformat(),
         "feeds": len(feeds),
-        "fetched": sum(s["fetched"] for s in per_source),
+        "fetched": fetched,
         "upserted": sum(s["upserted"] for s in per_source),
-        "errors": sum(s["errors"] for s in per_source),
+        "errors": row_errors,
+        "first_error": first_row_error,
         "skipped": [s["source_id"] for s in per_source if "skipped_reason" in s],
+        "failed_feeds": failed_feeds,
+        "all_empty": fetched == 0,
         "per_source": per_source,
     }
+
+
+def failure_summary(result: dict[str, Any], *, limit: int = 8) -> str:
+    """One-line explanation of an all-empty run, for the raised exception."""
+    feeds = result.get("failed_feeds") or []
+    if not result.get("feeds"):
+        return "no registry feed matched the requested filters"
+    parts = [f"{f['source_id']}: {f['reason']}" for f in feeds[:limit]]
+    more = f" (+{len(feeds) - limit} more)" if len(feeds) > limit else ""
+    return (
+        f"all {result.get('feeds')} feed(s) fetched 0 features — "
+        + "; ".join(parts) + more
+    )

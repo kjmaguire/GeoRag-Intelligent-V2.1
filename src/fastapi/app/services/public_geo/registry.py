@@ -7,6 +7,14 @@ publish. We do not author any of it: ``public_geo_sync`` pulls each feed from
 the survey's own ArcGIS REST service and upserts it into ``public_geo.*``,
 where the map layers, the chat tool and the citation resolvers read it.
 
+Saskatchewan only. British Columbia is NOT synced: on 2026-09-29 Kyle decided
+to skip BC altogether, so no ``CA-BC`` feed (not even the old CA-BC-MINFILE
+ArcGIS layer) is registered here and ``public_geo_sync`` never contacts a BC
+host. ``JURISDICTIONS`` keeps its ``CA-BC`` entry: it is jurisdiction
+metadata, not addressing, and the sync trigger validates against it (CA-BC
+is a known jurisdiction with no feeds, so a CA-BC-only trigger is refused
+with "no public-geo feeds are registered").
+
 Why the addressing is here and not in a table
 ---------------------------------------------
 ``public_geo.sources`` still exists and is still required — the canonical
@@ -109,17 +117,6 @@ JURISDICTIONS: dict[str, Jurisdiction] = {
     "CA-YT": Jurisdiction(code="CA-YT", display_name="Yukon", license_summary=None, license_url=None),}
 
 SOURCES: list[PublicGeoSource] = [
-    PublicGeoSource(
-        source_id="CA-BC-MINFILE",
-        jurisdiction_code="CA-BC",
-        name="BC MINFILE — Mineral Occurrences",
-        canonical_type="mineral_occurrence",
-        service_url="https://delivery.maps.gov.bc.ca/arcgis/rest/services/mpcm/bcgwpub/MapServer/137",
-        layer_index=137,
-        source_crs=3005,
-        license_summary="Open Government Licence – British Columbia (v2.0)",
-        license_url="https://www2.gov.bc.ca/gov/content/data/open-data/open-government-licence-bc",
-    ),
     PublicGeoSource(
         source_id="CA-SK-ASSESSMENT-AIRBORNE",
         jurisdiction_code="CA-SK",

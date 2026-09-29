@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\PublicApiController;
 use App\Http\Controllers\Api\V1\PublicGeoscience\EntityReferencesController as PublicGeoscienceEntityReferencesController;
 use App\Http\Controllers\Api\V1\PublicGeoscience\PublicGeoscienceMapController;
+use App\Http\Controllers\Api\V1\PublicGeoscience\PublicGeoscienceSyncController;
 use App\Http\Controllers\Api\V1\QueryController;
 use App\Http\Controllers\Api\V1\TrustController;
 use App\Http\Controllers\Api\V1\UploadController;
@@ -194,6 +195,14 @@ Route::prefix('v1')->group(function () {
             // Public Geoscience overlay (see plan addendum + controller
             // docblock: rebuild, not a restore of the old Martin-tile path).
             Route::get('map', [PublicGeoscienceMapController::class, 'index']);
+            // Operator controls (2026-09-29): admin-only "Sync now" enqueues
+            // the public_geo_sync Hatchet workflow via FastAPI; sync-status
+            // reports per-layer freshness. See the controller docblock.
+            Route::post('sync', [PublicGeoscienceSyncController::class, 'store'])
+                ->middleware('throttle:6,1')
+                ->name('public-geoscience.sync');
+            Route::get('sync-status', [PublicGeoscienceSyncController::class, 'status'])
+                ->name('public-geoscience.sync-status');
         });
     });
 });

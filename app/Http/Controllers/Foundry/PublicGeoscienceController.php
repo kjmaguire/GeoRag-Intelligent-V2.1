@@ -21,7 +21,13 @@ use Inertia\Response;
  * the reader-core trim along with everything else Martin-tile-based). This
  * gives that nav entry a real page instead of restoring the dead Martin
  * proxy path. See PublicGeoscienceMapController's docblock for the data
- * scope (4 point-geometry tables; polygons out of scope).
+ * scope (4 point-geometry tables always; the 4 polygon tables on request via
+ * `layers=` since 2026-09-29).
+ *
+ * The page also carries an admin-only "Sync now" control and a freshness
+ * line, both served by PublicGeoscienceSyncController; the admin flag comes
+ * from the shared `auth.user.is_admin` Inertia prop, and the POST is
+ * re-authorised server-side against the `admin` gate.
  */
 class PublicGeoscienceController extends Controller
 {

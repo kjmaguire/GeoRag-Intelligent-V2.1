@@ -186,6 +186,9 @@
                  comment for the full story on how they went undetected). -->
             <file>tests/Feature/Api/V1/ProjectControllerDeleteOrderingTest.php</file>
             <file>tests/Feature/Api/V1/PublicGeoscience/PublicGeoscienceMapControllerTest.php</file>
+            <!-- 2026-09-29: polygon layers (ST_ClipByBox2D /
+                 ST_SimplifyPreserveTopology) and the sync-status counts. -->
+            <file>tests/Feature/Api/V1/PublicGeoscience/PublicGeoscienceMapPolygonLayersTest.php</file>
             <!-- Restored 2026-08-25 with Martin. The ETag path uses
                  EXTRACT(EPOCH FROM ...)::bigint, which SQLite cannot parse. -->
             <file>tests/Feature/Api/V1/PublicGeoscience/TileProxyControllerTest.php</file>

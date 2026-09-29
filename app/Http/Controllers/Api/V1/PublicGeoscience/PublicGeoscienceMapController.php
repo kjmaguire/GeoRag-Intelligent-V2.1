@@ -46,20 +46,40 @@ use Illuminate\Support\Facades\DB;
  *   bbox=minLng,minLat,maxLng,maxLat  viewport; defaults to whole world
  *   zoom=N                            0–22, sets cluster grid size; default 4
  *   jurisdiction=CA-BC                filter to one jurisdiction_code
+ *   layers=mineral_disposition,…      polygon layers to include (see below);
+ *                                     omitted = none, i.e. the old response
  *
- * Scope: the 4 POINT-geometry public_geo tables — pg_mine,
- * pg_mineral_occurrence, pg_drillhole_collar, pg_rock_sample. The remaining
- * 4 tables (pg_resource_potential_zone, pg_assessment_survey,
- * pg_bedrock_geology, pg_mineral_disposition) are MULTIPOLYGON and remain
- * out of scope — rendering polygon overlays well (fill styling,
- * zoom-dependent simplification) is a different UI problem than point
- * markers. That is a disclosed boundary, not an oversight. Note it is now
- * a much larger exclusion than it was when first written: those four hold
- * ~65k rows between them, including 30,906 mineral dispositions.
+ * Point scope: the 4 POINT-geometry public_geo tables — pg_mine,
+ * pg_mineral_occurrence, pg_drillhole_collar, pg_rock_sample — always
+ * returned, exactly as before, in `features`.
  *
- * Every geom column is SRID 4326 POINT and carries a GiST index (verified
- * 2026-08-19), so the && bbox predicate below is index-assisted; without
- * those indexes this design would be far slower than the naive one.
+ * Polygon scope (2026-09-29; previously excluded as "a different UI problem"):
+ * the 4 MULTIPOLYGON tables — pg_mineral_disposition (tenure),
+ * pg_resource_potential_zone, pg_assessment_survey, pg_bedrock_geology — are
+ * returned ONLY when named in `layers=`, in a separate `polygons`
+ * FeatureCollection so no point-layer filter can ever match a polygon. Volume
+ * is bounded three ways, because a province-wide bbox over ~65k polygons
+ * (30,906 SK dispositions alone) must not return megabytes:
+ *
+ *   1. a per-layer minimum zoom below which nothing is fetched (mode
+ *      'min_zoom' — the UI says "zoom in"), since 30k parcels at zoom 4 are
+ *      unreadable anyway;
+ *   2. geometry is clipped to the (slightly padded) viewport and simplified
+ *      with ST_SimplifyPreserveTopology at a tolerance of ~half a screen
+ *      pixel for the requested zoom, then emitted at 6 decimal places;
+ *   3. a hard cap of MAX_POLYGONS_PER_LAYER features (largest first) and a
+ *      MAX_POLYGON_BYTES budget across all polygon layers.
+ *
+ * Invariant 1 below holds for polygons too: `polygon_layers.<layer>` carries
+ * the true `total_in_view` and a `truncated` flag whenever a cap bit.
+ * `sources` maps each returned source_id to its name and licence, which the
+ * popups show — these are government open-data licences that require
+ * attribution.
+ *
+ * Every geom column is SRID 4326 and carries a GiST index (points verified
+ * 2026-08-19; the polygon tables' idx_*_geom GiST indexes are created by
+ * their own migrations), so the && bbox predicate below is index-assisted;
+ * without those indexes this design would be far slower than the naive one.
  *
  * Not workspace/RLS-scoped — public_geo data isn't tenant data, same as
  * EntityReferencesController (its sibling in this namespace).
@@ -98,17 +118,101 @@ class PublicGeoscienceMapController extends Controller
         'pg_rock_sample' => ['rock_sample', 'station'],
     ];
 
+    /**
+     * Per-layer ceiling on polygon features, largest first.
+     */
+    public const MAX_POLYGONS_PER_LAYER = 1500;
+
+    /**
+     * Budget for the serialised polygon geometry across ALL polygon layers
+     * in one response. Once spent, remaining features are dropped and the
+     * layer is marked truncated.
+     */
+    public const MAX_POLYGON_BYTES = 4_000_000;
+
+    /**
+     * The polygon layers: layer name => table, minimum zoom, label SQL, and
+     * the key attributes (alias => SQL expression) a popup shows. Every
+     * expression is a fixed string from this constant, never user input.
+     *
+     * @var array<string, array{table: string, min_zoom: float, label: string, attrs: array<string, string>}>
+     */
+    public const POLYGON_LAYERS = [
+        'mineral_disposition' => [
+            'table' => 'pg_mineral_disposition',
+            'min_zoom' => 6.0,
+            'label' => 'disposition_number',
+            'attrs' => [
+                'disposition_type' => 'disposition_type',
+                'status' => 'status',
+                'holder_name' => 'holder_name',
+                'issue_date' => 'issue_date::text',
+                'expiry_date' => 'expiry_date::text',
+                'area_ha' => 'area_ha::text',
+            ],
+        ],
+        'resource_potential_zone' => [
+            'table' => 'pg_resource_potential_zone',
+            'min_zoom' => 3.0,
+            'label' => 'commodity',
+            'attrs' => [
+                'commodity' => 'commodity',
+                'potential_rank' => 'potential_rank::text',
+                'methodology_ref' => 'methodology_ref',
+            ],
+        ],
+        'assessment_survey' => [
+            'table' => 'pg_assessment_survey',
+            'min_zoom' => 6.0,
+            'label' => "source_attributes->>'FILENUMBER'",
+            'attrs' => [
+                'survey_type' => 'survey_type',
+                'file_number' => "source_attributes->>'FILENUMBER'",
+                'company' => "source_attributes->>'COMPANY'",
+            ],
+        ],
+        'bedrock_geology' => [
+            'table' => 'pg_bedrock_geology',
+            'min_zoom' => 5.0,
+            'label' => 'COALESCE(unit_name, unit_code)',
+            'attrs' => [
+                'unit_code' => 'unit_code',
+                'unit_name' => 'unit_name',
+                'period' => 'period',
+                'group_name' => 'group_name',
+                'formation' => 'formation',
+                'lithology' => 'lithology',
+                'scale' => 'scale',
+            ],
+        ],
+    ];
+
     public function index(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'bbox' => ['nullable', 'string', 'regex:/^-?\d+(\.\d+)?(,-?\d+(\.\d+)?){3}$/'],
             'zoom' => ['nullable', 'numeric', 'between:0,22'],
             'jurisdiction' => ['nullable', 'string', 'max:16'],
+            'layers' => [
+                'nullable', 'string', 'max:200',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    foreach (explode(',', (string) $value) as $layer) {
+                        if (! array_key_exists(trim($layer), self::POLYGON_LAYERS)) {
+                            $fail("Unknown polygon layer '{$layer}'. Allowed: "
+                                .implode(', ', array_keys(self::POLYGON_LAYERS)).'.');
+                        }
+                    }
+                },
+            ],
         ]);
 
         $bbox = $this->parseBbox($validated['bbox'] ?? null);
         $zoom = (float) ($validated['zoom'] ?? 4);
         $jurisdiction = $validated['jurisdiction'] ?? null;
+        $polygonLayers = array_values(array_unique(array_filter(array_map(
+            'trim',
+            explode(',', (string) ($validated['layers'] ?? '')),
+        ))));
 
         $features = [];
         $totalInView = 0;
@@ -141,7 +245,7 @@ class PublicGeoscienceMapController extends Controller
             $modes[$layer] = 'points';
         }
 
-        return response()->json([
+        $payload = [
             'type' => 'FeatureCollection',
             // True count of underlying records matching the query, whatever
             // mode each layer resolved to. The UI reads this — never
@@ -152,7 +256,169 @@ class PublicGeoscienceMapController extends Controller
             'zoom' => $zoom,
             'modes' => $modes,
             'features' => $features,
-        ]);
+        ];
+
+        if ($polygonLayers !== []) {
+            [$polygons, $polygonMeta, $sources] = $this->polygonFeatures($polygonLayers, $bbox, $zoom, $jurisdiction);
+            $payload['polygons'] = ['type' => 'FeatureCollection', 'features' => $polygons];
+            $payload['polygon_layers'] = $polygonMeta;
+            $payload['sources'] = $sources;
+        }
+
+        return response()->json($payload);
+    }
+
+    /**
+     * Simplification tolerance in degrees: about half a screen pixel at this
+     * zoom (a 256 px tile spans 360° / 2^zoom). Finer than that is invisible;
+     * coarser starts to visibly move boundaries.
+     */
+    public static function simplifyTolerance(float $zoom): float
+    {
+        return max(0.000001, 360.0 / (256 * (2 ** $zoom)) * 0.5);
+    }
+
+    /**
+     * Requested polygon layers, bounded per the class docblock.
+     *
+     * @param list<string> $layers
+     * @param array{0: float, 1: float, 2: float, 3: float} $bbox
+     *
+     * @return array{0: list<array<string, mixed>>, 1: array<string, array<string, mixed>>, 2: array<string, array<string, ?string>>}
+     */
+    private function polygonFeatures(array $layers, array $bbox, float $zoom, ?string $jurisdiction): array
+    {
+        $features = [];
+        $meta = [];
+        $sourceIds = [];
+        $bytesLeft = self::MAX_POLYGON_BYTES;
+        $tolerance = self::simplifyTolerance($zoom);
+
+        // Clip to the viewport padded by 10% so a clipped edge never shows
+        // on screen as a fake boundary.
+        [$minLng, $minLat, $maxLng, $maxLat] = $bbox;
+        $padLng = ($maxLng - $minLng) * 0.1;
+        $padLat = ($maxLat - $minLat) * 0.1;
+        $clip = [
+            max(-180.0, $minLng - $padLng), max(-90.0, $minLat - $padLat),
+            min(180.0, $maxLng + $padLng), min(90.0, $maxLat + $padLat),
+        ];
+
+        foreach ($layers as $layer) {
+            $def = self::POLYGON_LAYERS[$layer];
+
+            if ($zoom < $def['min_zoom']) {
+                $meta[$layer] = [
+                    'mode' => 'min_zoom',
+                    'min_zoom' => $def['min_zoom'],
+                    'total_in_view' => null,
+                    'returned' => 0,
+                    'truncated' => false,
+                ];
+
+                continue;
+            }
+
+            $total = $this->countInView($def['table'], $bbox, $jurisdiction);
+            $returned = 0;
+            $clipped = false;
+
+            if ($total > 0) {
+                $attrSql = implode(', ', array_map(
+                    static fn (string $alias, string $expr): string => "{$expr} AS \"{$alias}\"",
+                    array_keys($def['attrs']),
+                    array_values($def['attrs']),
+                ));
+
+                $query = DB::table("public_geo.{$def['table']}")
+                    ->whereNotNull('geom')
+                    ->whereRaw('geom && ST_MakeEnvelope(?, ?, ?, ?, 4326)', $bbox)
+                    ->selectRaw(
+                        "id, jurisdiction_code, source_id, {$def['label']} AS label, {$attrSql}, "
+                        .'ST_AsGeoJSON(ST_SimplifyPreserveTopology('
+                        .'ST_ClipByBox2D(geom, ST_MakeEnvelope(?, ?, ?, ?, 4326)), ?), 6) AS geojson',
+                        [...$clip, $tolerance],
+                    )
+                    // Largest first: under the cap, the parcels that matter
+                    // most at this zoom are the ones a user can actually see.
+                    ->orderByRaw('ST_Area(geom) DESC')
+                    ->limit(self::MAX_POLYGONS_PER_LAYER);
+
+                if ($jurisdiction !== null) {
+                    $query->where('jurisdiction_code', $jurisdiction);
+                }
+
+                foreach ($query->get() as $row) {
+                    $json = (string) ($row->geojson ?? '');
+                    if ($json === '') {
+                        continue;
+                    }
+                    if (strlen($json) > $bytesLeft) {
+                        $clipped = true;
+
+                        break;
+                    }
+                    $geometry = json_decode($json, true);
+                    if (! is_array($geometry) || ($geometry['coordinates'] ?? []) === []) {
+                        continue; // simplified/clipped away entirely
+                    }
+                    $bytesLeft -= strlen($json);
+
+                    $properties = [
+                        'id' => (string) $row->id,
+                        'layer' => $layer,
+                        'label' => $row->label !== null ? (string) $row->label : null,
+                        'jurisdiction_code' => (string) $row->jurisdiction_code,
+                        'source_id' => (string) $row->source_id,
+                    ];
+                    foreach (array_keys($def['attrs']) as $alias) {
+                        $properties[$alias] = $row->{$alias} !== null ? (string) $row->{$alias} : null;
+                    }
+
+                    $features[] = ['type' => 'Feature', 'geometry' => $geometry, 'properties' => $properties];
+                    $sourceIds[(string) $row->source_id] = true;
+                    $returned++;
+                }
+            }
+
+            $meta[$layer] = [
+                'mode' => 'polygons',
+                'min_zoom' => $def['min_zoom'],
+                'total_in_view' => $total,
+                'returned' => $returned,
+                // Invariant 1: say so whenever what came back is not all there is.
+                'truncated' => $clipped || $returned < $total,
+            ];
+        }
+
+        return [$features, $meta, $this->sourceAttribution(array_keys($sourceIds))];
+    }
+
+    /**
+     * Name + licence for each returned source_id (popup attribution).
+     *
+     * @param list<string> $sourceIds
+     *
+     * @return array<string, array{name: ?string, license_summary: ?string, license_url: ?string}>
+     */
+    private function sourceAttribution(array $sourceIds): array
+    {
+        if ($sourceIds === []) {
+            return [];
+        }
+
+        $out = [];
+        foreach (DB::table('public_geo.sources')
+            ->whereIn('source_id', $sourceIds)
+            ->get(['source_id', 'name', 'license_summary', 'license_url']) as $s) {
+            $out[(string) $s->source_id] = [
+                'name' => $s->name !== null ? (string) $s->name : null,
+                'license_summary' => $s->license_summary !== null ? (string) $s->license_summary : null,
+                'license_url' => $s->license_url !== null ? (string) $s->license_url : null,
+            ];
+        }
+
+        return $out;
     }
 
     /**
