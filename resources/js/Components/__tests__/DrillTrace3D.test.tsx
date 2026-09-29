@@ -183,7 +183,21 @@ describe('DrillTrace3D — trace_points', () => {
         const tube = traces.find((t) => t.mode === 'lines' && t.showlegend === false);
         expect(tube!.pointCount).toBe(3);
         expect(tube!.zs).toEqual([1000, 900, 800]);
-        expect(tube!.xs).toEqual([-105.0, -105.001, -105.002]);
+        // GIS-9: x/y are metres east/north of the collar centroid, not
+        // degrees. At 50°N, 0.001° of longitude is ~71.7 m and of latitude
+        // ~111.2 m.
+        const xs = tube!.xs as number[];
+        const ys = tube!.ys as number[];
+        expect(xs[0]).toBeCloseTo(0, 6);
+        expect(xs[1]).toBeCloseTo(-71.7, 0);
+        expect(ys[1]).toBeCloseTo(111.2, 0);
+    });
+
+    it('draws the scene at true scale on all three axes (GIS-9)', () => {
+        render(<DrillTrace3D collars={[COLLAR_WITH_TRACE]} />);
+        const layout = reactCalls[reactCalls.length - 1].layout as { scene: { aspectmode: string; xaxis: { title: { text: string } } } };
+        expect(layout.scene.aspectmode).toBe('data');
+        expect(layout.scene.xaxis.title.text).toMatch(/\(m\)/);
     });
 });
 

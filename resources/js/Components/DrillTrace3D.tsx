@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import Plotly from 'plotly.js-dist-min';
 import { escapeHtml } from '../lib/escapeHtml';
+import { centroidOrigin, toLocalMetres } from '../lib/localEnu';
 
 /**
  * 2026-05-26 — DO NOT re-import `react-plotly.js/factory`. Rolldown's
@@ -20,6 +21,12 @@ const PlotlyAPI: any = (Plotly as any).default ?? Plotly;
  * ADR-0007 PR-4: added `trace_points`, `intervals`, and `structures`
  * overlays. All three are additive — a payload with only `collars[]`
  * still renders the original collar dots + straight vertical tubes.
+ *
+ * GIS-9 (2026-09-29): the scene is in METRES — east/north of the collar
+ * centroid (lib/localEnu) against elevation — with `aspectmode: 'data'`, so
+ * 1 m looks like 1 m on every axis. It used to plot lon/lat degrees against
+ * metres with an automatic aspect, which made every apparent dip and azimuth
+ * arbitrary. The payload still arrives in lon/lat; only the drawing changed.
  */
 
 export interface TracePoint {
@@ -152,6 +159,12 @@ export default function DrillTrace3D({
     const { traces, layout } = useMemo(() => {
         if (collars.length === 0) return { traces: [] as Record<string, unknown>[], layout: {} };
 
+        const origin = centroidOrigin(collars.map((c) => ({ lon: c.longitude, lat: c.latitude })))
+            ?? { lon: 0, lat: 0 };
+        const toLocal = toLocalMetres(origin);
+        const ex = (lon: number, lat: number) => toLocal(lon, lat).east;
+        const ny = (lon: number, lat: number) => toLocal(lon, lat).north;
+
         const byStatus: Record<string, CollarPoint[]> = {};
         collars.forEach((c) => {
             const status = c.status || 'Unknown';
@@ -169,9 +182,10 @@ export default function DrillTrace3D({
                 type: 'scatter3d',
                 mode: 'markers+text',
                 name: status,
-                x: holes.map((h) => h.longitude),
-                y: holes.map((h) => h.latitude),
+                x: holes.map((h) => ex(h.longitude, h.latitude)),
+                y: holes.map((h) => ny(h.longitude, h.latitude)),
                 z: holes.map((h) => h.elevation || 0),
+                customdata: holes.map((h) => [h.longitude, h.latitude]),
                 // Plotly hovertemplate renders %{text} as pseudo-HTML (<b>,
                 // <br>, …) — hole_id is ingested data, so a hostile value
                 // could inject markup. Escape before it reaches Plotly (same
@@ -187,7 +201,7 @@ export default function DrillTrace3D({
                 },
                 hovertemplate:
                     '<b>%{text}</b><br>' +
-                    'Lon: %{x:.4f}<br>Lat: %{y:.4f}<br>' +
+                    'Lon: %{customdata[0]:.5f}<br>Lat: %{customdata[1]:.5f}<br>' +
                     'Elev: %{z:.0f} m<extra></extra>',
             });
 
@@ -197,8 +211,8 @@ export default function DrillTrace3D({
                     type: 'scatter3d',
                     mode: 'lines',
                     showlegend: false,
-                    x: trace.map((p) => p.x),
-                    y: trace.map((p) => p.y),
+                    x: trace.map((p) => ex(p.x, p.y)),
+                    y: trace.map((p) => ny(p.x, p.y)),
                     z: trace.map((p) => p.z),
                     line: { color, width: 3 },
                     hoverinfo: 'skip',
@@ -246,8 +260,8 @@ export default function DrillTrace3D({
                     // hovertemplate's %{text} — escape it (see the hole_id
                     // comment above for why).
                     const label = `${escapeHtml(iv.label)} · ${iv.depth_from}-${iv.depth_to}m`;
-                    xs.push(from.x, to.x, null);
-                    ys.push(from.y, to.y, null);
+                    xs.push(ex(from.x, from.y), ex(to.x, to.y), null);
+                    ys.push(ny(from.x, from.y), ny(to.x, to.y), null);
                     zs.push(from.z, to.z, null);
                     text.push(label, label, null);
                 });
@@ -297,8 +311,8 @@ export default function DrillTrace3D({
                     type: 'scatter3d',
                     mode: 'markers',
                     name: kind,
-                    x: items.map((i) => i.pt.x),
-                    y: items.map((i) => i.pt.y),
+                    x: items.map((i) => ex(i.pt.x, i.pt.y)),
+                    y: items.map((i) => ny(i.pt.x, i.pt.y)),
                     z: items.map((i) => i.pt.z),
                     // kind/strike/dip are ingested/derived data rendered via
                     // hovertemplate's %{text} — escape (see hole_id comment above).
@@ -320,9 +334,12 @@ export default function DrillTrace3D({
 
         const layout = {
             scene: {
-                xaxis: { title: { text: 'Longitude', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
-                yaxis: { title: { text: 'Latitude', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
+                xaxis: { title: { text: 'East of centroid (m)', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
+                yaxis: { title: { text: 'North of centroid (m)', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
                 zaxis: { title: { text: 'Elevation (m)', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
+                // True scale on all three axes: apparent dip and azimuth are
+                // then readable off the plot (GIS-9).
+                aspectmode: 'data',
                 bgcolor: '#030712',
                 camera: { eye: { x: 1.5, y: 1.5, z: 0.8 } },
             },
