@@ -15,9 +15,12 @@ import logging
 import time
 import uuid
 
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
@@ -27,44 +30,93 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+class BodySizeLimitMiddleware:
     """Reject requests whose body exceeds ``max_bytes``.
 
-    Two paths:
-      * Fast path — Content-Length header present and exceeds the limit:
-        return 413 immediately, before reading any body.
-      * Slow path — chunked transfer with no Content-Length header:
-        let the request proceed; Starlette's body buffer enforces the
-        cap via `max_request_size` set on the app instance.
+    A pure ASGI middleware (not ``BaseHTTPMiddleware``) because it has to
+    sit on the ``receive`` channel. Two paths:
 
-    Why a custom middleware instead of just relying on Starlette's
-    `client_max_size`? Two reasons:
-      (a) Starlette's setting only kicks in when the body is *consumed*.
-          A handler that reads the body in chunks (we don't, but) might
-          still process the leading megabytes before erroring.
-      (b) An explicit 413 + structured log line is friendlier than the
-          generic 500 you'd otherwise get.
+      * Fast path — ``Content-Length`` present and over the cap: 413
+        immediately, before any body byte is read.
+      * Streaming path — no ``Content-Length`` (``Transfer-Encoding:
+        chunked``) or a lying one: ``receive`` is wrapped and counts bytes as
+        they arrive; the first chunk that crosses the cap raises a 413
+        ``HTTPException``.
+
+    The streaming path is new (API-8). The old docstring said chunked bodies
+    were capped by "Starlette's ``max_request_size`` set on the app
+    instance" — Starlette has no such option and nothing set one. FastAPI
+    reads and parses the body BEFORE it resolves dependencies, i.e. before
+    ``verify_service_key`` runs, so an unauthenticated chunked POST was
+    buffered in full: a straightforward way to OOM a uvicorn worker.
+
+    Why ``HTTPException`` from inside ``receive``: FastAPI's body reader
+    re-raises ``HTTPException`` from middleware verbatim (anything else it
+    turns into a 400 "error parsing the body"), so the request ends as a
+    clean 413 through the normal exception handler. If the exception
+    escapes the app instead (a handler that swallows it and keeps going),
+    the wrapper below still answers 413 as long as no response has started.
     """
 
-    def __init__(self, app, max_bytes: int) -> None:
-        super().__init__(app)
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
         self.max_bytes = max_bytes
 
-    async def dispatch(self, request: Request, call_next):
-        cl = request.headers.get("content-length")
+    def _too_large(self, path: str, reason: str) -> JSONResponse:
+        logger.warning(
+            "BodySizeLimitMiddleware: rejected request — %s max=%d path=%s",
+            reason,
+            self.max_bytes,
+            path,
+        )
+        return JSONResponse({"detail": "Request body too large"}, status_code=413)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        cl = Headers(scope=scope).get("content-length")
         if cl and cl.isdigit() and int(cl) > self.max_bytes:
-            logger.warning(
-                "BodySizeLimitMiddleware: rejected request — content-length=%s "
-                "max=%d path=%s",
-                cl,
-                self.max_bytes,
-                request.url.path,
+            await self._too_large(path, f"content-length={cl}")(scope, receive, send)
+            return
+
+        received = 0
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    logger.warning(
+                        "BodySizeLimitMiddleware: streamed body crossed the cap "
+                        "received=%d max=%d path=%s",
+                        received,
+                        self.max_bytes,
+                        path,
+                    )
+                    raise HTTPException(
+                        status_code=413, detail="Request body too large"
+                    )
+            return message
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except HTTPException as exc:
+            if exc.status_code != 413 or response_started:
+                raise
+            await self._too_large(path, f"streamed>{self.max_bytes}")(
+                scope, receive, send
             )
-            return JSONResponse(
-                {"detail": "Request body too large"},
-                status_code=413,
-            )
-        return await call_next(request)
 
 
 # ---------------------------------------------------------------------------

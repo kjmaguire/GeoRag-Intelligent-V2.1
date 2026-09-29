@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Validator;
 
 class StoreExportRequest extends FormRequest
 {
@@ -34,13 +35,13 @@ class StoreExportRequest extends FormRequest
             'filters.hole_type' => ['nullable', 'string', 'in:Diamond,RC,RAB,Rotary,Percussion'],
             'filters.status' => ['nullable', 'string', 'in:Active,Completed,Abandoned'],
             'filters.drill_date_from' => ['nullable', 'date'],
-            'filters.drill_date_to' => ['nullable', 'date', 'after_or_equal:filters.drill_date_from'],
+            'filters.drill_date_to' => ['nullable', 'date'],
             'filters.min_depth' => ['nullable', 'numeric', 'min:0'],
-            'filters.max_depth' => ['nullable', 'numeric', 'gt:filters.min_depth'],
+            'filters.max_depth' => ['nullable', 'numeric', 'min:0'],
 
             // csv_samples filters
             'filters.from_depth_min' => ['nullable', 'numeric', 'min:0'],
-            'filters.from_depth_max' => ['nullable', 'numeric', 'gt:filters.from_depth_min'],
+            'filters.from_depth_max' => ['nullable', 'numeric', 'min:0'],
             'filters.sample_type' => ['nullable', 'string', 'max:32'],
 
             // csv_assays filters
@@ -61,6 +62,41 @@ class StoreExportRequest extends FormRequest
             // review_queue.payload rows still in 'pending'/'in_review'.
             // 'pending_only' emits ONLY queued rows — useful for QA review.
             'filters.review_status' => ['nullable', 'string', 'in:accepted,include_pending,pending_only'],
+        ];
+    }
+
+    /**
+     * Range checks that only apply when BOTH ends are supplied.
+     *
+     * LAR-9 (2026-09-29): these were `gt:filters.min_depth` /
+     * `after_or_equal:filters.drill_date_from` rules, and Laravel fails a
+     * field-reference comparison when the referenced field is absent — so
+     * `{"filters": {"max_depth": 500}}` was rejected with "must be greater
+     * than filters.min_depth". An open-ended range is a normal filter.
+     *
+     * @return array<int, \Closure(Validator): void>
+     */
+    public function after(): array
+    {
+        return [
+            function (Validator $validator): void {
+                if ($validator->errors()->isNotEmpty()) {
+                    return;
+                }
+
+                $filters = (array) $this->input('filters', []);
+
+                foreach ([['min_depth', 'max_depth'], ['from_depth_min', 'from_depth_max']] as [$low, $high]) {
+                    if (isset($filters[$low], $filters[$high]) && (float) $filters[$high] <= (float) $filters[$low]) {
+                        $validator->errors()->add("filters.{$high}", "The filters.{$high} field must be greater than filters.{$low}.");
+                    }
+                }
+
+                if (isset($filters['drill_date_from'], $filters['drill_date_to'])
+                    && strtotime((string) $filters['drill_date_to']) < strtotime((string) $filters['drill_date_from'])) {
+                    $validator->errors()->add('filters.drill_date_to', 'The filters.drill_date_to field must be a date after or equal to filters.drill_date_from.');
+                }
+            },
         ];
     }
 

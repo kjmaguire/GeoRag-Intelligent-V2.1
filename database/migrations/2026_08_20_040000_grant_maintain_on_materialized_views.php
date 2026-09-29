@@ -181,11 +181,21 @@ return new class extends Migration
      * MAINTAIN landed in PostgreSQL 17. Probing the privilege name directly is
      * more honest than parsing server_version_num, because what actually
      * matters is whether this server accepts it in a GRANT.
+     *
+     * The probe runs inside DB::transaction(), which Laravel emits as a
+     * SAVEPOINT because the migrator already holds a transaction open. Before
+     * 2026-09-29 it ran bare: on PostgreSQL 16 the rejected privilege name
+     * aborted the MIGRATION's transaction (25P02), so the catch below returned
+     * false and the very next statement, schemaExists(), failed anyway. The
+     * PG16 fallback this method exists for could never actually run. On 17+
+     * nothing changes: the probe succeeds and the savepoint is released.
      */
     private function supportsMaintain(): bool
     {
         try {
-            DB::selectOne("SELECT has_table_privilege(current_user, 'pg_class', 'MAINTAIN') AS ok");
+            DB::transaction(static fn () => DB::selectOne(
+                "SELECT has_table_privilege(current_user, 'pg_class', 'MAINTAIN') AS ok",
+            ));
 
             return true;
         } catch (Throwable) {

@@ -42,9 +42,19 @@ actual auth gate is still ``verify_service_key`` + ``extract_user_context``
 on each endpoint; a forged JWT can spoof the rate-limit key, but it
 cannot bypass auth.
 
-Falls back to remote address when no JWT, malformed JWT, or missing
-``workspace_id``/``sub`` claims — ensures unauthenticated paths
-(misconfigured caller) are still bounded.
+Falls back to an ``X-Workspace-Id`` header key, then to the remote address,
+when there is no JWT, a malformed JWT, or missing ``workspace_id``/``sub``
+claims — ensures unauthenticated paths (misconfigured caller) are still
+bounded.
+
+One limiter, not two
+--------------------
+``main.py`` used to build a second, IP-keyed ``Limiter`` for the
+``SlowAPIMiddleware`` default limit. Because every request reaches FastAPI
+from a handful of Laravel task IPs, that put every tenant in one shared
+60/minute bucket. ``main.py`` now installs THIS limiter on ``app.state`` and
+uses ``ProbeExemptSlowAPIMiddleware`` below, so the default limit is keyed
+per actor too.
 """
 
 from __future__ import annotations
@@ -52,15 +62,23 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from typing import Final
 
 from fastapi import Request
 from slowapi import Limiter
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_UUID_RE: Final = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 def _fast_unverified_jwt_claims(authorization_header: str) -> dict[str, str] | None:
@@ -111,7 +129,36 @@ def workspace_user_key(request: Request) -> str:
         sub = claims.get("sub")
         if ws and sub:
             return f"ws:{ws}:user:{sub}"
+    # Service-to-service calls that carry no user JWT but do name the
+    # tenant (Laravel's evidence proxy, the MV-refresh debounce job) are
+    # keyed per workspace rather than lumped into Laravel's IP bucket with
+    # every other tenant. Shape-checked so an arbitrary header value cannot
+    # mint unbounded distinct keys in the limiter storage.
+    header_ws = request.headers.get("x-workspace-id", "").strip()
+    if header_ws and _UUID_RE.match(header_ws):
+        return f"ws:{header_ws.lower()}"
     return get_remote_address(request)
+
+
+# Liveness / readiness / scrape endpoints. An orchestrator probe is not a
+# tenant and must never be throttled into a false "unhealthy".
+PROBE_PATHS: Final[frozenset[str]] = frozenset({"/health", "/ready", "/metrics"})
+
+
+class ProbeExemptSlowAPIMiddleware(SlowAPIMiddleware):
+    """slowapi's middleware with the probe paths exempted.
+
+    The middleware applies ``RATE_LIMIT_DEFAULT`` to every route that has no
+    ``@limiter.limit`` decorator of its own — including health probes, which
+    ECS / the load balancer hit on a fixed cadence.
+    """
+
+    async def dispatch(  # type: ignore[override]
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        if request.url.path in PROBE_PATHS:
+            return await call_next(request)
+        return await super().dispatch(request, call_next)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +175,7 @@ def workspace_user_key(request: Request) -> str:
 #   without removing the decorators.
 # ---------------------------------------------------------------------------
 
-_storage_uri = getattr(settings, "RATE_LIMIT_STORAGE_URI", None) or "memory://"
+_storage_uri = (settings.RATE_LIMIT_STORAGE_URI or "").strip() or "memory://"
 
 limiter: Final[Limiter] = Limiter(
     key_func=workspace_user_key,

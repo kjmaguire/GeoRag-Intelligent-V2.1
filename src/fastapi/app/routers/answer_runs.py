@@ -447,30 +447,42 @@ async def get_trust_summary(
                 "pending": 0, "insufficient": 0,
             }
 
-        # 5. User feedback on this run (table may not exist on every
-        # install — guard so the endpoint still returns the rest).
+        # 5. User feedback on this run. ``post_feedback`` above writes
+        # silver.message_feedback; this used to read a table no migration
+        # creates (silver.answer_run_feedback), so the section was always
+        # empty behind the ``except``. Scoped to the resolved workspace as
+        # defence in depth on top of the answer_run RBAC check.
         try:
             fb = await conn.fetch(
                 """
                 SELECT polarity, category, note, created_at
-                  FROM silver.answer_run_feedback
+                  FROM silver.message_feedback
                  WHERE answer_run_id = $1::uuid
+                   AND workspace_id = $2::uuid
                  ORDER BY created_at DESC
                  LIMIT 5
                 """,
                 answer_run_id,
+                workspace_id,
             )
-        except Exception:
+        except asyncpg.PostgresError as exc:
+            logger.warning(
+                "get_trust_summary: feedback lookup failed answer_run_id=%s: %s",
+                answer_run_id,
+                exc,
+            )
             fb = []
 
     # 6. Compute aggregate confidence — basic heuristic from citation
     # resolution rate + retrieval coverage. (Full hallucination-layer
     # confidence comes from app.agent.hallucination per run; this is
     # the operator-facing rollup.)
+    # The citations query yields ``source_store, state, n`` where state is
+    # 'accepted' (rejection_reason IS NULL) or 'rejected'. This used to read
+    # a ``lifecycle_state`` key the query never selects — asyncpg Records
+    # raise KeyError on a missing key, so every cited answer 500'd here.
     cite_total = sum(c["n"] for c in citations) or 0
-    cite_resolved = sum(
-        c["n"] for c in citations if (c["lifecycle_state"] or "") == "resolved"
-    )
+    cite_resolved = sum(c["n"] for c in citations if c["state"] == "accepted")
     resolution_pct = round(
         (cite_resolved / cite_total * 100.0) if cite_total else 0.0, 1,
     )

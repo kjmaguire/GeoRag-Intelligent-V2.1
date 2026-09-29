@@ -84,14 +84,38 @@ class Project extends Model
         'crs_datum' => 'EPSG:32613',
     ];
 
+    /** `silver.projects.slug` is VARCHAR(255). */
+    public const SLUG_MAX_LENGTH = 255;
+
+    public const SLUG_SUFFIX_LENGTH = 8;
+
     protected static function booted(): void
     {
         static::creating(function (self $project): void {
             if (empty($project->slug) && ! empty($project->project_name)) {
-                $suffix = $project->project_id ? substr((string) $project->project_id, 0, 8) : Str::random(8);
-                $project->slug = Str::slug($project->project_name).'-'.$suffix;
+                $project->slug = self::makeSlug((string) $project->project_name);
             }
         });
+    }
+
+    /**
+     * `{name-slug}-{8 random chars}`, never longer than the column.
+     *
+     * LAR-14 (2026-09-29): the suffix was `substr(project_id, 0, 8)`, and
+     * HasUuids mints UUIDv7, whose first 8 hex digits are the top of the
+     * millisecond timestamp — they change only every ~65 s. Two projects with
+     * the same name inside that window (a double-submit, a retry after a
+     * timeout, two tenants' "Demo") collided on `projects_slug_unique` and
+     * store() returned 500. A 255-char name plus the suffix also overflowed
+     * VARCHAR(255) (22001). The suffix is now random (36^8 ≈ 2.8e12) and the
+     * base is truncated to leave room for it.
+     */
+    public static function makeSlug(string $projectName): string
+    {
+        $maxBase = self::SLUG_MAX_LENGTH - 1 - self::SLUG_SUFFIX_LENGTH;
+        $base = rtrim(substr(Str::slug($projectName), 0, $maxBase), '-');
+
+        return ($base !== '' ? $base : 'project').'-'.Str::lower(Str::random(self::SLUG_SUFFIX_LENGTH));
     }
 
     /**

@@ -30,8 +30,10 @@ final class PaginationLimit
      *
      * Handles the three ways the input goes wrong: absent (use the default),
      * zero or negative (which is what disabled the LIMIT), and absurdly large.
+     * $max overrides the ceiling for an endpoint whose documented cap differs
+     * (the audit ledger read keeps its historical 500).
      */
-    public static function clamp(Request $request, int $default, string $key = 'per_page'): int
+    public static function clamp(Request $request, int $default, string $key = 'per_page', int $max = self::MAX): int
     {
         $requested = $request->integer($key, $default);
 
@@ -39,6 +41,6 @@ final class PaginationLimit
             return $default;
         }
 
-        return min($requested, self::MAX);
+        return min($requested, $max);
     }
 }

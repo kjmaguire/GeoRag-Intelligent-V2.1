@@ -30,11 +30,14 @@ use Inertia\Response;
  *
  * The whole method body is wrapped in ONE withWorkspaceRls() closure rather
  * than one per try/catch block: withWorkspaceRls() only sets the GUC inside
- * a DB transaction, and each inner try/catch already swallows its own
- * query failure before it can escape and roll back the transaction — so a
- * single shared wrap preserves the same "each panel degrades
- * independently" property as 24 separate wraps would, with far less
- * mechanical risk.
+ * a DB transaction.
+ *
+ * *Corrected 2026-09-29 (LAR-4):* this used to say each inner try/catch was
+ * enough to keep the panels independent. On Postgres it was not — the first
+ * failed statement aborts the shared transaction (25P02), so every panel after
+ * it failed too and rendered empty. Each optional block now opens its own
+ * savepoint (openSavepoint / releaseSavepoint / rollBackToSavepoint from
+ * SetsWorkspaceRlsContext), and a failure rolls back only that block.
  */
 class WorkspaceController extends Controller
 {
@@ -115,11 +118,14 @@ class WorkspaceController extends Controller
 
             $collarsTotal = $collars->count();
             if ($collarsTotal >= self::MAX_WORKSPACE_COLLARS) {
+                $sp = $this->openSavepoint();
                 try {
                     $collarsTotal = (int) DB::table('silver.collars')
                         ->where('project_id', $project->project_id)
                         ->count();
+                    $this->releaseSavepoint($sp);
                 } catch (\Throwable $e) { /* fall back to the returned count */
+                    $this->rollBackToSavepoint($sp);
                 }
             }
 
@@ -128,6 +134,7 @@ class WorkspaceController extends Controller
             // ore-band rows; cheap (one aggregate query each).
             $totalDrilledM = 0.0;
             $meanTd = null;
+            $sp = $this->openSavepoint();
             try {
                 $td = DB::table('silver.collars')
                     ->where('project_id', $project->project_id)
@@ -135,12 +142,15 @@ class WorkspaceController extends Controller
                     ->first();
                 $totalDrilledM = (float) ($td->sum_m ?? 0);
                 $meanTd = $td->avg_m !== null ? (float) $td->avg_m : null;
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
             $totalOreThicknessM = 0.0;
             $oreHoleCount = 0;
             $meanU3o8Pct = null;
+            $sp = $this->openSavepoint();
             try {
                 $ore = DB::table('gold.drillhole_intervals_visual')
                     ->where('project_id', $project->project_id)
@@ -149,9 +159,12 @@ class WorkspaceController extends Controller
                     ->first();
                 $totalOreThicknessM = (float) ($ore->sum_m ?? 0);
                 $oreHoleCount = (int) ($ore->holes ?? 0);
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
+            $sp = $this->openSavepoint();
             try {
                 $meanRow = DB::table('silver.samples as s')
                     ->join('silver.collars as c', 's.collar_id', '=', 'c.collar_id')
@@ -162,12 +175,15 @@ class WorkspaceController extends Controller
                 if ($meanRow && $meanRow->mean_grade !== null) {
                     $meanU3o8Pct = (float) $meanRow->mean_grade;
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Project AOI — convex hull of all collar geometries, as GeoJSON.
             // Drives the "Project AOI" toggle on the map (dashed outline).
             $projectAoi = null;
+            $sp = $this->openSavepoint();
             try {
                 $hullRow = DB::table('silver.collars')
                     ->where('project_id', $project->project_id)
@@ -177,13 +193,16 @@ class WorkspaceController extends Controller
                 if ($hullRow && $hullRow->hull) {
                     $projectAoi = json_decode((string) $hullRow->hull, true);
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Ore-band counts per collar — drives the marker styling on the
             // MapLibre layer (mineralised holes are surfaced with a brighter
             // halo). One quick aggregate query keyed by collar_id.
             $oreBandsByCollar = [];
+            $sp = $this->openSavepoint();
             try {
                 $oreRows = DB::table('gold.drillhole_intervals_visual')
                     ->where('project_id', $project->project_id)
@@ -197,28 +216,39 @@ class WorkspaceController extends Controller
                         'thickness_m' => round((float) $r->thickness_m, 2),
                     ];
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             $sectionsCount = 0;
+            $sp = $this->openSavepoint();
             try {
                 $sectionsCount = (int) DB::table('gold.cross_section_panels')
                     ->where('project_id', $project->project_id)->count();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* may not exist */
+                $this->rollBackToSavepoint($sp);
             }
 
             $intervalsCount = 0;
+            $sp = $this->openSavepoint();
             try {
                 $intervalsCount = (int) DB::table('gold.drillhole_intervals_visual')
                     ->where('project_id', $project->project_id)->count();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* may not exist */
+                $this->rollBackToSavepoint($sp);
             }
 
             $structuresVisualCount = 0;
+            $sp = $this->openSavepoint();
             try {
                 $structuresVisualCount = (int) DB::table('gold.structure_measurements_visual')
                     ->where('project_id', $project->project_id)->count();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* may not exist */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Raw silver-tier structures (joined via collars). Empty for Wyoming
@@ -227,16 +257,20 @@ class WorkspaceController extends Controller
             // well_log_curves *do* carry deviation angles we can surface as a
             // proxy for orientation context.
             $structuresCount = 0;
+            $sp = $this->openSavepoint();
             try {
                 $structuresCount = (int) DB::table('silver.structure as st')
                     ->join('silver.collars as c', 'st.collar_id', '=', 'c.collar_id')
                     ->where('c.project_id', $project->project_id)
                     ->count();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Curve type summary — drives the LOGS mode legend.
             $curveSummary = collect();
+            $sp = $this->openSavepoint();
             try {
                 $curveSummary = DB::table('silver.well_log_curves as wc')
                     ->join('silver.collars as c', 'wc.collar_id', '=', 'c.collar_id')
@@ -246,7 +280,9 @@ class WorkspaceController extends Controller
                     ->orderByDesc('curves')
                     ->limit(20)
                     ->get();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
             $wellLogCurvesCount = $curveSummary->sum('curves');
 
@@ -257,6 +293,7 @@ class WorkspaceController extends Controller
             // join yields one row per curve. Ordered by hole_id so the
             // dropdown is predictable.
             $logHoleOptions = [];
+            $sp = $this->openSavepoint();
             try {
                 $logHoleOptions = DB::table('silver.well_log_curves as wc')
                     ->join('silver.collars as c', 'wc.collar_id', '=', 'c.collar_id')
@@ -273,7 +310,9 @@ class WorkspaceController extends Controller
                     ])
                     ->values()
                     ->all();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
             // A hole whose geology was logged but which has no LAS curves used
@@ -281,6 +320,7 @@ class WorkspaceController extends Controller
             // the panel below drew nothing without curves - so a lithology,
             // alteration or mineralization log ingested for a hole never
             // showed as a strip log. Holes with any of those are listed too.
+            $sp = $this->openSavepoint();
             try {
                 $withIntervals = array_flip((new HoleStripTracks)->collarsWithIntervals(
                     array_map('strval', $collars->pluck('collar_id')->all()),
@@ -300,7 +340,9 @@ class WorkspaceController extends Controller
                 if ($added) {
                     usort($logHoleOptions, fn ($a, $b) => strcmp($a['hole_id'], $b['hole_id']));
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback: curve holes only */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Pull the selected (or first) hole's curves and render them in the
@@ -321,6 +363,7 @@ class WorkspaceController extends Controller
             $logAlterationIntervals = [];
             $logMineralizationIntervals = [];
             $logTracksTruncated = ['lithology' => false, 'alteration' => false, 'mineralization' => false];
+            $sp = $this->openSavepoint();
             try {
                 $requestedHole = $request->query('log_hole');
                 $sampleCollar = null;
@@ -372,7 +415,9 @@ class WorkspaceController extends Controller
                         $logSelectedCurves,
                     );
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
             // All holes' lithology intervals — feeds both the 3D Plotly viewer
@@ -382,6 +427,7 @@ class WorkspaceController extends Controller
             // Each entry now also carries lat/lng + easting/northing so the
             // 3D viewer can position each cylinder in real space.
             $firstHolesIntervals = [];
+            $sp = $this->openSavepoint();
             try {
                 // A prefix of the SAME ordered collar set the map and every
                 // other per-hole panel use, not a second independent query.
@@ -442,7 +488,9 @@ class WorkspaceController extends Controller
                         'bands' => $bandsByCollar[(string) $cr->collar_id] ?? [],
                     ];
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Downhole survey stations (depth, azimuth, dip) — feeds the 3D
@@ -465,6 +513,7 @@ class WorkspaceController extends Controller
             // table), downsampled to ~25 stations per hole.
             $surveys = [];
             $surveyHolesDownsampled = 0;
+            $sp = $this->openSavepoint();
             try {
                 $collarIds = $collars->pluck('collar_id')->all();
                 if (! empty($collarIds)) {
@@ -510,7 +559,9 @@ class WorkspaceController extends Controller
                         array_push($surveys, ...$this->deriveSurveysFromCurves($chunk));
                     }
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Raw structure measurements (planar features + lineations) — feeds
@@ -519,6 +570,7 @@ class WorkspaceController extends Controller
             // May be empty (Wyoming Cameco binary .log corpus has no extracted
             // structures yet); Stereosphere still renders the wireframe.
             $structures = [];
+            $sp = $this->openSavepoint();
             try {
                 $collarIds = $collars->pluck('collar_id')->all();
                 if (! empty($collarIds)) {
@@ -539,7 +591,9 @@ class WorkspaceController extends Controller
                         ->values()
                         ->all();
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Gold-tier 3D payloads — three new sub-views in MODE=3D:
@@ -552,6 +606,7 @@ class WorkspaceController extends Controller
             // has a sensible starting state; the FE can switch.
             $assayComposites = [];
             $assayElements = [];
+            $sp = $this->openSavepoint();
             try {
                 $collarIds = $collars->pluck('collar_id')->all();
                 if (! empty($collarIds)) {
@@ -587,12 +642,15 @@ class WorkspaceController extends Controller
                         ->values()
                         ->all();
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             // gold.significant_intersections — one or more cutoff-grade hits per
             // hole. Renders as a highlight ribbon on each trace.
             $significantIntersections = [];
+            $sp = $this->openSavepoint();
             try {
                 $collarIds = $collars->pluck('collar_id')->all();
                 if (! empty($collarIds)) {
@@ -618,13 +676,16 @@ class WorkspaceController extends Controller
                         ->values()
                         ->all();
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             // gold.structure_measurements_visual — depth-anchored strike/dip
             // measurements with stereonet-ready derived columns. Feeds the
             // Structure Discs sub-view.
             $structuresVisual = [];
+            $sp = $this->openSavepoint();
             try {
                 // Real schema (verified 2026-05-25): columns are `depth` (not
                 // depth_m), `structure_type` (not measurement_kind), `trend_deg`
@@ -664,7 +725,9 @@ class WorkspaceController extends Controller
                     })
                     ->values()
                     ->all();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             // silver.samples (commodity-grade samples) — feeds the
@@ -675,6 +738,7 @@ class WorkspaceController extends Controller
             // one with the most non-null samples.
             $commoditySamples = [];
             $commodityKeys = [];
+            $sp = $this->openSavepoint();
             try {
                 $collarIds = $collars->pluck('collar_id')->all();
                 if (! empty($collarIds)) {
@@ -738,7 +802,9 @@ class WorkspaceController extends Controller
                         ];
                     }
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback empty */
+                $this->rollBackToSavepoint($sp);
             }
 
             // Project layer row counts — drives the Layers panel left rail. Each
@@ -746,26 +812,35 @@ class WorkspaceController extends Controller
             // count so the UI can dim layers with no data.
             $samplesCount = 0;
             $lithologyCount = 0;
+            $sp = $this->openSavepoint();
             try {
                 $lithologyCount = (int) DB::table('silver.lithology_logs as l')
                     ->join('silver.collars as c', 'l.collar_id', '=', 'c.collar_id')
                     ->where('c.project_id', $project->project_id)
                     ->count();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
+            $sp = $this->openSavepoint();
             try {
                 $samplesCount = (int) DB::table('silver.samples as s')
                     ->join('silver.collars as c', 's.collar_id', '=', 'c.collar_id')
                     ->where('c.project_id', $project->project_id)
                     ->count();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
             $savedViewsCount = 0;
+            $sp = $this->openSavepoint();
             try {
                 $savedViewsCount = (int) DB::table('silver.saved_map_views')
                     ->where('project_id', $project->project_id)
                     ->count();
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
             // Per-thickness tier counts — drives the "Ore tier ≥ Nm" toggles.
             //
@@ -782,6 +857,7 @@ class WorkspaceController extends Controller
             // SUM(CASE ...) rather than COUNT(*) FILTER: the filter clause is
             // Postgres 9.4+ and SQLite 3.30+, and the test database is SQLite.
             $tierCounts = ['ore_5' => 0, 'ore_10' => 0, 'ore_20' => 0];
+            $sp = $this->openSavepoint();
             try {
                 $tiers = DB::selectOne(
                     'SELECT
@@ -803,7 +879,9 @@ class WorkspaceController extends Controller
                     'ore_10' => (int) ($tiers->ore_10 ?? 0),
                     'ore_20' => (int) ($tiers->ore_20 ?? 0),
                 ];
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
 
             $aoiAvailable = $projectAoi !== null ? 1 : 0;
@@ -831,10 +909,13 @@ class WorkspaceController extends Controller
                 'boundaries' => 'silver.project_boundaries',
                 'seismic' => 'silver.seismic_surveys',
             ] as $key => $table) {
+                $sp = $this->openSavepoint();
                 try {
                     $mvtCounts[$key] = (int) DB::table($table)
                         ->where('project_id', $project->project_id)->count();
+                    $this->releaseSavepoint($sp);
                 } catch (\Throwable $e) {
+                    $this->rollBackToSavepoint($sp);
                     Log::debug('workspace: MVT count unavailable', [
                         'table' => $table, 'error' => $e->getMessage(),
                     ]);
@@ -883,6 +964,7 @@ class WorkspaceController extends Controller
             // multi-log curves.
             $stratUnits = [];
             $stratSource = 'reference';
+            $sp = $this->openSavepoint();
             try {
                 $formations = DB::table('silver.geological_formations')
                     ->where('project_id', $project->project_id)
@@ -901,7 +983,9 @@ class WorkspaceController extends Controller
                         'notes' => [],
                     ])->all();
                 }
+                $this->releaseSavepoint($sp);
             } catch (\Throwable $e) { /* fallback */
+                $this->rollBackToSavepoint($sp);
             }
             if (empty($stratUnits)) {
                 $stratUnits = $this->referenceStratColumn($project);

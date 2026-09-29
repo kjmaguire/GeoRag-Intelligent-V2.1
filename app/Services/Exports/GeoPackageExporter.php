@@ -35,6 +35,17 @@ class GeoPackageExporter
             );
         }
 
+        // A 2xx JSON body is an error envelope, not a file. FastAPI used to
+        // answer an empty project with `{"error": ...}` and HTTP 200, and
+        // this method saved it verbatim as the export — the user downloaded
+        // a 45-byte "geopackage" that every GIS tool rejects as corrupt.
+        if (str_contains(strtolower((string) $response->header('Content-Type')), 'json')) {
+            throw new \RuntimeException(
+                'FastAPI geopackage export returned a JSON body instead of a file — '
+                .substr($response->body(), 0, 200),
+            );
+        }
+
         $tmpPath = sys_get_temp_dir().'/georag_collars_'.uniqid().'.gpkg';
         file_put_contents($tmpPath, $response->body());
 

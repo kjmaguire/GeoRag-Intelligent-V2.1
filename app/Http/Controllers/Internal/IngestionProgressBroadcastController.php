@@ -11,7 +11,6 @@ use App\Services\Ingestion\WorkspaceDataVersionBumper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
 use Throwable;
 
 /**
@@ -35,10 +34,9 @@ use Throwable;
  *   1. Bump silver.workspaces.data_version + silver.projects.data_version
  *      via {@see WorkspaceDataVersionBumper} (Redis SETNX-guarded, so
  *      Hatchet retries can't double-bump).
- *   2. Stamp a per-workspace "last dispatch" timestamp in Redis so the
- *      debounced MV refresh job can detect stale predecessors.
- *   3. Dispatch {@see DebounceWorkspaceMvRefresh} (delayed 30s, unique
- *      per workspace, coalesces bursts).
+ *   2. {@see DebounceWorkspaceMvRefresh::debounce()}: queue a refresh
+ *      delayed 30s and stamp it as the workspace's newest dispatch, so a
+ *      burst of completions coalesces into one refresh after the last.
  *
  * The debounce job itself dispatches WorkspaceDataUpdated once the
  * refresh succeeds — never from this controller, because the data
@@ -115,26 +113,14 @@ class IngestionProgressBroadcastController extends Controller
             // So: report what did not happen, return 200, and let the
             // nightly MV refresh catch up.
             try {
-                // Stamp the last-dispatch time so an already-queued debounce
-                // job whose delay window predates this dispatch can coalesce
-                // itself (see DebounceWorkspaceMvRefresh::handle).
-                $now = time();
-                Redis::setex(
-                    "mv_refresh:last_dispatch:{$payload['workspace_id']}",
-                    600,
-                    (string) $now,
-                );
-
-                // Unique-job dispatch: if another DebounceWorkspaceMvRefresh
-                // for this workspace is already queued or running, this is a
-                // no-op (ShouldBeUnique). When the existing job runs, it
-                // will read the fresh last_dispatch stamp and pick up this
-                // completion's work.
-                DebounceWorkspaceMvRefresh::dispatch(
+                // Queues this completion's refresh and marks it the newest
+                // for the workspace; any earlier job still in its delay
+                // window bails when it sees the newer stamp, so the burst
+                // refreshes exactly once, after the last completion.
+                DebounceWorkspaceMvRefresh::debounce(
                     $payload['workspace_id'],
                     $payload['project_id'],
                     $payload['pipeline_run_id'],
-                    $now,
                 );
 
                 $sideEffects['mv_refresh_dispatched'] = true;

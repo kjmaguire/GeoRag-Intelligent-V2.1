@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Support;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Set the `app.workspace_id` Postgres GUC so RLS policies on silver / gold
@@ -54,6 +55,95 @@ trait SetsWorkspaceRlsContext
 
             return $callback();
         });
+    }
+
+    /**
+     * Run one OPTIONAL query in its own savepoint and return $default if it
+     * fails.
+     *
+     * Why a savepoint (LAR-4, 2026-09-29): withWorkspaceRls() holds one
+     * transaction for the whole action, and on Postgres the first failed
+     * statement aborts it (25P02). A bare `try { ... } catch` around a panel
+     * query swallowed the error but left the transaction dead, so every later
+     * statement in the request failed as well — later panels rendered empty
+     * and any unguarded query 500'd the page. Rolling back to a savepoint
+     * discards only this query's failure; the GUC bound before it survives.
+     * SQLite never aborts a transaction on error, so only the pgsql suite can
+     * see the difference (tests/Feature/Foundry/OptionalPanelSavepointTest).
+     *
+     * @template T
+     * @template D
+     *
+     * @param \Closure():T $query
+     * @param D $default
+     *
+     * @return T|D
+     */
+    protected function optionalQuery(\Closure $query, mixed $default): mixed
+    {
+        $savepoint = $this->openSavepoint();
+
+        try {
+            $result = $query();
+            $this->releaseSavepoint($savepoint);
+
+            return $result;
+        } catch (\Throwable $e) {
+            $this->rollBackToSavepoint($savepoint);
+            Log::debug('optional panel query failed; using fallback', ['error' => $e->getMessage()]);
+
+            return $default;
+        }
+    }
+
+    /**
+     * Open a savepoint for an optional block that cannot be expressed as one
+     * closure (it assigns several locals). Returns the transaction level to
+     * hand back to {@see releaseSavepoint()} on success or
+     * {@see rollBackToSavepoint()} in the catch.
+     *
+     * Usage — the three calls always travel together:
+     *
+     *     $sp = $this->openSavepoint();
+     *     try {
+     *         ...
+     *         $this->releaseSavepoint($sp);
+     *     } catch (\Throwable $e) {
+     *         $this->rollBackToSavepoint($sp);
+     *     }
+     *
+     * Octane: holds no state; the level lives in the caller's local.
+     */
+    protected function openSavepoint(): int
+    {
+        $level = DB::transactionLevel();
+        DB::beginTransaction();
+
+        return $level;
+    }
+
+    /**
+     * Pop the savepoint opened by {@see openSavepoint()}. At an outer level
+     * of 0 this is a real COMMIT of a transaction the savepoint itself began.
+     */
+    protected function releaseSavepoint(int $level): void
+    {
+        if (DB::transactionLevel() > $level) {
+            DB::commit();
+        }
+    }
+
+    /**
+     * Roll back to the level captured by {@see openSavepoint()} —
+     * `ROLLBACK TO SAVEPOINT` inside an outer transaction — leaving
+     * everything bound before it (the workspace GUC in particular) intact.
+     * A no-op when the savepoint was never opened or was already released.
+     */
+    protected function rollBackToSavepoint(int $level): void
+    {
+        if (DB::transactionLevel() > $level) {
+            DB::rollBack($level);
+        }
     }
 
     /**

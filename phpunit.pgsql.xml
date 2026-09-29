@@ -102,6 +102,8 @@
                  call) and had no admin gate. The table is provisioned by a
                  pgsql-only migration, so the fix is only observable here. -->
             <file>tests/Feature/Api/V1/PublicApiControllerWebhooksTest.php</file>
+            <!-- 2026-09-29 (LAR-16): ?limit=-1 reached Postgres as LIMIT -1. -->
+            <file>tests/Feature/Api/V1/PublicApiControllerAuditLimitTest.php</file>
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>
@@ -206,6 +208,11 @@
             <file>tests/Feature/Foundry/AttributeTablesControllerTest.php</file>
             <file>tests/Feature/Foundry/RasterLayersControllerTest.php</file>
             <file>tests/Feature/Foundry/DrillholeDetailControllerTest.php</file>
+            <!-- 2026-09-29 (LAR-4): one failed optional panel query must not
+                 abort withWorkspaceRls()'s shared transaction (25P02) for
+                 every later panel. SQLite never aborts on error, so this is
+                 only observable here. -->
+            <file>tests/Feature/Foundry/OptionalPanelSavepointTest.php</file>
             <file>tests/Feature/Foundry/WorkspaceCompareMergeTest.php</file>
             <file>tests/Feature/Foundry/IngestQualityControllerTest.php</file>
             <file>tests/Feature/Foundry/OverviewControllerTest.php</file>

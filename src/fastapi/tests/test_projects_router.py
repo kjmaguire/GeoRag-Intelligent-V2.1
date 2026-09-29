@@ -6,8 +6,7 @@ Tests
     - 404 when project row is missing
     - 403 when user has no project_user pivot row
     - Happy-path ProjectRead for an authorised user
-    - Happy-path collar list (with and without status filter)
-    - Empty collar list when project has no collars
+    - The removed collars route stays removed (API-7)
 
   Integration tests — hit the live FastAPI endpoint (require Docker stack):
     - Marked with @pytest.mark.integration
@@ -78,21 +77,6 @@ _PROJECT_ROW: dict[str, Any] = {
     "slug": "athabasca-basin-uranium",
     "created_at": datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC),
     "updated_at": datetime.datetime(2026, 1, 2, 0, 0, 0, tzinfo=datetime.UTC),
-}
-
-_COLLAR_ROW: dict[str, Any] = {
-    "collar_id": UUID("12345678-1234-5678-1234-567812345678"),
-    "hole_id": "PLS-22-001",
-    "project_id": _PROJECT_ID,
-    "easting": 448200.0,
-    "northing": 6174300.0,
-    "elevation": 520.0,
-    "total_depth": 350.0,
-    "hole_type": "Diamond",
-    "azimuth": 225.0,
-    "dip": -60.0,
-    "drill_date": datetime.date(2022, 6, 15),
-    "status": "Completed",
 }
 
 
@@ -178,38 +162,6 @@ def _call_get_project(
         app.dependency_overrides.clear()
 
 
-def _call_get_collars(
-    project_id: UUID,
-    conn: MagicMock,
-    user: UserContext | None = None,
-    params: dict | None = None,
-) -> Any:
-    """Call GET /internal/projects/{project_id}/collars with a mocked pool.
-
-    Uses app.dependency_overrides per Module 9 Chunk 9.4 (see _call_get_project).
-    """
-    app = _make_test_app()
-    app.state.pg_pool = _make_pool_mock(conn)
-
-    from app.services.auth import (  # noqa: PLC0415
-        extract_user_context,
-        verify_service_key,
-    )
-
-    resolved_user = user or UserContext()
-    app.dependency_overrides[verify_service_key] = lambda: None
-    app.dependency_overrides[extract_user_context] = lambda: resolved_user
-
-    try:
-        client = TestClient(app, raise_server_exceptions=True)
-        return client.get(
-            f"/internal/projects/{project_id}/collars",
-            params=params or {},
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-
 # ---------------------------------------------------------------------------
 # Unit tests — GET /internal/projects/{project_id}
 # ---------------------------------------------------------------------------
@@ -265,75 +217,21 @@ class TestGetProject:
 
 
 # ---------------------------------------------------------------------------
-# Unit tests — GET /internal/projects/{project_id}/collars
+# GET /internal/projects/{project_id}/collars — removed (API-7)
 # ---------------------------------------------------------------------------
 
 
-class TestGetProjectCollars:
-    def test_403_when_no_pivot_row(self) -> None:
-        """User has no project_user row — 403 before touching collar data."""
-        conn = _make_conn_mock(pivot_row=None)
-        user = UserContext(user_id=_USER_ID, project_id=str(_PROJECT_ID))
+class TestGetProjectCollarsRemoved:
+    """The collars route queried a non-existent ``geo.collars`` table and a
+    non-existent ``location`` column, so it 500'd on every real call while
+    the mocked tests above it passed. It had no caller and was deleted.
+    """
 
-        resp = _call_get_collars(_PROJECT_ID, conn, user)
-
-        assert resp.status_code == 403
-
-    def test_empty_list_when_no_collars(self) -> None:
-        """Authorised user, project exists, but no collars yet."""
-        pivot_row = {"role": "member"}
-        conn = _make_conn_mock(pivot_row=pivot_row, data_rows=[])
-        user = UserContext(user_id=_USER_ID, project_id=str(_PROJECT_ID))
-
-        resp = _call_get_collars(_PROJECT_ID, conn, user)
-
-        assert resp.status_code == 200
-        assert resp.json() == []
-
-    def test_happy_path_returns_collars(self) -> None:
-        """Authorised user — returns list of CollarRead dicts."""
-        pivot_row = {"role": "member"}
-        conn = _make_conn_mock(pivot_row=pivot_row, data_rows=[_COLLAR_ROW])
-        user = UserContext(user_id=_USER_ID, project_id=str(_PROJECT_ID))
-
-        resp = _call_get_collars(_PROJECT_ID, conn, user)
-
-        assert resp.status_code == 200
-        collars = resp.json()
-        assert len(collars) == 1
-        assert collars[0]["hole_id"] == "PLS-22-001"
-        assert collars[0]["easting"] == pytest.approx(448200.0)
-        assert collars[0]["status"] == "Completed"
-
-    def test_no_jwt_skips_pivot_check_for_collars(self) -> None:
-        """Service-key-only request skips pivot check for collar endpoint."""
-        conn = _make_conn_mock(pivot_row=None, data_rows=[_COLLAR_ROW])
-        user = UserContext()  # no user_id
-
-        resp = _call_get_collars(_PROJECT_ID, conn, user)
-
-        assert resp.status_code == 200
-        assert len(resp.json()) == 1
-
-    def test_status_filter_param_accepted(self) -> None:
-        """Valid status query param is accepted (400 check for invalid values)."""
-        pivot_row = {"role": "member"}
-        conn = _make_conn_mock(pivot_row=pivot_row, data_rows=[])
-        user = UserContext(user_id=_USER_ID)
-
-        resp = _call_get_collars(_PROJECT_ID, conn, user, params={"status": "Completed"})
-
-        assert resp.status_code == 200
-
-    def test_invalid_status_filter_rejected(self) -> None:
-        """Invalid status query param value is rejected with 422."""
-        pivot_row = {"role": "member"}
-        conn = _make_conn_mock(pivot_row=pivot_row, data_rows=[])
-        user = UserContext(user_id=_USER_ID)
-
-        resp = _call_get_collars(_PROJECT_ID, conn, user, params={"status": "Invalid"})
-
-        assert resp.status_code == 422
+    def test_collars_route_is_not_registered(self) -> None:
+        app = _make_test_app()
+        paths = set(app.openapi()["paths"])
+        assert "/internal/projects/{project_id}/collars" not in paths
+        assert "/internal/projects/{project_id}" in paths
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +259,3 @@ class TestProjectsIntegration:
         unknown_id = uuid4()
         resp = await rag_client.get(f"/internal/projects/{unknown_id}")
         assert resp.status_code in (403, 404)
-
-    @pytest.mark.asyncio
-    async def test_get_project_collars_for_unknown_project(self, rag_client) -> None:
-        """Unknown project UUID — accept 403 (no access), 404 (not found),
-        or 200+[] (single-tenant skip path).
-        """
-        unknown_id = uuid4()
-        resp = await rag_client.get(f"/internal/projects/{unknown_id}/collars")
-        assert resp.status_code in (200, 403, 404)
-        if resp.status_code == 200:
-            assert resp.json() == []

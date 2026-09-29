@@ -7,9 +7,8 @@
     "AttributeError": 1,
     "AttributeError+ImportError": 1,
     "AttributeError+TypeError+ValueError": 1,
-    "AttributeError+ValueError": 1,
     "CancelledError": 1,
-    "Exception": 98,
+    "Exception": 97,
     "FileNotFoundError": 1,
     "HTTPError+ValueError": 2,
     "ImportError": 31,
@@ -82,13 +81,12 @@
     "src/fastapi/app/observability/otel.py": 1,
     "src/fastapi/app/routers/admin_tier1_misc.py": 1,
     "src/fastapi/app/routers/admin_tier234.py": 2,
-    "src/fastapi/app/routers/answer_runs.py": 5,
+    "src/fastapi/app/routers/answer_runs.py": 4,
     "src/fastapi/app/routers/audit_findings.py": 2,
     "src/fastapi/app/routers/evidence.py": 2,
     "src/fastapi/app/routers/interpretation.py": 1,
     "src/fastapi/app/routers/ml_training.py": 1,
     "src/fastapi/app/routers/outlier_assist.py": 1,
-    "src/fastapi/app/routers/pdf.py": 1,
     "src/fastapi/app/routers/queries.py": 6,
     "src/fastapi/app/routers/visualizations.py": 1,
     "src/fastapi/app/routers/what_changed.py": 1,
@@ -137,5 +135,5 @@
     "src/georag_geoparsers/georag_geoparsers/xlsx_parser.py": 1,
     "src/georag_geoparsers/georag_geoparsers/xyz_parser.py": 1
   },
-  "total": 236
+  "total": 234
 }

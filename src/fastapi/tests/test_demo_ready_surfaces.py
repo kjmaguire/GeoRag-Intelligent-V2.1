@@ -12,6 +12,12 @@ localhost:8000 with a minted JWT. Run with:
 
   docker exec -e PG_DSN=postgresql://georag:...@postgresql:5432/georag \\
     georag-fastapi python -m pytest tests/test_demo_ready_surfaces.py -v -m integration
+
+NOT in integration_ci_manifest.txt, and it cannot be: CI's integration job
+has Postgres but no running FastAPI on :8000. So this file runs nowhere in
+CI. The trust-summary / evidence / export regressions it should have caught
+(audit 2026-09-29, API-1/3/4) are covered in the ordinary unit job by
+tests/test_router_audit_regressions.py, with a stub pool.
 """
 from __future__ import annotations
 

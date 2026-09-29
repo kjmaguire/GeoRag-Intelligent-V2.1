@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -15,66 +16,45 @@ use Illuminate\Support\Str;
 /**
  * §8.5 Step 3 (deferred branch) — OAuth flows for cloud-source ingestion.
  *
+ * DORMANT, gated OFF (LAR-10, 2026-09-29). The routes sit behind
+ * `services.cloud_ingest_oauth.enabled` (CLOUD_INGEST_OAUTH_ENABLED,
+ * default false) and answer 404 while it is off. No page in
+ * resources/js/Pages calls them. Before the gate, GET /oauth/connections
+ * returned 500 unconditionally in AWS: it ran `CREATE TABLE IF NOT EXISTS`
+ * on the request path, and georag_app has no CREATE on `silver`.
+ *
  * Supports the 3 providers the master plan calls out:
  *   - sharepoint (Microsoft Graph)
  *   - onedrive   (Microsoft Graph)
  *   - googledrive (Google Drive v3)
  *
- * Routes:
+ * Routes (the only three that exist — `/folders` and `/connect`, which this
+ * docblock used to list, were never registered):
  *   GET  /oauth/{provider}/authorize     redirect to provider auth URL
  *   GET  /oauth/{provider}/callback      OAuth callback handler
- *   GET  /oauth/{provider}/folders       list user's folders (after auth)
- *   POST /oauth/{provider}/connect       persist a folder-watch connection
  *   GET  /oauth/connections              list this user's connections
  *
- * IMPORTANT — operator setup required:
- *   This scaffold is functional but requires per-provider OAuth app
- *   registration before it can be used end-to-end:
- *     - Microsoft Graph: register at https://entra.microsoft.com → app
- *       registrations; needs Files.Read.All, Sites.Read.All scopes
- *     - Google Drive: register at https://console.cloud.google.com →
- *       APIs & Services → credentials; needs drive.readonly scope
- *   Set the CLIENT_ID + CLIENT_SECRET env vars per provider (see
- *   config/services.php). Until those are set, /oauth/{provider}/authorize
- *   returns a 500 with a clear "OAuth app not configured" message.
+ * To turn it on an operator needs, in order:
+ *   1. A migration creating silver.cloud_ingest_connections with FORCE ROW
+ *      LEVEL SECURITY and a tenant_isolation policy (§06b). The runtime DDL
+ *      that used to stand in for it is gone; until the table exists the
+ *      connection reads answer 503 and the callback cannot persist.
+ *   2. Per-provider OAuth app registration, with client id + secret set in
+ *      config/services.php → cloud_ingest_oauth.providers (env
+ *      OAUTH_{PROVIDER}_CLIENT_ID / _CLIENT_SECRET).
+ *   3. CLOUD_INGEST_OAUTH_ENABLED=true.
  *
  * State is signed with the app key + has a 10-minute TTL to prevent CSRF.
- *
- * Tokens are persisted to silver.cloud_ingest_connections (created on
- * first POST /connect). Refresh tokens are encrypted at rest.
+ * Tokens are encrypted at rest with the app key.
  */
 class OAuthIngestController extends Controller
 {
     private const PROVIDERS = ['sharepoint', 'onedrive', 'googledrive'];
 
-    private const PROVIDER_CONFIG = [
-        'sharepoint' => [
-            'auth_url_env' => 'OAUTH_SHAREPOINT_AUTH_URL',
-            'token_url_env' => 'OAUTH_SHAREPOINT_TOKEN_URL',
-            'client_id_env' => 'OAUTH_SHAREPOINT_CLIENT_ID',
-            'client_secret_env' => 'OAUTH_SHAREPOINT_CLIENT_SECRET',
-            'scope' => 'offline_access Sites.Read.All Files.Read.All',
-            'default_auth_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-            'default_token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-        ],
-        'onedrive' => [
-            'auth_url_env' => 'OAUTH_ONEDRIVE_AUTH_URL',
-            'token_url_env' => 'OAUTH_ONEDRIVE_TOKEN_URL',
-            'client_id_env' => 'OAUTH_ONEDRIVE_CLIENT_ID',
-            'client_secret_env' => 'OAUTH_ONEDRIVE_CLIENT_SECRET',
-            'scope' => 'offline_access Files.Read.All',
-            'default_auth_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-            'default_token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-        ],
-        'googledrive' => [
-            'auth_url_env' => 'OAUTH_GOOGLEDRIVE_AUTH_URL',
-            'token_url_env' => 'OAUTH_GOOGLEDRIVE_TOKEN_URL',
-            'client_id_env' => 'OAUTH_GOOGLEDRIVE_CLIENT_ID',
-            'client_secret_env' => 'OAUTH_GOOGLEDRIVE_CLIENT_SECRET',
-            'scope' => 'https://www.googleapis.com/auth/drive.readonly',
-            'default_auth_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
-            'default_token_url' => 'https://oauth2.googleapis.com/token',
-        ],
+    private const SCOPES = [
+        'sharepoint' => 'offline_access Sites.Read.All Files.Read.All',
+        'onedrive' => 'offline_access Files.Read.All',
+        'googledrive' => 'https://www.googleapis.com/auth/drive.readonly',
     ];
 
     public function start(Request $request, string $provider): RedirectResponse
@@ -82,10 +62,10 @@ class OAuthIngestController extends Controller
         if (! in_array($provider, self::PROVIDERS, true)) {
             abort(404);
         }
-        $cfg = self::PROVIDER_CONFIG[$provider];
-        $clientId = env($cfg['client_id_env']);
+        $cfg = $this->providerConfig($provider);
+        $clientId = $cfg['client_id'];
         if (! $clientId) {
-            abort(500, "OAuth provider '{$provider}' not configured: set ".$cfg['client_id_env'].' (and '.$cfg['client_secret_env'].')');
+            abort(503, "OAuth provider '{$provider}' is not configured.");
         }
 
         // State: signed payload {user_id, ts, project_id?} with 10-min TTL
@@ -100,12 +80,12 @@ class OAuthIngestController extends Controller
         $signedState = "{$state}.{$signature}";
         $request->session()->put("oauth_state_{$provider}", $signedState);
 
-        $authUrl = env($cfg['auth_url_env'], $cfg['default_auth_url']);
+        $authUrl = $cfg['auth_url'];
         $params = http_build_query([
             'client_id' => $clientId,
             'response_type' => 'code',
             'redirect_uri' => route('oauth.callback', ['provider' => $provider]),
-            'scope' => $cfg['scope'],
+            'scope' => self::SCOPES[$provider],
             'state' => $signedState,
             'access_type' => 'offline',
             'prompt' => 'consent',
@@ -143,14 +123,14 @@ class OAuthIngestController extends Controller
         // accepts the connection and then stops responding takes a quarter of
         // the site's request capacity with it, per stuck callback, until the
         // container is restarted.
-        $cfg = self::PROVIDER_CONFIG[$provider];
+        $cfg = $this->providerConfig($provider);
         try {
             $resp = Http::asForm()
                 ->connectTimeout(5)
                 ->timeout(15)
-                ->post(env($cfg['token_url_env'], $cfg['default_token_url']), [
-                    'client_id' => env($cfg['client_id_env']),
-                    'client_secret' => env($cfg['client_secret_env']),
+                ->post($cfg['token_url'], [
+                    'client_id' => $cfg['client_id'],
+                    'client_secret' => $cfg['client_secret'],
                     'code' => $code,
                     'redirect_uri' => route('oauth.callback', ['provider' => $provider]),
                     'grant_type' => 'authorization_code',
@@ -158,16 +138,16 @@ class OAuthIngestController extends Controller
         } catch (\Throwable $exc) {
             Log::error("OAuth token exchange failed for {$provider}", ['exc' => $exc->getMessage()]);
 
-            return response()->json(['error' => 'token exchange failed', 'reason' => $exc->getMessage()], 502);
+            return response()->json(['error' => 'token exchange failed'], 502);
         }
         if (! $resp->ok()) {
-            return response()->json(['error' => 'token endpoint returned non-2xx', 'body' => $resp->body()], 502);
+            return response()->json(['error' => 'token endpoint returned non-2xx', 'status' => $resp->status()], 502);
         }
         $tokens = $resp->json();
 
-        // Persist connection
+        // Persist connection. The table is created by no migration yet (see
+        // the class docblock); a missing table lands in the catch below.
         try {
-            $this->ensureConnectionsTable();
             DB::table('silver.cloud_ingest_connections')->updateOrInsert(
                 [
                     'user_id' => $payload['user_id'],
@@ -177,7 +157,7 @@ class OAuthIngestController extends Controller
                     'access_token_enc' => encrypt($tokens['access_token'] ?? ''),
                     'refresh_token_enc' => encrypt($tokens['refresh_token'] ?? ''),
                     'expires_at' => now()->addSeconds((int) ($tokens['expires_in'] ?? 3600)),
-                    'scopes' => $tokens['scope'] ?? $cfg['scope'],
+                    'scopes' => $tokens['scope'] ?? self::SCOPES[$provider],
                     'updated_at' => now(),
                     'created_at' => now(),
                 ],
@@ -185,7 +165,7 @@ class OAuthIngestController extends Controller
         } catch (\Throwable $exc) {
             Log::error('OAuth connection persist failed', ['exc' => $exc->getMessage()]);
 
-            return response()->json(['error' => 'connection persist failed', 'reason' => $exc->getMessage()], 500);
+            return response()->json(['error' => 'connection persist failed'], 503);
         }
 
         return redirect()->to('/projects?oauth_completed='.$provider);
@@ -193,36 +173,33 @@ class OAuthIngestController extends Controller
 
     public function listConnections(Request $request): JsonResponse
     {
-        $this->ensureConnectionsTable();
         $user = $request->user();
         if (! $user) {
             return response()->json(['error' => 'unauthenticated'], 401);
         }
-        $rows = DB::table('silver.cloud_ingest_connections')
-            ->where('user_id', $user->id)
-            ->select('provider', 'scopes', 'expires_at', 'created_at')
-            ->get();
+
+        try {
+            $rows = DB::table('silver.cloud_ingest_connections')
+                ->where('user_id', $user->id)
+                ->select('provider', 'scopes', 'expires_at', 'created_at')
+                ->get();
+        } catch (QueryException $exc) {
+            Log::warning('OAuth connections unavailable', ['exc' => $exc->getMessage()]);
+
+            return response()->json(['error' => 'cloud ingest connections are not provisioned'], 503);
+        }
 
         return response()->json(['items' => $rows]);
     }
 
-    private function ensureConnectionsTable(): void
+    /**
+     * @return array{client_id: ?string, client_secret: ?string, auth_url: string, token_url: string}
+     */
+    private function providerConfig(string $provider): array
     {
-        // Lazy schema bootstrap so OAuth scaffolding works even on
-        // installations that haven't run the matching migration yet.
-        // Full canonical schema lands in a future migration file.
-        DB::statement(<<<'SQL'
-            CREATE TABLE IF NOT EXISTS silver.cloud_ingest_connections (
-                user_id           bigint NOT NULL,
-                provider          varchar(32) NOT NULL,
-                access_token_enc  text,
-                refresh_token_enc text,
-                expires_at        timestamptz,
-                scopes            text,
-                created_at        timestamptz NOT NULL DEFAULT now(),
-                updated_at        timestamptz NOT NULL DEFAULT now(),
-                PRIMARY KEY (user_id, provider)
-            )
-        SQL);
+        /** @var array{client_id: ?string, client_secret: ?string, auth_url: string, token_url: string} $cfg */
+        $cfg = config("services.cloud_ingest_oauth.providers.{$provider}");
+
+        return $cfg;
     }
 }

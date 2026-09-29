@@ -80,13 +80,21 @@ Route::prefix('v1')->group(function () {
             ->where('run_id', '[0-9a-f-]{36}')
             ->name('ingest_progress.show');
 
+        // LAR-15 (2026-09-29): every {project}/{collar}/{export} below is a
+        // uuid column. Without a constraint a non-UUID segment reached
+        // Postgres as `WHERE project_id = 'abc'` — 22P02, a 500 instead of a
+        // 404. The route now refuses to match, so the answer is a plain 404.
+        $uuid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+
         // Projects — full CRUD (scoped to user's memberships in controller)
-        Route::apiResource('projects', ProjectController::class);
+        Route::apiResource('projects', ProjectController::class)
+            ->where(['project' => $uuid]);
 
         // Collars — scoped to a project (nested resource)
         Route::apiResource('projects.collars', CollarController::class)
             ->scoped()
-            ->only(['index', 'store', 'show', 'destroy']);
+            ->only(['index', 'store', 'show', 'destroy'])
+            ->where(['project' => $uuid, 'collar' => $uuid]);
 
         // CC-03 Item 5 — coverage density GeoJSON for the MapView heatmap layer.
         Route::get('projects/{projectId}/coverage-density', [CoverageDensityController::class, 'show'])
@@ -120,6 +128,7 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('projects.exports', ExportController::class)
             ->scoped()
             ->only(['index', 'store', 'show'])
+            ->where(['project' => $uuid, 'export' => $uuid])
             ->names([
                 'index' => 'api.projects.exports.index',
                 'store' => 'api.projects.exports.store',
@@ -128,10 +137,12 @@ Route::prefix('v1')->group(function () {
 
         // Download redirect — not scoped under project so clients can bookmark it
         Route::get('exports/{export}/download', [ExportController::class, 'download'])
+            ->where('export', $uuid)
             ->name('exports.download');
 
         // File upload — uploads to MinIO bronze bucket (triggers Dagster sensor)
-        Route::post('projects/{project}/upload', [UploadController::class, 'store']);
+        Route::post('projects/{project}/upload', [UploadController::class, 'store'])
+            ->where('project', $uuid);
         Route::get('upload/categories', [UploadController::class, 'categories']);
 
         // CC-01 Item 1 — drill-data upload: slug-routed, bronze.source_files

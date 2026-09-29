@@ -143,16 +143,23 @@ async def trigger_integration(
     in a later phase.
 
     Auth: per-flow Bearer JWT only. See module docstring.
-    """
-    await _check_trigger_auth(flow_name, authorization)
 
+    The flow is resolved BEFORE auth (API-9). Authenticating first meant an
+    unauthenticated caller choosing arbitrary flow names drove a per-name
+    key lookup — a fresh ``asyncpg.connect()`` per request wherever
+    AUDIT_ENCRYPTION_KEY is set, plus a cache entry per name. ``get_flow``
+    reads the whole-registry cache, so an unknown name now costs nothing.
+    The 404 no longer lists the registered flows: it is answered before
+    auth, and the authenticated ``GET /flows`` is where that list lives.
+    """
     entry = await get_flow(flow_name)
     if entry is None:
-        known = await list_flow_names()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"unknown flow_name: {flow_name}. Registered: {known}",
+            detail="unknown flow_name",
         )
+
+    await _check_trigger_auth(flow_name, authorization)
 
     try:
         validated = entry.input_model.model_validate(payload or {})

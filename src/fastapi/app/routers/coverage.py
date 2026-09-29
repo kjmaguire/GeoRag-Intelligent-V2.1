@@ -26,7 +26,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.db.scoped_pool import scoped_connection
 from app.services.auth import UserContext, extract_user_context, verify_service_key
+from app.services.workspace_resolution import resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,8 @@ async def coverage_density(
     Responses
     ---------
     200  application/json — FeatureCollection of hex cells with count > 0
+    403  application/json — JWT project_id differs from the query's, or
+                              the workspace cannot be resolved
     422  application/json — invalid kind / cell_size_m
     503  application/json — pg pool not initialised
     """
@@ -111,7 +115,33 @@ async def coverage_density(
             detail="pg_pool_not_ready",
         )
 
-    async with pool.acquire() as conn:
+    # API-10 — tenant scoping. The SQL function deliberately has no
+    # workspace filter "because the caller has already set the RLS GUC";
+    # this handler used to run it on a bare connection with no GUC, and
+    # canonical policies are permissive when app.workspace_id is unset. So
+    # isolation rested entirely on Laravel's project-membership check.
+    # Now: the JWT must be for the project asked about, and the query runs
+    # with the workspace GUC bound.
+    if _user.project_id is not None and str(_user.project_id).lower() != str(
+        project_id
+    ):
+        logger.warning(
+            "coverage_density: JWT project_id=%s does not match query "
+            "project_id=%s",
+            _user.project_id,
+            project_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="project_id does not match the authenticated project",
+        )
+
+    redis_client = getattr(request.app.state, "redis_client", None)
+    workspace_id = await resolve_workspace_id(_user, request, pool, redis_client)
+
+    async with scoped_connection(
+        pool, workspace_id=str(workspace_id), site="coverage.density"
+    ) as conn:
         rows = await conn.fetch(
             "SELECT ST_AsGeoJSON(cell_polygon)::jsonb AS geom_json,"
             "       record_count, bias_warning"

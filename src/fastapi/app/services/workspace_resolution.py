@@ -47,7 +47,8 @@ async def _lookup_workspace_for_project(
 ) -> UUID | None:
     """Return workspace_id for a project, using Redis as a read-through cache.
 
-    Returns None if the project does not exist in silver.projects.
+    Returns None if the project does not exist in silver.projects. Raises
+    HTTP 503 if the lookup itself failed (retryable, not an auth failure).
     """
     cache_key = f"{_REDIS_PROJ_TO_WS_PREFIX}:{project_id}"
 
@@ -75,11 +76,18 @@ async def _lookup_workspace_for_project(
                 "SELECT workspace_id FROM silver.projects WHERE project_id = $1",
                 UUID(project_id),
             )
-    except Exception:
+    except Exception as exc:
+        # API-13 — a DB failure is NOT "project not found". Returning None
+        # here turned a Postgres blip into the caller's 403 "project not
+        # found for JWT project_id", i.e. an authorization error the user
+        # cannot retry out of. None stays reserved for "row absent".
         logger.exception(
             "workspace_resolution: DB lookup failed for project_id=%s", project_id
         )
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="workspace_lookup_unavailable",
+        ) from exc
 
     if row is None:
         return None

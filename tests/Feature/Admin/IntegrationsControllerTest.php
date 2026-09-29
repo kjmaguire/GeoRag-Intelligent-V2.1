@@ -34,7 +34,19 @@ use Tests\TestCase;
 class IntegrationsControllerTest extends TestCase
 {
     use RefreshDatabase;
-    use RequiresPostgres;
+    use RequiresPostgres {
+        setUp as requiresPostgresSetUp;
+    }
+
+    protected function setUp(): void
+    {
+        $this->requiresPostgresSetUp();
+
+        // The routes are gated OFF by default since 2026-09-29 (LAR-11);
+        // this file tests the feature itself, so it turns the gate on.
+        // The gate's own 404 is covered by DormantFeatureRoutesTest.
+        config(['services.admin_integrations.enabled' => true]);
+    }
 
     private function admin(): User
     {
@@ -54,7 +66,7 @@ class IntegrationsControllerTest extends TestCase
      */
     private function seedSender(string $source): string
     {
-        $encKey = (string) env('AUDIT_ENCRYPTION_KEY', '');
+        $encKey = (string) config('services.audit.encryption_key', '');
         $this->assertNotSame('', $encKey, 'AUDIT_ENCRYPTION_KEY must be configured for this test');
 
         return DB::connection('pgsql')->transaction(function () use ($encKey, $source): string {

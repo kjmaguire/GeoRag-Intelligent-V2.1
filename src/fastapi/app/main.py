@@ -53,9 +53,6 @@ from app.routers import (
     admin_tier234 as tier234_router,  # Phase H4 §11.1/§11.10 backups/cold-tier ops (trimmed 2026-07-28, task #31)
 )
 from app.routers import answer_runs as answer_runs_router
-from app.routers import (
-    assessment_summary as assessment_summary_router,  # CC-01 Item 5 — assessment report structured summary
-)
 from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
 from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
 from app.routers import completeness as completeness_router  # CC-03 Item 2 — completeness audit
@@ -68,7 +65,6 @@ from app.routers import metrics_ingestion_events as metrics_ingestion_events_rou
 from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
 from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
 from app.routers import outlier_assist as outlier_assist_router
-from app.routers import pdf as pdf_router
 from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
 from app.routers import public_geo_trigger as public_geo_trigger_router
@@ -225,18 +221,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Not fixed by logging components instead of the built DSN -- see the
     # paragraph above about reporting a host you did not connect to.
     logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))
+    _pg_pool_min, _pg_pool_max = 2, 12
     pg_pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=pg_dsn,
-        min_size=2,
-        # FastAPI review #4 — per-worker max trimmed from 25 → 12 because
-        # the Dockerfile runs 4 uvicorn workers. Total DB connection
-        # ceiling is now 4 × 12 = 48, which fits within PgBouncer's
-        # `default_pool_size=100` (raised in compose at the same time as
-        # this change). The original 25 × 4 = 100 was at the PgBouncer
-        # ceiling with zero headroom, causing acquire timeouts under load.
-        # If you re-flatten to a single uvicorn worker (review item #4
-        # option B), bump this back to 25.
-        max_size=12,
+        min_size=_pg_pool_min,
+        # FastAPI review #4 — per-worker max trimmed from 25 → 12. The
+        # ceiling is PER UVICORN WORKER, so per task it is workers × 12:
+        #   * docker/fastapi.Dockerfile defaults UVICORN_WORKERS=6 → 72
+        #     (this comment used to assume 4 workers → 48);
+        #   * compose runs UVICORN_WORKERS=3 → 36, behind PgBouncer's
+        #     default_pool_size=100.
+        # AWS has NO pooler: every fastapi task holds up to 72 direct RDS
+        # connections, plus the hatchet worker's and Laravel's, against a
+        # max_connections that scales with instance memory (~225 on
+        # db.t4g.small). Re-derive before scaling tasks or workers up.
+        max_size=_pg_pool_max,
         # command_timeout matches the PostGIS per-query timeout from Section 06e.
         # PgBouncer's server_idle_timeout is set in the PgBouncer config; we
         # set max_inactive_connection_lifetime slightly below it to avoid
@@ -280,7 +279,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.pg_pool = pg_pool
     logger.info(
-        "asyncpg pool ready (min=4 max=25, statement_cache_size=0, jit=off)"
+        "asyncpg pool ready (min=%d max=%d per worker, statement_cache_size=0, "
+        "jit=off)",
+        _pg_pool_min,
+        _pg_pool_max,
     )
 
     # -------------------------------------------------------------------------
@@ -965,6 +967,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await pg_pool.close()
     logger.info("asyncpg pool closed")
 
+    # API-12 — the ingest-progress module pool is created lazily from the
+    # request path (shadow / mv-refresh triggers) and was never closed.
+    try:
+        from app.hatchet_workflows._progress import (  # noqa: PLC0415
+            close_pool as _close_progress_pool,
+        )
+
+        await _close_progress_pool()
+    except Exception:
+        logger.warning("ingest-progress pool close failed", exc_info=True)
+
 
 # ---------------------------------------------------------------------------
 # FastAPI application
@@ -975,10 +988,10 @@ app = FastAPI(
     description="Geological RAG domain service with cited answers and visualization payloads",
     version="0.1.0",
     lifespan=lifespan,
-    # FastAPI review #3 — gate the OpenAPI surface. In dev (default
-    # OPENAPI_DOCS_PUBLIC=True) /docs and /redoc work as expected. In
-    # prod set OPENAPI_DOCS_PUBLIC=false so the schema + auth-claim
-    # shapes don't leak to anyone with network reach.
+    # FastAPI review #3 — gate the OpenAPI surface. Off by default
+    # (OPENAPI_DOCS_PUBLIC=False since API-11) so the schema + auth-claim
+    # shapes don't leak to anyone with network reach; a developer sets
+    # OPENAPI_DOCS_PUBLIC=true locally to get /docs and /redoc.
     docs_url="/docs" if settings.OPENAPI_DOCS_PUBLIC else None,
     redoc_url="/redoc" if settings.OPENAPI_DOCS_PUBLIC else None,
     openapi_url="/openapi.json" if settings.OPENAPI_DOCS_PUBLIC else None,
@@ -1013,10 +1026,14 @@ app.add_middleware(StructuredAccessLogMiddleware)  # #5 — outermost, sees ever
 # limiter; keeping it off by default avoids breaking single-tenant deploys.
 if settings.RATE_LIMIT_ENABLED:
     try:
-        from slowapi import Limiter  # noqa: PLC0415
         from slowapi.errors import RateLimitExceeded  # noqa: PLC0415
-        from slowapi.middleware import SlowAPIMiddleware  # noqa: PLC0415
-        from slowapi.util import get_remote_address  # noqa: PLC0415
+
+        from app.services.rate_limit import (  # noqa: PLC0415
+            ProbeExemptSlowAPIMiddleware,
+        )
+        from app.services.rate_limit import (  # noqa: PLC0415
+            limiter as _actor_limiter,
+        )
 
         async def _rate_limit_handler(request, exc):  # noqa: ARG001
             from starlette.responses import JSONResponse  # noqa: PLC0415
@@ -1025,11 +1042,13 @@ if settings.RATE_LIMIT_ENABLED:
                 status_code=429,
             )
 
-        app.state.limiter = Limiter(
-            key_func=get_remote_address,
-            default_limits=[settings.RATE_LIMIT_DEFAULT],
-        )
-        app.add_middleware(SlowAPIMiddleware)
+        # API-6 — ONE limiter, keyed per (workspace, user) from the JWT
+        # (then X-Workspace-Id, then IP). This used to be a second Limiter
+        # keyed on get_remote_address; every request arrives from a few
+        # Laravel task IPs, so all tenants shared one 60/min bucket, and the
+        # per-actor limiter's route registrations were invisible to it.
+        app.state.limiter = _actor_limiter
+        app.add_middleware(ProbeExemptSlowAPIMiddleware)
         app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
         logger.info(
             "Rate limiter enabled — default=%s queries=%s",
@@ -1046,20 +1065,32 @@ if settings.RATE_LIMIT_ENABLED:
 # FastAPI review #10 (hygiene) — `import logging as _logging` was redundant
 # (logging is already imported at module top). Use the existing module logger.
 _safety_logger = logging.getLogger("georag.safety")
+
+# API-5 — every posture CRITICAL below starts with this literal token so ONE
+# CloudWatch metric filter (deploy/aws/terraform/alerts.tf, log_markers)
+# matches all of them. The Azure-era "georag-fastapi-critical" alert that
+# the comments here used to rely on does not exist on AWS; nothing matched
+# a bare `"level": "CRITICAL"` line. Keep it a literal (not built at
+# runtime) — scripts/check-log-marker-alarms.py greps for it.
+POSTURE_CRITICAL_MARKER = "GEORAG_POSTURE_CRITICAL"
+
 if not settings.NUMERICAL_VERIFICATION_ENABLED:
     _safety_logger.critical(
-        "NUMERICAL_VERIFICATION_ENABLED=False — Layer 3 (numerical claim "
-        "verification) is DISABLED. Ungrounded numbers may reach users."
+        "%s NUMERICAL_VERIFICATION_ENABLED=False — Layer 3 (numerical claim "
+        "verification) is DISABLED. Ungrounded numbers may reach users.",
+        POSTURE_CRITICAL_MARKER,
     )
 if not settings.ENTITY_RESOLUTION_ENABLED:
     _safety_logger.critical(
-        "ENTITY_RESOLUTION_ENABLED=False — Layer 4 (entity resolution) is "
-        "DISABLED. Fabricated hole IDs and entity names may reach users."
+        "%s ENTITY_RESOLUTION_ENABLED=False — Layer 4 (entity resolution) is "
+        "DISABLED. Fabricated hole IDs and entity names may reach users.",
+        POSTURE_CRITICAL_MARKER,
     )
 if not settings.GEOLOGICAL_CONSTRAINTS_ENABLED:
     _safety_logger.critical(
-        "GEOLOGICAL_CONSTRAINTS_ENABLED=False — Layer 6 (geological "
-        "constraints) is DISABLED. Physically impossible values may reach users."
+        "%s GEOLOGICAL_CONSTRAINTS_ENABLED=False — Layer 6 (geological "
+        "constraints) is DISABLED. Physically impossible values may reach users.",
+        POSTURE_CRITICAL_MARKER,
     )
 
 
@@ -1082,8 +1113,11 @@ def _assert_production_posture() -> None:
 
     A CRITICAL line rather than a refusal to start: these are hardening
     controls, and taking the API down over one would trade a quiet risk for a
-    loud outage. It is not a whisper either — CRITICAL from fastapi-cc pages
-    via the georag-fastapi-critical alert.
+    loud outage. It is not a whisper either: every line carries the
+    ``GEORAG_POSTURE_CRITICAL`` token (``POSTURE_CRITICAL_MARKER``), which
+    the log-marker metric filter in deploy/aws/terraform/alerts.tf pages on.
+    (It used to say "pages via georag-fastapi-critical" — an Azure alert that
+    did not survive the move to AWS, so these lines paged nobody.)
     """
     if not settings.is_production:
         return
@@ -1105,17 +1139,31 @@ def _assert_production_posture() -> None:
     for name, value, consequence in required_on:
         if not value:
             _safety_logger.critical(
-                "GEORAG_ENV=production but %s is off — %s. "
-                "Set it on the container app.",
-                name, consequence,
+                "%s GEORAG_ENV=production but %s is off — %s. "
+                "Set it on the task definition.",
+                POSTURE_CRITICAL_MARKER, name, consequence,
             )
+
+    # API-11 — the table OWNER is exempt from plain ENABLE ROW LEVEL
+    # SECURITY, so connecting as it silently disables tenant isolation on
+    # every table that is not FORCE'd. Every deploy target sets
+    # POSTGRES_USER=georag_app today; this catches the day one does not.
+    if settings.POSTGRES_USER.strip() == "georag":
+        _safety_logger.critical(
+            "%s GEORAG_ENV=production with POSTGRES_USER=georag, the table "
+            "owner — row-level security does not apply to the owner on "
+            "tables without FORCE ROW LEVEL SECURITY. Set POSTGRES_USER="
+            "georag_app on the task definition.",
+            POSTURE_CRITICAL_MARKER,
+        )
 
     if settings.QDRANT_DOCUMENT_PROJECT_SCOPE == "cross_project":
         _safety_logger.critical(
-            "GEORAG_ENV=production with QDRANT_DOCUMENT_PROJECT_SCOPE="
+            "%s GEORAG_ENV=production with QDRANT_DOCUMENT_PROJECT_SCOPE="
             "cross_project — document retrieval filters on workspace only, "
             "so a question asked in one project can be answered from another "
-            "project's reports."
+            "project's reports.",
+            POSTURE_CRITICAL_MARKER,
         )
 
     # ADR-0023 — the selected chat backend must carry the credential it
@@ -1138,11 +1186,11 @@ def _assert_production_posture() -> None:
     _required = _chat_credentials.get(settings.LLM_BACKEND)
     if _required and not _required[1].strip():
         _safety_logger.critical(
-            "GEORAG_ENV=production with LLM_BACKEND=%s but %s is empty — "
+            "%s GEORAG_ENV=production with LLM_BACKEND=%s but %s is empty — "
             "every chat query will fail at the first call. Set it on the "
             "task definition (it is written to Secrets Manager out of band; "
             "see deploy/aws/README.md).",
-            settings.LLM_BACKEND, _required[0],
+            POSTURE_CRITICAL_MARKER, settings.LLM_BACKEND, _required[0],
         )
 
 
@@ -1166,7 +1214,11 @@ app.include_router(answer_runs_router.router)
 # §04p Phase 1.A — PDF Ingestion Subsystem (Stage 2 render endpoints).
 # No /internal prefix: these endpoints are called by the Pydantic AI agent
 # tools directly, not routed through the Laravel-to-FastAPI internal path.
-app.include_router(pdf_router.router)
+# API-14 — /pdf/* (6 routes) and /assessment_summary/* (2) were removed
+# 2026-09-29: no caller anywhere, and nothing writes the Bronze
+# ``pdfs/{sha256}.pdf`` layout both read, so every call 404'd. The lifespan
+# services they used (render/extract pools, VL, assessment summarizer) are
+# still initialised above; removing those is a separate lifespan change.
 app.include_router(phase0_ops_router.router)
 app.include_router(shadow_trigger_router.router)
 app.include_router(public_geo_trigger_router.router)  # operator "Sync now" for public_geo_sync
@@ -1187,7 +1239,6 @@ app.include_router(tier1_misc_router.k6_router)
 # were deleted in the reader-core trim. See admin_tier234.py's module
 # docstring. tier234_router.ap_router (Kestra channels) was already removed
 # 2026-05-17.
-app.include_router(assessment_summary_router.router)  # CC-01 Item 5 — assessment report structured summary
 app.include_router(maps_router.router)  # CC-01 Item 3 (stub) — map ingest scaffold
 app.include_router(coverage_router.router)  # CC-03 Item 5 — coverage density heatmap
 app.include_router(smdi_router.router)  # SMDI ingestion plan v1.1 Phase 6 — /public-geo/smdi/features

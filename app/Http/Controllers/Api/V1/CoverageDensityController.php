@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Services\FastApiJwtMinter;
 use App\Support\AuthorizationAuditLogger;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -69,15 +70,29 @@ class CoverageDensityController extends Controller
             workspaceId: $workspaceId,
         );
 
-        $resp = Http::withHeaders([
-            'X-Service-Key' => $serviceKey,
-            'Authorization' => 'Bearer '.$jwt,
-            'Accept' => 'application/json',
-        ])->timeout(30)->retry(2, 250)->get($fastApiBase.'/coverage/density', [
-            'project_id' => $projectId,
-            'kind' => $kind,
-            'cell_size_m' => $cellSizeM,
-        ]);
+        // LAR-8 (2026-09-29): the bare `retry(2, 250)` throws on the last
+        // non-2xx, so the 502 branch below was dead and any FastAPI error
+        // surfaced as an unhandled 500 (after pointlessly retrying 4xx too).
+        // Retry only when FastAPI was never reached; let every HTTP answer
+        // fall through to the status check.
+        try {
+            $resp = Http::withHeaders([
+                'X-Service-Key' => $serviceKey,
+                'Authorization' => 'Bearer '.$jwt,
+                'Accept' => 'application/json',
+            ])->timeout(30)->retry(
+                2,
+                250,
+                fn (\Throwable $exc): bool => $exc instanceof ConnectionException,
+                throw: false,
+            )->get($fastApiBase.'/coverage/density', [
+                'project_id' => $projectId,
+                'kind' => $kind,
+                'cell_size_m' => $cellSizeM,
+            ]);
+        } catch (ConnectionException) {
+            return response()->json(['message' => 'FastAPI coverage density is unreachable.'], 502);
+        }
 
         if (! $resp->ok()) {
             return response()->json(

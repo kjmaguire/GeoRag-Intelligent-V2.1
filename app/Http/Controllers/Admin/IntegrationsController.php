@@ -31,6 +31,14 @@ use Illuminate\Support\Facades\DB;
  * fix. Now `redirect()->back()`.
  *
  * Auth: 'admin' Gate.
+ *
+ * DORMANT, gated OFF (LAR-11, 2026-09-29): every route below sits behind
+ * `services.admin_integrations.enabled` (ADMIN_INTEGRATIONS_ENABLED, default
+ * false) and answers 404 while it is off. No page calls these endpoints, and
+ * in AWS nothing sets AUDIT_ENCRYPTION_KEY, so three of the four answered
+ * 503. The key is now read from `services.audit.encryption_key` instead of
+ * a raw env() call, which would return null under `config:cache`. Turning
+ * the flag on also needs that key set in the task definition.
  */
 class IntegrationsController extends Controller
 {
@@ -78,7 +86,7 @@ class IntegrationsController extends Controller
             abort(404, "unknown flow_name: {$flowName}");
         }
 
-        $encKey = (string) env('AUDIT_ENCRYPTION_KEY', '');
+        $encKey = (string) config('services.audit.encryption_key', '');
         if ($encKey === '') {
             abort(503, 'AUDIT_ENCRYPTION_KEY not configured server-side');
         }
@@ -156,7 +164,7 @@ class IntegrationsController extends Controller
         $source = (string) $validated['source'];
         $description = $validated['description'] ?? null;
 
-        $encKey = (string) env('AUDIT_ENCRYPTION_KEY', '');
+        $encKey = (string) config('services.audit.encryption_key', '');
         if ($encKey === '') {
             abort(503, 'AUDIT_ENCRYPTION_KEY not configured server-side');
         }
@@ -244,7 +252,7 @@ class IntegrationsController extends Controller
             abort(404, "sender not found or already disabled: {$id}");
         }
 
-        $encKey = (string) env('AUDIT_ENCRYPTION_KEY', '');
+        $encKey = (string) config('services.audit.encryption_key', '');
         if ($encKey === '') {
             abort(503, 'AUDIT_ENCRYPTION_KEY not configured server-side');
         }

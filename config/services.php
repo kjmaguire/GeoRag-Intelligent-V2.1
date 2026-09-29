@@ -347,4 +347,56 @@ return [
         'request_timeout' => (int) env('MARTIN_REQUEST_TIMEOUT', 15),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Dormant, routed features (LAR-10 / LAR-11, 2026-09-29)
+    |--------------------------------------------------------------------------
+    |
+    | Both surfaces below are wired to routes but have no page in
+    | resources/js/Pages and are not configured in deploy/aws/terraform, so in
+    | AWS they answered 500 (OAuth: a request-path CREATE TABLE the app role
+    | may not run) or 503 (integrations: AUDIT_ENCRYPTION_KEY unset). They
+    | are gated OFF by default and answer 404 until an operator turns them on
+    | deliberately. Values moved out of raw env() reads in the controllers,
+    | which return null the day the image runs `config:cache`.
+    |
+    | Turning cloud_ingest_oauth on is NOT enough by itself: the
+    | silver.cloud_ingest_connections table it persists to is created by no
+    | migration (the runtime DDL was removed), and a new table needs FORCE
+    | ROW LEVEL SECURITY plus a tenant_isolation policy (§06b).
+    |
+    */
+    'admin_integrations' => [
+        'enabled' => (bool) env('ADMIN_INTEGRATIONS_ENABLED', false),
+    ],
+
+    'audit' => [
+        // pgp_sym_encrypt key for usage.* sender secrets and flow JWT keys.
+        'encryption_key' => env('AUDIT_ENCRYPTION_KEY'),
+    ],
+
+    'cloud_ingest_oauth' => [
+        'enabled' => (bool) env('CLOUD_INGEST_OAUTH_ENABLED', false),
+        'providers' => [
+            'sharepoint' => [
+                'client_id' => env('OAUTH_SHAREPOINT_CLIENT_ID'),
+                'client_secret' => env('OAUTH_SHAREPOINT_CLIENT_SECRET'),
+                'auth_url' => env('OAUTH_SHAREPOINT_AUTH_URL', 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'),
+                'token_url' => env('OAUTH_SHAREPOINT_TOKEN_URL', 'https://login.microsoftonline.com/common/oauth2/v2.0/token'),
+            ],
+            'onedrive' => [
+                'client_id' => env('OAUTH_ONEDRIVE_CLIENT_ID'),
+                'client_secret' => env('OAUTH_ONEDRIVE_CLIENT_SECRET'),
+                'auth_url' => env('OAUTH_ONEDRIVE_AUTH_URL', 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'),
+                'token_url' => env('OAUTH_ONEDRIVE_TOKEN_URL', 'https://login.microsoftonline.com/common/oauth2/v2.0/token'),
+            ],
+            'googledrive' => [
+                'client_id' => env('OAUTH_GOOGLEDRIVE_CLIENT_ID'),
+                'client_secret' => env('OAUTH_GOOGLEDRIVE_CLIENT_SECRET'),
+                'auth_url' => env('OAUTH_GOOGLEDRIVE_AUTH_URL', 'https://accounts.google.com/o/oauth2/v2/auth'),
+                'token_url' => env('OAUTH_GOOGLEDRIVE_TOKEN_URL', 'https://oauth2.googleapis.com/token'),
+            ],
+        ],
+    ],
+
 ];

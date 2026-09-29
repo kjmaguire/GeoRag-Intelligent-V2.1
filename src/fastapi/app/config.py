@@ -123,8 +123,10 @@ class Settings(BaseSettings):
     #
     # Set to "production" on the live container apps. See
     # main.py::_assert_production_posture, which turns each violation into a
-    # CRITICAL log line — and CRITICAL on fastapi-cc now pages
-    # (georag-fastapi-critical, added 2026-08-21).
+    # CRITICAL log line starting with the GEORAG_POSTURE_CRITICAL token. On
+    # AWS that token is what pages (a log-marker metric filter in
+    # deploy/aws/terraform/alerts.tf); the Azure-era georag-fastapi-critical
+    # alert this comment used to cite did not survive the migration.
     GEORAG_ENV: str = "development"
 
     @property
@@ -145,7 +147,12 @@ class Settings(BaseSettings):
     # FastAPI review #3 — gate the OpenAPI docs (Swagger UI + ReDoc +
     # raw /openapi.json) behind a flag. They're convenient in dev but
     # leak the full request schema + auth-claim shapes in prod.
-    OPENAPI_DOCS_PUBLIC: bool = True
+    #
+    # Default False (API-11). It defaulted True and no deployment set it,
+    # so production served the full schema — every internal and admin
+    # route — to anything in the VPC. Set OPENAPI_DOCS_PUBLIC=true in a
+    # developer's .env to get /docs back locally.
+    OPENAPI_DOCS_PUBLIC: bool = False
 
     # FastAPI review #9 — rate limit the chat endpoint. Off by default
     # because single-tenant deploys don't need it (Laravel front door
@@ -155,6 +162,13 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = False
     RATE_LIMIT_DEFAULT: str = "60/minute"
     RATE_LIMIT_QUERIES: str = "20/minute"  # the expensive endpoint
+    # slowapi/limits storage backend. Unset/empty = per-worker in-process
+    # memory, so with N uvicorn workers a caller effectively gets N x the
+    # limit. Point it at Redis (``redis://:<pw>@host:6379/4``) to share one
+    # bucket across workers and tasks. Read by app/services/rate_limit.py;
+    # this used to be read via getattr() with no Settings field, so it could
+    # not actually be configured.
+    RATE_LIMIT_STORAGE_URI: str | None = None
 
     # -------------------------------------------------------------------------
     # PostgreSQL / PgBouncer
@@ -176,6 +190,12 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = ""
     POSTGRES_PORT: int | None = None
     POSTGRES_DB: str = "georag"
+    # NOT changed to "georag_app", deliberately (API-11): Terraform
+    # (common_environment), compose and the Helm fastapi Deployment all set
+    # it explicitly, but the Helm audit-chain-verify CronJob runs the fastapi
+    # image with only POSTGRES_PASSWORD (the owner's) and relies on this
+    # default. Production running as the owner is instead reported by
+    # main.py::_assert_production_posture as a GEORAG_POSTURE_CRITICAL.
     POSTGRES_USER: str = "georag"
     POSTGRES_PASSWORD: str
     # Local pgbouncer needs no TLS; Azure Database for PostgreSQL Flexible
