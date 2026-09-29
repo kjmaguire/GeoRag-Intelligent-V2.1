@@ -250,8 +250,8 @@ class BindWorkspaceRlsContext
             // it with RLS disarmed (SEC-10): 409 to a member, the same answer
             // RasterLayersController::workspaceIdOrFail() gives; 404 to anyone
             // else, so the refusal is not an existence oracle. Postgres only:
-            // SQLite has no RLS to disarm, and the suite's factory projects
-            // carry no workspace.
+            // SQLite has no RLS to disarm. (ProjectFactory gives every project
+            // a workspace; WorkspaceBindFailsClosedTest opts out to test this.)
             if ($workspaceId === null) {
                 if ($this->isPostgres()) {
                     if ($this->userIsMemberOf($user, $project['project_id'])) {
