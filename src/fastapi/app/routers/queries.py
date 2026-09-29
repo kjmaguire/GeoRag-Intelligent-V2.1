@@ -10,8 +10,24 @@ the final GeoRAGResponse.
 
 SSE event types
 ---------------
+The contract is exactly six names, identical in this module, in
+app/Jobs/StreamQueryFromFastApi.php's docblock, and in the listener in
+resources/js/Pages/Foundry/Chat.tsx (tests/Unit/Jobs/SseVocabularyContractTest
+fails if the three drift):
+
+  SSE vocabulary: status · bind · delta · citation · completed · failed
+
+  status     — progress message for the UI
+               data: {"message": "Analyzing query…"}
+               Also the periodic heartbeat (``"heartbeat": true``, the last
+               phase message repeated) sent every SSE_HEARTBEAT_INTERVAL_S of
+               silence, so the browser's idle watchdog does not fire while
+               the model is thinking before its first token (CHAT-6).
+
+  bind       — the citation manifest, bound before the first token
+
   delta      — incremental token chunk from the LLM
-               data: {"token": "<token text>"}
+               data: {"token": "<token text>", "token_seq": <int>}
 
   citation   — inline citation emitted as it is resolved
                data: {"citation_id": "[DATA-1]", "citation_type": "DATA",
@@ -156,6 +172,75 @@ def _sse_keepalive() -> str:
     return ": keepalive\n\n"
 
 
+def _effective_answer_run_id(
+    event_name: str, data: dict[str, Any], stamper: EventStamper
+) -> str | None:
+    """The ``answer_run_id`` a frame carries on the wire.
+
+    The ``completed`` frame carries the PERSISTED silver.answer_runs id or
+    ``None`` — never the streaming-session UUID (CHAT-19). The fallback to
+    the stamper's UUID made FeedbackControls render on answers that had no
+    run row (pre-INSERT refusals, a failed INSERT) and POST feedback to an
+    id that 404s. Every other frame keeps the stamper UUID, which is also
+    sent as ``stream_id``.
+    """
+    payload_run_id = data.get("answer_run_id")
+    if payload_run_id is not None:
+        return str(payload_run_id)
+    if event_name == "completed":
+        return None
+    return str(stamper.answer_run_id)
+
+
+#: Sentinel returned by :func:`_next_stream_item` when the orchestrator task
+#: finished without queueing a terminal item (CHAT-17).
+_RUN_ENDED_SILENTLY: tuple[str, Any] = ("run_ended", None)
+
+
+async def _next_stream_item(
+    queue: asyncio.Queue[tuple[str, Any]],
+    run_task: asyncio.Task[None],
+    timeout_s: float,
+) -> tuple[str, Any] | None:
+    """Next ``(kind, payload)`` for the SSE loop, watching the run too.
+
+    Returns ``None`` when ``timeout_s`` passes with nothing to send (the
+    caller emits a heartbeat), and :data:`_RUN_ENDED_SILENTLY` when the
+    orchestrator task has finished and left nothing on the queue.
+
+    The loop used to block on ``queue.get()`` alone. Every normal exit of
+    the run task queues a sentinel, but a ``BaseException`` that is not an
+    ``Exception`` (a ``CancelledError`` leaking out of an inner gather)
+    queues nothing — and the generator then waited forever, emitting no
+    terminal frame until Laravel's 270 s read timeout (CHAT-17).
+    """
+    if not queue.empty():
+        return queue.get_nowait()
+    get_task: asyncio.Task[tuple[str, Any]] = asyncio.ensure_future(queue.get())
+    try:
+        done, _ = await asyncio.wait(
+            {get_task, run_task},
+            timeout=timeout_s,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    except BaseException:
+        get_task.cancel()
+        raise
+    if get_task in done:
+        return get_task.result()
+    get_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await get_task
+    if get_task.done() and not get_task.cancelled():
+        # The get won the race against cancel(); do not lose the item.
+        return get_task.result()
+    if run_task.done():
+        if not queue.empty():
+            return queue.get_nowait()
+        return _RUN_ENDED_SILENTLY
+    return None
+
+
 def _extract_tool_results(messages: list[Any]) -> list[tuple[str, Any]]:
     """Walk the Pydantic AI message history and extract (tool_name, result) tuples.
 
@@ -238,22 +323,31 @@ async def _agent_rag_stream(
             # meaningful for the Redis ring-buffer key during this request;
             # it is never persisted to PG, so emitting it on the wire
             # breaks the Retrieval Inspector deep link
-            # (/retrieval/{answer_run_id}).
-            _payload_run_id = data.get("answer_run_id")
-            _effective_run_id = (
-                str(_payload_run_id)
-                if _payload_run_id is not None
-                else str(stamper.answer_run_id)
-            )
+            # (/retrieval/{answer_run_id}). On `completed` a missing
+            # persisted id is emitted as null — see _effective_answer_run_id.
+            _effective_run_id = _effective_answer_run_id(event_name, data, stamper)
             enriched: dict[str, Any] = {
                 **data,
                 "event_seq": seq,
                 "event_id": eid,
                 "answer_run_id": _effective_run_id,
+                # The replay ring-buffer key for this stream.
+                "stream_id": str(stamper.answer_run_id),
                 "trace_id": stamper.trace_id,  # None until Module 10
                 "event_name": event_name,
             }
             await stamper.push_to_redis(_redis_client, event_name, enriched)
+            if (
+                event_name == "completed"
+                and _effective_run_id is not None
+                and _effective_run_id != str(stamper.answer_run_id)
+            ):
+                # CHAT-8 / API-2: GET /v1/answer_runs/{id}/events checks
+                # the id against silver.answer_runs and then reads the
+                # buffer under that SAME id — but the buffer was only ever
+                # written under the stream UUID, so replay returned [] for
+                # every real run. Copy it under the persisted id too.
+                await stamper.alias_to(_redis_client, _effective_run_id)
         else:
             enriched = data
         return _sse_event(event_name, enriched)
@@ -521,10 +615,47 @@ async def _agent_rag_stream(
     run_task = asyncio.create_task(_run_and_finalise())
 
     final: GeoRAGResponse | None = None
+    # CHAT-6 — the only keepalive used to be the one comment frame above,
+    # and Laravel drops SSE comments, so between phase messages the browser
+    # heard nothing: a slow first token (COHERE_CHAT_TIMEOUT_S is 120 s)
+    # tripped Chat.tsx's 120 s idle watchdog, which blamed the realtime
+    # channel and left it moments before the answer arrived. A `status`
+    # heartbeat repeating the last phase keeps the channel honest without
+    # a new frame name.
+    heartbeat_s = float(settings.SSE_HEARTBEAT_INTERVAL_S)
+    if not heartbeat_s > 0:
+        heartbeat_s = 15.0  # a zero/negative setting would spin, not beat
+    last_status = "Analyzing query…"
     try:
         while True:
-            kind, payload = await status_queue.get()
+            item = await _next_stream_item(status_queue, run_task, heartbeat_s)
+            if item is None:
+                yield await _stamped_event(
+                    "status", {"message": last_status, "heartbeat": True}
+                )
+                continue
+            kind, payload = item
+            if kind == _RUN_ENDED_SILENTLY[0]:
+                # CHAT-17 — the run ended without a result or an error on
+                # the queue. Say so now rather than holding the stream open
+                # until Laravel's read timeout.
+                logger.error(
+                    "agent_rag_stream: orchestrator task ended without a "
+                    "terminal item project=%s",
+                    body.project_id,
+                )
+                from app.agent.errors import USER_MESSAGES, ErrorCode  # noqa: PLC0415
+
+                yield await _stamped_event(
+                    "failed",
+                    {
+                        "error": USER_MESSAGES[ErrorCode.INTERNAL_ERROR],
+                        "code": ErrorCode.INTERNAL_ERROR.value,
+                    },
+                )
+                return
             if kind == "status":
+                last_status = str(payload)
                 yield await _stamped_event("status", {"message": payload})
             elif kind == "bind":
                 # Eval 02 follow-up (2026-05-20) — citations-bound-pre-tokens.
@@ -867,6 +998,7 @@ async def post_query(
                 "event_seq": _seq,
                 "event_id": _eid,
                 "answer_run_id": str(_stamper.answer_run_id),
+                "stream_id": str(_stamper.answer_run_id),
                 "trace_id": _stamper.trace_id,
                 "event_name": "failed",
             }

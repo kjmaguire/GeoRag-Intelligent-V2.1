@@ -1283,6 +1283,11 @@ class Settings(BaseSettings):
     # _validate_timeout_ordering below fails startup if a future edit makes
     # an inner budget exceed this again.
     TIMEOUT_GATHER_S: float = 180.0  # hard deadline for parallel fan-out
+    # Seconds of SSE silence after which POST /internal/queries emits a
+    # `status` heartbeat (heartbeat=true, last phase message repeated).
+    # Must stay well under Chat.tsx's 120 s idle watchdog and its 30 s
+    # "still working" hint; Laravel relays it like any status frame.
+    SSE_HEARTBEAT_INTERVAL_S: float = 15.0
 
     # -------------------------------------------------------------------------
     # Embedding and reranker model selection
