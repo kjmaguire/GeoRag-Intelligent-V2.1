@@ -247,12 +247,6 @@ parameters:
 			path: app/Http/Controllers/Foundry/DrillholeDetailController.php
 
 		-
-			message: '#^Strict comparison using \!\=\= between non\-empty\-string and '''' will always evaluate to true\.$#'
-			identifier: notIdentical.alwaysTrue
-			count: 1
-			path: app/Http/Controllers/Foundry/IngestionRunsController.php
-
-		-
 			message: '#^Access to an undefined property App\\Models\\Project\:\:\$status\.$#'
 			identifier: property.notFound
 			count: 1
