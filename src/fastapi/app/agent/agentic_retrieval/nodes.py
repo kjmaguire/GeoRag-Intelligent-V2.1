@@ -80,68 +80,60 @@ async def resolve_node(state: AgenticRetrievalState) -> dict[str, Any]:
         return {}
 
     try:
-        from app.agent.multi_turn_resolver import resolve_multi_turn  # noqa: PLC0415
+        from app.agent.multi_turn_resolver import (  # noqa: PLC0415
+            REWRITE_MIN_CONFIDENCE,
+            resolve_multi_turn,
+        )
 
         resolved = resolve_multi_turn(state.query, list(state.history))
 
-        # Mutate state in place with the resolved values. State is a
-        # Pydantic v2 BaseModel (not frozen) so attribute set is allowed.
-        # The LangGraph merge of the returned update dict happens after
-        # this; the in-place mutation is what the spec wants
-        # ("immediately after resolve_multi_turn returns").
-        #
-        # The guard below predates the Sentry removal (2026-08-28), where
-        # it wrapped the tag stamper as well as this mutation. It is kept
-        # as-is rather than unwound, so dropping Sentry does not silently
-        # change the error semantics of the resolver; it now swallows only
-        # a malformed resolution_trace, which is worth tightening on its
-        # own terms rather than as a side effect here.
-        try:
-            state.resolution_trace = [
-                {
-                    "kind": s.kind,
-                    "original_phrase": s.original_phrase,
-                    "resolved_to": s.resolved_to,
-                    "source_turn_index": s.source_turn_index,
-                    "confidence": s.confidence,
-                }
-                for s in resolved.resolution_trace
-            ]
-            state.resolution_confidence = resolved.overall_confidence
-        except Exception:  # pragma: no cover — defensive
-            logger.debug(
-                "multi_turn resolution_trace mutation failed (non-fatal)",
-                exc_info=True,
-            )
+        # Everything goes through the returned update dict. This node used
+        # to ALSO assign state.resolution_trace in place "as the spec
+        # wants"; LangGraph rebuilds the state from channels for the next
+        # node, so an in-place write is discarded (audit AGT-5).
+        trace = [
+            {
+                "kind": s.kind,
+                "original_phrase": s.original_phrase,
+                "resolved_to": s.resolved_to,
+                "source_turn_index": s.source_turn_index,
+                "confidence": s.confidence,
+            }
+            for s in resolved.resolution_trace
+        ]
 
         if not resolved.made_changes:
             # Stamp the confidence even when no substitution happened —
-            # a fully-resolvable query is a positive signal.
+            # a fully-resolvable query is a positive signal, and a low one
+            # (an unresolvable or ambiguous pronoun) is worth recording.
+            return {"resolution_confidence": resolved.overall_confidence}
+
+        if resolved.overall_confidence < REWRITE_MIN_CONFIDENCE:
+            # Audit AGT-1: a low-confidence rewrite is a guess, and the
+            # rewritten string replaces state.query for the classifier,
+            # the hole-ID pre-pass, retrieval and persistence. Keep the
+            # user's words; the log records what was withheld.
+            logger.info(
+                "agentic_retrieval.resolve: rewrite withheld "
+                "(steps=%d, confidence=%.2f < %.2f)",
+                len(trace), resolved.overall_confidence, REWRITE_MIN_CONFIDENCE,
+            )
             return {"resolution_confidence": resolved.overall_confidence}
 
         logger.info(
             "agentic_retrieval.resolve: rewrote query "
             "(steps=%d, confidence=%.2f)",
-            len(resolved.resolution_trace),
+            len(trace),
             resolved.overall_confidence,
         )
 
         return {
             "query": resolved.rewritten_query,
             "query_original": state.query,
-            "resolution_trace": [
-                {
-                    "kind": s.kind,
-                    "original_phrase": s.original_phrase,
-                    "resolved_to": s.resolved_to,
-                    "source_turn_index": s.source_turn_index,
-                    "confidence": s.confidence,
-                }
-                for s in resolved.resolution_trace
-            ],
+            "resolution_trace": trace,
             "resolution_confidence": resolved.overall_confidence,
         }
-    except Exception:  # pragma: no cover — defensive
+    except Exception:  # pragma: no cover - defensive
         logger.exception(
             "agentic_retrieval.resolve: failed (non-fatal, falling back "
             "to un-rewritten query)"
@@ -1150,6 +1142,25 @@ def _render_tool_results_context(
     return "\n\n".join(out) if out else "(no tool results)"
 
 
+def _question_for_llm(state: AgenticRetrievalState) -> str:
+    """The USER QUESTION the synthesis model is shown.
+
+    Audit AGT-1: when resolve_node rewrote the query, the rewrite used to
+    REPLACE the user's words in the prompt, so a bad substitution was the
+    only version of the question the model ever saw. The model now gets
+    the user's own words first, with the rewrite as a labelled reading it
+    can use to resolve "it"/"its" against the conversation.
+    """
+    original = (state.query_original or "").strip()
+    rewritten = (state.query or "").strip()
+    if not original or original == rewritten:
+        return state.query
+    return (
+        f"{original}\n"
+        f"(Read in the context of the earlier conversation as: {rewritten})"
+    )
+
+
 async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Build the LLM context, call the model, and assemble the response.
 
@@ -1476,7 +1487,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # Letting the exception propagate is what actually reaches it. Found in
     # a full-app review, 2026-08-05.
     text = await _call_llm(
-        query=state.query,
+        query=_question_for_llm(state),
         context=context_block,
         temperature=0.1,
         anthropic_client=anthropic_client,
@@ -2642,7 +2653,7 @@ async def _reissue_llm_only(
     anthropic_client = getattr(state.deps, "anthropic_client", None)
 
     text = await _call_llm(
-        query=state.query,
+        query=_question_for_llm(state),
         context=context_block,
         temperature=0.1,
         anthropic_client=anthropic_client,

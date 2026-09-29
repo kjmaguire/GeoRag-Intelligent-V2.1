@@ -13,7 +13,7 @@ Geologists chain queries within a conversation:
 This module resolves three classes of references in the LATEST query
 against the conversation HISTORY:
 
-  1. **Pronoun coreference** ("it", "its", "they", "their", "that")
+  1. **Pronoun coreference** ("it", "its", "they", "their", "them")
      → resolved to the last named entity of compatible type in history.
   2. **Demonstrative reference** ("the same hole", "those assays",
      "this property") → resolved to the most recent entity of the
@@ -187,13 +187,84 @@ _PRONOUN_TO_TYPE: dict[str, EntityType] = {
     # Possessive pronouns (rendered as "X's" in the rewrite)
     "its": "hole",        # Most common — geologists ask "its assays"
     "their": "hole",      # Same
-    # Nominative pronouns — type inferred by recency
+    # Nominative / object pronouns
     "it": "hole",
     "they": "hole",
-    "that": "hole",
-    "those": "hole",
-    "this": "property",
+    "them": "hole",
 }
+# "that", "this" and "those" USED to be in this table as bare pronouns
+# (audit AGT-1, 2026-09-29). In a geologist's question they are almost
+# always a determiner ("what does this mean", "those assays") or a
+# relativizer / complementizer ("assays THAT exceed 2 g/t", "possible THAT
+# the mineralization continues"), and replacing them turned
+#   "Which holes have assays that exceed 2 g/t U3O8?"
+# into "Which holes have assays PLS-22-08 exceed 2 g/t U3O8?", which the
+# intent classifier, the hole-ID pre-pass and the LLM then all saw. They
+# now resolve ONLY inside the typed demonstrative patterns below ("that
+# hole", "this deposit", "those assays"), where the noun makes the
+# reference unambiguous.
+
+# Secondary entity types a pronoun may resolve to when NO mention of its
+# preferred type exists anywhere in history. Deliberately narrow: the
+# resolver used to fall back to the latest mention of ANY type, which is
+# how a pronoun with no plausible referent still got replaced.
+_PRONOUN_SECONDARY_TYPES: dict[str, tuple[EntityType, ...]] = {
+    "its": ("property",),
+    "it": ("property",),
+}
+
+# Expletive ("dummy") it — "it is possible that", "is it likely", "it
+# seems", "how long does it take". These have no referent; rewriting them
+# was the second AGT-1 reproduction ("Is it possible that the
+# mineralization continues" -> "Is PLS-22-08 possible PLS-22-08 the
+# mineralization continues").
+_EXPLETIVE_ADJECTIVES = (
+    r"possible|impossible|likely|unlikely|probable|improbable|plausible|"
+    r"true|false|clear|unclear|known|unknown|necessary|important|"
+    r"reasonable|feasible|worth|worthwhile|fair|safe|common|typical|"
+    r"normal|usual|unusual|reported|thought|believed|assumed|expected|"
+    r"estimated|interpreted|inferred|suggested|recommended|required|"
+    r"difficult|easy|hard|better|best|advisable|appropriate|correct|"
+    r"accurate|valid|realistic|sensible|economic|economical|"
+    r"uneconomic|viable|enough|sufficient|the\s+case"
+)
+# Matched against the text starting AT the pronoun ("it is possible ...").
+_EXPLETIVE_IT_FORWARD_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"it(?:'s|\s+(?:is|was|isn't|wasn't|would|could|will|might|may|"
+        r"should|must|can))(?:\s+(?:not|be|been|have\s+been))*"
+        r"(?:\s+\w+ly)?\s+(?:" + _EXPLETIVE_ADJECTIVES + r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"it\s+(?:seems?|seemed|appears?|appeared|looks?\s+like|looked\s+like|"
+        r"turns?\s+out|turned\s+out|follows|depends|matters|remains\s+to|"
+        r"takes?|took|costs?)\b",
+        re.IGNORECASE,
+    ),
+)
+# Inverted order — "is it possible", "would it be worth", "does it matter".
+# The head is matched against the text BEFORE the pronoun, the tail
+# against the text starting at it.
+_EXPLETIVE_IT_INVERTED_HEAD_RE = re.compile(
+    r"\b(?:is|was|isn't|wasn't|would|could|will|might|may|should|does|did|"
+    r"doesn't|didn't)\s+$",
+    re.IGNORECASE,
+)
+_EXPLETIVE_IT_INVERTED_TAIL_RE = re.compile(
+    r"it(?:\s+(?:not|be|been|have\s+been))*(?:\s+\w+ly)?\s+(?:"
+    + _EXPLETIVE_ADJECTIVES
+    + r"|matter|make\s+sense|take|cost|seem|appear)\b",
+    re.IGNORECASE,
+)
+
+# resolve_node does not substitute the rewrite for the user's question
+# when the overall confidence falls below this (spec §10.2 already uses
+# 0.6 as the "ask the user to confirm the interpretation" line).
+REWRITE_MIN_CONFIDENCE = 0.6
+
+# Per-step confidence when a pronoun had to fall back to a secondary type.
+_SECONDARY_TYPE_CONFIDENCE = 0.6
 
 # Demonstratives — these include a TYPE noun, so the resolver knows
 # what to look for. The phrase is replaced with the surface form of
@@ -206,6 +277,8 @@ _DEMONSTRATIVE_PATTERNS: tuple[tuple[re.Pattern[str], EntityType], ...] = (
     (re.compile(r"\bthe\s+same\s+property\b", re.IGNORECASE), "property"),
     (re.compile(r"\bthat\s+property\b", re.IGNORECASE), "property"),
     (re.compile(r"\bthis\s+property\b", re.IGNORECASE), "property"),
+    (re.compile(r"\bthe\s+same\s+(?:deposit|project)\b", re.IGNORECASE), "property"),
+    (re.compile(r"\bth(?:at|is)\s+(?:deposit|project)\b", re.IGNORECASE), "property"),
     (re.compile(r"\bthe\s+same\s+formation\b", re.IGNORECASE), "formation"),
     (re.compile(r"\bthat\s+formation\b", re.IGNORECASE), "formation"),
     (re.compile(r"\bthose\s+assays\b", re.IGNORECASE), "hole"),  # assays belong to a hole
@@ -430,13 +503,18 @@ def resolve_multi_turn(
     total_refs += p_total
     unresolved_refs += p_unresolved
 
-    # Confidence: 1.0 when no references found; degrades linearly with
-    # unresolved-fraction.
+    # Confidence: 1.0 when no references found. Otherwise the resolved
+    # fraction, capped by the weakest step actually applied — a rewrite
+    # built on a 0.75 nominative-pronoun guess used to report 1.0 because
+    # only UNRESOLVED references lowered the number (audit AGT-1).
     if total_refs == 0:
         confidence = 1.0
     else:
         resolved_fraction = (total_refs - unresolved_refs) / total_refs
-        confidence = max(0.0, min(1.0, resolved_fraction))
+        confidence = resolved_fraction
+        if steps:
+            confidence *= min(s.confidence for s in steps)
+        confidence = max(0.0, min(1.0, confidence))
 
     return ResolvedQuery(
         query=query,
@@ -508,12 +586,55 @@ def _walk_back_mention(
     return mentions[idx]
 
 
+def _is_expletive_it(text: str, start: int) -> bool:
+    """True when the "it" at ``text[start:]`` is a dummy subject.
+
+    "it is possible that…", "it seems…", "is it likely…", "how long does
+    it take…" — no referent, so nothing to resolve.
+    """
+    tail = text[start:]
+    if any(p.match(tail) for p in _EXPLETIVE_IT_FORWARD_RES):
+        return True
+    return bool(
+        _EXPLETIVE_IT_INVERTED_HEAD_RE.search(text[:start])
+        and _EXPLETIVE_IT_INVERTED_TAIL_RE.match(tail)
+    )
+
+
+def _candidate_for_type(
+    history: list[ConversationTurn],
+    target_type: EntityType,
+) -> tuple[EntityMention | None, bool]:
+    """Latest mention of ``target_type`` and whether it is ambiguous.
+
+    Ambiguous means the most recent turn that mentions the type at all
+    mentions MORE than one distinct entity of it ("PLS-22-08 and
+    PLS-22-11 both…") — a pronoun cannot say which one it means.
+    """
+    for turn in sorted(history, key=lambda t: t.turn_index, reverse=True):
+        typed = [m for m in turn.entity_mentions if m.entity_type == target_type]
+        if not typed:
+            continue
+        distinct = {m.surface_form.upper() for m in typed}
+        return typed[0], len(distinct) > 1
+    return None, False
+
+
 def _resolve_pronouns(
     rewritten: str,
     history: list[ConversationTurn],
 ) -> tuple[str, list[ResolutionStep], int, int]:
     """Resolve standalone pronouns. Returns (new_text, steps,
-    total_pronoun_refs_found, unresolved_count)."""
+    total_pronoun_refs_found, unresolved_count).
+
+    A pronoun is left untouched (and counted as unresolved, which lowers
+    the overall confidence) when:
+
+    * it is an expletive "it" ("it is possible that…");
+    * no mention of its preferred or secondary type exists in history —
+      there is no any-type fallback any more;
+    * the most recent turn naming that type names more than one entity.
+    """
     steps: list[ResolutionStep] = []
     total = 0
     unresolved = 0
@@ -521,34 +642,44 @@ def _resolve_pronouns(
     # Process each pronoun. We compile a per-pronoun regex with word
     # boundaries so "items" doesn't match "it", etc.
     # We process in deterministic order — sorted by descending length so
-    # longer pronouns (those, their) are tried before shorter (it, its).
+    # longer pronouns (their) are tried before shorter (it, its).
     pronouns_sorted = sorted(_PRONOUN_TO_TYPE.keys(), key=len, reverse=True)
 
     for pronoun in pronouns_sorted:
         pattern = re.compile(rf"\b{pronoun}\b", re.IGNORECASE)
-        match = pattern.search(rewritten)
-        if not match:
+        match = None
+        for candidate_match in pattern.finditer(rewritten):
+            if pronoun == "it" and _is_expletive_it(
+                rewritten, candidate_match.start(),
+            ):
+                continue
+            match = candidate_match
+            break
+        if match is None:
             continue
         total += 1
-        target_type = _PRONOUN_TO_TYPE[pronoun]
-        latest = _latest_mention_of_type(history, target_type)
-        # If the type-specific recency lookup misses, fall back to the
-        # latest mention of ANY type — pronouns are inherently ambiguous.
+
+        confidence_cap = 1.0
+        latest, ambiguous = _candidate_for_type(history, _PRONOUN_TO_TYPE[pronoun])
         if latest is None:
-            any_mentions = _all_mentions_newest_first(history)
-            if any_mentions:
-                latest = any_mentions[0]
-        if latest is None:
+            for secondary in _PRONOUN_SECONDARY_TYPES.get(pronoun, ()):
+                latest, ambiguous = _candidate_for_type(history, secondary)
+                if latest is not None:
+                    confidence_cap = _SECONDARY_TYPE_CONFIDENCE
+                    break
+        if latest is None or ambiguous:
             unresolved += 1
             continue
         # Possessive pronouns render as "X's" in the rewrite.
         if pronoun in ("its", "their"):
             replacement = f"{latest.surface_form}'s"
-            confidence = 0.85
+            confidence = min(0.85, confidence_cap)
         else:
             replacement = latest.surface_form
-            confidence = 0.75
-        rewritten = pattern.sub(replacement, rewritten, count=1)
+            confidence = min(0.75, confidence_cap)
+        rewritten = (
+            rewritten[: match.start()] + replacement + rewritten[match.end():]
+        )
         steps.append(ResolutionStep(
             kind="pronoun",
             original_phrase=match.group(0),

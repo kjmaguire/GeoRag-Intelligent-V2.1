@@ -294,16 +294,29 @@ def test_resolver_falls_back_to_text_extraction_when_mentions_empty():
         ConversationTurn(
             turn_index=0,
             role="user",
-            text="tell me about hole PLS-22-08 and DDH-1234",
+            text="tell me about hole PLS-22-08",
             entity_mentions=(),  # empty — resolver should backfill
         ),
     ]
     result = resolve_multi_turn("what are ITS depths?", history)
-    # Backfill should find PLS-22-08 or DDH-1234 and substitute.
-    assert (
-        "PLS-22-08" in result.rewritten_query
-        or "DDH-1234" in result.rewritten_query
-    )
+    assert result.rewritten_query == "what are PLS-22-08's depths?"
+
+
+def test_backfilled_turn_naming_two_holes_is_ambiguous_not_guessed():
+    """Two holes in the latest turn: "its" cannot say which. The old
+    resolver picked one silently; it now leaves the query alone and says
+    so through the confidence (AGT-1)."""
+    history = [
+        ConversationTurn(
+            turn_index=0,
+            role="user",
+            text="tell me about hole PLS-22-08 and DDH-1234",
+            entity_mentions=(),
+        ),
+    ]
+    result = resolve_multi_turn("what are ITS depths?", history)
+    assert result.made_changes is False
+    assert result.overall_confidence < 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -371,3 +384,89 @@ def test_made_changes_is_false_when_query_passes_through():
     history = [_turn(0, "x", mentions=[_hole(0, "PLS-22-08")])]
     result = resolve_multi_turn("what's the porosity of unit 4?", history)
     assert result.made_changes is False
+
+
+# ---------------------------------------------------------------------------
+# AGT-1 (audit 2026-09-29) — determiners, relativizers and expletives are
+# not pronouns. The three strings are the audit's reproductions, run
+# against the heuristic-extraction path exactly as production does it (the
+# Laravel bridge never sends entity_mentions).
+# ---------------------------------------------------------------------------
+
+_AGT1_HISTORY = [
+    ConversationTurn(
+        turn_index=0, role="user", text="Tell me about hole PLS-22-08",
+    ),
+]
+
+
+def test_relativizer_that_is_not_rewritten():
+    q = "Which holes have assays that exceed 2 g/t U3O8?"
+    result = resolve_multi_turn(q, _AGT1_HISTORY)
+    assert result.rewritten_query == q
+    assert result.resolution_trace == ()
+    assert result.overall_confidence == 1.0
+
+
+def test_expletive_it_and_complementizer_that_are_not_rewritten():
+    q = "Is it possible that the mineralization continues at depth?"
+    result = resolve_multi_turn(q, _AGT1_HISTORY)
+    assert result.rewritten_query == q
+    assert "PLS-22-08" not in result.rewritten_query
+
+
+def test_determiner_this_is_not_rewritten():
+    q = "What does this mean for the resource estimate?"
+    result = resolve_multi_turn(q, _AGT1_HISTORY)
+    assert result.rewritten_query == q
+
+
+def test_more_expletive_it_forms_are_left_alone():
+    for q in (
+        "It seems the grade drops off below 300 m, why?",
+        "Would it be worth drilling a step-out to the east?",
+        "How long does it take to get assay results back?",
+        "It is likely the fault offsets the ore body?",
+    ):
+        assert resolve_multi_turn(q, _AGT1_HISTORY).rewritten_query == q, q
+
+
+def test_genuine_it_after_expletive_still_resolves():
+    result = resolve_multi_turn(
+        "Is it likely that its grade holds at depth?", _AGT1_HISTORY,
+    )
+    assert result.rewritten_query == (
+        "Is it likely that PLS-22-08's grade holds at depth?"
+    )
+
+
+def test_pronoun_never_falls_back_to_an_unrelated_type():
+    """Only a formation in history: "it" has no hole or property to point
+    at, so it stays unresolved rather than grabbing the formation."""
+    history = [_turn(0, "x", mentions=[EntityMention(
+        surface_form="Athabasca Group", entity_type="formation", turn_index=0,
+    )])]
+    result = resolve_multi_turn("how deep is it?", history)
+    assert result.made_changes is False
+    assert result.overall_confidence == 0.0
+
+
+def test_confidence_reflects_the_weakest_applied_step():
+    history = [_turn(0, "x", mentions=[_hole(0, "PLS-22-08")])]
+    assert resolve_multi_turn("how deep is it?", history).overall_confidence == 0.75
+    assert resolve_multi_turn("what are its assays?", history).overall_confidence == 0.85
+    assert resolve_multi_turn(
+        "show me this hole", history,
+    ).overall_confidence == 0.9
+
+
+def test_typed_demonstratives_still_resolve():
+    history = [_turn(0, "x", mentions=[
+        _hole(0, "PLS-22-08"), _property_mention(0, "Crackingstone"),
+    ])]
+    assert "PLS-22-08" in resolve_multi_turn(
+        "log for that hole", history,
+    ).rewritten_query
+    assert "Crackingstone" in resolve_multi_turn(
+        "reports on this project", history,
+    ).rewritten_query
