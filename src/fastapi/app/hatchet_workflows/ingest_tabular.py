@@ -68,6 +68,7 @@ app/services/ingest/collar_crs.py.
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as _dt
 import json
 import logging
@@ -87,6 +88,21 @@ from pydantic import BaseModel, Field, field_validator
 from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress, hatchet
+from app.services.ingest.silver_row_guard import (
+    LITHOLOGY_PERCENT_RANGE,
+    LITHOLOGY_TEXT_WIDTHS,
+    MINERALIZATION_PCT_RANGE,
+    SAMPLE_TEXT_WIDTHS,
+    SURVEY_TEXT_WIDTHS,
+    UNKNOWN,
+    RowIssues,
+    finite,
+    fit_text,
+    guard_collar,
+    guard_interval,
+    guard_percent,
+    issue_warnings,
+)
 
 log = logging.getLogger("georag.hatchet.ingest_tabular")
 
@@ -186,16 +202,15 @@ WRITE_ORDER: tuple[str, ...] = (
     "mineralization", "sample",
 )
 
-#: NOT NULL columns the parsers do not guarantee. Defaulting these is the
-#: difference between ingesting a real-world file and rejecting it: plenty of
-#: collar exports carry no Status or HoleType column at all.
-_COLLAR_DEFAULTS = {
-    "hole_type": "unknown",
-    "status": "unknown",
-    "total_depth": 0.0,
-}
-_SURVEY_METHOD_DEFAULT = "unknown"
-_SAMPLE_TYPE_DEFAULT = "unknown"
+#: NOT NULL text columns the parsers do not guarantee. Defaulting these is
+#: the difference between ingesting a real-world file and rejecting it:
+#: plenty of collar exports carry no Status or HoleType column, and most
+#: assay exports carry no sample-type column. ``hole_type`` / ``status``
+#: default inside ``silver_row_guard.guard_collar``. ``total_depth`` is NOT
+#: defaulted any more: it used to be 0.0, which chk_total_depth_positive
+#: refuses — see ``_write_collars``.
+_SURVEY_METHOD_DEFAULT = UNKNOWN
+_SAMPLE_TYPE_DEFAULT = UNKNOWN
 
 _INSERT_BATCH = 500
 
@@ -259,11 +274,13 @@ INSERT INTO silver.collars (
     collar_id, workspace_id, project_id, hole_id, hole_id_canonical,
     easting, northing, elevation, total_depth, azimuth, dip,
     hole_type, drill_date, status, georef_method,
+    drill_type, hole_status,
     created_at, updated_at, geom, geom_4326
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4,
     $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14,
+    $16, $17,
     NOW(), NOW(),
     ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), {COLLAR_GEOM_SRID}),
     ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), 4326)
@@ -279,6 +296,10 @@ ON CONFLICT (project_id, hole_id) DO UPDATE SET
     hole_type   = EXCLUDED.hole_type,
     drill_date  = EXCLUDED.drill_date,
     status      = EXCLUDED.status,
+    -- Only ever the overflow of a too-long hole_type / status (PG-10), so a
+    -- row that did not overflow keeps whatever an earlier writer stored.
+    drill_type  = COALESCE(EXCLUDED.drill_type, silver.collars.drill_type),
+    hole_status = COALESCE(EXCLUDED.hole_status, silver.collars.hole_status),
     geom        = EXCLUDED.geom,
     geom_4326   = EXCLUDED.geom_4326,
     updated_at  = NOW()
@@ -1135,40 +1156,115 @@ def _resolve_collar(index: dict[str, str], hole_id: Any) -> str | None:
     return index.get(str(canon).strip().upper()) if canon else None
 
 
+async def _existing_collars_by_canonical(
+    conn: asyncpg.Connection, project_id: str,
+) -> dict[str, tuple[str, float | None]]:
+    """``canonical hole id -> (stored hole_id, stored total_depth)``.
+
+    The upsert below is keyed on ``(project_id, hole_id)`` — the only unique
+    constraint the table has — so ``SRE09_6`` from a LAS header on Monday and
+    ``SRE09-6`` from Friday's collar table used to become two collars at two
+    positions for one hole (ING-14). Reading the stored spelling first lets a
+    separator/case variant update the collar that already exists.
+
+    When the project already holds two ghosts of one hole, the one whose
+    stored spelling sorts first wins, so the choice is deterministic; the
+    ghosts themselves are Kyle's to merge (see the detection query in the
+    2026-09-29 ingestion fix report).
+    """
+    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+
+    rows = await conn.fetch(
+        "SELECT hole_id, hole_id_canonical, total_depth FROM silver.collars "
+        "WHERE project_id = $1::uuid ORDER BY hole_id",
+        project_id,
+    )
+    out: dict[str, tuple[str, float | None]] = {}
+    for r in rows:
+        stored = str(r["hole_id"] or "")
+        canon = r["hole_id_canonical"] or canonicalize(stored)
+        if canon and stored:
+            out.setdefault(str(canon).upper(), (stored, r["total_depth"]))
+    return out
+
+
 async def _write_collars(
     conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
     records: list[dict], epsg: int, georef_method: str,
+    issues: RowIssues | None = None,
 ) -> dict[str, int]:
+    """Upsert collars, one bad ROW never failing the batch (ING-1).
+
+    Every row is checked against the table's CHECK constraints and column
+    widths BEFORE it is sent (``silver_row_guard``): an out-of-range optional
+    value is blanked and reported, a row missing a NOT NULL value is skipped
+    and reported, and nothing is defaulted to a number nobody measured —
+    ``total_depth`` used to default to 0.0, which ``chk_total_depth_positive``
+    refuses, so a collar table with no EOH column failed outright.
+
+    All batches go in ONE transaction: a crash on batch 2 no longer leaves
+    batch 1's 500 collars committed. Called inside the per-sheet transaction
+    of ``run_ingest_tabular`` this becomes a savepoint.
+
+    ``issues`` collects what was blanked, skipped and merged so the caller
+    can turn it into the run's warnings.
+    """
+    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+
+    issues = issues if issues is not None else RowIssues()
+    skipped_before = len(issues.skipped)
+    existing = await _existing_collars_by_canonical(conn, project_id)
+    existing_ids = {stored for stored, _td in existing.values()}
+
     rows = []
-    skipped = 0
     for rec in records:
-        easting, northing = _num(rec.get("easting")), _num(rec.get("northing"))
-        if not rec.get("hole_id") or easting is None or northing is None:
-            # NOT NULL on both, and a collar without coordinates cannot be
-            # placed on a map or projected into a section — it is not a
-            # collar, so it is reported rather than written as zeroes.
-            skipped += 1
+        hole_id = str(rec.get("hole_id") or "").strip()
+        # Recomputed rather than trusted from the record: the rule is
+        # _hole_id.canonicalize, and a record whose canonical disagrees with
+        # its own hole_id must not merge two different holes.
+        canon = canonicalize(hole_id)
+        match = existing.get(str(canon).upper()) if canon else None
+        existing_td: float | None = None
+        if match is not None:
+            stored_id, existing_td = match
+            if hole_id and stored_id != hole_id and hole_id not in existing_ids:
+                # Same hole, different separators/case: update the collar
+                # that exists rather than create a ghost beside it.
+                issues.merged.append((rec.get("_source_row"), hole_id, stored_id))
+                rec = {**rec, "hole_id": stored_id}
+        rec = {**rec, "hole_id_canonical": canon}
+        values = guard_collar(rec, issues, existing_total_depth=existing_td)
+        if values is None:
             continue
+        if canon and match is None:
+            # A second spelling of the same hole LATER IN THIS FILE lands on
+            # the collar this row creates, not on a ghost of its own.
+            existing[str(canon).upper()] = (values["hole_id"], values["total_depth"])
+            existing_ids.add(values["hole_id"])
         rows.append((
             workspace_id, project_id,
-            str(rec["hole_id"]), rec.get("hole_id_canonical"),
-            easting, northing, _num(rec.get("elevation")),
-            _num(rec.get("total_depth")) if rec.get("total_depth") is not None
-            else _COLLAR_DEFAULTS["total_depth"],
-            _num(rec.get("azimuth")), _num(rec.get("dip")),
-            rec.get("hole_type") or _COLLAR_DEFAULTS["hole_type"],
+            values["hole_id"], values["hole_id_canonical"],
+            values["easting"], values["northing"], values["elevation"],
+            values["total_depth"], values["azimuth"], values["dip"],
+            values["hole_type"],
             rec.get("drill_date"),
-            rec.get("status") or _COLLAR_DEFAULTS["status"],
+            values["status"],
             georef_method,
             epsg,
+            values["drill_type"], values["hole_status"],
         ))
 
     written = 0
-    for start in range(0, len(rows), _INSERT_BATCH):
-        chunk = rows[start:start + _INSERT_BATCH]
-        await conn.executemany(_COLLAR_SQL, chunk)
-        written += len(chunk)
-    return {"written": written, "skipped": skipped, "orphaned": 0}
+    async with conn.transaction():
+        for start in range(0, len(rows), _INSERT_BATCH):
+            chunk = rows[start:start + _INSERT_BATCH]
+            await conn.executemany(_COLLAR_SQL, chunk)
+            written += len(chunk)
+    return {
+        "written": written,
+        "skipped": len(issues.skipped) - skipped_before,
+        "orphaned": 0,
+    }
 
 
 #: Interval tables have no natural unique key, so re-running an ingest would
@@ -1187,9 +1283,18 @@ async def _write_collars(
 #: hole untouched, which is what a geologist means by "here is the corrected
 #: file".
 #:
+#: Within ONE ingest run the replace happens once per (table, collar): a
+#: workbook with an Au sheet and a Cu/Zn sheet for the same holes, or an
+#: Access database with several assay tables, used to have its second sheet
+#: delete the first (ING-2). ``run_ingest_tabular`` now carries a
+#: ``replaced_scope`` so later sheets of the same run append.
+#:
 #: The caveat, stated because it is a real workflow: if one hole's intervals
-#: are split across two files, loading the second replaces the first. The
-#: replaced count is reported for exactly that reason — it is never silent.
+#: are split across two SEPARATE uploads (two files uploaded one after the
+#: other, or two members of a ZIP — each member is its own run), loading the
+#: second replaces the first. The replaced count is in the run's output; the
+#: tables carry no source-file column, so which upload wrote the replaced
+#: rows cannot be told apart and no warning claims to.
 _INTERVAL_TABLES = {
     "survey": "silver.surveys",
     "lithology": "silver.lithology_logs",
@@ -1223,6 +1328,8 @@ _COMPANION_TYPES: dict[str, tuple[str, ...]] = {
 async def _write_intervals(
     conn: asyncpg.Connection, *, workspace_id: str, sheet_type: str,
     records: list[dict], index: dict[str, str],
+    issues: RowIssues | None = None,
+    replaced_scope: set[tuple[str, str]] | None = None,
 ) -> dict[str, int]:
     """Write survey / lithology / sample (and structure, alteration, mineralization) rows against resolved collars.
 
@@ -1232,7 +1339,25 @@ async def _write_intervals(
     silver.assays_v2, the §04e-canonical assay table every assay-side
     reader queries. Both replace, scoped to the collars the file mentions,
     for the reasons on _INTERVAL_TABLES.
+
+    ``replaced_scope`` (ING-2) is the run's record of which
+    ``(table, collar_id)`` pairs it has ALREADY replaced. A workbook with an
+    ``Au_FA`` and an ``ICP_ME`` sheet, or an Access database with three assay
+    tables, reaches this function once per sheet; replacing per sheet made
+    the second sheet delete the first sheet's rows for the same holes. With
+    a scope, a hole is cleared once per table per ingest run — the first
+    sheet replaces what an EARLIER upload wrote, later sheets append.
+    ``None`` keeps the per-call replace for callers outside a run.
+
+    Rows the tables' constraints would refuse are handled per ROW, never per
+    batch (ING-1): an interval with no readable or an inverted from/to is
+    skipped, an out-of-range optional value (RQD / recovery / abundance
+    outside 0..100) or an over-width text value is blanked, and both are
+    recorded in ``issues``.
     """
+    issues = issues if issues is not None else RowIssues()
+    skipped_before = len(issues.skipped)
+
     element_ref: dict[str, str] = {}
     if sheet_type == "sample":
         element_ref = {
@@ -1246,7 +1371,6 @@ async def _write_intervals(
     assay_rows: list[tuple] = []
     assay_skipped = 0
     orphaned = 0
-    unwritable = 0
     for rec in records:
         collar_id = _resolve_collar(index, rec.get("hole_id"))
         if collar_id is None:
@@ -1256,18 +1380,25 @@ async def _write_intervals(
             continue
 
         if sheet_type == "survey":
+            depth = finite(rec.get("depth"))
+            if depth is None:
+                issues.skip(rec, "survey station has no readable depth")
+                continue
             rows.append((
-                workspace_id, collar_id, _num(rec.get("depth")),
-                _num(rec.get("azimuth")), _num(rec.get("dip")),
-                rec.get("survey_method") or _SURVEY_METHOD_DEFAULT,
+                workspace_id, collar_id, depth,
+                finite(rec.get("azimuth")), finite(rec.get("dip")),
+                fit_text(
+                    rec, "survey_method", SURVEY_TEXT_WIDTHS["survey_method"],
+                    issues, default=_SURVEY_METHOD_DEFAULT,
+                ),
             ))
         elif sheet_type == "structure":
-            depth = _num(rec.get("depth"))
+            depth = finite(rec.get("depth"))
             if depth is None:
                 # NOT NULL, and the parser already rejects such a row; kept
                 # as a guard for records that did not come from it, and
                 # counted rather than dropped in silence.
-                unwritable += 1
+                issues.skip(rec, "structure measurement has no readable depth")
                 continue
             rows.append((
                 workspace_id, collar_id, depth,
@@ -1277,41 +1408,66 @@ async def _write_intervals(
                 rec.get("roughness"), rec.get("infill"), rec.get("notes"),
             ))
         elif sheet_type == "alteration":
-            from_d, to_d = _num(rec.get("from_depth")), _num(rec.get("to_depth"))
-            if from_d is None or to_d is None or not rec.get("alteration_type"):
-                unwritable += 1
+            if not rec.get("alteration_type"):
+                issues.skip(rec, "alteration interval has no alteration type")
+                continue
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
                 continue
             rows.append((
-                workspace_id, collar_id, from_d, to_d,
+                workspace_id, collar_id, bounds[0], bounds[1],
                 rec["alteration_type"], rec.get("intensity"),
                 list(rec["minerals"]) if rec.get("minerals") else None,
                 rec.get("notes"),
             ))
         elif sheet_type == "mineralization":
-            from_d, to_d = _num(rec.get("from_depth")), _num(rec.get("to_depth"))
-            if from_d is None or to_d is None or not rec.get("mineral"):
-                unwritable += 1
+            if not rec.get("mineral"):
+                issues.skip(rec, "mineralization interval has no mineral")
+                continue
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
                 continue
             rows.append((
-                workspace_id, collar_id, from_d, to_d,
-                rec["mineral"], _num(rec.get("abundance_pct")),
+                workspace_id, collar_id, bounds[0], bounds[1],
+                rec["mineral"],
+                guard_percent(rec, "abundance_pct", MINERALIZATION_PCT_RANGE, issues),
                 rec.get("form"), rec.get("grain_size"), rec.get("notes"),
             ))
         elif sheet_type == "lithology":
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
+                continue
+            widths = LITHOLOGY_TEXT_WIDTHS
+            code = fit_text(rec, "lithology_code", widths["lithology_code"], issues)
+            description = rec.get("lithology_description")
+            if code is None and not description and rec.get("lithology_code"):
+                # A free-text "code" too long for varchar(20) is still the
+                # logger's words: keep them in the unbounded description
+                # column rather than lose them with the blanked code.
+                description = str(rec["lithology_code"]).strip() or None
             rows.append((
-                workspace_id, collar_id,
-                _num(rec.get("from_depth")), _num(rec.get("to_depth")),
-                rec.get("lithology_code"), rec.get("lithology_description"),
-                rec.get("grain_size"), rec.get("color"), rec.get("hardness"),
-                _num(rec.get("rqd")), _num(rec.get("recovery")),
-                rec.get("weathering"),
+                workspace_id, collar_id, bounds[0], bounds[1],
+                code,
+                description,
+                fit_text(rec, "grain_size", widths["grain_size"], issues),
+                fit_text(rec, "color", widths["color"], issues),
+                fit_text(rec, "hardness", widths["hardness"], issues),
+                guard_percent(rec, "rqd", LITHOLOGY_PERCENT_RANGE, issues),
+                guard_percent(rec, "recovery", LITHOLOGY_PERCENT_RANGE, issues),
+                fit_text(rec, "weathering", widths["weathering"], issues),
             ))
         else:  # sample
+            bounds = guard_interval(rec, issues)
+            if bounds is None:
+                continue
             rows.append((
-                workspace_id, collar_id,
-                _num(rec.get("from_depth")), _num(rec.get("to_depth")),
-                rec.get("sample_type") or _SAMPLE_TYPE_DEFAULT,
-                rec.get("lab_id"), rec.get("qaqc_type"),
+                workspace_id, collar_id, bounds[0], bounds[1],
+                fit_text(
+                    rec, "sample_type", SAMPLE_TEXT_WIDTHS["sample_type"],
+                    issues, default=_SAMPLE_TYPE_DEFAULT,
+                ),
+                fit_text(rec, "lab_id", SAMPLE_TEXT_WIDTHS["lab_id"], issues),
+                fit_text(rec, "qaqc_type", SAMPLE_TEXT_WIDTHS["qaqc_type"], issues),
                 json.dumps(rec.get("commodity_assays") or {}),
                 (
                     json.dumps(rec["commodity_assay_flags"])
@@ -1338,8 +1494,18 @@ async def _write_intervals(
 
     # Replace, don't append — see _INTERVAL_TABLES. Scoped to the collars this
     # file actually mentions, inside the same transaction as the insert so a
-    # failure cannot leave the holes emptied.
-    touched = sorted({r[1] for r in rows})
+    # failure cannot leave the holes emptied — and, within one run, to the
+    # collars no earlier sheet of this run has already replaced (ING-2).
+    table = _INTERVAL_TABLES[sheet_type]
+    mentioned = sorted({r[1] for r in rows})
+    touched = [
+        cid for cid in mentioned
+        if replaced_scope is None or (table, cid) not in replaced_scope
+    ]
+    assay_touched = [
+        cid for cid in mentioned
+        if replaced_scope is None or ("silver.assays_v2", cid) not in replaced_scope
+    ] if sheet_type == "sample" else []
     replaced = 0
     assay_replaced = 0
     written = 0
@@ -1348,25 +1514,25 @@ async def _write_intervals(
         if touched:
             replaced = int(
                 await conn.fetchval(
-                    f"WITH d AS (DELETE FROM {_INTERVAL_TABLES[sheet_type]} "  # noqa: S608
+                    f"WITH d AS (DELETE FROM {table} "  # noqa: S608
                     "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
                     "SELECT count(*) FROM d",
                     touched,
                 ) or 0
             )
-            if sheet_type == "sample":
-                # Same replace semantics for the canonical assay table —
-                # a corrected sample file must replace its holes' element
-                # rows too, or the doubled-composite failure the interval
-                # tables guard against comes back one table over.
-                assay_replaced = int(
-                    await conn.fetchval(
-                        "WITH d AS (DELETE FROM silver.assays_v2 "
-                        "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
-                        "SELECT count(*) FROM d",
-                        touched,
-                    ) or 0
-                )
+        if assay_touched:
+            # Same replace semantics for the canonical assay table —
+            # a corrected sample file must replace its holes' element
+            # rows too, or the doubled-composite failure the interval
+            # tables guard against comes back one table over.
+            assay_replaced = int(
+                await conn.fetchval(
+                    "WITH d AS (DELETE FROM silver.assays_v2 "
+                    "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
+                    "SELECT count(*) FROM d",
+                    assay_touched,
+                ) or 0
+            )
 
         for start in range(0, len(rows), _INSERT_BATCH):
             chunk = rows[start:start + _INSERT_BATCH]
@@ -1377,9 +1543,16 @@ async def _write_intervals(
             chunk = assay_rows[start:start + _INSERT_BATCH]
             await conn.executemany(_ASSAYS_V2_SQL, chunk)
 
+    if replaced_scope is not None:
+        # Recorded once this call's transaction (or savepoint) has
+        # succeeded. The caller rolls the scope back with the sheet if the
+        # enclosing per-sheet transaction fails afterwards.
+        replaced_scope.update((table, cid) for cid in touched)
+        replaced_scope.update(("silver.assays_v2", cid) for cid in assay_touched)
+
     stats = {
         "written": written,
-        "skipped": unwritable,
+        "skipped": len(issues.skipped) - skipped_before,
         "orphaned": orphaned,
         "replaced": replaced,
     }
@@ -1582,6 +1755,76 @@ def _rows_rejected_warning(
             + ". The rejected rows are not in silver; fix the values (or map "
             "the columns) and re-upload the file to replace this hole's rows."
         )[:900],
+    }
+
+
+def _fold_writer_skips(result: Any, issues: RowIssues) -> None:
+    """Record the writer's per-row skips on the parse result (ING-1).
+
+    ``skipped_details`` is where a skipped row's reason lives for every other
+    rejection, and ``_rows_rejected_warning`` summarises from it; a row the
+    writer refused because the table cannot hold it is the same kind of loss
+    and must be counted the same way. A result object that cannot take the
+    update (a test double, a frozen dataclass) is left alone — the
+    ``db_constraint_rows_skipped`` warning still reports the rows.
+    """
+    details = issues.skipped_details()
+    if not details:
+        return
+    existing = getattr(result, "skipped_details", None)
+    if isinstance(existing, list):
+        existing.extend(details)
+    for attr, delta in (("skipped_rows", len(details)), ("valid_rows", -len(details))):
+        current = getattr(result, attr, None)
+        if isinstance(current, int) and not isinstance(current, bool):
+            try:
+                setattr(result, attr, max(0, current + delta))
+            except AttributeError:
+                log.debug(
+                    "ingest_tabular: parse result %s is read-only; the writer "
+                    "skips are reported by their own warning",
+                    type(result).__name__, exc_info=True,
+                )
+                return
+
+
+#: Exceptions that mean the DATABASE or the worker is in trouble, not that
+#: one sheet's data is bad. These still fail the run so Hatchet retries it;
+#: anything else raised while writing one sheet costs that sheet only.
+_INFRASTRUCTURE_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.InterfaceError,
+    asyncpg.PostgresConnectionError,
+    asyncpg.exceptions.OperatorInterventionError,
+    asyncpg.exceptions.InsufficientResourcesError,
+    asyncpg.exceptions.TransactionRollbackError,
+    OSError,
+    TimeoutError,
+    MemoryError,
+)
+
+
+def _sheet_write_failed_warning(
+    *, label: str, sheet_type: str, exc: BaseException, table_source: bool,
+) -> dict[str, Any]:
+    """Say that ONE sheet/table failed to write, and that nothing of it landed."""
+    kept = (
+        "every row is in the attribute table and in bronze"
+        if table_source else
+        "the file is in bronze and the sheet was kept as searchable text"
+    )
+    return {
+        "code": "typed_table_write_failed",
+        "message": (
+            f"'{label}' looks like {sheet_type} data but could not be written "
+            f"as {sheet_type} rows"
+        ),
+        "detail": (
+            f"'{label}' classified as {sheet_type} and writing it as "
+            f"{sheet_type} rows failed: {str(exc)[:300]}. None of its rows "
+            f"were written (the sheet is all-or-nothing) and the other sheets "
+            f"were unaffected. The data is not lost - {kept} - and "
+            f"re-ingesting will retry."
+        ),
     }
 
 
@@ -2631,6 +2874,7 @@ async def run_ingest_tabular(
                     label: str, records: list[dict[str, Any]],
                     easting_column: str | None, northing_column: str | None,
                     *, trace_export: bool = False,
+                    issues: RowIssues | None = None,
                 ) -> dict[str, int]:
                     """Decide this table's CRS, write its collars, record confidence."""
                     decision, flagged = await _resolve_table_crs(
@@ -2658,6 +2902,7 @@ async def run_ingest_tabular(
                         project_id=input.project_id,
                         records=records, epsg=decision.epsg,
                         georef_method=method,
+                        issues=issues,
                     )
                     await _stamp_crs_confidence(
                         conn,
@@ -2675,6 +2920,12 @@ async def run_ingest_tabular(
                 #: fed alteration or mineralization, and that is not "wrote
                 #: nothing" - so the refusal path reads this.
                 companion_landed: dict[str, int] = {"rows": 0}
+
+                #: (table, collar_id) pairs this run has already replaced
+                #: (ING-2): the first sheet of a type clears what an EARLIER
+                #: upload wrote for its holes, later sheets of the same run
+                #: append instead of deleting the first one's rows.
+                replaced_scope: set[tuple[str, str]] = set()
 
                 async def _write_companions(
                     primary_result: Any, write_type: str,
@@ -2715,12 +2966,18 @@ async def run_ingest_tabular(
                         comp_records = getattr(comp, "records", None) or []
                         if not comp_records:
                             continue
+                        comp_issues = RowIssues()
                         comp_stats = await _write_intervals(
                             conn,
                             workspace_id=input.workspace_id,
                             sheet_type=companion_type,
                             records=comp_records, index=index,
+                            issues=comp_issues,
+                            replaced_scope=replaced_scope,
                         )
+                        warnings.extend(issue_warnings(
+                            comp_issues, label=label, table=companion_type,
+                        ))
                         # The same source rows already reported their unknown
                         # holes under the primary type; counting them again
                         # would double the orphan total.
@@ -2781,7 +3038,12 @@ async def run_ingest_tabular(
                         )
                     records = getattr(result, "records", None) or []
                     warnings.extend(getattr(result, "warnings", None) or [])
+                    label = (
+                        (table[0] if table is not None else None)
+                        or target_sheet or filename
+                    )
 
+                    row_issues = RowIssues()
                     if write_type == "collar":
                         result_map = getattr(result, "column_map", None) or {}
                         stats = await _placed_collars(
@@ -2790,6 +3052,7 @@ async def run_ingest_tabular(
                             records,
                             result_map.get("easting"),
                             result_map.get("northing"),
+                            issues=row_issues,
                         )
                     else:
                         # Rebuilt per type so collars written moments ago in
@@ -2800,15 +3063,26 @@ async def run_ingest_tabular(
                             workspace_id=input.workspace_id,
                             sheet_type=write_type,
                             records=records, index=index,
+                            issues=row_issues,
+                            replaced_scope=replaced_scope,
                         )
                         if write_type in _COMPANION_TYPES:
                             await _write_companions(
                                 result, write_type, table, target_sheet, index,
                             )
 
+                    # Rows the WRITER refused (a value the table's constraints
+                    # cannot hold) are rejected rows too: fold them into the
+                    # parse result so the rows_rejected summary below counts
+                    # them, and say what was skipped / blanked in their own
+                    # words (ING-1).
+                    _fold_writer_skips(result, row_issues)
+                    warnings.extend(issue_warnings(
+                        row_issues, label=label, table=write_type,
+                    ))
+
                     rejected_note = _rows_rejected_warning(
-                        label=(table[0] if table is not None else None)
-                        or target_sheet or filename,
+                        label=label,
                         write_type=write_type,
                         result=result,
                         written=stats.get("written", 0),
@@ -2824,6 +3098,35 @@ async def run_ingest_tabular(
                         prior[k] = prior.get(k, 0) + v
                     return result, stats
 
+                async def _parse_and_write_atomically(
+                    write_type: str, target_sheet: str | None,
+                ) -> tuple[Any, dict[str, int]]:
+                    """``_parse_and_write`` as ONE transaction per sheet (ING-1).
+
+                    The writers each commit on their own, so a sheet whose
+                    lithology landed and whose companion alteration write then
+                    failed used to leave half of itself behind; and batches of
+                    500 committed one by one before that. Here the whole sheet
+                    - primary table, companions, assays - commits together or
+                    not at all (the writers' own transactions become
+                    savepoints), and the run's accumulators are put back the
+                    way they were so the headline does not count rows that
+                    rolled back.
+                    """
+                    written_before = copy.deepcopy(written)
+                    sheets_before = len(sheets)
+                    scope_before = set(replaced_scope)
+                    try:
+                        async with conn.transaction():
+                            return await _parse_and_write(write_type, target_sheet)
+                    except BaseException:
+                        written.clear()
+                        written.update(written_before)
+                        del sheets[sheets_before:]
+                        replaced_scope.clear()
+                        replaced_scope.update(scope_before)
+                        raise
+
                 for sheet_type, sheet_name in work:
                     # Where this attempt's parser warnings begin and end in
                     # the run's list. Both retry outcomes need the span:
@@ -2835,35 +3138,38 @@ async def run_ingest_tabular(
                     forced_warn_start = len(warnings)
                     is_table_source = suffix in TABLE_SOURCE_EXTENSIONS
                     try:
-                        result, stats = await _parse_and_write(
+                        result, stats = await _parse_and_write_atomically(
                             sheet_type, sheet_name,
                         )
+                    except _INFRASTRUCTURE_ERRORS:
+                        # The database or the worker, not this sheet: fail
+                        # the run so Hatchet retries it whole.
+                        raise
                     except Exception as exc:
-                        if not is_table_source:
-                            raise
-                        # Additive, like the trace and geochemistry writes:
-                        # the attribute copy is written below and holds every
-                        # row, so a typed failure on ONE table must not turn
-                        # the file into a failed run or lose the others.
-                        display = table_sources[sheet_name or ""][0]
+                        # One sheet's failure costs that sheet only (ING-1).
+                        # It rolled back whole, the sheets before it are
+                        # committed, and the ones after it still run - a
+                        # workbook used to lose every survey / lithology /
+                        # assay sheet to one bad collar. A dBASE/Access table
+                        # keeps its attribute copy (written below); a CSV or
+                        # worksheet joins the text fallback so it stays
+                        # searchable.
+                        display = (
+                            table_sources[sheet_name or ""][0]
+                            if is_table_source else (sheet_name or filename)
+                        )
                         log.warning(
                             "ingest_tabular: typed %s write failed for %s: %s",
                             sheet_type, display, exc, exc_info=True,
                         )
-                        warnings.append({
-                            "code": "typed_table_write_failed",
-                            "message": (
-                                f"'{display}' looks like {sheet_type} data but "
-                                f"could not be written as {sheet_type} rows"
-                            ),
-                            "detail": (
-                                f"'{display}' classified as {sheet_type} and "
-                                f"writing it as {sheet_type} rows failed: "
-                                f"{str(exc)[:300]}. The table is not lost - "
-                                f"every row is in the attribute table and in "
-                                f"bronze, and re-ingesting will retry."
-                            ),
-                        })
+                        # Its notes described rows that are not in silver.
+                        del warnings[forced_warn_start:]
+                        warnings.append(_sheet_write_failed_warning(
+                            label=display, sheet_type=sheet_type, exc=exc,
+                            table_source=is_table_source,
+                        ))
+                        if not is_table_source and display not in unclassified:
+                            unclassified.append(display)
                         continue
                     forced_warn_end = len(warnings)
                     if is_table_source and stats.get("written"):
@@ -2940,9 +3246,25 @@ async def run_ingest_tabular(
                             headers_matched is not None
                             and headers_matched != sheet_type
                         ):
-                            retry_result, retry_stats = await _parse_and_write(
-                                headers_matched, None,
-                            )
+                            try:
+                                retry_result, retry_stats = (
+                                    await _parse_and_write_atomically(
+                                        headers_matched, None,
+                                    )
+                                )
+                            except _INFRASTRUCTURE_ERRORS:
+                                raise
+                            except Exception as retry_exc:
+                                # The re-read as another type failed to write;
+                                # the original refusal stands and the file
+                                # still reaches the text/table fallback.
+                                log.warning(
+                                    "ingest_tabular: re-read of %s as %s failed: %s",
+                                    filename, headers_matched, retry_exc,
+                                    exc_info=True,
+                                )
+                                retry_result = None
+                                retry_stats = {}
                             if retry_stats.get("written") or retry_stats.get(
                                 "orphaned",
                             ):
@@ -3032,6 +3354,7 @@ async def run_ingest_tabular(
                 # committed and must not be lost to a typed-write failure.
                 trace_shape = _discover_trace_columns(dbase_columns)
                 if trace_shape is not None:
+                    trace_issues = RowIssues()
                     try:
                         collar_rows = _collapse_discover_traces(
                             attribute_rows, trace_shape,
@@ -3046,6 +3369,7 @@ async def run_ingest_tabular(
                                 filename, collar_rows,
                                 trace_shape.get("mid_x"), trace_shape.get("mid_y"),
                                 trace_export=True,
+                                issues=trace_issues,
                             )
                             sheets.append({
                                 "sheet": filename,
@@ -3072,12 +3396,16 @@ async def run_ingest_tabular(
                                     sheet_type="survey",
                                     records=stations,
                                     index=survey_index,
+                                    issues=trace_issues,
                                 )
                                 sheets.append({
                                     "sheet": filename,
                                     "type": "survey",
                                     "rows": written["survey"]["written"],
                                 })
+                            warnings.extend(issue_warnings(
+                                trace_issues, label=filename, table="collar",
+                            ))
                             # An assumed CRS is reported once for the run,
                             # from crs_state, below — this site used to add
                             # a second copy of the same warning.

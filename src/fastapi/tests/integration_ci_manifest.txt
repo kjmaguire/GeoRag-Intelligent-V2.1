@@ -92,3 +92,8 @@ tests/test_usage_events_write_integration.py
 # earlier (an orphan is COUNTED, not raised), and a re-ingest REPLACES
 # stations rather than doubling them.
 tests/test_discover_trace_write_integration.py
+# The tabular writers against the real chk_* constraints (audit 2026-09-29,
+# ING-1/2/14): one bad row is skipped or blanked instead of failing the file,
+# a batch failure leaves nothing half-written, a second sheet in one run
+# appends, and a separator variant updates the existing collar.
+tests/test_ingest_constraint_rows_integration.py
