@@ -20,7 +20,9 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\MaxAttemptsExceededException;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Queue\TimeoutExceededException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -123,6 +125,49 @@ class GenerateExportJob implements ShouldQueue
 
             throw $e;
         }
+    }
+
+    /**
+     * Terminal failure hook — the only code that runs when the worker, not
+     * handle(), ends the job.
+     *
+     * LAR-6 (2026-09-29): handle()'s catch only sees exceptions thrown inside
+     * the process. A Horizon timeout kills the worker (SIGALRM) and a
+     * MaxAttemptsExceeded re-pop never enters handle() at all, so the row stayed
+     * `running` forever: status polling never ended and `download` answered 409
+     * indefinitely. This marks it failed with a reason a user can act on.
+     *
+     * Conditional on the row still being in flight: when handle()'s own catch
+     * already wrote `failed` with the specific message and rethrew, the worker
+     * calls this too, and that message must not be overwritten. A `completed`
+     * row is never touched. The reason is generic by design; the exception
+     * detail goes to the log, not to an API-visible column.
+     */
+    public function failed(?\Throwable $exception = null): void
+    {
+        $reason = match (true) {
+            $exception instanceof TimeoutExceededException => sprintf(
+                'Export timed out after %d seconds. Try a narrower filter, or request it again.',
+                $this->timeout,
+            ),
+            $exception instanceof MaxAttemptsExceededException => 'Export was interrupted before it finished. Please request it again.',
+            default => 'Export failed unexpectedly. Please request it again.',
+        };
+
+        $updated = Export::query()
+            ->whereKey($this->exportId)
+            ->whereNotIn('status', ['completed', 'failed'])
+            ->update([
+                'status' => 'failed',
+                'error_message' => $reason,
+            ]);
+
+        Log::error('GenerateExportJob: failed() hook', [
+            'export_id' => $this->exportId,
+            'marked_failed' => $updated > 0,
+            'exception_class' => $exception !== null ? $exception::class : null,
+            'exception' => $exception?->getMessage(),
+        ]);
     }
 
     /**
