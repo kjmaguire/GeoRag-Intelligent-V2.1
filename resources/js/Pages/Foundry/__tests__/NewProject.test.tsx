@@ -126,4 +126,57 @@ describe('NewProject', () => {
         fireEvent.click(screen.getByRole('button', { name: /create project/i }));
         expect(await screen.findByTestId('failed-uploads')).toHaveTextContent('Exceeds the 10 KB upload limit.');
     });
+
+    describe('azimuth reference (Kyle, 2026-09-29)', () => {
+        function toJurisdiction() {
+            render(<NewProject />);
+            fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'Red Star' } });
+            fireEvent.click(screen.getByRole('button', { name: /next/i }));
+        }
+        function toReview() {
+            fireEvent.click(screen.getByRole('button', { name: /next/i }));
+            fireEvent.click(screen.getByRole('button', { name: /next/i }));
+        }
+        const createBody = () => JSON.parse(String(projectCreates()[0].body));
+
+        it('sends BOH, and no declination, when nothing is chosen', async () => {
+            toJurisdiction();
+            expect(screen.getByLabelText(/Azimuth reference/)).toHaveValue('BOH');
+            toReview();
+            fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+            await waitFor(() => expect(projectCreates()).toHaveLength(1));
+            expect(createBody().orientation_reference).toBe('BOH');
+            expect(createBody()).not.toHaveProperty('magnetic_declination');
+        });
+
+        it('sends magnetic north with its declination as a number, east positive', async () => {
+            toJurisdiction();
+            fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'magnetic' } });
+            fireEvent.change(screen.getByLabelText(/Magnetic declination/), { target: { value: '14.5' } });
+            toReview();
+            fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+            await waitFor(() => expect(projectCreates()).toHaveLength(1));
+            expect(createBody().orientation_reference).toBe('magnetic');
+            expect(createBody().magnetic_declination).toBe(14.5);
+        });
+
+        it('blocks creating a magnetic-north project with no declination', () => {
+            toJurisdiction();
+            fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'magnetic' } });
+            expect(screen.getByText('Magnetic north needs a declination (degrees, east positive).')).toBeInTheDocument();
+            toReview();
+            expect(screen.getByRole('button', { name: /create project/i })).toBeDisabled();
+            expect(projectCreates()).toHaveLength(0);
+        });
+
+        it('sends true north with no declination', async () => {
+            toJurisdiction();
+            fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'true' } });
+            expect(screen.queryByLabelText(/Magnetic declination/)).not.toBeInTheDocument();
+            toReview();
+            fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+            await waitFor(() => expect(projectCreates()).toHaveLength(1));
+            expect(createBody().orientation_reference).toBe('true');
+        });
+    });
 });

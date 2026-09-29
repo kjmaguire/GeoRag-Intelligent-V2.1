@@ -68,6 +68,8 @@ class CollarResource extends JsonResource
                 // shows the geologist what the file actually said instead of
                 // a blank where 'desurveyed_trace' was.
                 'survey_method' => $s->getRawOriginal('survey_method'),
+                // The file's declared north for this azimuth, or null.
+                'azimuth_reference' => $s->azimuth_reference,
             ]),
             ),
             'lithology_logs' => $this->whenLoaded('lithologyLogs', fn () => $this->lithologyLogs->map(fn ($l) => [

@@ -186,6 +186,13 @@ All created in the April 2026 batch
 [2026_04_10_120000..120200](../../../database/migrations/)) and progressively
 extended.
 
+`silver.surveys.azimuth_reference` (varchar(10), CHECK true | magnetic | grid,
+NULL = undeclared) records the north a survey FILE declared for its azimuths
+and wins over `silver.projects.orientation_reference` at desurvey
+([2026_09_30_100100_add_azimuth_reference_to_silver_surveys.php](../../../database/migrations/2026_09_30_100100_add_azimuth_reference_to_silver_surveys.php)).
+`silver.projects.orientation_reference` accepts BOH / TOH / grid / true /
+magnetic, and `magnetic_declination` is degrees, east positive.
+
 `silver.structures` and `silver.alterations` were created in the same batch but
 dropped (empty) by
 [2026_05_20_060400](../../../database/migrations/2026_05_20_060400_create_silver_geological_singulars.php),

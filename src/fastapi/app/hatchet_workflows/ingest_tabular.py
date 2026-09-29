@@ -195,6 +195,20 @@ _INSERT_BATCH = 500
 _build_dsn = build_dsn
 
 
+def _survey_azimuth_reference(rec: dict[str, Any]) -> str | None:
+    """The station's declared azimuth reference, canonical or None.
+
+    csv_survey already canonicalises it; re-reading through the same function
+    keeps a record from any other source inside silver.surveys' CHECK
+    (true / magnetic / grid) instead of failing the whole batch on INSERT.
+    """
+    from georag_geoparsers._azimuth_reference import (  # noqa: PLC0415
+        canonical_azimuth_reference,
+    )
+
+    return canonical_azimuth_reference(rec.get("azimuth_reference"))
+
+
 class IngestTabularInput(BaseModel):
     workspace_id: str
     project_id: str
@@ -275,11 +289,15 @@ ON CONFLICT (project_id, hole_id) DO UPDATE SET
     updated_at  = NOW()
 """
 
+#: $7 is the station's DECLARED azimuth reference ('true' | 'magnetic' |
+#: 'grid', or NULL) from the file's azimuth-reference column, canonicalised
+#: by csv_survey. Desurvey prefers it over the project's orientation_reference
+#: (app/services/ingest/azimuth_reference.py; Kyle, 2026-09-29).
 _SURVEY_SQL = """
 INSERT INTO silver.surveys (
     survey_id, workspace_id, collar_id, depth, azimuth, dip,
-    survey_method, created_at, updated_at
-) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, NOW(), NOW())
+    survey_method, azimuth_reference, created_at, updated_at
+) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7, NOW(), NOW())
 """
 
 _LITHOLOGY_SQL = """
@@ -1356,6 +1374,7 @@ async def _write_intervals(
                     rec, "survey_method", SURVEY_TEXT_WIDTHS["survey_method"],
                     issues, default=_SURVEY_METHOD_DEFAULT,
                 ),
+                _survey_azimuth_reference(rec),
             ))
         elif sheet_type == "structure":
             depth = finite(rec.get("depth"))

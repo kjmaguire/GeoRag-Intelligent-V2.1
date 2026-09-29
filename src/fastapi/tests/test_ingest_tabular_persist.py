@@ -327,6 +327,19 @@ class TestWriteIntervals:
         await self._write(conn, "survey", [{"hole_id": "EL001", "depth": 1}])
         assert conn.rows[0][5] is not None
 
+    async def test_survey_azimuth_reference_is_the_seventh_parameter(self) -> None:
+        # $7 of _SURVEY_SQL: the file's declared north, canonical or NULL.
+        # A spelling outside silver.surveys' CHECK must land as NULL rather
+        # than fail the whole executemany batch.
+        conn = FakeConn()
+        await self._write(conn, "survey", [
+            {"hole_id": "EL001", "depth": 10.0, "azimuth_reference": "True North"},
+            {"hole_id": "EL001", "depth": 20.0, "azimuth_reference": "magnetic"},
+            {"hole_id": "EL001", "depth": 30.0, "azimuth_reference": "UTM"},
+            {"hole_id": "EL001", "depth": 40.0},
+        ])
+        assert [r[6] for r in conn.rows] == ["true", "magnetic", None, None]
+
     async def test_lithology_row_shape(self) -> None:
         conn = FakeConn()
         await self._write(conn, "lithology", [{

@@ -33,8 +33,14 @@ class ProjectCreate(BaseModel):
     project_name: str = Field(..., min_length=1, max_length=255)
     crs_datum: str = Field(default="EPSG:32613", max_length=64)
     company: str = Field(..., min_length=1, max_length=255)
-    magnetic_declination: float = Field(default=0.0, ge=-180.0, le=180.0)
-    orientation_reference: Literal["BOH", "TOH"] = "BOH"
+    #: Degrees, EAST positive. None means "not recorded", which is not 0:
+    #: a magnetic azimuth reference with no declination is not corrected
+    #: (app/services/ingest/azimuth_reference.py).
+    magnetic_declination: float | None = Field(default=None, ge=-180.0, le=180.0)
+    #: BOH / TOH — the core-orientation mark — or, since Kyle's 2026-09-29
+    #: decision, the azimuth north reference the project's surveys use:
+    #: grid / true / magnetic (Laravel's Project::ORIENTATION_REFERENCES).
+    orientation_reference: Literal["BOH", "TOH", "grid", "true", "magnetic"] = "BOH"
     commodity: str = Field(..., min_length=1, max_length=128)
     region: str = Field(..., min_length=1, max_length=255)
 
@@ -48,6 +54,9 @@ class ProjectRead(ProjectCreate):
     """
 
     project_id: UUID
+    #: What is STORED, not what may be written: rows stamped 'grid_north' by
+    #: the pre-2026-09-29 ingestion stubs must still read back, not 500.
+    orientation_reference: str = "BOH"  # type: ignore[assignment]
     status: Literal["active", "indexing", "degraded", "archived"] = "active"
     slug: str
     created_at: datetime

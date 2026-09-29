@@ -150,6 +150,11 @@ class OverviewController extends Controller
                 'company' => $project->company,
                 'status' => is_object($project->status) ? $project->status->value : ($project->status ?? 'active'),
                 'crs_epsg' => $project->crs_epsg,
+                // Azimuth north reference + declination (degrees, east
+                // positive) — edited in the Edit project sheet; applied by
+                // desurvey since 2026-09-29.
+                'orientation_reference' => $project->orientation_reference,
+                'magnetic_declination' => $project->magnetic_declination,
                 'data_version' => $project->data_version ?? 0,
             ],
             'kpis' => [

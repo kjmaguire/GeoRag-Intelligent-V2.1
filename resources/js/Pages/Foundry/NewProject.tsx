@@ -4,7 +4,15 @@ import JSZip from 'jszip';
 import { filesFromDataTransfer } from '@/lib/dropFiles';
 import { describeUploadFailure, useUploadLimit } from '@/lib/uploadLimit';
 import { PageHeader, Card } from '@/Components/Foundry/primitives';
-import { COMMODITIES, Field, inputStyle } from '@/Components/Foundry/projectFormFields';
+import {
+    AzimuthReferenceFields,
+    COMMODITIES,
+    declinationError,
+    Field,
+    inputStyle,
+    parseDeclination,
+    type OrientationReference,
+} from '@/Components/Foundry/projectFormFields';
 import {
     CATEGORY_EXTS,
     CATEGORY_LABEL,
@@ -289,6 +297,12 @@ export default function FoundryNewProject() {
         // override on each individual file. Asking once, here, is what
         // stops an Alaskan project writing its holes 2,500 km east.
         crsEpsg: '',
+        // Which north the survey azimuths use (silver.projects.
+        // orientation_reference). BOH declares none, so desurvey applies no
+        // correction — the default. Magnetic needs the declination below
+        // (degrees, EAST positive); blank means not recorded, never 0.
+        orientationReference: 'BOH' as OrientationReference,
+        magneticDeclination: '',
     });
     const setField = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
         setForm((f) => ({ ...f, [k]: v }));
@@ -301,6 +315,8 @@ export default function FoundryNewProject() {
     // Same parser the per-file CRS override uses, so "what is a valid EPSG
     // code" has one answer on this screen rather than two.
     const projectEpsg = parseEpsg(form.crsEpsg);
+    const projectDeclination = parseDeclination(form.magneticDeclination);
+    const azimuthReferenceError = declinationError(form.orientationReference, form.magneticDeclination);
 
     const [queue, setQueue] = useState<QueuedFile[]>([]);
     /**
@@ -661,7 +677,10 @@ export default function FoundryNewProject() {
                         // to match existing seeded projects. Country scopes the UI
                         // picker but isn't a separate column on silver.projects.
                         region: form.state,
-                        orientation_reference: 'BOH',
+                        orientation_reference: form.orientationReference,
+                        ...(projectDeclination.value !== undefined
+                            ? { magnetic_declination: projectDeclination.value }
+                            : {}),
                         // Omitted entirely when blank rather than sent as null:
                         // the column stays NULL either way, and a body that
                         // carries the key only when it has a value is what the
@@ -921,6 +940,12 @@ export default function FoundryNewProject() {
                                         </p>
                                     )}
                                 </Field>
+                                <AzimuthReferenceFields
+                                    reference={form.orientationReference}
+                                    declination={form.magneticDeclination}
+                                    onReferenceChange={(value) => setField('orientationReference', value)}
+                                    onDeclinationChange={(value) => setField('magneticDeclination', value)}
+                                />
                             </div>
                         )}
                         {step === 'Corpus' && (
@@ -1348,6 +1373,11 @@ export default function FoundryNewProject() {
                                                 {' · '}project EPSG code is not valid — fix in Jurisdiction before creating
                                             </span>
                                         )}
+                                        {azimuthReferenceError !== undefined && (
+                                            <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                                                {' · '}{azimuthReferenceError} — fix in Jurisdiction before creating
+                                            </span>
+                                        )}
                                     </span>
                                 </div>
                                 {submitProgress && (
@@ -1390,6 +1420,9 @@ export default function FoundryNewProject() {
                                     // transit — the same rule the per-file
                                     // override already follows.
                                     || projectEpsg.error !== undefined
+                                    // Magnetic north with no (or an unreadable)
+                                    // declination would be refused by the API.
+                                    || azimuthReferenceError !== undefined
                                 }
                                 className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-40"
                                 style={{ color: 'var(--bg-0)', background: 'var(--accent)', borderColor: 'var(--accent-dim)' }}

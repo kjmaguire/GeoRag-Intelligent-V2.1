@@ -45,6 +45,8 @@ interface OverviewProps {
         company: string | null;
         status: string;
         crs_epsg: number | null;
+        orientation_reference?: string | null;
+        magnetic_declination?: number | null;
         data_version: number;
     };
     kpis: Array<{ label: string; value: string; sub?: string; tone?: string }>;
