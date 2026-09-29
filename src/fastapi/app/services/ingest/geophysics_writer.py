@@ -174,14 +174,11 @@ _CLEAR_CHILDREN_SQL = (
     " SELECT (SELECT count(*) FROM l) + (SELECT count(*) FROM o) + (SELECT count(*) FROM m)"
 )
 
-#: The ordered point array, built once and shared by both geometry shapes.
-_POINTS = (
-    "ARRAY(SELECT ST_MakePoint(p.x, p.y)"
-    " FROM unnest($7::float8[], $8::float8[]) WITH ORDINALITY AS p(x, y, i)"
-    " ORDER BY p.i)"
-)
-
-LINE_SQL = f"""
+#: The ordered point array appears twice below, written out in full rather
+#: interpolated: scripts/ci/check_sql_against_schema.py PREPAREs string
+#: literals and blanks f-string holes, so an interpolated array would reach
+#: it as ST_Collect() with no argument.
+LINE_SQL = """
 INSERT INTO silver.geophysics_lines (
     workspace_id, project_id, survey_id, line_id, line_type, segment,
     point_count, x_native, y_native, source_rows, source_epsg, geom
@@ -194,8 +191,14 @@ SELECT $1::uuid, $2::uuid, $3::uuid, $4::text, $5::varchar, $6::integer,
                ST_SetSRID(ST_MakePoint(($7::float8[])[1], ($8::float8[])[1]), $10::integer),
                4326)
            WHEN $5::varchar = 'points' THEN ST_Transform(
-               ST_SetSRID(ST_Collect({_POINTS}), $10::integer), 4326)
-           ELSE ST_Transform(ST_SetSRID(ST_MakeLine({_POINTS}), $10::integer), 4326)
+               ST_SetSRID(ST_Collect(
+               ARRAY(SELECT ST_MakePoint(p.x, p.y)
+                   FROM unnest($7::float8[], $8::float8[]) WITH ORDINALITY AS p(x, y, i)
+                   ORDER BY p.i)), $10::integer), 4326)
+           ELSE ST_Transform(ST_SetSRID(ST_MakeLine(
+               ARRAY(SELECT ST_MakePoint(p.x, p.y)
+                   FROM unnest($7::float8[], $8::float8[]) WITH ORDINALITY AS p(x, y, i)
+                   ORDER BY p.i)), $10::integer), 4326)
        END
 RETURNING line_pk::text
 """
