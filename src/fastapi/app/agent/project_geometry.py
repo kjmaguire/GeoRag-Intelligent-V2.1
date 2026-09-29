@@ -8,11 +8,19 @@ the user drawing a polygon.
 
 Two strategies (try in order):
 
-  1. **silver.projects.geom_boundary** — the project's declared outline
-     (Polygon, 4326), enveloped. Cheap PK lookup.
+  1. **silver.projects.geom_boundary** — the envelope of the project's
+     declared boundary polygon (EPSG:4326), when one is set. Cheap PK
+     lookup.
   2. **silver.collars envelope** — `ST_Envelope(ST_Collect(geom_4326))`
-     for the project's collars when there's no boundary.
-     Bounded by `LIMIT 500` collars to keep the query fast.
+     for the project's collars when there's no boundary. Bounded by
+     `LIMIT 500` collars to keep the query fast.
+
+Database audit 2026-09-29 PG-11: this read `silver.projects.bbox` and
+`silver.collars.collar_geom`, neither of which exists, and swallowed the
+first UndefinedColumn *inside the transaction* — which aborts it, so the
+fallback query could never run either. Both columns are now the real
+ones, and the first lookup runs in its own savepoint so a failure there
+genuinely falls through.
 
 GIS-16 (audit 2026-09-29): this used to read ``silver.projects.bbox`` and
 ``silver.collars.collar_geom``. Neither column exists, so both queries
@@ -20,7 +28,7 @@ raised, the error was swallowed, and the supplier always returned None.
 Both now read real 4326 columns — never ``collars.geom``, which is 32613.
 
 Returns a WKT polygon string or None when neither path resolves
-(no collars, no bbox column, DB error). The §2g tool refuses to
+(no boundary, no collars, DB error). The §2g tool refuses to
 invent geometries — None from this supplier means the spatial
 query is skipped, not auto-widened.
 
@@ -41,7 +49,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# SQL — try bbox column first, then envelope from collars
+# SQL — try the project boundary first, then envelope from collars
 # ---------------------------------------------------------------------------
 
 
@@ -86,8 +94,8 @@ async def get_project_bbox_wkt(
 
     Returns:
         WKT polygon string or None. None when:
-          - silver.projects has no bbox column populated for this project
-            AND silver.collars has no collars for this project
+          - silver.projects.geom_boundary is NULL for this project
+            AND silver.collars has no located collars for this project
           - The DB lookup raises (logged + swallowed; spatial query
             should skip rather than crash)
     """
@@ -103,22 +111,22 @@ async def get_project_bbox_wkt(
                 await bind_workspace_scope(
                 conn, workspace_id=workspace_id, site="agent.project_geometry"
             )
-                # Try the cached bbox column first (cheap PK hit).
-                # silver.projects MAY not have a `bbox` column on
-                # every deployment — catch the UndefinedColumn error
-                # and fall through to the envelope path.
+                # Project boundary first (cheap PK hit). Its own savepoint:
+                # a failed statement aborts the enclosing transaction, so
+                # without one the envelope query below could never run
+                # after an error here.
                 bbox_wkt: str | None = None
                 try:
-                    row = await conn.fetchrow(
-                        _BBOX_FROM_PROJECT_COLUMN, project_id,
-                    )
+                    async with conn.transaction():
+                        row = await conn.fetchrow(
+                            _BBOX_FROM_PROJECT_COLUMN, project_id,
+                        )
                     if row is not None and row["wkt"]:
                         bbox_wkt = row["wkt"]
                 except Exception:
-                    # UndefinedColumn or schema drift — try envelope path.
-                    logger.debug(
-                        "get_project_bbox_wkt: silver.projects.bbox not "
-                        "available; falling back to collars envelope",
+                    logger.warning(
+                        "get_project_bbox_wkt: project boundary lookup "
+                        "failed; falling back to collars envelope",
                         exc_info=True,
                     )
                 if bbox_wkt:

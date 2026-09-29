@@ -296,10 +296,10 @@ def test_order_by_appended_when_provided():
         target="silver.collars",
         operation="intersects",
         geometry_wkt="POINT(0 0)",
-        order_by="total_depth_m DESC",
+        order_by="total_depth DESC",
     )
     plan = plan_spatial_query(spec)
-    assert "ORDER BY total_depth_m DESC" in plan.sql
+    assert "ORDER BY total_depth DESC" in plan.sql
 
 
 def test_distance_op_order_by_distance_AND_secondary_order_by():

@@ -140,13 +140,17 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
         geom_column="geom_4326",
         crs_epsg=4326,
         workspace_scoped=True,
+        # Real column names (database audit 2026-09-29 PG-11): the list used
+        # to carry `spatial_crs` and `total_depth_m`, neither of which
+        # exists, so every plan failed with UndefinedColumn.
+        # tests/test_spatial_plans_prepare_integration.py PREPAREs every
+        # target x operation against a migrated database.
         select_columns=(
             "collar_id",
             "hole_id",
             "easting",
             "northing",
-            "spatial_crs",
-            "total_depth_m",
+            "total_depth",
         ),
     ),
     "silver.spatial_features": SpatialTarget(
@@ -157,9 +161,9 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
         select_columns=(
             "feature_id",
             "feature_type",
-            "feature_label",
-            "spatial_crs",
-            "source_document_id",
+            "feature_name",
+            "source_crs",
+            "source_file",
         ),
     ),
     "public.smdi_deposits": SpatialTarget(
@@ -167,11 +171,12 @@ SPATIAL_TARGETS: dict[str, SpatialTarget] = {
         geom_column="geom",
         crs_epsg=4326,
         workspace_scoped=False,  # public table, intentionally not tenant-scoped
+        # public.smdi_deposits is Saskatchewan-only, so it has no
+        # jurisdiction column to select.
         select_columns=(
-            "smdi_id",
-            "deposit_name",
-            "commodity_primary",
-            "jurisdiction_code",
+            "smdi",
+            "name",
+            "primary_commodities",
         ),
     ),
     # gold.h3_density was here, and could not be repaired in place.

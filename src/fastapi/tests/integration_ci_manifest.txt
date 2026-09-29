@@ -101,3 +101,8 @@ tests/test_discover_trace_write_integration.py
 # a batch failure leaves nothing half-written, a second sheet in one run
 # appends, and a separator variant updates the existing collar.
 tests/test_ingest_constraint_rows_integration.py
+
+# ── Agent spatial SQL (2026-09-29 database audit PG-11) ───────────────
+# Planner SQL is built at runtime from SPATIAL_TARGETS, so only a PREPARE
+# against a migrated database can check its column names.
+tests/test_spatial_plans_prepare_integration.py
