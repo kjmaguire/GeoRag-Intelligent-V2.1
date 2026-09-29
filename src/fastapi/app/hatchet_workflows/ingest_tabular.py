@@ -784,6 +784,10 @@ _SAMPLE_TYPE_CODES: dict[str, str] = {
     "r": "rock_chip", "rock": "rock_chip", "rc": "rock_chip",
     "g": "grab", "grab": "grab",
     "c": "channel", "chan": "channel",
+    # §04e, SME-approved 2026-09-29: a trench sample is a channel sample
+    # (the same mapping csv_sample.SAMPLE_TYPE_SYNONYMS makes for drill
+    # samples). RAB/aircore are drill cuttings and do not occur here.
+    "trench": "channel", "trench channel": "channel",
     "ss": "stream_sediment", "stream": "stream_sediment", "sed": "stream_sediment",
     "t": "till", "till": "till",
 }

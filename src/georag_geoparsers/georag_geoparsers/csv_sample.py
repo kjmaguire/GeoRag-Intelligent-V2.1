@@ -106,7 +106,11 @@ VALID_SAMPLE_TYPES: frozenset = frozenset({"Core", "Chip", "Grab", "Channel", "S
 #: Spellings that ARE one of the allowed types (ING-4). Matched after
 #: case-folding and collapsing whitespace/punctuation. Nothing is added to
 #: the enum: an RC chip sample is a Chip, a half-core HQ sample is a Core.
-#: Anything not here (Trench, RAB, Aircore, Pulp, ...) is left blank and
+#:
+#: §04e, SME-approved (Kyle, 2026-09-29, "use best recommendation"):
+#: a TRENCH sample is a continuous cut across the exposure — a Channel — and
+#: RAB (rotary air blast) and AIRCORE (AC) return drill cuttings — Chips,
+#: like RC. Anything still not here (Pulp, Reject, ...) is left blank and
 #: reported rather than guessed at.
 SAMPLE_TYPE_SYNONYMS: dict[str, str] = {
     **{k: "Core" for k in (
@@ -117,9 +121,18 @@ SAMPLE_TYPE_SYNONYMS: dict[str, str] = {
     **{k: "Chip" for k in (
         "chip", "chips", "rc", "rc chip", "rc chips", "reverse circulation",
         "reverse circ", "percussion", "rock chip", "rock chips",
+        # §04e 2026-09-29: RAB and aircore cuttings.
+        "rab", "rab chip", "rab chips", "rotary air blast", "rotary airblast",
+        "aircore", "air core", "ac", "ac chip", "ac chips", "aircore chip",
+        "aircore chips",
     )},
     **{k: "Grab" for k in ("grab", "grab sample", "grabs")},
-    **{k: "Channel" for k in ("channel", "channel sample", "channels")},
+    **{k: "Channel" for k in (
+        "channel", "channel sample", "channels",
+        # §04e 2026-09-29: trench samples.
+        "trench", "trenches", "trench sample", "trench channel",
+        "trench channel sample", "channel trench",
+    )},
     **{k: "Soil" for k in ("soil", "soils", "soil sample")},
 }
 VALID_QAQC_TYPES: frozenset = frozenset({"Primary", "Duplicate", "Blank", "Standard"})
@@ -602,7 +615,9 @@ def canonical_sample_type(value: str | None) -> str | None:
     for allowed in VALID_SAMPLE_TYPES:
         if allowed.casefold() == folded:
             return allowed
-    return SAMPLE_TYPE_SYNONYMS.get(folded)
+    # Dotted abbreviations fold to spaced letters ("A.C." -> "a c",
+    # "R.A.B." -> "r a b"); the compact form is the abbreviation.
+    return SAMPLE_TYPE_SYNONYMS.get(folded) or SAMPLE_TYPE_SYNONYMS.get(folded.replace(" ", ""))
 
 
 def _assay_specs(assay_cols: list) -> dict[str, AssaySpec]:

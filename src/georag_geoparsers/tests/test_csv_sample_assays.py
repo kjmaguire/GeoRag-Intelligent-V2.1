@@ -128,7 +128,17 @@ class TestSampleTypes:
     def test_synonyms_map_onto_the_existing_enum(self, raw: str, expected: str) -> None:
         assert canonical_sample_type(raw) == expected
 
-    @pytest.mark.parametrize("raw", ["Trench", "RAB", "Aircore", "Pulp", ""])
+    @pytest.mark.parametrize(("raw", "expected"), [
+        ("Trench", "Channel"), ("TRENCH", "Channel"), ("trench channel", "Channel"),
+        ("Trench-Channel", "Channel"), ("Trenches", "Channel"),
+        ("RAB", "Chip"), ("rab", "Chip"), ("Rotary Air Blast", "Chip"),
+        ("Aircore", "Chip"), ("Air-core", "Chip"), ("AC", "Chip"), ("A.C.", "Chip"),
+    ])
+    def test_sme_approved_synonyms(self, raw: str, expected: str) -> None:
+        """§04e, SME-approved (Kyle, 2026-09-29)."""
+        assert canonical_sample_type(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["Pulp", "Reject", "Sonic", ""])
     def test_unknown_types_are_not_guessed(self, raw: str) -> None:
         assert canonical_sample_type(raw) is None
 
@@ -144,7 +154,7 @@ class TestParseCsvSamples:
             "Hole_ID,Sample_ID,From,To,Sample_Type,Au_ppm\n"
             "DH-1,S1,0,1,Core,0.5\nDH-1,S2,1,2,core,0.7\nDH-1,S3,2,3,DD,0.1\n"
             "DH-1,S4,3,4,RC,0.1\nDH-1,S5,4,5,Half Core,0.1\n"
-            "DH-1,S6,5,6,CORE,0.2\nDH-1,S7,6,7,Trench,0.2\n"
+            "DH-1,S6,5,6,CORE,0.2\nDH-1,S7,6,7,Pulp,0.2\n"
         )
         assert [r["sample_type"] for r in result.records] == [
             "Core", "Core", "Core", "Chip", "Core", "Core", None,
