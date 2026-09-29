@@ -490,7 +490,7 @@ async def test_las_warnings_reach_the_archive_row_as_one_line_per_code(
             )
         return LASIngestResult(
             file_path=name, hole_id=name, project_id=_PJ, collar_id="c", curves_inserted=1,
-            warnings=[{"code": "las_collar_assumed_location", "detail": "approx"}],
+            warnings=[{"code": "las_collar_crs_assumed", "detail": "approx"}],
             georef_method="assumed",
         )
 
@@ -499,12 +499,12 @@ async def test_las_warnings_reach_the_archive_row_as_one_line_per_code(
     await h.run()
 
     by_code = {w["code"]: w["detail"] for w in h.completed["warnings"]}
-    assert "4 LAS well(s)" in by_code["las_collar_assumed_location"]
-    assert "APPROXIMATE" in by_code["las_collar_assumed_location"]
+    assert "4 LAS well(s)" in by_code["las_collar_crs_assumed"]
+    assert "no stated CRS" in by_code["las_collar_crs_assumed"]
     assert "1 LAS file(s) were NOT loaded" in by_code["las_collar_unlocated"]
     assert "z_bad.las" in by_code["las_collar_unlocated"]
     # One entry per code, however many files raised it.
-    assert [w["code"] for w in h.completed["warnings"]].count("las_collar_assumed_location") == 1
+    assert [w["code"] for w in h.completed["warnings"]].count("las_collar_crs_assumed") == 1
 
 
 async def test_a_skipped_derive_is_one_warning_not_one_per_hole(

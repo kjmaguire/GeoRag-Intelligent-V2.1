@@ -1,4 +1,4 @@
-"""LAS file ingester for Wyoming Cameco / WSGS uranium drillhole archive.
+"""LAS file ingester.
 
 Doc-phase 179 — Phase B Tier 1.
 
@@ -8,30 +8,30 @@ Reads LAS 2.0 well-log files via `lasio`, lands:
   - N rows in `silver.well_log_curves` per LAS file (one per curve)
   - One row in `bronze.provenance` per ingested record
 
-Collar location -- this ingester never invents one. In order:
+Collar location -- this ingester never invents one, and it carries no
+dataset-specific placement (no PLSS section table, no per-company defaults).
+A collar is placed only from, in order:
 
   0. A collar that already exists in the project (matched on hole_id, then
      on the canonical hole_id) is used as it stands. The right way to load
      LAS files is collar table first, curves second.
-  1. Coordinates in the LAS ~WELL section (X/Y/EAST/NORTH/LATI/LONG and
-     friends). georef_method='declared' when the CRS or datum is stated by
-     the header or by the operator's upload; 'assumed' when it had to come
-     from the project or from WGS84.
-  2. A PLSS section key (the `LOC` field, or the caller's
-     ``plss_section_key``) that resolves in ``PLSS_REFERENCE_UTM``. This is
-     the Cameco Shirley Basin path: those LAS files carry LAT/LON='NA'. The
-     point is the section centroid plus a deterministic per-hole offset, so
-     it is only good to about a mile: georef_method='assumed',
-     spatial_uncertainty_m=1600, and a ``las_collar_assumed_location``
-     warning.
-  3. Otherwise the file is REFUSED with ``las_collar_unlocated``. It used
-     to land at a Wyoming default coordinate (480000, 4660000 in
-     EPSG:32613) with no warning at all -- a hole from anywhere in the
-     world drawn in Carbon County, WY. silver.collars.easting / northing are
-     NOT NULL (2026_04_09_180100_create_collars_table), and a 0 or any other
-     placeholder there is the same fabrication, so there is no "collar
-     without a location" to fall back to and the schema is left alone.
-     Upload the collar table first, then the LAS.
+  1. Coordinates in the LAS ~WELL section:
+       * LATI/LONG with a datum (GDAT) -> georef_method='declared';
+       * X/Y/EAST/NORTH with a CRS the header names (EPSG/CRS/HZCS item) or
+         the operator declared for the upload (``source_epsg``) -> 'declared';
+       * X/Y/EAST/NORTH with no stated CRS, when the PROJECT carries an
+         explicit ``crs_epsg`` -> 'assumed' plus ``las_collar_crs_assumed``.
+     LATI/LONG with no usable datum is read as WGS84 and flagged the same
+     way ('assumed' + ``las_collar_crs_assumed``).
+  2. Otherwise the file is REFUSED with ``las_collar_unlocated`` naming the
+     file and the well. It used to land at a Wyoming default coordinate
+     (480000, 4660000 in EPSG:32613), and later at a PLSS-section centroid
+     for one hard-coded Wyoming section -- a hole from anywhere drawn in
+     Carbon County, WY, or a location the data never gave. silver.collars
+     easting / northing are NOT NULL (2026_04_09_180100_create_collars_table),
+     and a 0 or any other placeholder there is the same fabrication, so there
+     is no "collar without a location" to fall back to and the schema is left
+     alone. Upload the collar table first, then the LAS.
 
 The geom is constructed at insert time via PostGIS ST_MakePoint +
 ST_Transform (to 32613 for `geom`, 4326 for the mirror column).
@@ -56,28 +56,9 @@ log = logging.getLogger("georag.ingest.las")
 #: silver.collars.geom is geometry(Point, 32613) — see the create migration.
 COLLAR_GEOM_SRID = 32613
 
-# PLSS section centroids — keyed by "{township}{N|S}{range}{E|W}{section}".
-# Reference centroids in UTM Zone 13N (EPSG:32613).
-# For Shirley Basin operations (T28N R79W), the reference is approximate;
-# Cameco operations cluster in section 36. A section that is not in this
-# table is NOT placed anywhere: add its centroid here from real data.
-PLSS_REFERENCE_UTM: dict[str, tuple[float, float]] = {
-    # Format: "TTTNRRRWSS" → (easting_m, northing_m) in EPSG:32613
-    "028N079W36": (471_000.0, 4_657_000.0),  # Shirley Basin, Carbon Co, WY
-    # Additional sections added as new clusters land
-}
-
-# Radius of doubt on a PLSS-centroid placement: the section is ~1 mile
-# (1609 m) square and the per-hole offset stays within +-800 m of its centre,
-# so the true hole can be anywhere in it. Written to
-# silver.collars.spatial_uncertainty_m instead of the 175 m the 'assumed'
-# Strategy B rubric would derive, which understates this.
-PLSS_UNCERTAINTY_M = 1600.0
-PLSS_UNCERTAINTY_METHOD = "plss_section_centroid"
-
 #: ~WELL mnemonics that carry a location. Deliberately not "E" / "N" / "LOC":
-#: LOC is free text (the PLSS parse below owns it) and single letters collide
-#: with other headers.
+#: LOC is free text, not a coordinate, and single letters collide with other
+#: headers.
 _X_MNEMONICS = ("X", "XCOORD", "X_COORD", "EAST", "EASTING", "EASTINGS")
 _Y_MNEMONICS = ("Y", "YCOORD", "Y_COORD", "NORTH", "NORTHING", "NORTHINGS")
 _LAT_MNEMONICS = ("LATI", "LAT", "LATITUDE")
@@ -124,52 +105,7 @@ class _Placement:
     easting: float           # value for silver.collars.easting
     northing: float          # value for silver.collars.northing
     georef_method: str       # 'declared' | 'assumed' (chk_collars_georef_method)
-    uncertainty_m: float | None = None
-    uncertainty_method: str | None = None
     warning: dict[str, str] | None = None
-
-
-def _parse_plss_loc(loc: str) -> tuple[int, int, int] | None:
-    """Parse a LAS LOC field like '36    28    79' → (section, township, range).
-
-    Returns None if the format doesn't match.
-    """
-    if not loc:
-        return None
-    parts = re.findall(r"\d+", loc)
-    if len(parts) >= 3:
-        return (int(parts[0]), int(parts[1]), int(parts[2]))
-    return None
-
-
-def _hole_offset_meters(hole_id: str) -> tuple[float, float]:
-    """Deterministic small offset within a PLSS section based on hole_id.
-
-    Returns (delta_easting, delta_northing) where each is in (-800, +800)
-    meters — keeps holes within the ~1-mile section boundary.
-    """
-    h = hashlib.sha256(hole_id.encode()).hexdigest()
-    # Two hex chunks, normalize to (-1, 1), scale to ±800m
-    de = (int(h[:8], 16) / 0xFFFFFFFF - 0.5) * 1600.0
-    dn = (int(h[8:16], 16) / 0xFFFFFFFF - 0.5) * 1600.0
-    return (de, dn)
-
-
-def _derive_coordinates(
-    plss_section_key: str | None,
-    hole_id: str,
-) -> tuple[float, float] | None:
-    """Return (easting, northing) in UTM Zone 13N (EPSG:32613), or None.
-
-    None when the section is not in PLSS_REFERENCE_UTM. It used to fall back
-    to a fixed Wyoming coordinate, which put every hole whose section was not
-    tabulated (or which had no section at all) in the same ~2 km box.
-    """
-    base = PLSS_REFERENCE_UTM.get(plss_section_key or "")
-    if base is None:
-        return None
-    de, dn = _hole_offset_meters(hole_id)
-    return (base[0] + de, base[1] + dn)
 
 
 def _parse_las_date(d: str | None) -> date | None:
@@ -409,37 +345,12 @@ async def _placement_from_header(
     return None, notes
 
 
-def _placement_from_plss(
-    plss_section_key: str | None, hole_id: str,
-) -> _Placement | None:
-    coords = _derive_coordinates(plss_section_key, hole_id)
-    if coords is None:
-        return None
-    return _Placement(
-        source_x=coords[0], source_y=coords[1], source_epsg=COLLAR_GEOM_SRID,
-        easting=coords[0], northing=coords[1],
-        georef_method="assumed",
-        uncertainty_m=PLSS_UNCERTAINTY_M,
-        uncertainty_method=PLSS_UNCERTAINTY_METHOD,
-        warning={
-            "code": "las_collar_assumed_location",
-            "detail": (
-                f"Well {hole_id!r} has no coordinates in its LAS header and no collar in "
-                f"this project. It was placed at the centre of PLSS section "
-                f"{plss_section_key} plus a per-hole offset: georef_method=assumed, "
-                f"good to about {int(PLSS_UNCERTAINTY_M)} m at best. Upload the collar "
-                "table to give it a real location."
-            ),
-        },
-    )
-
-
 async def _get_or_create_project(
     conn: asyncpg.Connection,
     *,
     project_name: str,
     company: str,
-    region: str,
+    region: str | None,
     workspace_id: str,
     commodity: str | None = None,
 ) -> str:
@@ -467,15 +378,19 @@ async def _get_or_create_project(
         """
         INSERT INTO silver.projects
             (project_id, project_name, slug, company, region, commodity,
-             crs_datum, crs_epsg, orientation_reference, status, workspace_id,
+             orientation_reference, status, workspace_id,
              created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5,
-                'EPSG:32613', 32613, 'grid_north', 'active', $6::uuid,
+                'grid_north', 'active', $6::uuid,
                 NOW(), NOW())
         RETURNING project_id::text AS project_id
         """,
         project_name, slug, company, region, commodity, workspace_id,
     )
+    # crs_epsg is deliberately NOT written. This row used to be stamped
+    # 32613 / 'EPSG:32613' (the first archive's zone) whatever the data was,
+    # which made "the project has an explicit CRS" true of every project this
+    # ingester ever created. NULL means the project has none declared.
     log.info("las_ingester.project_created name=%s slug=%s", project_name, slug)
     return row["project_id"]
 
@@ -547,20 +462,17 @@ async def _create_collar(
         INSERT INTO silver.collars
             (collar_id, hole_id, hole_id_canonical, project_id, easting, northing, total_depth,
              hole_type, status, drill_date, georef_method,
-             spatial_uncertainty_m, spatial_uncertainty_method,
              geom, geom_4326, workspace_id, created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3::uuid, $4, $5, $6,
                 'exploration', 'active', $7, $8,
-                $9, $10,
-                ST_Transform(ST_SetSRID(ST_MakePoint($11, $12), $13::int), 32613),
-                ST_Transform(ST_SetSRID(ST_MakePoint($11, $12), $13::int), 4326),
-                $14::uuid, NOW(), NOW())
+                ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 32613),
+                ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 4326),
+                $12::uuid, NOW(), NOW())
         ON CONFLICT (project_id, hole_id) DO UPDATE SET updated_at = silver.collars.updated_at
         RETURNING collar_id::text AS collar_id
         """,
         hole_id, hole_id_canonical, project_id, placement.easting, placement.northing,
         total_depth, drill_date, placement.georef_method,
-        placement.uncertainty_m, placement.uncertainty_method,
         placement.source_x, placement.source_y, placement.source_epsg,
         workspace_id,
     )
@@ -665,9 +577,8 @@ async def ingest_las_file(
     las_path: str,
     *,
     workspace_id: str,
-    project_name_fallback: str = "Wyoming WSGS Uranium Archive",
+    project_name_fallback: str = "LAS import",
     company_fallback: str = "Unknown Operator",
-    plss_section_key: str | None = None,
     ingest_run_id: str | None = None,
     project_id_override: str | None = None,
     source_epsg: int | None = None,
@@ -680,7 +591,6 @@ async def ingest_las_file(
         workspace_id: silver.workspaces UUID for RLS scoping
         project_name_fallback: used if LAS COMP field is empty
         company_fallback: used if LAS COMP field is empty
-        plss_section_key: e.g. "028N079W36" — overrides LOC-field parse
         ingest_run_id: optional bronze.ingest_runs link
         source_epsg: CRS the operator declared for the upload; used for
             projected X/Y in the LAS header when the header names none.
@@ -718,16 +628,7 @@ async def ingest_las_file(
     field_name = str(well.get("FLD", lasio.HeaderItem("FLD", value="")).value).strip()
     county = str(well.get("CNTY", lasio.HeaderItem("CNTY", value="")).value).strip()
     state = str(well.get("STAT", lasio.HeaderItem("STAT", value="")).value).strip()
-    loc = str(well.get("LOC", lasio.HeaderItem("LOC", value="")).value).strip()
     date_str = str(well.get("DATE", lasio.HeaderItem("DATE", value="")).value).strip()
-
-    # PLSS parse — if LOC field present, derive section_key
-    plss_parsed = _parse_plss_loc(loc)
-    if not plss_section_key and plss_parsed:
-        section, township, range_ = plss_parsed
-        # Format as "TTTN" + "RRRW" + "SS" — assume N township + W range
-        # (Wyoming is all N township; range W is dominant in W Wyoming)
-        plss_section_key = f"{township:03d}N{range_:03d}W{section:02d}"
 
     try:
         total_depth = float(las.well["STOP"].value) if "STOP" in las.well else 0.0
@@ -740,7 +641,7 @@ async def ingest_las_file(
     # Project name — derive from company + field if both present, else fallback
     project_name = f"{company} — {field_name}" if company and field_name else project_name_fallback
 
-    region = ", ".join(filter(None, [county, state])) or "Wyoming"
+    region = ", ".join(filter(None, [county, state])) or None
 
     if project_id_override:
         project_id = project_id_override
@@ -783,17 +684,10 @@ async def ingest_las_file(
             hole_id=hole_id,
         )
         if placement is None:
-            placement = _placement_from_plss(plss_section_key, hole_id)
-        if placement is None:
             why = "; ".join(header_notes) or "its ~WELL section carries no coordinates"
-            plss_note = (
-                f" Its LOC gives PLSS section {plss_section_key}, which has no reference "
-                "centroid in PLSS_REFERENCE_UTM."
-                if plss_section_key else ""
-            )
             detail = (
                 f"{p.name}: well {hole_id!r} has no collar in this project and cannot be "
-                f"located ({why}).{plss_note} Nothing was loaded for it. Upload the "
+                f"located ({why}). Nothing was loaded for it. Upload the "
                 "collar table first, then upload this LAS again."
             )
             log.warning("las_ingester.collar_unlocated file=%s well=%s why=%s", p.name, hole_id, why)
@@ -886,5 +780,4 @@ async def ingest_las_file(
 __all__ = [
     "ingest_las_file",
     "LASIngestResult",
-    "PLSS_REFERENCE_UTM",
 ]

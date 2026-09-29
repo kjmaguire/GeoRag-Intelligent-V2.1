@@ -61,6 +61,20 @@ _TOTAL_DEPTH_FILENAME_RE = re.compile(
 )
 
 
+#: The CRS this binary format writes its E=/N= pair in (NAD83 / Wyoming East,
+#: US survey feet) -- a property of the FORMAT, not of the project it is
+#: dropped into. The file states no CRS of its own, so a caller may only
+#: create or move a collar from it when the operator has DECLARED this EPSG
+#: for the upload (``source_epsg``). Without that, a .log dropped into a
+#: project from anywhere else would be placed in Wyoming.
+LOG_COORD_EPSG = 32155
+
+
+def log_crs_declared(source_epsg: int | None) -> bool:
+    """Whether the operator declared the CRS this format's coordinates use."""
+    return source_epsg == LOG_COORD_EPSG
+
+
 @dataclass
 class CamecoLogResult:
     file_path: str
@@ -146,13 +160,18 @@ async def update_collar_with_log_coords(
     *,
     project_id: str,
     parsed: CamecoLogResult,
+    source_epsg: int | None = None,
 ) -> bool:
     """Update an existing collar's coordinates with the surveyed state-plane
     values from the .log header. Transforms state plane WY East (EPSG:32155)
     to UTM Zone 13N (EPSG:32613) via PostGIS.
 
-    Returns True if the collar was found and updated; False if not found.
+    Returns True if the collar was found and updated; False if not found --
+    and False, touching nothing, unless ``source_epsg`` is LOG_COORD_EPSG:
+    the file carries no CRS, so it is used only when the operator declared it.
     """
+    if not log_crs_declared(source_epsg):
+        return False
     if not parsed.hole_id or parsed.state_plane_easting is None or parsed.state_plane_northing is None:
         return False
 
@@ -182,6 +201,7 @@ async def update_collar_with_log_coords(
             northing = ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 32155), 32613)),
             geom = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 32155), 32613),
             geom_4326 = ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 32155), 4326),
+            georef_method = 'declared',
             updated_at = NOW()
          WHERE collar_id = $3::uuid
         """,
@@ -196,6 +216,7 @@ async def upsert_collar_from_log(
     project_id: str,
     workspace_id: str,
     parsed: CamecoLogResult,
+    source_epsg: int | None = None,
 ) -> str | None:
     """Create-or-update a collar row directly from .log header data.
 
@@ -208,8 +229,12 @@ async def upsert_collar_from_log(
     This helper UPSERTs the collar so .log files always produce a row,
     whether or not a LAS file happened to seed one first.
 
-    Returns the collar_id, or None if the parse lacks coordinates.
+    Returns the collar_id, or None if the parse lacks coordinates -- or if
+    ``source_epsg`` is not LOG_COORD_EPSG (the file states no CRS; see
+    ``log_crs_declared``). Nothing is written in either case.
     """
+    if not log_crs_declared(source_epsg):
+        return None
     if not parsed.hole_id or parsed.state_plane_easting is None or parsed.state_plane_northing is None:
         return None
 
@@ -229,13 +254,13 @@ async def upsert_collar_from_log(
         """
         INSERT INTO silver.collars
             (collar_id, hole_id, hole_id_canonical, project_id, workspace_id,
-             easting, northing, total_depth, hole_type, status,
+             easting, northing, total_depth, hole_type, status, georef_method,
              geom, geom_4326, created_at, updated_at)
         VALUES (
             gen_random_uuid(), $1, $1, $2::uuid, $3::uuid,
             ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 32613)),
             ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 32613)),
-            $6, 'exploration', 'historical',
+            $6, 'exploration', 'historical', 'declared',
             ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 32613),
             ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32155), 4326),
             NOW(), NOW()
@@ -245,6 +270,7 @@ async def upsert_collar_from_log(
             northing = EXCLUDED.northing,
             geom = EXCLUDED.geom,
             geom_4326 = EXCLUDED.geom_4326,
+            georef_method = EXCLUDED.georef_method,
             total_depth = GREATEST(silver.collars.total_depth, EXCLUDED.total_depth),
             updated_at = NOW()
         RETURNING collar_id::text AS collar_id
@@ -281,4 +307,6 @@ __all__ = [
     "upsert_collar_from_log",
     "emit_log_provenance",
     "CamecoLogResult",
+    "LOG_COORD_EPSG",
+    "log_crs_declared",
 ]

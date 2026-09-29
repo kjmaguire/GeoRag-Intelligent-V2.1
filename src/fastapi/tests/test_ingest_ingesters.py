@@ -36,62 +36,18 @@ _requires_lasio = pytest.mark.skipif(
 # ────────────────────────── las_ingester ──────────────────────────
 
 @_requires_lasio
-def test_las_parse_plss_loc_standard_format():
-    from app.services.ingest.las_ingester import _parse_plss_loc
-    # Standard LAS LOC field: "section township range"
-    assert _parse_plss_loc("36    28    79") == (36, 28, 79)
-    assert _parse_plss_loc("1 2 3") == (1, 2, 3)
+def test_las_ingester_carries_no_dataset_specific_placement():
+    """The PLSS section table, the LOC parse, the per-hole hash offset and the
+    fixed Wyoming default were all removed: a LAS collar is placed only from an
+    existing collar or its own header coordinates (tests/test_las_collar_location.py).
+    This replaces the unit tests that pinned those helpers."""
+    from app.services.ingest import las_ingester
 
-
-@_requires_lasio
-def test_las_parse_plss_loc_handles_missing_or_malformed():
-    from app.services.ingest.las_ingester import _parse_plss_loc
-    assert _parse_plss_loc("") is None
-    assert _parse_plss_loc(None) is None
-    assert _parse_plss_loc("only_one") is None  # only 1 number
-
-
-@_requires_lasio
-def test_las_hole_offset_meters_deterministic_and_bounded():
-    from app.services.ingest.las_ingester import _hole_offset_meters
-    de1, dn1 = _hole_offset_meters("36-1042")
-    de2, dn2 = _hole_offset_meters("36-1042")
-    # Deterministic: same hole → same offset
-    assert (de1, dn1) == (de2, dn2)
-    # Bounded: ±800m within section
-    assert -800 < de1 < 800
-    assert -800 < dn1 < 800
-
-
-@_requires_lasio
-def test_las_hole_offset_differs_per_hole():
-    from app.services.ingest.las_ingester import _hole_offset_meters
-    a = _hole_offset_meters("36-1042")
-    b = _hole_offset_meters("36-1043")
-    assert a != b  # different hole_ids → different offsets
-
-
-@_requires_lasio
-def test_las_derive_coordinates_uses_section_reference():
-    from app.services.ingest.las_ingester import _derive_coordinates
-    e, n = _derive_coordinates("028N079W36", "36-1042")
-    # Shirley Basin reference: UTM Z13N around 471k/4657k
-    assert 470_000 < e < 472_000
-    assert 4_656_000 < n < 4_658_000
-
-
-@_requires_lasio
-def test_las_derive_coordinates_never_fabricates_for_an_unknown_section():
-    """Was `..._falls_back_to_default`, which pinned the fabrication.
-
-    A section that is not in PLSS_REFERENCE_UTM (or no section at all) used to
-    land at DEFAULT_UTM_FALLBACK (480000, 4660000) -- the same Wyoming box for
-    every such hole, with no warning. It now returns None and the caller
-    refuses the file; see tests/test_las_collar_location.py.
-    """
-    from app.services.ingest.las_ingester import _derive_coordinates
-    assert _derive_coordinates("999N999W99", "unknown-hole") is None
-    assert _derive_coordinates(None, "unknown-hole") is None
+    for name in (
+        "PLSS_REFERENCE_UTM", "DEFAULT_UTM_FALLBACK", "_parse_plss_loc",
+        "_hole_offset_meters", "_derive_coordinates", "_placement_from_plss",
+    ):
+        assert not hasattr(las_ingester, name), name
 
 
 @_requires_lasio

@@ -500,10 +500,11 @@ _MEMBER_WARNING_TEXT: dict[str, str] = {
         "project and no usable coordinates in the header ({names}). Upload the "
         "collar table first, then upload these LAS files again."
     ),
-    "las_collar_assumed_location": (
-        "{n} LAS well(s) were placed at an APPROXIMATE location -- the centre "
-        "of their PLSS section plus an offset, georef_method=assumed, good to "
-        "about 1.6 km ({names}). Upload the collar table for real coordinates."
+    "log_collar_crs_undeclared": (
+        "{n} binary .log file(s) were NOT loaded: their E=/N= coordinates state "
+        "no CRS (the format uses NAD83 / Wyoming East, EPSG:32155) and none was "
+        "declared for this upload ({names}). Upload again with that CRS declared "
+        "if it is correct, or load the collars from a collar table."
     ),
     "las_collar_crs_assumed": (
         "{n} LAS well(s) had header coordinates with no stated CRS; the "
@@ -1205,8 +1206,14 @@ async def _ingest_one(
             counts["las"] += 1
 
     elif ext == "log":
-        # Cameco binary log files → parse header + upsert collar
+        # Binary gamma-log files → parse header + upsert collar. The format
+        # writes its E=/N= pair in one fixed CRS (NAD83 / Wyoming East, ft) and
+        # states none in the file, so it is used ONLY when the operator declared
+        # that CRS for the upload (source_epsg); otherwise the member is
+        # refused rather than placed in Wyoming whatever project it landed in.
         from app.services.ingest.cameco_log_ingester import (  # noqa: PLC0415
+            LOG_COORD_EPSG,
+            log_crs_declared,
             parse_cameco_log_header,
             upsert_collar_from_log,
         )
@@ -1215,15 +1222,32 @@ async def _ingest_one(
         if parsed.skipped:
             counts["skipped"] += 1
             log.debug("ingest_zip_archive: LOG skipped %s — %s", file_path.name, parsed.skipped_reason)
+        elif not log_crs_declared(input.source_epsg):
+            counts["skipped"] += 1
+            log.warning(
+                "ingest_zip_archive: LOG %s not loaded — its coordinates carry no CRS "
+                "and EPSG:%s was not declared for this upload",
+                file_path.name, LOG_COORD_EPSG,
+            )
+            if member_warnings is not None:
+                member_warnings.append({
+                    "code": "log_collar_crs_undeclared",
+                    "detail": f"{file_path.name}: coordinates carry no CRS",
+                    "file": file_path.name,
+                })
         else:
             async with conn.transaction():
-                await upsert_collar_from_log(
+                log_collar_id = await upsert_collar_from_log(
                     conn,
                     project_id=input.project_id,
                     parsed=parsed,
                     workspace_id=input.workspace_id,
+                    source_epsg=input.source_epsg,
                 )
-            counts["log"] += 1
+            if log_collar_id is None:
+                counts["skipped"] += 1
+            else:
+                counts["log"] += 1
 
     # No ".txt": inside an archive that is almost always a readme, and
     # routing one into ingest_tabular spawns a workflow whose only output is

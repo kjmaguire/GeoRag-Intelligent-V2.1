@@ -26,10 +26,7 @@ import pytest
 pytest.importorskip("lasio")
 
 from app.services.ingest import las_ingester  # noqa: E402
-from app.services.ingest.las_ingester import (  # noqa: E402
-    PLSS_UNCERTAINTY_M,
-    ingest_las_file,
-)
+from app.services.ingest.las_ingester import ingest_las_file  # noqa: E402
 
 _WS = "a0000000-0000-0000-0000-00000000feed"
 _PJ = "b1000000-0000-0000-0000-0000000000a0"
@@ -83,8 +80,7 @@ def _insert(conn: _Conn) -> dict[str, Any]:
     assert conn.collar_insert is not None, "no collar was inserted"
     names = (
         "hole_id", "hole_id_canonical", "project_id", "easting", "northing",
-        "total_depth", "drill_date", "georef_method", "uncertainty_m",
-        "uncertainty_method", "source_x", "source_y", "source_epsg",
+        "total_depth", "drill_date", "georef_method", "source_x", "source_y", "source_epsg",
         "workspace_id",
     )
     return dict(zip(names, conn.collar_insert, strict=True))
@@ -268,51 +264,41 @@ async def test_null_coordinates_in_the_header_are_not_coordinates(tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
-# (b) PLSS -- the Cameco Shirley Basin flow
+# (b) PLSS / LOC -- the dataset-specific placement is GONE
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_a_resolving_plss_section_still_creates_the_collar_but_flags_it_assumed(tmp_path: Path) -> None:
-    las = _las(tmp_path / "s.las", well="36-1042", loc="36    28    79")
+@pytest.mark.parametrize("loc", ["36    28    79", "12    33    90"])
+async def test_a_plss_loc_no_longer_places_a_collar(tmp_path: Path, loc: str) -> None:
+    """The Cameco Shirley Basin fixture (LOC 36 28 79) used to be placed at a
+    hard-coded section centroid plus a hash offset. It is now just a LAS whose
+    well has no collar and no coordinates: refused, nothing written."""
+    las = _las(tmp_path / "s.las", well="36-1042", loc=loc)
     conn = _Conn()
 
     result = await ingest_las_file(conn, str(las), workspace_id=_WS, project_id_override=_PJ)
 
-    assert not result.skipped, result.skipped_reason
-    assert result.collar_id == _COLLAR
-    assert result.georef_method == "assumed"
-    assert _codes(result) == ["las_collar_assumed_location"]
-    detail = result.warnings[0]["detail"]
-    assert "36-1042" in detail and "028N079W36" in detail and "s.las" in detail
-    row = _insert(conn)
-    assert row["georef_method"] == "assumed"
-    # Same Shirley Basin box the pre-fix flow produced.
-    assert 470_000 < row["easting"] < 472_000
-    assert 4_656_000 < row["northing"] < 4_658_000
-    assert row["source_epsg"] == 32613
-    assert row["uncertainty_m"] == PLSS_UNCERTAINTY_M
-    assert row["uncertainty_method"] == "plss_section_centroid"
-    assert conn.curve_writes == 1
+    assert result.skipped and result.skipped_reason == "collar_unlocated"
+    assert _codes(result) == ["las_collar_unlocated"]
+    assert "36-1042" in result.warnings[0]["detail"] and "s.las" in result.warnings[0]["detail"]
+    assert conn.collar_insert is None and conn.curve_writes == 0
 
 
 @pytest.mark.asyncio
-async def test_a_callers_plss_key_still_works(tmp_path: Path) -> None:
-    """cluster_runner passes plss_section_key; a tabulated key resolves."""
-    las = _las(tmp_path / "s.las", well="A-1")
-    conn = _Conn()
+async def test_the_same_fixture_matches_an_existing_collar(tmp_path: Path) -> None:
+    """...and once the collar table is loaded the identical file lands."""
+    las = _las(tmp_path / "s.las", well="36-1042", loc="36    28    79")
+    conn = _Conn(by_hole_id=_EXISTING)
 
-    result = await ingest_las_file(
-        conn, str(las), workspace_id=_WS, project_id_override=_PJ,
-        plss_section_key="028N079W36",
-    )
+    result = await ingest_las_file(conn, str(las), workspace_id=_WS, project_id_override=_PJ)
 
-    assert result.georef_method == "assumed"
-    assert _codes(result) == ["las_collar_assumed_location"]
+    assert not result.skipped and result.collar_id == _EXISTING
+    assert conn.curve_writes == 1 and conn.collar_insert is None
 
 
 @pytest.mark.asyncio
-async def test_header_coordinates_beat_a_plss_guess(tmp_path: Path) -> None:
+async def test_header_coordinates_are_used_whatever_the_loc_says(tmp_path: Path) -> None:
     las = _las(
         tmp_path / "s.las", well="36-1042", loc="36 28 79",
         extra_well="LATI .DEG   42.06 : LATITUDE\nLONG .DEG -105.35 : LONGITUDE\nGDAT .  WGS84 : D\n",
@@ -323,6 +309,7 @@ async def test_header_coordinates_beat_a_plss_guess(tmp_path: Path) -> None:
 
     assert result.georef_method == "declared"
     assert result.warnings == []
+    assert _insert(conn)["source_epsg"] == 4326
 
 
 # ---------------------------------------------------------------------------
@@ -349,23 +336,9 @@ async def test_no_coordinates_and_no_plss_is_refused_with_a_named_warning(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_a_plss_section_missing_from_the_table_is_refused_not_defaulted(tmp_path: Path) -> None:
-    """This is the old DEFAULT_UTM_FALLBACK path, verbatim."""
-    las = _las(tmp_path / "x.las", well="X-1", loc="12    33    90")
-    conn = _Conn()
-
-    result = await ingest_las_file(conn, str(las), workspace_id=_WS, project_id_override=_PJ)
-
-    assert result.skipped and result.skipped_reason == "collar_unlocated"
-    assert "033N090W12" in result.warnings[0]["detail"]
-    assert conn.collar_insert is None
-
-
-@pytest.mark.asyncio
 async def test_no_code_path_writes_the_old_wyoming_default() -> None:
-    assert not hasattr(las_ingester, "DEFAULT_UTM_FALLBACK")
-    assert las_ingester._derive_coordinates(None, "H-1") is None
-    assert las_ingester._derive_coordinates("999N999W99", "H-1") is None
+    for name in ("DEFAULT_UTM_FALLBACK", "PLSS_REFERENCE_UTM", "_derive_coordinates"):
+        assert not hasattr(las_ingester, name), name
 
 
 # ---------------------------------------------------------------------------
