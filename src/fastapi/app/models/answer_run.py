@@ -96,10 +96,12 @@ CitationLifecycleStateLiteral = Literal[
     "rejected",
 ]
 
-CitationModeLiteral = Literal[
-    "posthoc_span_resolution",
-    "hybrid_delayed_attachment",
-]
+#: One mode (§04e, SME-approved, Kyle, 2026-09-29; CLAUDE.md hard rule 4):
+#: there is no best-effort citation mode. ``hybrid_delayed_attachment`` was
+#: never written and is gone from the answer_runs CHECK too
+#: (2026_09_29_230500_narrow_answer_runs_citation_mode.php); NULL stays
+#: legal for historical rows.
+CitationModeLiteral = Literal["posthoc_span_resolution"]
 
 StageLiteral = Literal["retrieved", "reranked", "in_context", "cited"]
 
