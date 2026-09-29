@@ -149,7 +149,9 @@ POOLS = {
         generate_report,
         # Doc-phase 88 / Master-plan §8.6 — score_targets wraps the
         # §18.2 Target Recommendation Graph in a durable Hatchet
-        # workflow with R5 sign-off pause-resume. Currently skeleton.
+        # workflow with R5 sign-off pause-resume. 6 of 12 nodes graduated.
+        # generate_report and score_targets are started by a project member
+        # through /internal/v1/workflows/{name}/trigger (HAT-13, 2026-09-29).
         score_targets,
         # Doc-phase 94 / Master-plan §9.11 — field_outcome_learning
         # folds new drilling outcomes into target-model learning state.
@@ -206,7 +208,9 @@ POOLS = {
         answer_quality_watch,
         # Doc-phase 98 / Master-plan §10.10 — support_replay re-
         # executes failed workflows in dry-run mode for diagnosis.
-        # Skeleton.
+        # support_replay, restore_workspace and workspace_export are
+        # admin-triggered through /internal/v1/workflows/{name}/trigger
+        # (HAT-13, 2026-09-29); none has a cron.
         support_replay,
         # Doc-phase 100 / Master-plan §11.3 — cross-store consistency
         # checks plus manifest-backed workspace restore.
@@ -265,7 +269,8 @@ POOLS = {
         # services directly instead of via a Bronze staging hop.
         public_geo_sync,
         # Master-plan §11.3 wave 1 — per-workspace logical export
-        # (manual trigger; complements the §11.1 full-store backups).
+        # (admin trigger, no cron; the §11.1 full-store backups it once
+        # complemented were deleted 2026-08-23).
         # Produces the JSONL.gz manifest that restore_workspace
         # dry_run=False consumes.
         workspace_export,

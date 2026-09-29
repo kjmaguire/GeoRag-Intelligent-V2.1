@@ -69,6 +69,34 @@ class User extends Authenticatable
     }
 
     /**
+     * Check if the user is a member of any project in a workspace.
+     *
+     * Membership is per project (the project_user pivot); a workspace has no
+     * membership table of its own, so belonging to one of its projects is
+     * what makes a user part of it. Fails CLOSED on a missing pivot, exactly
+     * like hasProjectAccess().
+     */
+    public function hasWorkspaceAccess(string $workspaceId): bool
+    {
+        try {
+            return $this->projects()
+                ->where('silver.projects.workspace_id', $workspaceId)
+                ->exists();
+        } catch (QueryException $e) {
+            if (self::isMissingProjectUserPivot($e)) {
+                Log::critical('hasWorkspaceAccess: project_user pivot table missing or unreadable — denying access (fail-CLOSED). Run `php artisan migrate`.', [
+                    'user_id' => $this->getKey(),
+                    'workspace_id' => $workspaceId,
+                    'exception' => $e->getMessage(),
+                ]);
+
+                return false;  // fail-CLOSED
+            }
+            throw $e;
+        }
+    }
+
+    /**
      * Check if the user is the owner of a project. Already fails closed —
      * no change required. Pivot-absence returns false (not an owner).
      */

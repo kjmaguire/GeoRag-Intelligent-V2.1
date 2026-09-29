@@ -25,6 +25,15 @@ This graduation lands two slices:
 
   3. `dry_run=False` restores a workspace export manifest to Postgres,
      Neo4j, Qdrant, and Redis when the corresponding sections exist.
+
+Trigger. Since 2026-09-29 (HAT-13) an admin who belongs to the workspace
+starts it with Laravel
+``POST /api/v1/admin/workspaces/{workspace}/workflows/restore_workspace``,
+which calls FastAPI ``POST /internal/v1/workflows/restore_workspace/trigger``.
+That route accepts only a ``s3://workspace-exports/<this workspace>/...``
+manifest; a ``file://`` URI or another workspace's export is refused. A
+``dry_run=false`` restore also needs ``confirm_workspace_id`` on the Laravel
+side. No cron.
 """
 from __future__ import annotations
 

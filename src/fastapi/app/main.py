@@ -71,6 +71,7 @@ from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
+from app.routers import workflow_trigger as workflow_trigger_router  # HAT-13
 from app.services.qdrant_conn import qdrant_client_kwargs
 
 # V1.5-05 — switch to JSON logs at module import so every logger.info() in
@@ -1220,6 +1221,7 @@ app.include_router(answer_runs_router.router)
 app.include_router(phase0_ops_router.router)
 app.include_router(shadow_trigger_router.router)
 app.include_router(public_geo_trigger_router.router)  # operator "Sync now" for public_geo_sync
+app.include_router(workflow_trigger_router.router)  # HAT-13 triggers for UI-only workflows
 app.include_router(mv_refresh_trigger_router.router)  # Phase 2 reliability spec
 app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliability spec
 app.include_router(integrations_trigger_router.router)

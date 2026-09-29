@@ -17,6 +17,12 @@ this workflow body keeps working without changes — `state.failure_reason`
 catches under-evidenced sections, and the output model already exposes
 the partial-state fields (sections_plan, section_drafts) needed for
 the admin / observability surfaces.
+
+Trigger. Since 2026-09-29 (HAT-13) a project member starts it with Laravel
+``POST /api/v1/projects/{project}/workflows/generate_report``, which calls
+FastAPI ``POST /internal/v1/workflows/generate_report/trigger``
+(``app/routers/workflow_trigger.py``). Before that it could only be started
+from the Hatchet UI. It has no cron.
 """
 from __future__ import annotations
 
@@ -42,7 +48,7 @@ log = logging.getLogger("georag.hatchet.generate_report")
 # Input + output models
 # =============================================================================
 class GenerateReportInput(BaseModel):
-    """Trigger payload from Laravel queue or Kestra flow."""
+    """Trigger payload, built by Laravel's WorkflowTriggerController."""
 
     workspace_id: UUID
     project_id: UUID

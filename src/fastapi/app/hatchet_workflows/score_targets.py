@@ -14,10 +14,16 @@ Today's task body invokes the **6 graduated nodes** (per doc-phase 138):
 The 6 still-skeleton nodes (collect_private_evidence,
 collect_public_geoscience, generate_candidate_zones,
 explain_score_factors, create_map_layers, route_to_review_cockpit)
-are not in the wired graph yet. The caller (Laravel queue or
-Kestra flow) must pre-populate `candidate_zones` via
-`extra_candidate_zone_wkts` — when `generate_candidate_zones`
-graduates the wiring inserts it before scoring.
+are not in the wired graph yet. The caller must pre-populate
+`candidate_zones` via `extra_candidate_zone_wkts`. When
+`generate_candidate_zones` graduates, the wiring inserts it before scoring.
+
+Trigger. Since 2026-09-29 (HAT-13) a project member starts it with Laravel
+``POST /api/v1/projects/{project}/workflows/score_targets`` (AOI plus at least
+one candidate zone), which calls FastAPI
+``POST /internal/v1/workflows/score_targets/trigger``. It is NOT a cron. Every
+run needs a user, an AOI and candidate zones, and an engine cron sends no
+input at all, so a scheduled tick could only fail validation.
 """
 from __future__ import annotations
 
@@ -44,7 +50,7 @@ log = logging.getLogger("georag.hatchet.score_targets")
 # Input + output models
 # =============================================================================
 class ScoreTargetsInput(BaseModel):
-    """Trigger payload from Laravel queue or Kestra flow."""
+    """Trigger payload, built by Laravel's WorkflowTriggerController."""
 
     workspace_id: UUID
     project_id: UUID

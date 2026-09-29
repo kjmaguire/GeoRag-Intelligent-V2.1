@@ -6,6 +6,7 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Policies\DashboardPolicy;
+use App\Policies\WorkflowTriggerPolicy;
 use App\Support\Http\PooledHttpClient;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Client\Factory as HttpFactory;
@@ -68,6 +69,12 @@ class AppServiceProvider extends ServiceProvider
         // vendor profiles and column mappings. Reads directly from the users
         // table column; no role package is required at this scale.
         Gate::define('admin', fn (User $user): bool => (bool) $user->is_admin);
+
+        // HAT-13 (2026-09-29) — who may start which Hatchet workflow from the
+        // product. See WorkflowTriggerPolicy for the three tiers.
+        Gate::define('triggerProjectWorkflow', [WorkflowTriggerPolicy::class, 'triggerForProject']);
+        Gate::define('triggerWorkspaceWorkflow', [WorkflowTriggerPolicy::class, 'triggerForWorkspace']);
+        Gate::define('triggerPlatformWorkflow', [WorkflowTriggerPolicy::class, 'triggerForPlatform']);
 
         // ── Rate limiters ────────────────────────────────────────────
         //
