@@ -30,6 +30,7 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
+from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._drill_schema import SAMPLE_ALIASES, SAMPLE_REQUIRED
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
@@ -947,6 +948,16 @@ def parse_csv_samples(
         c for c in assay_cols if c in df_renamed.columns
     ]
     df_trimmed = df_renamed.select(keep_cols)
+    # "From_ft" / "To_ft" -> metres (GIS-3); the header's unit is honoured.
+    df_trimmed, unit_warning = convert_feet_columns(
+        df_trimmed,
+        columns={"from_depth": "from_depth", "to_depth": "to_depth"},
+        headers=column_map,
+        fields=("from_depth", "to_depth"),
+        parser="csv_sample",
+    )
+    if unit_warning is not None:
+        global_warnings.append(unit_warning)
 
     records: list = []
     skipped: list = []

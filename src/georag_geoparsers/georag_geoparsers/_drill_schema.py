@@ -77,7 +77,12 @@ COLLAR_ALIASES: dict[str, list[str]] = {
         "EOH_Depth", "Final_Depth", "Hole_Length", "Length",
     ],
     "azimuth": ["Azimuth", "AZI", "AZ", "Bearing", "Collar_Azimuth", "Grid_Azimuth"],
-    "dip": ["Dip", "DIP", "Inclination", "INC", "Collar_Dip", "Plunge"],
+    # "Inclination" is ambiguous (from horizontal or from vertical); see
+    # _dip_convention.resolve_dip_convention for how each spelling is read.
+    "dip": [
+        "Dip", "DIP", "Inclination", "INC", "Collar_Dip", "Plunge",
+        "Inclination_From_Vertical", "Inc_From_Vertical", "Angle_From_Vertical",
+    ],
     "hole_type": ["HoleType", "Hole_Type", "Type", "DrillType", "Drill_Method"],
     "drill_date": [
         "Date", "DrillDate", "Drill_Date", "StartDate", "Start_Date",
@@ -93,7 +98,10 @@ SURVEY_ALIASES: dict[str, list[str]] = {
         "At_Depth", "Station",
     ],
     "azimuth": ["Azimuth", "AZI", "AZ", "Bearing"],
-    "dip": ["Dip", "DIP", "Inclination", "INC", "Plunge"],
+    "dip": [
+        "Dip", "DIP", "Inclination", "INC", "Plunge",
+        "Inclination_From_Vertical", "Inc_From_Vertical", "Angle_From_Vertical",
+    ],
     "survey_method": ["Method", "SurveyMethod", "Survey_Method", "Instrument", "Tool"],
 }
 
@@ -392,34 +400,94 @@ def coordinate_family_conflict(
     return (east_family, north_family)
 
 
-def detect_coordinate_mode(
+#: The widest spread, in degrees on either axis, that a set of values may
+#: have and still be read as decimal degrees WITHOUT a header saying so.
+#:
+#: A drill programme spans kilometres, i.e. hundredths to tenths of a
+#: degree; five degrees (~550 km of latitude) is generous for one upload.
+#: A local mine grid numbered from zero, by contrast, spans tens to
+#: hundreds of units — every value inside +/-180/+/-90, and nowhere near a
+#: degree-like spread — so it is not mistaken for longitude/latitude.
+DEGREE_SPREAD_MAX = 5.0
+
+
+def coordinate_mode_reason(
     eastings: list[float | None],
     northings: list[float | None],
-) -> str:
-    """``"geographic"`` when the coordinates are angles, else ``"projected"``.
+    *,
+    easting_column: str | None = None,
+    northing_column: str | None = None,
+) -> tuple[str, str]:
+    """``(mode, reason)`` — see :func:`detect_coordinate_mode`.
 
-    Decided from the values rather than from a declared CRS because the
-    parser is frequently handed neither — a bare CSV declares nothing, and
-    the project CRS describes where the holes are, not what units the file
-    writes them in.
+    ``reason`` is one of:
 
-    A file is only read as geographic when EVERY populated pair fits inside
-    the lon/lat envelope. One row at easting 512,000 is enough to make the
-    file projected, which is the safe direction: projected bounds are wide
-    enough to accept degrees, so a misread costs nothing, while reading a
-    UTM file as geographic would reject all of it.
+    * ``"header"`` — both columns are named as angles (Longitude/Latitude).
+    * ``"values"`` — unnamed or projected-named axes whose values are all
+      inside the lon/lat envelope, not all whole numbers, and spread no
+      more than :data:`DEGREE_SPREAD_MAX` degrees.
+    * ``"projected"`` — anything else, including no populated pair.
     """
+    east_family = column_coordinate_family(easting_column) if easting_column else "unknown"
+    north_family = column_coordinate_family(northing_column) if northing_column else "unknown"
+    if east_family == "geographic" and north_family == "geographic":
+        # The header is a declaration: out-of-envelope rows are then range
+        # failures, not evidence that the file is projected.
+        return "geographic", "header"
+
     pairs = [
         (e, n)
         for e, n in zip(eastings, northings, strict=False)
         if e is not None and n is not None
     ]
     if not pairs:
-        return "projected"
+        return "projected", "projected"
 
-    if all(-180.0 <= e <= 180.0 and -90.0 <= n <= 90.0 for e, n in pairs):
-        return "geographic"
-    return "projected"
+    if not all(-180.0 <= e <= 180.0 and -90.0 <= n <= 90.0 for e, n in pairs):
+        return "projected", "projected"
+
+    es = [e for e, _ in pairs]
+    ns = [n for _, n in pairs]
+    if max(es) - min(es) > DEGREE_SPREAD_MAX or max(ns) - min(ns) > DEGREE_SPREAD_MAX:
+        return "projected", "projected"
+    # Whole numbers throughout are a grid, not degrees: nobody surveys a
+    # collar to the nearest whole degree (~100 km).
+    if all(float(e).is_integer() and float(n).is_integer() for e, n in pairs):
+        return "projected", "projected"
+    return "geographic", "values"
+
+
+def detect_coordinate_mode(
+    eastings: list[float | None],
+    northings: list[float | None],
+    *,
+    easting_column: str | None = None,
+    northing_column: str | None = None,
+) -> str:
+    """``"geographic"`` when the coordinates are angles, else ``"projected"``.
+
+    Decided from the headers when they name angles (Longitude/Latitude),
+    else from the values: a declared CRS is frequently absent — a bare CSV
+    declares nothing — and the project CRS describes where the holes are,
+    not what units the file writes them in.
+
+    From the values, a file is only read as geographic when EVERY populated
+    pair fits inside the lon/lat envelope AND the values have a degree-like
+    spread (:data:`DEGREE_SPREAD_MAX`) AND they are not all whole numbers.
+    One row at easting 512,000 is enough to make the file projected, which
+    is the safe direction for the range checks: projected bounds are wide
+    enough to accept degrees.
+
+    This decision is not only a range check any more. Since GIS-1
+    (2026-09-29) ingest_tabular places a geographic file as EPSG:4326
+    whatever the project CRS says: before that, lon/lat collars were read
+    as UTM metres and landed within metres of the equator.
+    """
+    mode, _ = coordinate_mode_reason(
+        eastings, northings,
+        easting_column=easting_column, northing_column=northing_column,
+    )
+    return mode
 
 
 def coordinate_bounds(mode: str) -> dict[str, tuple[float, float]]:

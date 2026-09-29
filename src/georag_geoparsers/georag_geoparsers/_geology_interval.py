@@ -60,6 +60,7 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
+from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._geology_columns import (
     FAMILY_ALTERATION,
     FAMILY_MINERALIZATION,
@@ -844,6 +845,19 @@ def parse_family(
             total_rows=total_rows, columns=plan.unmapped, warnings=[],
             encoding=encoding, provenance=provenance, column_map=plan.column_map,
         )
+
+    # "From_ft" / "To_ft" -> metres (GIS-3). Converted in companion mode
+    # too — the values must agree with the lithology rows they sit beside —
+    # but reported once, by the primary parse of the same columns.
+    df, unit_warning = convert_feet_columns(
+        df,
+        columns=plan.key_map,
+        headers=plan.key_map,
+        fields=("from_depth", "to_depth"),
+        parser=parser_name,
+    )
+    if unit_warning is not None and not companion:
+        warnings.append(unit_warning)
 
     build = _alteration_rows if family == FAMILY_ALTERATION else _mineralization_rows
     counters = _Counters()

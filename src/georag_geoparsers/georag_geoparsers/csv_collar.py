@@ -28,7 +28,8 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
-from georag_geoparsers._dip_convention import DipConvention, detect_dip_convention, normalize_dip
+from georag_geoparsers._depth_units import convert_feet_columns, feet_coordinate_warning
+from georag_geoparsers._dip_convention import DipConvention, normalize_dip, resolve_dip_convention
 from georag_geoparsers._drill_schema import (
     COLLAR_ALIASES,
     COLLAR_REQUIRED,
@@ -103,6 +104,9 @@ class CollarParseResult:
     detected_encoding: str = "utf-8"
     dip_convention: str = "down_negative"
     provenance: dict[str, Any] = field(default_factory=dict)
+    #: "geographic" / "projected" — see _drill_schema.detect_coordinate_mode.
+    #: ingest_tabular reads it to choose the source CRS (GIS-1).
+    coordinate_mode: str = "projected"
 
     @property
     def parse_quality_pct(self) -> float:
@@ -222,7 +226,7 @@ def _validate_row(
             record[canonical] = str(raw_val).strip() if raw_val is not None else None
 
     # --- Dip normalisation ---
-    if record.get("dip") is not None and dip_convention == "down_positive":
+    if record.get("dip") is not None:
         record["dip"] = normalize_dip(record["dip"], dip_convention)
 
     # --- Range checks ---
@@ -478,47 +482,37 @@ def parse_csv_collars(
     canonical_cols = [c for c in df_renamed.columns if c in column_map]
     df_trimmed = df_renamed.select(canonical_cols)
 
+    # --- Length units named in the header (GIS-3) ---
+    # "EOH_ft" / "Elev (ft)" match total_depth / elevation because the unit
+    # suffix is stripped for matching; the unit itself is honoured here.
+    df_trimmed, unit_warning = convert_feet_columns(
+        df_trimmed,
+        columns={f: f for f in ("total_depth", "elevation")},
+        headers=column_map,
+        fields=("total_depth", "elevation"),
+        parser="csv_collar",
+    )
+    if unit_warning is not None:
+        global_warnings.append(unit_warning)
+    coord_unit_warning = feet_coordinate_warning(column_map, parser="csv_collar")
+    if coord_unit_warning is not None:
+        global_warnings.append(coord_unit_warning)
+
     # --- Dip convention detection (first pass over dip values) ---
     dip_convention: DipConvention = "down_negative"
     if "dip" in column_map:
         raw_dips = df_trimmed["dip"].to_list()
         numeric_dips = [_cast_float(v) for v in raw_dips]
         numeric_dips = [d for d in numeric_dips if d is not None]
-        dip_convention = detect_dip_convention(numeric_dips)
-
-        if dip_convention == "down_positive":
-            global_warnings.append({
-                "row": None,
-                "code": _CODE_DIP_CONVENTION,
-                "message": (
-                    "detected down_positive dip convention — flipping sign to down_negative "
-                    "(DB convention)"
-                ),
-                "context": {
-                    "source_convention": dip_convention,
-                    "sample_count": len(numeric_dips),
-                },
-            })
+        dip_resolution = resolve_dip_convention(
+            numeric_dips, header=column_map["dip"], parser="csv_collar",
+        )
+        dip_convention = dip_resolution.convention
+        global_warnings.extend(dip_resolution.warnings)
+        if dip_convention != "down_negative":
             logger.info(
-                "csv_collar: down_positive dip convention detected (%d samples) — normalising",
-                len(numeric_dips),
-            )
-        elif dip_convention == "ambiguous":
-            global_warnings.append({
-                "row": None,
-                "code": _CODE_DIP_AMBIGUOUS,
-                "message": (
-                    "dip convention is ambiguous (mix of positive and negative values) — "
-                    "no sign flip applied; DB CHECK may reject out-of-range rows"
-                ),
-                "context": {
-                    "source_convention": dip_convention,
-                    "sample_count": len(numeric_dips),
-                },
-            })
-            logger.warning(
-                "csv_collar: ambiguous dip convention (%d samples) — no normalisation applied",
-                len(numeric_dips),
+                "csv_collar: dip convention %s (%d samples)",
+                dip_convention, len(numeric_dips),
             )
 
     # --- Validate rows ---
@@ -536,6 +530,8 @@ def parse_csv_collars(
     coord_mode = detect_coordinate_mode(
         [_cast_float(r.get("easting")) for r in rows_as_dicts],
         [_cast_float(r.get("northing")) for r in rows_as_dicts],
+        easting_column=column_map.get("easting"),
+        northing_column=column_map.get("northing"),
     )
     coord_bounds = coordinate_bounds(coord_mode)
     global_warnings.append({
@@ -614,6 +610,7 @@ def parse_csv_collars(
         detected_encoding=detected_encoding,
         dip_convention=dip_convention,
         provenance=provenance,
+        coordinate_mode=coord_mode,
     )
 
     logger.info(

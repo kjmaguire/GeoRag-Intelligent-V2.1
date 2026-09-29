@@ -91,6 +91,41 @@ def normalize_header(header: str | None) -> str:
     return "".join(tokens)
 
 
+#: Canonical spelling of each LENGTH unit token, for callers that must act
+#: on the unit rather than discard it. Stripping ``_ft`` off ``From_ft`` is
+#: right for matching the header to ``from_depth``; storing the value it
+#: holds as metres is a 3.28x error, so the parsers ask for the unit back.
+_LENGTH_UNIT_CANONICAL: dict[str, str] = {
+    "m": "m", "metre": "m", "metres": "m", "meter": "m", "meters": "m",
+    "ft": "ft", "feet": "ft", "foot": "ft",
+    "mm": "mm", "cm": "cm", "km": "km",
+}
+
+
+def header_unit(header: str | None) -> str | None:
+    """The length unit a header's trailing unit token declares, else ``None``.
+
+    Uses the SAME tokenisation and the same "a name must survive" rule as
+    :func:`normalize_header`, so it reports exactly the unit that function
+    stripped: ``From_ft`` / ``Depth (ft)`` / ``EOH_Feet`` / ``DepthFt`` ->
+    ``"ft"``; ``Depth_m`` -> ``"m"``; ``Depth`` and a column named just
+    ``ft`` -> ``None``. Only length units are reported — ``Dip_deg`` gives
+    ``None``, because an angle has no conversion to make.
+    """
+    if not header:
+        return None
+    tokens = [t.lower() for t in _BOUNDARY.split(str(header).strip()) if t]
+    found: str | None = None
+    while len(tokens) > 1 and tokens[-1] in _UNIT_TOKENS:
+        token = tokens.pop()
+        # The token nearest the name wins: "Depth_ft_m" is not a real
+        # header, but if one appears the unit written next to the name is
+        # the one describing it.
+        if token in _LENGTH_UNIT_CANONICAL:
+            found = _LENGTH_UNIT_CANONICAL[token]
+    return found
+
+
 def alias_skeletons(canonical: str, alias_list: list[str]) -> set[str]:
     """Every normalised spelling that means *canonical*.
 
