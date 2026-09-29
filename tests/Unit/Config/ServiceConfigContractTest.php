@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Config;
 
+use App\Jobs\GenerateExportJob;
 use App\Jobs\StreamQueryFromFastApi;
 use Illuminate\Support\Facades\Config;
 use PHPUnit\Framework\Attributes\Test;
@@ -142,7 +143,7 @@ final class ServiceConfigContractTest extends TestCase
         // connection with a 300 s timeout. Any export slower than
         // retry_after was re-queued and failed while still running.
         $retryAfter = (int) config('queue.connections.redis.retry_after');
-        $exportTimeout = (new \ReflectionClass(\App\Jobs\GenerateExportJob::class))
+        $exportTimeout = (new \ReflectionClass(GenerateExportJob::class))
             ->getProperty('timeout')
             ->getDefaultValue();
 
