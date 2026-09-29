@@ -59,6 +59,8 @@ interface Interval {
     lithology_label?: string | null;
     color_hint?: string | null;
     assay_payload?: Record<string, unknown>;
+    alteration_payload?: unknown;
+    mineralization_payload?: unknown;
 }
 
 interface AssayRow {

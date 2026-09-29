@@ -21,12 +21,14 @@ use Tests\TestCase;
  * `color_hint` carried whatever text the promotion wrote (a described colour, a
  * rock code) straight into a CSS fill. Alteration and mineralization - written
  * by ingest_tabular to silver.alteration / silver.mineralization, promoted to
- * gold ('alteration') or read from silver (mineralization has no gold kind) -
- * were drawn nowhere.
+ * gold as the `alteration` and `mineralization` kinds (§04e, SME-approved
+ * 2026-09-29) - were drawn nowhere.
  *
  * Covered: the payload shape, the display-colour rule, the attributes gold has
- * no column for, the bound, and that a hole with a logged strip but no curves is
- * reachable from the LOGS picker at all.
+ * no column for, the bound, that a hole with a logged strip but no curves is
+ * reachable from the LOGS picker at all, and that mineralization is read from
+ * gold (one row per interval, flattened to one band per mineral) - a
+ * silver-only row is not drawn.
  *
  * Postgres-only (phpunit.pgsql.xml): PostGIS collars, JSONB payloads.
  */
@@ -134,7 +136,36 @@ final class HoleStripTracksTest extends TestCase
         );
     }
 
-    private function seedMineralization(string $collarId, float $from, float $to, string $mineral, ?float $pct): void
+    /**
+     * A gold `mineralization` row: one interval, every mineral of it in the
+     * payload (what promote_silver_to_gold writes).
+     *
+     * @param list<array{mineral: string, abundance_pct?: ?float, form?: ?string, grain_size?: ?string, notes?: ?string}> $minerals
+     */
+    private function seedMineralization(Project $project, string $collarId, float $from, float $to, array $minerals): void
+    {
+        $payload = ['minerals' => array_map(fn (array $m) => [
+            'mineral' => $m['mineral'],
+            'abundance_pct' => $m['abundance_pct'] ?? null,
+            'form' => $m['form'] ?? null,
+            'grain_size' => $m['grain_size'] ?? null,
+            'notes' => $m['notes'] ?? null,
+        ], $minerals)];
+
+        DB::statement(
+            "INSERT INTO gold.drillhole_intervals_visual (
+                collar_id, workspace_id, project_id, depth_from, depth_to,
+                interval_kind, lithology_label, mineralization_payload
+             ) VALUES (?::uuid, ?::uuid, ?::uuid, ?, ?, 'mineralization', ?, ?::jsonb)",
+            [
+                $collarId, $this->workspaceId, $project->project_id, $from, $to,
+                implode('; ', array_column($minerals, 'mineral')), json_encode($payload),
+            ],
+        );
+    }
+
+    /** The raw record: one silver.mineralization row per mineral (the collar API reads this). */
+    private function seedSilverMineralization(string $collarId, float $from, float $to, string $mineral, ?float $pct): void
     {
         DB::statement(
             'INSERT INTO silver.mineralization (
@@ -234,18 +265,66 @@ final class HoleStripTracksTest extends TestCase
         $this->assertSame([], $bands[0]['alterations']);
     }
 
-    public function test_mineralization_is_read_from_silver_with_its_percentage(): void
+    public function test_mineralization_is_read_from_gold_flattened_to_one_band_per_mineral(): void
     {
         ['project' => $project] = $this->seedProject();
         $collar = $this->seedCollar($project, 'HST-001');
-        $this->seedMineralization($collar, 5, 10, 'Pyrite', 3.0);
-        $this->seedMineralization($collar, 5, 10, 'Chalcopyrite', null);
+        // Payload order is the order the bands come back in (silver created_at, id).
+        $this->seedMineralization($project, $collar, 5, 10, [
+            ['mineral' => 'Pyrite', 'abundance_pct' => 3.0, 'form' => 'Disseminated', 'grain_size' => 'Fine', 'notes' => 'vein-hosted'],
+            ['mineral' => 'Chalcopyrite'],
+        ]);
+        $this->seedMineralization($project, $collar, 20, 22, [['mineral' => 'Galena', 'abundance_pct' => 0.5]]);
 
         $bands = (new HoleStripTracks)->mineralization($collar)['bands'];
 
-        $this->assertSame(['Chalcopyrite', 'Pyrite'], array_column($bands, 'mineral'));
-        $this->assertSame([null, 3.0], array_column($bands, 'abundance_pct'));
-        $this->assertSame('Disseminated', $bands[1]['form']);
+        $this->assertSame(['Pyrite', 'Chalcopyrite', 'Galena'], array_column($bands, 'mineral'));
+        $this->assertSame([5.0, 5.0, 20.0], array_column($bands, 'from'));
+        $this->assertSame([10.0, 10.0, 22.0], array_column($bands, 'to'));
+        $this->assertSame([3.0, null, 0.5], array_column($bands, 'abundance_pct'));
+        // Exactly the per-mineral band shape the front end already consumes.
+        $this->assertSame(
+            ['from', 'to', 'mineral', 'abundance_pct', 'form', 'grain_size', 'notes'],
+            array_keys($bands[0]),
+        );
+        $this->assertSame(
+            ['from' => 5.0, 'to' => 10.0, 'mineral' => 'Chalcopyrite', 'abundance_pct' => null, 'form' => null, 'grain_size' => null, 'notes' => null],
+            $bands[1],
+        );
+        $this->assertSame('Disseminated', $bands[0]['form']);
+        $this->assertSame('vein-hosted', $bands[0]['notes']);
+    }
+
+    public function test_silver_only_mineralization_is_not_drawn_until_it_is_promoted(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedProject();
+        $collar = $this->seedCollar($project, 'HST-001');
+        $this->seedSilverMineralization($collar, 5, 10, 'Pyrite', 3.0);
+
+        $this->assertSame([], (new HoleStripTracks)->mineralization($collar)['bands']);
+        $this->assertSame([], (new HoleStripTracks)->collarsWithIntervals([$collar]));
+
+        $props = $this->workspaceProps($user, $project);
+        $this->assertSame([], $props['log_hole_options'], 'silver alone does not put a hole in the picker');
+    }
+
+    public function test_a_malformed_mineralization_payload_yields_no_bands_not_an_error(): void
+    {
+        ['project' => $project] = $this->seedProject();
+        $collar = $this->seedCollar($project, 'HST-001');
+        DB::statement(
+            "INSERT INTO gold.drillhole_intervals_visual (
+                collar_id, workspace_id, project_id, depth_from, depth_to,
+                interval_kind, mineralization_payload
+             ) VALUES (?::uuid, ?::uuid, ?::uuid, 0, 5, 'mineralization', '{}'::jsonb)",
+            [$collar, $this->workspaceId, $project->project_id],
+        );
+        $this->seedMineralization($project, $collar, 5, 10, [['mineral' => 'Pyrite']]);
+
+        $track = (new HoleStripTracks)->mineralization($collar);
+
+        $this->assertSame(['Pyrite'], array_column($track['bands'], 'mineral'));
+        $this->assertFalse($track['truncated']);
     }
 
     public function test_each_track_is_bounded_and_says_when_it_was_cut(): void
@@ -254,9 +333,13 @@ final class HoleStripTracksTest extends TestCase
         $collar = $this->seedCollar($project, 'HST-001');
         $limit = HoleStripTracks::MAX_INTERVALS_PER_TRACK;
         DB::statement(
-            'INSERT INTO silver.mineralization (id, workspace_id, collar_id, from_depth, to_depth, mineral)
-             SELECT gen_random_uuid(), ?::uuid, ?::uuid, g, g + 1, ? FROM generate_series(0, ?) AS g',
-            [$this->workspaceId, $collar, 'Pyrite', $limit],   // limit + 1 rows
+            "INSERT INTO gold.drillhole_intervals_visual (
+                collar_id, workspace_id, project_id, depth_from, depth_to,
+                interval_kind, mineralization_payload
+             ) SELECT ?::uuid, ?::uuid, ?::uuid, g, g + 1, 'mineralization',
+                      jsonb_build_object('minerals', jsonb_build_array(jsonb_build_object('mineral', 'Pyrite')))
+               FROM generate_series(0, ?) AS g",
+            [$collar, $this->workspaceId, $project->project_id, $limit],   // limit + 1 rows
         );
 
         $track = (new HoleStripTracks)->mineralization($collar);
@@ -266,12 +349,46 @@ final class HoleStripTracksTest extends TestCase
         $this->assertFalse((new HoleStripTracks)->lithology($collar)['truncated']);
     }
 
+    public function test_the_cap_counts_flattened_bands_so_one_crowded_interval_cannot_slip_past_it(): void
+    {
+        ['project' => $project] = $this->seedProject();
+        $collar = $this->seedCollar($project, 'HST-001');
+        $limit = HoleStripTracks::MAX_INTERVALS_PER_TRACK;
+        // ONE gold row, limit + 1 minerals.
+        $this->seedMineralization($project, $collar, 0, 5, array_map(
+            fn (int $i) => ['mineral' => 'M'.$i],
+            range(0, $limit),
+        ));
+
+        $track = (new HoleStripTracks)->mineralization($collar);
+
+        $this->assertCount($limit, $track['bands']);
+        $this->assertTrue($track['truncated']);
+        $this->assertSame('M0', $track['bands'][0]['mineral']);
+    }
+
+    public function test_exactly_at_the_cap_is_not_truncated(): void
+    {
+        ['project' => $project] = $this->seedProject();
+        $collar = $this->seedCollar($project, 'HST-001');
+        $limit = HoleStripTracks::MAX_INTERVALS_PER_TRACK;
+        $this->seedMineralization($project, $collar, 0, 5, array_map(
+            fn (int $i) => ['mineral' => 'M'.$i],
+            range(1, $limit),
+        ));
+
+        $track = (new HoleStripTracks)->mineralization($collar);
+
+        $this->assertCount($limit, $track['bands']);
+        $this->assertFalse($track['truncated']);
+    }
+
     public function test_the_tracks_are_scoped_to_the_collar_asked_for(): void
     {
         ['project' => $project] = $this->seedProject();
         $mine = $this->seedCollar($project, 'HST-001');
         $other = $this->seedCollar($project, 'HST-002');
-        $this->seedMineralization($other, 0, 5, 'Pyrite', 1.0);
+        $this->seedMineralization($project, $other, 0, 5, [['mineral' => 'Pyrite', 'abundance_pct' => 1.0]]);
         $this->seedLithology($project, $other, 0, 5, 'GRN', 'x', null);
 
         $tracks = (new HoleStripTracks)->forCollar($mine);
@@ -292,7 +409,7 @@ final class HoleStripTracksTest extends TestCase
             json_encode(['alterations' => [['type' => 'Chlorite', 'intensity' => 'Strong', 'minerals' => [], 'notes' => null]]]),
             'Chlorite (Strong)',
         );
-        $this->seedMineralization($logged, 2, 4, 'Pyrite', 3.0);
+        $this->seedMineralization($project, $logged, 2, 4, [['mineral' => 'Pyrite', 'abundance_pct' => 3.0]]);
 
         $props = $this->workspaceProps($user, $project);
 
@@ -312,7 +429,7 @@ final class HoleStripTracksTest extends TestCase
         $b = $this->seedCollar($project, 'HST-B');
         $this->seedLithology($project, $a, 0, 5, 'GRN', 'a', null);
         $this->seedLithology($project, $b, 0, 5, 'SST', 'b', null);
-        $this->seedMineralization($b, 1, 2, 'Galena', null);
+        $this->seedMineralization($project, $b, 1, 2, [['mineral' => 'Galena']]);
 
         $props = $this->workspaceProps($user, $project, '?log_hole=HST-B');
 
@@ -327,7 +444,7 @@ final class HoleStripTracksTest extends TestCase
         ['user' => $user, 'project' => $project] = $this->seedProject();
         $collar = $this->seedCollar($project, 'HST-001');
         $this->seedLithology($project, $collar, 0, 5, 'GRN', 'Grey granite', '#123456');
-        $this->seedMineralization($collar, 1, 2, 'Pyrite', 2.5);
+        $this->seedMineralization($project, $collar, 1, 2, [['mineral' => 'Pyrite', 'abundance_pct' => 2.5]]);
 
         $response = $this->actingAs($user)
             ->getJson('/projects/'.$project->slug.'/holes/HST-001/payload');
@@ -343,7 +460,7 @@ final class HoleStripTracksTest extends TestCase
         ['user' => $user, 'project' => $project] = $this->seedProject();
         $collar = $this->seedCollar($project, 'HST-001');
         $this->seedLithology($project, $collar, 0, 5, 'GRN', 'Grey granite', null);
-        $this->seedMineralization($collar, 1, 2, 'Pyrite', 2.5);
+        $this->seedMineralization($project, $collar, 1, 2, [['mineral' => 'Pyrite', 'abundance_pct' => 2.5]]);
 
         $this->actingAs($user)
             ->get('/projects/'.$project->slug.'/holes/'.$collar.'/detail')
@@ -357,11 +474,12 @@ final class HoleStripTracksTest extends TestCase
                 ->where('strip_tracks.truncated.mineralization', false));
     }
 
+    /** The collar API is the raw record: it reads silver.mineralization, not the strip log's gold rows. */
     public function test_the_collar_api_returns_mineralization_and_alteration_notes(): void
     {
         ['user' => $user, 'project' => $project] = $this->seedProject();
         $collar = $this->seedCollar($project, 'HST-001');
-        $this->seedMineralization($collar, 1, 2, 'Pyrite', 2.5);
+        $this->seedSilverMineralization($collar, 1, 2, 'Pyrite', 2.5);
 
         $response = $this->actingAs($user, 'sanctum')
             ->getJson('/api/v1/projects/'.$project->project_id.'/collars/'.$collar);

@@ -167,5 +167,48 @@ describe('legend and fallbacks', () => {
         ]);
         expect(tracks.lithology.map((b) => b.color)).toEqual(['', '#abcdef']);
         expect(tracks.alteration).toEqual([]);
+        expect(tracks.mineralization).toEqual([]);
+    });
+
+    it('flattens a gold mineralization row to one band per mineral, in payload order (§04e)', () => {
+        const tracks = tracksFromIntervals([
+            {
+                depth_from: 5,
+                depth_to: 10,
+                interval_kind: 'mineralization',
+                lithology_label: 'Pyrite 3%; Chalcopyrite',
+                mineralization_payload: {
+                    minerals: [
+                        { mineral: 'Pyrite', abundance_pct: 3, form: 'Disseminated', grain_size: 'Fine', notes: 'vein-hosted' },
+                        { mineral: 'Chalcopyrite', abundance_pct: null, form: null, grain_size: null, notes: null },
+                    ],
+                },
+            },
+            // JSONB can arrive as text, and a row with no readable minerals adds no band.
+            { depth_from: 20, depth_to: 22, interval_kind: 'mineralization', mineralization_payload: '{"minerals":[{"mineral":"Galena","abundance_pct":"0.5"}]}' },
+            { depth_from: 30, depth_to: 31, interval_kind: 'mineralization', mineralization_payload: {} },
+            { depth_from: 40, depth_to: 41, interval_kind: 'mineralization', mineralization_payload: 'not json' },
+        ]);
+        expect(tracks.mineralization).toEqual([
+            { from: 5, to: 10, mineral: 'Pyrite', abundance_pct: 3, form: 'Disseminated', grain_size: 'Fine', notes: 'vein-hosted' },
+            { from: 5, to: 10, mineral: 'Chalcopyrite', abundance_pct: null, form: null, grain_size: null, notes: null },
+            { from: 20, to: 22, mineral: 'Galena', abundance_pct: 0.5, form: null, grain_size: null, notes: null },
+        ]);
+        expect(tracks.lithology).toEqual([]);
+    });
+
+    it('builds alteration bands from gold alteration rows for an older payload', () => {
+        const tracks = tracksFromIntervals([
+            {
+                depth_from: 0,
+                depth_to: 5,
+                interval_kind: 'alteration',
+                lithology_label: 'Chlorite (Strong)',
+                alteration_payload: { alterations: [{ type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite'], notes: null }, { intensity: 'x' }] },
+            },
+        ]);
+        expect(tracks.alteration).toEqual([
+            { from: 0, to: 5, label: 'Chlorite (Strong)', alterations: [{ type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite'], notes: null }] },
+        ]);
     });
 });

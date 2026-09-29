@@ -27,9 +27,13 @@ use Illuminate\Support\Facades\DB;
  *                   interval. Gold's own colour is a hex display colour or
  *                   nothing; the front end assigns a legend colour per code.
  *  - alteration     gold `alteration` rows (alteration_payload).
- *  - mineralization silver.mineralization directly: the gold table has no
- *                   mineralization kind (see promote_silver_to_gold), so there
- *                   is no gold row to read.
+ *  - mineralization gold `mineralization` rows (mineralization_payload; §04e,
+ *                   SME-approved 2026-09-29). Gold holds ONE row per interval
+ *                   with every mineral of that interval in the payload; this
+ *                   class flattens them back to one band per mineral, the shape
+ *                   the strip log draws (a silver.mineralization row per
+ *                   mineral). silver.mineralization is no longer read here -
+ *                   it stays the raw record behind the collar API.
  *
  * Callers pin the workspace RLS GUC first (`withWorkspaceRls`); nothing here
  * widens or narrows that scope. Stateless on purpose - Octane keeps one
@@ -133,38 +137,57 @@ final class HoleStripTracks
     }
 
     /**
+     * One band per mineral, flattened out of the gold `mineralization` rows.
+     *
+     * A gold row is one interval and carries every mineral logged over it
+     * (`mineralization_payload.minerals`, in silver created_at, id order); the
+     * strip log wants one band per mineral, so they are unpacked here in that
+     * order, interval by interval.
+     *
+     * The cap is on the FLATTENED bands, not on gold rows: a single interval
+     * with many minerals must not slip past it. Rows are fetched
+     * MAX_INTERVALS_PER_TRACK + 1 at a time - every row yields at least one
+     * band unless its payload is unreadable - and `truncated` is set when the
+     * flattened list overflows the cap OR when the row limit itself was hit
+     * (there may be more rows than were read).
+     *
      * @return array{bands: list<array<string, mixed>>, truncated: bool}
      */
     public function mineralization(string $collarId): array
     {
-        $rows = DB::table('silver.mineralization')
+        $rows = DB::table('gold.drillhole_intervals_visual')
             ->where('collar_id', $collarId)
-            ->orderBy('from_depth')
-            ->orderBy('mineral')
+            ->where('interval_kind', 'mineralization')
+            ->orderBy('depth_from')
             ->limit(self::MAX_INTERVALS_PER_TRACK + 1)
-            ->get(['from_depth', 'to_depth', 'mineral', 'abundance_pct', 'form', 'grain_size', 'notes']);
+            ->get(['depth_from', 'depth_to', 'mineralization_payload']);
 
         $truncated = $rows->count() > self::MAX_INTERVALS_PER_TRACK;
 
-        $bands = $rows->take(self::MAX_INTERVALS_PER_TRACK)->map(fn ($r) => [
-            'from' => (float) $r->from_depth,
-            'to' => (float) $r->to_depth,
-            'mineral' => (string) $r->mineral,
-            'abundance_pct' => $r->abundance_pct !== null ? (float) $r->abundance_pct : null,
-            'form' => $r->form !== null ? (string) $r->form : null,
-            'grain_size' => $r->grain_size !== null ? (string) $r->grain_size : null,
-            'notes' => $r->notes !== null ? (string) $r->notes : null,
-        ])->values()->all();
+        $bands = [];
+        foreach ($rows as $r) {
+            foreach ($this->mineralList($r->mineralization_payload) as $mineral) {
+                $bands[] = [
+                    'from' => (float) $r->depth_from,
+                    'to' => (float) $r->depth_to,
+                ] + $mineral;
+            }
+        }
+
+        if (count($bands) > self::MAX_INTERVALS_PER_TRACK) {
+            $truncated = true;
+            $bands = array_slice($bands, 0, self::MAX_INTERVALS_PER_TRACK);
+        }
 
         return ['bands' => $bands, 'truncated' => $truncated];
     }
 
     /**
      * Collars (of the given set) that have anything to draw beyond curves:
-     * a lithology or alteration band in gold, or a mineralization row.
+     * a gold lithology, alteration or mineralization band.
      *
-     * One query per source, not one per collar - the LOGS hole picker asks
-     * this for a whole project.
+     * One query, not one per collar - the LOGS hole picker asks this for a
+     * whole project.
      *
      * @param list<string> $collarIds
      *
@@ -176,18 +199,15 @@ final class HoleStripTracks
             return [];
         }
 
-        $gold = DB::table('gold.drillhole_intervals_visual')
+        return DB::table('gold.drillhole_intervals_visual')
             ->whereIn('collar_id', $collarIds)
-            ->whereIn('interval_kind', ['lithology', 'alteration'])
+            ->whereIn('interval_kind', ['lithology', 'alteration', 'mineralization'])
             ->distinct()
-            ->pluck('collar_id');
-
-        $silver = DB::table('silver.mineralization')
-            ->whereIn('collar_id', $collarIds)
-            ->distinct()
-            ->pluck('collar_id');
-
-        return $gold->merge($silver)->map(fn ($id) => (string) $id)->unique()->values()->all();
+            ->pluck('collar_id')
+            ->map(fn ($id) => (string) $id)
+            ->unique()
+            ->values()
+            ->all();
     }
 
     /**
@@ -237,6 +257,39 @@ final class HoleStripTracks
         $value = is_string($hint) ? trim($hint) : '';
 
         return preg_match(self::HEX_COLOUR, $value) === 1 ? strtolower($value) : '';
+    }
+
+    /**
+     * The minerals of one gold `mineralization` row, in the per-mineral band
+     * shape the front end consumes (minus from/to, which are the row's).
+     *
+     * @return list<array{mineral: string, abundance_pct: ?float, form: ?string, grain_size: ?string, notes: ?string}>
+     */
+    private function mineralList(mixed $payload): array
+    {
+        $decoded = is_string($payload) ? json_decode($payload, true) : $payload;
+        $items = is_array($decoded) ? ($decoded['minerals'] ?? []) : [];
+        if (! is_array($items)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($items as $item) {
+            if (! is_array($item) || ! isset($item['mineral'])) {
+                continue;
+            }
+            $out[] = [
+                'mineral' => (string) $item['mineral'],
+                'abundance_pct' => isset($item['abundance_pct']) && is_numeric($item['abundance_pct'])
+                    ? (float) $item['abundance_pct']
+                    : null,
+                'form' => isset($item['form']) ? (string) $item['form'] : null,
+                'grain_size' => isset($item['grain_size']) ? (string) $item['grain_size'] : null,
+                'notes' => isset($item['notes']) ? (string) $item['notes'] : null,
+            ];
+        }
+
+        return $out;
     }
 
     /**
