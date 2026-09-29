@@ -22,7 +22,8 @@ final class DrillholeResolver extends AbstractPgeoResolver
             'id', 'jurisdiction_code', 'source_id', 'source_feature_id',
             'drillhole_id', 'drillhole_name', 'company', 'project_name',
             'date_drilled', 'drill_type', 'commodity_of_interest',
-            'total_length_m', 'collar_elevation_m', 'stratigraphic_depths',
+            'total_length_m', 'inclination_deg', 'azimuth_deg',
+            'collar_elevation_m', 'stratigraphic_depths',
             'core_availability', 'core_storage', 'disposition',
             'source_url', 'last_seen_at',
         ];
@@ -58,6 +59,10 @@ final class DrillholeResolver extends AbstractPgeoResolver
             'drill_type' => $entity->drill_type,
             'commodity_of_interest' => $commodities,
             'total_length_m' => $entity->total_length_m,
+            // Orientation at the collar — the Public Geo map's hole card
+            // shows it beside depth, the way the Workspace hole card does.
+            'inclination_deg' => $entity->inclination_deg,
+            'azimuth_deg' => $entity->azimuth_deg,
             'collar_elevation_m' => $entity->collar_elevation_m,
             'stratigraphic_depths' => $strat,
             'core_availability' => $entity->core_availability,

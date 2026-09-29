@@ -121,7 +121,7 @@ class OverviewController extends Controller
             // project (chat answers from reports), not a cold start. Keying
             // on collars alone told users with 7 ingested reports to
             // "connect your first data source".
-            $collarCount === 0 && $reportsCount === 0 => ['title' => 'Connect your first data source', 'detail' => 'Upload drill logs or ingest the Wyoming WSGS archive to start the corpus.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard'],
+            $collarCount === 0 && $reportsCount === 0 => ['title' => 'Connect your first data source', 'detail' => 'Upload drill logs or ingest the Wyoming WSGS archive to start the corpus.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard?project='.rawurlencode($slug)],
             $queries7d === 0 => ['title' => 'Ask your first hypothesis', 'detail' => 'The chat is the main interface — pin sources, rank candidates, save runs.', 'cta' => 'Open Chat', 'href' => "/projects/{$slug}/chat"],
             // Drill data, queries being asked, and nothing for an answer to
             // cite. The old copy here — "Draft a recommendation report /
@@ -130,7 +130,7 @@ class OverviewController extends Controller
             // to the ingested-filings reader instead. Wrong feature, wrong
             // destination, and not the highest-leverage move either: without
             // documents the chat has nothing to ground an answer in.
-            $reportsCount === 0 => ['title' => 'Add technical reports', 'detail' => 'This project has drill data but no documents. Chat can only cite what has been ingested.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard'],
+            $reportsCount === 0 => ['title' => 'Add technical reports', 'detail' => 'This project has drill data but no documents. Chat can only cite what has been ingested.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard?project='.rawurlencode($slug)],
             // /corpus is a 302 to /reports (merged 2026-08-18). Linking the
             // redirect costs a round-trip and names a "Reader" page that no
             // longer exists.

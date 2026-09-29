@@ -8,20 +8,34 @@
  * lookups throw, the way the real map does once its style is destroyed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, act, cleanup } from '@testing-library/react';
+import { render, act, cleanup, fireEvent, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 
 const { handlers, state } = vi.hoisted(() => ({
     handlers: {} as Record<string, Array<(...args: unknown[]) => void>>,
-    state: { removed: false, layers: new Set<string>(), sources: new Set<string>(), container: null as HTMLElement | null },
+    state: {
+        removed: false,
+        maps: 0,
+        layers: new Set<string>(),
+        sources: new Set<string>(),
+        container: null as HTMLElement | null,
+        rendered: [] as unknown[],
+    },
 }));
 
 vi.mock('maplibre-gl', () => {
-    const guard = () => {
-        if (state.removed) throw new TypeError("Cannot read properties of undefined (reading 'getLayer')");
-    };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function MapMock(this: any, opts: { container: HTMLElement }) {
+        // Each map has its own removed flag: a basemap switch builds a new
+        // map while the old one's layer cleanups are still pending.
+        let removed = false;
+        const guard = () => {
+            if (removed) throw new TypeError("Cannot read properties of undefined (reading 'getLayer')");
+        };
+        state.maps += 1;
+        state.removed = false;
+        state.layers.clear();
+        state.sources.clear();
         state.container = opts.container;
         this.addControl = vi.fn();
         this.on = (event: string, fn: (...args: unknown[]) => void) => {
@@ -29,8 +43,11 @@ vi.mock('maplibre-gl', () => {
         };
         this.off = vi.fn();
         this.remove = () => {
+            removed = true;
             state.removed = true;
         };
+        this.getCenter = () => ({ lng: -105, lat: 55 });
+        this.setFilter = () => guard();
         this.getBounds = () => ({ getWest: () => -110, getSouth: () => 49, getEast: () => -101, getNorth: () => 60 });
         this.getZoom = () => 4;
         this.getCanvas = () => ({ style: {} });
@@ -58,7 +75,7 @@ vi.mock('maplibre-gl', () => {
             guard();
             state.sources.delete(id);
         };
-        this.queryRenderedFeatures = () => [];
+        this.queryRenderedFeatures = () => state.rendered;
         this.easeTo = vi.fn();
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,7 +97,13 @@ vi.mock('@inertiajs/react', () => ({
     usePage: () => ({ props: { auth: { user: { is_admin: false } } } }),
 }));
 vi.mock('@/Components/PublicGeoscience/PublicGeoSyncControls', () => ({ default: () => null }));
-vi.mock('@/lib/basemap', () => ({ useBasemapStyleUrl: () => 'https://example.test/style.json' }));
+vi.mock('@/lib/basemap', () => ({
+    BASEMAP_OPTIONS: [
+        { id: 'dark_matter', label: 'Dark' },
+        { id: 'positron', label: 'Light (Positron)' },
+    ],
+    useBasemapStyleSpec: (id: string) => `https://example.test/${id}.json`,
+}));
 
 import PublicGeoscience from '../PublicGeoscience';
 
@@ -98,15 +121,42 @@ const featureCollection = {
     modes: { mine: 'points' },
 };
 
+const drillholeRecord = {
+    title: 'Drillhole PLS-20-001',
+    jurisdiction: { code: 'CA-SK', name: 'Saskatchewan', authority: null },
+    source: { source_id: 'CA-SK-DRILLHOLE', name: 'Saskatchewan Minerals & Quaternary Drillhole Compilation', service_url: null },
+    license: { summary: 'Government of Saskatchewan Standard Unrestricted Use Data License v2.0', url: 'https://example.test/licence.pdf' },
+    refresh: { last_refreshed_at: null },
+    references_summary: { count: 0, documents: [] },
+    entity: {
+        drillhole_id: 'GOS-9001',
+        drillhole_name: 'PLS-20-001',
+        company: 'TestDrill Inc.',
+        project_name: 'Patterson Lake South',
+        total_length_m: '350.5',
+        inclination_deg: '-70.00',
+        azimuth_deg: '135.00',
+        core_availability: 'available',
+        stratigraphic_depths: { base_of_quaternary: { depth_m: 42.1, elevation_m: 480.2 } },
+    },
+};
+
 beforeEach(() => {
     state.removed = false;
+    state.maps = 0;
+    state.rendered = [];
     state.layers.clear();
     state.sources.clear();
     state.container = null;
     for (const key of Object.keys(handlers)) delete handlers[key];
     vi.stubGlobal(
         'fetch',
-        vi.fn(async () => new Response(JSON.stringify(featureCollection), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+        vi.fn(async (url: string) =>
+            new Response(JSON.stringify(String(url).includes('/citations/resolve') ? drillholeRecord : featureCollection), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        ),
     );
 });
 
@@ -151,5 +201,63 @@ describe('PublicGeoscience', () => {
         // map and the throw reached the error boundary.
         expect(() => cleanup()).not.toThrow();
         expect(state.removed).toBe(true);
+    });
+
+    it('opens the hole card with the full record when a drillhole is clicked', async () => {
+        await mountAndLoad();
+        state.rendered = [
+            {
+                geometry: { type: 'Point', coordinates: [-109.1, 57.6] },
+                properties: {
+                    cluster: false,
+                    layer: 'drillhole_collar',
+                    id: 'pg-uuid-1',
+                    source_id: 'CA-SK-DRILLHOLE',
+                    label: 'PLS-20-001',
+                    jurisdiction_code: 'CA-SK',
+                },
+            },
+        ];
+        await act(async () => {
+            for (const fn of handlers.click ?? []) fn({ point: { x: 10, y: 10 }, lngLat: { lng: -109.1, lat: 57.6 } });
+            await new Promise((r) => setTimeout(r, 0));
+        });
+
+        const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+        const resolveUrl = fetchMock.mock.calls.map((c) => String(c[0])).find((u) => u.includes('/citations/resolve'));
+        expect(resolveUrl).toContain(encodeURIComponent('pg_drillhole_collar:CA-SK-DRILLHOLE:pg_id=pg-uuid-1'));
+
+        const card = screen.getByRole('dialog');
+        expect(card.textContent).toContain('Public drillhole');
+        expect(card.textContent).toContain('PLS-20-001');
+        expect(card.textContent).toContain('350.5 m');
+        expect(card.textContent).toContain('-70° / 135°');
+        expect(card.textContent).toContain('Base of Quaternary');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+        expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('zooms into a cluster rather than opening a card', async () => {
+        await mountAndLoad();
+        state.rendered = [
+            { geometry: { type: 'Point', coordinates: [-105, 55] }, properties: { cluster: true, layer: 'drillhole_collar', point_count: 120 } },
+        ];
+        await act(async () => {
+            for (const fn of handlers.click ?? []) fn({ point: { x: 10, y: 10 }, lngLat: { lng: -105, lat: 55 } });
+        });
+        expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('switches basemap by rebuilding the map without throwing', async () => {
+        await mountAndLoad();
+        expect(state.maps).toBe(1);
+        // The old map's layer cleanups run after the new map exists — the
+        // case a single shared "removed" flag got wrong.
+        expect(() =>
+            fireEvent.change(screen.getByRole('combobox', { name: 'Basemap' }), { target: { value: 'positron' } }),
+        ).not.toThrow();
+        expect(state.maps).toBe(2);
+        expect(() => cleanup()).not.toThrow();
     });
 });

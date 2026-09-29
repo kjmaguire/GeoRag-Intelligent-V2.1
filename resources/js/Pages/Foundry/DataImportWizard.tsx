@@ -19,6 +19,7 @@ import {
     groupShapefiles,
     type CrsProvenance,
 } from '@/lib/shapefileBundle';
+import { requestedProject } from '@/lib/importWizardLink';
 
 /**
  * Foundry / DataImportWizard
@@ -411,7 +412,14 @@ export default function FoundryDataImportWizard() {
                 }));
                 if (!cancelled) {
                     setProjects(mapped);
-                    if (mapped.length === 1) setSelectedProjectId(mapped[0].project_id);
+                    // "+ Add Documents" on a project's Overview / Reports page
+                    // links here with ?project=<slug>, so the upload lands in
+                    // the project the user came from without re-picking it.
+                    const wanted = requestedProject(window.location.search);
+                    const preselect =
+                        (wanted && mapped.find((p) => p.slug === wanted || p.project_id === wanted)) ||
+                        (mapped.length === 1 ? mapped[0] : null);
+                    if (preselect) setSelectedProjectId(preselect.project_id);
                 }
             } catch (err) {
                 if (!cancelled) {
