@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import re
 from typing import Any
@@ -244,10 +245,29 @@ def _hole_ids_from_query(query: str) -> list[str]:
         logger.exception("agentic_retrieval.execute: extract_hole_ids import failed")
         return []
     try:
-        return extract_hole_ids(query)[:3]
+        found = extract_hole_ids(query)
     except Exception:  # pragma: no cover — defensive
         logger.exception("agentic_retrieval.execute: extract_hole_ids failed")
         return []
+    # "PLS-22-08" also yields its numeric tail "22-08" (the Cameco-shape
+    # pattern). Two IDs for one hole meant a second collar lookup and, for
+    # the assay filter, a second hole (audit AGT-1 / AGT-15). Drop any ID
+    # that is only the separator-delimited tail of a longer one found in
+    # the same question ("BH-1" next to "BH-12" is kept: not a tail).
+    upper = [h.upper() for h in found]
+
+    def _is_tail_of_another(u: str) -> bool:
+        return any(
+            len(other) > len(u)
+            and other.endswith(u)
+            and not other[-len(u) - 1].isalnum()
+            for other in upper
+        )
+
+    distinct = [
+        h for h, u in zip(found, upper, strict=True) if not _is_tail_of_another(u)
+    ]
+    return list(dict.fromkeys(distinct))[:3]
 
 
 # Question / command / generic words that are TitleCase at a sentence start but
@@ -383,9 +403,22 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
             from app.services.identifier_boost import detect_identifiers  # noqa: PLC0415
             _boost = detect_identifiers(query).boost_factor
             return await fn(ctx, query, project_id, sparse_boost_factor=_boost)
+        if real_name == "query_assay_data":
+            # Audit AGT-15 / RAG-6: this used to be (ctx, project_id) only,
+            # so "average gold grade?" in a U+Au project got uranium
+            # statistics and "top Au assays in PLS-22-08" got the whole
+            # project. The commodity the question names now picks the
+            # element key; none (or several) named -> per-element
+            # summaries. Named holes filter the rows and the aggregates.
+            commodities = _t.commodities_in_query(query)
+            hole_ids = _hole_ids_from_query(query)
+            return await fn(
+                ctx, project_id,
+                commodity=commodities[0] if len(commodities) == 1 else None,
+                hole_ids=hole_ids or None,
+            )
         if real_name in (
             "query_spatial_collars",
-            "query_assay_data",
             "query_project_overview",
         ):
             return await fn(ctx, project_id)
@@ -955,6 +988,309 @@ def _categories_from_tool_results(
     return categories
 
 
+# Per structured (non-chunk) block. Was 1,200 characters of
+# ``str(result)``, which for a dataclass whose row list is declared first
+# (AssayDataResult.samples, SpatialQueryResult.collars,
+# DownholeLogsResult.intervals) meant the model saw about five rows and
+# NONE of count / min / max / mean / median (audit AGT-2 / RAG-5).
+_STRUCTURED_CAP = 4000
+_STRUCTURED_ROW_SAMPLE = 12
+_SCALAR_REPR_CAP = 240
+
+
+def _short(value: Any, cap: int = _SCALAR_REPR_CAP) -> str:
+    text = value if isinstance(value, str) else repr(value)
+    if len(text) <= cap:
+        return text
+    return f"{text[:cap]}...(+{len(text) - cap} chars)"
+
+
+def _fmt_num(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _render_assay_result(result: Any) -> str:
+    """Header-first rendering of an AssayDataResult (AGT-2, AGT-15)."""
+    lines: list[str] = []
+    holes = list(getattr(result, "hole_filter", None) or [])
+    scope = f"holes {', '.join(holes)}" if holes else "whole project"
+    lines.append(
+        f"assay element={result.element} scope={scope} "
+        f"sample_count={result.count} (all matching samples, not just the rows shown)"
+    )
+    lines.append(
+        f"aggregates over all {result.count} samples of {result.element}: "
+        f"min={_fmt_num(result.min_value)} max={_fmt_num(result.max_value)} "
+        f"mean={_fmt_num(result.mean_value)} median={_fmt_num(result.median_value)}"
+    )
+    requested = getattr(result, "requested_commodity", None)
+    if getattr(result, "requested_commodity_unavailable", False) and requested:
+        lines.append(
+            f"NOTE: the question asks about {requested}, but no assay values "
+            f"for {requested} exist in this scope. The statistics here are "
+            f"for other elements; do not present them as {requested} grades."
+        )
+    summaries = list(getattr(result, "element_summaries", None) or [])
+    if getattr(result, "element_auto_selected", False) and summaries:
+        lines.append(
+            f"NOTE: no single commodity was named, so {result.element} was "
+            f"picked only to populate the rows below; the aggregates above "
+            f"are for {result.element} alone. Per-element summaries:"
+        )
+        for s in summaries:
+            lines.append(
+                f"  {s.element}: n={s.count} min={_fmt_num(s.min_value)} "
+                f"max={_fmt_num(s.max_value)} mean={_fmt_num(s.mean_value)} "
+                f"median={_fmt_num(s.median_value)}"
+            )
+    available = list(getattr(result, "available_elements", None) or [])
+    if available:
+        lines.append(f"assayed elements in project: {', '.join(available[:40])}")
+    samples = list(getattr(result, "samples", None) or [])
+    top = sorted(
+        samples, key=lambda s: (s.value is not None, s.value or 0.0), reverse=True,
+    )[:_STRUCTURED_ROW_SAMPLE]
+    if top:
+        lines.append(
+            f"highest {len(top)} of {result.count} samples by {result.element} "
+            f"(hole, from_depth-to_depth, value, sample_type):"
+        )
+        for s in top:
+            lines.append(
+                f"  {s.hole_id} {_fmt_num(s.from_depth)}-{_fmt_num(s.to_depth)} "
+                f"{_fmt_num(s.value)} {s.sample_type}"
+            )
+    return "\n".join(lines)
+
+
+def _render_structured_result(result: Any) -> str:
+    """Render one structured tool result: scalars first, then row samples.
+
+    Generic over the tool dataclasses so every one of them gets the fix,
+    not just the three the audit reproduced: scalar fields (count,
+    aggregates, data_source) come first, nested records next, then each
+    list as "showing k of N" with a bounded sample.
+    """
+    from app.agent.tools import AssayDataResult  # noqa: PLC0415
+
+    if isinstance(result, AssayDataResult):
+        return _render_assay_result(result)[:_STRUCTURED_CAP]
+    if not dataclasses.is_dataclass(result) or isinstance(result, type):
+        return _short(result, _STRUCTURED_CAP)
+
+    scalars: list[str] = []
+    nested: list[str] = []
+    lists: list[tuple[str, list[Any]]] = []
+    for f in dataclasses.fields(result):
+        value = getattr(result, f.name, None)
+        if isinstance(value, (list, tuple)):
+            lists.append((f.name, list(value)))
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            nested.append(f"{f.name}: {_short(value, 800)}")
+        else:
+            scalars.append(f"{f.name}={_short(value)}")
+    lines = [" ".join(scalars)] if scalars else []
+    lines.extend(nested)
+    for name, items in lists:
+        shown = items[:_STRUCTURED_ROW_SAMPLE]
+        lines.append(f"{name}: showing {len(shown)} of {len(items)}")
+        lines.extend(f"  {_short(item, 400)}" for item in shown)
+    return "\n".join(lines)[:_STRUCTURED_CAP]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ContextBlock:
+    tool_index: int
+    sub_index: int
+    kind: str  # "structured" | "chunk" | "record"
+    score: float
+    text: str
+    tool_name: str
+    citation_id: str
+
+
+def _build_context_blocks(
+    tool_results: list[tuple[str, Any]], *, fence: bool,
+) -> list[_ContextBlock]:
+    """One block per chunk / public-geo record / structured result."""
+    from app.agent.context_builder import _fence_untrusted  # noqa: PLC0415
+    from app.agent.response_assembler import assign_citation_ids  # noqa: PLC0415
+
+    # Imported, not re-typed. Chunks are already bounded at ingest to
+    # WINDOW_CHARS, and this used to cut them again at 1,800 — 64% of every
+    # retrieved chunk was discarded before the model saw it, while the
+    # citation for that chunk went into the answer regardless. A citation
+    # pointing at text nobody read is worse than no citation: it looks
+    # like evidence. pdf_report's own sizing comment says the window was
+    # chosen so five chunks land at ~6,250 tokens; this cap was what stopped
+    # that from happening.
+    from app.services.ingest.pdf_report import WINDOW_CHARS  # noqa: PLC0415
+
+    blocks: list[_ContextBlock] = []
+    id_bundles = assign_citation_ids(tool_results)
+    for ti, ((tool_name, result), bundle) in enumerate(
+        zip(tool_results, id_bundles, strict=False)
+    ):
+        chunks = getattr(result, "chunks", None)
+        records = getattr(result, "records", None)
+        if chunks is not None:
+            # DocumentSearchResult-shaped — one block per retrieved chunk,
+            # each carrying its OWN citation id (audit 2026-08-14 finding 1:
+            # assign_citation_ids emits one id per chunk, mirroring the PGEO
+            # per-record branch, so the marker the model cites maps to the
+            # real chunk_id/section/page in the assembled Citation). zip is
+            # deliberately non-strict: an empty result has one sentinel id
+            # and zero chunks.
+            fallback_cid = bundle[0] if bundle else "[DATA-0]"
+            for idx, chunk in enumerate(chunks):
+                cid = bundle[idx] if idx < len(bundle) else fallback_cid
+                header = (
+                    f"{cid} "
+                    f"{getattr(chunk, 'document_title', None) or 'Untitled document'}"
+                )
+                section = (
+                    getattr(chunk, "section_number", None)
+                    or getattr(chunk, "section_title", None)
+                    or getattr(chunk, "section", None)
+                )
+                if section:
+                    header += f" | section {section}"
+                page = getattr(chunk, "page", None) or getattr(chunk, "page_number", None)
+                if page is not None:
+                    header += f" | page {page}"
+                # annotated_text, not text: a page-image chunk's content is a
+                # vision model's DESCRIPTION of the page, and annotated_text
+                # carries the "not quoted text from the document" prefix
+                # (and the OCR-quality warning).
+                text = (getattr(chunk, "annotated_text", None)
+                        or getattr(chunk, "text", "")
+                        or "")[:WINDOW_CHARS]
+                if fence:
+                    text = _fence_untrusted(text)
+                score = getattr(chunk, "relevance_score", None)
+                blocks.append(_ContextBlock(
+                    ti, idx, "chunk",
+                    float(score) if isinstance(score, (int, float)) else 0.0,
+                    f"{header}\n{text}", tool_name, cid,
+                ))
+        elif records is not None and len(bundle) == len(records):
+            # PublicGeoscienceSearchResult-shaped — one id per record.
+            for idx, (record, cid) in enumerate(zip(records, bundle, strict=False)):
+                record_text = _short(record, 1200)
+                if fence:
+                    record_text = _fence_untrusted(record_text)
+                blocks.append(_ContextBlock(
+                    ti, idx, "record", 0.0,
+                    f"{cid} tool={tool_name} {record_text}", tool_name, cid,
+                ))
+        else:
+            # Structured results (collars / samples / overview / ...) — one
+            # header-first block per tool result. Sourced from our own
+            # PostGIS tables, not externally-authored free text, so
+            # (matching _build_context) these are NOT fenced.
+            cid = bundle[0] if bundle else "[DATA-0]"
+            blocks.append(_ContextBlock(
+                ti, 0, "structured", 0.0,
+                f"{cid} tool={tool_name}\n{_render_structured_result(result)}",
+                tool_name, cid,
+            ))
+    return blocks
+
+
+def _select_blocks_for_budget(
+    blocks: list[_ContextBlock], budget: int,
+) -> set[tuple[int, int]]:
+    """Which blocks fit, by priority rather than dispatch order (RAG-18).
+
+    Dispatch order used to decide: search_documents runs first for
+    synthesis, twelve ~5,000-char chunks exhausted the budget, and the
+    collar/assay blocks became "[context budget reached]" while still
+    counting as evidence. Now:
+
+      1. structured blocks (compact since AGT-2), up to half the budget —
+         the first one always;
+      2. document chunks, highest relevance first;
+      3. structured blocks that overflowed step 1;
+      4. public-geoscience records.
+
+    A block that does not fit is skipped, not a stopping point, so a
+    shorter lower-ranked block can still use the remaining room.
+    """
+    sep = 2  # blank line between blocks
+    chosen: set[tuple[int, int]] = set()
+    total = 0
+    structured_total = 0
+
+    def _try(block: _ContextBlock) -> bool:
+        nonlocal total
+        size = len(block.text) + sep
+        if total + size > budget:
+            return False
+        chosen.add((block.tool_index, block.sub_index))
+        total += size
+        return True
+
+    overflow: list[_ContextBlock] = []
+    for block in (b for b in blocks if b.kind == "structured"):
+        size = len(block.text) + sep
+        if structured_total and structured_total + size > budget // 2:
+            overflow.append(block)
+            continue
+        if _try(block):
+            structured_total += size
+        else:
+            overflow.append(block)
+    chunks = sorted(
+        (b for b in blocks if b.kind == "chunk"), key=lambda b: b.score, reverse=True,
+    )
+    for block in chunks:
+        _try(block)
+    for block in overflow:
+        _try(block)
+    for block in (b for b in blocks if b.kind == "record"):
+        _try(block)
+    return chosen
+
+
+def _prune_tool_results(
+    tool_results: list[tuple[str, Any]],
+    blocks: list[_ContextBlock],
+    kept: set[tuple[int, int]],
+) -> list[tuple[str, Any]]:
+    """tool_results restricted to the blocks that were rendered."""
+    kinds = {b.tool_index: b.kind for b in blocks}
+    pruned: list[tuple[str, Any]] = []
+    for ti, (tool_name, result) in enumerate(tool_results):
+        kind = kinds.get(ti)
+        if kind is None:
+            # Rendered nothing at all (an empty document search keeps its
+            # sentinel citation for the refusal path) — leave it as it was.
+            pruned.append((tool_name, result))
+        elif kind == "structured":
+            if (ti, 0) in kept:
+                pruned.append((tool_name, result))
+        else:
+            attr = "chunks" if kind == "chunk" else "records"
+            items = [
+                item for idx, item in enumerate(getattr(result, attr))
+                if (ti, idx) in kept
+            ]
+            if not items:
+                continue
+            changes = {attr: items, "count": len(items)}
+            try:
+                pruned.append((tool_name, dataclasses.replace(result, **changes)))
+            except (TypeError, ValueError):
+                # Not a dataclass we can rebuild; keep it whole rather than
+                # lose evidence that was (partly) rendered.
+                pruned.append((tool_name, result))
+    return pruned
+
+
 def _render_tool_results_context(
     tool_results: list[tuple[str, Any]],
     *,
@@ -991,41 +1327,43 @@ def _render_tool_results_context(
     exactly what ``_build_context`` fences (structured PostGIS/Neo4j/
     collar/graph blocks stay unfenced, same as there).
 
-    Truncation observability (2026-08-15): ``_TOTAL_BUDGET`` caps this
-    block at 24K chars. Blocks render in ``tool_results`` dispatch order
-    (NOT relevance order), so on document-heavy retrievals the budget can
-    be exhausted before structured collar/assay/downhole data ever
-    renders — silently, with only a bare ``"[context budget reached]"``
-    marker in the prompt and nothing in the logs. When truncation occurs
-    we now log a ``warning`` naming every dropped block's tool + citation
-    id and approximate size, plus the optional ``query``/``workspace_id``
-    context callers may supply, so a truncated-context incident can
-    actually be found and measured later. This does NOT change what gets
-    dropped or in what order — that prioritization problem is a separate,
-    larger design question — it only makes the drop observable.
+
+    Budget (RAG-18, 2026-09-29): ``_TOTAL_BUDGET`` caps this block. Which
+    blocks make the cut is decided by ``_select_blocks_for_budget``
+    (structured data first, then chunks by relevance), and what was cut
+    is no longer merely logged: :func:`_render_context_and_evidence`
+    returns the tool results restricted to what was rendered, and
+    assemble_node hands THAT list to citation assembly and the guards, so
+    a block the model never read can neither be cited nor ground a number.
     """
-    from app.agent.context_builder import _UNTRUSTED_GUARD, _fence_untrusted  # noqa: PLC0415
-    from app.agent.response_assembler import assign_citation_ids  # noqa: PLC0415
+    text, _ = _render_context_and_evidence(
+        tool_results, query=query, workspace_id=workspace_id,
+    )
+    return text
+
+
+def _render_context_and_evidence(
+    tool_results: list[tuple[str, Any]],
+    *,
+    query: str | None = None,
+    workspace_id: Any = None,
+) -> tuple[str, list[tuple[str, Any]]]:
+    """Render the context block; return it with the evidence it contains.
+
+    The second element is ``tool_results`` itself (same object) when
+    everything fit, otherwise a pruned copy in which document chunks and
+    public-geo records that were dropped are removed from their results,
+    and dropped structured results are removed entirely. Citation ids are
+    assigned over the pruned list, so the markers in the prompt are the
+    ones ``assemble_response`` will emit for it.
+    """
+    from app.agent.context_builder import _UNTRUSTED_GUARD  # noqa: PLC0415
     from app.config import settings as _settings  # noqa: PLC0415
-
-    # Imported, not re-typed. Chunks are already bounded at ingest to
-    # WINDOW_CHARS, and this used to cut them again at 1,800 — 64% of every
-    # retrieved chunk was discarded before the model saw it, while the
-    # citation for that chunk went into the answer regardless. A citation
-    # pointing at text nobody read is worse than no citation: it looks
-    # like evidence. pdf_report's own sizing comment says the window was
-    # chosen so five chunks land at ~6,250 tokens; this cap was what stopped
-    # that from happening.
-    from app.services.ingest.pdf_report import WINDOW_CHARS  # noqa: PLC0415
-
-    _CHUNK_TEXT_CAP = WINDOW_CHARS   # i.e. never cut a chunk mid-way
-    _STRUCTURED_CAP = 1200           # per structured (non-chunk) result
 
     # Derived from the active backend's context window rather than frozen.
     # 24,000 characters was sized for the 16K-context local vLLM deployment
-    # and never revisited after the move to Azure Foundry, where the window
-    # is 100,000 TOKENS — so the evidence budget was about 6% of what was
-    # available, and the shortfall was paid for by truncating chunks.
+    # and never revisited after the move to a 100,000-token hosted window,
+    # so the evidence budget was about 6% of what was available.
     #
     # ~4 chars/token is the usual English approximation. The clamp is the
     # point of the expression: spend a documented slice of the window, and
@@ -1037,109 +1375,39 @@ def _render_tool_results_context(
         48_000,
         int(_settings.effective_max_context_tokens * 0.30) * _CHARS_PER_TOKEN,
     )
-    _fence_enabled = bool(_settings.PROMPT_INJECTION_DELIMITING_ENABLED)
+    fence = bool(_settings.PROMPT_INJECTION_DELIMITING_ENABLED)
+    guard_cost = len(_UNTRUSTED_GUARD) + 2 if fence else 0
 
-    # Each entry is (rendered_text, tool_name, citation_id) — the tool
-    # name + citation id are carried alongside the text purely so a
-    # budget-truncation event can name what got dropped (see docstring).
-    blocks: list[tuple[str, str, str]] = []
-    id_bundles = assign_citation_ids(tool_results)
-    for (tool_name, result), bundle in zip(
-        tool_results, id_bundles, strict=False
-    ):
-        chunks = getattr(result, "chunks", None)
-        records = getattr(result, "records", None)
-        if chunks is not None:
-            # DocumentSearchResult-shaped — one block per retrieved chunk,
-            # each carrying its OWN citation id (audit 2026-08-14 finding 1:
-            # assign_citation_ids now emits one id per chunk, mirroring the
-            # PGEO per-record branch, so the marker the model cites maps to
-            # the real chunk_id/section/page in the assembled Citation).
-            # zip is deliberately non-strict: an empty result has one
-            # sentinel id and zero chunks.
-            fallback_cid = bundle[0] if bundle else "[DATA-0]"
-            for idx, chunk in enumerate(chunks):
-                cid = bundle[idx] if idx < len(bundle) else fallback_cid
-                header = (
-                    f"{cid} "
-                    f"{getattr(chunk, 'document_title', None) or 'Untitled document'}"
-                )
-                section = (
-                    getattr(chunk, "section_number", None)
-                    or getattr(chunk, "section_title", None)
-                    or getattr(chunk, "section", None)
-                )
-                if section:
-                    header += f" | section {section}"
-                page = getattr(chunk, "page", None)
-                if page is not None:
-                    header += f" | page {page}"
-                # annotated_text, not text. A page-image chunk's content is
-                # a vision model's DESCRIPTION of the page, and annotated_text
-                # is what carries the "not quoted text from the document"
-                # prefix. Reading .text here stripped that prefix, so a
-                # generated description reached the model looking exactly
-                # like an extract it could quote. context_builder.py:144 on
-                # the legacy path already read annotated_text; this path did
-                # not.
-                text = (getattr(chunk, "annotated_text", None)
-                        or getattr(chunk, "text", "")
-                        or "")[:_CHUNK_TEXT_CAP]
-                if _fence_enabled:
-                    text = _fence_untrusted(text)
-                blocks.append((f"{header}\n{text}", tool_name, cid))
-        elif records is not None and len(bundle) == len(records):
-            # PublicGeoscienceSearchResult-shaped — one id per record.
-            for record, cid in zip(records, bundle, strict=False):
-                record_text = str(record)[:_STRUCTURED_CAP]
-                if _fence_enabled:
-                    record_text = _fence_untrusted(record_text)
-                blocks.append((f"{cid} tool={tool_name} {record_text}", tool_name, cid))
-        else:
-            # Structured results (collars / samples / graph / overview) —
-            # one compact block per tool result. Sourced from our own
-            # PostGIS/Neo4j tables, not externally-authored free text, so
-            # (matching _build_context) these are NOT fenced.
-            cid = bundle[0] if bundle else "[DATA-0]"
-            blocks.append((
-                f"{cid} tool={tool_name} {str(result)[:_STRUCTURED_CAP]}",
-                tool_name,
-                cid,
-            ))
-
-    out: list[str] = []
-    total = 0
-    dropped: list[tuple[str, str, int]] = []  # (tool_name, citation_id, size)
-    if _fence_enabled and blocks:
-        out.append(_UNTRUSTED_GUARD)
-        out.append("")
-        total += len(_UNTRUSTED_GUARD) + 1
-    for i, (block, _tool_name, _cid) in enumerate(blocks):
-        if total + len(block) > _TOTAL_BUDGET:
-            out.append("[context budget reached]")
-            dropped = [(tn, c, len(b)) for b, tn, c in blocks[i:]]
-            break
-        out.append(block)
-        total += len(block)
-
-    if dropped:
-        _dropped_chars = sum(size for _, _, size in dropped)
+    blocks = _build_context_blocks(tool_results, fence=fence)
+    kept = _select_blocks_for_budget(blocks, max(0, _TOTAL_BUDGET - guard_cost))
+    rendered_results = tool_results
+    omitted = [b for b in blocks if (b.tool_index, b.sub_index) not in kept]
+    if omitted:
+        rendered_results = _prune_tool_results(tool_results, blocks, kept)
+        blocks = _build_context_blocks(rendered_results, fence=fence)
         logger.warning(
-            "agentic_retrieval.assemble: context budget reached "
-            "(%d/%d chars used) — dropped %d/%d tool-result block(s) "
-            "totalling ~%d chars that never reached the LLM context "
-            "(dropped tool/citation ids: %s); query=%r workspace_id=%s",
-            total,
+            "agentic_retrieval.assemble: context budget reached (%d chars) "
+            "— dropped %d block(s) totalling ~%d chars from the LLM context "
+            "AND from the evidence citations/guards see (dropped: %s); query=%r "
+            "workspace_id=%s",
             _TOTAL_BUDGET,
-            len(dropped),
-            len(blocks),
-            _dropped_chars,
-            [f"{tn}:{c}" for tn, c, _ in dropped[:25]],
+            len(omitted),
+            sum(len(b.text) for b in omitted),
+            [f"{b.tool_name}:{b.citation_id}" for b in omitted[:25]],
             query,
             workspace_id,
         )
 
-    return "\n\n".join(out) if out else "(no tool results)"
+    out: list[str] = []
+    if fence and blocks:
+        out.extend([_UNTRUSTED_GUARD, ""])
+    out.extend(b.text for b in blocks)
+    if omitted:
+        out.append(
+            f"[context budget reached: {len(omitted)} lower-ranked evidence "
+            f"block(s) omitted; they are not available to cite]"
+        )
+    return ("\n\n".join(out) if out else "(no tool results)"), rendered_results
 
 
 def _question_for_llm(state: AgenticRetrievalState) -> str:
@@ -1336,6 +1604,12 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         and state.evidence_packet is not None
         and state.evidence_packet.evidence
     )
+    # The evidence the model is actually shown. Equal to state.tool_results
+    # unless the context budget dropped blocks (RAG-18), in which case it
+    # is the pruned list — and it, not the full retrieval, is what the
+    # citations are built from and what validate_node's guards check
+    # against (returned as "tool_results" below).
+    rendered_results: list[tuple[str, Any]] = state.tool_results
     if use_packet_for_context:
         for ev in state.evidence_packet.evidence:
             citation_counter += 1
@@ -1351,7 +1625,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "\n".join(context_lines) if context_lines else "(no tool results)"
         )
     else:
-        context_block = _render_tool_results_context(
+        context_block, rendered_results = _render_context_and_evidence(
             state.tool_results,
             query=state.query,
             workspace_id=getattr(state.deps, "workspace_id", None),
@@ -1363,7 +1637,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # SYSTEM_PROMPT_ROUTING_ENABLED=false to go back to always-DEFAULT
     # without a deploy.
     system_prompt = _select_system_prompt(
-        categories=_categories_from_tool_results(state.tool_results),
+        categories=_categories_from_tool_results(rendered_results),
         query=state.query,
     )
 
@@ -1528,7 +1802,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     )
     response = assemble_response(
         text,
-        state.tool_results,
+        rendered_results,
         map_payload=map_payload,
         viz_payload=viz_payload,
     )
@@ -1542,7 +1816,27 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         envelope_notes=state.envelope_notes,
         unspecified_descriptions=unspecified_field_descriptions(state.context_envelope),
     )
-    return {"response": response, **_fold_token_usage(state)}
+    update: dict[str, Any] = {"response": response, **_fold_token_usage(state)}
+    # Audit AGT-5: the in-place `state.X = ...` writes above are visible to
+    # the rest of THIS node only. LangGraph rebuilds the state for the next
+    # node from channels, so anything persist_node reads has to be in the
+    # returned update — system_prompt_tokens was always NULL in
+    # silver.query_traces, context_prep_audit likewise, and with
+    # CONTEXT_PREP_ENABLED the pruned packet fed the prompt while persist
+    # stamped the UNPRUNED one onto the response.
+    update.update(_assemble_state_writes(state))
+    if rendered_results is not state.tool_results:
+        update["tool_results"] = rendered_results
+    return update
+
+
+def _assemble_state_writes(state: AgenticRetrievalState) -> dict[str, Any]:
+    """The state fields assemble_node sets in place, as an update dict."""
+    return {
+        "evidence_packet": state.evidence_packet,
+        "system_prompt_tokens_estimate": state.system_prompt_tokens_estimate,
+        "context_prep_audit_payload": state.context_prep_audit_payload,
+    }
 
 
 def _round_trace_points_for_card(points: list[dict]) -> list[dict]:

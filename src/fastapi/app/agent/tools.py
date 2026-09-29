@@ -50,7 +50,7 @@ import functools as _functools  # noqa: E402
 import logging
 import re
 import time as _metric_time  # noqa: E402
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -571,6 +571,170 @@ class AssayDataResult:
     mean_value: float | None
     median_value: float | None
     data_source: str  # "PostGIS silver.samples"
+    # Audit AGT-15 / RAG-6 (2026-09-29). When the question names no
+    # commodity, the tool used to pick one silently (U3O8 > Au > Cu) and the
+    # answer described that element as if it were the one asked about. It
+    # still picks a primary element for the chart rows, but now also
+    # returns one summary per assayed element and says it auto-selected.
+    element_summaries: list[ElementSummary] = field(default_factory=list)
+    element_auto_selected: bool = False
+    #: The commodity the question named ("gold"), when one was named.
+    requested_commodity: str | None = None
+    #: True when the named commodity has no assay key in this project —
+    #: the summaries then describe what IS assayed.
+    requested_commodity_unavailable: bool = False
+    #: Hole IDs the rows and aggregates are restricted to (empty = project).
+    hole_filter: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ElementSummary:
+    """Aggregates for one assay key (``commodity_assays`` JSONB key)."""
+
+    element: str
+    count: int
+    min_value: float | None
+    max_value: float | None
+    mean_value: float | None
+    median_value: float | None
+
+
+# ---------------------------------------------------------------------------
+# Commodity vocabulary → assay element keys (audit AGT-15 / RAG-6)
+# ---------------------------------------------------------------------------
+#
+# silver.samples.commodity_assays is keyed by the SOURCE column name
+# ("Au_ppb", "au_ppm", "U3O8_pct_e", "Li2O_pct", "TREO_ppm"), so a key is
+# matched on its leading element/oxide token, case-insensitively. Prefixes
+# are listed in preference order within a commodity.
+COMMODITY_ELEMENT_PREFIXES: dict[str, tuple[str, ...]] = {
+    "gold": ("au",),
+    "silver": ("ag",),
+    "copper": ("cu",),
+    "uranium": ("u3o8", "eu3o8", "u"),
+    "zinc": ("zn",),
+    "lead": ("pb",),
+    "nickel": ("ni",),
+    "cobalt": ("co",),
+    "molybdenum": ("mo", "mos2"),
+    "lithium": ("li2o", "li"),
+    "rare earths": ("treo", "tree", "ree"),
+    "platinum": ("pt",),
+    "palladium": ("pd",),
+    "vanadium": ("v2o5", "v"),
+    "thorium": ("tho2", "th"),
+    "tungsten": ("wo3", "w"),
+    "tin": ("sn",),
+    "iron": ("fe", "fe2o3", "fe3o4"),
+    "manganese": ("mn", "mno"),
+    "niobium": ("nb2o5", "nb"),
+    "tantalum": ("ta2o5", "ta"),
+    "potash": ("k2o", "kcl"),
+    "phosphate": ("p2o5",),
+    "graphite": ("cg", "gr"),
+}
+
+_COMMODITY_WORD_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bgold\b", re.IGNORECASE), "gold"),
+    (re.compile(r"\bsilver\b", re.IGNORECASE), "silver"),
+    (re.compile(r"\bcopper\b", re.IGNORECASE), "copper"),
+    (re.compile(r"\buranium\b|\byellowcake\b", re.IGNORECASE), "uranium"),
+    (re.compile(r"\bzinc\b", re.IGNORECASE), "zinc"),
+    # "lead" is also a verb ("what could lead to…"); only the metal sense
+    # next to a grade/assay word counts.
+    (re.compile(
+        r"\blead\s+(?:grades?|assays?|values?|content|mineralization|"
+        r"concentrations?)\b|\b(?:grades?|assays?)\s+(?:of|for)\s+lead\b",
+        re.IGNORECASE,
+    ), "lead"),
+    (re.compile(r"\bnickel\b", re.IGNORECASE), "nickel"),
+    (re.compile(r"\bcobalt\b", re.IGNORECASE), "cobalt"),
+    (re.compile(r"\bmolybdenum\b|\bmoly\b", re.IGNORECASE), "molybdenum"),
+    (re.compile(r"\blithium\b", re.IGNORECASE), "lithium"),
+    (re.compile(
+        r"\brare[\s-]+earths?(?:\s+elements?)?\b|\bREEs?\b|\bTREO\b",
+        re.IGNORECASE,
+    ), "rare earths"),
+    (re.compile(r"\bplatinum\b", re.IGNORECASE), "platinum"),
+    (re.compile(r"\bpalladium\b", re.IGNORECASE), "palladium"),
+    (re.compile(r"\bvanadium\b", re.IGNORECASE), "vanadium"),
+    (re.compile(r"\bthorium\b", re.IGNORECASE), "thorium"),
+    (re.compile(r"\btungsten\b", re.IGNORECASE), "tungsten"),
+    (re.compile(r"\btin\s+(?:grades?|assays?|values?)\b", re.IGNORECASE), "tin"),
+    (re.compile(r"\biron\s+(?:grades?|assays?|values?|ore)\b", re.IGNORECASE), "iron"),
+    (re.compile(r"\bmanganese\b", re.IGNORECASE), "manganese"),
+    (re.compile(r"\bniobium\b", re.IGNORECASE), "niobium"),
+    (re.compile(r"\btantalum\b", re.IGNORECASE), "tantalum"),
+    (re.compile(r"\bpotash\b", re.IGNORECASE), "potash"),
+    (re.compile(r"\bphosphate\b", re.IGNORECASE), "phosphate"),
+    (re.compile(r"\bgraphite\b", re.IGNORECASE), "graphite"),
+)
+
+# Element symbols / oxides as written in a question. Case-SENSITIVE and
+# limited to tokens that are not also common English ("As", "In", "W" as a
+# compass bearing, "Co." as company are left out).
+_COMMODITY_SYMBOL_RE = re.compile(
+    r"(?<![A-Za-z0-9])("
+    r"eU3O8|U3O8|Au|Ag|Cu|Zn|Pb|Ni|Mo|Li2O|Li|TREO|Pt|Pd|V2O5|WO3|Sn|Nb2O5|"
+    r"Ta2O5|K2O|P2O5"
+    r")(?![A-Za-z0-9])"
+)
+_SYMBOL_TO_COMMODITY: dict[str, str] = {
+    "eU3O8": "uranium", "U3O8": "uranium", "Au": "gold", "Ag": "silver",
+    "Cu": "copper", "Zn": "zinc", "Pb": "lead", "Ni": "nickel",
+    "Mo": "molybdenum", "Li2O": "lithium", "Li": "lithium",
+    "TREO": "rare earths", "Pt": "platinum", "Pd": "palladium",
+    "V2O5": "vanadium", "WO3": "tungsten", "Sn": "tin",
+    "Nb2O5": "niobium", "Ta2O5": "tantalum", "K2O": "potash",
+    "P2O5": "phosphate",
+}
+
+_ELEMENT_KEY_PREFIX_RE = re.compile(r"^([A-Za-z][A-Za-z0-9]*)")
+
+
+def commodities_in_query(query: str | None) -> list[str]:
+    """Commodities the question names, in order of first appearance.
+
+    Returns canonical names ("gold", "uranium", ...) — keys of
+    :data:`COMMODITY_ELEMENT_PREFIXES`.
+    """
+    if not query:
+        return []
+    hits: list[tuple[int, str]] = []
+    for pattern, commodity in _COMMODITY_WORD_RES:
+        m = pattern.search(query)
+        if m:
+            hits.append((m.start(), commodity))
+    for m in _COMMODITY_SYMBOL_RE.finditer(query):
+        hits.append((m.start(), _SYMBOL_TO_COMMODITY[m.group(1)]))
+    hits.sort()
+    return list(dict.fromkeys(c for _, c in hits))
+
+
+def _element_key_prefix(key: str) -> str:
+    m = _ELEMENT_KEY_PREFIX_RE.match(key or "")
+    return m.group(1).lower() if m else ""
+
+
+def element_key_for_commodity(
+    commodity: str, available: list[str],
+) -> str | None:
+    """Best ``commodity_assays`` key for ``commodity`` among ``available``.
+
+    Prefix order in :data:`COMMODITY_ELEMENT_PREFIXES` decides first; among
+    keys sharing a prefix, a derived effective grade (``*_e``) wins, for the
+    reason query_assay_data's auto-pick documents (for some projects it is
+    the only populated grade column). None when nothing matches.
+    """
+    prefixes = COMMODITY_ELEMENT_PREFIXES.get((commodity or "").lower())
+    if not prefixes:
+        return None
+    for prefix in prefixes:
+        matches = sorted(k for k in available if _element_key_prefix(k) == prefix)
+        if matches:
+            derived = [k for k in matches if k.lower().endswith("_e")]
+            return (derived or matches)[0]
+    return None
 
 
 @dataclass
@@ -1420,6 +1584,9 @@ async def query_assay_data(
     element: str | None = None,
     hole_id: str | None = None,
     limit: int = 5000,
+    *,
+    commodity: str | None = None,
+    hole_ids: list[str] | None = None,
 ) -> AssayDataResult:
     """Fetch assay sample values from silver.samples for plotting + narration.
 
@@ -1440,8 +1607,14 @@ async def query_assay_data(
 
     Args:
         project_id: UUID scope.
-        element: JSONB key name (e.g. "U3O8_ppm"). None → auto-detect primary.
+        element: JSONB key name (e.g. "U3O8_ppm"). None → resolve from
+            ``commodity``, else auto-detect a primary element AND return
+            per-element summaries (``element_summaries``) with
+            ``element_auto_selected=True``.
         hole_id: Optional filter to a single hole.
+        commodity: Canonical commodity the question named ("gold"; see
+            :func:`commodities_in_query`). Mapped to this project's key.
+        hole_ids: Optional filter to several holes (unioned with hole_id).
         limit: Max raw sample rows to return (1 to 20000). Aggregates are
             ALWAYS computed over the full unfiltered set, so capping
             ``limit`` only affects what's available for plotting, not the
@@ -1498,7 +1671,16 @@ async def query_assay_data(
                     data_source="PostGIS silver.samples",
                 )
 
-            # Auto-detect primary element. Prefer derived composites
+            # Resolve the element (audit AGT-15 / RAG-6, 2026-09-29).
+            #   1. An explicit ``element`` key wins (direct callers).
+            #   2. Else a commodity the QUESTION named ("gold") maps to
+            #      this project's key for it ("Au_ppb_e"/"Au_ppb"/"au_ppm").
+            #   3. Else auto-pick a primary element for the chart rows,
+            #      but say so, and return every element's summary, so the
+            #      answer cannot present uranium statistics as "the grade"
+            #      of a question that never mentioned uranium.
+            #
+            # Auto-pick order prefers derived composites
             # (`U3O8_pct_e` / `Au_ppb_e` / `Cu_pct_e`) when they're the
             # populated path, because for some projects the only
             # populated grade column is the derived effective grade
@@ -1507,7 +1689,18 @@ async def query_assay_data(
             # produces a 4-row "assay" answer that the LLM correctly
             # refuses, instead of the genuine project-wide grade.
             chosen = element
+            auto_selected = False
+            requested_unavailable = False
+            if chosen is None and commodity:
+                chosen = element_key_for_commodity(commodity, available)
+                if chosen is None:
+                    requested_unavailable = True
+                    logger.info(
+                        "query_assay_data: question named %s but no assay key "
+                        "matches it (available=%s)", commodity, available,
+                    )
             if chosen is None:
+                auto_selected = True
                 preferred_order = (
                     "U3O8_pct_e", "U3O8_ppm",
                     "Au_ppb_e", "Au_ppb",
@@ -1542,23 +1735,64 @@ async def query_assay_data(
                     )
                     chosen = alt
 
+            # Named holes (audit AGT-15): "top Au assays in PLS-22-08" used
+            # to get project-wide statistics.
+            holes = [h for h in (hole_ids or []) if h]
+            if hole_id and hole_id not in holes:
+                holes.insert(0, hole_id)
+            holes_upper = [h.upper() for h in holes]
+
+            def _scope(first_idx: int) -> tuple[str, list[Any]]:
+                """Hole + workspace filter SQL and binds, numbered from first_idx."""
+                sql = ""
+                binds: list[Any] = []
+                idx = first_idx
+                if holes_upper:
+                    sql += f" AND UPPER(c.hole_id) = ANY(${idx}::text[])"
+                    binds.append(holes_upper)
+                    idx += 1
+                if workspace_id:
+                    sql += f" AND s.workspace_id = ${idx}"
+                    binds.append(workspace_id)
+                return sql, binds
+
+            # Per-element summaries whenever the element was not chosen by
+            # the question and there is more than one to choose from. Same
+            # scoping as the main aggregate.
+            summaries: list[ElementSummary] = []
+            if auto_selected and len(available) > 1:
+                summary_scope, summary_binds = _scope(2)
+                summary_sql = (
+                    "SELECT kv.key AS elem, COUNT(*) AS n, "
+                    "  MIN(kv.value::double precision) AS min_v, "
+                    "  MAX(kv.value::double precision) AS max_v, "
+                    "  AVG(kv.value::double precision) AS mean_v, "
+                    "  PERCENTILE_CONT(0.5) WITHIN GROUP "
+                    "    (ORDER BY kv.value::double precision) AS median_v "
+                    "FROM silver.samples s "
+                    "JOIN silver.collars c ON c.collar_id = s.collar_id "
+                    "CROSS JOIN LATERAL jsonb_each_text(s.commodity_assays) kv "
+                    f"WHERE c.project_id = $1{summary_scope} "
+                    "  AND kv.value ~ '^\\s*[-+]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][-+]?[0-9]+)?\\s*$' "
+                    "GROUP BY kv.key ORDER BY kv.key"
+                )
+                for r in await conn.fetch(summary_sql, project_id, *summary_binds):
+                    summaries.append(ElementSummary(
+                        element=r["elem"],
+                        count=int(r["n"] or 0),
+                        min_value=float(r["min_v"]) if r["min_v"] is not None else None,
+                        max_value=float(r["max_v"]) if r["max_v"] is not None else None,
+                        mean_value=float(r["mean_v"]) if r["mean_v"] is not None else None,
+                        median_value=float(r["median_v"]) if r["median_v"] is not None else None,
+                    ))
+
             # Step 2: aggregates computed over the FULL unfiltered set in
             # SQL so they don't degrade when we cap raw rows for context
             # budget. PERCENTILE_CONT gives us a true median (not the
             # discrete-row-pick that the old Python fallback used).
-            hole_filter = ""
-            bind = [project_id, chosen]
-            param_idx = 3
-            if hole_id:
-                hole_filter = f" AND UPPER(c.hole_id) = UPPER(${param_idx})"
-                bind.append(hole_id)
-                param_idx += 1
-
-            workspace_filter = ""
-            if workspace_id:
-                workspace_filter = f" AND s.workspace_id = ${param_idx}"
-                bind.append(workspace_id)
-                param_idx += 1
+            scope_sql, scope_binds = _scope(3)
+            bind: list[Any] = [project_id, chosen, *scope_binds]
+            param_idx = 3 + len(scope_binds)
 
             agg_sql = (
                 "SELECT "
@@ -1570,11 +1804,19 @@ async def query_assay_data(
                 "  SELECT (s.commodity_assays->>$2)::double precision AS val "
                 "  FROM silver.samples s "
                 "  JOIN silver.collars c ON c.collar_id = s.collar_id "
-                f"  WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter}{workspace_filter} "
+                f"  WHERE c.project_id = $1 AND s.commodity_assays ? $2{scope_sql} "
                 ") sub "
                 "WHERE val IS NOT NULL"
             )
             agg_row = await conn.fetchrow(agg_sql, *bind)
+
+            provenance: dict[str, Any] = {
+                "element_summaries": summaries,
+                "element_auto_selected": auto_selected,
+                "requested_commodity": commodity,
+                "requested_commodity_unavailable": requested_unavailable,
+                "hole_filter": holes,
+            }
 
             total_n = int(agg_row["total_n"]) if agg_row and agg_row["total_n"] else 0
             if total_n == 0:
@@ -1588,6 +1830,7 @@ async def query_assay_data(
                     mean_value=None,
                     median_value=None,
                     data_source="PostGIS silver.samples",
+                    **provenance,
                 )
 
             # Step 3: fetch raw sample rows for plotting. P1 #29 — apply
@@ -1601,7 +1844,7 @@ async def query_assay_data(
                 "      (s.commodity_assays->>$2)::double precision AS val "
                 "FROM silver.samples s "
                 "JOIN silver.collars c ON c.collar_id = s.collar_id "
-                f"WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter}{workspace_filter} "
+                f"WHERE c.project_id = $1 AND s.commodity_assays ? $2{scope_sql} "
                 "  AND (s.commodity_assays->>$2) IS NOT NULL "
                 f"ORDER BY c.hole_id, s.from_depth "
                 f"LIMIT ${limit_idx}"
@@ -1641,6 +1884,7 @@ async def query_assay_data(
                 mean_value=float(agg_row["mean_v"]) if agg_row["mean_v"] is not None else None,
                 median_value=float(agg_row["median_v"]) if agg_row["median_v"] is not None else None,
                 data_source="PostGIS silver.samples",
+                **provenance,
             )
 
     try:

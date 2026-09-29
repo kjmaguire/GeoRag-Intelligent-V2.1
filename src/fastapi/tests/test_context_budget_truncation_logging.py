@@ -14,8 +14,8 @@ These tests pin that a truncation event is now observable: a ``warning``
 log record naming the dropped tool/citation ids and approximate dropped
 size, and (when the caller supplies it) the query/workspace context needed
 to investigate. They do NOT test — and this fix does not change — which
-blocks get dropped or in what order; that prioritization problem is a
-separate, larger design question.
+blocks get dropped or in what order; test_agent_context_rendering_audit.py
+covers the RAG-18 prioritisation (2026-09-29).
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class TestContextBudgetTruncationLogging:
         with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             context = _render_tool_results_context(tool_results)
 
-        assert "[context budget reached]" in context
+        assert "[context budget reached" in context
         warning_records = [
             r for r in caplog.records
             if r.levelno >= logging.WARNING and "context budget reached" in r.message
