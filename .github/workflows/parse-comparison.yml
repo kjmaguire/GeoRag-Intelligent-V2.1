@@ -1,0 +1,400 @@
+# Compare Cohere Parse with the native PDF stack on real reports, from inside AWS.
+#
+# One-off operator action. The harness (src/fastapi/scripts/ops/parse_vs_native.py)
+# needs Postgres, the bronze bucket and COHERE_API_KEY, none of which an
+# operator's sandbox has, so it runs as a one-off ECS task on the Hatchet
+# worker's task definition — the Python image, the COHERE_API_KEY secret, the
+# task role with S3 access, the same VPC — and prints its report to stdout.
+# This workflow starts it, waits, reads the task's CloudWatch stream, and puts
+# the report in the job log and the step summary.
+#
+# It answers "is Parse good enough to be PDF_PARSE_MODE=all?" — the number that
+# matters on an NI 43-101 is whether the NUMBERS survive, so the report leads
+# with number recall in both directions, not just text similarity. Read
+# pdf_report.py's module docstring for what the three modes do.
+#
+# READ-ONLY: the Postgres session is read-only and the script has no Qdrant
+# client and no write path to S3. It DOES spend Cohere pages (capped at 120 per
+# run, ~$0.18 at an assumed $1.50 / 1000 pages); set dry_run to sample and
+# measure the native side for free.
+#
+# Why a derived task-definition family (georag-parse-comparison) rather than a
+# bare `run-task` on georag-hatchet-worker: that definition carries the worker's
+# container health check (`curl :8001/health`), which a one-off command never
+# answers, so ECS would kill the task after ~2 minutes as UNHEALTHY. Nothing
+# can override a health check at run-task time, so the family is registered
+# from the worker's LATEST revision (i.e. whatever CD last deployed) with only
+# that block removed — the same trick cd.yml uses for georag-smoke. The command
+# itself is a run-task override, as in run-seeder.yml.
+#
+# Uses the CD deploy role (AWS_DEPLOY_ROLE_ARN). ci.tf already grants what this
+# needs — ecs:RegisterTaskDefinition / RunTask / DescribeTasks on "*",
+# iam:PassRole on the execution + task roles (hatchet-worker runs as the task
+# role), and logs:GetLogEvents on /ecs/georag* — so no Terraform apply is
+# required for it.
+#
+# The report contains short EXCERPTS (<= ~1,200 characters, at most 4 pages) of
+# the compared reports. They go to CloudWatch (30-day retention) and to this
+# job's log and summary: run it on a project whose text you are content to have
+# there.
+
+name: Parse vs native comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_slug:
+        description: "Project slug (a-z, 0-9, hyphen; blank = the project with the most reports)"
+        required: false
+        default: ""
+        type: string
+      max_reports:
+        description: "Reports to compare (1-5)"
+        required: false
+        default: "3"
+        type: choice
+        options: ["1", "2", "3", "4", "5"]
+      max_pages_per_report:
+        description: "Pages sampled per report (1-120; the whole run is capped at 120 Parse pages)"
+        required: false
+        default: "30"
+        type: string
+      dry_run:
+        description: "Dry run: select, sample and measure the native side; do NOT call Parse"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: parse-comparison
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: georag
+  DB_IDENTIFIER: georag-pg
+  # The Hatchet worker: `${local.name}-hatchet-worker` in services.tf, one
+  # container named after the service, image shared with fastapi.
+  SOURCE_TASK_FAMILY: georag-hatchet-worker
+  COMPARISON_TASK_FAMILY: georag-parse-comparison
+  CONTAINER_NAME: hatchet-worker
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Parse vs native
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Inputs reach the shell as ENVIRONMENT VARIABLES, never interpolated into
+      # the script text, and are checked here before anything uses them. The
+      # override below is then built with jq --arg/--argjson, so no input can
+      # become shell syntax or an extra argv element.
+      - name: Validate inputs
+        id: inputs
+        env:
+          INPUT_SLUG: ${{ inputs.project_slug }}
+          INPUT_MAX_REPORTS: ${{ inputs.max_reports }}
+          INPUT_MAX_PAGES: ${{ inputs.max_pages_per_report }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$INPUT_SLUG" =~ ^[a-z0-9-]{0,64}$ ]]; then
+            echo "::error::project_slug must match ^[a-z0-9-]{0,64}\$ (lowercase letters, digits, hyphen)"
+            exit 1
+          fi
+          if ! [[ "$INPUT_MAX_REPORTS" =~ ^[0-9]{1,2}$ ]] || [ "$INPUT_MAX_REPORTS" -lt 1 ] || [ "$INPUT_MAX_REPORTS" -gt 5 ]; then
+            echo "::error::max_reports must be an integer from 1 to 5"
+            exit 1
+          fi
+          if ! [[ "$INPUT_MAX_PAGES" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$INPUT_MAX_PAGES))" -lt 1 ] || [ "$((10#$INPUT_MAX_PAGES))" -gt 120 ]; then
+            echo "::error::max_pages_per_report must be an integer from 1 to 120"
+            exit 1
+          fi
+          case "$INPUT_DRY_RUN" in
+            true|false) ;;
+            *) echo "::error::dry_run must be true or false"; exit 1 ;;
+          esac
+
+          # Normalised values only from here on (10# strips a leading zero so
+          # "030" is 30, not an octal surprise).
+          {
+            echo "slug=$INPUT_SLUG"
+            echo "max_reports=$((10#$INPUT_MAX_REPORTS))"
+            echo "max_pages=$((10#$INPUT_MAX_PAGES))"
+            echo "dry_run=$INPUT_DRY_RUN"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The harness reads silver.reports; the instance is stopped nightly and
+      # absent under `power=off`. Same gate, same two messages, as run-seeder.yml.
+      - name: Postgres gate (nightly stop window / power flag)
+        run: |
+          set -uo pipefail
+          STATE=$(aws rds describe-db-instances \
+            --db-instance-identifier "$DB_IDENTIFIER" \
+            --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "absent")
+          echo "postgres state: $STATE"
+          if [ "$STATE" = "absent" ]; then
+            echo "::error::$DB_IDENTIFIER does not exist. The stack is powered off — run 'terraform apply -var power=on' first (see deploy/aws/terraform/power.tf)."
+            exit 1
+          fi
+          if [ "$STATE" != "available" ]; then
+            echo "::error::$DB_IDENTIFIER is '$STATE'. The nightly sweep stops it at 23:00 and starts it at 06:00 America/Los_Angeles. Re-run when it is 'available'."
+            exit 1
+          fi
+
+      - name: Register the comparison task definition (worker's latest revision, health check removed)
+        id: taskdef
+        run: |
+          set -euo pipefail
+
+          def=$(aws ecs describe-task-definition --task-definition "$SOURCE_TASK_FAMILY" \
+                  --query taskDefinition)
+          new=$(echo "$def" | jq --arg family "$COMPARISON_TASK_FAMILY" --arg c "$CONTAINER_NAME" '
+            .family = $family
+            | del(.containerDefinitions[] | select(.name == $c) | .healthCheck)
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)')
+
+          # Fail here, not at run-task, if the container is not where we think.
+          if [ "$(echo "$new" | jq --arg c "$CONTAINER_NAME" '[.containerDefinitions[] | select(.name == $c)] | length')" != "1" ]; then
+            echo "::error::$SOURCE_TASK_FAMILY has no container named $CONTAINER_NAME — services.tf changed; update CONTAINER_NAME in this workflow."
+            exit 1
+          fi
+
+          REV=$(aws ecs register-task-definition --cli-input-json "$new" \
+                  --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task definition: $REV"
+          echo "arn=$REV" >> "$GITHUB_OUTPUT"
+
+          # The log destination comes from the task definition, not from a
+          # guess: awslogs names the stream <prefix>/<container>/<task id>.
+          GROUP=$(echo "$new" | jq -r --arg c "$CONTAINER_NAME" '.containerDefinitions[] | select(.name == $c) | .logConfiguration.options["awslogs-group"]')
+          PREFIX=$(echo "$new" | jq -r --arg c "$CONTAINER_NAME" '.containerDefinitions[] | select(.name == $c) | .logConfiguration.options["awslogs-stream-prefix"]')
+          if [ -z "$GROUP" ] || [ "$GROUP" = "null" ] || [ -z "$PREFIX" ] || [ "$PREFIX" = "null" ]; then
+            echo "::error::could not read awslogs-group / awslogs-stream-prefix from $SOURCE_TASK_FAMILY"
+            exit 1
+          fi
+          echo "log_group=$GROUP" >> "$GITHUB_OUTPUT"
+          echo "log_prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+
+      - name: Run the comparison as a one-off ECS task
+        id: run
+        env:
+          SLUG: ${{ steps.inputs.outputs.slug }}
+          MAX_REPORTS: ${{ steps.inputs.outputs.max_reports }}
+          MAX_PAGES: ${{ steps.inputs.outputs.max_pages }}
+          DRY_RUN: ${{ steps.inputs.outputs.dry_run }}
+          TASK_DEF_ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          set -euo pipefail
+
+          # The command is an argv array: nothing here passes through a shell in
+          # the container, and every value came out of the validation step.
+          OVERRIDES=$(jq -nc \
+            --arg c "$CONTAINER_NAME" \
+            --arg slug "$SLUG" \
+            --arg reports "$MAX_REPORTS" \
+            --arg pages "$MAX_PAGES" \
+            --arg dry "$DRY_RUN" '
+            {
+              containerOverrides: [{
+                name: $c,
+                command: (
+                  ["python3", "/app/scripts/ops/parse_vs_native.py",
+                   "--max-reports", $reports,
+                   "--max-pages-per-report", $pages]
+                  + (if $slug != "" then ["--project-slug=" + $slug] else [] end)
+                  + (if $dry == "true" then ["--dry-run"] else [] end)
+                )
+              }]
+            }')
+          echo "override: $OVERRIDES"
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$TASK_DEF_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.AWS_PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.AWS_TASK_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
+            --overrides "$OVERRIDES" \
+            --query 'tasks[0].taskArn' --output text)
+
+          # A zero exit with empty output means a task may be running that this
+          # run cannot name — the trap cd.yml and run-seeder.yml both document.
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::run-task returned no task ARN (capacity, network configuration or a bad task definition)"
+            exit 1
+          fi
+          echo "comparison task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+          # Poll rather than `aws ecs wait tasks-stopped`, whose budget is 10
+          # minutes: scanning a few 300-page reports with pdfplumber and waiting
+          # on ~100 Parse requests can take longer than that.
+          DEADLINE=$(( $(date +%s) + 60 * 60 ))
+          while :; do
+            STATUS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+              --query 'tasks[0].lastStatus' --output text)
+            [ "$STATUS" = "STOPPED" ] && break
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::comparison task still $STATUS after 60 minutes; stopping it"
+              aws ecs stop-task --cluster "$ECS_CLUSTER" --task "$TASK_ARN" --reason "parse-comparison workflow timeout" >/dev/null || true
+              exit 1
+            fi
+            sleep 20
+          done
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query "tasks[0].containers[?name=='${CONTAINER_NAME}'] | [0].exitCode" --output text)
+          REASON=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+          echo "comparison exit code: ${EXIT_CODE} (${REASON})"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+
+      # Runs whether or not the task succeeded: a failed comparison's log is the
+      # most useful thing it produced (a Parse wire-shape or auth failure lands
+      # here), and `if: always()` keeps that from being lost behind the exit
+      # code check below. Skipped only when no task was ever started.
+      - name: Fetch the task's CloudWatch log and print the report
+        id: report
+        if: always() && steps.run.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.run.outputs.arn }}
+          LOG_GROUP: ${{ steps.taskdef.outputs.log_group }}
+          LOG_PREFIX: ${{ steps.taskdef.outputs.log_prefix }}
+          EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+        run: |
+          set -uo pipefail
+
+          TASK_ID="${TASK_ARN##*/}"
+          STREAM="${LOG_PREFIX}/${CONTAINER_NAME}/${TASK_ID}"
+          echo "log stream: ${LOG_GROUP} :: ${STREAM}"
+
+          RAW=/tmp/task.log
+          SUMMARY=/tmp/summary.md
+          JSON=/tmp/report.json
+          BEGIN_SUM='=====BEGIN PARSE_VS_NATIVE_SUMMARY_MD====='
+          END_SUM='=====END PARSE_VS_NATIVE_SUMMARY_MD====='
+          BEGIN_JSON='=====BEGIN PARSE_VS_NATIVE_JSON====='
+          END_JSON='=====END PARSE_VS_NATIVE_JSON====='
+
+          fetch_log() {
+            : > "$RAW"
+            local token="" resp next
+            for _ in $(seq 1 400); do
+              if [ -z "$token" ]; then
+                resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" \
+                  --start-from-head --limit 10000 --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+              else
+                resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" \
+                  --start-from-head --limit 10000 --next-forward-token "$token" --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+              fi
+              echo "$resp" | jq -r '.events[].message' >> "$RAW"
+              next=$(echo "$resp" | jq -r '.nextForwardToken')
+              # The last page hands back the token it was given.
+              [ "$next" = "$token" ] && return 0
+              token="$next"
+            done
+            return 0
+          }
+
+          # CloudWatch trails the container by a few seconds; the report is the
+          # LAST thing the task prints, so wait for its end marker.
+          for attempt in 1 2 3 4 5 6; do
+            fetch_log || true
+            if grep -qF "$END_JSON" "$RAW" 2>/dev/null; then break; fi
+            # A failed run legitimately has no report; do not wait for one.
+            if [ "$attempt" -ge 3 ] && [ "${EXIT_CODE:-}" != "0" ] && [ "${EXIT_CODE:-}" != "3" ]; then break; fi
+            sleep 15
+          done
+
+          echo "::group::Full task log (${RAW})"
+          cat "$RAW" || true
+          echo "::endgroup::"
+
+          awk -v b="$BEGIN_SUM" -v e="$END_SUM" '$0==b{f=1;next} $0==e{f=0} f' "$RAW" > "$SUMMARY"
+          awk -v b="$BEGIN_JSON" -v e="$END_JSON" '$0==b{f=1;next} $0==e{f=0} f' "$RAW" > "$JSON"
+
+          {
+            echo "## Parse vs native comparison"
+            echo ""
+            echo "Task \`${TASK_ID}\`, exit code \`${EXIT_CODE:-unknown}\`."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s "$SUMMARY" ]; then
+            echo "════ Markdown summary ════════════════════════════════════════"
+            cat "$SUMMARY"
+            cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::no report between the BEGIN/END markers — the task failed before producing one. See the log above."
+            {
+              echo "**No report was produced.** The task's own error output:"
+              echo ""
+              echo '```text'
+              tail -n 60 "$RAW" || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -s "$JSON" ]; then
+            echo "════ Full JSON ═══════════════════════════════════════════════"
+            cat "$JSON"
+            # GITHUB_STEP_SUMMARY is capped at 1 MiB per step; keep the JSON
+            # under 700 KB so the Markdown above always fits.
+            if [ "$(wc -c < "$JSON")" -le 700000 ]; then
+              {
+                echo ""
+                echo "<details><summary>Full JSON</summary>"
+                echo ""
+                echo '```json'
+                cat "$JSON"
+                echo '```'
+                echo ""
+                echo "</details>"
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "_Full JSON is over 700 KB and is in the job log and the artifact only._" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload the report
+        if: always() && steps.report.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: parse-vs-native-report
+          path: |
+            /tmp/summary.md
+            /tmp/report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Last, so the report above is never lost to it. Exit codes are the
+      # harness's contract (parse_vs_native.py docstring): 0 ok, 2 nothing could
+      # be compared, 3 every Parse request failed, 1 unexpected error.
+      - name: Check the task's exit code
+        if: always() && steps.run.outputs.arn != ''
+        env:
+          EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+          REASON: ${{ steps.run.outputs.reason }}
+        run: |
+          case "${EXIT_CODE:-}" in
+            0) echo "comparison completed" ;;
+            2) echo "::error::nothing could be compared (no visible reports, unreadable PDFs, or no COHERE_API_KEY on the task). See the log."; exit 1 ;;
+            3) echo "::error::EVERY Parse request failed — the report printed above shows the verbatim errors. This is not a pass."; exit 1 ;;
+            *) echo "::error::comparison task failed (exit ${EXIT_CODE:-none}: ${REASON:-unknown}). Container output is in the CloudWatch log group."; exit 1 ;;
+          esac
