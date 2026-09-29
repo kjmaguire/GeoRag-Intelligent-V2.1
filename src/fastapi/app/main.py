@@ -55,7 +55,6 @@ from app.routers import (
 from app.routers import answer_runs as answer_runs_router
 from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
 from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
-from app.routers import completeness as completeness_router  # CC-03 Item 2 — completeness audit
 from app.routers import coverage as coverage_router  # CC-03 Item 5 — coverage density heatmap
 from app.routers import evidence as evidence_router
 from app.routers import exports as exports_router
@@ -799,27 +798,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.bronze_store = None
 
     # -------------------------------------------------------------------------
-    # 9. §04p PDF Ingestion Subsystem — Stage 3 extract service (Phase 1.B)
+    # 9. §04p Stage 3 extract service — NOT started since 2026-09-29.
     # -------------------------------------------------------------------------
-    # PdfExtractService holds a dedicated ProcessPoolExecutor (separate from
-    # the render pool) for pdfminer.six / pdfplumber extraction.  Results are
-    # cached durably in silver.pdf_text_blocks + silver.pdf_table_cells so
-    # cross-process and cross-restart cache hits work.
-    # The pool is initialised AFTER pg_pool (step 1) because the extract service
-    # takes the pool reference at construction time.
-    try:
-        from app.services.pdf_extract import PdfExtractService  # noqa: PLC0415
-
-        app.state.pdf_extract_service = PdfExtractService(pool=pg_pool)
-        logger.info("PDF extract service ready (§04p Phase 1.B — pdfminer.six + pdfplumber)")
-    except Exception:
-        logger.exception(
-            "§04p Phase 1.B extract service init failed — "
-            "/pdf/extract_text and /pdf/find_tables will return 503. "
-            "Ensure pdfminer.six and pdfplumber are installed: "
-            "uv pip install 'pdfminer.six>=20240706' 'pdfplumber>=0.11'"
-        )
-        app.state.pdf_extract_service = None
+    # Its only consumers were GET /pdf/extract_text and /pdf/find_tables,
+    # unmounted by database audit PG-13 (silver.pdf_text_blocks /
+    # pdf_table_cells are never created). Starting it only spawned an unused
+    # process pool in every worker. app.state.pdf_extract_service stays None.
+    app.state.pdf_extract_service = None
 
     # -------------------------------------------------------------------------
     # 12. §04p PDF Ingestion Subsystem — Stage 6 VL service (Phase 1.D)
@@ -871,53 +856,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     # -------------------------------------------------------------------------
-    # 12.5 CC-01 Item 5 — Assessment Report Summarizer
+    # 12.5 / 13. AssessmentSummarizer and PdfCoordinatesService — NOT started
+    # since 2026-09-29. Their only consumers (/assessment_summary/*,
+    # /completeness_audit/*, GET /pdf/find_coordinates) were unmounted by
+    # database audit PG-13: they read silver.pdf_text_blocks /
+    # silver.pdf_coordinates, which no migration creates.
     # -------------------------------------------------------------------------
-    # Composes pdf_vl_service. If VL didn't initialise, summarizer stays None
-    # and /assessment_summary/* returns 503 until VL recovers.
     app.state.assessment_summarizer = None
-    if app.state.pdf_vl_service is not None:
-        try:
-            from app.services.assessment_summarizer import AssessmentSummarizer  # noqa: PLC0415
-
-            app.state.assessment_summarizer = AssessmentSummarizer(
-                pool=pg_pool,
-                vl_service=app.state.pdf_vl_service,
-            )
-            logger.info("AssessmentSummarizer ready (CC-01 Item 5)")
-        except Exception:
-            logger.exception(
-                "CC-01 Item 5 AssessmentSummarizer init failed — "
-                "/assessment_summary/* will return 503."
-            )
-
-    # -------------------------------------------------------------------------
-    # 13. §04p PDF Ingestion Subsystem — Phase 2.A coordinate extraction
-    # -------------------------------------------------------------------------
-    # PdfCoordinatesService is async-native (asyncpg only — no process pool).
-    # Regex over a few KB of text per block is fast enough for the async event
-    # loop (typically < 1 ms per block).  No shutdown step required.
-    #
-    # Depends on silver.pdf_text_blocks being populated first (Phase 1.B).
-    # find_coordinates returns empty list + cache_hit=False when no text blocks
-    # are cached yet — this is expected before extract_text has run.
-    #
-    # Depends on silver.pdf_coordinates table being present (Phase 2.A migration).
-    # Returns 503 on all /pdf/find_coordinates calls until the table exists and
-    # the pool is available.
     app.state.pdf_coordinates_service = None
-    try:
-        from app.services.pdf_coordinates import PdfCoordinatesService  # noqa: PLC0415
-
-        app.state.pdf_coordinates_service = PdfCoordinatesService(pool=pg_pool)
-        logger.info(
-            "PDF coordinates service ready (§04p Phase 2.A — deterministic regex)"
-        )
-    except Exception:
-        logger.exception(
-            "§04p Phase 2.A coordinates service init failed — "
-            "/pdf/find_coordinates will return 503."
-        )
 
     # -------------------------------------------------------------------------
     # Plan §0e — retrieval-trace flush loop. Drains the in-process buffer
@@ -1291,10 +1237,13 @@ app.include_router(tier1_misc_router.k6_router)
 # were deleted in the reader-core trim. See admin_tier234.py's module
 # docstring. tier234_router.ap_router (Kestra channels) was already removed
 # 2026-05-17.
+# completeness_router — UNMOUNTED 2026-09-29 (database audit PG-13). It reads
+# silver.pdf_text_blocks / silver.pdf_coordinates, which no migration creates,
+# and had no caller. The module stays. /assessment_summary/* was removed
+# outright (API-14, above).
 app.include_router(maps_router.router)  # CC-01 Item 3 (stub) — map ingest scaffold
 app.include_router(coverage_router.router)  # CC-03 Item 5 — coverage density heatmap
 app.include_router(smdi_router.router)  # SMDI ingestion plan v1.1 Phase 6 — /public-geo/smdi/features
-app.include_router(completeness_router.router)  # CC-03 Item 2 — completeness audit
 app.include_router(tier234_router.backups_router)  # Phase H4 §11.1/§11.10 — backup / cold-tier ops
 
 # §19.3 Interpretation Workspace — notes / section-lines / target-zones / comments
