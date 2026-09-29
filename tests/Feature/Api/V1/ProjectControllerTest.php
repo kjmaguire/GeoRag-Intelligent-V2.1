@@ -266,6 +266,128 @@ class ProjectControllerTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Azimuth north reference (Kyle, 2026-09-29): true / magnetic / grid join
+    // BOH / TOH, and magnetic needs a declination (degrees, east positive).
+    // -------------------------------------------------------------------------
+
+    /**
+     * @return array<string, array{0: string, 1: float|null}>
+     */
+    public static function azimuthReferences(): array
+    {
+        return [
+            'grid north' => ['grid', null],
+            'true north' => ['true', null],
+            'magnetic north, east declination' => ['magnetic', 14.5],
+            'magnetic north, west declination' => ['magnetic', -17.0],
+        ];
+    }
+
+    #[DataProvider('azimuthReferences')]
+    public function test_store_accepts_an_azimuth_north_reference(string $reference, ?float $declination): void
+    {
+        $this->actingAsAdmin();
+
+        $payload = ['project_name' => "North {$reference}", 'orientation_reference' => $reference];
+        if ($declination !== null) {
+            $payload['magnetic_declination'] = $declination;
+        }
+
+        $this->postJson('/api/v1/projects', $payload)
+            ->assertCreated()
+            ->assertJsonPath('data.orientation_reference', $reference)
+            // Loose: JSON renders -17.0 as -17.
+            ->assertJson(['data' => ['magnetic_declination' => $declination]]);
+    }
+
+    public function test_store_requires_a_declination_for_magnetic_north(): void
+    {
+        $this->actingAsAdmin();
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Magnetic Without Declination',
+            'orientation_reference' => 'magnetic',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['magnetic_declination']);
+
+        $this->assertDatabaseMissing('projects', ['project_name' => 'Magnetic Without Declination']);
+    }
+
+    public function test_update_sets_magnetic_north_with_a_west_declination(): void
+    {
+        $project = Project::factory()->create(['orientation_reference' => 'BOH', 'magnetic_declination' => null]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", [
+            'orientation_reference' => 'magnetic',
+            'magnetic_declination' => '-17',
+        ])->assertOk()
+            ->assertJsonPath('data.orientation_reference', 'magnetic')
+            ->assertJsonPath('data.magnetic_declination', -17);
+
+        $project->refresh();
+        $this->assertSame('magnetic', $project->orientation_reference);
+        $this->assertSame(-17.0, $project->magnetic_declination);
+    }
+
+    public function test_update_refuses_magnetic_north_when_no_declination_is_stored_or_sent(): void
+    {
+        $project = Project::factory()->create(['orientation_reference' => 'BOH', 'magnetic_declination' => null]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['orientation_reference' => 'magnetic'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['magnetic_declination']);
+
+        $this->assertSame('BOH', $project->refresh()->orientation_reference);
+    }
+
+    public function test_update_to_magnetic_north_keeps_an_already_stored_declination(): void
+    {
+        $project = Project::factory()->create(['orientation_reference' => 'true', 'magnetic_declination' => 12.25]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['orientation_reference' => 'magnetic'])
+            ->assertOk()
+            ->assertJsonPath('data.magnetic_declination', 12.25);
+    }
+
+    public function test_update_refuses_clearing_the_declination_of_a_magnetic_project(): void
+    {
+        $project = Project::factory()->create(['orientation_reference' => 'magnetic', 'magnetic_declination' => 8.0]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        // The sheet's emptied box arrives as '' — "not recorded", never 0.
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['magnetic_declination' => ''])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['magnetic_declination']);
+
+        $this->assertSame(8.0, $project->refresh()->magnetic_declination);
+    }
+
+    public function test_update_clears_the_declination_to_null_not_zero(): void
+    {
+        $project = Project::factory()->create(['orientation_reference' => 'true', 'magnetic_declination' => 8.0]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['magnetic_declination' => ''])
+            ->assertOk()
+            ->assertJsonPath('data.magnetic_declination', null);
+
+        $this->assertNull($project->refresh()->magnetic_declination);
+    }
+
+    public function test_update_magnetic_check_runs_after_the_membership_gate(): void
+    {
+        // Not a member: the answer is the usual 404, not a declination error
+        // that would reveal anything about another tenant's project.
+        $project = Project::factory()->create(['orientation_reference' => 'BOH', 'magnetic_declination' => null]);
+
+        $this->patchJson("/api/v1/projects/{$project->project_id}", ['orientation_reference' => 'magnetic'])
+            ->assertNotFound();
+    }
+
+    // -------------------------------------------------------------------------
     // show
     // -------------------------------------------------------------------------
 

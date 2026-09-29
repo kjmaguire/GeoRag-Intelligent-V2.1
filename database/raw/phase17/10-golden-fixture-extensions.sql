@@ -34,7 +34,7 @@ UPDATE silver.projects
 INSERT INTO silver.collars (
     collar_id, hole_id, project_id, easting, northing, elevation,
     total_depth, hole_type, azimuth, dip, drill_date, status,
-    geom, geom_4326, hole_id_canonical, created_at, updated_at
+    geom_4326, hole_id_canonical, created_at, updated_at
 )
 SELECT
     gen_random_uuid()                                     AS collar_id,
@@ -49,7 +49,6 @@ SELECT
     c.dip,
     c.drill_date,
     c.status,
-    ST_SetSRID(ST_MakePoint(c.easting, c.northing), 32613) AS geom,
     ST_Transform(
         ST_SetSRID(ST_MakePoint(c.easting, c.northing), 32613),
         4326

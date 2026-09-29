@@ -6,6 +6,7 @@ namespace Tests\Feature\Foundry;
 
 use App\Models\Project;
 use App\Models\User;
+use App\Support\HoleId;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -65,12 +66,12 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
             "INSERT INTO silver.collars (
                 collar_id, hole_id, project_id, workspace_id,
                 easting, northing, elevation, total_depth, azimuth, dip,
-                hole_type, status, geom
+                hole_type, status, geom_4326
              ) VALUES (
                 ?::uuid, ?, ?::uuid, ?::uuid,
                 500000, 4500000, 1000, 150, 180, -60,
                 'DDH', 'completed',
-                ST_SetSRID(ST_MakePoint(500000, 4500000), 32613)
+                ST_Transform(ST_SetSRID(ST_MakePoint(500000, 4500000), 32613), 4326)
              )",
             [$collarId, $holeId, $project->project_id, $this->workspaceId],
         );
@@ -147,8 +148,11 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
 
         $props = $this->workspaceProps($user, $project);
 
-        $this->assertSame(['RS-001'], $props['log_hole_options'], 'only holes with a curve are listed, whatever its name');
-        $this->assertSame('RS-001', $props['log_hole_id']);
+        // The panel keys and labels holes by hole_id_canonical, which the
+        // database now always derives (trg_collars_hole_id_canonical, §04e
+        // 2026-09-29) — it used to be NULL for a collar written without one.
+        $this->assertSame(['RS001'], $props['log_hole_options'], 'only holes with a curve are listed, whatever its name');
+        $this->assertSame('RS001', $props['log_hole_id']);
         $this->assertCount(2, $props['log_tracks']);
     }
 
@@ -162,7 +166,7 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
 
         $props = $this->workspaceProps($user, $project);
 
-        $this->assertSame(['RS-001'], $props['log_hole_options']);
+        $this->assertSame(['RS001'], $props['log_hole_options']);
     }
 
     public function test_available_curves_list_every_curve_with_units_and_gamma_family_first(): void
@@ -323,12 +327,12 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
             "INSERT INTO silver.collars (
                 collar_id, hole_id, project_id, workspace_id,
                 easting, northing, elevation, total_depth, azimuth, dip,
-                hole_type, status, geom
+                hole_type, status, geom_4326
              )
              SELECT gen_random_uuid(), 'CAP-'||lpad(g::text, 4, '0'), ?::uuid, ?::uuid,
                     500000, 4500000, 1000, 150, 180, -60,
                     'DDH', 'completed',
-                    ST_SetSRID(ST_MakePoint(500000, 4500000), 32613)
+                    ST_Transform(ST_SetSRID(ST_MakePoint(500000, 4500000), 32613), 4326)
                FROM generate_series(1, 1001) AS g",
             [$project->project_id, $this->workspaceId],
         );
@@ -346,8 +350,11 @@ final class WorkspaceLogsAndLimitsTest extends TestCase
         $this->assertSame(['shown' => 1000, 'total' => 1001, 'truncated' => true], $props['truncation']['collars']);
         $this->assertSame(['shown' => 200, 'total' => 1001, 'truncated' => true], $props['truncation']['interval_holes']);
         $this->assertCount(200, $props['first_holes_intervals']);
+        // first_holes_intervals names holes by their canonical id (which
+        // the database always derives since §04e 2026-09-29); `collars`
+        // carries the stored spelling.
         $this->assertSame(
-            array_slice($holes, 0, 200),
+            array_map(HoleId::canonicalize(...), array_slice($holes, 0, 200)),
             array_column($props['first_holes_intervals'], 'hole_id'),
             'the 3D interval holes are a prefix of the returned collars',
         );

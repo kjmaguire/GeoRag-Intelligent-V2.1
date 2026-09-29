@@ -27,7 +27,7 @@ class SurveyStation:
 
     depth_m: float       # Downhole depth, metres, >= 0
     azimuth_deg: float   # Azimuth, degrees, 0–360 (north-up)
-    dip_deg: float       # Dip, degrees, DOWN-NEGATIVE convention (0 to -90)
+    dip_deg: float       # Dip, degrees, DOWN-NEGATIVE convention (-90..90; > 0 = up-hole)
 
 
 @dataclass(frozen=True)
@@ -50,10 +50,13 @@ def _deg2rad(deg: float) -> float:
 def _validate_stations(stations: list[SurveyStation]) -> None:
     """Raise ValueError for invalid station inputs."""
     for s in stations:
-        if s.dip_deg > 0:
+        # Up-holes (0 < dip <= 90) are real since 2026-09-29 (§04e): the
+        # direction cosines below are signed, so Z simply rises. Only a dip
+        # past vertical in either direction is impossible.
+        if s.dip_deg > 90:
             raise ValueError(
-                f"minimum_curvature: dip_deg {s.dip_deg} at depth {s.depth_m} m is > 0 "
-                f"(up-going). Normalize via _dip_convention.normalize_dip first."
+                f"minimum_curvature: dip_deg {s.dip_deg} at depth {s.depth_m} m is > 90 "
+                f"(past vertical-up, impossible). Check data."
             )
         if s.dip_deg < -90:
             raise ValueError(
@@ -79,7 +82,7 @@ def _direction_cosines(azimuth_rad: float, dip_rad: float) -> tuple[float, float
     Standard minimum-curvature formulation:
       N = cos(dip) * cos(az)
       E = cos(dip) * sin(az)
-      Z = sin(dip)          # negative for downward because dip < 0
+      Z = sin(dip)          # negative for downward because dip < 0; positive for an up-hole
     """
     cos_dip = math.cos(dip_rad)
     sin_dip = math.sin(dip_rad)
@@ -133,8 +136,9 @@ def minimum_curvature(
     Raises
     ------
     ValueError
-        If any dip is > 0 (up-going) or < -90 (impossible), or if stations
-        are not monotonically increasing in depth.
+        If any dip is outside -90..90 (past vertical), or if stations are not
+        monotonically increasing in depth. A positive dip is an up-hole and
+        is desurveyed upward.
 
     Notes
     -----

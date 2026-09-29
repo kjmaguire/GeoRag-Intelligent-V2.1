@@ -228,17 +228,17 @@ class TestWriteCollars:
         assert result["skipped"] == 1
 
     @pytest.mark.parametrize("td", [None, "", 0.0])
-    async def test_missing_total_depth_skips_the_row_never_zero(self, td) -> None:
+    async def test_missing_total_depth_is_null_never_zero(self, td) -> None:
         """ING-1: 0.0 violated chk_total_depth_positive and failed the batch.
 
-        total_depth is NOT NULL, so with no stored depth for the hole the
-        row is skipped (and reported) rather than written with a depth
+        total_depth is optional since 2026-09-29 (§04e, SME-approved): the
+        collar is WRITTEN, with NULL — not skipped, and not given a depth
         nobody measured.
         """
         conn = FakeConn()
         result = await self._write(conn, [collar(total_depth=td), collar(hole_id="EL-002")])
-        assert result == {"written": 1, "skipped": 1, "orphaned": 0}
-        assert [r[2] for r in conn.rows] == ["EL-002"]
+        assert result == {"written": 2, "skipped": 0, "orphaned": 0}
+        assert [(r[2], r[7]) for r in conn.rows] == [("EL-001", None), ("EL-002", 150.0)]
 
     async def test_zero_elevation_survives(self) -> None:
         """Distinguish "no value" from "the value is zero"."""
@@ -326,6 +326,19 @@ class TestWriteIntervals:
         conn = FakeConn()
         await self._write(conn, "survey", [{"hole_id": "EL001", "depth": 1}])
         assert conn.rows[0][5] is not None
+
+    async def test_survey_azimuth_reference_is_the_seventh_parameter(self) -> None:
+        # $7 of _SURVEY_SQL: the file's declared north, canonical or NULL.
+        # A spelling outside silver.surveys' CHECK must land as NULL rather
+        # than fail the whole executemany batch.
+        conn = FakeConn()
+        await self._write(conn, "survey", [
+            {"hole_id": "EL001", "depth": 10.0, "azimuth_reference": "True North"},
+            {"hole_id": "EL001", "depth": 20.0, "azimuth_reference": "magnetic"},
+            {"hole_id": "EL001", "depth": 30.0, "azimuth_reference": "UTM"},
+            {"hole_id": "EL001", "depth": 40.0},
+        ])
+        assert [r[6] for r in conn.rows] == ["true", "magnetic", None, None]
 
     async def test_lithology_row_shape(self) -> None:
         conn = FakeConn()

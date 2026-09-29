@@ -19,6 +19,7 @@ from typing import IO, Any, Union
 
 import polars as pl
 
+from georag_geoparsers._azimuth_reference import canonical_azimuth_reference
 from georag_geoparsers._csv_io import (
     DEFAULT_NULL_VALUES,
     detect_delimiter,
@@ -60,7 +61,7 @@ VALID_SURVEY_METHODS: frozenset = frozenset({"Reflex", "Gyro", "Magnetic", "Acid
 RANGE_CHECKS: dict = {
     "depth":   (0.0,   10_000.0),
     "azimuth": (0.0,   360.0),
-    "dip":     (-90.0, 0.0),
+    "dip":     (-90.0, 90.0),   # §04e 2026-09-29: a positive dip is an up-hole
 }
 
 # Warning / skip codes
@@ -139,8 +140,8 @@ def _validate_row(
     skip_entry includes extended diagnostic fields per Sprint 2 contract:
       expected, actual, suggestion.
 
-    An unrecognised optional ``survey_method`` is set to None and recorded in
-    *blanked*; it never rejects the station.
+    An unrecognised optional ``survey_method`` or ``azimuth_reference`` is set
+    to None and recorded in *blanked*; it never rejects the station.
     """
     # --- Required field presence ---
     for req in REQUIRED_FIELDS:
@@ -205,7 +206,7 @@ def _validate_row(
                 "actual": {field_name: val},
                 "suggestion": (
                     f"Check that '{field_name}' is in the expected unit. "
-                    f"Depth range [{lo}, {hi}] m; azimuth 0–360; dip -90–0."
+                    f"Depth range [{lo}, {hi}] m; azimuth 0–360; dip -90–90 (negative = down)."
                 ),
             }
 
@@ -222,6 +223,20 @@ def _validate_row(
                     blanked.add("survey_method", method)
             else:
                 record["survey_method"] = canonical
+
+    # --- Azimuth reference (optional): canonicalise, blank, never reject ---
+    # true / magnetic / grid, or None. An unreadable value is blanked and
+    # reported rather than read as grid: grid is the no-correction default,
+    # so guessing it would hide a declaration the file did make.
+    reference = record.get("azimuth_reference")
+    if reference is not None:
+        if not reference.strip():
+            record["azimuth_reference"] = None
+        else:
+            canonical_ref = canonical_azimuth_reference(reference)
+            record["azimuth_reference"] = canonical_ref
+            if canonical_ref is None and blanked is not None:
+                blanked.add("azimuth_reference", reference)
 
     # --- hole_id canonicalization ---
     record["hole_id_canonical"] = canonicalize(record.get("hole_id"))

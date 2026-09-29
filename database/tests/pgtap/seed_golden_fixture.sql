@@ -59,8 +59,10 @@ VALUES (
 )
 ON CONFLICT (project_id) DO NOTHING;
 
--- ── 2. Collars (3 rows, EPSG:32613 Points inside tile 3/1/2) ─────────────────
--- Collar geometry: EPSG:32613 Points
+-- ── 2. Collars (3 rows, EPSG:4326 Points inside tile 3/1/2) ──────────────────
+-- Source coordinates are EPSG:32613 easting/northing, transformed to 4326 for
+-- geom_4326 — the only collar geometry since the 32613 `geom` column was
+-- retired (2026_09_30_100000_drop_silver_collars_geom).
 -- lon=-110, lat=55  →  easting≈500000, northing≈6100000
 -- lon=-112, lat=55  →  easting≈328000, northing≈6100000
 -- lon=-108, lat=55  →  easting≈670000, northing≈6100000
@@ -85,7 +87,7 @@ INSERT INTO silver.collars (
     azimuth,
     dip,
     status,
-    geom
+    geom_4326
 )
 VALUES
 (
@@ -101,7 +103,7 @@ VALUES
     45.0,
     -60.0,
     'completed',
-    ST_SetSRID(ST_MakePoint(500000.0, 6100000.0), 32613)
+    ST_Transform(ST_SetSRID(ST_MakePoint(500000.0, 6100000.0), 32613), 4326)
 ),
 (
     'b0000002-0000-0000-0000-deadbeefcafe',
@@ -116,7 +118,7 @@ VALUES
     90.0,
     -55.0,
     'completed',
-    ST_SetSRID(ST_MakePoint(501500.0, 6100500.0), 32613)
+    ST_Transform(ST_SetSRID(ST_MakePoint(501500.0, 6100500.0), 32613), 4326)
 ),
 (
     'b0000003-0000-0000-0000-deadbeefcafe',
@@ -131,7 +133,7 @@ VALUES
     180.0,
     -70.0,
     'completed',
-    ST_SetSRID(ST_MakePoint(502500.0, 6101000.0), 32613)
+    ST_Transform(ST_SetSRID(ST_MakePoint(502500.0, 6101000.0), 32613), 4326)
 )
 ON CONFLICT (project_id, hole_id) DO NOTHING;
 

@@ -56,7 +56,9 @@ export function Borehole3DView({
     height?: number;
 }) {
     const { data, layout, caption } = useMemo(() => {
-        const valid = holes.filter((h) => h.easting !== null && h.northing !== null && h.total_depth !== null && h.bands.length > 0);
+        // total_depth is optional (§04e, 2026-09-29): a hole without one is
+        // still drawn, to its deepest band (`deepest` below, via extendTo).
+        const valid = holes.filter((h) => h.easting !== null && h.northing !== null && h.bands.length > 0);
         if (valid.length === 0) {
             return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, caption: '' };
         }

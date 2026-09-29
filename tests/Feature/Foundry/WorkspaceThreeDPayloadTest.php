@@ -87,12 +87,12 @@ final class WorkspaceThreeDPayloadTest extends TestCase
                 "INSERT INTO silver.collars (
                     collar_id, hole_id, project_id, workspace_id,
                     easting, northing, elevation, total_depth, azimuth, dip,
-                    hole_type, status, geom
+                    hole_type, status, geom_4326
                  ) VALUES (
                     ?::uuid, ?, ?::uuid, ?::uuid,
                     500000, 4500000, 1000, 150, 180, -60,
                     'DDH', 'completed',
-                    ST_SetSRID(ST_MakePoint(500000, 4500000), 32613)
+                    ST_Transform(ST_SetSRID(ST_MakePoint(500000, 4500000), 32613), 4326)
                  )",
                 [(string) Str::uuid(), 'W3D-'.$i, $project->project_id, $workspaceId],
             );
@@ -162,6 +162,49 @@ final class WorkspaceThreeDPayloadTest extends TestCase
                     }
 
                     return true;
+                },
+            )),
+        );
+    }
+
+    /**
+     * §04e (2026-09-29): up-holes are legal and lib/desurvey.ts now honours
+     * the sign of dip, so a station derived from a SANG curve (0 = vertical
+     * down, 90 = horizontal) must arrive in the silver convention — negative
+     * = down, dip = SANG - 90. It used to be 90 - SANG, which the
+     * integrator only drew downward because it ignored the sign; with the
+     * sign honoured every Cameco hole would have been drawn going UP.
+     */
+    public function test_sang_derived_stations_use_the_down_negative_convention(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars(1);
+        $collar = DB::table('silver.collars')->where('project_id', $project->project_id)->first();
+
+        foreach (['AZIMUTH' => '{180,181,182}', 'SANG' => '{0,10,30}'] as $name => $values) {
+            DB::statement(
+                "INSERT INTO silver.well_log_curves (
+                    curve_id, collar_id, workspace_id, curve_name, min_depth, max_depth,
+                    null_value, sample_count, depths, \"values\", created_at, updated_at
+                 ) VALUES (?::uuid, ?::uuid, ?::uuid, ?, 0, 20, -999.25, 3, '{0,10,20}', ?::float8[], NOW(), NOW())",
+                [(string) Str::uuid(), $collar->collar_id, $collar->workspace_id, $name, $values],
+            );
+        }
+
+        $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
+
+        $response->assertInertia(
+            fn (AssertableInertia $page) => $page->loadDeferredProps('viz3d', fn (AssertableInertia $reload) => $reload->where(
+                'surveys_3d',
+                function ($surveys): bool {
+                    $dips = [];
+                    foreach ($surveys as $s) {
+                        $s = (array) $s;
+                        // JSON-decoded by the Inertia assertion: -90.0 arrives as -90.
+                        $dips[(string) $s['depth']] = (float) $s['dip'];
+                    }
+                    ksort($dips);
+
+                    return $dips === ['0' => -90.0, '10' => -80.0, '20' => -60.0];
                 },
             )),
         );

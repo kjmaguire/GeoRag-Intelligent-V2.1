@@ -495,7 +495,7 @@ async def check_collars(conn: Any, project: Project) -> dict[str, Any]:
     base = await conn.fetchrow(
         """
         SELECT count(*) AS total,
-               count(*) FILTER (WHERE c.geom IS NULL) AS null_geom,
+               count(*) FILTER (WHERE c.geom_4326 IS NULL) AS null_geom,
                count(*) FILTER (WHERE c.hole_id_canonical IS NULL) AS null_hole_id_canonical
           FROM silver.collars c
          WHERE c.project_id = $1::uuid

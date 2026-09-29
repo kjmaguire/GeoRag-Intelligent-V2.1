@@ -87,6 +87,87 @@ describe('EditProjectSheet', () => {
             company: '',
             commodity: 'gold',
             region: 'WY',
+            // Unset on the fixture: the default, which declares no north.
+            orientation_reference: 'BOH',
+            magnetic_declination: '',
+        });
+    });
+
+    describe('azimuth reference (Kyle, 2026-09-29)', () => {
+        it('prefills the stored reference and declination', () => {
+            render(
+                <EditProjectSheet
+                    project={{ ...project, orientation_reference: 'magnetic', magnetic_declination: 14.5 }}
+                    open
+                    onOpenChange={() => {}}
+                />,
+            );
+            expect(screen.getByLabelText(/Azimuth reference/)).toHaveValue('magnetic');
+            expect(screen.getByLabelText(/Magnetic declination/)).toHaveValue('14.5');
+        });
+
+        it("shows a legacy 'grid_north' project as grid north", () => {
+            render(
+                <EditProjectSheet project={{ ...project, orientation_reference: 'grid_north' }} open onOpenChange={() => {}} />,
+            );
+            expect(screen.getByLabelText(/Azimuth reference/)).toHaveValue('grid');
+            // No declination box until it is needed.
+            expect(screen.queryByLabelText(/Magnetic declination/)).not.toBeInTheDocument();
+        });
+
+        it('PATCHes true north', async () => {
+            request.mockResolvedValue(respondWith(200, { data: project }));
+            const onOpenChange = vi.fn();
+            render(<EditProjectSheet project={project} open onOpenChange={onOpenChange} />);
+
+            fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'true' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+            await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+            const body = JSON.parse(request.mock.calls[0][0].data);
+            expect(body.orientation_reference).toBe('true');
+            expect(body.magnetic_declination).toBe('');
+        });
+
+        it('refuses magnetic north without a declination, locally, before any request', () => {
+            render(<EditProjectSheet project={project} open onOpenChange={() => {}} />);
+
+            fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'magnetic' } });
+
+            expect(screen.getByText('Magnetic north needs a declination (degrees, east positive).')).toBeInTheDocument();
+            const save = screen.getByRole('button', { name: 'Save changes' });
+            expect(save).toBeDisabled();
+            fireEvent.click(save);
+            expect(request).not.toHaveBeenCalled();
+        });
+
+        it('PATCHes magnetic north with a west (negative) declination', async () => {
+            request.mockResolvedValue(respondWith(200, { data: project }));
+            const onOpenChange = vi.fn();
+            render(<EditProjectSheet project={project} open onOpenChange={onOpenChange} />);
+
+            fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'magnetic' } });
+            fireEvent.change(screen.getByLabelText(/Magnetic declination/), { target: { value: '-17' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+            await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+            const body = JSON.parse(request.mock.calls[0][0].data);
+            expect(body.orientation_reference).toBe('magnetic');
+            expect(body.magnetic_declination).toBe('-17');
+        });
+
+        it('rejects a declination that is not a number of degrees', () => {
+            render(
+                <EditProjectSheet
+                    project={{ ...project, orientation_reference: 'magnetic', magnetic_declination: 10 }}
+                    open
+                    onOpenChange={() => {}}
+                />,
+            );
+            fireEvent.change(screen.getByLabelText(/Magnetic declination/), { target: { value: '14E' } });
+            expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+            fireEvent.change(screen.getByLabelText(/Magnetic declination/), { target: { value: '200' } });
+            expect(screen.getByText('Declination must be between -180 and 180 degrees.')).toBeInTheDocument();
         });
     });
 

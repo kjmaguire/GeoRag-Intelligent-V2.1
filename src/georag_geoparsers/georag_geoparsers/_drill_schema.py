@@ -103,6 +103,15 @@ SURVEY_ALIASES: dict[str, list[str]] = {
         "Inclination_From_Vertical", "Inc_From_Vertical", "Angle_From_Vertical",
     ],
     "survey_method": ["Method", "SurveyMethod", "Survey_Method", "Instrument", "Tool"],
+    # Which north the azimuths are measured from (Kyle, 2026-09-29). Values
+    # are read by _azimuth_reference.canonical_azimuth_reference; stored per
+    # station in silver.surveys.azimuth_reference and preferred over the
+    # project's orientation_reference at desurvey.
+    "azimuth_reference": [
+        "Azimuth_Ref", "Azimuth_Reference", "Az_Ref", "Az_Reference",
+        "Azi_Ref", "Azi_Reference", "North_Ref", "North_Reference",
+        "Reference_North", "Azimuth_North_Ref",
+    ],
 }
 
 LITHOLOGY_ALIASES: dict[str, list[str]] = {

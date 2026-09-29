@@ -33,8 +33,14 @@ class ProjectCreate(BaseModel):
     project_name: str = Field(..., min_length=1, max_length=255)
     crs_datum: str = Field(default="EPSG:32613", max_length=64)
     company: str = Field(..., min_length=1, max_length=255)
-    magnetic_declination: float = Field(default=0.0, ge=-180.0, le=180.0)
-    orientation_reference: Literal["BOH", "TOH"] = "BOH"
+    #: Degrees, EAST positive. None means "not recorded", which is not 0:
+    #: a magnetic azimuth reference with no declination is not corrected
+    #: (app/services/ingest/azimuth_reference.py).
+    magnetic_declination: float | None = Field(default=None, ge=-180.0, le=180.0)
+    #: BOH / TOH — the core-orientation mark — or, since Kyle's 2026-09-29
+    #: decision, the azimuth north reference the project's surveys use:
+    #: grid / true / magnetic (Laravel's Project::ORIENTATION_REFERENCES).
+    orientation_reference: Literal["BOH", "TOH", "grid", "true", "magnetic"] = "BOH"
     commodity: str = Field(..., min_length=1, max_length=128)
     region: str = Field(..., min_length=1, max_length=255)
 
@@ -48,6 +54,9 @@ class ProjectRead(ProjectCreate):
     """
 
     project_id: UUID
+    #: What is STORED, not what may be written: rows stamped 'grid_north' by
+    #: the pre-2026-09-29 ingestion stubs must still read back, not 500.
+    orientation_reference: str = "BOH"  # type: ignore[assignment]
     status: Literal["active", "indexing", "degraded", "archived"] = "active"
     slug: str
     created_at: datetime
@@ -67,10 +76,14 @@ class CollarCreate(BaseModel):
     easting: float
     northing: float
     elevation: float
-    total_depth: float = Field(..., gt=0.0)
+    # §04e (SME-approved, Kyle, 2026-09-29): total depth is optional — NULL
+    # when the source has no EOH value, never 0 — and positive when present.
+    total_depth: float | None = Field(default=None, gt=0.0)
     hole_type: Literal["Diamond", "RC", "RAB", "Rotary", "Percussion"]
     azimuth: float = Field(..., ge=0.0, le=360.0)
-    dip: float = Field(..., ge=-90.0, le=0.0)
+    # Dip from horizontal, negative = down; a positive dip is an up-hole
+    # (§04e, 2026-09-29), matching chk_dip_range (-90..90).
+    dip: float = Field(..., ge=-90.0, le=90.0)
     drill_date: date | None = None
     status: Literal["Active", "Completed", "Abandoned"] = "Active"
 
@@ -92,7 +105,7 @@ class SurveyCreate(BaseModel):
     collar_id: UUID
     depth: float = Field(..., ge=0.0)
     azimuth: float = Field(..., ge=0.0, le=360.0)
-    dip: float = Field(..., ge=-90.0, le=0.0)
+    dip: float = Field(..., ge=-90.0, le=90.0)  # > 0 = up-hole (§04e, 2026-09-29)
     survey_method: Literal["Reflex", "Gyro", "Magnetic", "Acid Test"]
 
 

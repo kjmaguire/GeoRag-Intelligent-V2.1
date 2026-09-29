@@ -6,6 +6,7 @@ namespace App\Http\Requests;
 
 use App\Models\Project;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreProjectRequest extends FormRequest
 {
@@ -63,9 +64,16 @@ class StoreProjectRequest extends FormRequest
             'company' => ['nullable', 'string', 'max:255'],
             'commodity' => ['nullable', 'string', 'max:50'],
             'region' => ['nullable', 'string', 'max:255'],
-            'magnetic_declination' => ['nullable', 'numeric', 'between:-180,180'],
+            // Degrees, EAST positive. Required when the project declares a
+            // magnetic azimuth reference: without it the correction cannot be
+            // applied, and a magnetic declaration that silently corrects
+            // nothing is the gap this field exists to close.
+            'magnetic_declination' => [
+                'nullable', 'numeric', 'between:-180,180',
+                'required_if:orientation_reference,'.Project::MAGNETIC_ORIENTATION_REFERENCE,
+            ],
             // Always present after prepareForValidation() — see there.
-            'orientation_reference' => ['required', 'string', 'in:BOH,TOH'],
+            'orientation_reference' => ['required', 'string', Rule::in(Project::ORIENTATION_REFERENCES)],
         ];
     }
 
@@ -81,12 +89,13 @@ class StoreProjectRequest extends FormRequest
      * stubs write it too (they wrote 'grid_north'). The column also has a
      * DB default of BOH (2026_09_29_210400).
      *
-     * Vocabulary: BOH / TOH is the core-orientation mark convention
-     * (bottom- / top-of-hole). 'grid_north', found on projects created by
-     * the LAS / cluster ingestion stubs before 2026-09-29, is a north
-     * reference, not an orientation mark — it carries no orientation
-     * information and nothing downstream applies this column (see
-     * UpdateProjectRequest). Those rows are left as they are.
+     * Vocabulary (Project::ORIENTATION_REFERENCES): BOH / TOH is the
+     * core-orientation mark convention (bottom- / top-of-hole) and declares
+     * no azimuth north; grid / true / magnetic declare which north the
+     * project's survey azimuths use, and desurvey corrects them (Kyle,
+     * 2026-09-29). 'grid_north', found on projects created by the LAS /
+     * cluster ingestion stubs before 2026-09-29, reads as grid downstream;
+     * those rows are left as they are.
      */
     protected function prepareForValidation(): void
     {
@@ -102,7 +111,8 @@ class StoreProjectRequest extends FormRequest
             'crs_epsg.min' => 'EPSG codes must be in the range 1024-32767.',
             'crs_epsg.max' => 'EPSG codes must be in the range 1024-32767.',
             'magnetic_declination.between' => 'Magnetic declination must be between -180 and 180 degrees.',
-            'orientation_reference.in' => 'Orientation reference must be BOH or TOH.',
+            'magnetic_declination.required_if' => 'Magnetic north needs a magnetic declination (degrees, east positive).',
+            'orientation_reference.in' => 'Orientation reference must be BOH, TOH, grid, true or magnetic.',
         ];
     }
 }

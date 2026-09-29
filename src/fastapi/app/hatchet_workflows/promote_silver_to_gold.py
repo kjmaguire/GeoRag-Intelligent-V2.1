@@ -125,6 +125,8 @@ import hashlib
 import json
 import logging
 import math
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import asyncpg
 from hatchet_sdk import ConcurrencyExpression, ConcurrencyLimitStrategy, Context
@@ -133,6 +135,7 @@ from pydantic import BaseModel, Field
 from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
+from app.services.collar_depth import EFFECTIVE_TOTAL_DEPTH_SQL
 
 log = logging.getLogger("georag.promote_silver_to_gold")
 
@@ -184,8 +187,13 @@ class PromoteSilverToGoldOutput(BaseModel):
     traces_skipped_no_geometry: int = 0
     #: Traces whose azimuths were corrected from a DECLARED reference (true or
     #: magnetic north, or another projected grid) to the collar's local UTM
-    #: grid. Zero unless silver.projects declares one (GIS-12).
+    #: grid. Zero unless silver.projects or silver.surveys declares one (GIS-12).
     traces_azimuth_corrected: int = 0
+    #: Traces whose azimuth reference was DECLARED (survey file or project)
+    #: but could not be applied — magnetic north with no
+    #: silver.projects.magnetic_declination. Built uncorrected; counted so the
+    #: gap is reported rather than hidden.
+    traces_azimuth_reference_unapplied: int = 0
     intervals_written: int = 0
     #: 'alteration' rows rebuilt this run (a subset of nothing above: they are
     #: rebuilt, not upserted, so the count is the project's whole set).
@@ -490,10 +498,12 @@ def _collar_local_utm(lon: float, lat: float) -> int:
     WHY THIS EXISTS
         The trace is metre offsets from the collar, so it has to be assembled
         in a projected CRS — but there is no column recording which one the
-        collar's easting/northing were surveyed in. `silver.collars.geom` is
-        no help: it is declared ``geometry(POINT, 32613)`` and every collar is
-        ST_Transform-ed into that zone on insert, so ``ST_SRID(geom)`` returns
-        32613 for a hole anywhere on earth.
+        collar's easting/northing were surveyed in. The old
+        `silver.collars.geom` was no help: it was declared
+        ``geometry(POINT, 32613)`` and every collar was ST_Transform-ed into
+        that zone on insert, so ``ST_SRID(geom)`` returned 32613 for a hole
+        anywhere on earth. It was retired 2026-09-29; geom_4326 is the only
+        collar geometry.
 
         v1 of this module read ``ST_SRID(c.geom)`` as the SOURCE srid and fed
         it the raw easting/northing. For Athabasca that is accidentally right.
@@ -572,13 +582,15 @@ def _straight_line_stations(
 
 
 def _clean_stations(
-    rows: list[asyncpg.Record],
+    rows: Sequence[Mapping[str, Any]],
 ) -> list[tuple[float, float, float]]:
     """Usable survey stations, deduplicated by depth and sorted.
 
-    Rejects the four cases the retired asset enumerated: a NULL azimuth or
-    dip, a dip above horizontal or past vertical, and a duplicate depth
-    (last row wins, matching "keep latest updated_at").
+    Rejects a NULL azimuth or dip, a dip past vertical in either direction
+    (outside -90..90), and a duplicate depth (last row wins, matching "keep
+    latest updated_at"). A dip above horizontal is NOT rejected any more: it
+    is an up-hole, stored as measured since 2026-09-29 (§04e, SME-approved),
+    and ``minimum_curvature`` desurveys it upward.
     """
     by_depth: dict[float, tuple[float, float, float]] = {}
     for r in rows:
@@ -586,7 +598,7 @@ def _clean_stations(
         dip = r["dip"]
         if az is None or dip is None:
             continue
-        if dip > 0 or dip < -90:
+        if dip > 90 or dip < -90:
             continue
         depth = float(r["depth"])
         by_depth[depth] = (depth, float(az), float(dip))
@@ -648,20 +660,24 @@ async def _promote_traces(
     # geom_4326 is transformed from the collar's real source CRS at insert,
     # so it is correct wherever the hole was surveyed. easting/northing are
     # raw numbers whose projection is not recorded anywhere on the row —
-    # reading them as though they were in ST_SRID(geom) is what put Alaskan
-    # traces 2,500 km east. See `_collar_local_utm`.
+    # reading them as though they were in ST_SRID(geom) (the retired 32613
+    # column) is what put Alaskan traces 2,500 km east. See
+    # `_collar_local_utm`.
     #
     # A collar with no geom_4326 is skipped rather than guessed at: without a
     # position there is nothing to hang metre offsets on.
-    # The azimuth reference the project DECLARES, if any (GIS-12). With none
-    # recognised, azimuths are taken as grid north of the collar's own UTM
-    # zone — the as-built default Kyle chose to keep (2026-09-29). See
-    # app/services/ingest/azimuth_reference.py.
+    #
+    # Azimuth reference (GIS-12; Kyle, 2026-09-29): a survey station's own
+    # silver.surveys.azimuth_reference (from the file) wins over the
+    # project's orientation_reference; with neither recognised, azimuths are
+    # taken as grid north of the collar's own UTM zone — the as-built
+    # default. See app/services/ingest/azimuth_reference.py.
     from app.services.ingest.azimuth_reference import (  # noqa: PLC0415
         apply as apply_azimuth_correction,
     )
     from app.services.ingest.azimuth_reference import (  # noqa: PLC0415
         azimuth_correction,
+        correct_survey_rows,
     )
 
     try:
@@ -677,10 +693,14 @@ async def _promote_traces(
     magnetic_declination = project_row["magnetic_declination"] if project_row else None
     project_epsg = project_row["crs_epsg"] if project_row else None
 
+    # total_depth is optional since 2026-09-29 (§04e): a collar without one
+    # traces its straight-line fallback to the deepest survey station or
+    # interval on record (app/services/collar_depth.py), not to 0 and not
+    # to nothing.
     collars = await conn.fetch(
-        """
+        f"""
         SELECT c.collar_id, c.elevation,
-               c.total_depth, c.azimuth, c.dip,
+               {EFFECTIVE_TOTAL_DEPTH_SQL} AS total_depth, c.azimuth, c.dip,
                ST_X(c.geom_4326) AS lon,
                ST_Y(c.geom_4326) AS lat,
                t.survey_hash AS existing_hash
@@ -693,12 +713,31 @@ async def _promote_traces(
     )
 
     for c in collars:
+        lon = float(c["lon"])
+        lat = float(c["lat"])
+        collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
+        local_epsg = _collar_local_utm(lon, lat)
+
         surveys = await conn.fetch(
-            "SELECT depth, azimuth, dip FROM silver.surveys "
+            "SELECT depth, azimuth, dip, azimuth_reference FROM silver.surveys "
             "WHERE collar_id = $1::uuid ORDER BY depth",
             c["collar_id"],
         )
-        stations = _clean_stations(surveys)
+        # Declared reference -> the local zone's grid, per STATION. Applied
+        # BEFORE cleaning and hashing, so declaring (or changing) a reference
+        # rebuilds the trace; with none declared the stations, and the hash,
+        # are unchanged.
+        corrected = correct_survey_rows(
+            surveys,
+            project_reference=orientation_reference,
+            magnetic_declination=magnetic_declination,
+            project_epsg=project_epsg,
+            local_epsg=local_epsg,
+            lon=lon, lat=lat,
+        )
+        stations = _clean_stations(corrected.rows)
+        azimuth_corrected = corrected.corrected
+        unapplied = list(corrected.unapplied_notes)
 
         quality = "ok"
         if len(stations) < 2:
@@ -713,28 +752,33 @@ async def _promote_traces(
             if fallback is None:
                 out.traces_skipped_no_geometry += 1
                 continue
-            stations = fallback
             quality = "single_survey_vertical"
-
-        lon = float(c["lon"])
-        lat = float(c["lat"])
-        collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
-
-        # Declared azimuth reference -> the local zone's grid (GIS-12). Applied
-        # BEFORE hashing, so declaring (or changing) a reference rebuilds the
-        # trace; with none declared the stations, and the hash, are unchanged.
-        correction = azimuth_correction(
-            orientation_reference=orientation_reference,
-            magnetic_declination=magnetic_declination,
-            project_epsg=project_epsg,
-            local_epsg=_collar_local_utm(lon, lat),
-            lon=lon, lat=lat,
-        )
-        if correction.degrees:
+            # The collar azimuth comes from the collar table, not a survey
+            # file, so only the project's declaration applies to it.
+            correction = azimuth_correction(
+                orientation_reference=orientation_reference,
+                magnetic_declination=magnetic_declination,
+                project_epsg=project_epsg,
+                local_epsg=local_epsg,
+                lon=lon, lat=lat,
+            )
+            azimuth_corrected = bool(correction.degrees)
+            unapplied = [correction.note] if correction.note else []
             stations = [
-                (d, apply_azimuth_correction(a, correction), p) for d, a, p in stations
+                (d, apply_azimuth_correction(a, correction), p) for d, a, p in fallback
             ]
+
+        if azimuth_corrected:
             out.traces_azimuth_corrected += 1
+        if unapplied:
+            # Declared but not applied (magnetic with no project declination):
+            # the trace is still built, uncorrected, and the gap is counted
+            # so it reaches the run report instead of being smoothed away.
+            out.traces_azimuth_reference_unapplied += 1
+            log.warning(
+                "promote.traces: azimuth reference not applied collar=%s (%s)",
+                c["collar_id"], "; ".join(unapplied),
+            )
 
         # Hashed BEFORE the skip test, and over the collar origin as well as
         # the stations — a collar that moves must invalidate its own trace.

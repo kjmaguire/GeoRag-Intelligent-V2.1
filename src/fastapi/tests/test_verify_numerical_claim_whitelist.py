@@ -118,7 +118,7 @@ async def test_geometry_column_blocked():
     result = await verify_numerical_claim(
         ctx,
         table="silver.collars",
-        column="geom",
+        column="geom_4326",
         row_id="00000000-0000-0000-0000-000000000001",
         claimed_value=0.0,
     )

@@ -34,8 +34,9 @@ A collar is placed only from, in order:
      alone. The refusal is not a loss: callers that hold the file keep it and
      attach it when the collar is written (services/ingest/las_pending.py).
 
-The geom is constructed at insert time via PostGIS ST_MakePoint +
-ST_Transform (to 32613 for `geom`, 4326 for the mirror column).
+The geometry is constructed at insert time via PostGIS ST_MakePoint +
+ST_Transform, straight from the source CRS to EPSG:4326 (`geom_4326`, the
+only collar geometry since the 32613 `geom` column was retired 2026-09-29).
 """
 from __future__ import annotations
 
@@ -59,8 +60,9 @@ from georag_geoparsers.las_parser import (
 
 log = logging.getLogger("georag.ingest.las")
 
-#: silver.collars.geom is geometry(Point, 32613) — see the create migration.
-COLLAR_GEOM_SRID = 32613
+#: silver.collars.geom_4326 is geometry(Point, 4326) — the only collar
+#: geometry (the 32613 `geom` column was retired 2026-09-29, §04e).
+COLLAR_GEOM_SRID = 4326
 
 #: ~WELL mnemonics that carry a location. Deliberately not "E" / "N" / "LOC":
 #: LOC is free text, not a coordinate, and single letters collide with other
@@ -222,6 +224,7 @@ def _within_crs_area(epsg: int, x: float, y: float) -> bool:
 
 
 def _to_collar_srid(epsg: int, x: float, y: float) -> tuple[float, float]:
+    """(lon, lat) in the collar geometry's SRID (4326), axis order x/y."""
     from pyproj import Transformer  # noqa: PLC0415
 
     e, n = Transformer.from_crs(
@@ -286,7 +289,7 @@ async def _placement_from_header(
             # the source gave them" on every path, geom_4326 is the truth).
             e, n = _to_collar_srid(epsg, lon, lat)
             if not (math.isfinite(e) and math.isfinite(n)):
-                notes.append("the position does not transform to a projected coordinate")
+                notes.append("the position does not transform to WGS84 (EPSG:4326)")
             else:
                 warning = None
                 if not declared:
@@ -496,14 +499,15 @@ async def _create_collar(
     project_id: str,
     hole_id: str,
     placement: _Placement,
-    total_depth: float,
+    total_depth: float | None,
     drill_date: date | None,
     workspace_id: str,
 ) -> str:
     """Insert a `silver.collars` row at an already-justified placement.
 
-    Idempotent on (project_id, hole_id): a concurrent writer that got there
-    first wins and its collar_id is returned, untouched.
+    Idempotent on (project_id, hole_id_canonical) — the collar key since
+    2026-09-29 (§04e): a concurrent writer that got there first, under any
+    spelling of the hole id, wins and its collar_id is returned, untouched.
     """
     hole_id_canonical = _canonical_hole_id(hole_id)
     row = await conn.fetchrow(
@@ -511,13 +515,13 @@ async def _create_collar(
         INSERT INTO silver.collars
             (collar_id, hole_id, hole_id_canonical, project_id, easting, northing, total_depth,
              hole_type, status, drill_date, georef_method,
-             geom, geom_4326, workspace_id, created_at, updated_at)
+             geom_4326, workspace_id, created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3::uuid, $4, $5, $6,
                 'exploration', 'active', $7, $8,
-                ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 32613),
                 ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 4326),
                 $12::uuid, NOW(), NOW())
-        ON CONFLICT (project_id, hole_id) DO UPDATE SET updated_at = silver.collars.updated_at
+        ON CONFLICT (project_id, hole_id_canonical) WHERE hole_id_canonical IS NOT NULL
+        DO UPDATE SET updated_at = silver.collars.updated_at
         RETURNING collar_id::text AS collar_id
         """,
         hole_id, hole_id_canonical, project_id, placement.easting, placement.northing,
@@ -698,15 +702,18 @@ async def ingest_las_file(
         # Not .get(): lasio's SectionItems.get() fabricates a HeaderItem for
         # a missing key instead of returning the default.
         stop_item = las.well["STOP"] if "STOP" in las.well else None  # noqa: SIM401
-        total_depth = float(stop_item.value) if stop_item is not None else 0.0
+        stop_value = float(stop_item.value) if stop_item is not None else None
         stop_factor = (
             unit_to_metres_factor(stop_item.unit) if stop_item is not None else None
         )
-        total_depth *= stop_factor if stop_factor is not None else depth_unit.factor
+        total_depth: float | None = (
+            stop_value * (stop_factor if stop_factor is not None else depth_unit.factor)
+            if stop_value is not None else None
+        )
     except (TypeError, ValueError):
         # Reported below as las_invalid_stop_depth, with the file name.
         log.debug("las_ingester.stop_not_numeric file=%s", p.name)
-        total_depth = 0.0
+        total_depth = None
     drill_date = _parse_las_date(date_str)
 
     # Project name — derive from company + field if both present, else fallback
@@ -725,25 +732,26 @@ async def ingest_las_file(
             workspace_id=workspace_id,
         )
 
-    if total_depth <= 0:
-        # Was a bare skip that the archive only counted. The file name is
-        # what a geologist needs to go and fix the header.
-        stop_raw = las.well["STOP"].value if "STOP" in las.well else None
-        detail = (
-            f"{p.name}: well {hole_id!r} has STOP = {stop_raw!r} in its ~WELL "
-            "section (the bottom depth), which is not a positive depth, so the "
-            "file was skipped and none of its curves were loaded. Correct STOP "
-            "and upload it again."
-        )
-        log.warning("las_ingester.invalid_stop file=%s well=%s stop=%r", p.name, hole_id, stop_raw)
-        return LASIngestResult(
-            file_path=las_path, hole_id=hole_id, project_id=project_id, collar_id=None,
-            curves_inserted=0, skipped=True,
-            skipped_reason="invalid_total_depth",
-            warnings=[{"code": "las_invalid_stop_depth", "detail": detail}],
-        )
-
     warnings: list[dict[str, str]] = []
+    if total_depth is None or total_depth <= 0:
+        # total_depth is optional since 2026-09-29 (§04e, SME-approved): a
+        # missing or non-positive STOP no longer costs the file its curves.
+        # The collar (if this file creates it) is stored with NULL total
+        # depth — never 0 — and the warning names the file so the header
+        # can still be fixed.
+        stop_raw = las.well["STOP"].value if "STOP" in las.well else None
+        warnings.append({
+            "code": "las_invalid_stop_depth",
+            "detail": (
+                f"{p.name}: well {hole_id!r} has STOP = {stop_raw!r} in its ~WELL "
+                "section (the bottom depth), which is not a positive depth. The "
+                "curves were loaded; the hole has no total depth from this file. "
+                "Correct STOP and upload it again to record one."
+            ),
+        })
+        log.warning("las_ingester.invalid_stop file=%s well=%s stop=%r", p.name, hole_id, stop_raw)
+        total_depth = None
+
     unit_warning = las_depth_unit_warning(depth_unit, file_name=p.name, well=hole_id)
     if unit_warning is not None:
         warnings.append({"code": unit_warning["code"], "detail": unit_warning["detail"]})

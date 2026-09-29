@@ -59,28 +59,28 @@ ON CONFLICT (project_id) DO UPDATE
 INSERT INTO silver.collars (
     collar_id, hole_id, project_id, workspace_id,
     easting, northing, elevation, total_depth, hole_type, azimuth, dip, status,
-    geom, created_at, updated_at
+    geom_4326, created_at, updated_at
 ) VALUES
     ('c0000001-aaaa-4aaa-8aaa-000000000001', 'MER-001', 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', '11111111-aaaa-4aaa-8aaa-111111111111',
      500000, 5900000, 1010, 152.4, 'DD', 45,  -60, 'completed',
-     ST_SetSRID(ST_MakePoint(500000, 5900000), 32613), NOW(), NOW()),
+     ST_Transform(ST_SetSRID(ST_MakePoint(500000, 5900000), 32613), 4326), NOW(), NOW()),
     ('c0000002-bbbb-4bbb-8bbb-000000000002', 'CAS-001', 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb', '22222222-bbbb-4bbb-8bbb-222222222222',
      500100, 5900000, 1012, 168.0, 'DD', 90,  -55, 'completed',
-     ST_SetSRID(ST_MakePoint(500100, 5900000), 32613), NOW(), NOW()),
+     ST_Transform(ST_SetSRID(ST_MakePoint(500100, 5900000), 32613), 4326), NOW(), NOW()),
     ('c0000003-aaaa-4aaa-8aaa-000000000003', 'MER-002', 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', '11111111-aaaa-4aaa-8aaa-111111111111',
      500200, 5900000, 1008, 201.5, 'DD', 135, -70, 'completed',
-     ST_SetSRID(ST_MakePoint(500200, 5900000), 32613), NOW(), NOW()),
+     ST_Transform(ST_SetSRID(ST_MakePoint(500200, 5900000), 32613), 4326), NOW(), NOW()),
     ('c0000004-bbbb-4bbb-8bbb-000000000004', 'CAS-002', 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb', '22222222-bbbb-4bbb-8bbb-222222222222',
      500300, 5900000, 1015, 96.0,  'RC', 180, -50, 'completed',
-     ST_SetSRID(ST_MakePoint(500300, 5900000), 32613), NOW(), NOW()),
+     ST_Transform(ST_SetSRID(ST_MakePoint(500300, 5900000), 32613), 4326), NOW(), NOW()),
     ('c0000005-aaaa-4aaa-8aaa-000000000005', 'MER-003', 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', '11111111-aaaa-4aaa-8aaa-111111111111',
      500400, 5900000, 1004, 143.2, 'RC', 225, -65, 'completed',
-     ST_SetSRID(ST_MakePoint(500400, 5900000), 32613), NOW(), NOW()),
+     ST_Transform(ST_SetSRID(ST_MakePoint(500400, 5900000), 32613), 4326), NOW(), NOW()),
     ('c0000006-bbbb-4bbb-8bbb-000000000006', 'CAS-003', 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb', '22222222-bbbb-4bbb-8bbb-222222222222',
      500500, 5900000, 1018, 187.6, 'DD', 270, -80, 'completed',
-     ST_SetSRID(ST_MakePoint(500500, 5900000), 32613), NOW(), NOW())
+     ST_Transform(ST_SetSRID(ST_MakePoint(500500, 5900000), 32613), 4326), NOW(), NOW())
 ON CONFLICT (collar_id) DO UPDATE SET
-    easting = EXCLUDED.easting, northing = EXCLUDED.northing, geom = EXCLUDED.geom,
+    easting = EXCLUDED.easting, northing = EXCLUDED.northing, geom_4326 = EXCLUDED.geom_4326,
     updated_at = NOW();
 
 COMMIT;

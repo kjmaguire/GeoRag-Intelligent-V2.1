@@ -93,18 +93,18 @@ because the value is draped from a DEM later.
 
 easting/northing are interpreted in the owning project's CRS
 (``silver.projects.crs_epsg``, defaulting to EPSG:32613 / UTM Zone 13N
-when unset) and transformed to EPSG:32613 for ``silver.collars.geom``
-— mirrors how ``las_ingester`` / ``cameco_log_ingester`` populate the
-same column. Coordinate range checks are chosen per file from the
+when unset) and transformed straight to EPSG:4326 for
+``silver.collars.geom_4326`` — mirrors how ``las_ingester`` /
+``cameco_log_ingester`` populate the same column (the 32613 ``geom`` twin
+was retired 2026-09-29). Coordinate range checks are chosen per file from the
 values (degrees vs a projected grid) rather than assuming UTM. dip sign
 convention (down-positive vs down-negative) is auto-detected across
 the file and normalised to the DB's down-negative convention
-(``dip BETWEEN -90 AND 0``). total_depth is technically optional in
-the CSV (many collar-only exports omit it) but ``silver.collars`` has
-a ``NOT NULL`` + ``total_depth > 0`` constraint, so a missing/invalid
-value is floored to 0.01 m rather than dropping the row — the same
-precedent ``cameco_log_ingester.upsert_collar_from_log`` uses for
-depth-less ``.log`` headers.
+(``dip BETWEEN -90 AND 90``: negative = down, and since 2026-09-29 a
+positive dip in a down-negative file is an up-hole, stored as measured).
+total_depth is optional (§04e, SME-approved 2026-09-29): many
+collar-only exports omit it, and a missing or non-positive value is
+stored as NULL — never 0, and no longer floored to an invented 0.01 m.
 
 Rows failing required-field presence, numeric casting, or range
 checks are skipped — logged + counted, never aborting the file. Rows
@@ -179,9 +179,6 @@ _CODE_RANGE = "range_check_failed"
 _CODE_COORD_FAMILY_CONFLICT = "coordinate_family_conflict"
 
 _DEFAULT_CRS_EPSG = 32613  # UTM Zone 13N — same project default as las_ingester.
-# Mirrors cameco_log_ingester.upsert_collar_from_log's 0.01 m floor: better
-# than dropping a collar-only CSV row entirely when total_depth is absent.
-_TOTAL_DEPTH_FLOOR_M = 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -506,8 +503,8 @@ async def _upsert_collar(
 ) -> str:
     """Insert-or-update one `silver.collars` row from a validated CSV record.
 
-    Conflict target mirrors las_ingester / cameco_log_ingester's
-    (project_id, hole_id) unique constraint. georef_method='declared'
+    Conflict target is the canonical hole id (§04e, 2026-09-29), shared
+    with every collar writer. georef_method='declared'
     lets the `trg_derive_collar_spatial_uncertainty` trigger (Strategy B,
     2026-07-02) auto-populate spatial_uncertainty_m — a CSV-declared
     coordinate is exactly the 'declared' case the trigger models.
@@ -515,8 +512,8 @@ async def _upsert_collar(
     hole_id = record["hole_id"]
     hole_id_canonical = record.get("hole_id_canonical") or canonicalize(hole_id)
     total_depth = record.get("total_depth")
-    if not total_depth or total_depth <= 0:
-        total_depth = _TOTAL_DEPTH_FLOOR_M
+    if total_depth is None or total_depth <= 0:
+        total_depth = None   # optional (§04e): NULL, never 0 or 0.01
 
     row = await conn.fetchrow(
         """
@@ -524,28 +521,27 @@ async def _upsert_collar(
             (collar_id, hole_id, hole_id_canonical, project_id, workspace_id,
              easting, northing, elevation, total_depth, hole_type, status,
              azimuth, dip, drill_date, georef_method,
-             geom, geom_4326, created_at, updated_at)
+             geom_4326, created_at, updated_at)
         VALUES (
             gen_random_uuid(), $1, $2, $3::uuid, $4::uuid,
             $5, $6, $7, $8, $9, $10,
             $11, $12, $13, 'declared',
-            ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $14::int), 32613),
             ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $14::int), 4326),
             NOW(), NOW()
         )
-        ON CONFLICT (project_id, hole_id) DO UPDATE SET
+        ON CONFLICT (project_id, hole_id_canonical) WHERE hole_id_canonical IS NOT NULL
+        DO UPDATE SET
             hole_id_canonical = EXCLUDED.hole_id_canonical,
             easting            = EXCLUDED.easting,
             northing           = EXCLUDED.northing,
             elevation          = EXCLUDED.elevation,
-            total_depth        = EXCLUDED.total_depth,
+            total_depth        = COALESCE(EXCLUDED.total_depth, silver.collars.total_depth),
             hole_type          = EXCLUDED.hole_type,
             status             = EXCLUDED.status,
             azimuth            = EXCLUDED.azimuth,
             dip                = EXCLUDED.dip,
             drill_date         = EXCLUDED.drill_date,
             georef_method      = EXCLUDED.georef_method,
-            geom               = EXCLUDED.geom,
             geom_4326          = EXCLUDED.geom_4326,
             updated_at         = NOW()
         RETURNING collar_id::text AS collar_id

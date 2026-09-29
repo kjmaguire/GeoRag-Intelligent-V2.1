@@ -10,6 +10,7 @@ use App\Http\Resources\CollarResource;
 use App\Models\Collar;
 use App\Models\Project;
 use App\Support\AuthorizationAuditLogger;
+use App\Support\HoleId;
 use App\Support\PaginationLimit;
 use App\Support\SafeErrorMessage;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -48,7 +49,7 @@ class CollarController extends Controller
             $project = Project::findOrFail($projectId);
 
             $query = Collar::withCount(['surveys', 'samples'])
-                ->selectRaw('*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude')
+                ->selectRaw('*, ST_X(geom_4326) AS longitude, ST_Y(geom_4326) AS latitude')
                 ->where('project_id', $project->project_id);
 
             if ($request->filled('hole_type')) {
@@ -102,6 +103,9 @@ class CollarController extends Controller
 
             $data = array_merge($request->validated(), [
                 'project_id' => $project->project_id,
+                // The database derives it too (trg_collars_hole_id_canonical);
+                // set here so the model and any non-Postgres test DB agree.
+                'hole_id_canonical' => HoleId::canonicalize((string) $request->validated('hole_id')),
             ]);
 
             $collar = Collar::create($data);
@@ -158,7 +162,7 @@ class CollarController extends Controller
                 'wellLogCurves',
             ])
                 ->withCount(['surveys', 'samples'])
-                ->selectRaw('*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude')
+                ->selectRaw('*, ST_X(geom_4326) AS longitude, ST_Y(geom_4326) AS latitude')
                 ->where('project_id', $projectId)
                 ->findOrFail($collarId);
 

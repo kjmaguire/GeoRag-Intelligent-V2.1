@@ -107,13 +107,13 @@ columns:
   - {name: azimuth,     type: FLOAT,   null: true}
   - {name: dip,         type: FLOAT,   null: true}
   - {name: drill_date,  type: DATE,    null: true}
-  - {name: geom,        type: GEOMETRY(Point, 32613), null: true, gist_index: idx_collars_geom}
+  - {name: geom_4326,   type: GEOMETRY(Point, 4326),  null: true, gist_index: idx_collars_geom_4326}  # geom (32613) retired 2026-09-29
   - {name: spatial_uncertainty_m, type: NUMERIC(8,2), null: true}
   - {name: data_version,type: BIGINT,  null: false, default: 1}
   - {name: created_at,  type: TIMESTAMPTZ, null: false, default: clock_timestamp()}
   - {name: updated_at,  type: TIMESTAMPTZ, null: false, default: clock_timestamp()}
 indexes:
-  - {name: idx_collars_geom, kind: GIST, cols: (geom)}
+  - {name: idx_collars_geom_4326, kind: GIST, cols: (geom_4326)}
   - {name: silver_collars_project_hole_key, kind: UNIQUE, cols: (project_id, hole_id)}
   - {name: silver_collars_workspace_idx, kind: BTREE, cols: (workspace_id, project_id)}
 constraints:

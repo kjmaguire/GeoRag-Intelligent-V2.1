@@ -216,6 +216,46 @@ class TestSurveyStations:
         assert collars[0]["hole_id"] == stations[0]["hole_id"] == "TR002"
 
 
+class TestTraceDipConvention:
+    """§04e 2026-09-29: up-holes are stored, so the file's sign convention matters.
+
+    Positive dips used to be blanked on the collar and dropped by the trace
+    builder, which hid a down-positive export. Now the trace path runs the
+    same per-file heuristic as the collar/survey parsers.
+    """
+
+    def _run(self, rows):
+        from app.hatchet_workflows.ingest_tabular import _normalize_trace_dips
+
+        mapped = _discover_trace_columns(TRACE_COLUMNS)
+        collars = _collapse_discover_traces(rows, mapped)
+        stations = _trace_survey_stations(rows, mapped)
+        warnings = _normalize_trace_dips(rows, mapped, collars, stations, label="t.DAT")
+        return collars, stations, warnings
+
+    def test_a_down_positive_export_is_flipped(self) -> None:
+        rows = [_row(f"DH{i}", d, dip=60.0) for i in range(3) for d in (0.0, 50.0)]
+        collars, stations, warnings = self._run(rows)
+        assert {c["dip"] for c in collars} == {-60.0}
+        assert {s["dip"] for s in stations} == {-60.0}
+        assert [w["code"] for w in warnings] == ["dip_convention_normalized"]
+        assert warnings[0]["message"].startswith("t.DAT: ")
+
+    def test_an_up_hole_in_a_down_negative_export_is_kept(self) -> None:
+        rows = [_row(f"DH{i}", d, dip=-60.0) for i in range(5) for d in (0.0, 50.0)]
+        rows += [_row("UP1", 0.0, dip=25.0), _row("UP1", 20.0, dip=25.0)]
+        collars, stations, warnings = self._run(rows)
+        assert next(c for c in collars if c["hole_id"] == "UP1")["dip"] == 25.0
+        assert {s["dip"] for s in stations if s["hole_id"] == "UP1"} == {25.0}
+        assert warnings == []
+
+    def test_horizontal_trenches_are_untouched(self) -> None:
+        rows = [_row("TR002", 0.0), _row("TR002", 61.5)]
+        collars, stations, warnings = self._run(rows)
+        assert {s["dip"] for s in stations} == {0.0}
+        assert warnings == []
+
+
 @pytest.mark.skipif(not REAL_TRACE.exists(), reason="RedStar delivery not present")
 class TestAgainstTheRealDelivery:
     """Sitka_trD.DAT: five trenches, ten segments.

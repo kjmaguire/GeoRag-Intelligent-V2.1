@@ -7,8 +7,11 @@ namespace App\Providers;
 use App\Models\User;
 use App\Policies\DashboardPolicy;
 use App\Policies\WorkflowTriggerPolicy;
+use App\Services\Collars\CanonicalHoleIdIndex;
 use App\Support\Http\PooledHttpClient;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Database\Events\MigrationsEnded;
+use Illuminate\Database\Events\NoPendingMigrations;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Request;
 use Illuminate\Log\Events\MessageLogged;
@@ -164,6 +167,31 @@ class AppServiceProvider extends ServiceProvider
                 // perturb the request that triggered the audit log.
             }
         });
+
+        // ── UNIQUE (project_id, hole_id_canonical) on silver.collars ──
+        //
+        // §04e (SME-approved, 2026-09-29). Migration 2026_09_29_230300 skips
+        // the index — without failing the deploy — while ghost collars exist.
+        // Every later `php artisan migrate` retries it here, so "merge the
+        // duplicates, re-run migrate" is the whole recovery. Both events fire
+        // inside Migrator::usingConnection(), so the default connection is
+        // the one being migrated (pgsql_migrations in production). Only
+        // `up` runs; a rollback must not rebuild what it is removing.
+        Event::listen(
+            [MigrationsEnded::class, NoPendingMigrations::class],
+            static function (MigrationsEnded|NoPendingMigrations $event): void {
+                if ($event->method !== 'up' || DB::connection()->getDriverName() !== 'pgsql') {
+                    return;
+                }
+                try {
+                    app(CanonicalHoleIdIndex::class)->ensure(DB::getDefaultConnection());
+                } catch (\Throwable $e) {
+                    // Never fail `migrate` over an index the data does not
+                    // allow yet; the warning is the signal.
+                    Log::warning('collars canonical index check failed: '.$e->getMessage());
+                }
+            },
+        );
 
         // ── project_user pivot boot guard (A1-01) ───────────────────
         //

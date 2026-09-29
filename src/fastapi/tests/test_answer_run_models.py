@@ -218,9 +218,23 @@ def test_citation_lifecycle_state_alias_is_literal() -> None:
 
 
 def test_citation_mode_alias_is_literal() -> None:
-    """CitationMode is a Literal type alias for the mode values."""
+    """CitationMode is a Literal with ONE value (§04e, SME-approved 2026-09-29)."""
     args = typing.get_args(CitationMode)
-    assert set(args) == {"posthoc_span_resolution", "hybrid_delayed_attachment"}
+    assert set(args) == {"posthoc_span_resolution"}
+
+
+def test_retired_citation_mode_is_rejected() -> None:
+    """hybrid_delayed_attachment was never written; the model refuses it now."""
+    from pydantic import ValidationError
+
+    from app.models.answer_run import AnswerRunUpdate
+
+    assert AnswerRunUpdate(citation_mode="posthoc_span_resolution").citation_mode == (
+        "posthoc_span_resolution"
+    )
+    assert AnswerRunUpdate(citation_mode=None).citation_mode is None
+    with pytest.raises(ValidationError):
+        AnswerRunUpdate(citation_mode="hybrid_delayed_attachment")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

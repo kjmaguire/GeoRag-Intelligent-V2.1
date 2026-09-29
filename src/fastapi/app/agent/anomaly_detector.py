@@ -97,7 +97,10 @@ def _assay_anomalies(result: AssayDataResult) -> list[str]:
 def _depth_anomalies(result: SpatialQueryResult) -> list[str]:
     """Detect holes significantly deeper/shallower than the project average."""
     insights = []
-    depths = [c.total_depth for c in result.collars]
+    # total_depth is optional (§04e, 2026-09-29): a collar without one is
+    # neither an anomaly nor part of the mean.
+    measured = [c for c in result.collars if c.total_depth is not None]
+    depths = [float(c.total_depth) for c in measured if c.total_depth is not None]
     if len(depths) < 3:
         return insights
 
@@ -108,12 +111,13 @@ def _depth_anomalies(result: SpatialQueryResult) -> list[str]:
     if std == 0:
         return insights
 
-    for collar in result.collars:
-        sigma = abs(collar.total_depth - mean) / std
+    for collar in measured:
+        td = float(collar.total_depth or 0.0)
+        sigma = abs(td - mean) / std
         if sigma > 2.0:
-            direction = "deeper" if collar.total_depth > mean else "shallower"
+            direction = "deeper" if td > mean else "shallower"
             insights.append(
-                f"Depth anomaly: {collar.hole_id} is {collar.total_depth:.0f} m TD — "
+                f"Depth anomaly: {collar.hole_id} is {td:.0f} m TD — "
                 f"{sigma:.1f}σ {direction} than the project average of {mean:.0f} m. "
                 f"Consider whether this reflects geological targets at depth or "
                 f"operational constraints."

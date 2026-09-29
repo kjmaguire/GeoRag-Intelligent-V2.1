@@ -44,10 +44,25 @@ class Project extends Model
     /**
      * orientation_reference when nobody says otherwise — what the New
      * Project form, FastAPI's Project model and the ingestion stubs all
-     * write, and the column's DB default. Vocabulary: BOH | TOH (core
-     * orientation mark); see StoreProjectRequest::prepareForValidation().
+     * write, and the column's DB default. See
+     * StoreProjectRequest::prepareForValidation().
      */
     public const DEFAULT_ORIENTATION_REFERENCE = 'BOH';
+
+    /**
+     * Every value a request may write to orientation_reference.
+     *
+     * BOH / TOH are the core-orientation mark (bottom / top of hole) and
+     * declare no azimuth north, so desurvey applies no correction. grid /
+     * true / magnetic (Kyle, 2026-09-29) declare which north the project's
+     * survey azimuths are measured from; promote_silver_to_gold converts them
+     * to the collar's local grid (FastAPI app/services/ingest/azimuth_reference.py).
+     * A survey file's own azimuth-reference column wins over this per station.
+     */
+    public const ORIENTATION_REFERENCES = ['BOH', 'TOH', 'grid', 'true', 'magnetic'];
+
+    /** The subset of ORIENTATION_REFERENCES that needs magnetic_declination. */
+    public const MAGNETIC_ORIENTATION_REFERENCE = 'magnetic';
 
     protected $table = 'silver.projects';
 

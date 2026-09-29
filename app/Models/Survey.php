@@ -29,6 +29,10 @@ class Survey extends Model
         'azimuth',
         'dip',
         'survey_method',
+        // Which north this station's azimuth is measured from, as the survey
+        // file declared it: 'true' | 'magnetic' | 'grid', or null. Preferred
+        // over the project's orientation_reference at desurvey (2026-09-29).
+        'azimuth_reference',
     ];
 
     protected $casts = [

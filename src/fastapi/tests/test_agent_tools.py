@@ -137,7 +137,7 @@ class TestQuerySpatialCollars:
             "dip": -60.0,
             "status": "Completed",
             "drill_date": "2023-06-15",
-            # lon/lat columns are added by tools.py via ST_Transform(geom, 4326)
+            # lon/lat columns are added by tools.py via ST_X/ST_Y(geom_4326)
             # for the MapLibre client; mocked rows have to supply them too.
             "longitude": -106.5,
             "latitude": 52.1,

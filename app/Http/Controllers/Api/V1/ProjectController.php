@@ -222,7 +222,26 @@ class ProjectController extends Controller
 
         try {
             $project = Project::findOrFail($projectId);
-            $project->update($request->validated());
+            $validated = $request->validated();
+
+            // A magnetic azimuth reference is only applied with a declination
+            // (FastAPI azimuth_reference.py); judged on the merged state so a
+            // PATCH that only switches the reference is fine when one is
+            // already stored. After the membership gate, never before it.
+            $reference = $validated['orientation_reference'] ?? $project->orientation_reference;
+            $declination = array_key_exists('magnetic_declination', $validated)
+                ? $validated['magnetic_declination']
+                : $project->magnetic_declination;
+            if ($reference === Project::MAGNETIC_ORIENTATION_REFERENCE && $declination === null) {
+                return response()->json([
+                    'message' => 'Magnetic north needs a magnetic declination (degrees, east positive).',
+                    'errors' => [
+                        'magnetic_declination' => ['Magnetic north needs a magnetic declination (degrees, east positive).'],
+                    ],
+                ], 422);
+            }
+
+            $project->update($validated);
             $project->loadCount('collars');
 
             // Phase 3 — broadcast workspace activity. Project rename / region

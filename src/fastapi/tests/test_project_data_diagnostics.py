@@ -546,7 +546,7 @@ class TestAttributeTables:
 
 def _collar_rules(**over: Any) -> list[tuple[Any, Any]]:
     rules: dict[str, Any] = {
-        "count(*) FILTER (WHERE c.geom IS NULL)": {"total": 10, "null_geom": 3, "null_hole_id_canonical": 2},
+        "count(*) FILTER (WHERE c.geom_4326 IS NULL)": {"total": 10, "null_geom": 3, "null_hole_id_canonical": 2},
         "COALESCE(c.georef_method": [
             {"georef_method": "declared", "n": 6},
             {"georef_method": "(null)", "n": 3},

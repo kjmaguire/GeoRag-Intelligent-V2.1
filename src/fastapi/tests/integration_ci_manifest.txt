@@ -91,8 +91,10 @@ tests/test_usage_events_write_integration.py
 # throughout, because a recording fake accepts any SQL. It surfaced only
 # when the chain was run against Postgres with RedStar's EPSG:26904.
 #
-# This module covers the three claims that need a live database: the geom
-# SRID conforms, a survey station resolves to the collar written moments
+# (That column was retired 2026-09-29; the writer now sets geom_4326 alone.)
+#
+# This module covers the three claims that need a live database: the collar
+# lands in the right place, a survey station resolves to the collar written moments
 # earlier (an orphan is COUNTED, not raised), and a re-ingest REPLACES
 # stations rather than doubling them.
 tests/test_discover_trace_write_integration.py
@@ -101,6 +103,10 @@ tests/test_discover_trace_write_integration.py
 # a batch failure leaves nothing half-written, a second sheet in one run
 # appends, and a separator variant updates the existing collar.
 tests/test_ingest_constraint_rows_integration.py
+# §04e schema decisions (SME-approved 2026-09-29): up-holes traced upward,
+# NULL total depth traced to the deepest interval, the database-derived
+# canonical hole id and the canonical-key upsert.
+tests/test_sme_schema_decisions_integration.py
 
 # ── Agent spatial SQL (2026-09-29 database audit PG-11) ───────────────
 # Planner SQL is built at runtime from SPATIAL_TARGETS, so only a PREPARE

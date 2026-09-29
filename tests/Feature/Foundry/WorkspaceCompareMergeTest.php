@@ -88,12 +88,12 @@ final class WorkspaceCompareMergeTest extends TestCase
                 "INSERT INTO silver.collars (
                     collar_id, hole_id, project_id, workspace_id,
                     easting, northing, elevation, total_depth, azimuth, dip,
-                    hole_type, status, geom
+                    hole_type, status, geom_4326
                  ) VALUES (
                     ?::uuid, ?, ?::uuid, ?::uuid,
                     500000, 4500000, 1000, 150, 180, -60,
                     'DDH', 'completed',
-                    ST_SetSRID(ST_MakePoint(500000, 4500000), 32613)
+                    ST_Transform(ST_SetSRID(ST_MakePoint(500000, 4500000), 32613), 4326)
                  )",
                 [$collarId, $holeId, $projectId, $workspaceId],
             );
@@ -102,12 +102,12 @@ final class WorkspaceCompareMergeTest extends TestCase
                 "INSERT INTO silver.collars (
                     collar_id, hole_id, project_id,
                     easting, northing, elevation, total_depth, azimuth, dip,
-                    hole_type, status, geom
+                    hole_type, status, geom_4326
                  ) VALUES (
                     ?::uuid, ?, ?::uuid,
                     500000, 4500000, 1000, 150, 180, -60,
                     'DDH', 'completed',
-                    ST_SetSRID(ST_MakePoint(500000, 4500000), 32613)
+                    ST_Transform(ST_SetSRID(ST_MakePoint(500000, 4500000), 32613), 4326)
                  )",
                 [$collarId, $holeId, $projectId],
             );
@@ -184,7 +184,9 @@ final class WorkspaceCompareMergeTest extends TestCase
             ->getJson('/projects/'.$project->slug.'/holes/HC-LEFT/payload');
 
         $response->assertStatus(200);
-        $response->assertJsonPath('hole_id', 'HC-LEFT');
+        // Answered with the canonical id, which the database always derives
+        // since §04e (2026-09-29); the requested spelling still resolves.
+        $response->assertJsonPath('hole_id', 'HCLEFT');
     }
 
     /**

@@ -25,9 +25,10 @@ class CollarResource extends JsonResource
             'drill_date' => $this->drill_date?->toDateString(),
             'status' => $this->status,
 
-            // WGS84 lon/lat derived from PostGIS geometry via ST_Transform.
-            // These are pre-computed in the controller query via selectRaw so they
-            // arrive as attributes; fall back to null if geom is absent.
+            // WGS84 lon/lat read straight off silver.collars.geom_4326 (the
+            // only collar geometry since the SRID-32613 `geom` was retired
+            // 2026-09-29). Pre-computed in the controller query via selectRaw
+            // so they arrive as attributes; null when geom_4326 is absent.
             'longitude' => isset($this->longitude) ? (float) $this->longitude : null,
             'latitude' => isset($this->latitude) ? (float) $this->latitude : null,
 
@@ -67,6 +68,8 @@ class CollarResource extends JsonResource
                 // shows the geologist what the file actually said instead of
                 // a blank where 'desurveyed_trace' was.
                 'survey_method' => $s->getRawOriginal('survey_method'),
+                // The file's declared north for this azimuth, or null.
+                'azimuth_reference' => $s->azimuth_reference,
             ]),
             ),
             'lithology_logs' => $this->whenLoaded('lithologyLogs', fn () => $this->lithologyLogs->map(fn ($l) => [

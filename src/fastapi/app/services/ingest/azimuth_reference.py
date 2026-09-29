@@ -7,38 +7,47 @@ carries the meridian convergence as an error (2.5-2.7 degrees at 58-64 N,
 ~20 m over a 500 m hole); a magnetic one carries the whole declination
 (often 5-15 degrees in this domain).
 
-Kyle's decision (2026-09-29): the DEFAULT is unchanged — no convergence or
+Kyle's decisions (2026-09-29): the DEFAULT is unchanged — no convergence or
 declination is applied — unless the data DECLARES its azimuth reference.
-As built, the only declaration there is to read is project-level:
+Two declarations are read, most specific first:
 
-* ``silver.projects.orientation_reference`` — a varchar(10) whose values in
-  practice are 'BOH'/'TOH' (the core-orientation mark: bottom/top of hole,
-  which is NOT an azimuth reference and is ignored here), 'grid_north'
-  (stamped by the LAS ingester) and, from the factory, 'grid'/'true'.
-  Recognised here: true / true_north / tn; magnetic / magnetic_north / mag /
-  mn; grid / grid_north / gn.
-* ``silver.projects.magnetic_declination`` — degrees, east positive.
-  Required for a magnetic reference; without it nothing is applied.
+1. ``silver.surveys.azimuth_reference`` — per station, populated from an
+   azimuth-reference column in the survey file (``Azimuth_Ref``,
+   ``Az_Reference``, ``North_Ref`` ...). CHECK-constrained to
+   true / magnetic / grid; NULL when the file had no such column.
+2. ``silver.projects.orientation_reference`` — the project default, set in
+   the project settings. BOH / TOH (the core-orientation mark: bottom/top of
+   hole, NOT an azimuth reference) declare nothing; grid / true / magnetic
+   do; legacy 'grid_north' (the LAS ingester's old stamp) reads as grid.
 
-Survey files carry no per-row reference column in silver.surveys, so a
-per-file declaration would need a schema change (Kyle).
+``silver.projects.magnetic_declination`` — degrees, EAST POSITIVE — is
+required for a magnetic reference (from either source); without it nothing
+is applied and the trace is counted as ``traces_azimuth_reference_unapplied``
+so the gap is visible rather than smoothed away.
+
+The collar's own azimuth (a hole with fewer than two survey stations) comes
+from the collar table, not a survey file, so only the project default
+applies to it.
 
 As-built assumption, stated plainly: with no recognised reference, azimuths
 are taken as grid north of the collar's own UTM zone. For a project whose
 CRS is that zone (the common case) that is exactly grid north of the
 project grid; for true-north surveys it is wrong by the convergence.
+
+Spellings live in ``georag_geoparsers._azimuth_reference`` — the parser that
+fills silver.surveys.azimuth_reference reads through the same function.
 """
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Any
+
+from georag_geoparsers._azimuth_reference import canonical_azimuth_reference
 
 logger = logging.getLogger(__name__)
-
-_TRUE = frozenset({"true", "true_north", "truenorth", "tn"})
-_MAGNETIC = frozenset({"magnetic", "magnetic_north", "magneticnorth", "mag", "mn"})
-_GRID = frozenset({"grid", "grid_north", "gridnorth", "gn"})
 
 #: Northward step used to measure the direction of true north in a grid.
 _STEP_DEG = 1e-4
@@ -56,14 +65,7 @@ class AzimuthCorrection:
 
 
 def _reference_kind(raw: str | None) -> str:
-    token = (raw or "").strip().lower().replace(" ", "_").replace("-", "_")
-    if token in _TRUE:
-        return "true"
-    if token in _MAGNETIC:
-        return "magnetic"
-    if token in _GRID:
-        return "grid"
-    return "none"
+    return canonical_azimuth_reference(raw) or "none"
 
 
 def true_north_bearing_in_grid(epsg: int, lon: float, lat: float) -> float:
@@ -109,6 +111,7 @@ def azimuth_correction(
                 0.0, "magnetic",
                 note="magnetic reference declared without a declination; not applied",
             )
+        # true = magnetic + declination (east positive); then true -> grid.
         return AzimuthCorrection(float(magnetic_declination) + local_true, "magnetic")
 
     # Grid north of the PROJECT grid. Only differs from the collar's local
@@ -129,3 +132,62 @@ def apply(azimuth: float, correction: AzimuthCorrection) -> float:
     if correction.degrees == 0.0:
         return azimuth
     return (azimuth + correction.degrees) % 360.0
+
+
+@dataclass
+class StationCorrections:
+    """Survey rows with azimuths in the collar's local grid, and what was done."""
+
+    rows: list[dict[str, Any]]
+    #: Any station's azimuth was actually changed.
+    corrected: bool = False
+    #: A reference was declared (file or project) but could not be applied —
+    #: magnetic with no project declination. Surfaced, never guessed.
+    unapplied_notes: list[str] = field(default_factory=list)
+    #: Which source declared each distinct reference used: 'survey' | 'project'.
+    sources: set[str] = field(default_factory=set)
+
+
+def correct_survey_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    project_reference: str | None,
+    magnetic_declination: float | None,
+    project_epsg: int | None,
+    local_epsg: int,
+    lon: float,
+    lat: float,
+) -> StationCorrections:
+    """Apply each station's DECLARED reference, the survey's own first.
+
+    A row's ``azimuth_reference`` (silver.surveys, from the file) wins over
+    *project_reference*; with neither recognised the azimuth is untouched.
+    Rows keep every other key, so the result feeds ``_clean_stations``
+    unchanged. A NULL azimuth stays NULL (it is dropped there).
+    """
+    cache: dict[str, AzimuthCorrection] = {}
+    out = StationCorrections(rows=[])
+    for row in rows:
+        own = canonical_azimuth_reference(row.get("azimuth_reference"))
+        reference = own or project_reference
+        new_row = dict(row)
+        azimuth = row.get("azimuth")
+        if azimuth is not None and _reference_kind(reference) != "none":
+            key = _reference_kind(reference)
+            if key not in cache:
+                cache[key] = azimuth_correction(
+                    orientation_reference=key,
+                    magnetic_declination=magnetic_declination,
+                    project_epsg=project_epsg,
+                    local_epsg=local_epsg,
+                    lon=lon, lat=lat,
+                )
+            corr = cache[key]
+            out.sources.add("survey" if own else "project")
+            if corr.degrees:
+                new_row["azimuth"] = apply(float(azimuth), corr)
+                out.corrected = True
+            elif corr.note and corr.note not in out.unapplied_notes:
+                out.unapplied_notes.append(corr.note)
+        out.rows.append(new_row)
+    return out

@@ -569,6 +569,16 @@ class TestMdbReachesTheTypedTables:
 # ---------------------------------------------------------------------------
 
 class TestRoutingHelpers:
+    @pytest.mark.parametrize(("raw", "expected"), [
+        ("Trench", "channel"), ("trench channel", "channel"), ("C", "channel"),
+        ("S", "soil"), ("mystery", "other"), ("", "other"),
+    ])
+    def test_surface_sample_types(self, raw: str, expected: str) -> None:
+        """§04e, SME-approved 2026-09-29: a trench sample is a channel sample."""
+        from app.hatchet_workflows.ingest_tabular import _sample_type_of
+
+        assert _sample_type_of(raw) == expected
+
     def test_columns_are_the_union_over_rows_in_first_seen_order(self) -> None:
         from app.hatchet_workflows.ingest_tabular import _table_columns
 

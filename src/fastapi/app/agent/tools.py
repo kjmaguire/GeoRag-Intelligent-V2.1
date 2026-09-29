@@ -275,13 +275,10 @@ class CollarRecord:
     orchestrator can build GeoJSON map payloads without duplicating projection
     logic. They are nullable because pre-M2 rows may not have valid geometries.
 
-    easting / northing are the source-grid columns, NOT ``ST_X/ST_Y(geom)``.
-    ``geom`` is declared ``geometry(POINT, 32613)`` and every collar is
-    transformed into that SRID at insert so a non-Athabasca project can be
-    written at all, which means ``ST_X(geom)`` is not the easting the file
-    supplied unless the project happens to be UTM 13N. The columns hold the
-    untouched values, and the agent is instructed to cite these numerics
-    verbatim.
+    easting / northing are the source-grid columns: the untouched values the
+    file supplied, in whatever CRS it used. The only collar geometry is
+    ``geom_4326`` (the SRID-32613 ``geom`` twin was retired 2026-09-29), and
+    the agent is instructed to cite these numerics verbatim.
     """
 
     hole_id: str
@@ -289,9 +286,12 @@ class CollarRecord:
     easting: float
     northing: float
     elevation: float
-    total_depth: float
+    #: None when the collar records no total depth — the column is optional
+    #: since 2026-09-29 (§04e, SME-approved). Never read as 0.
+    total_depth: float | None
     hole_type: str
     azimuth: float
+    #: Degrees from horizontal, negative = down; positive = up-hole (§04e).
     dip: float
     status: str
     drill_date: str | None
@@ -910,11 +910,10 @@ async def query_spatial_collars(
 
     sql = (
         "SELECT collar_id::text, hole_id, project_id::text, "
-        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
-        # declared 32613 and every collar is transformed into it at insert,
-        # so for a non-Athabasca project ST_X(geom) is not the easting the
-        # file supplied. The columns hold the untouched source values, and
-        # the agent is instructed to cite returned numerics verbatim.
+        # easting/northing from the COLUMNS: they hold the untouched source
+        # values (the only geometry is geom_4326, lon/lat; the 32613 `geom`
+        # twin was retired 2026-09-29), and the agent is instructed to cite
+        # returned numerics verbatim.
         "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, "
         "drill_date::text, "
@@ -1163,11 +1162,10 @@ async def query_downhole_logs(
     # pinned to this single hole.
     collar_sql = (
         "SELECT collar_id::text, hole_id, project_id::text, "
-        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
-        # declared 32613 and every collar is transformed into it at insert,
-        # so for a non-Athabasca project ST_X(geom) is not the easting the
-        # file supplied. The columns hold the untouched source values, and
-        # the agent is instructed to cite returned numerics verbatim.
+        # easting/northing from the COLUMNS: they hold the untouched source
+        # values (the only geometry is geom_4326, lon/lat; the 32613 `geom`
+        # twin was retired 2026-09-29), and the agent is instructed to cite
+        # returned numerics verbatim.
         "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, drill_date::text, "
         "ST_X(geom_4326) AS longitude, "
@@ -1379,11 +1377,10 @@ async def query_collar_details(
     norm_hole_sql_c2 = _hole_norm_sql("c2.hole_id")
     collar_sql = (
         "SELECT collar_id::text, hole_id, hole_id_canonical, project_id::text, "
-        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
-        # declared 32613 and every collar is transformed into it at insert,
-        # so for a non-Athabasca project ST_X(geom) is not the easting the
-        # file supplied. The columns hold the untouched source values, and
-        # the agent is instructed to cite returned numerics verbatim.
+        # easting/northing from the COLUMNS: they hold the untouched source
+        # values (the only geometry is geom_4326, lon/lat; the 32613 `geom`
+        # twin was retired 2026-09-29), and the agent is instructed to cite
+        # returned numerics verbatim.
         "easting, northing, elevation, "
         "total_depth, drill_type, hole_type, azimuth, dip, "
         "drill_date::text, geologist, match_priority "
@@ -3788,8 +3785,7 @@ async def query_coverage_gap(
     # data on this collar) so it can colour-code green / red / partial.
     #
     # The geometry source is silver.collars.geom_4326 — the WGS84
-    # column that pre-existed the §6b work; the SRID=32613 raw `geom`
-    # column is UTM-specific and not suitable for GeoJSON.
+    # column and, since 2026-09-29, the only collar geometry.
     def _collar_geojson_sql(selected: set[str] | None) -> str:
         """Build the per-collar coverage SQL, including only the EXISTS
         subqueries for attributes the caller asked about. When dimensions
@@ -4318,7 +4314,8 @@ class DrillTraceCollar:
     longitude: float
     latitude: float
     elevation: float
-    total_depth: float
+    #: None when the collar records no total depth (§04e, 2026-09-29).
+    total_depth: float | None
     hole_type: str
     status: str
     azimuth: float
@@ -4500,7 +4497,7 @@ async def query_drill_traces_3d(
             c.hole_type                                         AS hole_type,
             c.status                                            AS status,
             COALESCE(c.elevation, 0.0)::float                   AS elevation,
-            COALESCE(c.total_depth, 0.0)::float                 AS total_depth,
+            c.total_depth::float                                AS total_depth,
             COALESCE(c.azimuth, 0.0)::float                     AS azimuth,
             COALESCE(c.dip, -90.0)::float                       AS dip,
             ST_X(c.geom_4326)::float                            AS longitude,
@@ -4567,7 +4564,10 @@ async def query_drill_traces_3d(
         lon = float(r["longitude"])
         lat = float(r["latitude"])
         elev = float(r["elevation"]) if r.get("elevation") is not None else 0.0
-        td = float(r["total_depth"]) if r.get("total_depth") is not None else 0.0
+        # None when the collar has no total depth (§04e, 2026-09-29): the
+        # stored trace (if any) is drawn as-is, and the placeholder below
+        # collapses to the collar point rather than inventing a length.
+        td = float(r["total_depth"]) if r.get("total_depth") is not None else None
         az = float(r["azimuth"]) if r.get("azimuth") is not None else 0.0
         dip = float(r["dip"]) if r.get("dip") is not None else -90.0
 
@@ -4585,9 +4585,10 @@ async def query_drill_traces_3d(
             # Fallback when silver.drill_traces has no row for this
             # collar (e.g. unusable orientation). Emit a 2-point vertical
             # placeholder so the card still renders the hole position.
+            placeholder_td = td or 0.0
             trace_points = [
                 {"x": lon, "y": lat, "z": elev, "depth_m": 0.0},
-                {"x": lon, "y": lat, "z": elev - td, "depth_m": td},
+                {"x": lon, "y": lat, "z": elev - placeholder_td, "depth_m": placeholder_td},
             ]
 
         collars.append(DrillTraceCollar(

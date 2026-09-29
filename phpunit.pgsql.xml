@@ -74,6 +74,13 @@
             -->
             <file>tests/Feature/Api/V1/CollarControllerTest.php</file>
             <file>tests/Feature/Api/V1/CollarCrudTest.php</file>
+            <!-- §04e 2026-09-29: UNIQUE (project_id, hole_id_canonical), the
+                 deriving trigger, and collars:merge-duplicates — real indexes,
+                 triggers and FKs, so Postgres only. -->
+            <file>tests/Feature/Console/MergeDuplicateCollarsCommandTest.php</file>
+            <!-- §04e 2026-09-29: total_depth is nullable; the citation card
+                 must not print a NULL as "0.0 m TD". -->
+            <file>tests/Feature/Services/CollarsResolverTotalDepthTest.php</file>
             <!-- Phase 3 / Step 3.2 — context envelope validation tests.
                  Uses RefreshDatabase + Project::factory(), so it runs
                  against PG (the silver.* migrations don't work on SQLite). -->

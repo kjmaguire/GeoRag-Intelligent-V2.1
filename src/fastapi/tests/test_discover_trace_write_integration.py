@@ -6,7 +6,8 @@ WHY THIS FILE EXISTS
 
     A recording fake accepts any SQL, so `silver.collars.geom` being
     declared ``geometry(POINT, 32613)`` went unnoticed: _COLLAR_SQL handed
-    PostGIS the project's SOURCE srid, and PostGIS refuses anything else --
+    PostGIS the project's SOURCE srid, and PostGIS refused anything else
+    (the column was retired 2026-09-29; geom_4326 is the only one now) --
 
         InvalidParameterValueError: Geometry SRID (26904) does not match
         column SRID (32613)
@@ -175,24 +176,23 @@ async def test_collars_write_at_a_non_athabasca_srid(scoped_project) -> None:
 async def test_the_map_position_is_alaska_not_saskatchewan(scoped_project) -> None:
     """geom_4326 is what the map draws, and it must survive the transform.
 
-    Conforming `geom` to the column's declared SRID must not drag the
-    geographic position with it — geom_4326 is transformed from the SOURCE
-    srid, so it stays exact.
+    geom_4326 is transformed from the SOURCE srid, so it stays exact.
     """
     fx = scoped_project
     shape = _discover_trace_columns(TRACE_COLUMNS)
     await _ingest(fx, SYNTHETIC_ROWS, shape)
 
     row = await fx.conn.fetchrow(
-        "SELECT ST_X(geom_4326) lon, ST_Y(geom_4326) lat, ST_SRID(geom) srid, "
-        "       easting, northing "
+        "SELECT ST_X(geom_4326) lon, ST_Y(geom_4326) lat, "
+        "       ST_SRID(geom_4326) srid, easting, northing "
         "FROM silver.collars WHERE project_id = $1::uuid AND hole_id = $2",
         fx.project_id, "TR002-Sitka",
     )
     # Unga Island, Alaska — where Apollo-Sitka is.
     assert -161.0 < row["lon"] < -160.0, f"lon {row['lon']} is not Alaska"
     assert 55.0 < row["lat"] < 55.5, f"lat {row['lat']} is not Alaska"
-    # The source values are kept untouched; only `geom` is reprojected.
+    assert row["srid"] == 4326
+    # The source values are kept untouched; only geom_4326 is reprojected.
     assert row["easting"] == pytest.approx(400807.0)
     assert row["northing"] == pytest.approx(6117291.0)
 

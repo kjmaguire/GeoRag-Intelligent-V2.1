@@ -56,10 +56,13 @@ final class CollarsResolver extends AbstractCitationResolver
             'source_chunk_id' => $sourceId,
             'title' => "Drill Collar: {$collar->hole_id}",
             'text' => sprintf(
-                '%s — %s, %s m TD, Status: %s, Drilled: %s',
+                '%s — %s, %s, Status: %s, Drilled: %s',
                 $collar->hole_id,
                 $collar->hole_type,
-                number_format((float) $collar->total_depth, 1),
+                // Optional since 2026-09-29 (§04e): never "0.0 m TD".
+                $collar->total_depth !== null
+                    ? number_format((float) $collar->total_depth, 1).' m TD'
+                    : 'TD not recorded',
                 $collar->status,
                 $collar->drill_date ?? 'unknown',
             ),

@@ -113,7 +113,7 @@ def _build_context(
                     f"  - hole_id={collar.hole_id}, "
                     f"easting={collar.easting}, northing={collar.northing}, "
                     f"elevation={collar.elevation}, "
-                    f"total_depth={collar.total_depth}, "
+                    f"total_depth={collar.total_depth if collar.total_depth is not None else 'not recorded'}, "
                     f"hole_type={collar.hole_type}, "
                     f"status={collar.status}, "
                     f"drill_date={collar.drill_date}"
@@ -233,8 +233,13 @@ def _build_context(
                 collar = result.collar
                 record_lines.append(
                     f"Downhole lithology log for {collar.hole_id} "
-                    f"({collar.hole_type}, {collar.total_depth} m TD, "
-                    f"status={collar.status}):"
+                    f"({collar.hole_type}, "
+                    + (
+                        f"{collar.total_depth} m TD, "
+                        if collar.total_depth is not None
+                        else "TD not recorded, "
+                    )
+                    + f"status={collar.status}):"
                 )
                 for iv in result.intervals:
                     thickness = iv.to_depth - iv.from_depth

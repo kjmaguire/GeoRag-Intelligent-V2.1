@@ -8,7 +8,15 @@ import {
     SheetHeader,
     SheetTitle,
 } from '@/Components/ui/sheet';
-import { COMMODITIES, Field, inputStyle } from '@/Components/Foundry/projectFormFields';
+import {
+    AzimuthReferenceFields,
+    COMMODITIES,
+    declinationError,
+    Field,
+    inputStyle,
+    normaliseOrientationReference,
+    type OrientationReference,
+} from '@/Components/Foundry/projectFormFields';
 
 export interface EditableProject {
     project_id: string;
@@ -18,6 +26,10 @@ export interface EditableProject {
     region: string | null;
     /** Shown read-only; see the component docblock. */
     crs_epsg?: number | null;
+    /** BOH | TOH | grid | true | magnetic (legacy 'grid_north' reads as grid). */
+    orientation_reference?: string | null;
+    /** Degrees, east positive; null = not recorded. */
+    magnetic_declination?: number | null;
 }
 
 interface EditProjectForm {
@@ -25,6 +37,9 @@ interface EditProjectForm {
     company: string;
     commodity: string;
     region: string;
+    orientation_reference: OrientationReference;
+    /** The text box's contents; '' is sent and stored as NULL, never 0. */
+    magnetic_declination: string;
 }
 
 interface EditProjectSheetProps {
@@ -39,6 +54,11 @@ function formFrom(project: EditableProject): EditProjectForm {
         company: project.company ?? '',
         commodity: project.commodity ?? '',
         region: project.region ?? '',
+        orientation_reference: normaliseOrientationReference(project.orientation_reference),
+        magnetic_declination:
+            project.magnetic_declination === null || project.magnetic_declination === undefined
+                ? ''
+                : String(project.magnetic_declination),
     };
 }
 
@@ -52,9 +72,12 @@ function formFrom(project: EditableProject): EditProjectForm {
  * the endpoint answers JSON, not an Inertia page, and `useHttp` still maps a
  * 422 onto per-field `errors`. On success the Overview's props are reloaded.
  *
- * Only four fields, on purpose — see UpdateProjectRequest's docblock. The
- * coordinate system is shown read-only because changing it would not
- * reproject the holes already ingested; the slug (the URL) never changes.
+ * Identity fields plus the azimuth reference (and magnetic declination,
+ * degrees east positive) — see UpdateProjectRequest's docblock. The azimuth
+ * reference is editable because desurvey re-applies it on the next promotion
+ * and rebuilds the affected traces. The coordinate system is shown read-only
+ * because changing it would not reproject the holes already ingested; the
+ * slug (the URL) never changes.
  */
 export default function EditProjectSheet({ project, open, onOpenChange }: EditProjectSheetProps) {
     const form = useHttp<EditProjectForm>(formFrom(project));
@@ -68,7 +91,18 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
         form.clearErrors();
         setFailure(null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, project.project_id, project.project_name, project.company, project.commodity, project.region]);
+    }, [
+        open,
+        project.project_id,
+        project.project_name,
+        project.company,
+        project.commodity,
+        project.region,
+        project.orientation_reference,
+        project.magnetic_declination,
+    ]);
+
+    const localDeclinationError = declinationError(form.data.orientation_reference, form.data.magnetic_declination);
 
     // Keep a legacy value (e.g. 'U3O8' from a seed) selectable instead of
     // silently blanking it the first time someone opens the sheet.
@@ -80,6 +114,9 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
     async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
         event.preventDefault();
         setFailure(null);
+        // Magnetic with no declination would be stored and then silently not
+        // applied; the server refuses it too (ProjectController::update).
+        if (localDeclinationError) return;
 
         const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
 
@@ -120,7 +157,7 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
                     <SheetHeader>
                         <SheetTitle style={{ color: 'var(--fg-0)' }}>Edit project</SheetTitle>
                         <SheetDescription style={{ color: 'var(--fg-3)' }}>
-                            Rename the project or correct its operator, commodity and region. The project URL stays the same.
+                            Rename the project, correct its operator, commodity and region, or set which north its survey azimuths use. The project URL stays the same.
                         </SheetDescription>
                     </SheetHeader>
 
@@ -188,6 +225,15 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
                             <FieldError message={form.errors.region} />
                         </Field>
 
+                        <AzimuthReferenceFields
+                            reference={form.data.orientation_reference}
+                            declination={form.data.magnetic_declination}
+                            onReferenceChange={(value) => form.setData('orientation_reference', value)}
+                            onDeclinationChange={(value) => form.setData('magnetic_declination', value)}
+                            referenceError={form.errors.orientation_reference}
+                            declinationServerError={form.errors.magnetic_declination}
+                        />
+
                         <div
                             data-testid="edit-project-crs"
                             className="px-3 py-2 rounded border text-[11px] leading-relaxed"
@@ -224,7 +270,7 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
                         </button>
                         <button
                             type="submit"
-                            disabled={form.processing}
+                            disabled={form.processing || localDeclinationError !== undefined}
                             className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-50"
                             style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
                         >

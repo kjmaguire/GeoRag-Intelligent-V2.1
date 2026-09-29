@@ -49,7 +49,7 @@ data-completeness problem the geologist needs told about.
 
 Coordinates and CRS
 -------------------
-silver.collars stores easting/northing as given plus a geom. A projected
+silver.collars stores easting/northing as given plus geom_4326. A projected
 source CRS is NOT discoverable from a CSV — there is no header for it — so
 it comes from the upload, then the project, defaulting to
 ``DEFAULT_SOURCE_EPSG``. When that default is used rather than supplied,
@@ -155,38 +155,13 @@ TABLE_SOURCE_EXTENSIONS = DBASE_EXTENSIONS | ACCESS_EXTENSIONS
 #: centred. A default, not a detection: see the module docstring.
 DEFAULT_SOURCE_EPSG = 32613
 
-#: The SRID `silver.collars.geom` is DECLARED as, which is not the same fact
-#: as the default above and is why this constant exists separately.
-#:
-#: The column was created with `AddGeometryColumn(..., 32613, 'POINT', 2)`,
-#: so PostGIS REJECTS any other SRID outright:
-#:
-#:     InvalidParameterValueError: Geometry SRID (26904) does not match
-#:     column SRID (32613)
-#:
-#: _COLLAR_SQL used to insert `ST_SetSRID(ST_MakePoint(...), <source epsg>)`
-#: unchanged, so the tabular collar write had never worked for ANY project
-#: outside zone 13N — not a trace-specific problem, the whole CSV/Excel
-#: collar path. It went unnoticed because every corpus so far was Athabasca.
-#: RedStar's Sitka trenches are EPSG:26904 (NAD83 / UTM 4N, Alaska).
-#:
-#: cameco_log_ingester.py already conforms the same way, transforming its
-#: 32155 source to 32613 at insert. So the column's contract is "the project
-#: CRS", and this path was the one violating it.
-#:
-#: Reprojecting far outside a UTM zone is exact, not approximate: Sitka's
-#: point round-trips 26904 -> 32613 -> 3857 to the same location 4326 gives
-#: directly (verified against POINT(-158.099 56.122), Unga Island). The
-#: easting/northing COLUMNS still hold the untouched source values, and
-#: geom_4326 is transformed straight from the source SRID, so nothing is
-#: lost — only `geom` is expressed in the column's declared projection.
-#:
-#: Kyle: the cleaner fix is to unpin the column so `geom` really does hold
-#: source-CRS geometry. That is a production schema change to a §04e table,
-#: so it is yours to call, not mine. The tile functions already use
-#: ST_Transform(c.geom, 3857), which reads the geometry's own SRID and would
-#: keep working either way.
-COLLAR_GEOM_SRID = 32613
+#: silver.collars carries ONE geometry, `geom_4326` (geometry(Point, 4326)),
+#: transformed at insert straight from the source CRS above. The old
+#: `geom` column — pinned to SRID 32613 for every collar on earth, which
+#: made the whole CSV/Excel collar path fail outside zone 13N until it was
+#: conformed — was retired 2026-09-29 (Kyle, §04e;
+#: 2026_09_30_100000_drop_silver_collars_geom). The easting/northing COLUMNS
+#: keep the untouched source values.
 
 #: Order matters — see the module docstring. Anything not in this tuple is
 #: reported as an unclassified sheet rather than guessed at.
@@ -207,8 +182,9 @@ WRITE_ORDER: tuple[str, ...] = (
 #: plenty of collar exports carry no Status or HoleType column, and most
 #: assay exports carry no sample-type column. ``hole_type`` / ``status``
 #: default inside ``silver_row_guard.guard_collar``. ``total_depth`` is NOT
-#: defaulted any more: it used to be 0.0, which chk_total_depth_positive
-#: refuses — see ``_write_collars``.
+#: defaulted: it used to be 0.0, which chk_total_depth_positive refuses, and
+#: since 2026-09-29 (§04e) the column is nullable, so an absent depth is
+#: stored as NULL — see ``_write_collars``.
 _SURVEY_METHOD_DEFAULT = UNKNOWN
 _SAMPLE_TYPE_DEFAULT = UNKNOWN
 
@@ -218,6 +194,20 @@ _INSERT_BATCH = 500
 # One DSN builder for the whole service — see app/db/dsn.py for why
 # sixty copies of this existed and what the drift cost.
 _build_dsn = build_dsn
+
+
+def _survey_azimuth_reference(rec: dict[str, Any]) -> str | None:
+    """The station's declared azimuth reference, canonical or None.
+
+    csv_survey already canonicalises it; re-reading through the same function
+    keeps a record from any other source inside silver.surveys' CHECK
+    (true / magnetic / grid) instead of failing the whole batch on INSERT.
+    """
+    from georag_geoparsers._azimuth_reference import (  # noqa: PLC0415
+        canonical_azimuth_reference,
+    )
+
+    return canonical_azimuth_reference(rec.get("azimuth_reference"))
 
 
 class IngestTabularInput(BaseModel):
@@ -266,31 +256,37 @@ class IngestTabularOut(BaseModel):
     duration_ms: int = 0
 
 
-# f-string ONLY so the geom SRID comes from the constant above rather than
-# becoming another hardcoded copy. COLLAR_GEOM_SRID is an int literal in this
-# module — never user input, so there is no injection surface here.
-_COLLAR_SQL = f"""
+_COLLAR_SQL = """
 INSERT INTO silver.collars (
     collar_id, workspace_id, project_id, hole_id, hole_id_canonical,
     easting, northing, elevation, total_depth, azimuth, dip,
     hole_type, drill_date, status, georef_method,
     drill_type, hole_status,
-    created_at, updated_at, geom, geom_4326
+    created_at, updated_at, geom_4326
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4,
     $5, $6, $7, $8, $9, $10,
     $11, $12, $13, $14,
     $16, $17,
     NOW(), NOW(),
-    ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), {COLLAR_GEOM_SRID}),
     ST_Transform(ST_SetSRID(ST_MakePoint($5, $6), $15::int), 4326)
 )
-ON CONFLICT (project_id, hole_id) DO UPDATE SET
+-- One collar per (project, canonical hole id) — §04e, SME-approved
+-- 2026-09-29. The WHERE clause lets Postgres infer either arbiter: the
+-- partial uq_collars_project_hole_canonical before
+-- 2026_09_29_230300 builds the full index, the full
+-- collars_project_id_hole_id_canonical_unique after. hole_id_canonical is
+-- derived by trg_collars_hole_id_canonical BEFORE arbitration, so a
+-- separator/case variant updates the existing collar instead of becoming a
+-- ghost beside it; the stored hole_id spelling is kept.
+ON CONFLICT (project_id, hole_id_canonical) WHERE hole_id_canonical IS NOT NULL
+DO UPDATE SET
     hole_id_canonical = EXCLUDED.hole_id_canonical,
     easting     = EXCLUDED.easting,
     northing    = EXCLUDED.northing,
     elevation   = EXCLUDED.elevation,
-    total_depth = EXCLUDED.total_depth,
+    -- Optional (§04e): a file without a depth keeps the stored one.
+    total_depth = COALESCE(EXCLUDED.total_depth, silver.collars.total_depth),
     azimuth     = EXCLUDED.azimuth,
     dip         = EXCLUDED.dip,
     hole_type   = EXCLUDED.hole_type,
@@ -300,16 +296,19 @@ ON CONFLICT (project_id, hole_id) DO UPDATE SET
     -- row that did not overflow keeps whatever an earlier writer stored.
     drill_type  = COALESCE(EXCLUDED.drill_type, silver.collars.drill_type),
     hole_status = COALESCE(EXCLUDED.hole_status, silver.collars.hole_status),
-    geom        = EXCLUDED.geom,
     geom_4326   = EXCLUDED.geom_4326,
     updated_at  = NOW()
 """
 
+#: $7 is the station's DECLARED azimuth reference ('true' | 'magnetic' |
+#: 'grid', or NULL) from the file's azimuth-reference column, canonicalised
+#: by csv_survey. Desurvey prefers it over the project's orientation_reference
+#: (app/services/ingest/azimuth_reference.py; Kyle, 2026-09-29).
 _SURVEY_SQL = """
 INSERT INTO silver.surveys (
     survey_id, workspace_id, collar_id, depth, azimuth, dip,
-    survey_method, created_at, updated_at
-) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, NOW(), NOW())
+    survey_method, azimuth_reference, created_at, updated_at
+) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7, NOW(), NOW())
 """
 
 _LITHOLOGY_SQL = """
@@ -785,6 +784,10 @@ _SAMPLE_TYPE_CODES: dict[str, str] = {
     "r": "rock_chip", "rock": "rock_chip", "rc": "rock_chip",
     "g": "grab", "grab": "grab",
     "c": "channel", "chan": "channel",
+    # §04e, SME-approved 2026-09-29: a trench sample is a channel sample
+    # (the same mapping csv_sample.SAMPLE_TYPE_SYNONYMS makes for drill
+    # samples). RAB/aircore are drill cuttings and do not occur here.
+    "trench": "channel", "trench channel": "channel",
     "ss": "stream_sediment", "stream": "stream_sediment", "sed": "stream_sediment",
     "t": "till", "till": "till",
 }
@@ -1049,6 +1052,41 @@ def _trace_survey_stations(
     return stations
 
 
+def _normalize_trace_dips(
+    rows: list[dict[str, Any]], mapped: dict[str, str],
+    collars: list[dict[str, Any]], stations: list[dict[str, Any]],
+    *, label: str,
+) -> list[dict[str, Any]]:
+    """Put a trace export's dips in the silver convention; return warnings.
+
+    Up-holes are stored as measured since 2026-09-29 (§04e, SME-approved), so
+    a positive dip is no longer blanked on the way in — which makes the sign
+    convention of THIS file matter. The trace path never ran the per-file
+    heuristic the collar and survey parsers use; it does now, the same
+    ``resolve_dip_convention``: a file whose dips are mostly positive is a
+    down-positive export and every value is flipped, and an individual
+    positive dip in a down-negative export stays an up-hole. Mutates
+    ``collars`` and ``stations`` in place.
+    """
+    from georag_geoparsers._dip_convention import (  # noqa: PLC0415
+        normalize_dip,
+        resolve_dip_convention,
+    )
+
+    if "dip" not in mapped:
+        return []
+    dips = [d for d in (_num(r.get(mapped["dip"])) for r in rows) if d is not None]
+    resolution = resolve_dip_convention(dips, header=mapped["dip"], parser="discover_trace")
+    if resolution.convention in ("down_positive", "from_vertical"):
+        for rec in (*collars, *stations):
+            if rec.get("dip") is not None:
+                rec["dip"] = normalize_dip(float(rec["dip"]), resolution.convention)
+    return [
+        {"code": w["code"], "message": f"{label}: {w['message']}", **({"detail": w["detail"]} if w.get("detail") else {})}
+        for w in resolution.warnings
+    ]
+
+
 async def _write_surface_geochem(
     conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
     shape: dict[str, Any], rows: list[dict[str, Any]], source_epsg: int,
@@ -1156,16 +1194,17 @@ async def _existing_collars_by_canonical(
 ) -> dict[str, tuple[str, float | None]]:
     """``canonical hole id -> (stored hole_id, stored total_depth)``.
 
-    The upsert below is keyed on ``(project_id, hole_id)`` — the only unique
-    constraint the table has — so ``SRE09_6`` from a LAS header on Monday and
-    ``SRE09-6`` from Friday's collar table used to become two collars at two
-    positions for one hole (ING-14). Reading the stored spelling first lets a
-    separator/case variant update the collar that already exists.
+    The upsert used to be keyed on ``(project_id, hole_id)``, so ``SRE09_6``
+    from a LAS header on Monday and ``SRE09-6`` from Friday's collar table
+    became two collars at two positions for one hole (ING-14). It is now
+    keyed on the canonical hole id (§04e, 2026-09-29), which already lands
+    the variant on the existing collar; reading the stored spelling here
+    keeps that spelling in the row and lets the run REPORT the match
+    (``hole_id_matched_existing_collar``).
 
-    When the project already holds two ghosts of one hole, the one whose
-    stored spelling sorts first wins, so the choice is deterministic; the
-    ghosts themselves are Kyle's to merge (see the detection query in the
-    2026-09-29 ingestion fix report).
+    When the project still holds two ghosts of one hole (before
+    ``php artisan collars:merge-duplicates`` has run), the one whose stored
+    spelling sorts first wins, so the choice is deterministic.
     """
     from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
 
@@ -1195,7 +1234,8 @@ async def _write_collars(
     value is blanked and reported, a row missing a NOT NULL value is skipped
     and reported, and nothing is defaulted to a number nobody measured —
     ``total_depth`` used to default to 0.0, which ``chk_total_depth_positive``
-    refuses, so a collar table with no EOH column failed outright.
+    refuses, so a collar table with no EOH column failed outright; it is now
+    NULL when absent (§04e, SME-approved 2026-09-29) and those collars land.
 
     All batches go in ONE transaction: a crash on batch 2 no longer leaves
     batch 1's 500 collars committed. Called inside the per-sheet transaction
@@ -1218,6 +1258,11 @@ async def _write_collars(
         # _hole_id.canonicalize, and a record whose canonical disagrees with
         # its own hole_id must not merge two different holes.
         canon = canonicalize(hole_id)
+        if hole_id and canon is None:
+            # All separators ("--", "./"): no canonical key, so no collar the
+            # canonical-key upsert could land on — reported, not sent.
+            issues.skip(rec, f"hole id {hole_id!r} has no letters or digits")
+            continue
         match = existing.get(str(canon).upper()) if canon else None
         existing_td: float | None = None
         if match is not None:
@@ -1264,7 +1309,7 @@ async def _write_collars(
 
 #: Interval tables have no natural unique key, so re-running an ingest would
 #: APPEND a second copy of every row. Collars are protected by
-#: ON CONFLICT (project_id, hole_id); these are not.
+#: ON CONFLICT (project_id, hole_id_canonical); these are not.
 #:
 #: Duplicated intervals are the worse failure by a wide margin. They are
 #: silent, and they corrupt exactly the numbers people act on — a doubled
@@ -1386,6 +1431,7 @@ async def _write_intervals(
                     rec, "survey_method", SURVEY_TEXT_WIDTHS["survey_method"],
                     issues, default=_SURVEY_METHOD_DEFAULT,
                 ),
+                _survey_azimuth_reference(rec),
             ))
         elif sheet_type == "structure":
             depth = finite(rec.get("depth"))
@@ -3592,6 +3638,16 @@ async def run_ingest_tabular(
                         collar_rows = _collapse_discover_traces(
                             attribute_rows, trace_shape,
                         )
+                        # Computed up front so the collar dips and the
+                        # station dips are normalised by ONE file-level
+                        # convention decision (§04e up-holes, 2026-09-29).
+                        stations = _trace_survey_stations(
+                            attribute_rows, trace_shape,
+                        )
+                        warnings.extend(_normalize_trace_dips(
+                            attribute_rows, trace_shape, collar_rows, stations,
+                            label=filename,
+                        ))
                         if collar_rows:
                             # The coordinates came from the export, not
                             # from a human typing an EPSG — 'declared'
@@ -3616,9 +3672,6 @@ async def run_ingest_tabular(
                             # and the index has to be rebuilt here rather
                             # than reused: these collars did not exist
                             # when any earlier index was taken.
-                            stations = _trace_survey_stations(
-                                attribute_rows, trace_shape,
-                            )
                             if stations:
                                 survey_index = await _collar_index(
                                     conn, input.project_id,

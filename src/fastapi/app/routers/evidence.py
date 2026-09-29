@@ -434,10 +434,15 @@ async def _assemble_passage(
     """Assemble EvidencePassagePayload from the evidence_items row."""
     passage_id = row.get("passage_id")
     if not passage_id:
-        # Should not happen: has_target CHECK prevents this.
+        # The cited passage was deleted. evidence_items.passage_id is
+        # ON DELETE SET NULL since 2026-09-29 (§04e, SME-approved): deleting
+        # or re-ingesting a document no longer has to be blocked by the
+        # evidence that cited it, and the evidence row survives as a
+        # tombstone (type 'document_passage', every ref NULL). 410, not 500:
+        # the evidence existed and its source is gone.
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="evidence_fetch_failed",
+            status_code=status.HTTP_410_GONE,
+            detail="evidence_source_deleted",
         )
 
     passage_data = await _fetch_passage_with_context(

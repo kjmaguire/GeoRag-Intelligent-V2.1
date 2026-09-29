@@ -104,11 +104,39 @@ describe('desurveyHole — minimum curvature', () => {
         close(positionAtDepth(h, 420).z, -420);
     });
 
-    it('ignores the sign of dip', () => {
-        const a = positionAtDepth(desurveyHole({ azimuth: 0, dip: 60, totalDepth: 10 }, []), 10);
-        const b = positionAtDepth(desurveyHole({ azimuth: 0, dip: -60, totalDepth: 10 }, []), 10);
-        close(a.z, b.z);
-        expect(a.z).toBeLessThan(0);
+    it('draws a positive dip as an up-hole (§04e 2026-09-29)', () => {
+        const up = positionAtDepth(desurveyHole({ azimuth: 0, dip: 60, totalDepth: 10 }, []), 10);
+        const down = positionAtDepth(desurveyHole({ azimuth: 0, dip: -60, totalDepth: 10 }, []), 10);
+        // Same plan position, mirrored elevation.
+        close(up.x, down.x);
+        close(up.y, down.y);
+        close(up.z, -down.z);
+        close(up.z, 10 * Math.sin(60 * Math.PI / 180));
+        expect(up.z).toBeGreaterThan(0);
+    });
+
+    it('desurveys a surveyed up-hole upward by minimum curvature', () => {
+        // Flattening from +30 to +10 toward east over 100 m: rises, never dips.
+        const h = desurveyHole({ azimuth: 90, dip: 30, totalDepth: 100 }, [
+            { depth: 0, azimuth: 90, dip: 30 },
+            { depth: 100, azimuth: 90, dip: 10 },
+        ]);
+        for (let i = 1; i < h.path.length; i++) {
+            expect(h.path[i].z).toBeGreaterThan(h.path[i - 1].z);
+            expect(h.path[i].dip).toBeGreaterThan(0);
+        }
+        const beta = 20 * Math.PI / 180;
+        const rf = (2 / beta) * Math.tan(beta / 2);
+        const expectedZ = (100 / 2) * (Math.sin(30 * Math.PI / 180) + Math.sin(10 * Math.PI / 180)) * rf;
+        close(positionAtDepth(h, 100).z, expectedZ, 1e-6);
+    });
+
+    it('reaches the deepest survey station when TD is missing (§04e 2026-09-29)', () => {
+        const h = desurveyHole({ azimuth: 0, dip: -60, totalDepth: null }, [
+            { depth: 120, azimuth: 0, dip: -60 },
+        ]);
+        expect(h.maxDepth).toBe(120);
+        close(positionAtDepth(h, 120).z, -120 * Math.sin(60 * Math.PI / 180), 1e-6);
     });
 });
 

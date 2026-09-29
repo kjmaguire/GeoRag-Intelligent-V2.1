@@ -135,12 +135,19 @@ class TestCleanStations:
         out = _clean_stations(self._rows([(0, None, -60), (10, 90, None), (20, 90, -60)]))
         assert [d for d, _, _ in out] == [20.0]
 
-    @pytest.mark.parametrize("bad_dip", [5.0, 0.5, -90.5, -180.0])
+    @pytest.mark.parametrize("bad_dip", [90.5, 180.0, -90.5, -180.0])
     def test_drops_impossible_dips(self, bad_dip):
-        """Up-going or past-vertical is a data error, not a steep hole."""
+        """Past vertical (either way) is a data error, not a steep hole."""
         from app.hatchet_workflows.promote_silver_to_gold import _clean_stations
 
         assert _clean_stations(self._rows([(0, 90, bad_dip)])) == []
+
+    @pytest.mark.parametrize("up_dip", [0.5, 5.0, 45.0, 90.0])
+    def test_keeps_up_hole_dips(self, up_dip):
+        """§04e 2026-09-29: an up-hole is real data, not an error."""
+        from app.hatchet_workflows.promote_silver_to_gold import _clean_stations
+
+        assert _clean_stations(self._rows([(0, 90, up_dip)])) == [(0.0, 90.0, up_dip)]
 
     def test_horizontal_and_vertical_are_both_legal(self):
         from app.hatchet_workflows.promote_silver_to_gold import _clean_stations
@@ -632,6 +639,47 @@ class TestAgainstTheInterpolator:
             "elev_m is relative to the collar; collar_elevation is ignored"
         )
         assert at_zero[0][1].elev_m == pytest.approx(0.0, abs=1e-9)
+
+    def test_an_up_hole_rises(self):
+        """§04e 2026-09-29: +30 toward east climbs 50 m over 100 m and runs 86.6 m east."""
+        interp = pytest.importorskip("georag_geoparsers._survey_interp")
+
+        out = interp.minimum_curvature(
+            collar_easting=0.0, collar_northing=0.0, collar_elevation=0.0,
+            stations=[
+                interp.SurveyStation(depth_m=0.0, azimuth_deg=90.0, dip_deg=30.0),
+                interp.SurveyStation(depth_m=100.0, azimuth_deg=90.0, dip_deg=30.0),
+            ],
+        )
+        _, end = out[-1]
+        assert end.elev_m == pytest.approx(50.0, abs=1e-6)
+        assert end.east_m == pytest.approx(100.0 * math.cos(math.radians(30.0)), abs=1e-6)
+        assert end.north_m == pytest.approx(0.0, abs=1e-6)
+
+    def test_an_up_hole_mirrors_the_down_hole(self):
+        """Same azimuth, dip +/-60: same plan position, opposite elevation."""
+        interp = pytest.importorskip("georag_geoparsers._survey_interp")
+
+        def end(dip: float):
+            return interp.minimum_curvature(0.0, 0.0, 0.0, [
+                interp.SurveyStation(depth_m=0.0, azimuth_deg=45.0, dip_deg=dip),
+                interp.SurveyStation(depth_m=80.0, azimuth_deg=50.0, dip_deg=dip),
+            ])[-1][1]
+
+        up, down = end(60.0), end(-60.0)
+        assert up.east_m == pytest.approx(down.east_m, abs=1e-6)
+        assert up.north_m == pytest.approx(down.north_m, abs=1e-6)
+        assert up.elev_m == pytest.approx(-down.elev_m, abs=1e-6)
+        assert up.elev_m > 0
+
+    def test_past_vertical_is_still_refused(self):
+        interp = pytest.importorskip("georag_geoparsers._survey_interp")
+
+        with pytest.raises(ValueError):
+            interp.minimum_curvature(0.0, 0.0, 0.0, [
+                interp.SurveyStation(depth_m=0.0, azimuth_deg=0.0, dip_deg=91.0),
+                interp.SurveyStation(depth_m=10.0, azimuth_deg=0.0, dip_deg=91.0),
+            ])
 
     def test_a_horizontal_hole_travels_its_full_length(self):
         interp = pytest.importorskip("georag_geoparsers._survey_interp")

@@ -15,17 +15,20 @@ would refuse fails THAT ROW or THAT FIELD, never the batch.
 
 * An out-of-range OPTIONAL (nullable) field is blanked, the row is kept,
   and the blanking is reported.
-* A value a NOT NULL column cannot do without (hole id, total depth, the
+* A value a NOT NULL column cannot do without (hole id, position, the
   interval bounds) skips the row, with a reason.
 * Nothing is invented. There is no floor-to-0.01 and no clamp: a total depth
-  of 0.01 m is a number nobody measured.
+  of 0.01 m is a number nobody measured. An absent total depth is stored as
+  NULL (§04e, SME-approved 2026-09-29) — never 0.
 
 The bounds below are NOT a second opinion on geology. They are copies of the
 constraints the migrations create, and
 ``tests/test_silver_row_guard_matches_migrations.py`` fails if a migration
-changes one without this module following. Whether the database SHOULD allow
-up-holes (dip > 0) or elevations above 9,000 m is a §04e decision for Kyle;
-until it changes, the writer must not send what the table refuses.
+changes one without this module following. Up-holes (0 < dip <= 90) are
+allowed since 2026-09-29 (§04e, SME-approved, Kyle) and pass through here as
+measured; whether elevations above 9,000 m should be is still a §04e decision
+for Kyle, and until it changes the writer must not send what the table
+refuses.
 
 Pure functions, no database and no Hatchet import, so the tests run anywhere.
 """
@@ -43,14 +46,17 @@ log = logging.getLogger("georag.ingest.silver_row_guard")
 # Constraint mirrors — database/migrations/2026_04_13_100000_database_hardening.php
 # ---------------------------------------------------------------------------
 
-#: chk_total_depth_positive: ``total_depth > 0``. The column is NOT NULL.
+#: chk_total_depth_positive: ``total_depth > 0``. The column is nullable since
+#: 2026_09_29_230100_make_collar_total_depth_optional (§04e, 2026-09-29).
 COLLAR_TOTAL_DEPTH_EXCLUSIVE_MIN: float = 0.0
 #: chk_elevation_range: ``elevation >= -500 AND elevation <= 9000``. Nullable.
 COLLAR_ELEVATION_RANGE: tuple[float, float] = (-500.0, 9000.0)
 #: chk_azimuth_range: ``azimuth >= 0 AND azimuth <= 360``. Nullable.
 COLLAR_AZIMUTH_RANGE: tuple[float, float] = (0.0, 360.0)
-#: chk_dip_range: ``dip >= -90 AND dip <= 0``. Nullable.
-COLLAR_DIP_RANGE: tuple[float, float] = (-90.0, 0.0)
+#: chk_dip_range: ``dip >= -90 AND dip <= 90``. Nullable. Negative is below
+#: horizontal; a positive dip is an up-hole and is stored as measured
+#: (2026_09_29_230000_allow_up_hole_dips_on_collars, §04e 2026-09-29).
+COLLAR_DIP_RANGE: tuple[float, float] = (-90.0, 90.0)
 #: chk_rqd_range / chk_recovery_range: ``0..100`` or NULL.
 LITHOLOGY_PERCENT_RANGE: tuple[float, float] = (0.0, 100.0)
 #: silver_mineralization_valid_pct: ``0..100`` or NULL.
@@ -182,9 +188,13 @@ def guard_collar(
 
     ``existing_total_depth`` is the depth already stored for this hole (from
     an earlier upload or a LAS header). A row with no usable total depth
-    keeps it rather than being skipped — that is the stored value, not a
-    guess. With nothing stored the row is skipped: total_depth is NOT NULL
-    and 0.0 / 0.01 would both be invented depths.
+    keeps it — that is the stored value, not a guess. With nothing stored the
+    total depth is None and the collar is still written: the column is
+    optional (§04e, SME-approved 2026-09-29), and 0.0 / 0.01 would both be
+    invented depths. A collar table with no EOH column lands its collars.
+
+    A value that is present but not > 0 (``0``, ``-5``) is not a depth
+    either; it is stored as None and reported as blanked.
     """
     hole_id = _hole(rec)
     easting, northing = finite(rec.get("easting")), finite(rec.get("northing"))
@@ -203,17 +213,14 @@ def guard_collar(
         return None
 
     total_depth = finite(rec.get("total_depth"))
-    if total_depth is None or total_depth <= COLLAR_TOTAL_DEPTH_EXCLUSIVE_MIN:
-        if existing_total_depth is not None and existing_total_depth > 0:
-            total_depth = existing_total_depth
-        else:
-            shown = rec.get("total_depth")
-            issues.skip(
-                rec,
-                "no total depth"
-                if shown in (None, "") else f"total depth {shown!r} is not > 0",
-            )
-            return None
+    if total_depth is not None and total_depth <= COLLAR_TOTAL_DEPTH_EXCLUSIVE_MIN:
+        issues.blank(
+            "total_depth", rec, total_depth,
+            "not > 0 — a total depth of zero or less is not a depth",
+        )
+        total_depth = None
+    if total_depth is None and existing_total_depth is not None and existing_total_depth > 0:
+        total_depth = existing_total_depth
 
     elevation = finite(rec.get("elevation"))
     if elevation is not None and not _in_range(elevation, COLLAR_ELEVATION_RANGE):
@@ -230,11 +237,10 @@ def guard_collar(
 
     dip = finite(rec.get("dip"))
     if dip is not None and not _in_range(dip, COLLAR_DIP_RANGE):
-        issues.blank(
-            "dip", rec, dip,
-            "outside -90..0 (the table stores down-holes as negative; an "
-            "up-hole or a positive-down convention cannot be stored yet)",
-        )
+        # Past vertical either way. A positive dip inside the range is an
+        # up-hole and is kept as measured; the file-level convention check
+        # (``_dip_convention``) has already flipped a positive-down file.
+        issues.blank("dip", rec, dip, "outside -90..90 (dip from horizontal)")
         dip = None
 
     canonical = fit_text(

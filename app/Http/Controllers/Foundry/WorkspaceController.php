@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Support\HoleId;
 use App\Support\HoleStripTracks;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
@@ -369,8 +370,13 @@ class WorkspaceController extends Controller
                 $requestedHole = $request->query('log_hole');
                 $sampleCollar = null;
                 if ($requestedHole && ! empty($logHoleOptions)) {
+                    // Options are canonical ids (the database derives
+                    // hole_id_canonical on every write, §04e 2026-09-29), so a
+                    // link carrying the stored spelling ("HST-B") must match
+                    // its canonical form ("HSTB") too.
+                    $requestedCanonical = HoleId::canonicalize(is_string($requestedHole) ? $requestedHole : null);
                     foreach ($logHoleOptions as $opt) {
-                        if ($opt['hole_id'] === $requestedHole) {
+                        if ($opt['hole_id'] === $requestedHole || $opt['hole_id'] === $requestedCanonical) {
                             $sampleCollar = (object) ['collar_id' => $opt['collar_id'], 'hole_id_canonical' => $opt['hole_id'], 'hole_id' => $opt['hole_id']];
                             break;
                         }
@@ -1610,11 +1616,15 @@ class WorkspaceController extends Controller
                     'depth' => (float) $azDepths[$i],
                     'azimuth' => $a,
                     // SANG is the survey angle: 0 = vertical (straight down),
-                    // 90 = horizontal. The trajectory integrator expects
-                    // `dip` in the "angle from horizontal" convention used
-                    // by MultiHole3DTrace / OrientationSpiral, where 90 =
-                    // vertical down. Convert: dip = 90 - SANG.
-                    'dip' => 90.0 - $d,
+                    // 90 = horizontal. The trajectory integrator
+                    // (resources/js/lib/desurvey.ts) takes `dip` in the
+                    // silver convention — degrees from horizontal, negative
+                    // = down — and since up-holes became legal (§04e,
+                    // 2026-09-29) it honours the sign, so this must be
+                    // negative for a down-going hole: dip = SANG - 90. It
+                    // used to be 90 - SANG, which only worked while the
+                    // integrator ignored the sign.
+                    'dip' => $d - 90.0,
                 ];
             }
         }

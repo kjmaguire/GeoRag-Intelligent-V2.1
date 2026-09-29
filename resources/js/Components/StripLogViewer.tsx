@@ -759,13 +759,21 @@ export default function StripLogViewer({
     const hasAlteration = alterationBands.length > 0;
     const hasMineralization = mineralBands.length > 0;
 
-    // The collar's total depth is 0 when the collar file carried none; the
-    // deepest logged interval then sets the scale instead of dividing by zero.
+    // The collar's total depth is NULL when the collar file carried none
+    // (§04e, 2026-09-29: the column is optional); the deepest logged interval
+    // then sets the scale instead of dividing by zero.
     const deepestLogged = Math.max(
         0,
         ...lithologyLogs.map((l) => Number(l.to_depth ?? l.depth_to_m ?? 0)),
         ...alterationBands.map((b) => b.to),
         ...mineralBands.map((b) => b.to),
+        // A curve-only hole (a LAS with no collar EOH) must reach its deepest
+        // sample; curve depths are ascending, so the last one is the deepest.
+        ...wellLogCurves.map((c) => {
+            const depths = Array.isArray(c.depths) ? (c.depths as number[]) : [];
+            const last = depths.length > 0 ? Number(depths[depths.length - 1]) : 0;
+            return Number.isFinite(last) ? last : 0;
+        }),
     );
     const totalDepth    = Math.max(collar?.total_depth ?? 0, deepestLogged);
 
