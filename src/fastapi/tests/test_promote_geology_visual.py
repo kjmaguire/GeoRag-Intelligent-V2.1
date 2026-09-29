@@ -1,4 +1,4 @@
-"""Gold gets lithology it can colour, alteration it can draw, and never breaks.
+"""Gold gets lithology it can colour, alteration and mineralization it can draw, and never breaks.
 
 WHY THIS FILE EXISTS
     promote_silver_to_gold wrote gold.drillhole_intervals_visual lithology bands
@@ -16,6 +16,8 @@ WHY THIS FILE EXISTS
         new ones (an upsert never removes), so the strip log drew two columns.
 
     And alteration had no gold rows at all: silver.alteration was not read.
+    Mineralization had none either, until §04e gained a ``mineralization``
+    interval_kind (SME-approved 2026-09-29, Kyle) - see TestMineralizationRows.
 
     (The statements were also run against a real PostgreSQL with the migrated
     schema; these tests keep the properties that run established from
@@ -38,12 +40,20 @@ GOLD_MIGRATION = (
     REPO_ROOT / "database" / "migrations"
     / "2026_05_13_080000_create_gold_drillhole_intervals_visual.php"
 )
+MINERALIZATION_KIND_MIGRATION = (
+    REPO_ROOT / "database" / "migrations"
+    / "2026_09_29_120000_add_mineralization_kind_to_gold_drillhole_intervals_visual.php"
+)
 SILVER_MIGRATION = (
     REPO_ROOT / "database" / "migrations"
     / "2026_05_20_060400_create_silver_geological_singulars.php"
 )
 _needs_migrations = pytest.mark.skipif(
-    not (GOLD_MIGRATION.exists() and SILVER_MIGRATION.exists()),
+    not (
+        GOLD_MIGRATION.exists()
+        and SILVER_MIGRATION.exists()
+        and MINERALIZATION_KIND_MIGRATION.exists()
+    ),
     reason="database/migrations is not mounted (container run of src/fastapi only)",
 )
 
@@ -166,14 +176,117 @@ class TestAlterationRows:
         assert "interval_kind = 'alteration'" in promo._INTERVALS_ALTERATION_CLEAR
         assert "project_id = $1::uuid" in promo._INTERVALS_ALTERATION_CLEAR
 
-    def test_there_is_no_mineralization_gold_row(self) -> None:
-        """The CHECK has no mineralization kind; bending 'other' is a schema
-        decision for Kyle, not this module (see the module docstring)."""
-        source = Path(promo.__file__).read_text()
-        assert "silver.mineralization" not in source.split("WHAT THE STRIP LOG IS GIVEN")[1].split("IDEMPOTENCY")[1]
-        for name in dir(promo):
-            if name.startswith("_INTERVALS_"):
-                assert "silver.mineralization" not in getattr(promo, name)
+class TestMineralizationRows:
+    """§04e ``mineralization`` kind: promoted like alteration, rebuilt per project."""
+
+    def test_mineralization_is_the_kind_it_writes(self) -> None:
+        assert "'mineralization'" in promo._INTERVALS_MINERALIZATION
+
+    @_needs_migrations
+    def test_the_check_constraint_lists_mineralization_and_keeps_the_six(self) -> None:
+        text = MINERALIZATION_KIND_MIGRATION.read_text()
+        after = re.search(r'KINDS_AFTER = "([^"]+)"', text).group(1)
+        before = re.search(r'KINDS_BEFORE = "([^"]+)"', text).group(1)
+        kinds_after = re.findall(r"'([a-z_]+)'", after)
+        # The original CHECK, read from the migration that created the table:
+        original = re.search(
+            r"drillhole_intervals_visual_kind_valid\s+CHECK \(interval_kind IN \((.*?)\)\)",
+            GOLD_MIGRATION.read_text(), re.DOTALL,
+        ).group(1)
+        six = re.findall(r"'([a-z_]+)'", original)
+        assert len(six) == 6
+        assert set(six) < set(kinds_after)              # all six survive
+        assert set(kinds_after) - set(six) == {"mineralization"}
+        # down() restores exactly the original vocabulary.
+        assert re.findall(r"'([a-z_]+)'", before) == six
+        assert "'mineralization'" in text
+
+    @_needs_migrations
+    def test_the_migration_adds_the_payload_column_idempotently_and_down_undoes_it(self) -> None:
+        text = MINERALIZATION_KIND_MIGRATION.read_text()
+        assert "ADD COLUMN IF NOT EXISTS mineralization_payload JSONB NOT NULL DEFAULT '{}'::jsonb" in text
+        down = text.split("public function down()")[1]
+        assert "DELETE FROM gold.drillhole_intervals_visual WHERE interval_kind = 'mineralization'" in down
+        assert "DROP COLUMN IF EXISTS mineralization_payload" in down
+        # rows go before the CHECK is restored, or the restored CHECK refuses them
+        assert down.index("DELETE FROM") < down.index("replaceKindCheck")
+
+    @_needs_migrations
+    def test_it_uses_only_real_gold_columns(self) -> None:
+        gold = GOLD_MIGRATION.read_text() + MINERALIZATION_KIND_MIGRATION.read_text()
+        columns = set(re.findall(
+            r"^\s+([a-z_]+)\s+(?:UUID|NUMERIC|VARCHAR|TEXT|JSONB|TIMESTAMPTZ)",
+            gold, re.MULTILINE | re.IGNORECASE,
+        ))
+        columns |= set(re.findall(r"ADD COLUMN IF NOT EXISTS ([a-z_]+)", gold))
+        inserted = re.search(
+            r"INSERT INTO gold\.drillhole_intervals_visual \((.*?)\)\s*SELECT",
+            promo._INTERVALS_MINERALIZATION, re.DOTALL,
+        )
+        assert inserted
+        names = {c.strip() for c in inserted.group(1).split(",")}
+        assert "mineralization_payload" in names
+        assert names <= columns, names - columns
+
+    @_needs_migrations
+    def test_it_reads_only_real_silver_mineralization_columns(self) -> None:
+        text = SILVER_MIGRATION.read_text()
+        body = re.search(
+            r"CREATE TABLE silver\.mineralization \((.*?)\n\s*\)\n\s*SQL", text, re.DOTALL,
+        ).group(1)
+        real = {
+            m.group(1) for m in re.finditer(
+                r"^\s*([a-z_]+)\s+(?:uuid|numeric|text|timestamptz)", body, re.MULTILINE,
+            )
+        }
+        used = set(re.findall(r"\bx\.([a-z_]+)", promo._INTERVALS_MINERALIZATION))
+        assert used <= real, used - real
+
+    def test_every_mineral_over_one_interval_shares_a_row(self) -> None:
+        sql = promo._INTERVALS_MINERALIZATION
+        assert "GROUP BY m.collar_id, c.workspace_id, c.project_id, m.depth_from, m.depth_to" in sql
+        assert "jsonb_agg(" in sql and "'minerals'" in sql
+        for key in ("'mineral'", "'abundance_pct'", "'form'", "'grain_size'", "'notes'"):
+            assert key in sql
+        # minerals and the label are ordered the same way, deterministically
+        assert sql.count("ORDER BY m.created_at, m.id") == 2
+
+    def test_the_label_is_the_capped_mineral_summary(self) -> None:
+        sql = promo._INTERVALS_MINERALIZATION
+        assert "LEFT(string_agg(" in sql and "'; '" in sql and "500)" in sql
+        assert "trim_scale(m.abundance_pct)" in sql and "'%'" in sql
+
+    def test_tenancy_comes_from_the_collar_and_scope_from_the_project(self) -> None:
+        sql = promo._INTERVALS_MINERALIZATION
+        assert "c.workspace_id, c.project_id" in sql
+        assert "x.workspace_id" not in sql
+        assert "cx.project_id = $1::uuid" in sql
+        assert "c.project_id = $1::uuid" in sql
+
+    def test_it_respects_the_depth_check_before_the_database_does(self) -> None:
+        sql = promo._INTERVALS_MINERALIZATION
+        assert "x.from_depth >= 0" in sql
+        assert "x.to_depth < 10000000" in sql
+        assert "round(x.to_depth, 3) > round(x.from_depth, 3)" in sql
+
+    def test_mineralization_is_rebuilt_not_upserted_and_only_its_own_kind_is_cleared(self) -> None:
+        assert "ON CONFLICT" not in promo._INTERVALS_MINERALIZATION
+        clear = promo._INTERVALS_MINERALIZATION_CLEAR
+        assert "interval_kind = 'mineralization'" in clear
+        assert "project_id = $1::uuid" in clear
+        # derive_intervals' DERIVED-* bands are lithology rows and must be out of reach
+        assert "lithology" not in clear and "DERIVED" not in clear
+
+    def test_nothing_else_clears_or_rewrites_mineralization_rows(self) -> None:
+        """The lithology stale-sweep and the alteration clear are kind-scoped."""
+        assert "'mineralization'" not in promo._INTERVALS_LITHOLOGY_STALE
+        assert "'mineralization'" not in promo._INTERVALS_ALTERATION_CLEAR
+        assert "interval_kind = 'lithology'" in promo._INTERVALS_LITHOLOGY_STALE
+
+    def test_the_docstring_no_longer_says_mineralization_has_no_gold_row(self) -> None:
+        doc = promo.__doc__ or ""
+        assert "NO gold row" not in doc
+        assert "``mineralization`` rows" in doc
 
 
 class _Conn:
@@ -242,20 +355,27 @@ class TestThePromotionRun:
         )
 
         ran = [(sql, depth) for verb, sql, depth in conn.calls if verb == "execute"]
-        # lithology upsert, stale cleanup, samples, alteration clear + rebuild, structure ...
+        # lithology upsert, stale cleanup, samples, alteration and mineralization clear + rebuild, structure ...
         kinds = [
             ("lithology" if "'lithology'" in sql and "INSERT" in sql else
              "stale" if "NOT EXISTS" in sql else
              "sample" if "'sample_window'" in sql else
              "alt-clear" if "interval_kind = 'alteration'" in sql and "DELETE" in sql else
-             "alt" if "'alteration'" in sql and "INSERT" in sql else "other", depth)
+             "alt" if "'alteration'" in sql and "INSERT" in sql else
+             "min-clear" if "interval_kind = 'mineralization'" in sql and "DELETE" in sql else
+             "min" if "'mineralization'" in sql and "INSERT" in sql else "other", depth)
             for sql, depth in ran
         ]
-        assert [k for k, _ in kinds][:5] == ["lithology", "stale", "sample", "alt-clear", "alt"]
-        # lithology + cleanup share a transaction; so do the alteration clear + rebuild.
+        assert [k for k, _ in kinds][:7] == [
+            "lithology", "stale", "sample", "alt-clear", "alt", "min-clear", "min",
+        ]
+        # lithology + cleanup share a transaction; so do the alteration clear + rebuild,
+        # and the mineralization clear + rebuild.
         depth_of = dict(kinds)
         assert depth_of["lithology"] == 1 and depth_of["stale"] == 1
         assert depth_of["alt-clear"] == 1 and depth_of["alt"] == 1
+        assert depth_of["min-clear"] == 1 and depth_of["min"] == 1
         assert depth_of["sample"] == 0
         assert out.alteration_intervals_written == 3
+        assert out.mineralization_intervals_written == 3
         assert out.lithology_duplicate_intervals == 2

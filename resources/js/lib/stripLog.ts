@@ -297,19 +297,77 @@ export function lithologyLegend(bands: StripLithologyBand[]): { code: string; co
     return [...seen.values()];
 }
 
-/** Bands from the gold interval rows the hole page already had, for an older payload. */
-export function tracksFromIntervals(
-    intervals: {
-        depth_from: number;
-        depth_to: number;
-        interval_kind: string;
-        lithology_code?: string | null;
-        lithology_label?: string | null;
-        color_hint?: string | null;
-    }[],
-): StripTracks {
+/** A gold `drillhole_intervals_visual` row, as the hole page's older payload carries it. */
+export interface GoldIntervalRow {
+    depth_from: number;
+    depth_to: number;
+    interval_kind: string;
+    lithology_code?: string | null;
+    lithology_label?: string | null;
+    color_hint?: string | null;
+    /** JSONB: an object, or the JSON text of one, depending on the driver. */
+    alteration_payload?: unknown;
+    mineralization_payload?: unknown;
+}
+
+function payloadList(payload: unknown, key: string): unknown[] {
+    let value = payload;
+    if (typeof value === 'string') {
+        try {
+            value = JSON.parse(value);
+        } catch {
+            return [];
+        }
+    }
+    const list = value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+    return Array.isArray(list) ? list : [];
+}
+
+const textOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+
+/**
+ * Bands from the gold interval rows the hole page already had, for an older
+ * payload. Lithology, alteration and mineralization rows are understood; a gold
+ * `mineralization` row is one interval carrying every mineral in its payload
+ * and is flattened to one band per mineral (the shape `strip_tracks` has).
+ */
+export function tracksFromIntervals(intervals: GoldIntervalRow[]): StripTracks {
+    const alteration: StripAlterationBand[] = [];
+    const mineralization: StripMineralBand[] = [];
+    for (const i of intervals) {
+        const from = Number(i.depth_from);
+        const to = Number(i.depth_to);
+        if (i.interval_kind === 'alteration') {
+            const alterations: AlterationItem[] = [];
+            for (const raw of payloadList(i.alteration_payload, 'alterations')) {
+                const a = raw as Record<string, unknown> | null;
+                if (!a || a.type === undefined || a.type === null) continue;
+                alterations.push({
+                    type: String(a.type),
+                    intensity: textOrNull(a.intensity),
+                    minerals: Array.isArray(a.minerals) ? a.minerals.map(String) : [],
+                    notes: textOrNull(a.notes),
+                });
+            }
+            alteration.push({ from, to, label: i.lithology_label ?? '', alterations });
+        } else if (i.interval_kind === 'mineralization') {
+            for (const raw of payloadList(i.mineralization_payload, 'minerals')) {
+                const m = raw as Record<string, unknown> | null;
+                if (!m || m.mineral === undefined || m.mineral === null) continue;
+                const pct = m.abundance_pct === null || m.abundance_pct === undefined ? NaN : Number(m.abundance_pct);
+                mineralization.push({
+                    from,
+                    to,
+                    mineral: String(m.mineral),
+                    abundance_pct: Number.isFinite(pct) ? pct : null,
+                    form: textOrNull(m.form),
+                    grain_size: textOrNull(m.grain_size),
+                    notes: textOrNull(m.notes),
+                });
+            }
+        }
+    }
     return {
-        ...EMPTY_TRACKS,
         lithology: intervals
             .filter((i) => i.interval_kind === 'lithology')
             .map((i) => ({
@@ -319,5 +377,7 @@ export function tracksFromIntervals(
                 label: i.lithology_label ?? '',
                 color: isDisplayColour(i.color_hint) ? i.color_hint : '',
             })),
+        alteration,
+        mineralization,
     };
 }
