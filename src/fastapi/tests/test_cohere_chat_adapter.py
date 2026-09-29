@@ -30,7 +30,7 @@ import httpx
 import pytest
 
 from app.agent import llm_cohere, llm_common
-from app.agent.llm_calls import _llm_call_counter
+from app.agent.llm_calls import _llm_call_counter, llm_call_budget
 from app.agent.llm_cohere import CohereResponseShapeError, call_cohere_llm
 from app.config import settings
 
@@ -44,9 +44,8 @@ def slept(monkeypatch: pytest.MonkeyPatch):
         delays.append(delay)
 
     monkeypatch.setattr(llm_common, "_sleep", _fake_sleep)
-    token = _llm_call_counter.set(0)
-    yield delays
-    _llm_call_counter.reset(token)
+    with llm_call_budget():
+        yield delays
 
 
 # ---------------------------------------------------------------------------

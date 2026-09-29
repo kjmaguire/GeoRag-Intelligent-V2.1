@@ -10,13 +10,14 @@ AGT-7   only clean, cited, complete answers are cached, without their
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import uuid
 from typing import Any
 
 import pytest
 
 import app.agent.llm_calls as llm_calls
-from app.agent.llm_calls import _llm_call_counter, begin_run_llm_call_budget
+from app.agent.llm_calls import _llm_call_counter, llm_call_budget
 from app.config import settings
 
 # ---------------------------------------------------------------------------
@@ -25,25 +26,24 @@ from app.config import settings
 
 
 @pytest.mark.asyncio
-async def test_count_is_shared_by_tasks_after_begin_run():
-    begin_run_llm_call_budget()
-
+async def test_count_is_shared_by_tasks_inside_a_run():
     async def one_call() -> None:
         _llm_call_counter.set(_llm_call_counter.get() + 1)
 
-    # Each create_task copies the context, exactly as LangGraph runs nodes.
-    await asyncio.create_task(one_call())
-    await asyncio.create_task(one_call())
-    await asyncio.create_task(one_call())
-    assert _llm_call_counter.get() == 3
+    with llm_call_budget():
+        # Each create_task copies the context, exactly as LangGraph runs nodes.
+        await asyncio.create_task(one_call())
+        await asyncio.create_task(one_call())
+        await asyncio.create_task(one_call())
+        assert _llm_call_counter.get() == 3
 
 
 @pytest.mark.asyncio
-async def test_begin_run_resets_the_count():
-    begin_run_llm_call_budget()
-    _llm_call_counter.set(7)
-    begin_run_llm_call_budget()
-    assert _llm_call_counter.get() == 0
+async def test_each_run_starts_at_zero():
+    with llm_call_budget():
+        _llm_call_counter.set(7)
+    with llm_call_budget():
+        assert _llm_call_counter.get() == 0
 
 
 @pytest.mark.asyncio
@@ -60,20 +60,59 @@ async def test_cap_trips_across_nodes(monkeypatch):
     async def node() -> str:
         return await llm_calls._call_llm(query="q", context="c")
 
-    begin_run_llm_call_budget()
-    await asyncio.create_task(node())
-    await asyncio.create_task(node())
-    with pytest.raises(llm_calls.LLMCallBudgetExceeded):
+    with llm_call_budget():
         await asyncio.create_task(node())
+        await asyncio.create_task(node())
+        with pytest.raises(llm_calls.LLMCallBudgetExceeded):
+            await asyncio.create_task(node())
 
 
-def test_run_agentic_retrieval_installs_a_fresh_budget():
+def test_a_run_count_is_unbound_when_the_run_ends():
+    """Nothing after the run - nor any context copied after it - inherits it."""
+    with llm_call_budget():
+        _llm_call_counter.set(5)
+    assert llm_calls._llm_call_cell.get() is None
+    assert contextvars.copy_context().run(_llm_call_counter.get) == 0
+
+
+def test_nested_runs_are_independent_and_restore_the_outer_count():
+    with llm_call_budget():
+        _llm_call_counter.set(3)
+        with llm_call_budget():
+            assert _llm_call_counter.get() == 0
+            _llm_call_counter.set(6)
+        assert _llm_call_counter.get() == 3
+
+
+@pytest.mark.asyncio
+async def test_outside_a_run_the_count_is_context_local():
+    """The pre-AGT-12 behaviour: a child Task's increments stay in the child."""
+    ctx = contextvars.copy_context()
+
+    async def body() -> tuple[int, int]:
+        _llm_call_counter.set(2)
+
+        async def child() -> int:
+            _llm_call_counter.set(_llm_call_counter.get() + 5)
+            return _llm_call_counter.get()
+
+        seen_in_child = await asyncio.create_task(child())
+        return seen_in_child, _llm_call_counter.get()
+
+    seen_in_child, seen_in_parent = await asyncio.get_running_loop().create_task(
+        body(), context=ctx
+    )
+    assert (seen_in_child, seen_in_parent) == (7, 2)
+    assert llm_calls._llm_call_cell.get() is None
+
+
+def test_run_agentic_retrieval_opens_a_budget_around_the_graph():
     import inspect
 
     from app.agent.agentic_retrieval import graph
 
     src = inspect.getsource(graph.run_agentic_retrieval)
-    assert src.index("begin_run_llm_call_budget()") < src.index("graph.ainvoke(")
+    assert src.index("with llm_call_budget():") < src.index("graph.ainvoke(")
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +141,8 @@ async def test_response_format_is_normalised(monkeypatch, spelling, backend, exp
     monkeypatch.setattr(_cohere, "call_cohere_llm", fake_chat)
     monkeypatch.setattr(_bedrock, "call_bedrock_llm", fake_chat)
     monkeypatch.setattr(llm_calls, "_call_openai_compatible_llm", fake_chat)
-    begin_run_llm_call_budget()
-    await llm_calls._call_llm(query="q", context="c", response_format=spelling)
+    with llm_call_budget():
+        await llm_calls._call_llm(query="q", context="c", response_format=spelling)
     assert seen["rf"] == expected
 
 
@@ -119,8 +158,8 @@ async def test_no_response_format_stays_none(monkeypatch):
     import app.agent.llm_cohere as _cohere
 
     monkeypatch.setattr(_cohere, "call_cohere_llm", fake_chat)
-    begin_run_llm_call_budget()
-    await llm_calls._call_llm(query="q", context="c")
+    with llm_call_budget():
+        await llm_calls._call_llm(query="q", context="c")
     assert seen["rf"] is None
 
 
