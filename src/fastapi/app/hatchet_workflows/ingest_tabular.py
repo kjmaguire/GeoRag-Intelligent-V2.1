@@ -49,12 +49,20 @@ data-completeness problem the geologist needs told about.
 
 Coordinates and CRS
 -------------------
-silver.collars stores easting/northing as given plus a geom. The source CRS
-is NOT discoverable from a CSV — there is no header for it — so it comes from
-the caller, defaulting to ``DEFAULT_SOURCE_EPSG``. When that default is used
-rather than supplied, ``georef_method`` records 'assumed', because a UTM
-easting read as WGS84 lands in the Gulf of Guinea and the map has no way to
-know it is wrong.
+silver.collars stores easting/northing as given plus a geom. A projected
+source CRS is NOT discoverable from a CSV — there is no header for it — so
+it comes from the upload, then the project, defaulting to
+``DEFAULT_SOURCE_EPSG``. When that default is used rather than supplied,
+``georef_method`` records 'assumed' and the run carries one prominent
+``collar_crs_assumed`` warning, because a UTM easting read in the wrong zone
+lands hundreds of km away and the map has no way to know it is wrong.
+
+A longitude/latitude table IS discoverable (headers, or degree-like values)
+and is placed as EPSG:4326 whatever the project CRS says (GIS-1,
+2026-09-29) — it used to be read as UTM metres and land on the equator.
+Every placed table is then checked against the project's known extent and
+its CRS's area of use; implausible positions warn (GIS-13). See
+app/services/ingest/collar_crs.py.
 """
 
 from __future__ import annotations
@@ -712,8 +720,11 @@ def _surface_geochem_columns(columns: list[str]) -> dict[str, Any] | None:
 
     located, _ = build_column_map(columns, {
         "sample_id": ["sample", "sample_no", "sample_number", "sampleid", "station"],
-        "easting": ["easting", "east", "utm_e", "x", "xcoord"],
-        "northing": ["northing", "north", "utm_n", "y", "ycoord"],
+        # Longitude/latitude are coordinates too (GIS-1): the CRS decision
+        # places a lon/lat survey as EPSG:4326, so it no longer has to be
+        # renamed to x/y to be recognised at all.
+        "easting": ["easting", "east", "utm_e", "x", "xcoord", "longitude", "long", "lon"],
+        "northing": ["northing", "north", "utm_n", "y", "ycoord", "latitude", "lat"],
         "sample_type": ["sample_typ", "sample_type", "samptype", "type"],
     })
 
@@ -1575,22 +1586,124 @@ def _rows_rejected_warning(
 
 
 def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
-    """Say that these collars were placed by guess, and name the guess."""
+    """Say that these collars were placed by guess, and name the guess.
+
+    GIS-2 (Kyle, 2026-09-29): undeclared projected coordinates are still
+    placed at the platform default rather than refused, so this warning is
+    the only thing standing between the geologist and a hole drawn in the
+    wrong zone. It names the assumption, what it costs when wrong, and the
+    two places a CRS can be declared.
+    """
+    named = " (WGS 84 / UTM zone 13N, the platform default)" if epsg == 32613 else ""
     return {
         "code": "collar_crs_assumed",
         "message": (
-            f"{collars_written} collar(s) placed using an assumed "
-            f"coordinate system (EPSG:{epsg})"
+            f"{collars_written} collar(s) placed using an ASSUMED coordinate "
+            f"system (EPSG:{epsg}) — no CRS was declared"
         ),
         "detail": (
-            f"No coordinate system was supplied with this upload, so its "
-            f"easting/northing were read as EPSG:{epsg}. If the holes were "
-            f"surveyed in a different projection they are now in the wrong "
-            f"place on the map — re-upload with the correct EPSG code to fix "
-            f"it. Nothing in a CSV or spreadsheet declares a projection, so "
-            f"this cannot be detected from the file."
+            f"Neither this upload nor its project declares a coordinate "
+            f"system, so the easting/northing values were read as "
+            f"EPSG:{epsg}{named}. Nothing in a CSV or spreadsheet declares a "
+            f"projection, so this cannot be detected from the file. If the "
+            f"holes were surveyed in any other zone or "
+            f"datum they are now in the wrong place on the map: another UTM "
+            f"zone is hundreds to thousands of kilometres off, NAD27 in the "
+            f"same zone about 200 m. To fix it, re-upload with the correct EPSG "
+            f"code: type it for this file in the Import wizard, or set the "
+            f"project's coordinate system (Edit project -> CRS / EPSG) so every "
+            f"future upload uses it. Re-uploading replaces these collars in "
+            f"place."
         ),
     }
+
+
+async def _resolve_table_crs(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    label: str,
+    records: list[dict[str, Any]],
+    easting_column: str | None,
+    northing_column: str | None,
+    declared_epsg: int | None,
+    project_epsg: int | None,
+    id_key: str = "hole_id",
+    x_key: str = "easting",
+    y_key: str = "northing",
+) -> tuple[Any, set[str]]:
+    """Decide one table's source CRS and check where it puts the rows.
+
+    GIS-1 / GIS-2 / GIS-13 — see app/services/ingest/collar_crs.py. Returns
+    the ``CollarCrsDecision`` (its ``warnings`` already carry the
+    plausibility findings) and the ids of the rows flagged implausible.
+    """
+    from app.services.ingest.collar_crs import (  # noqa: PLC0415
+        decide_collar_crs,
+        plausibility_warnings,
+        project_reference,
+    )
+
+    xs = [_num(r.get(x_key)) for r in records]
+    ys = [_num(r.get(y_key)) for r in records]
+    decision = decide_collar_crs(
+        eastings=xs, northings=ys,
+        easting_column=easting_column, northing_column=northing_column,
+        declared_epsg=declared_epsg, project_epsg=project_epsg,
+        default_epsg=DEFAULT_SOURCE_EPSG, label=label,
+    )
+    if decision.refusal is not None:
+        return decision, set()
+
+    points = [
+        (str(r.get(id_key)), x, y)
+        for r, x, y in zip(records, xs, ys, strict=True)
+        if r.get(id_key) and x is not None and y is not None
+    ]
+    if not points:
+        return decision, set()
+    reference = await project_reference(
+        conn, project_id, exclude_hole_ids=[p[0] for p in points],
+    )
+    found, flagged = await asyncio.to_thread(
+        plausibility_warnings,
+        epsg=decision.epsg, points=points, reference=reference, label=label,
+    )
+    decision.warnings.extend(found)
+    return decision, flagged
+
+
+async def _stamp_crs_confidence(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    hole_ids: list[str],
+    confidence: float,
+    flagged: set[str],
+) -> None:
+    """Record how far each written collar's CRS is to be believed.
+
+    silver.collars.crs_confidence was never written by this path, so the
+    MVT's crs_confidence was NULL for every tabular collar. Flagged
+    (implausible) collars get 0.1. Best-effort in a savepoint: a failure
+    here must not undo collars that are already written.
+    """
+    if not hole_ids:
+        return
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE silver.collars SET crs_confidence = CASE "
+                "WHEN hole_id = ANY($3::text[]) THEN LEAST($4::real, 0.1::real) "
+                "ELSE $4::real END "
+                "WHERE project_id = $1::uuid AND hole_id = ANY($2::text[])",
+                project_id, hole_ids, sorted(flagged), confidence,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort; the collars are already written
+        log.warning(
+            "ingest_tabular: could not record crs_confidence for %s: %s",
+            project_id, exc,
+        )
 
 
 def _remap_facts(result: Any, sheet_type: str) -> dict[str, Any] | None:
@@ -2199,7 +2312,11 @@ async def run_ingest_tabular(
 
     epsg = input.source_epsg or DEFAULT_SOURCE_EPSG
     epsg_assumed = input.source_epsg is None
-    georef_method = "assumed" if epsg_assumed else "declared"
+    #: Collars placed under the ASSUMED default, across every table of this
+    #: run — the source of the one run-level collar_crs_assumed warning
+    #: (GIS-2). Function scope so the warning block after the connection
+    #: closes can always read it.
+    crs_state: dict[str, int] = {"assumed_collars": 0}
 
     # Always create the row, under the run_id the caller minted. Laravel
     # stamps a UUID on every upload, and this used to read
@@ -2485,6 +2602,13 @@ async def run_ingest_tabular(
                 # unreadable row must not fail an ingest that would
                 # otherwise succeed — it falls back to the old behaviour,
                 # warning included.
+                #
+                # Since GIS-1 (2026-09-29) that precedence is applied PER
+                # TABLE by _resolve_table_crs, which also recognises a
+                # longitude/latitude table and places it as EPSG:4326
+                # whatever the project says; `epsg` below is only the
+                # fallback for the run-level output fields.
+                project_epsg: int | None = None
                 if input.source_epsg is None:
                     try:
                         project_epsg = await conn.fetchval(
@@ -2499,9 +2623,52 @@ async def run_ingest_tabular(
                             input.project_id, crs_exc,
                         )
                     if project_epsg is not None:
-                        epsg = int(project_epsg)
+                        project_epsg = int(project_epsg)
+                        epsg = project_epsg
                         epsg_assumed = False
-                        georef_method = "declared"
+
+                async def _placed_collars(
+                    label: str, records: list[dict[str, Any]],
+                    easting_column: str | None, northing_column: str | None,
+                    *, trace_export: bool = False,
+                ) -> dict[str, int]:
+                    """Decide this table's CRS, write its collars, record confidence."""
+                    decision, flagged = await _resolve_table_crs(
+                        conn,
+                        project_id=input.project_id,
+                        label=label,
+                        records=records,
+                        easting_column=easting_column,
+                        northing_column=northing_column,
+                        declared_epsg=input.source_epsg,
+                        project_epsg=project_epsg,
+                    )
+                    warnings.extend(decision.warnings)
+                    if decision.refusal is not None:
+                        warnings.append(decision.refusal)
+                        return {"written": 0, "skipped": len(records), "orphaned": 0}
+                    method = decision.georef_method
+                    if trace_export and method == "declared":
+                        # A trace export names no CRS itself; see the
+                        # Discover branch below for why this is 'manual'.
+                        method = "manual"
+                    collar_stats = await _write_collars(
+                        conn,
+                        workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                        records=records, epsg=decision.epsg,
+                        georef_method=method,
+                    )
+                    await _stamp_crs_confidence(
+                        conn,
+                        project_id=input.project_id,
+                        hole_ids=[str(r["hole_id"]) for r in records if r.get("hole_id")],
+                        confidence=decision.crs_confidence,
+                        flagged=flagged,
+                    )
+                    if decision.assumed:
+                        crs_state["assumed_collars"] += collar_stats.get("written", 0)
+                    return collar_stats
 
                 #: Rows the companion tables of the sheet just written landed.
                 #: A lithology sheet the lithology writer refused can still have
@@ -2616,12 +2783,13 @@ async def run_ingest_tabular(
                     warnings.extend(getattr(result, "warnings", None) or [])
 
                     if write_type == "collar":
-                        stats = await _write_collars(
-                            conn,
-                            workspace_id=input.workspace_id,
-                            project_id=input.project_id,
-                            records=records, epsg=epsg,
-                            georef_method=georef_method,
+                        result_map = getattr(result, "column_map", None) or {}
+                        stats = await _placed_collars(
+                            (table[0] if table is not None else None)
+                            or target_sheet or filename,
+                            records,
+                            result_map.get("easting"),
+                            result_map.get("northing"),
                         )
                     else:
                         # Rebuilt per type so collars written moments ago in
@@ -2869,18 +3037,15 @@ async def run_ingest_tabular(
                             attribute_rows, trace_shape,
                         )
                         if collar_rows:
-                            written["collar"] = await _write_collars(
-                                conn,
-                                workspace_id=input.workspace_id,
-                                project_id=input.project_id,
-                                records=collar_rows,
-                                epsg=epsg,
-                                # The coordinates came from the export, not
-                                # from a human typing an EPSG — 'declared'
-                                # would overstate it, since the file itself
-                                # names no CRS. 'assumed' matches what the
-                                # tabular path already records elsewhere.
-                                georef_method="assumed" if epsg_assumed else "manual",
+                            # The coordinates came from the export, not
+                            # from a human typing an EPSG — 'declared'
+                            # would overstate it, since the file itself
+                            # names no CRS, so a declared/project CRS is
+                            # recorded as 'manual' (trace_export=True).
+                            written["collar"] = await _placed_collars(
+                                filename, collar_rows,
+                                trace_shape.get("mid_x"), trace_shape.get("mid_y"),
+                                trace_export=True,
                             )
                             sheets.append({
                                 "sheet": filename,
@@ -2913,10 +3078,9 @@ async def run_ingest_tabular(
                                     "type": "survey",
                                     "rows": written["survey"]["written"],
                                 })
-                            if epsg_assumed:
-                                warnings.append(_assumed_crs_warning(
-                                    epsg, written["collar"]["written"],
-                                ))
+                            # An assumed CRS is reported once for the run,
+                            # from crs_state, below — this site used to add
+                            # a second copy of the same warning.
                         skipped_holes = len({
                             str(r.get(trace_shape["hole_id"], "") or "").strip()
                             for r in attribute_rows
@@ -2958,22 +3122,47 @@ async def run_ingest_tabular(
                 geochem_shape = _surface_geochem_columns(dbase_columns)
                 if geochem_shape is not None:
                     try:
-                        written["geochemistry"] = await _write_surface_geochem(
+                        # Same per-table CRS rule as collars (GIS-1): a soil
+                        # survey in lon/lat is placed as EPSG:4326, not read
+                        # as UTM metres at the equator.
+                        located = geochem_shape["located"]
+                        geo_decision, _ = await _resolve_table_crs(
                             conn,
-                            workspace_id=input.workspace_id,
                             project_id=input.project_id,
-                            shape=geochem_shape,
-                            rows=attribute_rows,
-                            source_epsg=epsg,
+                            label=filename,
+                            records=attribute_rows,
+                            easting_column=located["easting"],
+                            northing_column=located["northing"],
+                            declared_epsg=input.source_epsg,
+                            project_epsg=project_epsg,
+                            id_key=located["sample_id"],
+                            x_key=located["easting"],
+                            y_key=located["northing"],
                         )
+                        warnings.extend(geo_decision.warnings)
+                        if geo_decision.refusal is not None:
+                            warnings.append(geo_decision.refusal)
+                            written["geochemistry"] = {
+                                "written": 0, "skipped": len(attribute_rows),
+                                "orphaned": 0,
+                            }
+                        else:
+                            written["geochemistry"] = await _write_surface_geochem(
+                                conn,
+                                workspace_id=input.workspace_id,
+                                project_id=input.project_id,
+                                shape=geochem_shape,
+                                rows=attribute_rows,
+                                source_epsg=geo_decision.epsg,
+                            )
                         sheets.append({
                             "sheet": filename,
                             "type": "geochemistry",
                             "rows": written["geochemistry"]["written"],
                         })
-                        if epsg_assumed:
+                        if geo_decision.assumed:
                             warnings.append(_assumed_crs_warning(
-                                epsg, written["geochemistry"]["written"],
+                                geo_decision.epsg, written["geochemistry"]["written"],
                             ))
                     except Exception as exc:
                         log.warning(
@@ -3135,9 +3324,15 @@ async def run_ingest_tabular(
         #
         # Fires only when collars were actually written: an interval-only
         # upload has no coordinates for the assumption to damage.
-        collars_written = written.get("collar", {}).get("written", 0)
-        if epsg_assumed and collars_written:
-            warnings.append(_assumed_crs_warning(epsg, collars_written))
+        #
+        # Counted per table since GIS-1/GIS-2 (2026-09-29): a lon/lat table
+        # is placed as EPSG:4326 and is not "assumed" even when the run
+        # declares nothing, so the count comes from the decisions made, not
+        # from the run-level fallback.
+        if crs_state["assumed_collars"]:
+            warnings.append(_assumed_crs_warning(
+                DEFAULT_SOURCE_EPSG, crs_state["assumed_collars"],
+            ))
 
         orphans = sum(v.get("orphaned", 0) for v in written.values())
         if orphans:
