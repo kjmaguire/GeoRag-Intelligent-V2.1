@@ -95,7 +95,7 @@ class BlankedValues:
         if not self._counts:
             return None
 
-        fields = {
+        fields: dict[str, dict[str, Any]] = {
             name: {"count": count, "examples": list(self._examples[name])}
             for name, count in sorted(self._counts.items())
         }

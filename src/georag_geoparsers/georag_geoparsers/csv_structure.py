@@ -440,7 +440,7 @@ def _row_warnings(
 def parse_csv_structures(
     source: Union[str, Path, IO],  # noqa: UP007
     *,
-    null_values: list = None,
+    null_values: list | None = None,
     vendor_aliases: dict[str, list[str]] | None = None,
 ) -> StructureParseResult:
     """Parse a CSV structural-measurement file into a :class:`StructureParseResult`.
