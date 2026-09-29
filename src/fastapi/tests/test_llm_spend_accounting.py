@@ -103,6 +103,27 @@ def test_the_unpriced_warning_fires_once_per_model(caplog):
     )
 
 
+def test_an_unpriced_model_says_the_spend_ceiling_cannot_fire_once(caplog):
+    """VEN-12: has_pricing() returned False silently for Command A+.
+
+    Every answer on the default backend then recorded $0 and
+    cost_burn_watcher's `HAVING SUM(projected_cost_usd) > 0` skipped it,
+    with nothing in any log saying the brake was off. No rate is invented:
+    this only makes the gap loud.
+    """
+    import app.agent.pricing as pricing
+
+    pricing._UNPRICED_CEILING_WARNED.discard("command-a-plus-05-2026")
+    with caplog.at_level("WARNING", logger="app.agent.pricing"):
+        assert not has_pricing("command-a-plus-05-2026")
+        assert not has_pricing("command-a-plus-05-2026")
+        assert has_pricing("claude-opus-4-8")
+
+    hits = [r.getMessage() for r in caplog.records if "command-a-plus-05-2026" in r.getMessage()]
+    assert len(hits) == 1
+    assert "CANNOT fire" in hits[0]
+
+
 # ---------------------------------------------------------------------------
 # The production LLM path now costs its own calls
 # ---------------------------------------------------------------------------
