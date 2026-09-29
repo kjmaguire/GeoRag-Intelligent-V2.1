@@ -642,6 +642,13 @@ jobs:
         run: terraform -chdir=deploy/aws/terraform init -backend=false
       - name: Validate against the provider schema
         run: terraform -chdir=deploy/aws/terraform validate
+      # terraform.yml applies this tree from GitHub. Its two OIDC roles'
+      # trust subjects are the whole security model (plan on the main ref,
+      # apply only in the protected production environment), so they, the
+      # stateful-resource warning in the run summary and the workflow lines
+      # that pick a role are pinned here.
+      - name: Terraform workflow, CI roles and plan summary
+        run: bash deploy/aws/ci/tests/run.sh
 
   # ─── Deployment manifest invariants ───────────────────────────────────
   # Redis is deployed five different ways (Container Apps, Helm, and three

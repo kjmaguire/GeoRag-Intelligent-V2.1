@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI, used by run.sh to exercise
+# deploy/aws/terraform/bootstrap-ci-roles.sh. Every invocation is appended to
+# $FAKE_AWS_LOG, and IAM policy documents are copied out to files so a test
+# can assert on the exact trust and permission JSON.
+#
+#   FAKE_AWS_ROLES_EXIST   "1" if both roles already exist            ("")
+#   FAKE_AWS_NO_PROVIDER   "1" if the GitHub OIDC provider is missing  ("")
+#   FAKE_AWS_NO_BUCKET     "1" if the state bucket is unreachable      ("")
+set -uo pipefail
+
+printf '%s\n' "$*" >> "${FAKE_AWS_LOG:?FAKE_AWS_LOG must be set}"
+DOCS="${FAKE_AWS_LOG}.docs"
+mkdir -p "$DOCS"
+
+arg_after() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+  return 1
+}
+
+case "$1 $2" in
+  "sts get-caller-identity") echo "123456789012" ;;
+  "iam get-open-id-connect-provider") [ "${FAKE_AWS_NO_PROVIDER:-}" = "1" ] && exit 254; echo '{}' ;;
+  "s3api head-bucket") [ "${FAKE_AWS_NO_BUCKET:-}" = "1" ] && exit 254; exit 0 ;;
+  "iam get-role") [ "${FAKE_AWS_ROLES_EXIST:-}" = "1" ] || exit 254; echo '{}' ;;
+  "iam create-role")
+    role=$(arg_after --role-name "$@")
+    arg_after --assume-role-policy-document "$@" > "${DOCS}/${role}.trust.json" ;;
+  "iam update-assume-role-policy")
+    role=$(arg_after --role-name "$@")
+    arg_after --policy-document "$@" > "${DOCS}/${role}.trust.json" ;;
+  "iam put-role-policy")
+    role=$(arg_after --role-name "$@")
+    arg_after --policy-document "$@" > "${DOCS}/${role}.inline.json" ;;
+  "iam attach-role-policy")
+    role=$(arg_after --role-name "$@")
+    arg_after --policy-arn "$@" >> "${DOCS}/${role}.managed" ; echo >> "${DOCS}/${role}.managed" ;;
+  "iam update-role") exit 0 ;;
+  *) echo "fake-aws: unexpected call: $*" >&2; exit 99 ;;
+esac
