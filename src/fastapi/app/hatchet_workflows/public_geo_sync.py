@@ -44,11 +44,28 @@ Failure behaviour
 Nothing here fails the run on one bad feed. ``sync_all`` catches per-source,
 and the per-feature loop inside ``sync_source`` catches per-row, because a
 survey going offline or publishing one malformed polygon must not stop the
-other twenty-eight feeds from refreshing. What it does instead is *report*:
-the returned stats carry per-source counts, unmapped status values and
-truncation counts, and this workflow copies that verbatim into an audit row.
-A run that fetched nothing is visible as fetched=0 rather than as a green
-tick.
+other feeds from refreshing. What it does instead is *report*: each feed's
+stats carry an ``error`` saying why it came back short (HTTP status,
+transport error, in-band ArcGIS error, WFS exception, or plain empty), the
+row-write error count and the first row error, and this workflow copies all
+of it into an audit row.
+
+A run in which EVERY feed fetched zero features is different: that is not a
+survey having a bad day, it is egress, DNS, credentials or the registry
+being wrong, and it used to finish green with ``fetched=0``. Since
+2026-09-29 it writes the audit row (action ``public_geo.sync.failed``) and
+then RAISES, so the Hatchet run ends FAILED with the per-feed reasons in the
+error message.
+
+Triggering
+----------
+Weekly cron, or on demand: ``POST /internal/v1/public-geo/sync/trigger`` on
+FastAPI (service key), which Laravel calls from the admin-only "Sync now"
+button on the Public Geo page and from ``php artisan public-geo:sync``.
+
+Concurrency is one run at a time (``CANCEL_NEWEST`` on a constant key): a
+manual trigger while the cron — or another manual trigger — is in flight is
+cancelled by Hatchet rather than running two writers over the same tables.
 """
 
 from __future__ import annotations
@@ -58,12 +75,17 @@ import time as _t
 from datetime import UTC, datetime
 from typing import Any
 
-from hatchet_sdk import Context
+from hatchet_sdk import (
+    ConcurrencyExpression,
+    ConcurrencyLimitStrategy,
+    Context,
+    NonRetryableException,
+)
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
 from app.hatchet_workflows import _progress, hatchet
-from app.services.public_geo.sync import sync_all
+from app.services.public_geo.sync import failure_summary, sync_all
 
 log = logging.getLogger("georag.hatchet.public_geo_sync")
 
@@ -95,16 +117,30 @@ class PublicGeoSyncOut(BaseModel):
     fetched: int
     upserted: int
     errors: int
+    first_error: str | None = None
     skipped: list[str]
+    failed_feeds: list[dict[str, Any]] = Field(default_factory=list)
     per_source: list[dict[str, Any]]
     duration_ms: int
     synced_at: str  # ISO-8601 UTC
+
+
+class PublicGeoSyncFailed(RuntimeError):
+    """Every feed fetched zero features — see the module docstring."""
 
 
 public_geo_sync = hatchet.workflow(
     name="public_geo_sync",
     on_crons=["30 18 * * 0"],  # 18:30 UTC Sundays — see module docstring
     input_validator=PublicGeoSyncInput,
+    # One writer at a time. A constant key makes every run the same group;
+    # CANCEL_NEWEST drops a run that arrives while one is in flight (a
+    # double-clicked "Sync now", or a manual run overlapping the cron).
+    concurrency=ConcurrencyExpression(
+        expression="'public_geo_sync'",
+        max_runs=1,
+        limit_strategy=ConcurrencyLimitStrategy.CANCEL_NEWEST,
+    ),
 )
 
 
@@ -132,13 +168,27 @@ async def run_public_geo_sync(
             max_features_per_source=input.max_features_per_source,
         )
 
+    return await finish_run(pool, result, t0=t0, input=input)
+
+
+async def finish_run(
+    pool: Any, result: dict[str, Any], *, t0: float, input: PublicGeoSyncInput
+) -> PublicGeoSyncOut:
+    """Write the audit row, then return the output — or raise if all-empty.
+
+    Split out of the task body so the fail-loud rule is testable without a
+    Hatchet worker: the audit row is ALWAYS written first (a failed run is
+    exactly the one whose per-feed reasons an operator needs), and only then
+    does an all-empty run raise.
+    """
     duration_ms = int((_t.monotonic() - t0) * 1000)
     synced_at = datetime.now(UTC)
+    failed = bool(result.get("all_empty"))
 
     try:
         await emit_audit(
             pool,
-            action_type="public_geo.sync.complete",
+            action_type="public_geo.sync.failed" if failed else "public_geo.sync.complete",
             actor_kind="workflow",
             target_schema="public_geo",
             target_table=None,
@@ -148,7 +198,10 @@ async def run_public_geo_sync(
                 "fetched": result["fetched"],
                 "upserted": result["upserted"],
                 "errors": result["errors"],
+                "first_error": result.get("first_error"),
                 "skipped": result["skipped"],
+                "failed_feeds": result.get("failed_feeds", []),
+                "filters": input.model_dump(exclude_none=True),
                 # Per-source detail is the point of the audit row: a feed that
                 # quietly returns zero is only visible here.
                 "per_source": result["per_source"],
@@ -157,18 +210,34 @@ async def run_public_geo_sync(
             },
         )
     except Exception:  # pragma: no cover — never fail the sync on audit-write
-        log.exception("emit_audit failed (the sync itself succeeded)")
+        log.exception("emit_audit failed (the sync itself ran)")
+
+    if failed:
+        summary = failure_summary(result)
+        log.error("public_geo_sync FAILED: %s", summary)
+        if not result.get("feeds"):
+            # A filter that matches no feed will not match on retry either.
+            raise NonRetryableException(f"public_geo_sync: {summary}")
+        raise PublicGeoSyncFailed(f"public_geo_sync: {summary}")
 
     out = PublicGeoSyncOut(
         feeds=result["feeds"],
         fetched=result["fetched"],
         upserted=result["upserted"],
         errors=result["errors"],
+        first_error=result.get("first_error"),
         skipped=result["skipped"],
+        failed_feeds=result.get("failed_feeds", []),
         per_source=result["per_source"],
         duration_ms=duration_ms,
         synced_at=synced_at.isoformat(),
     )
+    if out.failed_feeds:
+        log.warning(
+            "public_geo_sync: %d of %d feed(s) came back short: %s",
+            len(out.failed_feeds), out.feeds,
+            "; ".join(f"{f['source_id']}: {f['reason']}" for f in out.failed_feeds[:10]),
+        )
     log.info(
         "public_geo_sync complete: feeds=%d fetched=%d upserted=%d errors=%d in %dms",
         out.feeds, out.fetched, out.upserted, out.errors, out.duration_ms,
