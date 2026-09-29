@@ -320,6 +320,32 @@ def _derive_match_bbox(
 # Core extraction logic — called per-block, sync (regex is fast)
 # ---------------------------------------------------------------------------
 
+#: Northings a UTM point in MGRS latitude band S (32-40 N) can have. A
+#: southern-hemisphere northing is 10,000,000 minus the distance from the
+#: equator, so the same range there is ~50-58 S.
+_BAND_S_NORTHING = (3_500_000.0, 4_450_000.0)
+
+
+def _hemisphere_reading(letter: str, northing: float) -> tuple[str | None, float]:
+    """``(hemisphere or None, extraction_confidence)`` for a zone letter.
+
+    GIS-18 (audit 2026-09-29): "12S 400000 4000000" was stored as the
+    SOUTHERN hemisphere, but in MGRS/UTM band notation S is the band for
+    32-40 N — the same text read the other way is ~10,000 km off. N is north
+    either way (band N is 0-8 N). S is only unambiguous when the northing
+    cannot belong to band S; otherwise the hemisphere is stored as unknown
+    (NULL) at half confidence, and nothing downstream may transform it
+    until a human says which.
+    """
+    letter = letter.upper()
+    if letter == "N":
+        return "N", 1.0
+    lo, hi = _BAND_S_NORTHING
+    if lo <= northing <= hi:
+        return None, 0.5
+    return "S", 1.0
+
+
 def _extract_from_block(block: dict) -> list[dict]:
     """Extract all coordinate matches from a single text block dict.
 
@@ -357,6 +383,7 @@ def _extract_from_block(block: dict) -> list[dict]:
 
         bbox = _derive_match_bbox(block, m.start(), m.end(), text_len)
         datum = _find_nearest_datum(text, m.start(), m.end())
+        hemisphere, confidence = _hemisphere_reading(coord.utm_hemisphere, coord.utm_northing)
         results.append({
             "coord_kind": "utm",
             "raw_match": m.group(0),
@@ -364,10 +391,11 @@ def _extract_from_block(block: dict) -> list[dict]:
             "latitude": None,
             "longitude": None,
             "utm_zone": coord.utm_zone,
-            "utm_hemisphere": coord.utm_hemisphere,
+            "utm_hemisphere": hemisphere,
             "utm_easting": coord.utm_easting,
             "utm_northing": coord.utm_northing,
             "datum": datum,
+            "extraction_confidence": confidence,
         })
 
     # ----------------------------------------------------------------
@@ -403,6 +431,7 @@ def _extract_from_block(block: dict) -> list[dict]:
 
         bbox = _derive_match_bbox(block, m.start(), m.end(), text_len)
         datum = _find_nearest_datum(text, m.start(), m.end())
+        hemisphere, confidence = _hemisphere_reading(coord.utm_hemisphere, coord.utm_northing)
         results.append({
             "coord_kind": "utm",
             "raw_match": raw,
@@ -410,10 +439,11 @@ def _extract_from_block(block: dict) -> list[dict]:
             "latitude": None,
             "longitude": None,
             "utm_zone": coord.utm_zone,
-            "utm_hemisphere": coord.utm_hemisphere,
+            "utm_hemisphere": hemisphere,
             "utm_easting": coord.utm_easting,
             "utm_northing": coord.utm_northing,
             "datum": datum,
+            "extraction_confidence": confidence,
         })
 
     # ----------------------------------------------------------------
@@ -668,7 +698,7 @@ class PdfCoordinatesService:
                 c.get("utm_easting"),                       # utm_easting
                 c.get("utm_northing"),                      # utm_northing
                 c.get("datum"),                             # datum
-                1.0,                                        # extraction_confidence
+                c.get("extraction_confidence", 1.0),        # extraction_confidence
                 "regex",                                    # source_method
                 now,                                        # extracted_at
             ))

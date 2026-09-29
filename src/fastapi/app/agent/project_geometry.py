@@ -8,11 +8,16 @@ the user drawing a polygon.
 
 Two strategies (try in order):
 
-  1. **silver.projects.bbox** — if the project has a pre-computed
-     bbox column. Cheap PK lookup.
-  2. **silver.collars envelope** — `ST_Envelope(ST_Union(collar_geom))`
-     for the project's collars when there's no pre-computed bbox.
+  1. **silver.projects.geom_boundary** — the project's declared outline
+     (Polygon, 4326), enveloped. Cheap PK lookup.
+  2. **silver.collars envelope** — `ST_Envelope(ST_Collect(geom_4326))`
+     for the project's collars when there's no boundary.
      Bounded by `LIMIT 500` collars to keep the query fast.
+
+GIS-16 (audit 2026-09-29): this used to read ``silver.projects.bbox`` and
+``silver.collars.collar_geom``. Neither column exists, so both queries
+raised, the error was swallowed, and the supplier always returned None.
+Both now read real 4326 columns — never ``collars.geom``, which is 32613.
 
 Returns a WKT polygon string or None when neither path resolves
 (no collars, no bbox column, DB error). The §2g tool refuses to
@@ -41,23 +46,23 @@ __all__ = [
 
 
 _BBOX_FROM_PROJECT_COLUMN = """
-    SELECT ST_AsText(bbox) AS wkt
+    SELECT ST_AsText(ST_Envelope(geom_boundary)) AS wkt
     FROM silver.projects
     WHERE project_id = $1::uuid
-      AND bbox IS NOT NULL
+      AND geom_boundary IS NOT NULL
     LIMIT 1
 """
 
 
 _BBOX_FROM_COLLARS_ENVELOPE = """
     WITH project_collars AS (
-        SELECT collar_geom
+        SELECT geom_4326
         FROM silver.collars
         WHERE project_id = $1::uuid
-          AND collar_geom IS NOT NULL
+          AND geom_4326 IS NOT NULL
         LIMIT 500
     )
-    SELECT ST_AsText(ST_Envelope(ST_Collect(collar_geom))) AS wkt
+    SELECT ST_AsText(ST_Envelope(ST_Collect(geom_4326))) AS wkt
     FROM project_collars
 """
 
