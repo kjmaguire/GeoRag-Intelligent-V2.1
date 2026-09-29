@@ -8,6 +8,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia;
 use Tests\Concerns\RequiresPostgres;
@@ -49,6 +50,11 @@ final class OverviewControllerTest extends TestCase
              ON CONFLICT (workspace_id) DO NOTHING',
             [$this->workspaceId, 'Overview Test Workspace', 'overview-'.substr($this->workspaceId, 0, 8)],
         );
+
+        // The ingest tile lists every bronze upload prefix for the project
+        // (IngestionSnapshot::listUploads). Keep that off a real object
+        // store for every test, not only the ones about the tile.
+        Storage::fake('s3-bronze');
     }
 
     private function makeProject(): Project
@@ -65,7 +71,7 @@ final class OverviewControllerTest extends TestCase
         return $project;
     }
 
-    private function insertReport(Project $project, string $title): void
+    private function insertReport(Project $project, string $title, ?string $sourceObjectKey = null): void
     {
         DB::table('silver.reports')->insert([
             'report_id' => (string) Str::uuid(),
@@ -73,6 +79,7 @@ final class OverviewControllerTest extends TestCase
             'project_id' => $project->project_id,
             'title' => $title,
             'page_count' => 10,
+            'source_object_key' => $sourceObjectKey,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -405,5 +412,94 @@ final class OverviewControllerTest extends TestCase
             $this->assertSame(0, $c['total']);
             $this->assertSame([], $c['by_method']);
         });
+    }
+
+    // ── Ingest summary tile ─────────────────────────────────────────────
+    //
+    // 2026-09-29 ("waffles"): the tile read "10 files ingesting · latest:
+    // …MadsenPFS_NI43-101…" for reports that had finished. It was computed
+    // separately from the Ingestion Runs page, by matching bronze filenames
+    // against report TITLES, never consulted silver.ingest_progress, and was
+    // only corrected by the frontend's first poll 5-30 s later.
+
+    public function test_a_finished_report_is_not_counted_as_ingesting(): void
+    {
+        $project = $this->makeProject();
+        $key = "reports/{$project->project_id}/20260929_012744_SRKCA_MadsenPFS_NI43-101_CAPR003299_Final_20250218.pdf";
+        Storage::disk('s3-bronze')->put($key, 'fake-pdf-bytes');
+        $this->insertReport($project, 'Madsen Mine Pre-Feasibility Study Technical Report', $key);
+
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $page
+                ->where('ingest_summary.in_flight', 0)
+                ->where('ingest_summary.completed', 1)
+                ->where('ingest_summary.latest_in_flight', null));
+    }
+
+    public function test_the_tile_says_what_the_ingestion_runs_poll_will_say(): void
+    {
+        $project = $this->makeProject();
+        $pid = $project->project_id;
+
+        // Finished: the report carries its key; its title is unrelated.
+        $done = "reports/{$pid}/20260929_010000_Done.pdf";
+        Storage::disk('s3-bronze')->put($done, 'x');
+        $this->insertReport($project, 'An Extracted Title', $done);
+
+        // Uploaded, no report, no progress row yet: in flight.
+        Storage::disk('s3-bronze')->put("reports/{$pid}/20260929_020000_Queued.pdf", 'x');
+
+        // Completed run for a non-report file: not in flight.
+        DB::table('silver.ingest_progress')->insert([
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $pid,
+            'minio_key' => "collars/{$pid}/20260929_030000_collars.csv",
+            'filename' => '20260929_030000_collars.csv',
+            'current_step' => 'completed',
+            'step_index' => 5,
+            'total_steps' => 5,
+            'status' => 'completed',
+            'started_at' => now(),
+            'updated_at' => now(),
+            'completed_at' => now(),
+        ]);
+
+        // Running: in flight, and the newest moving row.
+        DB::table('silver.ingest_progress')->insert([
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $pid,
+            'minio_key' => "reports/{$pid}/20260929_040000_Parsing.pdf",
+            'filename' => '20260929_040000_Parsing.pdf',
+            'current_step' => 'parse',
+            'step_index' => 2,
+            'total_steps' => 5,
+            'status' => 'started',
+            'started_at' => now()->addMinute(),
+            'updated_at' => now()->addMinute(),
+        ]);
+
+        $summary = null;
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertOk()
+            ->assertInertia(function (AssertableInertia $page) use (&$summary) {
+                $summary = $page->toArray()['props']['ingest_summary'];
+            });
+
+        $poll = $this->actingAs($this->user)
+            ->getJson("/projects/{$project->slug}/ingestion-runs.json")
+            ->assertOk();
+
+        // Exactly what Overview.tsx derives from the poll body.
+        $this->assertSame([
+            'in_flight' => $poll->json('runs.totals.in_flight'),
+            'completed' => $poll->json('runs.totals.completed'),
+            'latest_in_flight' => $poll->json('runs.latest_in_flight'),
+        ], $summary);
+        $this->assertSame(2, $summary['in_flight']);
+        $this->assertSame(1, $summary['completed']);
+        $this->assertSame('20260929_040000_Parsing.pdf', $summary['latest_in_flight']);
     }
 }

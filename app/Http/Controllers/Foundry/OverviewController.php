@@ -7,7 +7,7 @@ namespace App\Http\Controllers\Foundry;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\QueryAuditLog;
-use App\Services\StorageService;
+use App\Services\IngestionSnapshot;
 use App\Support\SetsWorkspaceRlsContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
@@ -27,7 +27,7 @@ class OverviewController extends Controller
     use SetsWorkspaceRlsContext;
 
     public function __construct(
-        private readonly StorageService $storage,
+        private readonly IngestionSnapshot $ingestionSnapshot,
     ) {}
 
     public function show(Request $request, string $slug): Response
@@ -67,13 +67,21 @@ class OverviewController extends Controller
         } catch (\Throwable $e) { /* */
         }
 
-        // Ingest summary — counts files in MinIO under bronze/reports/{project_id}/
-        // that don't yet have a silver.reports row (fuzzy filename match), so
-        // the Overview can show an "X files ingesting" card linking to the
-        // dedicated Ingestion Runs page. Cheap because the bucket is partitioned
-        // by project_id and a single project rarely has more than a few dozen
-        // PDFs in flight at once.
-        $ingestSummary = $this->buildIngestSummary($project->project_id);
+        // Ingest summary for the "X files ingesting" card, which links to the
+        // Ingestion Runs page. Taken from the SAME snapshot that page and its
+        // 5 s JSON poll serve — this used to be a second, cruder computation
+        // (bronze objects whose filename did not start with some report
+        // TITLE), which never matched an NI 43-101 whose extracted title
+        // differs from its filename, so finished reports read as ingesting
+        // until the frontend's first poll overwrote the number.
+        try {
+            $ingestSummary = $this->ingestionSnapshot->summary(
+                (string) $project->project_id,
+                (string) $project->workspace_id,
+            );
+        } catch (\Throwable $e) { /* schema drift — the landing page must still render */
+            $ingestSummary = ['in_flight' => 0, 'completed' => $reportsCount, 'latest_in_flight' => null];
+        }
 
         // OCR corpus coverage. See ocrCoverage()'s docblock for what this
         // number is and, more importantly, what it is not.
@@ -277,88 +285,5 @@ class OverviewController extends Controller
             // ground-truth page set and a CER/WER harness exist (L776a).
             'measured_accuracy' => null,
         ];
-    }
-
-    /**
-     * Lightweight in-flight count for the Overview card. Mirrors the matching
-     * logic in IngestionRunsController but only returns the totals + the most
-     * recent in-flight filename, so the Overview render stays cheap.
-     *
-     * @return array{in_flight: int, completed: int, latest_in_flight: ?string}
-     */
-    private function buildIngestSummary(string $projectId): array
-    {
-        $reportTitles = [];
-        try {
-            $reportTitles = DB::table('silver.reports')
-                ->where('project_id', $projectId)
-                ->pluck('title')
-                ->all();
-        } catch (\Throwable $e) {
-            // empty
-        }
-
-        $titleFps = [];
-        foreach ($reportTitles as $t) {
-            $fp = $this->fingerprint((string) $t);
-            if ($fp !== '') {
-                $titleFps[$fp] = true;
-            }
-        }
-
-        $inFlight = 0;
-        $latest = null;
-        $latestMtime = 0;
-
-        try {
-            $disk = $this->storage->bronzeReadOnly();
-            foreach (['reports', 'tiff'] as $prefix) {
-                foreach ($disk->files("{$prefix}/{$projectId}") as $key) {
-                    $filename = basename($key);
-                    $stem = pathinfo($filename, PATHINFO_FILENAME);
-                    $stem = preg_replace('/^\d{8}_\d{6}_/', '', $stem) ?? $stem;
-                    $fp = $this->fingerprint($stem);
-
-                    $matched = false;
-                    foreach ($titleFps as $titleFp => $_) {
-                        if (str_starts_with($fp, $titleFp)) {
-                            $matched = true;
-                            break;
-                        }
-                    }
-                    if ($matched) {
-                        continue;
-                    }
-
-                    $inFlight++;
-                    try {
-                        $mtime = $disk->lastModified($key);
-                    } catch (\Throwable $e) {
-                        $mtime = 0;
-                    }
-                    if ($mtime >= $latestMtime) {
-                        $latestMtime = $mtime;
-                        $latest = $filename;
-                    }
-                }
-            }
-        } catch (\Throwable $e) {
-            // bucket may be unreachable — degrade silently
-        }
-
-        $completed = count($reportTitles);
-
-        return [
-            'in_flight' => $inFlight,
-            'completed' => $completed,
-            'latest_in_flight' => $latest,
-        ];
-    }
-
-    private function fingerprint(string $value): string
-    {
-        $alnum = preg_replace('/[^a-z0-9]+/', '', strtolower($value)) ?? '';
-
-        return substr($alnum, 0, 40);
     }
 }

@@ -63,7 +63,7 @@ final class IngestionRunsControllerTest extends TestCase
         Storage::fake('s3-bronze');
     }
 
-    private function insertReport(string $title, int $passages, int $embedded): string
+    private function insertReport(string $title, int $passages, int $embedded, ?string $sourceObjectKey = null): string
     {
         $reportId = (string) Str::uuid();
         DB::table('silver.reports')->insert([
@@ -76,6 +76,7 @@ final class IngestionRunsControllerTest extends TestCase
             'is_scanned' => false,
             'version' => 1,
             'qp_name' => '{}',
+            'source_object_key' => $sourceObjectKey,
         ]);
 
         for ($i = 0; $i < $passages; $i++) {
@@ -327,6 +328,88 @@ final class IngestionRunsControllerTest extends TestCase
             ->assertOk()
             ->assertJsonPath('runs.totals.in_flight', 0)
             ->assertJsonPath('runs.totals.completed', 1);
+    }
+
+    public function test_an_upload_is_matched_to_its_report_by_source_object_key_not_title(): void
+    {
+        // 2026-09-29 ("waffles"): a real NI 43-101's stored title is the
+        // document's extracted title, which shares no prefix with its upload
+        // filename. The title-fingerprint match therefore never claimed it,
+        // and a finished report sat in "in flight" as 'queued' forever
+        // whenever its file had no progress row. ingest_pdf persists the
+        // exact bronze key on silver.reports.source_object_key.
+        $key = "reports/{$this->project->project_id}/20260929_012744_SRKCA_MadsenPFS_NI43-101_CAPR003299_Final_20250218.pdf";
+        Storage::disk('s3-bronze')->put($key, 'fake-pdf-bytes');
+        $this->insertReport('Madsen Mine Pre-Feasibility Study Technical Report', passages: 5, embedded: 5, sourceObjectKey: $key);
+
+        $this->actingAs($this->user)
+            ->getJson("/projects/{$this->project->slug}/ingestion-runs.json")
+            ->assertOk()
+            ->assertJsonPath('runs.totals.in_flight', 0)
+            ->assertJsonCount(0, 'runs.in_flight')
+            ->assertJsonPath('runs.latest_in_flight', null)
+            ->assertJsonPath('runs.totals.completed', 1)
+            ->assertJsonPath('runs.completed.0.filename', basename($key));
+    }
+
+    public function test_a_completed_pdf_run_with_a_null_report_id_is_not_listed_twice(): void
+    {
+        // mark_report_id() only stamps a row that is still non-terminal, so
+        // a completed PDF run routinely carries report_id NULL (the
+        // 2026-08-19 migration counted 0 of 1,328 locally). The report is
+        // found by its key instead.
+        $key = "reports/{$this->project->project_id}/20260929_010000_NullReportId.pdf";
+        $this->insertReport('Extracted Title', passages: 1, embedded: 1, sourceObjectKey: $key);
+        DB::table('silver.ingest_progress')->insert([
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $this->project->project_id,
+            'minio_key' => $key,
+            'filename' => basename($key),
+            'current_step' => 'completed',
+            'step_index' => 5,
+            'total_steps' => 5,
+            'status' => 'completed',
+            'started_at' => now(),
+            'updated_at' => now(),
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($this->user)
+            ->getJson("/projects/{$this->project->slug}/ingestion-runs.json")
+            ->assertOk()
+            ->assertJsonPath('runs.totals.in_flight', 0)
+            ->assertJsonCount(0, 'runs.in_flight')
+            ->assertJsonPath('runs.totals.completed', 1)
+            ->assertJsonPath('runs.totals.files_completed', 1);
+    }
+
+    public function test_a_stuck_run_whose_report_exists_is_not_in_flight(): void
+    {
+        // A worker killed mid-embed (Spot interruption, the 17:00 nightly
+        // stop) leaves status='started' at 'embedding'. The report row is
+        // there and nothing has touched the progress row for an hour: the
+        // file ingested, whatever stale_run_detector later decides.
+        $key = "reports/{$this->project->project_id}/20260929_020000_Stuck.pdf";
+        $this->insertReport('Extracted Title', passages: 3, embedded: 1, sourceObjectKey: $key);
+        DB::table('silver.ingest_progress')->insert([
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $this->project->project_id,
+            'minio_key' => $key,
+            'filename' => basename($key),
+            'current_step' => 'embedding',
+            'step_index' => 4,
+            'total_steps' => 5,
+            'status' => 'started',
+            'started_at' => now()->subHours(2),
+            'updated_at' => now()->subHour(),
+        ]);
+
+        $this->actingAs($this->user)
+            ->getJson("/projects/{$this->project->slug}/ingestion-runs.json")
+            ->assertOk()
+            ->assertJsonPath('runs.totals.in_flight', 0)
+            ->assertJsonPath('runs.totals.files_completed', 1)
+            ->assertJsonPath('runs.totals.files_running', 0);
     }
 
     public function test_poll_endpoint_and_page_load_agree_on_in_flight(): void

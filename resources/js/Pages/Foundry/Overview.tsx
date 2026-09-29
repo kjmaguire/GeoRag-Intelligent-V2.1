@@ -83,7 +83,10 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                 setIngest({
                     in_flight: totals?.in_flight ?? 0,
                     completed: totals?.completed ?? 0,
-                    latest_in_flight: inFlightList[0]?.filename ?? null,
+                    // The server's pick (newest row still MOVING); in_flight[0]
+                    // can be a settled row in its 24 h grace window.
+                    latest_in_flight:
+                        body.runs?.latest_in_flight !== undefined ? body.runs.latest_in_flight : (inFlightList[0]?.filename ?? null),
                 });
             } catch {
                 // ignore — retry on next tick if still polling

@@ -348,6 +348,8 @@ interface RunTotals {
 interface RunsSnapshot {
     in_flight: InFlightRow[];
     completed: CompletedRow[];
+    /** Newest row still moving (not merely in_flight[0]); null when idle. */
+    latest_in_flight?: string | null;
     totals: RunTotals;
 }
 
