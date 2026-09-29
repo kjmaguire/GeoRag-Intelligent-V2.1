@@ -341,7 +341,10 @@ dependencies = [
     # EXCLUDED the only patched release for CVE-2026-49452 (CSS injection),
     # which was fixed in weasyprint 69.0. Admitting 69.x closes it while
     # still blocking a 70.x major jump.
-    "weasyprint>=68.0,<70.0",
+    # 2026-09-29: raised to >=70.0,<71.0 for PYSEC-2026-3940, fixed only
+    # in 70.0 (Kyle approved clearing the open security alerts). The
+    # renderer uses only HTML(string=...).write_pdf(stylesheets=[CSS]).
+    "weasyprint>=70.0,<71.0",
     "python-docx>=1.1,<2.0",
     "openpyxl>=3.1,<4.0",
 
@@ -429,7 +432,10 @@ packages = ["app"]
 constraint-dependencies = [
     "anthropic<1.0",
     "gunicorn<26.0",
-    "setuptools<82.0",
+    # <84: 83.0 fixes PYSEC-2026-3447 (2026-09-29). 82 removed
+    # pkg_resources; nothing here needs it (grpc_tools imports it only on
+    # Python <3.9, wrapt guards the ImportError).
+    "setuptools<84.0",
     "websockets<16.0",
     "xxhash<4.0",
     "affine<3.0",
