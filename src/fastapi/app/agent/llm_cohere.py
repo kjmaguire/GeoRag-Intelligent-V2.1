@@ -98,6 +98,10 @@ class CoherePreStreamError(RuntimeError):
     """
 
 
+class _ThinkingRejectedError(RuntimeError):
+    """Cohere returned 400/422 naming the ``thinking`` field."""
+
+
 class CohereResponseShapeError(RuntimeError):
     """Cohere answered 200 with a body this adapter cannot read.
 
@@ -144,6 +148,7 @@ def _build_request(
     max_output: int,
     response_format: str | None,
     stream: bool,
+    thinking_budget: int | None = None,
 ) -> dict[str, Any]:
     """Assemble the v2 chat body.
 
@@ -151,6 +156,10 @@ def _build_request(
     Bedrock Converse, and the difference does not announce itself: a system
     prompt sent as a user turn still returns fluent text, just without the
     grounding rules applied.
+
+    ``thinking_budget``: None sends no ``thinking`` field (model default),
+    0 disables reasoning, a positive value caps it. [UNVERIFIED] on this
+    model -- see ``_thinking_rejected`` for what happens if it is refused.
     """
     messages: list[dict[str, Any]] = []
     if system_content:
@@ -169,7 +178,39 @@ def _build_request(
         # citation and numeric guard in orchestrator_validators.py assumes
         # the model actually returns JSON when asked.
         body["response_format"] = {"type": "json_object"}
+    if thinking_budget is not None:
+        body["thinking"] = (
+            {"type": "enabled", "token_budget": thinking_budget}
+            if thinking_budget > 0
+            else {"type": "disabled"}
+        )
     return body
+
+
+def _thinking_budget(max_output: int) -> int | None:
+    """The reasoning cap to send, from ``COHERE_CHAT_THINKING_BUDGET``.
+
+    Never more than half of ``max_output``: reasoning spends from the same
+    budget first, so a cap at or above it is no cap on the failure it exists
+    to prevent -- an answer-less reply.
+    """
+    configured = settings.COHERE_CHAT_THINKING_BUDGET
+    if configured < 0:
+        return None
+    if configured == 0:
+        return 0
+    return max(1, min(configured, max_output // 2))
+
+
+def _thinking_rejected(status: int, body: dict[str, Any], detail: str) -> bool:
+    """True when Cohere refused the request over its ``thinking`` field.
+
+    The field is [UNVERIFIED] on Command A+. A 400/422 that names it is
+    retried once without it, loudly, rather than failing every chat: an
+    uncapped-reasoning answer is worse than a capped one but much better
+    than none.
+    """
+    return status in (400, 422) and "thinking" in body and "thinking" in detail.lower()
 
 
 def _extract_content(payload: Any) -> str:
@@ -470,6 +511,7 @@ async def call_cohere_llm(
         max_output=max_output,
         response_format=response_format,
         stream=streaming,
+        thinking_budget=_thinking_budget(max_output),
     )
     url = f"{_base_url()}/v2/chat"
     timeout = httpx.Timeout(settings.COHERE_CHAT_TIMEOUT_S, connect=10.0, read=settings.COHERE_CHAT_TIMEOUT_S)
@@ -485,6 +527,8 @@ async def call_cohere_llm(
                     response = await client.post(url, headers=_headers(), json=body)
                     if response.status_code in _PRE_STREAM_RETRYABLE_STATUS:
                         raise CoherePreStreamError(f"HTTP {response.status_code} from Cohere before any output")
+                    if _thinking_rejected(response.status_code, body, response.text):
+                        raise _ThinkingRejectedError(response.text[:300])
                     response.raise_for_status()
                     payload = response.json()
                     content = _extract_content(payload)
@@ -507,6 +551,10 @@ async def call_cohere_llm(
                     async with client.stream("POST", url, headers=_headers(stream=True), json=body) as response:
                         if response.status_code in _PRE_STREAM_RETRYABLE_STATUS:
                             raise CoherePreStreamError(f"HTTP {response.status_code} from Cohere before any output")
+                        if response.status_code in (400, 422) and "thinking" in body:
+                            detail = (await response.aread()).decode(errors="replace")
+                            if _thinking_rejected(response.status_code, body, detail):
+                                raise _ThinkingRejectedError(detail[:300])
                         response.raise_for_status()
                         content_type = response.headers.get("content-type", "")
                         async for line in response.aiter_lines():
@@ -601,6 +649,16 @@ async def call_cohere_llm(
                             f"UNVERIFIED — correct _delta_text to match. {detail}"
                         )
             break
+        except _ThinkingRejectedError as exc:
+            # Once only: the field is gone from `body` after this, so a
+            # second rejection cannot match and falls through to raise.
+            body.pop("thinking", None)
+            logger.error(
+                "cohere chat: the API rejected the `thinking` field (%s) -- retrying "
+                "without it, so reasoning is UNCAPPED and answers can come back empty. "
+                "Set COHERE_CHAT_THINKING_BUDGET=-1 to stop sending it.",
+                exc,
+            )
         except Exception as exc:  # noqa: BLE001 — re-raised unless retryable
             retryable = isinstance(exc, (CoherePreStreamError, *_PRE_STREAM_RETRYABLE_EXCEPTIONS))
             if sent_any_token or not retryable or attempt >= max_retries:

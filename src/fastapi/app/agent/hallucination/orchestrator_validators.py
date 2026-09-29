@@ -33,11 +33,14 @@ Usage in orchestrator:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import re
 import time
 from typing import Any
+
+from pydantic import BaseModel
 
 from app.agent.deps import AgentDeps
 from app.agent.hallucination.citation_markers import (
@@ -794,9 +797,25 @@ def _collect_value_strings(obj: Any) -> list[str]:
     ``document_type``, ``hole_id``, ``relevance_score``, …) are part of the
     response *schema*, not evidence the tools returned, and must not ground a
     fabricated entity name. Only the values the tools actually produced count.
+
+    Dataclass and Pydantic instances are walked the same way, field VALUES
+    only. They used to fall through every branch and contribute nothing, and
+    the tools nest them: ``DocumentSearchResult.chunks`` is a list of
+    ``DocumentChunk`` dataclasses, so no retrieved passage text ever reached
+    the bag. Every commodity and proper noun in a document-grounded answer
+    was reported as "not found in any tool result" -- the first live AWS
+    query (2026-09-28) flagged 'Au' on an answer quoting "15.6 g/t Au"
+    straight from its sources -- and three such warnings escalate to
+    critical, which floors confidence and re-calls the LLM.
     """
     out: list[str] = []
-    if isinstance(obj, dict):
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        for field in dataclasses.fields(obj):
+            out.extend(_collect_value_strings(getattr(obj, field.name)))
+    elif isinstance(obj, BaseModel):
+        for name in type(obj).model_fields:
+            out.extend(_collect_value_strings(getattr(obj, name)))
+    elif isinstance(obj, dict):
         for v in obj.values():
             out.extend(_collect_value_strings(v))
     elif isinstance(obj, (list, tuple, set, frozenset)):

@@ -803,13 +803,20 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             rank_evidence_by_authority,
         )
         from app.agent.evidence_converter import build_evidence_packet  # noqa: PLC0415
+        from app.config import settings as _cfg  # noqa: PLC0415
         _query_id = str(_uuid4())
 
+        # The real context ceiling for the active backend, the same one
+        # context_prep trims against. Without it the packet fell back to
+        # build_evidence_packet's 6500 default -- a number from the retired
+        # 16K-context Qwen host -- and the chat UI's Budget pill showed
+        # twelve ordinary chunks as -7,000 tokens over budget on a 128K model.
         raw_packet = build_evidence_packet(
             query_id=_query_id,
             query_text=state.query,
             tool_results=results,
             system_prompt_tokens=state.system_prompt_tokens_estimate or 0,
+            max_context_tokens=_cfg.effective_max_context_tokens,
         )
         # Refresh authority_rank from document_type, then re-sort the
         # packet so high-authority evidence reads first. assemble_node

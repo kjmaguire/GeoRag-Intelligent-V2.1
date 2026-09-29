@@ -513,6 +513,44 @@ class TestLayer4OrchestratorExpanded:
         assert "section_title" not in bag
         assert "document_type" not in bag
 
+    def test_extract_entities_reads_the_real_search_documents_result(self) -> None:
+        """The dict fixtures above never exercised what search_documents
+        actually returns: a DocumentSearchResult dataclass holding
+        DocumentChunk dataclasses. The walker skipped both, so no passage
+        text reached the bag, and the first live AWS answer (2026-09-28) was
+        flagged "Commodity 'Au' mentioned but not found in any tool result"
+        while quoting "15.6 g/t Au" from its own sources.
+        """
+        from app.agent.hallucination.orchestrator_validators import (
+            _commodity_grounded,
+            _extract_entities_from_tool_results,
+        )
+        from app.agent.tools import DocumentChunk, DocumentSearchResult
+
+        chunk = DocumentChunk(
+            chunk_id="c-1",
+            text="28 mines produced 29 Moz at 15.6 g/t Au in the Red Lake district.",
+            source_document_id="doc-1",
+            document_title="Report.doc",
+            section_number=None,
+            section_title="History",
+            section=None,
+            page=12,
+            document_type="NI43",
+            report_id="r-1",
+            relevance_score=0.61,
+        )
+        bag = _extract_entities_from_tool_results(
+            [("search_documents", DocumentSearchResult(chunks=[chunk], count=1, data_source="qdrant"))]
+        )
+
+        assert "red" in bag and "district" in bag, "passage text must reach the bag"
+        assert _commodity_grounded("Au", bag)
+        assert not _commodity_grounded("Cu", bag), "still strict for what the text lacks"
+        # Field NAMES stay out, dataclass or dict.
+        assert "section_title" not in bag
+        assert "relevance_score" not in bag
+
     @pytest.mark.asyncio
     async def test_commodity_in_tool_results_no_warning(self) -> None:
         """Commodity mentioned in answer AND present in tool results: no warning."""

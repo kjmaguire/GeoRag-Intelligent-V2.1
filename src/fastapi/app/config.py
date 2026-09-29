@@ -447,7 +447,20 @@ class Settings(BaseSettings):
     # these, which is what makes them real controls rather than settings that
     # only look like ones.
     COHERE_CHAT_MAX_MODEL_LEN: int = 128_000
-    COHERE_CHAT_MAX_TOKENS: int = 4096
+    # Reasoning is on by default on this model and spends from max_tokens
+    # BEFORE any answer text. At 4096 with no reasoning cap, the first live
+    # AWS query (2026-09-28) spent the whole budget thinking over twelve
+    # retrieved chunks and returned no answer at all (BUDGET_EXHAUSTED_FALLBACK).
+    # 8192 with the reasoning cap below leaves at least 7K for the answer.
+    COHERE_CHAT_MAX_TOKENS: int = 8192
+    # Cap on the model's reasoning tokens, sent as `thinking.token_budget`.
+    # > 0: reasoning on, capped here (and never above half of max_tokens, so
+    # the answer always has room). 0: reasoning off -- fastest, cheapest.
+    # < 0: send no `thinking` field and take the model default (uncapped;
+    # the pre-2026-09-29 behaviour). Reasoning is also most of the latency:
+    # it streams before the first answer token, so this is the knob for
+    # "the chat is slow" as well as for cost.
+    COHERE_CHAT_THINKING_BUDGET: int = 1024
     # Read timeout for a single generation. There is no cold start to absorb
     # here — that was a Marketplace-endpoint concern and it does not exist on
     # this host — so this is sized for a long grounded answer at
