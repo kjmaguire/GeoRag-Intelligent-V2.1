@@ -1,0 +1,271 @@
+# Terraform for deploy/aws/terraform, from GitHub instead of a workstation.
+#
+#   Actions → Terraform → Run workflow (on main)
+#     action: plan   plan only; the plan is in the run summary
+#     action: apply  plan, then wait for approval on the `production`
+#                    environment, then apply exactly what was approved
+#
+# Added 2026-09-29. Until now every apply ran from whichever laptop or
+# CloudShell held credentials, with no record of what was planned or who
+# approved it. This workflow is that record.
+#
+# TWO ROLES, TWO TRUSTS (deploy/aws/terraform/bootstrap-ci-roles.sh)
+#
+#   plan   georag-github-terraform-plan, trusted for refs/heads/main.
+#          ReadOnlyAccess plus the state lock object. It cannot change
+#          infrastructure, so planning needs no approval.
+#   apply  georag-github-terraform-apply, trusted for the `production`
+#          environment ONLY. That job carries `environment: production`,
+#          whose required reviewer is the approval gate and whose branch
+#          rule (main only) keeps other branches from naming it. The job
+#          token's sub is environment-shaped, so the plan role's ref-shaped
+#          trust cannot be used here and vice versa.
+#
+# WHAT GETS APPLIED IS WHAT WAS APPROVED. The binary plan file is NOT
+# carried between jobs: it embeds prior state, and state holds every value
+# Terraform refreshes, georag/app's secret string included. An artifact is
+# readable by anyone with read access to the repository for its whole
+# retention. Instead the plan job uploads the list of resource changes
+# (address + actions, no values), and the apply job re-plans against the
+# same commit and the same image tag and refuses to apply unless its list
+# is identical. A difference means the infrastructure moved between plan
+# and approval: re-run and review again.
+#
+# image_tag. The tfvars value is overridden with the tag the fastapi service
+# is running now, so an apply never pins the task definitions to a stale
+# tag. Pass one explicitly to override. CD still owns which image the seven
+# first-party services run; see services.tf's ignore_changes.
+#
+# After a successful apply the three vendor services (hatchet, qdrant,
+# redis) are rolled onto the task definitions the apply registered
+# (deploy/aws/README.md "After every apply"). Each is a gap of a minute or
+# two. Turn it off with roll_vendor_services: false.
+#
+# Configuration (bootstrap-ci-roles.sh prints it): repository variables
+# AWS_TERRAFORM_PLAN_ROLE_ARN, AWS_TERRAFORM_APPLY_ROLE_ARN, TF_STATE_BUCKET;
+# repository secret PRODUCTION_TFVARS (the production.tfvars file).
+
+name: Terraform
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan, or plan then apply after approval"
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - apply
+      image_tag:
+        description: "image_tag override (default: the tag production is running)"
+        required: false
+        default: ""
+        type: string
+      roll_vendor_services:
+        description: "After an apply, roll hatchet/qdrant/redis onto their new task definitions"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: terraform-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: georag
+  TF_DIR: deploy/aws/terraform
+  TF_VERSION: 1.13.3
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+
+jobs:
+  plan:
+    name: Plan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configuration present?
+        env:
+          PLAN_ROLE: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+          STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          HAS_TFVARS: ${{ secrets.PRODUCTION_TFVARS != '' }}
+        run: |
+          missing=""
+          [ -n "$PLAN_ROLE" ] || missing="$missing AWS_TERRAFORM_PLAN_ROLE_ARN(variable)"
+          [ -n "$STATE_BUCKET" ] || missing="$missing TF_STATE_BUCKET(variable)"
+          [ "$HAS_TFVARS" = "true" ] || missing="$missing PRODUCTION_TFVARS(secret)"
+          if [ -n "$missing" ]; then
+            echo "::error::not configured:${missing}. Run deploy/aws/terraform/bootstrap-ci-roles.sh; it prints what to set."
+            exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (plan role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Write production.tfvars
+        env:
+          PRODUCTION_TFVARS: ${{ secrets.PRODUCTION_TFVARS }}
+        run: |
+          umask 077
+          printf '%s\n' "$PRODUCTION_TFVARS" > "${TF_DIR}/production.tfvars"
+
+      - name: Resolve image_tag
+        id: tag
+        env:
+          OVERRIDE: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OVERRIDE" ]; then
+            tag="$OVERRIDE"
+          else
+            td=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services fastapi \
+                   --query 'services[0].taskDefinition' --output text)
+            image=$(aws ecs describe-task-definition --task-definition "$td" \
+                      --query 'taskDefinition.containerDefinitions[0].image' --output text)
+            tag="${image##*:}"
+          fi
+          # Same shape cd.yml pushes (a short SHA), or the documented
+          # first-apply placeholder. `latest` is refused by variables.tf.
+          if ! printf '%s' "$tag" | grep -Eq '^([0-9a-f]{7,40}|bootstrap)$'; then
+            echo "::error::image_tag '${tag}' is not a commit SHA"
+            exit 1
+          fi
+          echo "image_tag: ${tag}"
+          echo "image_tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: terraform init
+        env:
+          STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: |
+          terraform -chdir="$TF_DIR" init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: terraform plan
+        id: plan
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+        run: |
+          set +e
+          terraform -chdir="$TF_DIR" plan -input=false -lock-timeout=5m \
+            -var-file=production.tfvars -var "image_tag=${IMAGE_TAG}" \
+            -detailed-exitcode -out=tfplan
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "has_changes=false" >> "$GITHUB_OUTPUT" ;;
+            2) echo "has_changes=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::terraform plan failed (exit ${rc})"; exit "$rc" ;;
+          esac
+
+      - name: Summarise the plan
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -no-color tfplan > plan.txt
+          terraform -chdir="$TF_DIR" show -json tfplan \
+            | jq -S '[.resource_changes[]? | select(.change.actions != ["no-op"])
+                      | {address, actions: .change.actions}] | sort_by(.address)' > changes.json
+          bash deploy/aws/ci/summarise-plan.sh changes.json plan.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the change list (addresses and actions only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-changes
+          path: changes.json
+          retention-days: 7
+
+  apply:
+    name: Apply (after approval)
+    needs: plan
+    if: >-
+      github.ref == 'refs/heads/main'
+      && inputs.action == 'apply'
+      && needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (apply role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 7200
+
+      - name: Write production.tfvars
+        env:
+          PRODUCTION_TFVARS: ${{ secrets.PRODUCTION_TFVARS }}
+        run: |
+          umask 077
+          printf '%s\n' "$PRODUCTION_TFVARS" > "${TF_DIR}/production.tfvars"
+
+      - name: terraform init
+        env:
+          STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: |
+          terraform -chdir="$TF_DIR" init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: terraform-changes
+          path: approved
+
+      - name: Re-plan and compare with what was approved
+        env:
+          IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" plan -input=false -lock-timeout=5m \
+            -var-file=production.tfvars -var "image_tag=${IMAGE_TAG}" -out=tfplan
+          terraform -chdir="$TF_DIR" show -json tfplan \
+            | jq -S '[.resource_changes[]? | select(.change.actions != ["no-op"])
+                      | {address, actions: .change.actions}] | sort_by(.address)' > changes.json
+          if ! diff -u approved/changes.json changes.json; then
+            echo "::error::the plan changed between approval and apply (diff above). Nothing was applied. Re-run the workflow and review the new plan."
+            exit 1
+          fi
+          echo "plan matches the approved change list"
+
+      - name: terraform apply
+        run: terraform -chdir="$TF_DIR" apply -input=false -lock-timeout=5m tfplan
+
+      - name: Roll the vendor services onto their new task definitions
+        if: inputs.roll_vendor_services
+        run: |
+          bash deploy/aws/upgrade/roll-vendor-services.sh
+          bash deploy/aws/upgrade/roll-vendor-services.sh --apply

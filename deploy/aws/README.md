@@ -368,6 +368,53 @@ power-off ever ran.
 > is the thing that file exists to prevent. Deleting the console one before the
 > first apply is equally fine: nothing bills until `power=on`.
 
+## Applying from GitHub Actions
+
+`.github/workflows/terraform.yml` runs the plan and apply from GitHub, so
+no workstation needs credentials and every apply leaves a record: the plan
+in the run summary, who approved it, and what changed.
+
+**Once:** run `bash deploy/aws/terraform/bootstrap-ci-roles.sh` from
+CloudShell (it needs admin credentials and the OIDC provider `ci.tf` creates).
+It creates two roles and prints the GitHub settings to make:
+
+| Role | Trusted for | Can |
+|---|---|---|
+| `georag-github-terraform-plan` | `refs/heads/main` | `ReadOnlyAccess`, the state lock object, and reading `georag/app` (a refresh of `app_placeholder` reads it) |
+| `georag-github-terraform-apply` | the `production` **environment** only | `AdministratorAccess` |
+
+The apply role is only as safe as the environment: give `production` a
+**required reviewer** and restrict its **deployment branches to `main`**.
+Without both, any branch workflow that names the environment could assume an
+admin role. Required reviewers on a private repository need GitHub Pro, Team
+or Enterprise.
+
+Then set the repository variables `AWS_TERRAFORM_PLAN_ROLE_ARN`,
+`AWS_TERRAFORM_APPLY_ROLE_ARN` and `TF_STATE_BUCKET`, and the repository
+secret `PRODUCTION_TFVARS` (the whole `production.tfvars` file). The script
+prints the exact values.
+
+**Each time:** Actions → Terraform → Run workflow on `main`.
+
+- `action: plan` plans and stops. The summary lists every change, and warns
+  first about any destroy or replace of a stateful resource (the database,
+  an EFS volume, the S3 bucket, the app secret, ECR, or a Qdrant service
+  replace, which is a retrieval outage).
+- `action: apply` plans, then waits for approval on the `production`
+  environment. After approval it re-plans against the same commit and image
+  tag, refuses to apply unless the change list is identical to the approved
+  one, applies, and then runs `roll-vendor-services.sh --apply` (turn that
+  off with `roll_vendor_services: false`).
+
+`image_tag` defaults to the tag the `fastapi` service is running, so the
+`image_tag` line in `PRODUCTION_TFVARS` is ignored; pass `image_tag` to
+override it. The binary plan is never uploaded as an artifact, because it
+embeds state and state holds every refreshed secret value.
+
+The workflow does not write Secrets Manager values. Keys an apply starts
+injecting (like the `FASTAPI_SERVICE_KEY_*` slots in Step 3) still have to be
+written before the apply.
+
 ## Layout
 
 | Path | What it is |

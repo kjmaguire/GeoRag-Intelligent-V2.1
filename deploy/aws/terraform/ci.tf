@@ -45,6 +45,13 @@
 # and an environment with no deployment-branch rule would re-open every
 # branch. Add it only together with a protected `production` environment
 # restricted to main, and list both claims below.
+#
+# NOT the Terraform roles. .github/workflows/terraform.yml plans and applies
+# this tree through two OTHER roles, georag-github-terraform-plan (main ref,
+# read-only) and georag-github-terraform-apply (the protected `production`
+# environment only). They are created by bootstrap-ci-roles.sh, not here:
+# the role that runs Terraform must not be managed by the state it applies.
+# They reuse the OIDC provider below, so do not remove it.
 
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url            = "https://token.actions.githubusercontent.com"
