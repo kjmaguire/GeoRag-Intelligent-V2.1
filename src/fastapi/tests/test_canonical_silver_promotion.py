@@ -281,6 +281,29 @@ class TestDeriveAssayV2Rows:
         assert skipped == 1
         assert [r[6] for r in rows] == ["Cu"]
 
+    def test_over_limit_sets_over_detection(self):
+        """ING-9: '>10' is stored as 10 with over_detection, not dropped."""
+        rows, _ = _derive(_rec(
+            commodity_assays={"Au_ppm": 10.0},
+            commodity_assay_flags={"Au_ppm": {
+                "od_flag": True, "od_threshold": 10.0,
+                "original": ">10", "substitution": "limit",
+            }},
+        ))
+        (*_head, detection_limit, over, under, half_dl, _lab) = rows[0]
+        assert rows[0][7] == 10.0
+        assert (detection_limit, over, under, half_dl) == (10.0, True, False, False)
+
+    @pytest.mark.parametrize(("key", "element", "unit"), [
+        ("Mo_ppm", "Mo", "ppm"), ("Pt_ppb", "Pt", "ppb"),
+        ("TREO_pct", "TREO", "pct"), ("Co_ppm", "Co", "ppm"),
+    ])
+    def test_any_element_reaches_assays_v2(self, key, element, unit):
+        """ING-3: the key vocabulary is the parser's, not a ten-element list."""
+        rows, skipped = _derive(_rec(commodity_assays={key: 3.0}))
+        assert skipped == 0
+        assert rows[0][6:9] == (element, 3.0, unit)
+
     def test_same_input_same_ids(self):
         """Re-uploading the same file must rewrite the same rows, or every
         re-ingest re-keys the nl_summaries passages derived from them."""

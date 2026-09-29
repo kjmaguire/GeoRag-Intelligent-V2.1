@@ -171,14 +171,20 @@ class TestSample:
             "qaqc_type": {"count": 1, "examples": ["CRM-1"]},
         }
 
-    def test_sample_type_is_required_and_still_rejects(self) -> None:
+    def test_unknown_sample_type_is_blanked_not_rejected(self) -> None:
+        """Kyle, 2026-09-29 (ING-4): keep the row - and its assays - blank the
+        type, say so. It used to reject the whole row."""
         result = parse_csv_samples(io.StringIO(
             "HoleID,SampleID,From,To,SampleType,Au_ppm\n"
             "D1,S1,0,1,Mystery,0.5\n"
             "D1,S2,1,2,Core,0.6\n"
         ))
-        assert result.valid_rows == 1
-        assert result.skipped_details[0]["code"] == "invalid_sample_type"
+        assert result.valid_rows == 2 and result.skipped_rows == 0
+        assert [r["sample_type"] for r in result.records] == [None, "Core"]
+        assert result.records[0]["commodity_assays"] == {"Au_ppm": 0.5}
+        assert _warning(result)["fields"] == {
+            "sample_type": {"count": 1, "examples": ["Mystery"]},
+        }
 
 
 class TestHelpers:

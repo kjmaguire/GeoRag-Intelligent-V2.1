@@ -805,24 +805,11 @@ def _sample_type_of(raw: Any) -> str:
     return _SAMPLE_TYPE_CODES.get(text, "other")
 
 
-#: Mirrors csv_sample.ASSAY_COLUMN_RE. The parser already restricted
-#: commodity_assays keys to this vocabulary, so a key failing here means the
-#: parser's regex drifted from this one — counted, never raised.
-_ASSAY_KEY_RE = re.compile(
-    r"^(U3O8|Au|Ag|Cu|Pb|Zn|Ni|Fe|Ti|Li)_?(ppm|pct|ppb|pct_|_pct)?$",
-    re.IGNORECASE,
-)
-
-#: Canonical casing for the vocabulary above — headers arrive as the lab
-#: wrote them ("AU_PPM", "u3o8ppm") and silver.assays_v2.element is matched
-#: verbatim by the agent's assay tools.
-_ASSAY_ELEMENT_CASE = {
-    "u3o8": "U3O8", "au": "Au", "ag": "Ag", "cu": "Cu", "pb": "Pb",
-    "zn": "Zn", "ni": "Ni", "fe": "Fe", "ti": "Ti", "li": "Li",
-}
-
 #: Unit → parts-per-million factor. The unit is what the COLUMN SUFFIX
-#: declared; there is no guessing an undeclared unit from the value.
+#: declared; there is no guessing an undeclared unit from the value. The
+#: parser stores every assay in one of these three (g/t is ppm, oz/t is
+#: converted to ppm) under a canonical key such as ``Au_ppm`` — see
+#: georag_geoparsers._assay_columns, which also reads the key back here.
 _UNIT_TO_PPM = {"ppm": 1.0, "ppb": 0.001, "pct": 10000.0}
 
 
@@ -872,15 +859,18 @@ def derive_assay_v2_rows(
     ):
         return [], len(keys)
 
+    from georag_geoparsers._assay_columns import split_assay_key  # noqa: PLC0415
+
     rows: list[tuple] = []
     skipped = 0
     for key in sorted(keys):
-        m = _ASSAY_KEY_RE.match(key)
-        if m is None:
+        parsed = split_assay_key(key)
+        if parsed is None:
+            # Not an assay key the parser could have produced — counted,
+            # never raised.
             skipped += 1
             continue
-        element = _ASSAY_ELEMENT_CASE[m.group(1).lower()]
-        suffix = (m.group(2) or "").strip("_").lower()
+        element, suffix = parsed
         unit = suffix or element_ref.get(element) or "unspecified"
 
         value = assays.get(key)
@@ -892,7 +882,12 @@ def derive_assay_v2_rows(
 
         flag = flags.get(key) if isinstance(flags.get(key), dict) else {}
         under_detection = bool(flag.get("dl_flag"))
+        # ">10": the value is the upper limit, and the row says so (ING-9) —
+        # it used to be hard-coded False and the cell dropped by the parser.
+        over_detection = bool(flag.get("od_flag"))
         detection_limit = flag.get("dl_threshold")
+        if detection_limit is None and over_detection:
+            detection_limit = flag.get("od_threshold")
         half_dl = flag.get("substitution") == "half_dl"
 
         # uuid5 over the natural key: re-uploading the same file rewrites
@@ -906,7 +901,7 @@ def derive_assay_v2_rows(
             str(row_id), workspace_id, collar_id, sample_id,
             from_depth, to_depth,
             element, value, unit, value_ppm, detection_limit,
-            False, under_detection, half_dl,
+            over_detection, under_detection, half_dl,
             rec.get("lab_id"),
         ))
     return rows, skipped
