@@ -126,6 +126,23 @@ inline citation pill UI in the chat view.
 Canonical evidence-anchor and passage tables (FK targets above). Created in
 the April 20 batch.
 
+`evidence_items.passage_id` → `document_passages` is **ON DELETE SET NULL**
+since 2026-09-29 (§04e, SME-approved, Kyle) —
+[2026_09_29_230400_set_null_evidence_items_passage_on_delete.php](../../../database/migrations/2026_09_29_230400_set_null_evidence_items_passage_on_delete.php).
+It was RESTRICT
+([2026_04_20_140000_create_evidence_items.php:70-71](../../../database/migrations/2026_04_20_140000_create_evidence_items.php)),
+which blocked deleting or re-ingesting any cited document. The two CHECKs
+(`evidence_items_exactly_one_ref`, `evidence_items_type_ref_consistent`)
+admit exactly one extra shape, the tombstone: `evidence_type =
+'document_passage'` with every ref NULL. `GET /v1/evidence/{id}` answers a
+tombstone with 410 `evidence_source_deleted`.
+
+`answer_runs.citation_mode` is CHECK-constrained to
+`posthoc_span_resolution` (or NULL for historical rows) since 2026-09-29 —
+[2026_09_29_230500_narrow_answer_runs_citation_mode.php](../../../database/migrations/2026_09_29_230500_narrow_answer_runs_citation_mode.php);
+`hybrid_delayed_attachment` was never written and is gone from the CHECK and
+from `CitationModeLiteral` (`src/fastapi/app/models/answer_run.py`).
+
 ### silver.message_feedback
 
 [2026_04_22_120000_create_message_feedback.php:58](../../../database/migrations/2026_04_22_120000_create_message_feedback.php) — thumbs/comments per assistant turn.
@@ -154,6 +171,35 @@ Extended by
 [2026_05_20_060200_extend_silver_collars_drillhole.php](../../../database/migrations/2026_05_20_060200_extend_silver_collars_drillhole.php) and
 [2026_05_23_050000_add_spatial_uncertainty_to_collars_and_spatial_features.php](../../../database/migrations/2026_05_23_050000_add_spatial_uncertainty_to_collars_and_spatial_features.php).
 RLS enabled + FORCE.
+
+**§04e decisions, SME-approved (Kyle), 2026-09-29:**
+
+- **Up-holes.** `chk_dip_range` is `dip BETWEEN -90 AND 90` (negative = below
+  horizontal) —
+  [2026_09_29_230000_allow_up_hole_dips_on_collars.php](../../../database/migrations/2026_09_29_230000_allow_up_hole_dips_on_collars.php).
+  It was `-90..0`
+  ([2026_04_13_100000_database_hardening.php:70-74](../../../database/migrations/2026_04_13_100000_database_hardening.php)).
+  `silver.surveys` carries no dip CHECK; the survey parser's range is
+  `-90..90`. The per-file dip-convention heuristic stays: a mostly-positive
+  file is down-positive and flipped; a single positive dip in a
+  down-negative file is an up-hole.
+- **`total_depth` is optional.** NULL when the source has none (never 0),
+  `> 0` when present —
+  [2026_09_29_230100_make_collar_total_depth_optional.php](../../../database/migrations/2026_09_29_230100_make_collar_total_depth_optional.php).
+  Readers that need a length fall back to the deepest survey/interval
+  ([src/fastapi/app/services/collar_depth.py](../../../src/fastapi/app/services/collar_depth.py)).
+- **One collar per `(project_id, hole_id_canonical)`.** The database derives
+  `hole_id_canonical` (`silver.canonical_hole_id()` via
+  `trg_collars_hole_id_canonical`) —
+  [2026_09_29_230200_derive_hole_id_canonical_on_collars.php](../../../database/migrations/2026_09_29_230200_derive_hole_id_canonical_on_collars.php);
+  the unique index `collars_project_id_hole_id_canonical_unique` is built
+  CONCURRENTLY by
+  [2026_09_29_230300_unique_canonical_hole_id_on_collars.php](../../../database/migrations/2026_09_29_230300_unique_canonical_hole_id_on_collars.php)
+  only when no duplicates exist (otherwise a warning, and
+  `php artisan collars:merge-duplicates` merges them into the oldest collar).
+  Every collar writer upserts `ON CONFLICT (project_id, hole_id_canonical)
+  WHERE hole_id_canonical IS NOT NULL`. The `(project_id, hole_id)` unique
+  constraint stays.
 
 ### silver.assays_v2
 
