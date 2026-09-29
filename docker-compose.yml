@@ -303,8 +303,17 @@ services:
       # can connect to the pgbouncer virtual admin DB without a separate postgres user.
       # edoburu entrypoint generates admin_users from this var (default: postgres).
       ADMIN_USERS: ${POSTGRES_USER:-georag}
+    # SEC-7 (2026-09-29): every backend/datastore port in this file is
+    # published on ${GEORAG_BIND_ADDR:-127.0.0.1}, not 0.0.0.0. Qdrant runs
+    # with no API key here ("network isolation handles the threat model"),
+    # Martin serves any project_id/workspace_id pair it is asked for, and
+    # Redis/PgBouncer/FastAPI are behind shared secrets at best — on all
+    # interfaces, anyone on the LAN of a dev or demo box could read every
+    # tenant's chunks. Set GEORAG_BIND_ADDR=0.0.0.0 to opt back in. The app
+    # (APP_PORT) and Reverb stay on all interfaces: they are the
+    # authenticated front door.
     ports:
-      - "${PGBOUNCER_PORT:-6432}:6432"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${PGBOUNCER_PORT:-6432}:6432"
     networks:
       - georag
     depends_on:
@@ -403,7 +412,7 @@ services:
         --loglevel notice
         --requirepass ${REDIS_PASSWORD:-}
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -458,10 +467,17 @@ services:
       # treats inbound traffic as token-only and skips StartSession, so spaLogin
       # 500s with "Session store not set on request" (2026-05-22 regression).
       SANCTUM_STATEFUL_DOMAINS: ${SANCTUM_STATEFUL_DOMAINS:-localhost,localhost:8888,127.0.0.1,127.0.0.1:8888,host.docker.internal,host.docker.internal:8888}
-      # Database — always route through PgBouncer
+      # Database — DIRECT to Postgres, not PgBouncer (SEC-2, 2026-09-29).
+      # BindWorkspaceRlsContext binds app.workspace_id per SESSION; behind
+      # transaction pooling that binding stays on whichever backend ran it
+      # and scopes someone else's next request (proved against PgBouncer in
+      # tests/Feature/Tenancy/PooledRlsBindingTest.php). This matches AWS,
+      # where Laravel talks to RDS:5432 with no pooler. The middleware
+      # refuses every request (503) if DB_POOLED is true or the port is 6432.
       DB_CONNECTION: pgsql
-      DB_HOST: pgbouncer
-      DB_PORT: 6432
+      DB_HOST: postgresql
+      DB_PORT: 5432
+      DB_POOLED: "false"
       DB_DATABASE: ${POSTGRES_DB:-georag}
       DB_USERNAME: ${GEORAG_APP_USER:-georag_app}
       DB_PASSWORD: ${GEORAG_APP_PASSWORD:?GEORAG_APP_PASSWORD must be set in .env}
@@ -534,7 +550,7 @@ services:
     networks:
       - georag
     depends_on:
-      pgbouncer:
+      postgresql:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -581,6 +597,8 @@ services:
       DB_CONNECTION: pgsql
       DB_HOST: pgbouncer
       DB_PORT: 6432
+      # Transaction-pooled: only SET LOCAL (withWorkspaceRls) is sound here.
+      DB_POOLED: "true"
       DB_DATABASE: ${POSTGRES_DB:-georag}
       DB_USERNAME: ${GEORAG_APP_USER:-georag_app}
       DB_PASSWORD: ${GEORAG_APP_PASSWORD:?GEORAG_APP_PASSWORD must be set in .env}
@@ -665,6 +683,8 @@ services:
       DB_CONNECTION: pgsql
       DB_HOST: pgbouncer
       DB_PORT: 6432
+      # Transaction-pooled: only SET LOCAL (withWorkspaceRls) is sound here.
+      DB_POOLED: "true"
       DB_DATABASE: ${POSTGRES_DB:-georag}
       DB_USERNAME: ${GEORAG_APP_USER:-georag_app}
       DB_PASSWORD: ${GEORAG_APP_PASSWORD:?GEORAG_APP_PASSWORD must be set in .env}
@@ -762,7 +782,7 @@ services:
         --timeout-graceful-shutdown 30
         --header server:GeoRAG
     ports:
-      - "${FASTAPI_PORT:-8000}:8000"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${FASTAPI_PORT:-8000}:8000"
     environment:
       # Phase F.5 — pin the import root to the bind-mounted source tree so
       # live edits in src/fastapi/app/ take effect immediately. Without this
@@ -1367,8 +1387,8 @@ services:
     container_name: georag-qdrant
     restart: unless-stopped
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${QDRANT_PORT:-6333}:6333"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${QDRANT_GRPC_PORT:-6334}:6334"
     environment:
       QDRANT__SERVICE__GRPC_PORT: 6334
       # Qdrant review #4 — bumped cluster-level HNSW `m` 16 → 32 to match
@@ -1476,9 +1496,9 @@ services:
     entrypoint: ["sh", "/usr/local/bin/entrypoint.sh"]
     ports:
       # S3 API \u2014 was 9000 under MinIO, now 8333 under SeaweedFS.
-      - "${S3_API_PORT:-${MINIO_API_PORT:-8333}}:8333"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${S3_API_PORT:-${MINIO_API_PORT:-8333}}:8333"
       # Filer HTTP UI / admin (no separate console like MinIO had).
-      - "${S3_CONSOLE_PORT:-${MINIO_CONSOLE_PORT:-8888}}:8888"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${S3_CONSOLE_PORT:-${MINIO_CONSOLE_PORT:-8888}}:8888"
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
@@ -1636,8 +1656,8 @@ services:
       postgresql:
         condition: service_healthy
     ports:
-      - "${HATCHET_API_PORT:-8889}:8888"
-      - "${HATCHET_GRPC_PORT:-7077}:7077"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${HATCHET_API_PORT:-8889}:8888"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${HATCHET_GRPC_PORT:-7077}:7077"
     environment:
       DATABASE_URL: "postgres://hatchet:${HATCHET_DB_PASSWORD:-hatchet}@postgresql:5432/hatchet?sslmode=disable"
       SERVER_MSGQUEUE_KIND: postgres
@@ -1998,7 +2018,7 @@ services:
     restart: unless-stopped
     command: --config /config/martin.yaml
     ports:
-      - "${MARTIN_PORT:-3002}:3000"
+      - "${GEORAG_BIND_ADDR:-127.0.0.1}:${MARTIN_PORT:-3002}:3000"
     environment:
       DATABASE_URL: "postgresql://${GEORAG_APP_USER:-georag_app}:${GEORAG_APP_PASSWORD}@postgresql:5432/${POSTGRES_DB:-georag}"
     volumes:
