@@ -236,8 +236,18 @@ async def _emit_for_collar(
         "DELETE FROM silver.samples WHERE collar_id = $1::uuid AND sample_type = 'derived_composite'",
         collar_id,
     )
+    # Scoped to the rows THIS module wrote. It used to delete every
+    # 'lithology' interval on the collar, which also destroyed the geologist's
+    # LOGGED lithology that promote_silver_to_gold had already written for the
+    # hole (silver.lithology -> gold), on any hole with a curve named GAMMA.
+    # The two writers race — the archive derives once when it finishes, the
+    # promotions fire as each tabular member completes — so a real Hole
+    # Lithology strip log could be wiped and left blank until the next
+    # promotion. Silver was already scoped this way (DERIVED-% above).
     await conn.execute(
-        "DELETE FROM gold.drillhole_intervals_visual WHERE collar_id = $1::uuid AND interval_kind = 'lithology'",
+        "DELETE FROM gold.drillhole_intervals_visual "
+        "WHERE collar_id = $1::uuid AND interval_kind = 'lithology' "
+        "AND lithology_code LIKE 'DERIVED-%'",
         collar_id,
     )
 
