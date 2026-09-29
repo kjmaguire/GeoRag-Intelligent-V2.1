@@ -31,6 +31,7 @@ from hatchet_sdk import (
 )
 from pydantic import BaseModel, Field, model_validator
 
+from app.db import fetch_per_workspace
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.ingest.context_enricher import enrich_passage_context
@@ -173,12 +174,17 @@ async def run(
     if input.project_id == "*":
         conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
         try:
-            rows = await conn.fetch(
+            # HAT-1 (2026-09-29): per workspace, scope bound. The passages
+            # table is fail-CLOSED, so the unscoped read found nothing under
+            # the worker's AWS role (georag_app, NOBYPASSRLS).
+            rows = await fetch_per_workspace(
+                conn,
                 "SELECT DISTINCT r.project_id::text AS pid, "
                 "       dp.workspace_id::text AS wid "
                 "  FROM silver.document_passages dp "
                 "  JOIN silver.reports r ON r.report_id = dp.document_id "
-                " WHERE dp.contextualized_content IS NULL AND r.project_id IS NOT NULL"
+                " WHERE dp.contextualized_content IS NULL AND r.project_id IS NOT NULL",
+                site="enrich_passage_context.targets",
             )
             targets = [(r["wid"], r["pid"]) for r in rows if r["wid"]]
         finally:

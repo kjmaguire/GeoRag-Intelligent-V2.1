@@ -26,6 +26,7 @@ import asyncpg
 from hatchet_sdk import ConcurrencyExpression, ConcurrencyLimitStrategy, Context
 from pydantic import BaseModel, Field, model_validator
 
+from app.db import fetch_per_workspace
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.ingest.page_verbalizer import verbalize_pending_pages
@@ -132,7 +133,11 @@ async def run(
     conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
         if input.project_id == "*":
-            rows = await conn.fetch(
+            # HAT-1 (2026-09-29): per workspace, scope bound. The passages
+            # table is fail-CLOSED, so the unscoped read found nothing under
+            # the worker's AWS role (georag_app, NOBYPASSRLS).
+            rows = await fetch_per_workspace(
+                conn,
                 "SELECT DISTINCT r.project_id::text AS pid, "
                 "       dp.workspace_id::text AS wid "
                 "  FROM silver.document_passages dp "
@@ -140,7 +145,8 @@ async def run(
                 " WHERE dp.modality = 'image' "
                 "   AND dp.verbalized_at IS NULL "
                 "   AND dp.image_object_key IS NOT NULL "
-                "   AND r.project_id IS NOT NULL"
+                "   AND r.project_id IS NOT NULL",
+                site="verbalize_page_images.targets",
             )
             targets = [(r["wid"], r["pid"]) for r in rows]
         else:

@@ -29,6 +29,7 @@ from hatchet_sdk import (
 )
 from pydantic import BaseModel, Field, model_validator
 
+from app.db import affected_row_count, execute_per_workspace, fetch_per_workspace
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.ingest.passage_embedder import embed_pending_passages
@@ -43,6 +44,20 @@ log = logging.getLogger("georag.hatchet.embed_pending_passages")
 # at embed_verify/embedding forever.
 _EMBEDDABLE_OCR_PREDICATE = (
     "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+)
+
+# HAT-1 (2026-09-29) — every cross-workspace read below runs once per
+# workspace with the scope bound (app/db/workspace_sweep.py).
+# silver.document_passages is fail-CLOSED, so under the worker's AWS role
+# (georag_app, NOBYPASSRLS) the old unscoped fan-out found no targets and
+# both crons fired and did nothing; the completion sweep's NOT EXISTS read
+# every run as fully embedded.
+_FANOUT_TARGETS_SQL = (
+    "SELECT DISTINCT r.project_id::text AS pid, "
+    "       dp.workspace_id::text AS wid "
+    "  FROM silver.document_passages dp "
+    "  JOIN silver.reports r ON r.report_id = dp.document_id "
+    " WHERE dp.embedding_id IS NULL AND r.project_id IS NOT NULL"
 )
 
 
@@ -230,12 +245,8 @@ async def run(
     if input.project_id == "*":
         conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
         try:
-            rows = await conn.fetch(
-                "SELECT DISTINCT r.project_id::text AS pid, "
-                "       dp.workspace_id::text AS wid "
-                "  FROM silver.document_passages dp "
-                "  JOIN silver.reports r ON r.report_id = dp.document_id "
-                " WHERE dp.embedding_id IS NULL AND r.project_id IS NOT NULL"
+            rows = await fetch_per_workspace(
+                conn, _FANOUT_TARGETS_SQL, site="embed_pending_passages.targets",
             )
             targets = [(r["wid"], r["pid"]) for r in rows if r["wid"]]
         finally:
@@ -282,7 +293,8 @@ async def run(
     try:
         gauge_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
         try:
-            gauge_rows = await gauge_conn.fetch(
+            gauge_rows = await fetch_per_workspace(
+                gauge_conn,
                 """
                 SELECT r.workspace_id::text AS ws, count(*)::int AS n
                 FROM silver.document_passages dp
@@ -290,6 +302,7 @@ async def run(
                 WHERE dp.embedding_id IS NULL
                 GROUP BY r.workspace_id
                 """,
+                site="embed_pending_passages.gauge",
             )
         finally:
             await gauge_conn.close()
@@ -330,10 +343,16 @@ async def run(
 
             _heal_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
             try:
-                _pg_embedded = await _heal_conn.fetchval(
-                    "SELECT count(*) FROM silver.document_passages "
-                    "WHERE embedding_id IS NOT NULL"
+                _heal_counts = await fetch_per_workspace(
+                    _heal_conn,
+                    "SELECT current_setting('app.workspace_id') AS wid, "
+                    "       count(*)::bigint AS n "
+                    "  FROM silver.document_passages "
+                    " WHERE embedding_id IS NOT NULL",
+                    site="embed_pending_passages.heal_count",
                 )
+                _heal_workspaces = [r["wid"] for r in _heal_counts if r["n"]]
+                _pg_embedded = sum(int(r["n"]) for r in _heal_counts)
                 if (_qdrant_points in (0, None)) and _pg_embedded >= 50:
                     log.error(
                         "embed_pending_passages.qdrant_drift detected: "
@@ -392,17 +411,30 @@ async def run(
                         # repopulated, so successive sweeps keep going. The
                         # ORDER BY makes the batches deterministic instead
                         # of re-picking arbitrary rows each tick.
-                        _reset = await _heal_conn.execute(
-                            "UPDATE silver.document_passages "
-                            "SET embedding_id = NULL, updated_at = NOW() "
-                            "WHERE passage_id IN ("
-                            "  SELECT passage_id FROM silver.document_passages "
-                            "  WHERE embedding_id IS NOT NULL "
-                            "  ORDER BY created_at "
-                            "  LIMIT $1"
-                            ")",
-                            _QDRANT_DRIFT_RESET_BATCH,
-                        )
+                        # One batch in total, shared across workspaces in
+                        # order, so the cap still bounds a false positive.
+                        _reset_left = _QDRANT_DRIFT_RESET_BATCH
+                        _reset_statuses: list[str] = []
+                        for _wid in _heal_workspaces:
+                            if _reset_left <= 0:
+                                break
+                            _status = (await execute_per_workspace(
+                                _heal_conn,
+                                "UPDATE silver.document_passages "
+                                "SET embedding_id = NULL, updated_at = NOW() "
+                                "WHERE passage_id IN ("
+                                "  SELECT passage_id FROM silver.document_passages "
+                                "  WHERE embedding_id IS NOT NULL "
+                                "  ORDER BY created_at "
+                                "  LIMIT $1"
+                                ")",
+                                _reset_left,
+                                site="embed_pending_passages.drift_reset",
+                                workspace_ids=[_wid],
+                            ))[0]
+                            _reset_statuses.append(_status)
+                            _reset_left -= affected_row_count(_status)
+                        _reset = ", ".join(_reset_statuses)
                         log.info(
                             "embed_pending_passages.qdrant_drift reset %s "
                             "(cap %d of %d embedded) — re-embed begins this "
@@ -417,12 +449,9 @@ async def run(
                         # Must rebuild `targets`, not `project_ids` — the
                         # embed loop iterates (workspace_id, project_id)
                         # pairs, and project_ids is only a derived label.
-                        _rows = await _heal_conn.fetch(
-                            "SELECT DISTINCT r.project_id::text AS pid, "
-                            "       dp.workspace_id::text AS wid "
-                            "  FROM silver.document_passages dp "
-                            "  JOIN silver.reports r ON r.report_id = dp.document_id "
-                            " WHERE dp.embedding_id IS NULL AND r.project_id IS NOT NULL"
+                        _rows = await fetch_per_workspace(
+                            _heal_conn, _FANOUT_TARGETS_SQL,
+                            site="embed_pending_passages.targets",
                         )
                         targets = [(r["wid"], r["pid"]) for r in _rows if r["wid"]]
                         project_ids = [pid for _, pid in targets]
@@ -440,13 +469,16 @@ async def run(
                     try:
                         from qdrant_client import models as _qmodels  # noqa: PLC0415
 
-                        _proj_rows = await _heal_conn.fetch(
+                        _proj_rows = await fetch_per_workspace(
+                            _heal_conn,
                             "SELECT r.project_id::text AS pid, count(*)::int AS n "
                             "  FROM silver.document_passages dp "
                             "  JOIN silver.reports r ON r.report_id = dp.document_id "
                             " WHERE dp.embedding_id IS NOT NULL "
                             "   AND r.project_id IS NOT NULL "
-                            " GROUP BY r.project_id"
+                            " GROUP BY r.project_id",
+                            site="embed_pending_passages.partial_loss",
+                            workspace_ids=_heal_workspaces,
                         )
                         _qc_cnt = AsyncQdrantClient(**qdrant_client_kwargs())
                         try:
@@ -560,12 +592,14 @@ async def run(
         try:
             orphan_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
             try:
-                orphan_rows = await orphan_conn.fetch(
+                orphan_rows = await fetch_per_workspace(
+                    orphan_conn,
                     "SELECT DISTINCT workspace_id::text AS wid "
                     "  FROM silver.document_passages "
                     " WHERE embedding_id IS NULL "
                     "   AND document_id IS NULL "
-                    "   AND workspace_id IS NOT NULL"
+                    "   AND workspace_id IS NOT NULL",
+                    site="embed_pending_passages.orphan_discovery",
                 )
                 orphan_workspaces = [r["wid"] for r in orphan_rows]
             finally:
@@ -668,7 +702,8 @@ async def run(
             # project-wide predicate held every run hostage to the slowest
             # document in a bulk import. NULL report_id (recovery rows, rows
             # that died before persist) keeps the project-wide fallback.
-            rows_to_complete = await sweep_conn.fetch(
+            rows_to_complete = await fetch_per_workspace(
+                sweep_conn,
                 f"""
                 SELECT ip.run_id::text       AS run_id,
                        ip.workspace_id::text AS workspace_id,
@@ -690,6 +725,7 @@ async def run(
                   )
                 """,
                 project_ids,
+                site="embed_pending_passages.completion_sweep",
             )
 
         flipped = 0
