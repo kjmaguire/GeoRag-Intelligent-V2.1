@@ -576,6 +576,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             _loaded_dim = embedding_model.get_sentence_embedding_dimension()
         except Exception:  # noqa: BLE001 — logged below as unknown
+            logger.debug("embedding dimension unavailable after warm-up", exc_info=True)
             _loaded_dim = None
         # %s, not %d — the remote-sidecar proxy returns None for the dimension
         # when the sidecar can't be reached, and %d would blow up the log call.

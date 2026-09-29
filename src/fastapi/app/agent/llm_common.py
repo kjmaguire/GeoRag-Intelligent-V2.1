@@ -217,10 +217,12 @@ def parse_retry_after(value: str | None) -> float | None:
     try:
         return max(0.0, float(text))
     except ValueError:
-        pass
+        # Not delta-seconds; try the HTTP-date form below.
+        logger.debug("Retry-After %r is not delta-seconds", text)
     try:
         when = email.utils.parsedate_to_datetime(text)
     except (TypeError, ValueError):
+        logger.debug("Retry-After %r unreadable; using the backoff ladder", text)
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=UTC)
