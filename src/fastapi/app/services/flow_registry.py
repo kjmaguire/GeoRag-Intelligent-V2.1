@@ -132,10 +132,15 @@ async def get_registry(*, force_refresh: bool = False) -> dict[str, FlowEntry]:
     cache is older than the TTL (or on force_refresh)."""
     global _cache_loaded_at, _cache
     now = time.monotonic()
+    # Freshness is keyed on the load TIME, not on the dict being non-empty.
+    # It used to test ``_cache`` truthiness, and an empty registry is the
+    # normal state here (no integration edge exists) — so every call,
+    # including every unauthenticated POST to the integrations trigger,
+    # opened a fresh asyncpg connection (API-9).
     with _cache_lock:
         cache_fresh = (
-            _cache
-            and not force_refresh
+            not force_refresh
+            and _cache_loaded_at > 0.0
             and (now - _cache_loaded_at) < CACHE_TTL_SECONDS
         )
     if cache_fresh:
@@ -145,6 +150,10 @@ async def get_registry(*, force_refresh: bool = False) -> dict[str, FlowEntry]:
         rows = await _fetch_rows()
     except Exception as e:
         log.warning("flow_registry refresh failed (keeping prior cache): %s", e)
+        # Back off for one TTL rather than reconnecting on every call while
+        # the database is unreachable.
+        with _cache_lock:
+            _cache_loaded_at = now
         return _cache
 
     resolved: dict[str, FlowEntry] = {}

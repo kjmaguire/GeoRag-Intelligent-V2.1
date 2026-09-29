@@ -120,8 +120,12 @@ class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
             throw new RuntimeException('FASTAPI_SERVICE_KEY not configured');
         }
 
+        // X-Workspace-Id keys FastAPI's rate limiter per tenant for this
+        // JWT-less service call; without it every workspace's refresh
+        // shares the one bucket keyed on this worker's IP.
         $resp = Http::withHeaders([
             'X-Service-Key' => $serviceKey,
+            'X-Workspace-Id' => $this->workspaceId,
             'Accept' => 'application/json',
         ])
             ->timeout(120)

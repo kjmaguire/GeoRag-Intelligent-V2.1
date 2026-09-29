@@ -209,9 +209,32 @@ def _cached_keys(flow_name: str) -> list[tuple[str, str]] | None:
     return keys
 
 
+#: Hard cap on cached flows. The registry holds a handful; the cap exists
+#: because the key is caller-supplied (the URL path), and an unbounded dict
+#: keyed on it grew for every distinct name anyone sent (API-9).
+_PER_FLOW_CACHE_MAX = 256
+
+
 def _store_keys(flow_name: str, keys: list[tuple[str, str]]) -> None:
+    """Cache ``keys`` for ``flow_name``, pruning expired and excess entries.
+
+    Expired entries used to stay in the dict forever (``_cached_keys`` only
+    ignored them), so the cache only ever grew.
+    """
+    now = time.monotonic()
     with _per_flow_lock:
-        _per_flow_cache[flow_name] = (keys, time.monotonic())
+        for name in [
+            n
+            for n, (_, fetched_at) in _per_flow_cache.items()
+            if (now - fetched_at) >= _PER_FLOW_KEY_TTL_SECONDS
+        ]:
+            del _per_flow_cache[name]
+        _per_flow_cache[flow_name] = (keys, now)
+        overflow = len(_per_flow_cache) - _PER_FLOW_CACHE_MAX
+        if overflow > 0:
+            oldest = sorted(_per_flow_cache.items(), key=lambda kv: kv[1][1])
+            for name, _entry in oldest[:overflow]:
+                del _per_flow_cache[name]
 
 
 async def _aget_per_flow_keys(flow_name: str) -> list[tuple[str, str]]:

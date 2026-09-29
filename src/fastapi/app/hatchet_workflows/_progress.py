@@ -37,6 +37,7 @@ See [[ingestion-runs-ui-2026-05-24]] for design notes and
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -109,24 +110,47 @@ _dsn = build_dsn
 # Module-level asyncpg pool — spec constraint #3: hooks/sweeps reuse the pool.
 # ---------------------------------------------------------------------------
 _pool: asyncpg.Pool | None = None
+# Guards pool creation. get_pool() is also called from the FastAPI request
+# path (shadow_trigger, mv_refresh_trigger, ingest_progress.start_run), where
+# concurrent first requests on one worker used to each pass the None check,
+# each create a pool, and leak all but the last for the process lifetime
+# (API-12). Double-checked below so the steady state takes no lock.
+_pool_lock = asyncio.Lock()
 
 
 async def get_pool() -> asyncpg.Pool:
     """Return the lazily-initialised module pool.
 
-    The Hatchet worker is a single-process asyncio runtime, so one
-    module-level pool is safe and avoids the per-call connect overhead the
-    Phase B implementation paid for every write.
+    One module-level pool per process avoids the per-call connect overhead
+    the Phase B implementation paid for every write. Creation is serialised
+    by ``_pool_lock`` because this runs under concurrent FastAPI requests,
+    not only in the single-process Hatchet worker.
     """
     global _pool
-    if _pool is None or _pool.is_closing():
-        _pool = await asyncpg.create_pool(
-            _dsn(),
-            min_size=1,
-            max_size=4,
-            statement_cache_size=0,
-        )
-    return _pool
+    if _pool is not None and not _pool.is_closing():
+        return _pool
+    async with _pool_lock:
+        if _pool is None or _pool.is_closing():
+            _pool = await asyncpg.create_pool(
+                _dsn(),
+                min_size=1,
+                max_size=4,
+                statement_cache_size=0,
+            )
+        return _pool
+
+
+async def close_pool() -> None:
+    """Close the module pool if one was created. Idempotent.
+
+    Called from the FastAPI lifespan teardown so the connections are closed
+    cleanly instead of being dropped by the server when the task stops.
+    """
+    global _pool
+    async with _pool_lock:
+        pool, _pool = _pool, None
+    if pool is not None and not pool.is_closing():
+        await pool.close()
 
 
 #: The prefix Laravel prepends to every uploaded object's name.
@@ -517,7 +541,6 @@ async def mark_heartbeat(*, run_id: str) -> None:
         )
 
 
-import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 
 
