@@ -9,6 +9,7 @@ use App\Models\Project;
 use App\Support\HoleStripTracks;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -111,7 +112,20 @@ class DrillholeDetailController extends Controller
             );
 
             $lithologyQuality = $this->lithologyQualityCounters($collarId);
-            $dqFlags = $this->dataQualityFlagSummary($collarId, $project->project_id);
+
+            // LAR-4: this summary was the one read left unguarded, so any
+            // earlier failure (or its own) 500'd the page. The fallback
+            // under-claims — `evaluated: false` renders "not checked", never
+            // "clean".
+            $dqFlags = $this->optionalQuery(
+                fn (): array => $this->dataQualityFlagSummary($collarId, $project->project_id),
+                [
+                    'counts' => ['ERROR' => 0, 'WARNING' => 0, 'INFO' => 0],
+                    'open_total' => 0,
+                    'evaluated' => false,
+                    'flags' => [],
+                ],
+            );
 
             return Inertia::render('Foundry/DrillholeDetail', [
                 'project' => [
@@ -274,7 +288,7 @@ class DrillholeDetailController extends Controller
      */
     private function lithologyQualityCounters(string $collarId): ?array
     {
-        try {
+        return $this->optionalQuery(function () use ($collarId): ?array {
             $row = DB::table('silver.lithology')
                 ->where('collar_id', $collarId)
                 ->selectRaw(
@@ -295,9 +309,7 @@ class DrillholeDetailController extends Controller
                 'unmapped' => (int) $row->unmapped,
                 'total' => (int) $row->total,
             ];
-        } catch (\Throwable $e) {
-            return null;
-        }
+        }, null);
     }
 
     /**
@@ -305,22 +317,28 @@ class DrillholeDetailController extends Controller
      */
     private function stripTracks(string $collarId): array
     {
-        try {
-            return (new HoleStripTracks)->forCollar($collarId);
-        } catch (\Throwable $e) {
-            return [
+        return $this->optionalQuery(
+            fn (): array => (new HoleStripTracks)->forCollar($collarId),
+            [
                 'lithology' => [], 'alteration' => [], 'mineralization' => [],
                 'truncated' => ['lithology' => false, 'alteration' => false, 'mineralization' => false],
-            ];
-        }
+            ],
+        );
     }
 
+    /**
+     * One optional panel read, in its own savepoint (see
+     * SetsWorkspaceRlsContext::optionalQuery()).
+     *
+     * @param \Closure(): Collection<int, object> $fn
+     *
+     * @return list<array<string, mixed>>
+     */
     private function safeQuery(\Closure $fn): array
     {
-        try {
-            return $fn()->map(fn ($row) => (array) $row)->all();
-        } catch (\Throwable $e) {
-            return [];
-        }
+        return $this->optionalQuery(
+            fn (): array => $fn()->map(fn ($row) => (array) $row)->values()->all(),
+            [],
+        );
     }
 }
