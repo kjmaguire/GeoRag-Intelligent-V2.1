@@ -1,4 +1,11 @@
-"""Wire-contract probe for the four Cohere models on Amazon Bedrock (ADR-0022).
+"""Wire-contract probe for the Cohere models on Amazon Bedrock (ADR-0022).
+
+Since ADR-0023 (2026-09-15) only TWO of them are served from Bedrock in
+production: Embed v4 and Rerank 3.5. Command A+ chat is still probed here
+when BEDROCK_CHAT_MODEL_ID names a Marketplace endpoint an operator chose to
+deploy; Parse 5 is probed by ops/validation/cohere_probe.py only -- the Parse
+section that used to live here (on the retired object-form ``image_url``,
+known to 400) was deleted 2026-09-29 (VEN-18).
 
 **Nothing in the Bedrock adapters has been verified against a live endpoint.**
 They were written to the documented contract from a session that could not
@@ -17,7 +24,7 @@ What it records:
   1. **Availability.** Which Cohere models the target region actually offers
      serverless, and whether the two Marketplace endpoints exist and are
      InService. This is step 0 of the migration and the whole route rests on
-     it; if Command A+ or Parse 5 are absent, stop and read ADR-0022 §11.
+     it. Only the chat endpoint is looked for now (see above).
   2. **Chat (Converse).** Whether `additionalModelRequestFields` carries a
      JSON `response_format` through; whether reasoning arrives as a
      `reasoningContent` content block, as a sibling field, or not at all;
@@ -30,6 +37,10 @@ What it records:
   4. **Embeddings.** That the request body really is Cohere's own v2 schema
      minus `model`, and that `output_dimension: 1024` is honoured. A silently
      ignored dimension writes 1536-dim vectors into a 1024-dim collection.
+     Since 2026-09-29 also: `input_type="search_query"` (the query path), a
+     96-text batch (the per-request limit _BedrockEmbedding chunks to), and
+     ONE image through `images[]` then `inputs[]` -- which of the two Embed
+     v4 accepts on Bedrock is undocumented and ingest depends on it.
   5. **Rerank.** The `bedrock-agent-runtime.rerank` response shape, and a
      SANITY CHECK on Rerank 3.5's scores: does an obviously-relevant document
      clear `RERANKER_SCORE_THRESHOLD_HOSTED` (0.2, measured against v4) and
@@ -38,11 +49,9 @@ What it records:
      wrong for 3.5 and cannot tell you the right value. Re-measuring the
      threshold properly needs chunk-level relevance labels that do not exist
      yet; see app/services/reranker.py for what that would take.
-  6. **Parse.** The full key shape of `pages[0]` in `blocks` and `markdown`
-     mode, and the pixel ladder for `COHERE_PARSE_MAX_PIXELS`. This contract
-     has NEVER been verified, on Foundry or on Bedrock.
-  7. Error shapes and latency, so the retry and fallback branches are tuned
-     against something real.
+  6. Error shapes and latency, so the retry and fallback branches are tuned
+     against something real -- reported against the reranker's REAL caller
+     budget (reranker._caller_budget_s()), not a hard-coded 8 s.
 
 No secrets are written to the report — Bedrock authenticates with the caller's
 IAM identity, so there are none to leak, which is itself one of the things the
@@ -50,11 +59,13 @@ move bought.
 
 Usage:
     BEDROCK_REGION=us-east-1 \\
-    BEDROCK_CHAT_MODEL_ID=arn:aws:sagemaker:...:endpoint/georag-chat \\
-    BEDROCK_PARSE_MODEL_ID=arn:aws:sagemaker:...:endpoint/georag-parse \\
     uv run python ops/validation/bedrock_probe.py \\
         --pdf src/fastapi/tests/fixtures/ocr/PLS-2024-Technical-Report.pdf \\
-        --pages 1,7 --out ops/validation/reports/
+        --pages 1 --out ops/validation/reports/
+
+``--pdf``/``--pages`` now only choose the page rendered for the image-embed
+variant; without them a small synthetic image is used. Set
+BEDROCK_CHAT_MODEL_ID only if a Marketplace chat endpoint exists.
 """
 
 from __future__ import annotations
@@ -93,7 +104,11 @@ except Exception as _exc:  # noqa: BLE001 — any import failure, not just Impor
 else:
     _DIFF_IMPORT_ERROR = None
 
-PIXEL_LADDER = (1_900_000, 4_000_000, 8_000_000, 12_000_000, 20_000_000)
+#: Embed v4's image ceiling is 2M pixels; render the probe image under it.
+_EMBED_IMAGE_MAX_PIXELS = 1_900_000
+#: The per-request text limit _BedrockEmbedding chunks to ([ASSUMED] vendor
+#: figure until this variant runs).
+_EMBED_MAX_TEXTS = 96
 
 #: Sentinel tokens Cohere wraps JSON-mode output in. Whether the Bedrock
 #: runtime strips them is exactly what step 2 answers.
@@ -140,8 +155,9 @@ def probe_availability() -> dict[str, Any]:
 
     out["marketplace_endpoints"] = {}
     sagemaker = _client("sagemaker")
-    for label, env in (("chat", "BEDROCK_CHAT_MODEL_ID"),
-                       ("parse", "BEDROCK_PARSE_MODEL_ID")):
+    # Chat only: Parse left Bedrock with ADR-0023 and is probed by
+    # cohere_probe.py against Cohere's own API.
+    for label, env in (("chat", "BEDROCK_CHAT_MODEL_ID"),):
         arn = os.environ.get(env, "")
         name = arn.rsplit("/", 1)[-1] if arn else ""
         if not name:
@@ -277,7 +293,54 @@ def probe_chat_stream() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def probe_embed() -> dict[str, Any]:
+def _embed_call(runtime: Any, model_id: str, body: dict[str, Any]) -> tuple[dict[str, Any], float]:
+    started = time.monotonic()
+    raw = runtime.invoke_model(
+        modelId=model_id, body=json.dumps(body),
+        accept="application/json", contentType="application/json")
+    return json.loads(raw["body"].read()), time.monotonic() - started
+
+
+def _probe_image_png(pdf: Path | None, page: int) -> tuple[bytes, str] | None:
+    """One PNG under Embed v4's 2M-pixel cap: a PDF page if given, else synthetic."""
+    import io as _io
+
+    if pdf is not None and pdf.exists():
+        try:
+            import pypdfium2
+
+            document = pypdfium2.PdfDocument(str(pdf))
+            try:
+                target = document[page - 1]
+                width, height = target.get_size()
+                scale = min(4.0, (_EMBED_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
+                image = target.render(scale=scale).to_pil()
+            finally:
+                document.close()
+            buffer = _io.BytesIO()
+            image.save(buffer, format="PNG")
+            return buffer.getvalue(), f"{pdf.name} page {page}"
+        except Exception:  # noqa: BLE001 -- fall through to the synthetic image
+            pass
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    image = Image.new("RGB", (800, 600), "white")
+    ImageDraw.Draw(image).text((40, 40), "Drill hole MAD-21-003: 12 m quartz veining", fill="black")
+    buffer = _io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue(), "synthetic 800x600"
+
+
+def probe_embed(pdf: Path | None = None, page: int = 1) -> dict[str, Any]:
+    """Embed v4 on Bedrock: the document call, then three variants.
+
+    The top-level keys stay those of the single search_document call, so a
+    report from before 2026-09-29 and one from after are read by the same
+    wire-contract evidence path (``top_level_keys``). Each variant is its own
+    nested result, so one refused variant does not hide the others.
+    """
     model_id = os.environ.get("BEDROCK_EMBED_MODEL_ID", "cohere.embed-v4:0")
     runtime = _client("bedrock-runtime")
     body = {
@@ -287,23 +350,85 @@ def probe_embed() -> dict[str, Any]:
         "output_dimension": 1024,
     }
     try:
-        started = time.monotonic()
-        raw = runtime.invoke_model(
-            modelId=model_id, body=json.dumps(body),
-            accept="application/json", contentType="application/json")
-        payload = json.loads(raw["body"].read())
+        payload, elapsed = _embed_call(runtime, model_id, body)
         vectors = payload["embeddings"]["float"]
-        return {
+        out: dict[str, Any] = {
             "model_id": model_id,
-            "latency_s": round(time.monotonic() - started, 3),
+            "latency_s": round(elapsed, 3),
             "top_level_keys": sorted(payload),
             "dimension": len(vectors[0]),
             # A silently ignored output_dimension writes the wrong width into
             # a 1024-dim collection, and retrieval refuses every question.
             "dimension_honoured": len(vectors[0]) == 1024,
         }
+        out["document"] = {"top_level_keys": out["top_level_keys"], "latency_s": out["latency_s"]}
     except Exception as exc:  # noqa: BLE001
         return {"model_id": model_id, "error": _err(exc)}
+
+    # The query path: same key, the other value. tools.py sends it on every
+    # question; the 2026-09-16 run never did.
+    try:
+        payload, elapsed = _embed_call(runtime, model_id, {**body, "input_type": "search_query"})
+        vectors = payload["embeddings"]["float"]
+        out["query"] = {
+            "latency_s": round(elapsed, 3),
+            "top_level_keys": sorted(payload),
+            "dimension": len(vectors[0]),
+        }
+    except Exception as exc:  # noqa: BLE001
+        out["query"] = {"error": _err(exc)}
+
+    # The batch limit. _BedrockEmbedding splits at 96; if 96 is refused the
+    # split point is wrong and every ingest batch fails.
+    texts = [f"assay interval {i}: {0.1 * i:.1f} g/t Au over 1.5 m" for i in range(_EMBED_MAX_TEXTS)]
+    try:
+        payload, elapsed = _embed_call(runtime, model_id, {**body, "texts": texts})
+        vectors = payload["embeddings"]["float"]
+        out["batch"] = {
+            "texts_sent": len(texts),
+            "vectors_back": len(vectors),
+            "latency_s": round(elapsed, 3),
+            "top_level_keys": sorted(payload),
+        }
+    except Exception as exc:  # noqa: BLE001
+        out["batch"] = {"texts_sent": len(texts), "error": _err(exc)}
+
+    # ONE image, primary shape then fallback -- exactly the order
+    # _BedrockEmbedding.embed_image tries them, and only on a
+    # ValidationException, as it does.
+    rendered = _probe_image_png(pdf, page)
+    if rendered is None:
+        out["image"] = {"skipped": "no pypdfium2 page and no PIL for a synthetic image"}
+        return out
+    png, source = rendered
+    uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    shapes = (
+        ("images", {"images": [uri]}),
+        ("inputs", {"inputs": [{"content": [{"type": "image_url", "image_url": {"url": uri}}]}]}),
+    )
+    attempts: dict[str, Any] = {}
+    for name, shape in shapes:
+        image_body = {**shape, "input_type": "image", "embedding_types": ["float"], "output_dimension": 1024}
+        try:
+            payload, elapsed = _embed_call(runtime, model_id, image_body)
+        except Exception as exc:  # noqa: BLE001
+            attempts[name] = _err(exc)
+            if attempts[name].get("code") == "ValidationException":
+                continue
+            break
+        vectors = payload["embeddings"]["float"]
+        out["image"] = {
+            "source": source,
+            "png_bytes": len(png),
+            "shape_accepted": name,
+            "rejected_first": attempts or None,
+            "latency_s": round(elapsed, 3),
+            "top_level_keys": sorted(payload),
+            "dimension": len(vectors[0]),
+        }
+        return out
+    out["image"] = {"source": source, "png_bytes": len(png), "error": attempts}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -367,92 +492,36 @@ def probe_rerank() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 6. Parse — never verified on any host
+# 6. Parse -- DELETED 2026-09-29 (VEN-18)
+# ---------------------------------------------------------------------------
+# It probed a Bedrock Marketplace Parse endpoint that ADR-0023 retired, with
+# the object-form document.image_url that Cohere refuses with HTTP 400. Parse
+# is probed by cohere_probe.py, against Cohere's own API, with the string form.
+
+
 # ---------------------------------------------------------------------------
 
 
-def _render(pdf: Path, page: int, max_pixels: int) -> bytes | None:
+def _reranker_budget() -> dict[str, Any]:
+    """The budget the live reranker actually runs under, from the app itself.
+
+    This used to be a literal 8.0 -- the pre-2026-08-20 value -- while the
+    real derived budget is 19 s. Read from reranker._caller_budget_s() and
+    _bedrock.retry_profile_within_budget() so the report cannot drift from
+    the code again.
+    """
     try:
-        import pypdfium2
-    except ImportError:
-        return None
-    document = pypdfium2.PdfDocument(str(pdf))
-    try:
-        target = document[page - 1]
-        width, height = target.get_size()
-        scale = min(4.0, (max_pixels / (width * height)) ** 0.5)
-        image = target.render(scale=scale).to_pil()
-        import io as _io
-        buffer = _io.BytesIO()
-        image.save(buffer, format="PNG")
-        return buffer.getvalue()
-    finally:
-        document.close()
+        from app.services import _bedrock as bedrock_mod
+        from app.services import reranker as reranker_mod
 
-
-def probe_parse(pdf: Path | None, pages: list[int]) -> dict[str, Any]:
-    model_id = os.environ.get("BEDROCK_PARSE_MODEL_ID", "")
-    if not model_id:
-        return {"skipped": "BEDROCK_PARSE_MODEL_ID unset"}
-    if pdf is None or not pdf.exists():
-        return {"skipped": "no --pdf given"}
-
-    runtime = _client("bedrock-runtime")
-    out: dict[str, Any] = {"model_id": model_id, "formats": {}, "pixel_ladder": {}}
-
-    for output_format in ("blocks", "markdown"):
-        png = _render(pdf, pages[0], 4_000_000)
-        if png is None:
-            out["formats"][output_format] = {"skipped": "pypdfium2 unavailable"}
-            continue
-        uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-        body = {
-            "document": {"type": "image_url", "image_url": {"url": uri}},
-            "output_format": output_format,
-        }
-        try:
-            started = time.monotonic()
-            raw = runtime.invoke_model(
-                modelId=model_id, body=json.dumps(body),
-                accept="application/json", contentType="application/json")
-            payload = json.loads(raw["body"].read())
-            page0 = (payload.get("pages") or [{}])[0]
-            out["formats"][output_format] = {
-                "latency_s": round(time.monotonic() - started, 3),
-                "top_level_keys": sorted(payload),
-                "page0_keys": sorted(page0),
-                # The response adapter is deliberately tolerant about field
-                # names because this was never verified. This is what
-                # replaces the guessing.
-                "page0_sample": json.loads(json.dumps(page0)[:2000] + "}")
-                if len(json.dumps(page0)) > 2000 else page0,
-            }
-        except Exception as exc:  # noqa: BLE001
-            out["formats"][output_format] = {"error": _err(exc)}
-
-    # Where does the model start rejecting renders? Sets
-    # COHERE_PARSE_MAX_PIXELS from evidence rather than from a guess.
-    for pixels in PIXEL_LADDER:
-        png = _render(pdf, pages[0], pixels)
-        if png is None:
-            break
-        body = {
-            "document": {"type": "image_url", "image_url": {
-                "url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}},
-            "output_format": "blocks",
-        }
-        try:
-            runtime.invoke_model(
-                modelId=model_id, body=json.dumps(body),
-                accept="application/json", contentType="application/json")
-            out["pixel_ladder"][pixels] = "accepted"
-        except Exception as exc:  # noqa: BLE001
-            out["pixel_ladder"][pixels] = _err(exc)
-            break
-    return out
-
-
-# ---------------------------------------------------------------------------
+        budget = reranker_mod._caller_budget_s()
+        read_timeout = min(reranker_mod.BEDROCK_RERANK_TIMEOUT_S, budget / 2.0)
+        attempts, read_timeout = bedrock_mod.retry_profile_within_budget(
+            budget, read_timeout_s=read_timeout, ceiling=reranker_mod.BEDROCK_RERANK_MAX_ATTEMPTS
+        )
+        return {"budget_s": round(budget, 3), "max_attempts": attempts, "read_timeout_s": round(read_timeout, 3)}
+    except Exception as exc:  # noqa: BLE001 -- the latency numbers still stand without it
+        return {"error": f"{type(exc).__name__}: {exc}"}
 
 
 def probe_latency(samples: int) -> dict[str, Any]:
@@ -471,17 +540,16 @@ def probe_latency(samples: int) -> dict[str, Any]:
         "samples": len(ordered),
         "p50_s": round(statistics.median(ordered), 3),
         "p95_s": round(ordered[int(len(ordered) * 0.95) - 1], 3),
-        # TIMEOUT_RERANKER_S is 8s and the per-call timeout is clamped to
-        # half the derived budget. If p95 is anywhere near that, the retry
-        # is dead code again — the 2026-08-20 defect, in a new host.
-        "reranker_budget_s": 8.0,
+        # If p95 is anywhere near the per-attempt read timeout, the retry is
+        # dead code again — the 2026-08-20 defect, in a new host.
+        "reranker_budget": _reranker_budget(),
     }
 
 
 # The sections that have to report a real observation for this run to count as
 # evidence. `availability` is deliberately excluded: it can legitimately come
 # back empty in a region that offers nothing, and that IS the finding.
-_EVIDENCE_SECTIONS = ("chat", "chat_stream", "embed", "rerank", "parse", "latency")
+_EVIDENCE_SECTIONS = ("chat", "chat_stream", "embed", "rerank", "latency")
 
 
 #: Error codes that mean the credentials were the problem, not the call.
@@ -553,9 +621,8 @@ def main() -> int:
         "availability": probe_availability(),
         "chat": probe_chat(),
         "chat_stream": probe_chat_stream(),
-        "embed": probe_embed(),
+        "embed": probe_embed(args.pdf, pages[0] if pages else 1),
         "rerank": probe_rerank(),
-        "parse": probe_parse(args.pdf, pages),
         "latency": probe_latency(args.latency_samples),
     }
 

@@ -204,6 +204,9 @@ def test_a_section_whose_every_call_failed_is_not_an_observation(probe_module: s
     assert "chat" not in v["sections_ok"]
 
 
+_GROUPED_SECTION_BY_PROBE = [("bedrock_probe", "embed"), ("cohere_probe", "parse")]
+
+
 @pytest.mark.parametrize("probe_module", ["bedrock_probe", "cohere_probe"])
 def test_a_section_with_one_good_call_among_failures_still_counts(probe_module: str) -> None:
     """The other direction, which matters just as much.
@@ -226,8 +229,11 @@ def test_a_section_with_one_good_call_among_failures_still_counts(probe_module: 
     assert "chat" in v["sections_ok"]
 
 
-@pytest.mark.parametrize("probe_module", ["bedrock_probe", "cohere_probe"])
-def test_a_section_whose_variants_are_grouped_is_still_judged(probe_module: str) -> None:
+# The grouped-section shape is Parse's, but the rule is the shared
+# `_probe_verdict` one; the Bedrock probe has had no Parse section since
+# 2026-09-29 (VEN-18), so it is exercised there under a section it has.
+@pytest.mark.parametrize(("probe_module", "section"), _GROUPED_SECTION_BY_PROBE)
+def test_a_section_whose_variants_are_grouped_is_still_judged(probe_module: str, section: str) -> None:
     """The same defect, one level deeper than the fix that created the module.
 
     `probe_chat` puts its variants directly on the section, so a one-level
@@ -247,7 +253,7 @@ def test_a_section_whose_variants_are_grouped_is_still_judged(probe_module: str)
 
     module = importlib.import_module(probe_module)
     report = {name: {"observed": True} for name in module._EVIDENCE_SECTIONS}
-    report["parse"] = {
+    report[section] = {
         "model": "parse-v5.0",
         "formats": {
             "blocks": {"error": {"type": "ProxyError", "message": "403 Forbidden"}},
@@ -259,18 +265,21 @@ def test_a_section_whose_variants_are_grouped_is_still_judged(probe_module: str)
     }
 
     v = module.verdict(report)
-    assert "parse" in v["sections_failed"]
-    assert "parse" not in v["sections_ok"]
+    assert section in v["sections_failed"]
+    assert section not in v["sections_ok"]
 
 
-@pytest.mark.parametrize("probe_module", ["bedrock_probe", "cohere_probe"])
-def test_a_grouped_section_with_a_real_observation_still_passes(probe_module: str) -> None:
+# The grouped-section shape is Parse's, but the rule is the shared
+# `_probe_verdict` one; the Bedrock probe has had no Parse section since
+# 2026-09-29 (VEN-18), so it is exercised there under a section it has.
+@pytest.mark.parametrize(("probe_module", "section"), _GROUPED_SECTION_BY_PROBE)
+def test_a_grouped_section_with_a_real_observation_still_passes(probe_module: str, section: str) -> None:
     """Recursing must not overshoot into marking healthy sections failed."""
     import importlib
 
     module = importlib.import_module(probe_module)
     report = {name: {"observed": True} for name in module._EVIDENCE_SECTIONS}
-    report["parse"] = {
+    report[section] = {
         "model": "parse-v5.0",
         "formats": {
             "blocks": {"page0_keys": ["text", "bbox"], "status": 200},
@@ -279,12 +288,15 @@ def test_a_grouped_section_with_a_real_observation_still_passes(probe_module: st
     }
 
     v = module.verdict(report)
-    assert "parse" in v["sections_ok"]
+    assert section in v["sections_ok"]
 
 
-@pytest.mark.parametrize("probe_module", ["bedrock_probe", "cohere_probe"])
+# The grouped-section shape is Parse's, but the rule is the shared
+# `_probe_verdict` one; the Bedrock probe has had no Parse section since
+# 2026-09-29 (VEN-18), so it is exercised there under a section it has.
+@pytest.mark.parametrize(("probe_module", "section"), _GROUPED_SECTION_BY_PROBE)
 def test_a_section_carrying_only_config_is_not_mistaken_for_failure(
-    probe_module: str,
+    probe_module: str, section: str,
 ) -> None:
     """A nested dict that recorded no call at all must stay neutral.
 
@@ -296,14 +308,14 @@ def test_a_section_carrying_only_config_is_not_mistaken_for_failure(
 
     module = importlib.import_module(probe_module)
     report = {name: {"observed": True} for name in module._EVIDENCE_SECTIONS}
-    report["parse"] = {
+    report[section] = {
         "model": "parse-v5.0",
         "settings": {"limits": {"max_pixels": 1900000}},
         "observed": True,
     }
 
     v = module.verdict(report)
-    assert "parse" in v["sections_ok"]
+    assert section in v["sections_ok"]
 
 
 class TestAParseLadderRungIsJudgedByWhyItWasRefused:
