@@ -1,18 +1,19 @@
-"""One-off CLI to ingest a single extracted PLSS-section cluster.
+"""One-off CLI to ingest a single extracted cluster directory.
 
-Used by the 2026-05-17 Wyoming catch-up to add projects beyond the
-original Shirley Basin (028N079W36) ingest. Runs the standard
-`ingest_cluster` pipeline (LAS + .log header coords) then the derivation
-pipeline (`derive_intervals`).
+Runs the standard `ingest_cluster` pipeline (LAS + binary .log header coords)
+then the derivation pipeline (`derive_intervals`, uranium projects only).
+
+No location is ever assumed: a LAS is placed from an existing collar or its own
+header coordinates, and the binary .log pass needs --source-epsg 32155.
 
 Usage:
     python -m scripts.ingest_one_cluster \\
-        --cluster-dir /data/033N089W28 \\
-        --section-key 033N089W28 \\
-        --project-name "Gas Hills Uranium (033N089W28)" \\
-        --project-slug "gas-hills-033n089w28" \\
-        --company "Pathfinder/Cameco" \\
-        --region "Fremont, WY"
+        --cluster-dir /data/some-cluster \\
+        --project-name "Some Project" \\
+        --project-slug "some-project" \\
+        --company "Some Operator" \\
+        --region "Fremont, WY" \\
+        --source-epsg 32155
 """
 from __future__ import annotations
 
@@ -33,23 +34,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def _main(
     *,
     cluster_dir: str,
-    section_key: str,
     project_name: str,
     project_slug: str,
     company: str,
-    region: str,
+    region: str | None,
+    source_epsg: int | None = None,
     workspace_id: str,
     commodity: str | None = None,
 ) -> int:
     summary = await ingest_cluster(
         cluster_dir,
         workspace_id=workspace_id,
-        plss_section_key=section_key,
         project_name=project_name,
         project_slug=project_slug,
         project_company=company,
         project_region=region,
         project_commodity=commodity,
+        source_epsg=source_epsg,
     )
     log.info("cluster_runner.summary %s", summary)
 
@@ -85,11 +86,12 @@ async def _main(
 def _cli() -> int:
     p = argparse.ArgumentParser(description="Ingest a single cluster + derive intervals")
     p.add_argument("--cluster-dir", required=True)
-    p.add_argument("--section-key", required=True, help="e.g. 033N089W28")
     p.add_argument("--project-name", required=True)
     p.add_argument("--project-slug", required=True)
     p.add_argument("--company", default="Unknown Operator")
-    p.add_argument("--region", default="Wyoming")
+    p.add_argument("--region", default=None)
+    p.add_argument("--source-epsg", type=int, default=None,
+                   help="CRS of the cluster coordinates; required for the binary .log pass")
     # No default. cluster_runner used to hardcode 'uranium' into every stub
     # project row; LAS 2.0 has no commodity field, so an unpassed flag means
     # NULL ("not stated") rather than a guess inherited from the Cameco
@@ -99,13 +101,13 @@ def _cli() -> int:
     args = p.parse_args()
     return asyncio.run(_main(
         cluster_dir=args.cluster_dir,
-        section_key=args.section_key,
         project_name=args.project_name,
         project_slug=args.project_slug,
         company=args.company,
         region=args.region,
         workspace_id=args.workspace_id,
         commodity=args.commodity,
+        source_epsg=args.source_epsg,
     ))
 
 

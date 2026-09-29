@@ -1,4 +1,4 @@
-"""LAS file ingester for Wyoming Cameco / WSGS uranium drillhole archive.
+"""LAS file ingester.
 
 Doc-phase 179 — Phase B Tier 1.
 
@@ -8,50 +8,81 @@ Reads LAS 2.0 well-log files via `lasio`, lands:
   - N rows in `silver.well_log_curves` per LAS file (one per curve)
   - One row in `bronze.provenance` per ingested record
 
-Coordinate handling:
-  Cameco LAS files have LAT/LON='NA' (proprietary scrubbing). We derive
-  approximate coordinates from the PLSS Township-Range-Section in the
-  inner-zip directory name + the LAS `LOC` field. For Shirley Basin
-  (T28N R79W) the reference point is approximate UTM Zone 13N
-  (EPSG:32613). Per-hole offset is derived from a deterministic hash of
-  hole_id, keeping holes within the section boundary (~1 mile).
+Collar location -- this ingester never invents one, and it carries no
+dataset-specific placement (no PLSS section table, no per-company defaults).
+A collar is placed only from, in order:
+
+  0. A collar that already exists in the project (matched on hole_id, then
+     on the canonical hole_id) is used as it stands. The right way to load
+     LAS files is collar table first, curves second.
+  1. Coordinates in the LAS ~WELL section:
+       * LATI/LONG with a datum (GDAT) -> georef_method='declared';
+       * X/Y/EAST/NORTH with a CRS the header names (EPSG/CRS/HZCS item) or
+         the operator declared for the upload (``source_epsg``) -> 'declared';
+       * X/Y/EAST/NORTH with no stated CRS, when the PROJECT carries an
+         explicit ``crs_epsg`` -> 'assumed' plus ``las_collar_crs_assumed``.
+     LATI/LONG with no usable datum is read as WGS84 and flagged the same
+     way ('assumed' + ``las_collar_crs_assumed``).
+  2. Otherwise the file is REFUSED with ``las_collar_unlocated`` naming the
+     file and the well. It used to land at a Wyoming default coordinate
+     (480000, 4660000 in EPSG:32613), and later at a PLSS-section centroid
+     for one hard-coded Wyoming section -- a hole from anywhere drawn in
+     Carbon County, WY, or a location the data never gave. silver.collars
+     easting / northing are NOT NULL (2026_04_09_180100_create_collars_table),
+     and a 0 or any other placeholder there is the same fabrication, so there
+     is no "collar without a location" to fall back to and the schema is left
+     alone. The refusal is not a loss: callers that hold the file keep it and
+     attach it when the collar is written (services/ingest/las_pending.py).
 
 The geom is constructed at insert time via PostGIS ST_MakePoint +
-ST_Transform for the 4326 mirror column.
+ST_Transform (to 32613 for `geom`, 4326 for the mirror column).
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
+import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 import lasio
 
 log = logging.getLogger("georag.ingest.las")
 
+#: silver.collars.geom is geometry(Point, 32613) — see the create migration.
+COLLAR_GEOM_SRID = 32613
 
-# PLSS section centroids — keyed by "{township}{N|S}{range}{E|W}{section}".
-# Reference centroids in UTM Zone 13N (EPSG:32613).
-# For Shirley Basin operations (T28N R79W), the reference is approximate;
-# Cameco operations cluster in section 36.
-PLSS_REFERENCE_UTM: dict[str, tuple[float, float]] = {
-    # Format: "TTTNRRRWSS" → (easting_m, northing_m) in EPSG:32613
-    "028N079W36": (471_000.0, 4_657_000.0),  # Shirley Basin, Carbon Co, WY
-    # Additional sections added as new clusters land
-}
+#: ~WELL mnemonics that carry a location. Deliberately not "E" / "N" / "LOC":
+#: LOC is free text, not a coordinate, and single letters collide with other
+#: headers.
+_X_MNEMONICS = ("X", "XCOORD", "X_COORD", "EAST", "EASTING", "EASTINGS")
+_Y_MNEMONICS = ("Y", "YCOORD", "Y_COORD", "NORTH", "NORTHING", "NORTHINGS")
+_LAT_MNEMONICS = ("LATI", "LAT", "LATITUDE")
+_LON_MNEMONICS = ("LONG", "LON", "LONGITUDE")
+#: Header items that may state the coordinate reference.
+_CRS_MNEMONICS = (
+    "EPSG", "SRID", "CRS", "HZCS", "COORDSYS", "COORD_SYS", "PROJ", "PROJECTION",
+)
+_DATUM_MNEMONICS = ("GDAT", "DATUM", "GEODETIC")
 
-# Default Wyoming UTM 13N coordinates when section not in lookup
-DEFAULT_UTM_FALLBACK: tuple[float, float] = (480_000.0, 4_660_000.0)
+_NULL_TOKENS = frozenset(
+    {"", "NA", "N/A", "NAN", "NULL", "NONE", "UNKNOWN", "-", "--"},
+)
 
 
 @dataclass
 class LASIngestResult:
-    """Outcome of a single LAS file ingestion."""
+    """Outcome of a single LAS file ingestion.
+
+    ``warnings`` are ``{"code", "detail"}`` dicts in the same shape
+    ingest_tabular reports, so the archive workflow can carry them onto its
+    ingest_progress row. A skipped file always says why in one of them.
+    """
     file_path: str
     hole_id: str
     project_id: str | None
@@ -60,46 +91,22 @@ class LASIngestResult:
     skipped: bool = False
     skipped_reason: str | None = None
     error: str | None = None
+    warnings: list[dict[str, str]] = field(default_factory=list)
+    #: How a collar CREATED by this file was placed ('declared' / 'assumed');
+    #: None when the collar already existed or the file was skipped.
+    georef_method: str | None = None
 
 
-def _parse_plss_loc(loc: str) -> tuple[int, int, int] | None:
-    """Parse a LAS LOC field like '36    28    79' → (section, township, range).
-
-    Returns None if the format doesn't match.
-    """
-    if not loc:
-        return None
-    parts = re.findall(r"\d+", loc)
-    if len(parts) >= 3:
-        return (int(parts[0]), int(parts[1]), int(parts[2]))
-    return None
-
-
-def _hole_offset_meters(hole_id: str) -> tuple[float, float]:
-    """Deterministic small offset within a PLSS section based on hole_id.
-
-    Returns (delta_easting, delta_northing) where each is in (-800, +800)
-    meters — keeps holes within the ~1-mile section boundary.
-    """
-    h = hashlib.sha256(hole_id.encode()).hexdigest()
-    # Two hex chunks, normalize to (-1, 1), scale to ±800m
-    de = (int(h[:8], 16) / 0xFFFFFFFF - 0.5) * 1600.0
-    dn = (int(h[8:16], 16) / 0xFFFFFFFF - 0.5) * 1600.0
-    return (de, dn)
-
-
-def _derive_coordinates(
-    plss_section_key: str | None,
-    hole_id: str,
-) -> tuple[float, float]:
-    """Return (easting, northing) in UTM Zone 13N (EPSG:32613).
-
-    Uses PLSS_REFERENCE_UTM if the section is known, else falls back to
-    DEFAULT_UTM_FALLBACK. Adds a deterministic per-hole offset.
-    """
-    base = PLSS_REFERENCE_UTM.get(plss_section_key or "", DEFAULT_UTM_FALLBACK)
-    de, dn = _hole_offset_meters(hole_id)
-    return (base[0] + de, base[1] + dn)
+@dataclass
+class _Placement:
+    """Where a new collar goes, and how much to believe it."""
+    source_x: float          # lon or easting in `source_epsg`
+    source_y: float          # lat or northing in `source_epsg`
+    source_epsg: int
+    easting: float           # value for silver.collars.easting
+    northing: float          # value for silver.collars.northing
+    georef_method: str       # 'declared' | 'assumed' (chk_collars_georef_method)
+    warning: dict[str, str] | None = None
 
 
 def _parse_las_date(d: str | None) -> date | None:
@@ -114,12 +121,237 @@ def _parse_las_date(d: str | None) -> date | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Header coordinates
+# ---------------------------------------------------------------------------
+
+def _header_values(well: Any) -> dict[str, str]:
+    """Upper-cased mnemonic -> stripped string value for the ~WELL section."""
+    out: dict[str, str] = {}
+    for item in well:
+        mnemonic = str(getattr(item, "mnemonic", "") or "").strip().upper()
+        if not mnemonic or mnemonic in out:
+            continue
+        out[mnemonic] = str(getattr(item, "value", "") or "").strip()
+    return out
+
+
+def _first(values: dict[str, str], names: tuple[str, ...]) -> tuple[str, str] | None:
+    """The first of ``names`` present with a non-null value, as (name, value)."""
+    for name in names:
+        raw = values.get(name)
+        if raw is not None and raw.upper() not in _NULL_TOKENS:
+            return name, raw
+    return None
+
+
+def _to_float(raw: str) -> float | None:
+    """A finite float from a header value, or None. No DMS, no guessing."""
+    try:
+        value = float(raw.replace(",", "").strip())
+    except ValueError:
+        log.debug("las_ingester.header_value_not_numeric raw=%r", raw)
+        return None
+    if not math.isfinite(value):
+        return None
+    # -999.25 / -9999 are LAS null sentinels, not coordinates.
+    if value in (-999.25, -999.0, -9999.0, -99999.0):
+        return None
+    return value
+
+
+def _crs_epsg_from_text(text: str, *, projected: bool | None) -> int | None:
+    """An EPSG code from header text ('26913', 'EPSG:26913', 'NAD83 / UTM zone 13N').
+
+    ``projected`` restricts the answer to projected (True) / geographic
+    (False) systems. None when the text names nothing pyproj can resolve.
+    """
+    raw = text.strip()
+    if raw.upper() in _NULL_TOKENS:
+        return None
+    from pyproj import CRS  # noqa: PLC0415 — heavy import, only needed here
+    from pyproj.exceptions import CRSError  # noqa: PLC0415
+
+    candidate = f"EPSG:{raw}" if raw.isdigit() else raw
+    try:
+        crs = CRS.from_user_input(candidate)
+    except (CRSError, ValueError, TypeError):
+        log.debug("las_ingester.crs_text_unresolved text=%r", raw)
+        return None
+    if projected is not None and crs.is_projected != projected:
+        return None
+    return crs.to_epsg()
+
+
+def _within_crs_area(epsg: int, x: float, y: float) -> bool:
+    """Whether (x, y) transforms to a valid lon/lat near the CRS's home area.
+
+    Catches feet read as metres, a wrong UTM zone and swapped axes, all of
+    which produce a perfectly finite coordinate in the wrong place.
+    """
+    from pyproj import CRS, Transformer  # noqa: PLC0415
+
+    try:
+        crs = CRS.from_epsg(epsg)
+        lon, lat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(x, y)
+    except Exception as exc:  # noqa: BLE001 — any pyproj failure means "not placeable"
+        log.debug("las_ingester.crs_transform_failed epsg=%s x=%s y=%s err=%s", epsg, x, y, exc)
+        return False
+    if not (math.isfinite(lon) and math.isfinite(lat)):
+        return False
+    if abs(lat) > 90 or abs(lon) > 180:
+        return False
+    area = crs.area_of_use
+    if area is not None:
+        slack = 3.0
+        if not (
+            area.west - slack <= lon <= area.east + slack
+            and area.south - slack <= lat <= area.north + slack
+        ):
+            return False
+    return True
+
+
+def _to_collar_srid(epsg: int, x: float, y: float) -> tuple[float, float]:
+    from pyproj import Transformer  # noqa: PLC0415
+
+    e, n = Transformer.from_crs(
+        f"EPSG:{epsg}", f"EPSG:{COLLAR_GEOM_SRID}", always_xy=True,
+    ).transform(x, y)
+    return float(e), float(n)
+
+
+async def _project_crs_epsg(conn: asyncpg.Connection, project_id: str) -> int | None:
+    """silver.projects.crs_epsg, or None when it is unset or unreadable."""
+    try:
+        value = await conn.fetchval(
+            "SELECT crs_epsg FROM silver.projects WHERE project_id = $1::uuid",
+            project_id,
+        )
+    except asyncpg.PostgresError as exc:
+        log.warning("las_ingester.project_crs_lookup_failed project=%s err=%s", project_id, exc)
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+async def _placement_from_header(
+    conn: asyncpg.Connection,
+    *,
+    values: dict[str, str],
+    project_id: str,
+    source_epsg: int | None,
+    hole_id: str,
+) -> tuple[_Placement | None, list[str]]:
+    """Coordinates the LAS header itself carries, or (None, why-not notes).
+
+    Geographic (LATI/LONG) is tried before projected (X/Y): a file with both
+    states the unambiguous one. The notes name every header value that was
+    present but unusable, so the refusal/assumption warning can say so.
+    """
+    notes: list[str] = []
+    datum = _first(values, _DATUM_MNEMONICS)
+    crs_item = _first(values, _CRS_MNEMONICS)
+
+    lat_item = _first(values, _LAT_MNEMONICS)
+    lon_item = _first(values, _LON_MNEMONICS)
+    if lat_item and lon_item:
+        lat, lon = _to_float(lat_item[1]), _to_float(lon_item[1])
+        if lat is None or lon is None:
+            notes.append(
+                f"{lat_item[0]}={lat_item[1]!r} / {lon_item[0]}={lon_item[1]!r} "
+                "are not decimal degrees",
+            )
+        elif abs(lat) > 90 or abs(lon) > 180 or (lat == 0.0 and lon == 0.0):
+            notes.append(f"{lat_item[0]}={lat} / {lon_item[0]}={lon} is not a valid position")
+        else:
+            epsg = None
+            if datum:
+                epsg = _crs_epsg_from_text(datum[1], projected=False)
+            if epsg is None and crs_item:
+                epsg = _crs_epsg_from_text(crs_item[1], projected=False)
+            declared = epsg is not None
+            if epsg is None:
+                epsg = 4326
+            e, n = _to_collar_srid(epsg, lon, lat)
+            if not (math.isfinite(e) and math.isfinite(n)):
+                notes.append("the position does not transform to a projected coordinate")
+            else:
+                warning = None
+                if not declared:
+                    stated = f" (its {datum[0]} reads {datum[1]!r}, which is not recognised)" if datum else ""
+                    warning = {
+                        "code": "las_collar_crs_assumed",
+                        "detail": (
+                            f"Well {hole_id!r}: the LAS header gives {lat_item[0]}/{lon_item[0]} "
+                            f"but no usable datum{stated}; they were read as WGS84 (EPSG:4326). "
+                            "Upload the collar table with a declared CRS if that is wrong."
+                        ),
+                    }
+                return _Placement(
+                    source_x=lon, source_y=lat, source_epsg=epsg,
+                    easting=e, northing=n,
+                    georef_method="declared" if declared else "assumed",
+                    warning=warning,
+                ), notes
+
+    x_item = _first(values, _X_MNEMONICS)
+    y_item = _first(values, _Y_MNEMONICS)
+    if x_item and y_item:
+        x, y = _to_float(x_item[1]), _to_float(y_item[1])
+        if x is None or y is None:
+            notes.append(f"{x_item[0]}={x_item[1]!r} / {y_item[0]}={y_item[1]!r} are not numbers")
+        elif x == 0.0 and y == 0.0:
+            notes.append(f"{x_item[0]}/{y_item[0]} are both 0")
+        else:
+            epsg = None
+            origin = ""
+            if crs_item:
+                epsg = _crs_epsg_from_text(crs_item[1], projected=True)
+                origin = f"the LAS header ({crs_item[0]}={crs_item[1]!r})"
+            if epsg is None and source_epsg:
+                epsg = source_epsg
+                origin = "the CRS declared with this upload"
+            declared = epsg is not None
+            if epsg is None:
+                epsg = await _project_crs_epsg(conn, project_id)
+                origin = "the project's CRS"
+            if epsg is None:
+                notes.append(
+                    f"{x_item[0]}/{y_item[0]} are present but no CRS is stated in the "
+                    "header, on the upload, or on the project",
+                )
+            elif not _within_crs_area(epsg, x, y):
+                notes.append(
+                    f"{x_item[0]}={x} / {y_item[0]}={y} do not fall inside the area "
+                    f"EPSG:{epsg} covers (wrong CRS, feet read as metres, or swapped axes)",
+                )
+            else:
+                warning = None
+                if not declared:
+                    warning = {
+                        "code": "las_collar_crs_assumed",
+                        "detail": (
+                            f"Well {hole_id!r}: the LAS header gives {x_item[0]}/{y_item[0]} "
+                            f"but states no CRS; {origin} (EPSG:{epsg}) was used. "
+                            "Upload the collar table with a declared CRS if that is wrong."
+                        ),
+                    }
+                return _Placement(
+                    source_x=x, source_y=y, source_epsg=epsg,
+                    easting=x, northing=y,
+                    georef_method="declared" if declared else "assumed",
+                    warning=warning,
+                ), notes
+
+    return None, notes
+
+
 async def _get_or_create_project(
     conn: asyncpg.Connection,
     *,
     project_name: str,
     company: str,
-    region: str,
+    region: str | None,
     workspace_id: str,
     commodity: str | None = None,
 ) -> str:
@@ -147,75 +379,102 @@ async def _get_or_create_project(
         """
         INSERT INTO silver.projects
             (project_id, project_name, slug, company, region, commodity,
-             crs_datum, crs_epsg, orientation_reference, status, workspace_id,
+             orientation_reference, status, workspace_id,
              created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5,
-                'EPSG:32613', 32613, 'grid_north', 'active', $6::uuid,
+                'grid_north', 'active', $6::uuid,
                 NOW(), NOW())
         RETURNING project_id::text AS project_id
         """,
         project_name, slug, company, region, commodity, workspace_id,
     )
+    # crs_epsg is deliberately NOT written. This row used to be stamped
+    # 32613 / 'EPSG:32613' (the first archive's zone) whatever the data was,
+    # which made "the project has an explicit CRS" true of every project this
+    # ingester ever created. NULL means the project has none declared.
     log.info("las_ingester.project_created name=%s slug=%s", project_name, slug)
     return row["project_id"]
 
 
-async def _get_or_create_collar(
-    conn: asyncpg.Connection,
-    *,
-    project_id: str,
-    hole_id: str,
-    easting: float,
-    northing: float,
-    total_depth: float,
-    drill_date: date | None,
-    workspace_id: str,
-) -> str:
-    """Idempotently fetch or create a `silver.collars` row.
+def _canonical_hole_id(hole_id: str) -> str | None:
+    """Strip separators + uppercase.
 
-    Returns the collar_id (UUID as string).
+    Mirrors the rule baked into the CSV parser
+    (parsers/_hole_id.py::canonicalize) so the chat retrieval path can join
+    on silver.collars.hole_id_canonical without waiting on a backfill sweep.
     """
-    # Canonical form of the LAS ~WELL name: strip separators + uppercase, the
-    # rule in parsers/_hole_id.py::canonicalize. Also stored on insert so the
-    # chat retrieval path can join on silver.collars.hole_id_canonical.
-    hole_id_canonical = re.sub(r"[ \-_./]+", "", (hole_id or "").strip()).upper() or None
+    return re.sub(r"[ \-_./]+", "", (hole_id or "").strip()).upper() or None
 
-    # Exact spelling first, then the canonical form. Matching on the exact
-    # string alone meant a LAS whose ~WELL says "TR-002" beside a collar
-    # ingested as "TR002" (or the reverse) did not find the collar it belongs
-    # to and INSERTED A SECOND ONE — with coordinates derived from
-    # DEFAULT_UTM_FALLBACK (Wyoming), not the hole's. The real hole then had
-    # no curves and the map gained a phantom hole 3,000 km away. ingest_tabular
-    # and ingest_well_logs already resolve hole ids this way
-    # (_collar_index/_resolve_collar); this ingester did not.
+
+async def _find_collar(
+    conn: asyncpg.Connection, *, project_id: str, hole_id: str,
+) -> str | None:
+    """The project's existing collar for this hole, or None.
+
+    Exact hole_id first; then the canonical form, so a LAS whose WELL reads
+    'SRE09_6' finds the collar the collar table loaded as 'SRE09-6' instead
+    of minting a second, unlocated one beside it.
+    """
     row = await conn.fetchrow(
         """
         SELECT collar_id::text AS collar_id
           FROM silver.collars
-         WHERE project_id = $1::uuid
-           AND (hole_id = $2 OR ($3::text IS NOT NULL AND hole_id_canonical = $3))
-         ORDER BY (hole_id = $2) DESC
+         WHERE project_id = $1::uuid AND hole_id = $2
          LIMIT 1
         """,
-        project_id, hole_id, hole_id_canonical,
+        project_id, hole_id,
     )
     if row:
         return row["collar_id"]
+    canonical = _canonical_hole_id(hole_id)
+    if not canonical:
+        return None
+    row = await conn.fetchrow(
+        """
+        SELECT collar_id::text AS collar_id
+          FROM silver.collars
+         WHERE project_id = $1::uuid AND hole_id_canonical = $2
+         ORDER BY created_at
+         LIMIT 1
+        """,
+        project_id, canonical,
+    )
+    return row["collar_id"] if row else None
 
+
+async def _create_collar(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    hole_id: str,
+    placement: _Placement,
+    total_depth: float,
+    drill_date: date | None,
+    workspace_id: str,
+) -> str:
+    """Insert a `silver.collars` row at an already-justified placement.
+
+    Idempotent on (project_id, hole_id): a concurrent writer that got there
+    first wins and its collar_id is returned, untouched.
+    """
+    hole_id_canonical = _canonical_hole_id(hole_id)
     row = await conn.fetchrow(
         """
         INSERT INTO silver.collars
             (collar_id, hole_id, hole_id_canonical, project_id, easting, northing, total_depth,
-             hole_type, status, drill_date, geom, geom_4326,
-             workspace_id, created_at, updated_at)
+             hole_type, status, drill_date, georef_method,
+             geom, geom_4326, workspace_id, created_at, updated_at)
         VALUES (gen_random_uuid(), $1, $2, $3::uuid, $4, $5, $6,
-                'exploration', 'active', $7,
-                ST_SetSRID(ST_MakePoint($4, $5), 32613),
-                ST_Transform(ST_SetSRID(ST_MakePoint($4, $5), 32613), 4326),
-                $8::uuid, NOW(), NOW())
+                'exploration', 'active', $7, $8,
+                ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 32613),
+                ST_Transform(ST_SetSRID(ST_MakePoint($9, $10), $11::int), 4326),
+                $12::uuid, NOW(), NOW())
+        ON CONFLICT (project_id, hole_id) DO UPDATE SET updated_at = silver.collars.updated_at
         RETURNING collar_id::text AS collar_id
         """,
-        hole_id, hole_id_canonical, project_id, easting, northing, total_depth, drill_date,
+        hole_id, hole_id_canonical, project_id, placement.easting, placement.northing,
+        total_depth, drill_date, placement.georef_method,
+        placement.source_x, placement.source_y, placement.source_epsg,
         workspace_id,
     )
     return row["collar_id"]
@@ -319,11 +578,12 @@ async def ingest_las_file(
     las_path: str,
     *,
     workspace_id: str,
-    project_name_fallback: str = "Wyoming WSGS Uranium Archive",
+    project_name_fallback: str = "LAS import",
     company_fallback: str = "Unknown Operator",
-    plss_section_key: str | None = None,
     ingest_run_id: str | None = None,
     project_id_override: str | None = None,
+    source_epsg: int | None = None,
+    hole_id_override: str | None = None,
 ) -> LASIngestResult:
     """Ingest one LAS file into silver.* + bronze.provenance.
 
@@ -333,11 +593,17 @@ async def ingest_las_file(
         workspace_id: silver.workspaces UUID for RLS scoping
         project_name_fallback: used if LAS COMP field is empty
         company_fallback: used if LAS COMP field is empty
-        plss_section_key: e.g. "028N079W36" — overrides LOC-field parse
         ingest_run_id: optional bronze.ingest_runs link
+        source_epsg: CRS the operator declared for the upload; used for
+            projected X/Y in the LAS header when the header names none.
+        hole_id_override: the hole this file belongs to when the operator (or a
+            kept-for-later record) says so, instead of the header's WELL item.
 
     Returns:
-        LASIngestResult describing what landed.
+        LASIngestResult describing what landed. A file whose collar cannot
+        be located is returned ``skipped`` with ``skipped_reason=
+        'collar_unlocated'`` and a ``las_collar_unlocated`` warning; nothing
+        is written for it.
     """
     p = Path(las_path)
     try:
@@ -354,7 +620,9 @@ async def ingest_las_file(
 
     # Well metadata
     well = las.well
-    hole_id = str(well.get("WELL", lasio.HeaderItem("WELL", value="")).value).strip()
+    hole_id = (hole_id_override or str(
+        well.get("WELL", lasio.HeaderItem("WELL", value="")).value,
+    )).strip()
     if not hole_id:
         return LASIngestResult(
             file_path=las_path, hole_id="", project_id=None, collar_id=None,
@@ -363,28 +631,23 @@ async def ingest_las_file(
         )
 
     company = str(well.get("COMP", lasio.HeaderItem("COMP", value="")).value).strip() or company_fallback
-    field = str(well.get("FLD", lasio.HeaderItem("FLD", value="")).value).strip()
+    field_name = str(well.get("FLD", lasio.HeaderItem("FLD", value="")).value).strip()
     county = str(well.get("CNTY", lasio.HeaderItem("CNTY", value="")).value).strip()
     state = str(well.get("STAT", lasio.HeaderItem("STAT", value="")).value).strip()
-    loc = str(well.get("LOC", lasio.HeaderItem("LOC", value="")).value).strip()
     date_str = str(well.get("DATE", lasio.HeaderItem("DATE", value="")).value).strip()
 
-    # PLSS parse — if LOC field present, derive section_key
-    plss_parsed = _parse_plss_loc(loc)
-    if not plss_section_key and plss_parsed:
-        section, township, range_ = plss_parsed
-        # Format as "TTTN" + "RRRW" + "SS" — assume N township + W range
-        # (Wyoming is all N township; range W is dominant in W Wyoming)
-        plss_section_key = f"{township:03d}N{range_:03d}W{section:02d}"
-
-    easting, northing = _derive_coordinates(plss_section_key, hole_id)
-    total_depth = float(las.well["STOP"].value) if "STOP" in las.well else 0.0
+    try:
+        total_depth = float(las.well["STOP"].value) if "STOP" in las.well else 0.0
+    except (TypeError, ValueError):
+        # Reported below as las_invalid_stop_depth, with the file name.
+        log.debug("las_ingester.stop_not_numeric file=%s", p.name)
+        total_depth = 0.0
     drill_date = _parse_las_date(date_str)
 
     # Project name — derive from company + field if both present, else fallback
-    project_name = f"{company} — {field}" if company and field else project_name_fallback
+    project_name = f"{company} — {field_name}" if company and field_name else project_name_fallback
 
-    region = ", ".join(filter(None, [county, state])) or "Wyoming"
+    region = ", ".join(filter(None, [county, state])) or None
 
     if project_id_override:
         project_id = project_id_override
@@ -398,22 +661,65 @@ async def ingest_las_file(
         )
 
     if total_depth <= 0:
+        # Was a bare skip that the archive only counted. The file name is
+        # what a geologist needs to go and fix the header.
+        stop_raw = las.well["STOP"].value if "STOP" in las.well else None
+        detail = (
+            f"{p.name}: well {hole_id!r} has STOP = {stop_raw!r} in its ~WELL "
+            "section (the bottom depth), which is not a positive depth, so the "
+            "file was skipped and none of its curves were loaded. Correct STOP "
+            "and upload it again."
+        )
+        log.warning("las_ingester.invalid_stop file=%s well=%s stop=%r", p.name, hole_id, stop_raw)
         return LASIngestResult(
             file_path=las_path, hole_id=hole_id, project_id=project_id, collar_id=None,
             curves_inserted=0, skipped=True,
             skipped_reason="invalid_total_depth",
+            warnings=[{"code": "las_invalid_stop_depth", "detail": detail}],
         )
 
-    collar_id = await _get_or_create_collar(
-        conn,
-        project_id=project_id,
-        hole_id=hole_id,
-        easting=easting,
-        northing=northing,
-        total_depth=total_depth,
-        drill_date=drill_date,
-        workspace_id=workspace_id,
-    )
+    warnings: list[dict[str, str]] = []
+    georef_method: str | None = None
+    collar_id = await _find_collar(conn, project_id=project_id, hole_id=hole_id)
+    if collar_id is None:
+        placement, header_notes = await _placement_from_header(
+            conn,
+            values=_header_values(well),
+            project_id=project_id,
+            source_epsg=source_epsg,
+            hole_id=hole_id,
+        )
+        if placement is None:
+            why = "; ".join(header_notes) or "its ~WELL section carries no coordinates"
+            detail = (
+                f"{p.name}: well {hole_id!r} has no collar in this project and cannot be "
+                f"located ({why}). Its curves were not loaded by this call; the caller "
+                "decides whether to keep the file until the collar exists "
+                "(see las_pending.py)."
+            )
+            log.warning("las_ingester.collar_unlocated file=%s well=%s why=%s", p.name, hole_id, why)
+            return LASIngestResult(
+                file_path=las_path, hole_id=hole_id, project_id=project_id, collar_id=None,
+                curves_inserted=0, skipped=True,
+                skipped_reason="collar_unlocated",
+                warnings=[{"code": "las_collar_unlocated", "detail": detail}],
+            )
+        collar_id = await _create_collar(
+            conn,
+            project_id=project_id,
+            hole_id=hole_id,
+            placement=placement,
+            total_depth=total_depth,
+            drill_date=drill_date,
+            workspace_id=workspace_id,
+        )
+        georef_method = placement.georef_method
+        if placement.warning is not None:
+            warnings.append({**placement.warning, "detail": f"{p.name}: {placement.warning['detail']}"})
+            log.warning(
+                "las_ingester.%s file=%s well=%s georef=%s",
+                placement.warning["code"], p.name, hole_id, placement.georef_method,
+            )
 
     # Compute source file sha256 once
     sha = hashlib.sha256(p.read_bytes()).hexdigest()
@@ -473,11 +779,12 @@ async def ingest_las_file(
         project_id=project_id,
         collar_id=collar_id,
         curves_inserted=curves_inserted,
+        warnings=warnings,
+        georef_method=georef_method,
     )
 
 
 __all__ = [
     "ingest_las_file",
     "LASIngestResult",
-    "PLSS_REFERENCE_UTM",
 ]

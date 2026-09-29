@@ -1,4 +1,4 @@
-"""Ingest drill data from CSV and XLSX into the silver drill tables.
+"""Ingest drill data from CSV, XLSX, dBASE/DAT and Access into the silver drill tables.
 
 Formats
 -------
@@ -16,10 +16,15 @@ attribute sidecar and belongs to ``ingest_spatial``; the two cases are
 indistinguishable after the file is opened (GDAL resolves the stem and
 hands back the shapefile, geometry included), so the discrimination is a
 sibling stat taken BEFORE the open — see ``_assert_standalone_dbf``.
-A dBASE table matches no geology schema at all, so its rows land in
-``silver.attribute_tables`` as JSONB rather than being guessed into a
-collar or a sample. They arrive from GIS deliveries as legend tables,
-survey point registers and comment logs: real data with no typed home.
+Every dBASE table lands in ``silver.attribute_tables`` as JSONB, the
+lossless record. Its headers are ALSO run through the same classifier the CSV
+and workbook paths use (``_typed_verdict_for_table``): a table that classifies
+as collar / survey / lithology / sample / structure is routed through the same
+parsers and writers as the identical columns in a CSV, and a table that
+classifies as nothing - legend tables, survey point registers, comment logs -
+is unchanged. The same holds for each table of a ``.mdb`` and for a MapInfo
+``.dat``; a Discover trace export and a surface-geochemistry table keep their
+dedicated writers.
 
 Why this workflow exists
 ------------------------
@@ -116,6 +121,12 @@ SUPPORTED_EXTENSIONS = (
     CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBASE_EXTENSIONS | ACCESS_EXTENSIONS
 )
 
+#: Formats whose tables are read into Python row dicts rather than parsed from
+#: the file on disk. The CSV/Excel typed path re-opens the file per sheet; a
+#: dBASE/DAT/Access table has no text form to re-open, so its rows are parsed
+#: from memory (``_parse_rows``) by the same georag_geoparsers parsers.
+TABLE_SOURCE_EXTENSIONS = DBASE_EXTENSIONS | ACCESS_EXTENSIONS
+
 #: UTM zone 13N — the Athabasca Basin, where this platform's corpus is
 #: centred. A default, not a detection: see the module docstring.
 DEFAULT_SOURCE_EPSG = 32613
@@ -155,7 +166,13 @@ COLLAR_GEOM_SRID = 32613
 
 #: Order matters — see the module docstring. Anything not in this tuple is
 #: reported as an unclassified sheet rather than guessed at.
-WRITE_ORDER: tuple[str, ...] = ("collar", "survey", "lithology", "sample")
+#:
+#: Collars first: every other type resolves hole_id -> collar_id against
+#: silver.collars. ``structure`` (silver.structure, per-collar oriented
+#: measurements) follows the collars it references.
+WRITE_ORDER: tuple[str, ...] = (
+    "collar", "structure", "survey", "lithology", "sample",
+)
 
 #: NOT NULL columns the parsers do not guarantee. Defaulting these is the
 #: difference between ingesting a real-world file and rejecting it: plenty of
@@ -282,6 +299,31 @@ INSERT INTO silver.samples (
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
     $8::jsonb, $9::jsonb, NOW(), NOW()
+)
+"""
+
+#: silver.structure — the COLUMNS created by
+#: 2026_05_20_060400_create_silver_geological_singulars, which is not the field
+#: list in the architecture doc's §04e table (that names depth_m / alpha / beta
+#: / dip_dir / dip / confidence; the table has depth, alpha_angle, beta_angle,
+#: true_dip, true_dip_dir, roughness, infill, notes and no confidence).
+#: The plural ``silver.structures`` was dropped by that migration - the demo
+#: seeder that still targets it is stale.
+#:
+#: The angle parameters are cast through double precision: the columns are
+#: ``numeric`` and asyncpg would otherwise send the exact binary expansion of a
+#: Python float (0.1 -> 0.1000000000000000055...). float8 -> numeric rounds to
+#: 15 significant digits, which is what the source file said.
+_STRUCTURE_SQL = """
+INSERT INTO silver.structure (
+    id, workspace_id, collar_id, depth, structure_type,
+    alpha_angle, beta_angle, true_dip, true_dip_dir,
+    roughness, infill, notes, created_at
+) VALUES (
+    gen_random_uuid(), $1::uuid, $2::uuid, $3::double precision, $4,
+    $5::double precision, $6::double precision,
+    $7::double precision, $8::double precision,
+    $9, $10, $11, NOW()
 )
 """
 
@@ -1109,6 +1151,10 @@ _INTERVAL_TABLES = {
     "survey": "silver.surveys",
     "lithology": "silver.lithology_logs",
     "sample": "silver.samples",
+    # Not an interval, but the same replace-per-collar rule applies: a
+    # corrected structure log replaces the holes it mentions, and re-running
+    # the same file must not double every measurement on the stereonet.
+    "structure": "silver.structure",
 }
 
 
@@ -1138,6 +1184,7 @@ async def _write_intervals(
     assay_rows: list[tuple] = []
     assay_skipped = 0
     orphaned = 0
+    unwritable = 0
     for rec in records:
         collar_id = _resolve_collar(index, rec.get("hole_id"))
         if collar_id is None:
@@ -1151,6 +1198,21 @@ async def _write_intervals(
                 workspace_id, collar_id, _num(rec.get("depth")),
                 _num(rec.get("azimuth")), _num(rec.get("dip")),
                 rec.get("survey_method") or _SURVEY_METHOD_DEFAULT,
+            ))
+        elif sheet_type == "structure":
+            depth = _num(rec.get("depth"))
+            if depth is None:
+                # NOT NULL, and the parser already rejects such a row; kept
+                # as a guard for records that did not come from it, and
+                # counted rather than dropped in silence.
+                unwritable += 1
+                continue
+            rows.append((
+                workspace_id, collar_id, depth,
+                rec.get("structure_type") or "other",
+                _num(rec.get("alpha_angle")), _num(rec.get("beta_angle")),
+                _num(rec.get("true_dip")), _num(rec.get("true_dip_dir")),
+                rec.get("roughness"), rec.get("infill"), rec.get("notes"),
             ))
         elif sheet_type == "lithology":
             rows.append((
@@ -1184,6 +1246,7 @@ async def _write_intervals(
 
     sql = {
         "survey": _SURVEY_SQL,
+        "structure": _STRUCTURE_SQL,
         "lithology": _LITHOLOGY_SQL,
         "sample": _SAMPLE_SQL,
     }[sheet_type]
@@ -1231,7 +1294,7 @@ async def _write_intervals(
 
     stats = {
         "written": written,
-        "skipped": 0,
+        "skipped": unwritable,
         "orphaned": orphaned,
         "replaced": replaced,
     }
@@ -1267,7 +1330,7 @@ def _csv_headers(path: str) -> list[str]:
     return []
 
 
-#: How the four CSV parsers report a FILE-level refusal: one
+#: How the CSV parsers report a FILE-level refusal: one
 #: ``skipped_details`` entry with ``row`` unset, ``code`` ==
 #: ``"missing_required"``, and a ``reason`` naming the column set no alias
 #: matched (csv_collar.py:369, csv_survey.py:348, csv_lithology.py:426,
@@ -1436,8 +1499,14 @@ def _wrote_nothing_warning(
     headers_matched: str | None = None,
     retry_reason: str | None = None,
     remap: dict[str, Any] | None = None,
+    table_source: bool = False,
 ) -> dict[str, Any]:
     """Say which sheet was refused, what it was taken for, and why.
+
+    ``table_source`` is a dBASE/DAT/Access table: it has no text form, so the
+    sheet-as-searchable-text fallback does not apply to it, and the honest
+    statement is that its rows are in the data-table copy (which is written
+    for every such table regardless).
 
     ``message`` AND ``detail``: the Ingestion Runs page renders
     ``detail``, falling back to ``code`` — a warning with neither shows
@@ -1517,6 +1586,14 @@ def _wrote_nothing_warning(
             f"right type or rename its columns to ones the "
             f"{classified_as} parser recognises."
         )
+    kept = (
+        "The table was kept whole as a data table (every column, every "
+        "row); it is not in the drillhole tables."
+        if table_source else
+        "The sheet was kept as searchable text and, where its columns "
+        "allow, as a data table; the warnings beside this one report what "
+        "landed."
+    )
     warning: dict[str, Any] = {
         "code": "classified_but_nothing_written",
         "message": (
@@ -1525,9 +1602,7 @@ def _wrote_nothing_warning(
         ),
         "detail": (
             f"{how} — which accepted none of its rows: {because}. No "
-            f"{classified_as} rows were written. The sheet was kept as "
-            f"searchable text and, where its columns allow, as a data "
-            f"table; the warnings beside this one report what landed. {fix}"
+            f"{classified_as} rows were written. {kept} {fix}"
         ),
     }
     if remap is not None:
@@ -1806,6 +1881,117 @@ def _vendor_aliases_for(
     }
 
 
+def _table_columns(rows: list[dict[str, Any]]) -> list[str]:
+    """Column names of a row-dict table, in first-seen order.
+
+    A UNION over every row, not ``list(rows[0])``: mdb-json omits a key whose
+    value is NULL in that row (see access_mdb.read_table), so the first row of
+    an Access table can be missing a column that every later row carries.
+    """
+    seen: dict[str, None] = {}
+    for row in rows:
+        for key in row:
+            seen.setdefault(key)
+    return list(seen)
+
+
+def _rows_as_csv_stream(rows: list[dict[str, Any]]) -> Any:
+    """A dBASE/DAT/Access table as the in-memory CSV the CSV parsers read.
+
+    The same trick ``parse_xlsx_sheet`` uses for a worksheet, for the same
+    reason: hole-ID canonicalisation, range checks, dip-convention and
+    unit-ambiguity handling live in the CSV parsers, and re-implementing them
+    per source would fork the most heavily audited logic in the pipeline.
+    Everything is written as text and the parsers cast for themselves.
+    """
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer, fieldnames=_table_columns(rows), restval="",
+        extrasaction="ignore",
+    )
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: ("" if v is None else v) for k, v in row.items()})
+    buffer.seek(0)
+    return buffer
+
+
+def _parse_rows(
+    rows: list[dict[str, Any]],
+    sheet_type: str,
+    column_map: dict[str, dict[str, str]] | None = None,
+) -> Any:
+    """Run the CSV parser for *sheet_type* over an in-memory table."""
+    return _csv_parser_for(sheet_type)(
+        _rows_as_csv_stream(rows),
+        vendor_aliases=_vendor_aliases_for(column_map, sheet_type),
+    )
+
+
+def _typed_verdict_for_table(
+    rows: list[dict[str, Any]],
+    column_map: dict[str, dict[str, str]] | None = None,
+    *,
+    dbase_side_writes: bool = False,
+) -> tuple[str, float]:
+    """The drill type a dBASE/DAT/Access table's headers classify as.
+
+    The SAME classifier the CSV and workbook paths use
+    (``_sheet_classifier.classify_sheet_type``), so a table is a collar /
+    survey / lithology / sample / structure table by exactly the rule that
+    would apply to the identical columns in a CSV or a worksheet. Returns
+    ``("unknown", 0.0)`` when nothing classifies - the table then behaves
+    as it always did, landing only in silver.attribute_tables.
+
+    ``dbase_side_writes`` gives the two shapes that already have their own
+    dedicated writers precedence over the generic route, so the same rows
+    are not written twice by two writers that disagree:
+
+      * a Discover/MapInfo drillhole TRACE export has hole/depth/azimuth/dip,
+        so it would classify as a survey - but its rows are segment
+        midpoints, and ``_collapse_discover_traces`` exists precisely
+        because treating them as stations bends every hole off its collar;
+      * a surface-geochemistry table is a sample with a location and no hole.
+    """
+    columns = _table_columns(rows)
+    if not columns:
+        return "unknown", 0.0
+    if dbase_side_writes and (
+        _discover_trace_columns(columns) is not None
+        or _surface_geochem_columns(columns) is not None
+    ):
+        return "unknown", 0.0
+
+    from georag_geoparsers._sheet_classifier import (  # noqa: PLC0415
+        classify_sheet_type,
+    )
+
+    sheet_type, confidence = classify_sheet_type(columns, column_map=column_map)
+    return sheet_type, confidence
+
+
+def _csv_parser_for(sheet_type: str) -> Any:
+    """The georag_geoparsers CSV parser that reads *sheet_type*."""
+    from georag_geoparsers import (  # noqa: PLC0415
+        parse_csv_collars,
+        parse_csv_lithology,
+        parse_csv_samples,
+        parse_csv_structures,
+        parse_csv_surveys,
+    )
+
+    return {
+        "collar": parse_csv_collars,
+        "survey": parse_csv_surveys,
+        "structure": parse_csv_structures,
+        "lithology": parse_csv_lithology,
+        "sample": parse_csv_samples,
+    }[sheet_type]
+
+
 def _parse_one(
     path: str,
     sheet_type: str,
@@ -1813,19 +1999,7 @@ def _parse_one(
     column_map: dict[str, dict[str, str]] | None = None,
 ) -> Any:
     """Run the parser matching *sheet_type*."""
-    from georag_geoparsers import (  # noqa: PLC0415
-        parse_csv_collars,
-        parse_csv_lithology,
-        parse_csv_samples,
-        parse_csv_surveys,
-    )
-
-    parser = {
-        "collar": parse_csv_collars,
-        "survey": parse_csv_surveys,
-        "lithology": parse_csv_lithology,
-        "sample": parse_csv_samples,
-    }[sheet_type]
+    parser = _csv_parser_for(sheet_type)
 
     vendor_aliases = _vendor_aliases_for(column_map, sheet_type)
 
@@ -1934,6 +2108,15 @@ async def run_ingest_tabular(
             attribute_sha256 = ""
             #: Access branch state: one (table_name, rows) per Access table.
             access_layers: list[tuple[str, list[dict[str, Any]]]] = []
+            #: dBASE/DAT/Access tables whose headers classified as a drill
+            #: type: ``{work label: (display name, rows)}``. Their rows are
+            #: parsed from memory by the same parsers the CSV/Excel paths
+            #: use; the attribute_tables copy is written for them as well.
+            table_sources: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+            #: Rows that landed BOTH typed and as attribute rows. They are
+            #: the same rows, so the run's headline count subtracts them
+            #: once instead of reporting 2N for an N-row collar table.
+            typed_rows_shadowing_attribute = 0
 
             if suffix in ACCESS_EXTENSIONS:
                 # An Access database is MANY tables in one file — measured: 19
@@ -1978,6 +2161,17 @@ async def run_ingest_tabular(
                             "type": "attribute_table",
                             "rows": len(rows),
                         })
+                        # The same header classification the CSV/Excel path
+                        # runs. A table that matches no drill type (the
+                        # common case in a geophysics .mdb) is unaffected.
+                        verdict, _conf = _typed_verdict_for_table(
+                            rows, input.column_map,
+                        )
+                        if verdict in WRITE_ORDER:
+                            work.append((verdict, table_name))
+                            table_sources[table_name] = (
+                                f"{filename}:{table_name}", rows,
+                            )
                 if not access_layers:
                     warnings.append({
                         "code": "access_no_tables",
@@ -2008,6 +2202,19 @@ async def run_ingest_tabular(
                     "type": "attribute_table",
                     "rows": len(attribute_rows),
                 })
+                if attribute_rows:
+                    # Typed routing by the same header classification the
+                    # CSV/Excel path runs; a trace export or a surface
+                    # geochemistry table keeps its dedicated writer below.
+                    verdict, _conf = _typed_verdict_for_table(
+                        attribute_rows, input.column_map,
+                        dbase_side_writes=True,
+                    )
+                    if verdict in WRITE_ORDER:
+                        work.append((verdict, attribute_layer))
+                        table_sources[attribute_layer] = (
+                            filename, attribute_rows,
+                        )
                 if not attribute_rows:
                     warnings.append({
                         "code": "dbf_no_rows",
@@ -2153,10 +2360,21 @@ async def run_ingest_tabular(
                     collar/interval split and the accumulator arithmetic,
                     and the two copies would drift.
                     """
-                    result = await asyncio.to_thread(
-                        _parse_one, local, write_type, target_sheet,
-                        input.column_map,
+                    table = (
+                        table_sources.get(target_sheet)
+                        if target_sheet is not None else None
                     )
+                    if table is not None:
+                        # dBASE/DAT/Access: parse the rows already in memory.
+                        result = await asyncio.to_thread(
+                            _parse_rows, table[1], write_type,
+                            input.column_map,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            _parse_one, local, write_type, target_sheet,
+                            input.column_map,
+                        )
                     records = getattr(result, "records", None) or []
                     warnings.extend(getattr(result, "warnings", None) or [])
 
@@ -2180,7 +2398,8 @@ async def run_ingest_tabular(
                         )
 
                     rejected_note = _rows_rejected_warning(
-                        label=target_sheet or filename,
+                        label=(table[0] if table is not None else None)
+                        or target_sheet or filename,
                         write_type=write_type,
                         result=result,
                         written=stats.get("written", 0),
@@ -2205,10 +2424,47 @@ async def run_ingest_tabular(
                     # same encoding/delimiter facts and would report each
                     # twice).
                     forced_warn_start = len(warnings)
-                    result, stats = await _parse_and_write(
-                        sheet_type, sheet_name,
-                    )
+                    is_table_source = suffix in TABLE_SOURCE_EXTENSIONS
+                    try:
+                        result, stats = await _parse_and_write(
+                            sheet_type, sheet_name,
+                        )
+                    except Exception as exc:
+                        if not is_table_source:
+                            raise
+                        # Additive, like the trace and geochemistry writes:
+                        # the attribute copy is written below and holds every
+                        # row, so a typed failure on ONE table must not turn
+                        # the file into a failed run or lose the others.
+                        display = table_sources[sheet_name or ""][0]
+                        log.warning(
+                            "ingest_tabular: typed %s write failed for %s: %s",
+                            sheet_type, display, exc, exc_info=True,
+                        )
+                        warnings.append({
+                            "code": "typed_table_write_failed",
+                            "message": (
+                                f"'{display}' looks like {sheet_type} data but "
+                                f"could not be written as {sheet_type} rows"
+                            ),
+                            "detail": (
+                                f"'{display}' classified as {sheet_type} and "
+                                f"writing it as {sheet_type} rows failed: "
+                                f"{str(exc)[:300]}. The table is not lost - "
+                                f"every row is in the attribute table and in "
+                                f"bronze, and re-ingesting will retry."
+                            ),
+                        })
+                        continue
                     forced_warn_end = len(warnings)
+                    if is_table_source and stats.get("written"):
+                        display = table_sources[sheet_name or ""][0]
+                        sheets.append({
+                            "sheet": display,
+                            "type": sheet_type,
+                            "rows": stats["written"],
+                        })
+                        typed_rows_shadowing_attribute += stats["written"]
                     if stats.get("written") or stats.get("orphaned"):
                         # ORPHANED COUNTS AS LANDED DELIBERATELY. An
                         # interval sheet whose rows all orphaned parsed
@@ -2235,6 +2491,10 @@ async def run_ingest_tabular(
                     forced = (
                         sheet_type == input.sheet_type
                         and suffix not in EXCEL_EXTENSIONS
+                        # A dBASE/Access table is classified from its own
+                        # headers whatever category the upload carried, and
+                        # has no CSV header row for the re-check to read.
+                        and not is_table_source
                     )
                     headers_matched: str | None = None
                     retry_reason: str | None = None
@@ -2509,7 +2769,13 @@ async def run_ingest_tabular(
                     label, classified_as, reason, forced, matched, second,
                     remap,
                 ) in wrote_nothing:
-                    if label not in unclassified:
+                    # The text/table fallbacks re-read the file as delimited
+                    # text or a worksheet; a dBASE/Access table is neither,
+                    # and is already whole in silver.attribute_tables.
+                    if (
+                        suffix not in TABLE_SOURCE_EXTENSIONS
+                        and label not in unclassified
+                    ):
                         unclassified.append(label)
                     warnings.append(_wrote_nothing_warning(
                         label=label,
@@ -2519,6 +2785,7 @@ async def run_ingest_tabular(
                         headers_matched=matched,
                         retry_reason=second,
                         remap=remap,
+                        table_source=suffix in TABLE_SOURCE_EXTENSIONS,
                     ))
 
                 # ── Whatever did not classify ───────────────────────────
@@ -2568,6 +2835,32 @@ async def run_ingest_tabular(
                     if rows_landed:
                         warnings.append(rows_landed)
                         table_rows += int(rows_landed.get("rows") or 0)
+
+                # Collars were just written: LAS files kept in bronze because
+                # their hole had no collar attach now (never raises).
+                if written.get("collar", {}).get("written"):
+                    from app.services.ingest.las_pending import (  # noqa: PLC0415
+                        attach_pending_las,
+                    )
+
+                    try:  # a hook defect costs a warning, never these collars
+                        await attach_pending_las(
+                            conn, store=store, workspace_id=input.workspace_id,
+                            project_id=input.project_id,
+                        )
+                    except Exception as attach_exc:  # noqa: BLE001
+                        log.warning(
+                            "ingest_tabular: pending LAS attach failed for %s: %s",
+                            filename, attach_exc,
+                        )
+                        warnings.append({
+                            "code": "las_pending_attach_failed",
+                            "message": (
+                                "LAS files waiting for these collars were not "
+                                "attached this run; they stay kept and attach "
+                                f"on the next collar upload ({attach_exc})"
+                            )[:500],
+                        })
             finally:
                 await conn.close()
 
@@ -2633,7 +2926,7 @@ async def run_ingest_tabular(
             # headline, which stops contradicting the warning under it.
             rows_written = sum(
                 stats.get("written", 0) for stats in written.values()
-            ) + text_passages + table_rows
+            ) + text_passages + table_rows - typed_rows_shadowing_attribute
             transitioned = await _progress.mark_completed_by_run(
                 run_id=run_id,
                 rows_written=rows_written,

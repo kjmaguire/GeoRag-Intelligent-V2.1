@@ -42,7 +42,18 @@ logger = logging.getLogger(__name__)
 PARSER_VERSION = "1.2.0"  # 2026-05-23 — added enumerate_sheets for multi-sheet auto-dispatch
 
 # Supported sheet types map directly to the existing CSV parsers.
-SheetType = Literal["collar", "survey", "lithology", "sample"]
+SheetType = Literal["collar", "survey", "lithology", "sample", "structure"]
+
+#: Codes of parser warnings that describe the data (not the transport) and
+#: are forwarded from the CSV parser to the workbook result.
+_FORWARDED_PARSER_WARNINGS = frozenset({
+    "optional_values_blanked",
+    "structure_strike_not_converted",
+    "structure_type_unmapped",
+    "structure_interval_collapsed",
+    "structure_no_orientation",
+    "structure_strike_converted",
+})
 
 # Extension sets for routing to the correct read backend.
 _XLSX_EXTS = frozenset({".xlsx", ".xlsm"})
@@ -464,7 +475,7 @@ def parse_xlsx_sheet(
     sheet_name:
         Name of the sheet to load.  Pass an empty string to use the first sheet.
     sheet_type:
-        One of "collar", "survey", "lithology", "sample".  Controls which CSV
+        One of "collar", "survey", "lithology", "sample", "structure".  Controls which CSV
         parser is invoked.
     vendor_aliases:
         Extra column spellings, passed straight through to that CSV parser.
@@ -580,8 +591,21 @@ def parse_xlsx_sheet(
         from georag_geoparsers.csv_sample import parse_csv_samples
         result = parse_csv_samples(csv_buffer, vendor_aliases=vendor_aliases)
         assay_columns = getattr(result, "assay_columns", [])
+    elif sheet_type == "structure":
+        from georag_geoparsers.csv_structure import parse_csv_structures
+        result = parse_csv_structures(csv_buffer, vendor_aliases=vendor_aliases)
+        assay_columns = []
     else:
         raise ValueError(f"xlsx_parser: unknown sheet_type '{sheet_type}'")
+
+    # The CSV parsers' own warnings are NOT all forwarded: their encoding and
+    # delimiter notes describe the in-memory buffer built above, not the
+    # workbook. The ones about the DATA are, because the CSV path surfaces
+    # them and a workbook must not be the quieter way to lose a value.
+    extra_warnings.extend(
+        w for w in (getattr(result, "warnings", None) or [])
+        if isinstance(w, dict) and w.get("code") in _FORWARDED_PARSER_WARNINGS
+    )
 
     # Populate source_col_map now that the CSV parser has resolved column aliases.
     provenance["source_col_map"] = result.column_map or {}

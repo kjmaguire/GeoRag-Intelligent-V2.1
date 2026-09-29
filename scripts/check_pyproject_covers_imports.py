@@ -114,6 +114,7 @@ ALLOWED_NON_PYPROJECT: set[str] = {
     # Transitives guaranteed by parent deps:
     "shapely",           # via geopandas
     "pyogrio",           # via geopandas (replaces fiona)
+    "pyproj",            # via georag-geoparsers (pyproj>=3.6) and geopandas; las_ingester reprojects LAS header coordinates
     "charset_normalizer",  # via requests
     # Soft-deps with explicit try/except handling in the source:
     "langdetect",        # pdf_report.py wraps `from langdetect import DetectorFactory`

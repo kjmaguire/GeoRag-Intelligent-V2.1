@@ -21,6 +21,22 @@ Classification rules (Wyoming roll-front, fine for Cameco Shirley):
     surface 0..7 m                           → SURF  (alluvium/overburden)
     otherwise                                → MIX   (transitional)
 
+When this runs -- and when it does not
+    The thresholds above are Wyoming roll-front uranium numbers and the depth
+    axis is assumed to be feet. Applied to a gold or copper hole they
+    manufacture a lithology log that reads like geology. So, per project:
+
+      * the project's commodity must be uranium (``silver.projects.commodity``
+        is free text, ``commodity_arr`` a text[]; see ``is_uranium_commodity``)
+        -- anything else, including NULL ("not stated"), is skipped whole;
+      * a hole that already has LOGGED lithology (any silver.lithology_logs
+        row whose code is not ``DERIVED-%``) is never derived over. Its stale
+        derived rows, if an earlier run left any, are removed instead.
+
+    Every delete stays scoped to derived rows (``DERIVED-%`` codes,
+    ``derived_composite`` samples). The depth-unit assumption (feet) is
+    unchanged, and is reported in the summary as ``depth_unit_assumed``.
+
 Run via:
     python -m app.services.ingest.derive_intervals --project-id <uuid>
 """
@@ -29,10 +45,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import logging
+import re
 import sys
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import asyncpg
 
@@ -62,6 +82,40 @@ LITHO_COLOR = {
 FT_TO_M = 0.3048
 MIN_INTERVAL_M = 0.5          # collapse depth bands shorter than this
 SAMPLE_COMPOSITE_M = 1.5      # ~5 ft composite for sample rows
+
+#: Reported in the summary so an operator can see what was assumed.
+DEPTH_UNIT_ASSUMED = "ft"
+
+_URANIUM_WORDS = frozenset({"uranium", "u3o8", "u308"})
+#: A bare "u" only counts as a whole list item ("Au, U"), never as a word
+#: inside prose ("U.S. porphyry").
+_COMMODITY_SPLIT = re.compile(r"[,;/&|+]|\band\b|-")
+
+
+def is_uranium_commodity(*values: str | Iterable[str] | None) -> bool:
+    """Whether any commodity value names uranium.
+
+    ``silver.projects.commodity`` is a free-text varchar(50) typed by the
+    project's owner ("Uranium", "U3O8", "U", "Au, U", "Uranium (ISR)") and
+    ``commodity_arr`` a text[] that may hold the same. NULL / empty means
+    "not stated", which is NOT uranium: the answer is False.
+    """
+    items: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            items.append(value)
+        else:
+            items.extend(str(v) for v in value if v is not None)
+    for item in items:
+        for part in _COMMODITY_SPLIT.split(item.lower()):
+            part = part.strip()
+            if part == "u":
+                return True
+            if _URANIUM_WORDS & set(re.findall(r"[a-z0-9]+", part)):
+                return True
+    return False
 
 
 def _parse_pg_double_array(raw: str | list[float] | None) -> list[float]:
@@ -205,6 +259,72 @@ def _build_samples(curves: CurvePack, intervals: list[tuple[float, float, str]])
     return samples
 
 
+async def _clear_derived(conn: asyncpg.Connection, collar_id: str) -> None:
+    """Delete this collar's DERIVED rows and nothing else.
+
+    The gold delete used to be scoped by interval_kind alone. Only this
+    module writes gold.drillhole_intervals_visual today, but a scope of "every
+    lithology row" is one future writer away from deleting logged geology, so
+    it carries the same DERIVED-% guard as the silver one.
+    """
+    await conn.execute(
+        "DELETE FROM silver.lithology_logs WHERE collar_id = $1::uuid AND lithology_code LIKE 'DERIVED-%'",
+        collar_id,
+    )
+    await conn.execute(
+        "DELETE FROM silver.samples WHERE collar_id = $1::uuid AND sample_type = 'derived_composite'",
+        collar_id,
+    )
+    await conn.execute(
+        "DELETE FROM gold.drillhole_intervals_visual "
+        "WHERE collar_id = $1::uuid AND interval_kind = 'lithology' "
+        "AND lithology_code LIKE 'DERIVED-%'",
+        collar_id,
+    )
+
+
+async def _collars_with_logged_lithology(
+    conn: asyncpg.Connection, project_id: str,
+) -> set[str]:
+    """Collar ids in the project that carry lithology somebody LOGGED.
+
+    A row counts as logged unless its code is ``DERIVED-%`` (NULL code with a
+    description is a logged row too). silver.lithology, the canonical table,
+    is a per-project projection of silver.lithology_logs rebuilt by
+    promote_silver_to_gold (its ids ARE the log_ids), so lithology_logs is
+    the source of truth and the only table consulted; the projection can lag
+    behind a re-derive and would misread stale derived rows as logged.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT l.collar_id::text AS collar_id
+          FROM silver.lithology_logs l
+          JOIN silver.collars c ON c.collar_id = l.collar_id
+         WHERE c.project_id = $1::uuid
+           AND (l.lithology_code IS NULL OR l.lithology_code NOT LIKE 'DERIVED-%')
+        """,
+        project_id,
+    )
+    return {r["collar_id"] for r in rows}
+
+
+async def _project_commodities(
+    conn: asyncpg.Connection, project_id: str,
+) -> tuple[str | None, list[str]]:
+    """(commodity, commodity_arr) for the project.
+
+    Read through to_jsonb so a database without the commodity_arr column
+    (added 2026-05-20, PostgreSQL only) still answers on `commodity`.
+    """
+    raw = await conn.fetchval(
+        "SELECT to_jsonb(p) FROM silver.projects p WHERE project_id = $1::uuid",
+        project_id,
+    )
+    row: dict[str, Any] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    arr = row.get("commodity_arr") or []
+    return row.get("commodity"), [str(v) for v in arr]
+
+
 async def _emit_for_collar(
     conn: asyncpg.Connection,
     *,
@@ -228,28 +348,7 @@ async def _emit_for_collar(
     intervals = _collapse_to_intervals(pack.depths_m, labels)
 
     # Wipe prior derived rows for this collar so the script is re-runnable.
-    await conn.execute(
-        "DELETE FROM silver.lithology_logs WHERE collar_id = $1::uuid AND lithology_code LIKE 'DERIVED-%'",
-        collar_id,
-    )
-    await conn.execute(
-        "DELETE FROM silver.samples WHERE collar_id = $1::uuid AND sample_type = 'derived_composite'",
-        collar_id,
-    )
-    # Scoped to the rows THIS module wrote. It used to delete every
-    # 'lithology' interval on the collar, which also destroyed the geologist's
-    # LOGGED lithology that promote_silver_to_gold had already written for the
-    # hole (silver.lithology -> gold), on any hole with a curve named GAMMA.
-    # The two writers race — the archive derives once when it finishes, the
-    # promotions fire as each tabular member completes — so a real Hole
-    # Lithology strip log could be wiped and left blank until the next
-    # promotion. Silver was already scoped this way (DERIVED-% above).
-    await conn.execute(
-        "DELETE FROM gold.drillhole_intervals_visual "
-        "WHERE collar_id = $1::uuid AND interval_kind = 'lithology' "
-        "AND lithology_code LIKE 'DERIVED-%'",
-        collar_id,
-    )
+    await _clear_derived(conn, collar_id)
 
     litho_inserted = 0
     visual_inserted = 0
@@ -332,7 +431,31 @@ async def _emit_for_collar(
     }
 
 
+def _empty_summary(project_id: str) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "skipped": False,
+        "skipped_reason": None,
+        "commodity": None,
+        "depth_unit_assumed": DEPTH_UNIT_ASSUMED,
+        "collars_total": 0,
+        "collars_emitted": 0,
+        "collars_skipped": 0,
+        "collars_skipped_logged_lithology": 0,
+        "collars_skipped_no_gamma": 0,
+        "intervals_total": 0,
+        "samples_total": 0,
+        "ore_bands_total": 0,
+    }
+
+
 async def derive_project(project_id: str) -> dict:
+    """Derive strip logs for one project -- uranium projects only.
+
+    Returns a summary dict. ``skipped=True`` with ``skipped_reason=
+    'commodity_not_uranium'`` means nothing at all was touched. Holes with
+    logged lithology are counted in ``collars_skipped_logged_lithology``.
+    """
     conn = await asyncpg.connect(
         build_dsn(),
         statement_cache_size=0,
@@ -357,15 +480,44 @@ async def derive_project(project_id: str) -> dict:
         )
         await conn.execute("SELECT set_config('app.project_id', $1, false)", project_id)
 
+        commodity, commodity_arr = await _project_commodities(conn, project_id)
+        if not is_uranium_commodity(commodity, commodity_arr):
+            # Not uranium (or not stated): the thresholds below mean nothing
+            # here. Logged once, reported once by the caller -- never per hole.
+            summary = _empty_summary(project_id)
+            summary.update({
+                "skipped": True,
+                "skipped_reason": "commodity_not_uranium",
+                "commodity": commodity or (", ".join(commodity_arr) or None),
+            })
+            log.info(
+                "derive.project skipped project_id=%s reason=commodity_not_uranium "
+                "commodity=%r", project_id, summary["commodity"],
+            )
+            return summary
+
         collars = await conn.fetch(
             "SELECT collar_id::text AS collar_id, hole_id FROM silver.collars WHERE project_id = $1::uuid ORDER BY hole_id",
             project_id,
         )
-        log.info("derive.project start project_id=%s collars=%d", project_id, len(collars))
+        logged = await _collars_with_logged_lithology(conn, project_id)
+        log.info(
+            "derive.project start project_id=%s collars=%d with_logged_lithology=%d",
+            project_id, len(collars), len(logged),
+        )
 
         out: list[dict] = []
         for i, c in enumerate(collars):
             try:
+                if c["collar_id"] in logged:
+                    # A geologist logged this hole; derived strips must not
+                    # sit beside (or over) it. Clear any an earlier run left.
+                    await _clear_derived(conn, c["collar_id"])
+                    out.append({
+                        "hole_id": c["hole_id"], "skipped": True,
+                        "reason": "has_logged_lithology",
+                    })
+                    continue
                 r = await _emit_for_collar(
                     conn,
                     workspace_id=workspace_id,
@@ -380,15 +532,22 @@ async def derive_project(project_id: str) -> dict:
                 log.warning("derive.collar_failed hole=%s err=%s", c["hole_id"], e)
                 out.append({"hole_id": c["hole_id"], "skipped": True, "reason": str(e)[:120]})
 
-        summary = {
-            "project_id": project_id,
+        summary = _empty_summary(project_id)
+        summary.update({
+            "commodity": commodity or (", ".join(commodity_arr) or None),
             "collars_total": len(collars),
             "collars_emitted": sum(1 for r in out if not r.get("skipped")),
             "collars_skipped": sum(1 for r in out if r.get("skipped")),
+            "collars_skipped_logged_lithology": sum(
+                1 for r in out if r.get("reason") == "has_logged_lithology"
+            ),
+            "collars_skipped_no_gamma": sum(
+                1 for r in out if r.get("reason") == "no_gamma_curve"
+            ),
             "intervals_total": sum(r.get("intervals", 0) for r in out),
             "samples_total": sum(r.get("samples", 0) for r in out),
             "ore_bands_total": sum(r.get("ore_bands", 0) for r in out),
-        }
+        })
         log.info("derive.project done %s", summary)
         return summary
     finally:

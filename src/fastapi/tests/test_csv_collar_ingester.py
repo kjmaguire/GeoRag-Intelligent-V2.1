@@ -341,7 +341,7 @@ def test_ingest_zip_archive_routes_every_tabular_extension_to_ingest_tabular():
     )
     src = path.read_text(encoding="utf-8")
 
-    assert 'elif ext in ("csv", "tsv", "xlsx", "xls", "xlsm"):' in src, (
+    assert 'elif ext in ("csv", "tsv", "txt", "xlsx", "xls", "xlsm"):' in src, (
         "ingest_zip_archive._ingest_one must route every tabular extension "
         "through one branch, not just .csv"
     )

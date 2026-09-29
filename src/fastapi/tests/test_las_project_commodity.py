@@ -36,6 +36,7 @@ _requires_lasio = pytest.mark.skipif(
 _WS = "a0000000-0000-0000-0000-00000000feed"
 _PJ = "b1000000-0000-0000-0000-0000000000a0"
 _NEW_PJ = "c2000000-0000-0000-0000-0000000000b0"
+_COLLAR = "d3000000-0000-0000-0000-0000000000c0"
 
 # Bind order of the silver.projects INSERT in both modules under test:
 # project_name, slug, company, region, commodity, workspace_id
@@ -57,8 +58,15 @@ class _RecordingConn:
     the project row's commodity column.
     """
 
-    def __init__(self, *, existing_project: str | None = None) -> None:
+    def __init__(
+        self, *, existing_project: str | None = None, existing_collar: str | None = None,
+    ) -> None:
         self.existing_project = existing_project
+        # A collar already in the project. A LAS whose well has neither a
+        # collar nor header coordinates is refused (las_ingester never places
+        # a hole by a guess), so the tests that need the LAS to LAND give it
+        # the collar the collar table would have loaded.
+        self.existing_collar = existing_collar
         self.project_args: tuple | None = None
         self.project_inserts = 0
 
@@ -100,7 +108,7 @@ class _RecordingConn:
         if "INSERT INTO silver.collars" in flat:
             return {"collar_id": "d3000000-0000-0000-0000-0000000000c0"}
         if flat.startswith("SELECT collar_id"):
-            return None
+            return {"collar_id": self.existing_collar} if self.existing_collar else None
         if "INSERT INTO" in flat and "RETURNING" in flat:
             return {"id": "e4000000-0000-0000-0000-0000000000d0"}
         return None
@@ -207,7 +215,7 @@ class TestWhichCallPathActuallyReachedTheDefault:
 
         path = tmp_path / "hole.las"
         _minimal_las(path)
-        conn = _RecordingConn()
+        conn = _RecordingConn(existing_collar=_COLLAR)
 
         result = await ingest_las_file(
             conn, str(path), workspace_id=_WS, project_id_override=_PJ,
@@ -227,7 +235,7 @@ class TestWhichCallPathActuallyReachedTheDefault:
 
         path = tmp_path / "hole.las"
         _minimal_las(path)
-        conn = _RecordingConn()
+        conn = _RecordingConn(existing_collar=_COLLAR)
 
         result = await ingest_las_file(conn, str(path), workspace_id=_WS)
 

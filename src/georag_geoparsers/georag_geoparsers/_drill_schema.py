@@ -130,6 +130,67 @@ SAMPLE_ALIASES: dict[str, list[str]] = {
     ],
 }
 
+#: Structural measurements (silver.structure): one oriented feature at one
+#: depth in one hole. Deliberately conservative - see the note on
+#: STRUCTURE_SIGNAL_ALIASES for why this schema is the one most likely to
+#: be confused with SURVEY_ALIASES.
+#:
+#: Canonical names follow the silver.structure COLUMNS (depth,
+#: structure_type, alpha_angle, beta_angle, true_dip, true_dip_dir, roughness,
+#: infill, notes), not the looser names in the architecture doc's §04e table.
+#: ``to_depth``, ``strike`` and ``strike_rhr`` have no column of their own:
+#: they are read only to explain or convert (see csv_structure).
+#:
+#: ``Type`` is a WEAK alias of structure_type and is listed last: it is what
+#: half the drill vocabulary calls its category (hole_type, sample_type), so
+#: it is accepted when the table is already known to be structural but is
+#: never, by itself, evidence that it is. Likewise ``Azimuth``/``AZI`` for the
+#: dip direction: a structural log that calls it that gets read that way (and
+#: is warned about), but a bare azimuth is what a downhole survey has.
+STRUCTURE_SIGNAL_ALIASES: dict[str, list[str]] = {
+    "structure_type": [
+        "Structure_Type", "StructureType", "Struct_Type", "StructType",
+        "Structure", "Struct", "Feature", "Feature_Type", "Struct_Code",
+        "Structure_Code", "Struct_Class", "Structure_Class",
+    ],
+    "alpha_angle": ["Alpha", "Alpha_Angle", "Alpha_Ang"],
+    "beta_angle": ["Beta", "Beta_Angle", "Beta_Ang"],
+    "true_dip_dir": [
+        "Dip_Dir", "DipDir", "Dip_Direction", "DipDirection", "True_Dip_Dir",
+        "True_Dip_Direction", "Struct_Dip_Dir", "Structure_Dip_Dir",
+    ],
+}
+
+STRUCTURE_ALIASES: dict[str, list[str]] = {
+    "hole_id": HOLE_ID_ALIASES,
+    # A single depth, or the top of a logged interval - silver.structure has
+    # one depth column. Plain depth spellings first so a table carrying both
+    # Depth and From/To reads Depth as the depth.
+    "depth": [
+        "Depth", "DEPTH", "Struct_Depth", "Structure_Depth", "Meas_Depth",
+        "Measured_Depth", "At_Depth", "MD", *FROM_DEPTH_ALIASES,
+    ],
+    "to_depth": TO_DEPTH_ALIASES,
+    "structure_type": [*STRUCTURE_SIGNAL_ALIASES["structure_type"], "Type"],
+    "alpha_angle": STRUCTURE_SIGNAL_ALIASES["alpha_angle"],
+    "beta_angle": STRUCTURE_SIGNAL_ALIASES["beta_angle"],
+    "true_dip": [
+        "True_Dip", "TrueDip", "Dip", "DIP", "Dip_Angle", "Struct_Dip",
+        "Structure_Dip", "Plane_Dip",
+    ],
+    "true_dip_dir": [*STRUCTURE_SIGNAL_ALIASES["true_dip_dir"], "Azimuth", "AZI"],
+    # Strike is not stored (silver.structure has no strike column); the
+    # right-hand-rule spelling is the one form that converts unambiguously.
+    "strike_rhr": ["Strike_RHR", "RHR_Strike", "StrikeRHR", "Strike_Right_Hand"],
+    "strike": ["Strike", "Struct_Strike", "Structure_Strike"],
+    "roughness": ["Roughness", "Rough"],
+    "infill": ["Infill", "Infilling", "Fill", "Filling", "Joint_Fill"],
+    "notes": [
+        "Comments", "Comment", "Notes", "Remarks", "Description", "Desc",
+        "Struct_Description", "Structure_Description",
+    ],
+}
+
 #: A collar needs an identity and a position. Elevation was required until
 #: 2026-08-24 and should not have been: ``silver.collars.elevation`` is
 #: nullable, the writer already reads it with ``.get()``, and plenty of
@@ -144,15 +205,26 @@ LITHOLOGY_REQUIRED: frozenset[str] = frozenset(
 SAMPLE_REQUIRED: frozenset[str] = frozenset(
     {"hole_id", "from_depth", "to_depth", "sample_type"}
 )
+#: silver.structure.depth is NOT NULL and the row is meaningless without its
+#: hole. Structure type is NOT required even though the column is NOT NULL:
+#: many oriented-core logs carry only depth/alpha/beta/dip/dip-dir, and the
+#: parser stores 'other' (and says so) rather than refusing the measurement.
+STRUCTURE_REQUIRED: frozenset[str] = frozenset({"hole_id", "depth"})
 
 
 def schemas() -> dict[str, tuple[dict[str, list[str]], frozenset[str]]]:
-    """``{sheet_type: (aliases, required)}`` for the four drill layouts."""
+    """``{sheet_type: (aliases, required)}`` for the five drill layouts.
+
+    Order matters to the classifier, which breaks ties in favour of the
+    earlier entry: ``structure`` is last so that survey keeps priority
+    wherever the two are genuinely ambiguous.
+    """
     return {
         "collar": (COLLAR_ALIASES, COLLAR_REQUIRED),
         "survey": (SURVEY_ALIASES, SURVEY_REQUIRED),
         "lithology": (LITHOLOGY_ALIASES, LITHOLOGY_REQUIRED),
         "sample": (SAMPLE_ALIASES, SAMPLE_REQUIRED),
+        "structure": (STRUCTURE_ALIASES, STRUCTURE_REQUIRED),
     }
 
 

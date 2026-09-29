@@ -7,7 +7,7 @@
  * `GET /api/v1/evidence/{evidence_id}`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import EvidenceInspector from '@/Components/EvidenceInspector';
 
 const citation = {
@@ -28,7 +28,15 @@ describe('EvidenceInspector', () => {
         globalThis.fetch = fetchMock as unknown as typeof fetch;
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        // Unmount the Sheet here, then let one macrotask run. Radix's
+        // FocusScope dispatches its unmount focus event from a
+        // setTimeout(0); left pending, it can fire after the file's jsdom
+        // environment is torn down and fail the run with "parameter 1 is
+        // not of type 'Event'" (CI, 2026-09-29) even though every test
+        // passed.
+        cleanup();
+        await new Promise((resolve) => setTimeout(resolve, 0));
         globalThis.fetch = originalFetch;
         vi.clearAllMocks();
     });

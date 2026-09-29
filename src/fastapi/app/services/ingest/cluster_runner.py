@@ -1,4 +1,4 @@
-"""End-to-end Cameco cluster ingest runner.
+"""End-to-end cluster ingest runner (manual operator tool).
 
 Doc-phase 179 — Phase B Tier 1.
 
@@ -32,7 +32,9 @@ import asyncpg
 from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.services.ingest.cameco_log_ingester import (
+    LOG_COORD_EPSG,
     emit_log_provenance,
+    log_crs_declared,
     parse_cameco_log_header,
     update_collar_with_log_coords,
     upsert_collar_from_log,
@@ -48,7 +50,6 @@ log = logging.getLogger("georag.ingest.cluster_runner")
 class ClusterIngestSummary:
     cluster_dir: str
     workspace_id: str
-    plss_section_key: str | None = None
     las_files: int = 0
     las_ingested: int = 0
     las_skipped: int = 0
@@ -87,9 +88,9 @@ async def _set_rls_gucs(
 
 
 async def _find_project_id(
-    conn: asyncpg.Connection, *, company_hint: str = "CAMECO",
+    conn: asyncpg.Connection, *, company_hint: str,
 ) -> str | None:
-    """Locate the Cameco project_id (created by LAS ingester first pass)."""
+    """Locate a project by name hint (only reached if the slug lookup misses)."""
     row = await conn.fetchrow(
         "SELECT project_id::text FROM silver.projects "
         "WHERE project_name ILIKE $1 LIMIT 1",
@@ -102,21 +103,31 @@ async def ingest_cluster(
     cluster_dir: str,
     *,
     workspace_id: str,
-    plss_section_key: str | None = None,
+    project_name: str,
+    project_slug: str,
+    project_company: str,
+    project_region: str | None = None,
     conn: asyncpg.Connection | None = None,
     progress_every: int = 25,
-    project_name: str = "Cameco Shirley Basin Uranium",
-    project_slug: str = "cameco-shirley-basin",
-    project_company: str = "CAMECO RESOURCES",
-    project_region: str = "CARBON, WY",
     project_commodity: str | None = None,
+    source_epsg: int | None = None,
 ) -> ClusterIngestSummary:
     """Walk `cluster_dir` and ingest every Tier 1 file.
+
+    The project identity (name, slug, company) is REQUIRED: this runner used
+    to default to a Cameco / Shirley Basin / Carbon County WY project, so a
+    caller that forgot to say what it was ingesting had it labelled as that
+    dataset. There is also no coordinate fallback of any kind -- see
+    ``las_ingester`` for how a LAS collar is (and is not) placed.
 
     Args:
         cluster_dir: filesystem path to the extracted inner-zip directory
         workspace_id: silver.workspaces UUID for RLS scoping
-        plss_section_key: e.g. "028N079W36" for coordinate fallback
+        source_epsg: CRS the operator declares for the cluster's coordinates.
+            Forwarded to the LAS ingester for header X/Y, and it is what
+            allows the binary .log pass to run at all (those files state no
+            CRS; they are skipped, with an entry in ``errors``, unless this
+            is the format's EPSG, ``LOG_COORD_EPSG``).
         conn: optional pre-existing asyncpg connection; if None one is created
         progress_every: log line every N files processed
         project_commodity: commodity for the stub project row AND for the
@@ -135,7 +146,6 @@ async def ingest_cluster(
     summary = ClusterIngestSummary(
         cluster_dir=cluster_dir,
         workspace_id=workspace_id,
-        plss_section_key=plss_section_key,
     )
 
     own_conn = False
@@ -159,12 +169,12 @@ async def ingest_cluster(
                 """
                 INSERT INTO silver.projects
                     (project_id, project_name, slug, company, region, commodity,
-                     crs_datum, crs_epsg, orientation_reference, status, workspace_id,
+                     orientation_reference, status, workspace_id,
                      created_at, updated_at)
                 VALUES (gen_random_uuid(),
                         $1, $2, $3, $4,
                         $5,
-                        'EPSG:32613', 32613, 'grid_north', 'active', $6::uuid,
+                        'grid_north', 'active', $6::uuid,
                         NOW(), NOW())
                 ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
                 RETURNING project_id::text AS project_id
@@ -202,41 +212,9 @@ async def ingest_cluster(
                 )
         log.info("cluster_runner.stub_project_created project_id=%s", stub_project_id)
 
-        # ── Pass 1 — LAS files create projects + collars ─────────────
-        las_paths = sorted(
-            list(Path(cluster_dir).rglob("*.LAS")) +
-            list(Path(cluster_dir).rglob("*.las"))
-        )
-        summary.las_files = len(las_paths)
-        log.info("cluster_runner.las_start count=%d", len(las_paths))
-
-        for i, p in enumerate(las_paths):
-            try:
-                async with conn.transaction():
-                    await _set_rls_gucs(
-                        conn, workspace_id=workspace_id, project_id=stub_project_id,
-                    )
-                    result = await ingest_las_file(
-                        conn, str(p),
-                        workspace_id=workspace_id,
-                        plss_section_key=plss_section_key,
-                        project_id_override=stub_project_id,
-                    )
-                if result.skipped:
-                    summary.las_skipped += 1
-                else:
-                    summary.las_ingested += 1
-                    summary.las_curves += result.curves_inserted
-            except Exception as e:
-                summary.errors.append({"type": "las", "file": str(p), "err": str(e)})
-                log.warning("cluster_runner.las_failed file=%s err=%s", p, e)
-
-            if (i + 1) % progress_every == 0:
-                log.info(
-                    "cluster_runner.las_progress %d/%d ingested=%d curves=%d",
-                    i + 1, len(las_paths),
-                    summary.las_ingested, summary.las_curves,
-                )
+        # LAS files run AFTER the .log pass (Pass 2b below): a LAS attaches its
+        # curves to a collar that already exists or that its own header
+        # locates, and never invents a location, so the collar sources go first.
 
         # Locate the project_id we just created. We have a guaranteed
         # slug via the stub-project upsert above, so use it directly
@@ -268,8 +246,6 @@ async def ingest_cluster(
                 project_id = await _find_project_id(
                     conn, company_hint=project_company,
                 )
-            if not project_id:
-                project_id = await _find_project_id(conn, company_hint="")
         log.info("cluster_runner.project_id=%s", project_id)
 
         # ── Pass 2 — Cameco .log binary headers update collar coords ─
@@ -279,6 +255,17 @@ async def ingest_cluster(
         ))
         summary.log_files = len(log_paths)
         log.info("cluster_runner.log_start count=%d", len(log_paths))
+
+        if log_paths and not log_crs_declared(source_epsg):
+            # These files state no CRS. Refuse the pass rather than place
+            # every hole in the format's home zone.
+            msg = (
+                f"{len(log_paths)} binary .log file(s) skipped: their coordinates carry "
+                f"no CRS and EPSG:{LOG_COORD_EPSG} was not declared (source_epsg)"
+            )
+            summary.errors.append({"type": "log", "file": cluster_dir, "err": msg})
+            log.warning("cluster_runner.log_skipped %s", msg)
+            log_paths = []
 
         for i, p in enumerate(log_paths):
             try:
@@ -299,6 +286,7 @@ async def ingest_cluster(
                     # to upserting a fresh collar from the .log header.
                     updated = await update_collar_with_log_coords(
                         conn, project_id=project_id, parsed=parsed,
+                        source_epsg=source_epsg,
                     )
                     collar_id: str | None = None
                     if updated:
@@ -315,6 +303,7 @@ async def ingest_cluster(
                             project_id=project_id,
                             workspace_id=workspace_id,
                             parsed=parsed,
+                            source_epsg=source_epsg,
                         )
                         if new_collar_id:
                             summary.log_collars_updated += 1
@@ -332,6 +321,49 @@ async def ingest_cluster(
                 log.info(
                     "cluster_runner.log_progress %d/%d updated=%d",
                     i + 1, len(log_paths), summary.log_collars_updated,
+                )
+
+        # ── Pass 2b — LAS curves onto the collars that now exist ─────
+        # A LAS whose well has no collar and no usable header coordinates is
+        # refused (las_collar_unlocated), never placed by a guess.
+        las_paths = sorted(
+            list(Path(cluster_dir).rglob("*.LAS")) +
+            list(Path(cluster_dir).rglob("*.las"))
+        )
+        summary.las_files = len(las_paths)
+        log.info("cluster_runner.las_start count=%d", len(las_paths))
+
+        for i, p in enumerate(las_paths):
+            try:
+                async with conn.transaction():
+                    await _set_rls_gucs(
+                        conn, workspace_id=workspace_id, project_id=stub_project_id,
+                    )
+                    result = await ingest_las_file(
+                        conn, str(p),
+                        workspace_id=workspace_id,
+                        project_id_override=stub_project_id,
+                        source_epsg=source_epsg,
+                    )
+                if result.skipped:
+                    summary.las_skipped += 1
+                    for w in result.warnings:
+                        summary.errors.append({
+                            "type": "las", "file": str(p),
+                            "err": f"{w['code']}: {w['detail']}",
+                        })
+                else:
+                    summary.las_ingested += 1
+                    summary.las_curves += result.curves_inserted
+            except Exception as e:
+                summary.errors.append({"type": "las", "file": str(p), "err": str(e)})
+                log.warning("cluster_runner.las_failed file=%s err=%s", p, e)
+
+            if (i + 1) % progress_every == 0:
+                log.info(
+                    "cluster_runner.las_progress %d/%d ingested=%d curves=%d",
+                    i + 1, len(las_paths),
+                    summary.las_ingested, summary.las_curves,
                 )
 
         # ── Pass 3 — PDFs → silver.document_passages ─────────────────

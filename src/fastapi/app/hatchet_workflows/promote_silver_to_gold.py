@@ -756,8 +756,30 @@ ON CONFLICT (collar_id, depth_from, depth_to, interval_kind) DO UPDATE SET
 
 #: Stereonet-ready structure. The equal-area (Schmidt) pole projection is
 #: computed in SQL so the gold row is self-contained: a client that cannot
-#: run the projection still gets x/y. `structure_type` is copied, not
-#: mapped — inventing a taxonomy here would contradict §04e.
+#: run the projection still gets x/y.
+#:
+#: TWO THINGS THIS STATEMENT MUST SURVIVE, both learned when silver.structure
+#: gained a real writer (ingest_tabular, 2026-09-29):
+#:
+#:   * gold.structure_measurements_visual has a CHECK on structure_type (twelve
+#:     values), on dip (0-90), on dip direction (0-360) and on depth (>= 0),
+#:     and this is ONE INSERT ... SELECT - a single out-of-vocabulary type or
+#:     out-of-range angle anywhere in the project fails the whole statement
+#:     and promotes nothing. silver.structure.structure_type is free text.
+#:     So a type outside the vocabulary is carried as 'other' (inventing a
+#:     mapping here would contradict §04e; the writer already maps the
+#:     conventional synonyms, and silver keeps the original), and an
+#:     out-of-range angle is carried as NULL rather than failing the batch.
+#:   * The table has no unique key, so the ``ON CONFLICT DO NOTHING`` this
+#:     statement used to end with could never conflict and every promotion run
+#:     APPENDED a second copy of every measurement - a doubled stereonet
+#:     after the first re-ingest. The gold rows are a pure function of
+#:     silver, so the project's rows are cleared and rebuilt inside one
+#:     transaction (_STRUCTURES_VISUAL_CLEAR).
+_STRUCTURES_VISUAL_CLEAR = """
+DELETE FROM gold.structure_measurements_visual WHERE project_id = $1::uuid
+"""
+
 _STRUCTURES_VISUAL = """
 INSERT INTO gold.structure_measurements_visual (
     visual_id, collar_id, workspace_id, project_id,
@@ -765,26 +787,39 @@ INSERT INTO gold.structure_measurements_visual (
     plunge_deg, trend_deg, stereonet_x, stereonet_y, projection,
     computed_at, created_at
 )
-SELECT gen_random_uuid(), st.collar_id, c.workspace_id, c.project_id,
-       st.depth, st.structure_type,
-       CASE WHEN st.true_dip_dir IS NULL THEN NULL
-            ELSE MOD((st.true_dip_dir - 90 + 360)::numeric, 360) END,
-       st.true_dip, st.true_dip_dir,
+SELECT gen_random_uuid(), s.collar_id, c.workspace_id, c.project_id,
+       s.depth, s.structure_type,
+       CASE WHEN s.dip_dir IS NULL THEN NULL
+            ELSE MOD((s.dip_dir - 90 + 360)::numeric, 360) END,
+       s.dip, s.dip_dir,
        NULL, NULL,
-       CASE WHEN st.true_dip IS NULL OR st.true_dip_dir IS NULL THEN NULL ELSE
-            SQRT(2) * SIN(RADIANS((90 - st.true_dip) / 2.0))
-                    * SIN(RADIANS(MOD((st.true_dip_dir + 180)::numeric, 360)))
+       CASE WHEN s.dip IS NULL OR s.dip_dir IS NULL THEN NULL ELSE
+            SQRT(2) * SIN(RADIANS((90 - s.dip) / 2.0))
+                    * SIN(RADIANS(MOD((s.dip_dir + 180)::numeric, 360)))
        END,
-       CASE WHEN st.true_dip IS NULL OR st.true_dip_dir IS NULL THEN NULL ELSE
-            SQRT(2) * SIN(RADIANS((90 - st.true_dip) / 2.0))
-                    * COS(RADIANS(MOD((st.true_dip_dir + 180)::numeric, 360)))
+       CASE WHEN s.dip IS NULL OR s.dip_dir IS NULL THEN NULL ELSE
+            SQRT(2) * SIN(RADIANS((90 - s.dip) / 2.0))
+                    * COS(RADIANS(MOD((s.dip_dir + 180)::numeric, 360)))
        END,
        'equal_area', NOW(), NOW()
-  FROM silver.structure st
-  JOIN silver.collars c ON c.collar_id = st.collar_id
+  FROM (
+        SELECT st.collar_id, st.depth,
+               CASE WHEN st.structure_type IN (
+                        'fault', 'shear', 'fracture', 'joint', 'vein',
+                        'foliation', 'cleavage', 'bedding', 'contact',
+                        'fold_axis', 'lineation', 'other')
+                    THEN st.structure_type ELSE 'other' END AS structure_type,
+               CASE WHEN st.true_dip BETWEEN 0 AND 90
+                    THEN st.true_dip END AS dip,
+               CASE WHEN st.true_dip_dir BETWEEN 0 AND 360
+                    THEN st.true_dip_dir END AS dip_dir
+          FROM silver.structure st
+         WHERE st.depth IS NOT NULL
+           AND st.depth >= 0
+           AND st.depth < 10000000
+       ) s
+  JOIN silver.collars c ON c.collar_id = s.collar_id
  WHERE c.project_id = $1::uuid
-   AND st.depth IS NOT NULL
-ON CONFLICT DO NOTHING
 """
 
 
@@ -850,7 +885,11 @@ async def promote(
             for sql in (_INTERVALS_LITHOLOGY, _INTERVALS_SAMPLES):
                 status = await conn.execute(sql, project_id)
                 out.intervals_written += _affected(status)
-            status = await conn.execute(_STRUCTURES_VISUAL, project_id)
+            # Clear-and-rebuild in one transaction: see _STRUCTURES_VISUAL for
+            # why an append (the old ON CONFLICT DO NOTHING) duplicated rows.
+            async with conn.transaction():
+                await conn.execute(_STRUCTURES_VISUAL_CLEAR, project_id)
+                status = await conn.execute(_STRUCTURES_VISUAL, project_id)
             out.structures_written += _affected(status)
     finally:
         await conn.close()
