@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Foundry;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -39,19 +40,11 @@ class ChatController extends Controller
         $activeThread = null;
         if ($activeId) {
             $activeThread = $threads->firstWhere('conversation_id', $activeId);
-            $activeMessages = DB::table('public.chat_messages')
-                ->where('conversation_id', $activeId)
-                ->orderBy('created_at')
-                ->limit(200)
-                ->get();
+            $activeMessages = $this->threadMessages((string) $activeId);
         } elseif ($threads->isNotEmpty()) {
             $activeId = (string) $threads->first()->conversation_id;
             $activeThread = $threads->first();
-            $activeMessages = DB::table('public.chat_messages')
-                ->where('conversation_id', $activeId)
-                ->orderBy('created_at')
-                ->limit(200)
-                ->get();
+            $activeMessages = $this->threadMessages((string) $activeId);
         }
 
         // Phase 3 / Step 3.2 — surface the active project's context so the
@@ -93,11 +86,41 @@ class ChatController extends Controller
                     'answer_run_id' => $meta['answer_run_id'] ?? null,
                     'citations' => $meta['citations'] ?? [],
                     'confidence' => $meta['confidence'] ?? null,
+                    // CHAT-9. Chat.tsx persists these so a reopened thread
+                    // still says an answer was flagged / refused / failed;
+                    // not mapping them rendered a flagged answer exactly
+                    // like a clean one, and the next sync (which re-sends
+                    // every message's validationState) erased the flag.
+                    'validationState' => $meta['validation_state'] ?? null,
+                    'refusalPayload' => $meta['refusal_payload'] ?? null,
+                    'error' => $meta['error'] ?? null,
+                    'errorCode' => $meta['error_code'] ?? null,
+                    'citationsMissing' => $meta['citations_missing'] ?? null,
                 ];
             })->values(),
             'empty' => $threads->isEmpty(),
             'legacy_url' => '/chat',
         ]);
+    }
+
+    /**
+     * The first 200 messages of a thread in thread order.
+     *
+     * Ordered by `position` (CHAT-2 / LAR-5): every sync re-inserts the
+     * whole thread within one second, so `created_at` alone ties and
+     * Postgres returns ties in physical, not insertion, order.
+     *
+     * @return Collection<int, \stdClass>
+     */
+    private function threadMessages(string $conversationId): Collection
+    {
+        return DB::table('public.chat_messages')
+            ->where('conversation_id', $conversationId)
+            ->orderBy('position')
+            ->orderBy('created_at')
+            ->orderBy('message_id')
+            ->limit(200)
+            ->get();
     }
 
     /**

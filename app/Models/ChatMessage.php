@@ -36,10 +36,15 @@ class ChatMessage extends Model
         'role',
         'content',
         'metadata',
+        // 0-based order within the thread (CHAT-2 / LAR-5). created_at
+        // cannot order a thread: a sync re-inserts every message in the
+        // same second.
+        'position',
     ];
 
     protected $casts = [
         'metadata' => 'array',
+        'position' => 'integer',
     ];
 
     public function conversation(): BelongsTo

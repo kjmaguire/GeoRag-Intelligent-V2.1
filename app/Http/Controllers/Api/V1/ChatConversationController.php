@@ -35,6 +35,12 @@ use Illuminate\Support\Facades\Log;
  */
 class ChatConversationController extends Controller
 {
+    /** Upper bound on messages in one full-replace sync (LAR-18). */
+    private const MAX_MESSAGES = 500;
+
+    /** Upper bound on one message's text, in characters (LAR-18). */
+    private const MAX_CONTENT_CHARS = 100_000;
+
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -115,10 +121,17 @@ class ChatConversationController extends Controller
         $validated = $request->validate([
             'title' => ['nullable', 'string', 'max:255'],
             'project_id' => ['nullable', 'uuid'],
-            'messages' => ['array'],
+            // Bounded (LAR-18): the sync is a full replace, so an unbounded
+            // body is an unbounded delete + insert inside one transaction.
+            'messages' => ['array', 'max:'.self::MAX_MESSAGES],
             'messages.*.role' => ['required_with:messages', 'string', 'in:user,assistant,system'],
-            'messages.*.content' => ['required_with:messages', 'string'],
-            'messages.*.metadata' => ['sometimes', 'array'],
+            // `present|nullable`, not `required` (CHAT-4). An assistant turn
+            // that failed before any text streamed has content ''; the
+            // ConvertEmptyStringsToNull middleware makes that null, and a
+            // `required` rule then 422'd EVERY later sync of the thread --
+            // nothing after the first empty failure was ever persisted.
+            'messages.*.content' => ['present', 'nullable', 'string', 'max:'.self::MAX_CONTENT_CHARS],
+            'messages.*.metadata' => ['sometimes', 'nullable', 'array'],
         ]);
 
         // Tenancy gate — a client-supplied project_id was previously
@@ -131,18 +144,44 @@ class ChatConversationController extends Controller
             return response()->json(['error' => 'project_not_found'], 404);
         }
 
+        $incomingMessages = $validated['messages'] ?? [];
+
         $resolvedProjectId = null;
         $wasNewThread = false;
-        DB::transaction(function () use ($conversationId, $user, $validated, &$resolvedProjectId, &$wasNewThread) {
-            $thread = ChatConversation::firstOrNew([
-                'conversation_id' => $conversationId,
-                'user_id' => $user->id,
-            ]);
+        $refusedToEmpty = false;
+        DB::transaction(function () use ($conversationId, $user, $validated, $incomingMessages, &$resolvedProjectId, &$wasNewThread, &$refusedToEmpty) {
+            // Look the id up WITHOUT the user filter (LAR-18). The previous
+            // firstOrNew(['conversation_id' => X, 'user_id' => me]) could
+            // never return another user's row, so the 403 below was
+            // unreachable and a colliding id fell through to an INSERT that
+            // hit the primary key and 500'd.
+            $thread = ChatConversation::query()
+                ->where('conversation_id', $conversationId)
+                ->lockForUpdate()
+                ->first();
 
-            // If the row existed under a different user, reject — don't
+            // If the row exists under a different user, reject — don't
             // leak / clobber another user's conversation by id collision.
-            if ($thread->exists && $thread->user_id !== $user->id) {
+            if ($thread !== null && (int) $thread->user_id !== (int) $user->id) {
                 abort(403, 'Conversation belongs to another user.');
+            }
+
+            // CHAT-3. A sync that would empty a thread that has messages is
+            // never a legitimate chat-page write (deleting a thread is
+            // DELETE). It is what the page sent when "+ New" was clicked
+            // mid-answer: the late `completed` handler persisted the NEW
+            // (empty) transcript under the OLD thread id, and this
+            // full-replace erased the whole previous conversation.
+            if ($thread !== null && $incomingMessages === []
+                && ChatMessage::where('conversation_id', $thread->conversation_id)->exists()) {
+                $refusedToEmpty = true;
+
+                return;
+            }
+
+            if ($thread === null) {
+                $thread = new ChatConversation;
+                $thread->conversation_id = $conversationId;
             }
 
             $wasNewThread = ! $thread->exists;
@@ -158,17 +197,28 @@ class ChatConversationController extends Controller
             // server-side ids — localStorage keeps its own).
             ChatMessage::where('conversation_id', $thread->conversation_id)->delete();
 
-            foreach ($validated['messages'] ?? [] as $i => $m) {
+            foreach (array_values($incomingMessages) as $i => $m) {
                 ChatMessage::create([
                     'conversation_id' => $thread->conversation_id,
                     'role' => $m['role'],
-                    'content' => $m['content'],
+                    // content is NOT NULL in the table; an empty failed
+                    // assistant turn is stored as '' (CHAT-4).
+                    'content' => (string) ($m['content'] ?? ''),
                     'metadata' => $m['metadata'] ?? [],
-                    // Preserve client order by nudging created_at per index.
-                    // Same second for all, ordering is by insertion order.
+                    // The client's order, explicitly (CHAT-2 / LAR-5). Every
+                    // row of this sync gets the same created_at second, and
+                    // Postgres does not return ties in insertion order.
+                    'position' => $i,
                 ]);
             }
         });
+
+        if ($refusedToEmpty) {
+            return response()->json([
+                'error' => 'refusing_to_empty_thread',
+                'message' => 'A sync may not remove every message from an existing thread. Use DELETE to remove the thread.',
+            ], 409);
+        }
 
         // Phase 3 — broadcast WorkspaceDataUpdated with affected_types=['investigations']
         // so Foundry/Investigations refetches the conversation list. Only fires
