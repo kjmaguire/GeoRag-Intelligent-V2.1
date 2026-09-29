@@ -330,7 +330,7 @@ class DrillholeDetailController extends Controller
      * One optional panel read, in its own savepoint (see
      * SetsWorkspaceRlsContext::optionalQuery()).
      *
-     * @param \Closure(): Collection<int, object> $fn
+     * @param \Closure(): Collection<int, \stdClass> $fn
      *
      * @return list<array<string, mixed>>
      */
