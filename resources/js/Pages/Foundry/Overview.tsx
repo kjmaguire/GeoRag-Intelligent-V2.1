@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Stat, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
+import EditProjectSheet from '@/Components/EditProjectSheet';
 
 interface IngestSummary {
     in_flight: number;
@@ -41,6 +42,7 @@ interface OverviewProps {
         slug: string;
         region: string | null;
         commodity: string | null;
+        company: string | null;
         status: string;
         crs_epsg: number | null;
         data_version: number;
@@ -55,6 +57,7 @@ interface OverviewProps {
 
 export default function FoundryOverview({ project, kpis, next_action, recent_activity, ingest_summary, ocr_coverage, empty }: OverviewProps) {
     const [deleting, setDeleting] = useState(false);
+    const [editing, setEditing] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
     const [ingest, setIngest] = useState<IngestSummary>(ingest_summary);
 
@@ -178,6 +181,15 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                             </Link>
                             <button
                                 type="button"
+                                onClick={() => setEditing(true)}
+                                className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                style={{ color: 'var(--fg-1)', background: 'var(--bg-2)', borderColor: 'var(--line-2)' }}
+                                title="Rename this project or change its operator, commodity and region"
+                            >
+                                Edit Project
+                            </button>
+                            <button
+                                type="button"
                                 onClick={handleDelete}
                                 disabled={deleting}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-50"
@@ -189,6 +201,8 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                         </div>
                     }
                 />
+
+                <EditProjectSheet project={project} open={editing} onOpenChange={setEditing} />
 
                 {deleteError && (
                     <div className="mx-8 mt-4 px-3 py-2 text-xs rounded border border-red-800/50 bg-red-950/40 text-red-300">

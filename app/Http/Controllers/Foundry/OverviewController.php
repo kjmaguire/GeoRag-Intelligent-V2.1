@@ -136,6 +136,9 @@ class OverviewController extends Controller
                 'slug' => $project->slug,
                 'region' => $project->region,
                 'commodity' => $project->commodity,
+                // Read by the Edit project sheet as the Operator field's
+                // starting value; not rendered in the header.
+                'company' => $project->company,
                 'status' => is_object($project->status) ? $project->status->value : ($project->status ?? 'active'),
                 'crs_epsg' => $project->crs_epsg,
                 'data_version' => $project->data_version ?? 0,
