@@ -12,11 +12,39 @@ interface ProjectSelectorProps {
     onProjectChange?: (slug: string) => void;
 }
 
+/**
+ * Project sub-pages that exist for every project (parameter-free routes in
+ * routes/web.php). Anything else under /projects/{slug}/ names a record.
+ */
+const PROJECT_PAGES = new Set([
+    'attribute-tables', 'chat', 'compare', 'corpus', 'imports/quality',
+    'ingestion-runs', 'map', 'rasters', 'reports', 'sources', 'workspace',
+]);
+
+/**
+ * Where to go when the user picks another project.
+ *
+ * Carries over the project PAGE (/workspace, /chat, /reports …) but never a
+ * record: /reports/{uuid} or /holes/{collarId}/detail name something in the
+ * OLD project and 404 on the new one (FE-14). A record page falls back to the
+ * page it lives under, or the overview. The query string is dropped for the
+ * same reason.
+ */
+export function projectSwitchUrl(currentUrl: string, slug: string): string {
+    const m = currentUrl.match(/^\/projects\/[^/?#]+\/([^?#]*)/);
+    const rest = (m?.[1] ?? '').replace(/\/+$/, '');
+    if (PROJECT_PAGES.has(rest)) return `/projects/${slug}/${rest}`;
+    const first = rest.split('/')[0];
+    if (PROJECT_PAGES.has(first)) return `/projects/${slug}/${first}`;
+    return `/projects/${slug}`;
+}
+
 export default function ProjectSelector({ onProjectChange }: ProjectSelectorProps) {
     const [projects, setProjects] = useState<Project[]>([]);
     const [selectedSlug, setSelectedSlug] = useState<string>('');
     const [loading, setLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
+    const [reloadKey, setReloadKey] = useState(0);
     const { url } = usePage();
 
     // Sync dropdown to current URL's project slug whenever the page changes.
@@ -75,7 +103,7 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
             cancelled = true;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [reloadKey]);
 
     function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
         const slug = e.target.value;
@@ -87,13 +115,7 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
             return;
         }
 
-        // Default behaviour: navigate to the same sub-route on the new
-        // project. /projects/{old}/workspace → /projects/{new}/workspace,
-        // /projects/{old}/chat → /projects/{new}/chat, etc. If the user
-        // is on /projects/{old} (overview), go to /projects/{new}.
-        const m = url.match(/^\/projects\/[^/?#]+(\/[^?#]*)?/);
-        const subPath = m && m[1] ? m[1] : '';
-        router.visit(`/projects/${slug}${subPath}`);
+        router.visit(projectSwitchUrl(url, slug));
     }
 
     if (loading) {
@@ -113,7 +135,9 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
                 </span>
                 <button
                     type="button"
-                    onClick={() => { setError(null); setLoading(true); }}
+                    // Bumping reloadKey is what refetches; clearing the
+                    // error alone left "Loading projects…" up forever (FE-14).
+                    onClick={() => { setError(null); setLoading(true); setReloadKey((k) => k + 1); }}
                     className="text-xs text-amber-400 hover:text-amber-300 underline"
                 >
                     Retry

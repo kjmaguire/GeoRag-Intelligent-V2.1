@@ -90,6 +90,15 @@ function planeArc3D(dipDirection: number, dip: number, nSamples = 120): { x: num
     return { x: xs, y: ys, z: zs };
 }
 
+/**
+ * A structure is plottable when it HAS a dip and a dip direction. The check
+ * used to be `!s.true_dip`, which treats a dip of 0 — flat bedding, the most
+ * common planar reading there is — as missing (FE-17).
+ */
+export function isPlottableStructure(s: { true_dip: number | null | undefined; dip_direction: number | null | undefined }): boolean {
+    return s.true_dip != null && Number.isFinite(s.true_dip) && s.dip_direction != null && Number.isFinite(s.dip_direction);
+}
+
 /** Pole-to-plane as an XYZ unit vector on the lower hemisphere. */
 function pole3D(dipDirection: number, dip: number): { x: number; y: number; z: number } {
     // The pole points downward-opposite-to-dip-direction, at a plunge
@@ -210,7 +219,7 @@ export default function Stereosphere({ structures, holeId, visibleTypes }: Stere
         // separators so Plotly breaks the line between features.
         const byType: Record<string, Structure[]> = {};
         for (const s of structures) {
-            if (!s.true_dip || s.dip_direction == null) continue;
+            if (!isPlottableStructure(s)) continue;
             if (visibleTypes && visibleTypes[s.structure_type] === false) continue;
             byType[s.structure_type] = byType[s.structure_type] || [];
             byType[s.structure_type].push(s);
