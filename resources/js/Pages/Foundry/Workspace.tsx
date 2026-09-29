@@ -14,6 +14,8 @@ import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/Compa
 import { SectionView } from '@/Components/Foundry/SectionView';
 import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
 import { Borehole3DView } from '@/Components/Foundry/Borehole3DView';
+import { LogCurveToggles, type AvailableLogCurve } from '@/Components/Foundry/LogCurveToggles';
+import { describeTruncation, type WorkspaceTruncation } from '@/lib/workspaceLimits';
 import { useFullscreenToggle } from '@/Hooks/useFullscreenToggle';
 import { structurePoles, structureStrikes } from '@/lib/structureProjection';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
@@ -151,6 +153,9 @@ interface CurveSummaryRow {
 }
 
 interface LogTrack {
+    curve?: string;
+    group?: string;
+    unit?: string | null;
     label: string;
     color: string;
     points: Array<{ depth: number; value: number }>;
@@ -179,6 +184,9 @@ interface WorkspaceProps {
     well_log_curves_count: number;
     curve_summary: CurveSummaryRow[];
     log_tracks: LogTrack[];
+    log_available_curves: AvailableLogCurve[];
+    log_selected_curves: string[];
+    log_curves_max: number;
     log_hole_id: string | null;
     log_depth_max: number;
     log_hole_options: string[];
@@ -200,6 +208,7 @@ interface WorkspaceProps {
     commodity_samples_3d: CommoditySample3D[];
     commodity_keys_3d: CommodityKey3D[];
     empty: boolean;
+    truncation?: WorkspaceTruncation;
 }
 
 type View3D =
@@ -233,7 +242,7 @@ function initialMode(): Mode {
 }
 type Tool = 'pan' | 'draw' | 'measure' | 'select';
 
-export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, first_holes_intervals, project_layers, strat_units, strat_source, project_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty }: WorkspaceProps) {
+export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_available_curves, log_selected_curves, log_curves_max, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, first_holes_intervals, project_layers, strat_units, strat_source, project_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty, truncation }: WorkspaceProps) {
     // Phase 5 real-time push — sync_silver_to_kg / mv_refresh_silver /
     // ingest jobs all touch the 3D mode's 9 sub-views. Full reload is
     // acceptable given the large prop surface (per Phase 5 decision).
@@ -401,6 +410,30 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
         }
     }
 
+    const truncationNotices = describeTruncation(truncation);
+
+    function changeLogCurves(next: string[]) {
+        router.get(
+            `/projects/${project.slug}/workspace`,
+            { log_hole: log_hole_id ?? undefined, log_curves: next.join(',') },
+            {
+                preserveScroll: true,
+                preserveState: true,
+                only: [
+                    'log_tracks',
+                    'log_available_curves',
+                    'log_selected_curves',
+                    'log_hole_id',
+                    'log_depth_max',
+                    'log_hole_total_depth',
+                    'log_hole_easting',
+                    'log_hole_northing',
+                    'log_lithology_intervals',
+                ],
+            },
+        );
+    }
+
     return (
         <AppLayout>
             <Head title={`Workspace · ${project.project_name}`} />
@@ -410,7 +443,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                     <PageHeader
                         eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · WORKSPACE`}
                         title="Project canvas"
-                        sub={`${collars.length} collars · ${well_log_curves_count} log curves · ${sections_count} section panels · ${structures_count} structures`}
+                        sub={`${truncation?.collars?.truncated ? `${collars.length} of ${truncation.collars.total}` : collars.length} collars · ${well_log_curves_count} log curves · ${sections_count} section panels · ${structures_count} structures`}
                     />
                 )}
 
@@ -438,6 +471,17 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                         >
                             Fullscreen ⤢
                         </button>
+                    </div>
+                )}
+
+                {!isCanvasFullscreen && truncationNotices.length > 0 && (
+                    <div
+                        role="status"
+                        data-testid="workspace-truncation-notice"
+                        className="px-8 py-1.5 border-b text-[11px] font-mono shrink-0"
+                        style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
+                    >
+                        {truncationNotices.join(' ')}
                     </div>
                 )}
 
@@ -543,6 +587,8 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                         preserveState: true,
                                                         only: [
                                                             'log_tracks',
+                                                            'log_available_curves',
+                                                            'log_selected_curves',
                                                             'log_hole_id',
                                                             'log_depth_max',
                                                             'log_hole_total_depth',
@@ -575,7 +621,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                         ) : (
                                             <EmptyState
                                                 title="Need at least 2 collars to draw a section."
-                                                detail="This project has fewer than 2 collars with GAMMA curves. Ingest more LAS files via Data → Connect Source."
+                                                detail="This project has fewer than 2 collars with well-log curves. Ingest more LAS files via Data → Connect Source."
                                             />
                                         )}
                                     </Card>
@@ -928,7 +974,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                 {renderModePanel('logs', (
                                     <Card
                                         eyebrow={log_hole_id ? `LOGS · HOLE ${log_hole_id}` : 'LOGS'}
-                                        title={log_tracks.length > 0 ? `${log_tracks.length} curves rendered · ${well_log_curves_count} total in project` : 'No curve data'}
+                                        title={log_tracks.length > 0 ? `${log_tracks.length} of ${log_available_curves.length} curves rendered · ${well_log_curves_count} total in project` : 'No curve data'}
                                         className="flex-1 flex flex-col min-h-0"
                                         contentClassName="flex-1 flex flex-col min-h-0"
                                     >
@@ -939,6 +985,12 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                 holes={log_hole_options}
                                             />
                                         )}
+                                        <LogCurveToggles
+                                            available={log_available_curves}
+                                            selected={log_selected_curves}
+                                            max={log_curves_max}
+                                            onChange={changeLogCurves}
+                                        />
                                         {log_tracks.length > 0 ? (
                                             <>
                                                 <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
@@ -992,8 +1044,8 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                             </>
                                         ) : (
                                             <EmptyState
-                                                title="No GAMMA / GRADE / RES / SP curves found for this project."
-                                                detail="LOGS mode reads silver.well_log_curves filtered to the four uranium-relevant tracks. Ingest LAS files via Data → Connect Source to populate."
+                                                title="No well-log curves found for this hole."
+                                                detail="LOGS mode reads silver.well_log_curves for the selected hole. Ingest LAS files via Data → Connect Source to populate."
                                             />
                                         )}
                                     </Card>
@@ -1227,6 +1279,8 @@ function LogsHolePicker({ projectSlug, activeHoleId, holes }: { projectSlug: str
                 preserveState: true,
                 only: [
                     'log_tracks',
+                    'log_available_curves',
+                    'log_selected_curves',
                     'log_hole_id',
                     'log_depth_max',
                     'log_hole_total_depth',

@@ -39,6 +39,56 @@ class WorkspaceController extends Controller
 {
     use SetsWorkspaceRlsContext;
 
+    /**
+     * Payload bounds. One collar set is the source of truth for every
+     * per-hole panel on the page (map, 3D intervals, surveys, assays...) so
+     * the caps nest instead of each panel choosing its own hole population:
+     * the interval holes are a PREFIX of the returned collars, and surveys are
+     * fetched for exactly the returned collars. Every cap that bites is
+     * reported in the `truncation` prop so the UI can say so.
+     */
+    private const MAX_WORKSPACE_COLLARS = 1000;
+
+    private const MAX_INTERVAL_HOLES = 200;
+
+    private const MAX_INTERVAL_BANDS_PER_HOLE = 80;
+
+    private const MAX_SURVEY_STATIONS_PER_HOLE = 100;
+
+    /** Curves drawn when the user has not picked any (gamma family first). */
+    private const DEFAULT_LOG_TRACKS = 8;
+
+    /** Hard ceiling on tracks in one payload, whatever ?log_curves= asks for. */
+    private const MAX_LOG_TRACKS = 12;
+
+    /** Points per curve after downsampling (SVG perf + payload size). */
+    private const LOG_CURVE_TARGET_POINTS = 240;
+
+    /**
+     * Small, data-driven alias map. Used ONLY for ordering, colour and a
+     * fallback unit label — a curve whose name is not listed is still listed,
+     * selectable and plotted (group `other`), never dropped.
+     *
+     * @var array<string, array{label: string, color: string, unit: string|null, aliases: list<string>}>
+     */
+    private const LOG_CURVE_GROUPS = [
+        'gamma' => ['label' => 'Gamma', 'color' => 'oklch(0.78 0.16 30)', 'unit' => 'cps', 'aliases' => ['GAMMA', 'GR', 'GAM', 'GRD', 'GAMMA_RAY']],
+        'grade' => ['label' => 'U grade', 'color' => 'oklch(0.82 0.18 145)', 'unit' => '%eU₃O₈', 'aliases' => ['GRADE']],
+        'resistivity' => ['label' => 'Resistivity', 'color' => 'oklch(0.72 0.14 220)', 'unit' => 'Ω·m', 'aliases' => ['RES', 'RESIST', 'RT', 'RESISTIVITY']],
+        'sp' => ['label' => 'SP', 'color' => 'oklch(0.65 0.10 280)', 'unit' => 'mV', 'aliases' => ['SP']],
+        'ip' => ['label' => 'IP', 'color' => 'oklch(0.75 0.15 330)', 'unit' => null, 'aliases' => ['IP', 'CHARGEABILITY']],
+        'susceptibility' => ['label' => 'Susceptibility', 'color' => 'oklch(0.72 0.14 180)', 'unit' => null, 'aliases' => ['SUSC', 'MAGSUS']],
+        'density' => ['label' => 'Density', 'color' => 'oklch(0.70 0.12 100)', 'unit' => null, 'aliases' => ['DEN', 'DENS', 'RHOB']],
+        'caliper' => ['label' => 'Caliper', 'color' => 'oklch(0.68 0.08 60)', 'unit' => null, 'aliases' => ['CAL', 'CALI', 'CALIPER']],
+    ];
+
+    /** Colours for curves outside every alias group (picked by name hash). */
+    private const LOG_CURVE_FALLBACK_COLORS = [
+        'oklch(0.74 0.13 15)', 'oklch(0.74 0.13 55)', 'oklch(0.74 0.13 120)',
+        'oklch(0.74 0.13 165)', 'oklch(0.74 0.13 200)', 'oklch(0.74 0.13 250)',
+        'oklch(0.74 0.13 300)', 'oklch(0.74 0.13 345)',
+    ];
+
     public function show(Request $request, string $slug): Response
     {
         $project = Project::where('slug', $slug)->firstOrFail();
@@ -47,6 +97,9 @@ class WorkspaceController extends Controller
         $workspaceId = (string) $project->workspace_id;
 
         return $this->withWorkspaceRls($workspaceId, function () use ($request, $project) {
+            // Deterministic order (hole_id, then collar_id as a tiebreaker) so
+            // the cap always keeps the same holes and the 3D interval set below
+            // is a stable prefix of this one.
             $collars = DB::table('silver.collars')
                 ->where('project_id', $project->project_id)
                 // CC-01 Item 2 — surface spatial uncertainty + CRS provenance
@@ -54,8 +107,20 @@ class WorkspaceController extends Controller
                 // Orientation triple (azimuth/dip/elevation) + hole_type/status
                 // feed the 3D Trajectories sub-view (MultiHole3DTrace).
                 ->selectRaw('collar_id, hole_id, hole_id_canonical, easting, northing, total_depth, ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat, spatial_uncertainty_m, crs_confidence, georef_method, azimuth, dip, elevation, hole_type, status')
-                ->limit(500)
+                ->orderBy('hole_id')
+                ->orderBy('collar_id')
+                ->limit(self::MAX_WORKSPACE_COLLARS)
                 ->get();
+
+            $collarsTotal = $collars->count();
+            if ($collarsTotal >= self::MAX_WORKSPACE_COLLARS) {
+                try {
+                    $collarsTotal = (int) DB::table('silver.collars')
+                        ->where('project_id', $project->project_id)
+                        ->count();
+                } catch (\Throwable $e) { /* fall back to the returned count */
+                }
+            }
 
             // Project summary aggregates — drives the map-overlay header and the
             // bottom stats chip. Computed across the project's collars + derived
@@ -184,18 +249,22 @@ class WorkspaceController extends Controller
             }
             $wellLogCurvesCount = $curveSummary->sum('curves');
 
-            // Build the list of collars that have at least one GAMMA curve —
-            // this is what the LOGS hole picker shows. Ordered by hole_id so
-            // the dropdown is predictable.
+            // Collars that have at least one well-log curve of ANY name — this
+            // is what the LOGS hole picker shows. (It used to require a curve
+            // named exactly GAMMA, which hid every hole logged with GR, RESIST,
+            // IP, SUSC, DEN, CAL ... from the picker.) DISTINCT because the
+            // join yields one row per curve. Ordered by hole_id so the
+            // dropdown is predictable.
             $logHoleOptions = [];
             try {
                 $logHoleOptions = DB::table('silver.well_log_curves as wc')
                     ->join('silver.collars as c', 'wc.collar_id', '=', 'c.collar_id')
                     ->where('c.project_id', $project->project_id)
-                    ->where('wc.curve_name', 'GAMMA')
+                    ->distinct()
                     ->select('c.collar_id', 'c.hole_id', 'c.hole_id_canonical')
                     ->orderBy('c.hole_id_canonical')
                     ->orderBy('c.hole_id')
+                    ->orderBy('c.collar_id')
                     ->get()
                     ->map(fn ($r) => [
                         'collar_id' => (string) $r->collar_id,
@@ -206,10 +275,15 @@ class WorkspaceController extends Controller
             } catch (\Throwable $e) { /* fallback */
             }
 
-            // Pull the selected (or first) hole's GAMMA/GRADE/RES/SP curves and
-            // render them in the LOGS panel. The ?log_hole= query param overrides
-            // the default picker selection.
+            // Pull the selected (or first) hole's curves and render them in the
+            // LOGS panel. ?log_hole= overrides the default picker selection;
+            // ?log_curves=A,B,C overrides which curves are drawn (default:
+            // the gamma family first, then the rest, up to DEFAULT_LOG_TRACKS).
+            // `log_available_curves` always lists EVERY curve the hole has so
+            // the UI can offer a toggle for curves that are not drawn yet.
             $logTracks = [];
+            $logAvailableCurves = [];
+            $logSelectedCurves = [];
             $logHoleId = null;
             $logDepthMax = 0.0;
             $logHoleTotalDepth = null;
@@ -259,71 +333,32 @@ class WorkspaceController extends Controller
                         $logHoleEasting = $collarMeta->easting !== null ? (float) $collarMeta->easting : null;
                         $logHoleNorthing = $collarMeta->northing !== null ? (float) $collarMeta->northing : null;
                     }
-                    $wanted = [
-                        ['curve' => 'GAMMA', 'label' => 'Gamma (cps)', 'color' => 'oklch(0.78 0.16 30)'],
-                        ['curve' => 'GRADE', 'label' => 'U grade (%eU₃O₈)', 'color' => 'oklch(0.82 0.18 145)'],
-                        ['curve' => 'RES', 'label' => 'Resistivity (Ω·m)', 'color' => 'oklch(0.72 0.14 220)'],
-                        ['curve' => 'SP', 'label' => 'SP (mV)', 'color' => 'oklch(0.65 0.10 280)'],
-                    ];
-                    foreach ($wanted as $w) {
-                        $row = DB::table('silver.well_log_curves')
-                            ->where('collar_id', $sampleCollar->collar_id)
-                            ->where('curve_name', $w['curve'])
-                            ->select('depths', 'values', 'min_depth', 'max_depth', 'sample_count', 'null_value', 'curve_unit')
-                            ->first();
-                        if (! $row) {
-                            continue;
-                        }
-                        $depths = $this->parsePgDoubleArray($row->depths);
-                        $values = $this->parsePgDoubleArray($row->values);
-                        // Downsample to ~240 pts for SVG perf.
-                        $n = min(count($depths), count($values));
-                        if ($n === 0) {
-                            continue;
-                        }
-                        $step = max(1, (int) floor($n / 240));
-                        $pts = [];
-                        $vmin = INF;
-                        $vmax = -INF;
-                        for ($i = 0; $i < $n; $i += $step) {
-                            $v = (float) $values[$i];
-                            // null_value sentinel (commonly -999.25) — skip
-                            if (abs($v - (float) $row->null_value) < 1e-6) {
-                                continue;
-                            }
-                            $pts[] = ['depth' => (float) $depths[$i], 'value' => $v];
-                            $vmin = min($vmin, $v);
-                            $vmax = max($vmax, $v);
-                        }
-                        if (empty($pts)) {
-                            continue;
-                        }
-                        $logTracks[] = [
-                            'label' => $w['label'],
-                            'color' => $w['color'],
-                            'points' => $pts,
-                            'min' => is_finite($vmin) ? $vmin : 0,
-                            'max' => is_finite($vmax) ? $vmax : 1,
-                        ];
-                        $logDepthMax = max($logDepthMax, (float) $row->max_depth);
-                    }
+                    $requestedCurves = $request->query('log_curves');
+                    $logAvailableCurves = $this->availableLogCurves((string) $sampleCollar->collar_id);
+                    $logSelectedCurves = $this->selectLogCurves(
+                        $logAvailableCurves,
+                        is_string($requestedCurves) ? $requestedCurves : null,
+                    );
+                    ['tracks' => $logTracks, 'depth_max' => $logDepthMax] = $this->buildLogTracks(
+                        (string) $sampleCollar->collar_id,
+                        $logAvailableCurves,
+                        $logSelectedCurves,
+                    );
                 }
             } catch (\Throwable $e) { /* fallback */
             }
 
             // All holes' lithology intervals — feeds both the 3D Plotly viewer
-            // and the mini-strip 3D grid. Capped at 200 holes + 80 bands/hole
-            // to keep payloads reasonable (worst case ~16k records ≈ 2MB).
+            // and the mini-strip 3D grid. Capped at MAX_INTERVAL_HOLES holes +
+            // MAX_INTERVAL_BANDS_PER_HOLE bands/hole to keep payloads reasonable
+            // (worst case ~16k records ≈ 2MB).
             // Each entry now also carries lat/lng + easting/northing so the
             // 3D viewer can position each cylinder in real space.
             $firstHolesIntervals = [];
             try {
-                $collarRows = DB::table('silver.collars')
-                    ->where('project_id', $project->project_id)
-                    ->orderBy('hole_id')
-                    ->limit(200)
-                    ->selectRaw('collar_id, hole_id, hole_id_canonical, total_depth, easting, northing, ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat')
-                    ->get();
+                // A prefix of the SAME ordered collar set the map and every
+                // other per-hole panel use, not a second independent query.
+                $collarRows = $collars->take(self::MAX_INTERVAL_HOLES);
                 // One windowed query for every hole's bands, instead of one
                 // query per hole.
                 //
@@ -353,7 +388,7 @@ class WorkspaceController extends Controller
 
                     foreach (
                         DB::query()->fromSub($ranked, 'ranked')
-                            ->where('rn', '<=', 80)
+                            ->where('rn', '<=', self::MAX_INTERVAL_BANDS_PER_HOLE)
                             ->orderBy('collar_id')
                             ->orderBy('depth_from')
                             ->get() as $b
@@ -384,36 +419,69 @@ class WorkspaceController extends Controller
             }
 
             // Downhole survey stations (depth, azimuth, dip) — feeds the 3D
-            // Trajectories sub-view in the workspace 3D mode. Capped per-hole
-            // and overall to keep the Inertia payload bounded; the visual is a
-            // qualitative drill-pattern check, not a precise survey export.
+            // Trajectories sub-view in the workspace 3D mode.
             //
-            // FALLBACK: when silver.surveys is empty for a collar, try to derive
-            // stations from silver.well_log_curves AZIMUTH + SANG curves (Cameco
-            // binary .log corpus carries per-depth survey angles on every hole
-            // but has never promoted them into the surveys table). We downsample
-            // to ~25 stations per hole — plenty for a qualitative trajectory.
+            // Fetched for EXACTLY the collars returned above (whereIn on that
+            // set), bounded PER HOLE rather than by one global row cap. The old
+            // `ORDER BY collar_id LIMIT 20000` spent the whole budget on the
+            // first holes in uuid order and silently gave every later hole no
+            // trajectory at all. Now a hole with more than
+            // MAX_SURVEY_STATIONS_PER_HOLE stations is thinned to evenly spaced
+            // stations (first and last always kept, so the deep end of the
+            // trace is not cut off); the visual is a qualitative drill-pattern
+            // check, not a precise survey export.
+            //
+            // FALLBACK, per collar: any returned collar with no silver.surveys
+            // rows gets stations derived from silver.well_log_curves AZIMUTH +
+            // SANG curves (Cameco binary .log corpus carries per-depth survey
+            // angles on every hole but has never promoted them into the surveys
+            // table), downsampled to ~25 stations per hole.
             $surveys = [];
+            $surveyHolesDownsampled = 0;
             try {
                 $collarIds = $collars->pluck('collar_id')->all();
                 if (! empty($collarIds)) {
-                    $surveys = DB::table('silver.surveys')
+                    $maxStations = self::MAX_SURVEY_STATIONS_PER_HOLE;
+                    $ranked = DB::table('silver.surveys')
                         ->whereIn('collar_id', $collarIds)
+                        ->selectRaw(
+                            'collar_id, depth, azimuth, dip, '
+                            .'ROW_NUMBER() OVER (PARTITION BY collar_id ORDER BY depth) AS rn, '
+                            .'COUNT(*) OVER (PARTITION BY collar_id) AS cnt',
+                        );
+                    $surveyRows = DB::query()->fromSub($ranked, 'ranked')
+                        ->whereRaw(sprintf(
+                            '(((rn - 1) %% ((cnt + %1$d - 1) / %1$d)) = 0 OR rn = cnt)',
+                            $maxStations,
+                        ))
                         ->orderBy('collar_id')
                         ->orderBy('depth')
-                        ->limit(20000)
-                        ->get(['collar_id', 'depth', 'azimuth', 'dip'])
-                        ->map(fn ($r) => [
+                        ->get(['collar_id', 'depth', 'azimuth', 'dip', 'cnt']);
+
+                    $downsampled = [];
+                    foreach ($surveyRows as $r) {
+                        if ((int) $r->cnt > $maxStations) {
+                            $downsampled[(string) $r->collar_id] = true;
+                        }
+                        $surveys[] = [
                             'collar_id' => (string) $r->collar_id,
                             'depth' => (float) $r->depth,
                             'azimuth' => $r->azimuth !== null ? (float) $r->azimuth : null,
                             'dip' => $r->dip !== null ? (float) $r->dip : null,
-                        ])
-                        ->values()
-                        ->all();
-                }
-                if (empty($surveys) && ! empty($collarIds)) {
-                    $surveys = $this->deriveSurveysFromCurves($collarIds);
+                        ];
+                    }
+                    $surveyHolesDownsampled = count($downsampled);
+
+                    $haveSurveys = array_fill_keys(array_column($surveys, 'collar_id'), true);
+                    $missing = array_values(array_filter(
+                        array_map('strval', $collarIds),
+                        fn (string $id) => ! isset($haveSurveys[$id]),
+                    ));
+                    // Chunked: each collar's AZIMUTH/SANG arrays are ~3.7k
+                    // samples, so bound how many are parsed in memory at once.
+                    foreach (array_chunk($missing, 100) as $chunk) {
+                        array_push($surveys, ...$this->deriveSurveysFromCurves($chunk));
+                    }
                 }
             } catch (\Throwable $e) { /* fallback empty */
             }
@@ -872,6 +940,9 @@ class WorkspaceController extends Controller
                     'avg_samples' => (int) round((float) $r->avg_samples),
                 ])->values(),
                 'log_tracks' => $logTracks,
+                'log_available_curves' => $logAvailableCurves,
+                'log_selected_curves' => $logSelectedCurves,
+                'log_curves_max' => self::MAX_LOG_TRACKS,
                 'log_hole_id' => $logHoleId,
                 'log_depth_max' => $logDepthMax > 0 ? $logDepthMax : 600.0,
                 'log_hole_options' => array_map(fn ($o) => $o['hole_id'], $logHoleOptions),
@@ -897,6 +968,17 @@ class WorkspaceController extends Controller
                 'strat_source' => $stratSource,
                 'project_country' => $country,
                 'empty' => $collars->isEmpty(),
+                // Which payload caps actually bit. `collars` bounds the map and
+                // every per-hole panel; `interval_holes` is the (smaller) 3D
+                // lithology cap, a prefix of the same collar set;
+                // `survey_holes_downsampled` counts holes whose survey stations
+                // were thinned to MAX_SURVEY_STATIONS_PER_HOLE.
+                'truncation' => $this->truncationSummary(
+                    $collars->count(),
+                    $collarsTotal,
+                    min(self::MAX_INTERVAL_HOLES, $collars->count()),
+                    $surveyHolesDownsampled,
+                ),
             ]);
         });
     }
@@ -916,7 +998,7 @@ class WorkspaceController extends Controller
 
         $workspaceId = (string) $project->workspace_id;
 
-        return $this->withWorkspaceRls($workspaceId, function () use ($project, $hole) {
+        return $this->withWorkspaceRls($workspaceId, function () use ($request, $project, $hole) {
             $collar = DB::table('silver.collars')
                 ->where('project_id', $project->project_id)
                 ->where(function ($q) use ($hole) {
@@ -929,55 +1011,17 @@ class WorkspaceController extends Controller
                 return response()->json(['error' => 'hole_not_found', 'hole_id' => $hole], 404);
             }
 
-            $wanted = [
-                ['curve' => 'GAMMA', 'label' => 'Gamma (cps)', 'color' => 'oklch(0.78 0.16 30)'],
-                ['curve' => 'GRADE', 'label' => 'U grade (%eU₃O₈)', 'color' => 'oklch(0.82 0.18 145)'],
-                ['curve' => 'RES', 'label' => 'Resistivity (Ω·m)', 'color' => 'oklch(0.72 0.14 220)'],
-                ['curve' => 'SP', 'label' => 'SP (mV)', 'color' => 'oklch(0.65 0.10 280)'],
-            ];
-
-            $logTracks = [];
-            $logDepthMax = 0.0;
-            foreach ($wanted as $w) {
-                $row = DB::table('silver.well_log_curves')
-                    ->where('collar_id', $collar->collar_id)
-                    ->where('curve_name', $w['curve'])
-                    ->select('depths', 'values', 'min_depth', 'max_depth', 'sample_count', 'null_value', 'curve_unit')
-                    ->first();
-                if (! $row) {
-                    continue;
-                }
-                $depths = $this->parsePgDoubleArray($row->depths);
-                $values = $this->parsePgDoubleArray($row->values);
-                $n = min(count($depths), count($values));
-                if ($n === 0) {
-                    continue;
-                }
-                $step = max(1, (int) floor($n / 240));
-                $pts = [];
-                $vmin = INF;
-                $vmax = -INF;
-                for ($i = 0; $i < $n; $i += $step) {
-                    $v = (float) $values[$i];
-                    if (abs($v - (float) $row->null_value) < 1e-6) {
-                        continue;
-                    }
-                    $pts[] = ['depth' => (float) $depths[$i], 'value' => $v];
-                    $vmin = min($vmin, $v);
-                    $vmax = max($vmax, $v);
-                }
-                if (empty($pts)) {
-                    continue;
-                }
-                $logTracks[] = [
-                    'label' => $w['label'],
-                    'color' => $w['color'],
-                    'points' => $pts,
-                    'min' => is_finite($vmin) ? $vmin : 0,
-                    'max' => is_finite($vmax) ? $vmax : 1,
-                ];
-                $logDepthMax = max($logDepthMax, (float) $row->max_depth);
-            }
+            $availableCurves = $this->availableLogCurves((string) $collar->collar_id);
+            $requestedCurves = $request->query('log_curves');
+            $selectedCurves = $this->selectLogCurves(
+                $availableCurves,
+                is_string($requestedCurves) ? $requestedCurves : null,
+            );
+            ['tracks' => $logTracks, 'depth_max' => $logDepthMax] = $this->buildLogTracks(
+                (string) $collar->collar_id,
+                $availableCurves,
+                $selectedCurves,
+            );
 
             $lithologyIntervals = DB::table('gold.drillhole_intervals_visual')
                 ->where('collar_id', $collar->collar_id)
@@ -1013,6 +1057,8 @@ class WorkspaceController extends Controller
                 'lat' => isset($collar->lat) ? (float) $collar->lat : null,
                 'lng' => isset($collar->lng) ? (float) $collar->lng : null,
                 'log_tracks' => $logTracks,
+                'log_available_curves' => $availableCurves,
+                'log_selected_curves' => $selectedCurves,
                 'log_depth_max' => $logDepthMax > 0 ? $logDepthMax : 600.0,
                 'lithology_intervals' => $lithologyIntervals,
                 'ore_bands' => (int) ($oreStats->n ?? 0),
@@ -1022,6 +1068,185 @@ class WorkspaceController extends Controller
                     : null,
             ]);
         });
+    }
+
+    /**
+     * @return array{collars: array{shown: int, total: int, truncated: bool}, interval_holes: array{shown: int, total: int, truncated: bool}, survey_holes_downsampled: int}
+     */
+    private function truncationSummary(int $collarsShown, int $collarsTotal, int $intervalHolesShown, int $surveyHolesDownsampled): array
+    {
+        $collarsTotal = max($collarsTotal, $collarsShown);
+
+        return [
+            'collars' => [
+                'shown' => $collarsShown,
+                'total' => $collarsTotal,
+                'truncated' => $collarsShown < $collarsTotal,
+            ],
+            'interval_holes' => [
+                'shown' => $intervalHolesShown,
+                'total' => $collarsTotal,
+                'truncated' => $intervalHolesShown < $collarsTotal,
+            ],
+            'survey_holes_downsampled' => $surveyHolesDownsampled,
+        ];
+    }
+
+    /**
+     * Resolve a curve name to its alias-group key ('other' when unlisted).
+     * Case-insensitive; ordering, colour and unit fallback only.
+     */
+    private function logCurveGroup(string $curveName): string
+    {
+        $needle = strtoupper(trim($curveName));
+        foreach (self::LOG_CURVE_GROUPS as $group => $def) {
+            if (in_array($needle, $def['aliases'], true)) {
+                return $group;
+            }
+        }
+
+        return 'other';
+    }
+
+    /**
+     * Every curve the hole has, in default-selection order: alias groups in
+     * LOG_CURVE_GROUPS order (gamma family first), then everything else,
+     * alphabetical within each. One cheap query — no depth/value arrays.
+     *
+     * @return list<array{curve_name: string, unit: string|null, group: string, sample_count: int}>
+     */
+    private function availableLogCurves(string $collarId): array
+    {
+        $rows = DB::table('silver.well_log_curves')
+            ->where('collar_id', $collarId)
+            ->orderBy('curve_name')
+            ->get(['curve_name', 'curve_unit', 'sample_count']);
+
+        $groupOrder = array_flip(array_keys(self::LOG_CURVE_GROUPS));
+        $out = [];
+        foreach ($rows as $r) {
+            $name = (string) $r->curve_name;
+            $group = $this->logCurveGroup($name);
+            $out[] = [
+                'curve_name' => $name,
+                'unit' => $r->curve_unit !== null && trim((string) $r->curve_unit) !== '' ? (string) $r->curve_unit : null,
+                'group' => $group,
+                'sample_count' => (int) $r->sample_count,
+            ];
+        }
+        usort($out, function (array $a, array $b) use ($groupOrder): int {
+            $ga = $groupOrder[$a['group']] ?? PHP_INT_MAX;
+            $gb = $groupOrder[$b['group']] ?? PHP_INT_MAX;
+
+            return $ga <=> $gb ?: strcmp($a['curve_name'], $b['curve_name']);
+        });
+
+        return $out;
+    }
+
+    /**
+     * Which curves to draw. `?log_curves=A,B` is honoured only for names the
+     * hole actually has (so it cannot be used to probe other tables), capped
+     * at MAX_LOG_TRACKS; with no valid request the first DEFAULT_LOG_TRACKS
+     * of the priority-ordered list are drawn.
+     *
+     * @param list<array{curve_name: string, unit: string|null, group: string, sample_count: int}> $available
+     *
+     * @return list<string>
+     */
+    private function selectLogCurves(array $available, ?string $requestedCsv): array
+    {
+        $names = array_column($available, 'curve_name');
+
+        if ($requestedCsv !== null && $requestedCsv !== '') {
+            $wanted = array_flip(array_map('trim', explode(',', $requestedCsv)));
+            $picked = array_values(array_filter($names, fn (string $n) => isset($wanted[$n])));
+            if ($picked !== []) {
+                return array_slice($picked, 0, self::MAX_LOG_TRACKS);
+            }
+        }
+
+        return array_slice($names, 0, self::DEFAULT_LOG_TRACKS);
+    }
+
+    /**
+     * Downsampled tracks for the selected curves, in `$selected` order, in one
+     * query. Curves that are entirely the null sentinel produce no track.
+     *
+     * @param list<array{curve_name: string, unit: string|null, group: string, sample_count: int}> $available
+     * @param list<string> $selected
+     *
+     * @return array{tracks: list<array<string, mixed>>, depth_max: float}
+     */
+    private function buildLogTracks(string $collarId, array $available, array $selected): array
+    {
+        if ($selected === []) {
+            return ['tracks' => [], 'depth_max' => 0.0];
+        }
+
+        $meta = [];
+        foreach ($available as $a) {
+            $meta[$a['curve_name']] = $a;
+        }
+
+        $rows = DB::table('silver.well_log_curves')
+            ->where('collar_id', $collarId)
+            ->whereIn('curve_name', $selected)
+            ->select('curve_name', 'depths', 'values', 'max_depth', 'null_value')
+            ->get()
+            ->keyBy(fn ($r) => (string) $r->curve_name);
+
+        $tracks = [];
+        $depthMax = 0.0;
+        foreach ($selected as $name) {
+            $row = $rows->get($name);
+            if (! $row) {
+                continue;
+            }
+            $depths = $this->parsePgDoubleArray($row->depths);
+            $values = $this->parsePgDoubleArray($row->values);
+            $n = min(count($depths), count($values));
+            if ($n === 0) {
+                continue;
+            }
+            $step = max(1, (int) floor($n / self::LOG_CURVE_TARGET_POINTS));
+            $pts = [];
+            $vmin = INF;
+            $vmax = -INF;
+            for ($i = 0; $i < $n; $i += $step) {
+                $v = $values[$i];
+                // null_value sentinel (commonly -999.25) — skip
+                if (abs($v - (float) $row->null_value) < 1e-6) {
+                    continue;
+                }
+                $pts[] = ['depth' => $depths[$i], 'value' => $v];
+                $vmin = min($vmin, $v);
+                $vmax = max($vmax, $v);
+            }
+            if ($pts === []) {
+                continue;
+            }
+
+            $unit = $meta[$name]['unit'] ?? null;
+            $group = $meta[$name]['group'] ?? 'other';
+            $def = self::LOG_CURVE_GROUPS[$group] ?? null;
+            $unitLabel = $unit ?? ($def['unit'] ?? null);
+            $colors = self::LOG_CURVE_FALLBACK_COLORS;
+
+            $tracks[] = [
+                'curve' => $name,
+                'group' => $group,
+                'unit' => $unit,
+                'label' => $unitLabel !== null ? sprintf('%s (%s)', $name, $unitLabel) : $name,
+                'color' => $def['color'] ?? $colors[crc32($name) % count($colors)],
+                'points' => $pts,
+                'min' => is_finite($vmin) ? $vmin : 0,
+                'max' => is_finite($vmax) ? $vmax : 1,
+            ];
+            $depthMax = max($depthMax, (float) $row->max_depth);
+        }
+
+        return ['tracks' => $tracks, 'depth_max' => $depthMax];
     }
 
     private function formatAgeRange(mixed $lower, mixed $upper): string
