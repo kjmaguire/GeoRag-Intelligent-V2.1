@@ -26,7 +26,44 @@ into the upload UI. This workflow:
 Individual file errors are caught, logged, and skipped — a corrupt LAS
 file should not abort the 600 other files in the same ZIP.
 
-Execution timeout is 4 h to accommodate large archives on slow storage.
+Two-phase dispatch
+------------------
+Members are NOT all fired in ``rglob`` order. Interval tables (survey /
+lithology / sample) and LAS curves attach to collars, and every collar-bearing
+member is an asynchronous child run: an interval file that happened to run
+first found no holes, ingest_tabular counted its rows ``orphaned`` (and warned
+``orphaned_intervals``: "upload the collar file, then re-run this one"), and
+nothing ever re-ran it. So:
+
+  phase 1  everything that does not need a collar to exist -- collar tables,
+           workbooks holding a collar sheet, spatial / raster / PDF members,
+           Cameco ``.log`` headers, unclassifiable tables.
+  wait     for the phase-1 ingest_tabular runs to reach a terminal state
+           (``hatchet.runs.aio_get_status``, polled), bounded by
+           ``GEORAG_ZIP_PHASE_WAIT_TIMEOUT_S`` (default 1500 s). On timeout
+           phase 2 is dispatched anyway, with an ``archive_dependency_wait_
+           timeout`` warning.
+  phase 2  interval tables and LAS files.
+
+Which phase a table belongs to is decided by the SAME header classifier
+ingest_tabular uses (``classify_sheet_type`` / ``enumerate_sheets``), not by
+filename guessing: a member is deferred only when it classifies to interval
+types exclusively. A sniff that fails, or finds anything else, leaves it in
+phase 1, i.e. today's behaviour. The alternative -- dispatch everything, then
+re-dispatch members whose runs reported ``orphaned_intervals`` -- was
+rejected: it needs each child's result payload, re-runs interval files a
+second time (and a hole split across two files would have file 2's rows
+replaced by file 1's re-run), and does nothing for LAS, which runs in-process
+and needs its collars before it starts, not after.
+
+Re-ingesting a member replaces rather than duplicates: ingest_tabular upserts
+collars on (project_id, hole_id) and deletes-then-inserts interval rows scoped
+to the collars a file mentions, in one transaction (``_INTERVAL_TABLES``).
+
+The archive task's own ``execution_timeout`` stays 4 h: the two waits add at
+most 2 x 25 min. While it waits it holds a worker slot (HATCHET_WORKER_SLOTS,
+default 20); twenty archives waiting at once on children that need a slot
+would stall until the timeout above, then carry on.
 """
 from __future__ import annotations
 
@@ -37,6 +74,8 @@ import os
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -220,6 +259,317 @@ class IngestZipArchiveInput(BaseModel):
 # One DSN builder for the whole service — see app/db/dsn.py for why
 # sixty copies of this existed and what the drift cost.
 _build_dsn = build_dsn
+
+
+# ---------------------------------------------------------------------------
+# Two-phase dispatch: collar producers first, collar dependents after
+# ---------------------------------------------------------------------------
+
+#: Tables that FK to a collar. A member that classifies to these ONLY has
+#: nothing to write until its collars exist.
+_INTERVAL_SHEET_TYPES = frozenset({"survey", "lithology", "sample"})
+_WRITE_SHEET_TYPES = frozenset({"collar"}) | _INTERVAL_SHEET_TYPES
+
+_PHASE_PRODUCERS = 1
+_PHASE_DEPENDENTS = 2
+
+#: Extensions ingest_tabular classifies by header, and so can be sniffed.
+_SNIFFED_CSV_EXTS = frozenset({"csv", "tsv"})
+_SNIFFED_WORKBOOK_EXTS = frozenset({"xlsx", "xls", "xlsm"})
+
+_TERMINAL_RUN_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
+
+_DEFAULT_WAIT_TIMEOUT_S = 25 * 60.0
+_DEFAULT_WAIT_POLL_S = 10.0
+#: Concurrent status calls per poll round; each is a blocking REST call in a
+#: thread (hatchet.runs.aio_get_status), so a 500-member archive must not
+#: open 500 at once.
+_STATUS_CONCURRENCY = 8
+
+
+def _wait_timeout_s() -> float:
+    """Bound on each dependency wait; GEORAG_ZIP_PHASE_WAIT_TIMEOUT_S overrides."""
+    raw = os.environ.get("GEORAG_ZIP_PHASE_WAIT_TIMEOUT_S")
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            log.warning(
+                "ingest_zip_archive: GEORAG_ZIP_PHASE_WAIT_TIMEOUT_S=%r is not "
+                "a number; using %ss", raw, _DEFAULT_WAIT_TIMEOUT_S,
+            )
+        else:
+            if value >= 0:
+                return value
+    return _DEFAULT_WAIT_TIMEOUT_S
+
+
+@dataclass(frozen=True)
+class _MemberRun:
+    """A child ingest_tabular run this archive started."""
+
+    name: str
+    run_id: str
+
+
+@dataclass
+class _WaitOutcome:
+    finished: list[_MemberRun]
+    #: Reached a terminal state that is not COMPLETED, with that state.
+    not_completed: list[tuple[_MemberRun, str]]
+    #: Still queued / running (or unreadable) when the deadline passed.
+    pending: list[_MemberRun]
+    waited_s: float
+
+
+async def _run_status(run_id: str) -> str | None:
+    """Hatchet's status for one run, upper-cased, or None when unreadable.
+
+    Same call stale_run_detector makes. None (unreachable engine, a run past
+    retention) is treated as "not finished yet" by the caller, so an API
+    outage degrades to the timeout path rather than to a wrong "done".
+    """
+    try:
+        status = await hatchet.runs.aio_get_status(run_id)
+    except Exception as exc:  # noqa: BLE001 — any API failure means "unknown"
+        log.warning("ingest_zip_archive: could not read status of run %s: %s", run_id, exc)
+        return None
+    raw = getattr(status, "value", status)
+    return str(raw).upper() if raw is not None else None
+
+
+def _track_run(dispatched: list[_MemberRun] | None, name: str, ref: Any) -> None:
+    """Remember a child run so the archive can wait for it."""
+    if dispatched is None:
+        return
+    run_id = getattr(ref, "workflow_run_id", None)
+    if run_id:
+        dispatched.append(_MemberRun(name=name, run_id=str(run_id)))
+
+
+async def _await_runs(
+    runs: list[_MemberRun],
+    *,
+    timeout_s: float,
+    poll_s: float = _DEFAULT_WAIT_POLL_S,
+    status_fn: Callable[[str], Awaitable[str | None]] | None = None,
+    on_tick: Callable[[int, int], Awaitable[None]] | None = None,
+) -> _WaitOutcome:
+    """Poll ``runs`` until each is terminal or ``timeout_s`` elapses.
+
+    Never raises for a run's own outcome: FAILED / CANCELLED come back in
+    ``not_completed`` and unfinished ones in ``pending``, and the caller
+    decides what to tell the operator. ``status_fn`` is looked up at call
+    time so tests can replace ``_run_status``.
+    """
+    read_status = status_fn or _run_status
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    deadline = started + timeout_s
+    gate = asyncio.Semaphore(_STATUS_CONCURRENCY)
+
+    async def _one(run: _MemberRun) -> tuple[_MemberRun, str | None]:
+        async with gate:
+            return run, await read_status(run.run_id)
+
+    pending = list(runs)
+    finished: list[_MemberRun] = []
+    not_completed: list[tuple[_MemberRun, str]] = []
+    while pending:
+        still: list[_MemberRun] = []
+        for run, status in await asyncio.gather(*(_one(r) for r in pending)):
+            if status is None or status not in _TERMINAL_RUN_STATUSES:
+                still.append(run)
+            elif status == "COMPLETED":
+                finished.append(run)
+            else:
+                not_completed.append((run, status))
+        pending = still
+        if not pending:
+            break
+        if on_tick is not None:
+            await on_tick(len(runs) - len(pending), len(runs))
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(poll_s, remaining))
+    return _WaitOutcome(
+        finished=finished,
+        not_completed=not_completed,
+        pending=pending,
+        waited_s=loop.time() - started,
+    )
+
+
+def _sniff_sheet_types(path: Path, ext: str) -> set[str] | None:
+    """Which drill tables (collar/survey/lithology/sample) a member holds.
+
+    Uses the classifiers ingest_tabular itself uses, so the phase a member is
+    put in and the table it is later written to cannot disagree. Returns None
+    when the file cannot be sniffed; the caller treats that as "unknown".
+    Blocking (file I/O) -- call through ``asyncio.to_thread``.
+    """
+    try:
+        if ext in _SNIFFED_CSV_EXTS:
+            from georag_geoparsers._sheet_classifier import (  # noqa: PLC0415
+                classify_sheet_type,
+            )
+
+            from app.hatchet_workflows.ingest_tabular import _csv_headers  # noqa: PLC0415
+
+            sheet_type, _conf = classify_sheet_type(_csv_headers(str(path)))
+            return {sheet_type} & _WRITE_SHEET_TYPES
+        if ext in _SNIFFED_WORKBOOK_EXTS:
+            from georag_geoparsers.xlsx_parser import enumerate_sheets  # noqa: PLC0415
+
+            return {
+                meta.sheet_type for meta in enumerate_sheets(str(path))
+                if meta.row_count
+            } & _WRITE_SHEET_TYPES
+    except Exception as exc:  # noqa: BLE001 — a failed sniff must never fail the member
+        log.warning(
+            "ingest_zip_archive: could not sniff %s (%s); dispatching it in "
+            "phase 1", path.name, exc,
+        )
+    return None
+
+
+async def _member_phase(file_path: Path, ext: str) -> int:
+    """Phase a member is dispatched in (see the module docstring).
+
+    Deferred to phase 2: LAS (attaches curves to existing collars), and a
+    csv/tsv/workbook whose sniffed tables are ALL interval types. Everything
+    else -- including anything unsniffable -- is phase 1.
+    """
+    if ext == "las":
+        return _PHASE_DEPENDENTS
+    if ext in _SNIFFED_CSV_EXTS | _SNIFFED_WORKBOOK_EXTS:
+        types = await asyncio.to_thread(_sniff_sheet_types, file_path, ext)
+        if types and "collar" not in types and types <= _INTERVAL_SHEET_TYPES:
+            return _PHASE_DEPENDENTS
+    return _PHASE_PRODUCERS
+
+
+async def _split_into_phases(files: list[Path]) -> tuple[list[Path], list[Path]]:
+    """(phase-1 files, phase-2 files), each in the original order."""
+    phase1: list[Path] = []
+    phase2: list[Path] = []
+    for path in files:
+        ext = path.suffix.lower().lstrip(".")
+        if await _member_phase(path, ext) == _PHASE_DEPENDENTS:
+            phase2.append(path)
+        else:
+            phase1.append(path)
+    return phase1, phase2
+
+
+def _wait_warnings(
+    outcome: _WaitOutcome, *, waiting_for: str, consequence: str,
+) -> list[dict[str, str]]:
+    """Archive warnings for a dependency wait that did not end cleanly."""
+    out: list[dict[str, str]] = []
+    if outcome.pending:
+        out.append({
+            "code": "archive_dependency_wait_timeout",
+            "detail": (
+                f"{len(outcome.pending)} of "
+                f"{len(outcome.finished) + len(outcome.not_completed) + len(outcome.pending)} "
+                f"{waiting_for} had not finished after {int(outcome.waited_s // 60)} min "
+                f"({_names([r.name for r in outcome.pending])}), so {consequence} "
+                "ran without waiting for them."
+            ),
+        })
+    if outcome.not_completed:
+        out.append({
+            "code": "archive_member_run_not_completed",
+            "detail": (
+                f"{len(outcome.not_completed)} {waiting_for} ended "
+                f"FAILED or CANCELLED ({_names([r.name for r, _ in outcome.not_completed])}); "
+                f"{consequence} may find holes missing. See each run's own row."
+            ),
+        })
+    return out
+
+
+#: Archive-level wording for the per-member LAS warnings; ``{n}`` is the file
+#: count and ``{names}`` the capped file list. One warning per code, never one
+#: per file (a 400-file archive would otherwise bury the row).
+_MEMBER_WARNING_TEXT: dict[str, str] = {
+    "las_collar_unlocated": (
+        "{n} LAS file(s) were NOT loaded: their wells have no collar in this "
+        "project and no usable coordinates in the header ({names}). Upload the "
+        "collar table first, then upload these LAS files again."
+    ),
+    "las_collar_assumed_location": (
+        "{n} LAS well(s) were placed at an APPROXIMATE location -- the centre "
+        "of their PLSS section plus an offset, georef_method=assumed, good to "
+        "about 1.6 km ({names}). Upload the collar table for real coordinates."
+    ),
+    "las_collar_crs_assumed": (
+        "{n} LAS well(s) had header coordinates with no stated CRS; the "
+        "project's CRS or WGS84 was assumed ({names})."
+    ),
+    "las_invalid_stop_depth": (
+        "{n} LAS file(s) were skipped because STOP (bottom depth) in the "
+        "~WELL section is not a positive number ({names}). Correct it and "
+        "upload them again."
+    ),
+}
+
+
+def _member_warning_summaries(
+    member_warnings: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Collapse per-file member warnings to one archive warning per code."""
+    by_code: dict[str, list[dict[str, str]]] = {}
+    for w in member_warnings:
+        by_code.setdefault(str(w.get("code") or "member_warning"), []).append(w)
+    out: list[dict[str, str]] = []
+    for code, items in by_code.items():
+        names = [str(i.get("file") or "?") for i in items]
+        template = _MEMBER_WARNING_TEXT.get(code)
+        if template is None:
+            detail = str(items[0].get("detail") or code)
+        else:
+            detail = template.format(n=len(items), names=_names(names))
+        out.append({"code": code, "detail": detail})
+    return out
+
+
+def _derive_warnings(summary: dict[str, Any] | None) -> list[dict[str, str]]:
+    """ONE archive warning describing what derive_intervals did not do."""
+    if not summary:
+        return []
+    if summary.get("error"):
+        return [{
+            "code": "derive_intervals_failed",
+            "detail": (
+                "Deriving lithology strips from the LAS curves failed "
+                f"({summary['error']}). The LAS curves themselves loaded."
+            ),
+        }]
+    if summary.get("skipped_reason") == "commodity_not_uranium":
+        commodity = summary.get("commodity")
+        stated = f"is {commodity!r}" if commodity else "is not set"
+        return [{
+            "code": "derive_intervals_skipped",
+            "detail": (
+                f"No lithology was derived from the LAS gamma curves: the project's "
+                f"commodity {stated}, and the derivation rules are Wyoming roll-front "
+                "uranium thresholds. If this is a uranium project, set its commodity "
+                "to uranium and upload the archive again."
+            ),
+        }]
+    logged = int(summary.get("collars_skipped_logged_lithology") or 0)
+    if logged:
+        return [{
+            "code": "derive_intervals_skipped",
+            "detail": (
+                f"{logged} hole(s) already have logged lithology, so none was derived "
+                "from their gamma curves; any strip derived earlier for them was removed."
+            ),
+        }]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -417,9 +767,65 @@ async def run_zip_ingest(
                 counts: dict[str, int] = dict.fromkeys(_COUNT_KEYS, 0)
                 errors: list[dict[str, str]] = []
                 unhandled: list[str] = []
+                #: Per-file LAS warnings, collapsed to one per code at the end.
+                member_warnings: list[dict[str, str]] = []
+                #: Dependency-wait warnings (timeouts, failed collar runs).
+                wait_warnings: list[dict[str, str]] = []
+                #: Every ingest_tabular child run started, in dispatch order.
+                dispatched_runs: list[_MemberRun] = []
 
-                for idx, file_path in enumerate(all_files, start=1):
+                # Collar producers first, dependents (interval tables, LAS)
+                # after the producers' runs have finished — module docstring.
+                producers, dependents = await _split_into_phases(all_files)
+                ordered_files = [*producers, *dependents]
+                first_dependent_idx = len(producers) + 1
+                #: How many of ``dispatched_runs`` were phase 1; the rest are
+                #: the interval-table runs the derive step waits for. Stays
+                #: at the full length when there is no phase 2.
+                phase1_run_count = 10**9
+                log.info(
+                    "ingest_zip_archive: dispatch plan run_id=%s phase1=%d "
+                    "phase2=%d (%s)",
+                    input.run_id, len(producers), len(dependents),
+                    _names([p.name for p in dependents]),
+                )
+
+                async def _tick(done: int, of: int) -> None:
+                    # Doubles as a heartbeat while the archive sits in the wait.
+                    if progress_run_id:
+                        await ingest_progress.mark_stage_progress(
+                            run_id=progress_run_id,
+                            stage_pct=(first_dependent_idx - 1) / total,
+                            stage_detail=(
+                                f"waiting for {of - done} of {of} "
+                                "collar-bearing member run(s) before "
+                                "loading interval tables and LAS files"
+                            ),
+                        )
+
+                for idx, file_path in enumerate(ordered_files, start=1):
                     ext = file_path.suffix.lower().lstrip(".")
+                    if idx == first_dependent_idx:
+                        phase1_run_count = len(dispatched_runs)
+                    if idx == first_dependent_idx and dispatched_runs:
+                        # Phase 1 is out. Its tabular runs are what create
+                        # the collars phase 2 attaches to, so wait for them.
+                        wait1 = await _await_runs(
+                            list(dispatched_runs), timeout_s=_wait_timeout_s(),
+                            on_tick=_tick,
+                        )
+                        wait_warnings.extend(_wait_warnings(
+                            wait1,
+                            waiting_for="collar-bearing member run(s)",
+                            consequence="the interval tables and LAS files",
+                        ))
+                        log.info(
+                            "ingest_zip_archive: phase-1 wait done run_id=%s "
+                            "finished=%d not_completed=%d pending=%d waited=%.0fs",
+                            input.run_id, len(wait1.finished),
+                            len(wait1.not_completed), len(wait1.pending),
+                            wait1.waited_s,
+                        )
                     try:
                         # Snapshot the buckets _ingest_one may bump, so
                         # "did this file actually land" is answered by what
@@ -438,6 +844,8 @@ async def run_zip_ingest(
                             store=store,
                             input=input,
                             counts=counts,
+                            dispatched=dispatched_runs,
+                            member_warnings=member_warnings,
                         )
 
                         # This used to read `if ext not in ("skipped",)`.
@@ -503,6 +911,69 @@ async def run_zip_ingest(
             finally:
                 await conn.close()
 
+        # ── 5. Derive lithology / interval strip logs from the LAS curves ──
+        # gold.drillhole_intervals_visual — the lithology strip logs, ore-band
+        # counts and mean grades behind Workspace / Compare / DrillholeDetail —
+        # had no automated writer. Its Dagster asset was deleted in #124 (it read
+        # a table that never existed) and the only correct writer,
+        # services/ingest/derive_intervals.derive_project, was reachable only from
+        # the manual script scripts/ingest_one_cluster.py. So every archive
+        # ingested through this workflow produced well-log curves that never
+        # became a strip log unless someone ran that script by hand.
+        #
+        # Gated on counts["las"]: derive_project reads silver.well_log_curves, and
+        # LAS is the only extension in this workflow that writes them (.log files
+        # upsert a collar header only).
+        #
+        # derive_project is itself gated (derive_intervals module docstring): it
+        # only derives for a URANIUM project, and only for holes with no LOGGED
+        # lithology. Those checks read silver.lithology_logs, which the phase-2
+        # interval tables write from child runs -- so those runs are waited for
+        # first (bounded, same timeout as the phase-1 wait), or the "already
+        # logged" test would race the very upload that makes it true.
+        #
+        # What it skips is reported ONCE, as a single archive warning, never per
+        # hole -- see _derive_warnings.
+        #
+        # Runs once per archive rather than per file — derive_project sweeps every
+        # collar in the project, and its writes are idempotent: each collar's
+        # DERIVED-% lithology rows, derived_composite samples and 'lithology'
+        # interval rows are deleted and re-emitted. A re-run, or an archive that
+        # only adds some of a project's holes, simply recomputes from whatever
+        # curves are present.
+        #
+        # A failure here must not fail the archive. Every file is already ingested
+        # by this point, so the error is recorded in the summary and left for the
+        # next run to correct — same "one bad step doesn't kill the run" posture
+        # as the per-file loop. It runs BEFORE the terminal marks below so its
+        # warning reaches the archive's row and the completion toast.
+        derive_intervals_summary: dict[str, Any] | None = None
+        if counts["las"] > 0:
+            from app.services.ingest.derive_intervals import derive_project  # noqa: PLC0415
+
+            phase2_runs = dispatched_runs[phase1_run_count:]
+            if phase2_runs:
+                wait2 = await _await_runs(phase2_runs, timeout_s=_wait_timeout_s())
+                wait_warnings.extend(_wait_warnings(
+                    wait2,
+                    waiting_for="interval-table member run(s)",
+                    consequence="the lithology derivation",
+                ))
+            try:
+                derive_intervals_summary = await derive_project(input.project_id)
+                log.info(
+                    "ingest_zip_archive.derive_intervals run_id=%s %s",
+                    input.run_id,
+                    derive_intervals_summary,
+                )
+            except Exception as exc:
+                derive_intervals_summary = {"error": str(exc)[:200]}
+                log.warning(
+                    "ingest_zip_archive: derive_intervals failed run_id=%s — %s (continuing)",
+                    input.run_id,
+                    exc,
+                )
+
         # Terminal mark INSIDE the archive_lifecycle — 'partial' when any
         # per-file ingester failed, 'completed' otherwise. archive_lifecycle
         # would mark 'failed' if we raised; we don't (per-file errors are
@@ -530,6 +1001,11 @@ async def run_zip_ingest(
             dispatched = sum(counts[k] for k in _DISPATCHED_COUNT_KEYS)
             archive_warnings = _archive_warnings(
                 total=total, counts=counts, errors=errors, unhandled=unhandled,
+                extra=[
+                    *_member_warning_summaries(member_warnings),
+                    *wait_warnings,
+                    *_derive_warnings(derive_intervals_summary),
+                ],
             )
             transitioned = await ingest_progress.mark_completed_by_run(
                 run_id=progress_run_id,
@@ -550,50 +1026,6 @@ async def run_zip_ingest(
                     ),
                 )
 
-    # ── 5. Derive lithology / interval strip logs from the LAS curves ──────
-    # gold.drillhole_intervals_visual — the lithology strip logs, ore-band
-    # counts and mean grades behind Workspace / Compare / DrillholeDetail —
-    # had no automated writer. Its Dagster asset was deleted in #124 (it read
-    # a table that never existed) and the only correct writer,
-    # services/ingest/derive_intervals.derive_project, was reachable only from
-    # the manual script scripts/ingest_one_cluster.py. So every archive
-    # ingested through this workflow produced well-log curves that never
-    # became a strip log unless someone ran that script by hand.
-    #
-    # Gated on counts["las"]: derive_project reads silver.well_log_curves, and
-    # LAS is the only extension in this workflow that writes them (.log files
-    # upsert a collar header only).
-    #
-    # Runs once per archive rather than per file — derive_project sweeps every
-    # collar in the project, and its writes are idempotent: each collar's
-    # DERIVED-% lithology rows, derived_composite samples and 'lithology'
-    # interval rows are deleted and re-emitted. A re-run, or an archive that
-    # only adds some of a project's holes, simply recomputes from whatever
-    # curves are present.
-    #
-    # A failure here must not fail the archive. Every file is already ingested
-    # by this point and the terminal status has already been marked, so the
-    # error is recorded in the summary and left for the next run to correct —
-    # same "one bad step doesn't kill the run" posture as the per-file loop.
-    derive_intervals_summary: dict[str, Any] | None = None
-    if counts["las"] > 0:
-        from app.services.ingest.derive_intervals import derive_project  # noqa: PLC0415
-
-        try:
-            derive_intervals_summary = await derive_project(input.project_id)
-            log.info(
-                "ingest_zip_archive.derive_intervals run_id=%s %s",
-                input.run_id,
-                derive_intervals_summary,
-            )
-        except Exception as exc:
-            derive_intervals_summary = {"error": str(exc)[:200]}
-            log.warning(
-                "ingest_zip_archive: derive_intervals failed run_id=%s — %s (continuing)",
-                input.run_id,
-                exc,
-            )
-
     summary = {
         "run_id": input.run_id,
         "archive_run_id": archive_run_id,
@@ -603,6 +1035,12 @@ async def run_zip_ingest(
         "error_count": len(errors),
         "errors_sample": errors[:20],  # cap sample to keep payload small
         "derive_intervals": derive_intervals_summary,
+        "dispatch_plan": {"phase1": len(producers), "phase2": len(dependents)},
+        "warnings": [
+            *_member_warning_summaries(member_warnings),
+            *wait_warnings,
+            *_derive_warnings(derive_intervals_summary),
+        ],
         "completed_at": datetime.now(UTC).isoformat(),
     }
     log.info("ingest_zip_archive.complete run_id=%s summary=%s", input.run_id, counts)
@@ -665,8 +1103,13 @@ def _archive_warnings(
     counts: dict[str, int],
     errors: list[dict[str, str]],
     unhandled: list[str],
+    extra: list[dict[str, str]] | None = None,
 ) -> list[dict[str, str]]:
     """The archive row's warnings — what did NOT reach an ingester, and why.
+
+    ``extra`` carries the warnings the members and the dependent steps
+    produced (LAS location, dependency waits, the derive step); they follow
+    the accounting warnings below.
 
     A member with no handler or one whose ingester declined it used to leave
     no trace outside the worker log: ``unknown`` and ``skipped`` never
@@ -704,6 +1147,7 @@ def _archive_warnings(
                 "log names each one."
             ),
         })
+    warnings.extend(extra or [])
     return warnings
 
 
@@ -719,12 +1163,19 @@ async def _ingest_one(
     store: ObjectStorage,
     input: IngestZipArchiveInput,
     counts: dict[str, int],
+    dispatched: list[_MemberRun] | None = None,
+    member_warnings: list[dict[str, str]] | None = None,
 ) -> None:
     """Route a single extracted file to its ingester.
 
     Ingesters are imported lazily inside each branch so that a missing
     optional dep (e.g. ``lasio`` not installed in the ingestion worker
     image) only fails that extension's branch, not the entire workflow.
+
+    ``dispatched`` collects every ingest_tabular child run started, so the
+    caller can wait for them; ``member_warnings`` collects per-file warnings
+    (LAS location, invalid STOP) for the caller to summarise. Both are
+    optional so a bare call still works.
     """
 
     if ext in ("las",):
@@ -737,10 +1188,19 @@ async def _ingest_one(
                 str(file_path),
                 workspace_id=input.workspace_id,
                 project_id_override=input.project_id,
+                source_epsg=input.source_epsg,
+            )
+        if member_warnings is not None:
+            member_warnings.extend(
+                {**w, "file": file_path.name} for w in result.warnings
             )
         if result.skipped:
             counts["skipped"] += 1
-            log.debug("ingest_zip_archive: LAS skipped %s — %s", file_path.name, result.skipped_reason)
+            # WARNING, not debug: this is a member that loaded nothing.
+            log.warning(
+                "ingest_zip_archive: LAS skipped %s — %s",
+                file_path.name, result.skipped_reason,
+            )
         else:
             counts["las"] += 1
 
@@ -794,7 +1254,7 @@ async def _ingest_one(
         tabular_key = f"tabular/{input.project_id}/{ts}_{safe_name}"
         file_bytes = await asyncio.to_thread(file_path.read_bytes)
         await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, tabular_key, file_bytes)
-        await ingest_tabular.aio_run_no_wait(
+        tabular_ref = await ingest_tabular.aio_run_no_wait(
             IngestTabularInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
@@ -804,6 +1264,7 @@ async def _ingest_one(
                 source_epsg=input.source_epsg,
             )
         )
+        _track_run(dispatched, file_path.name, tabular_ref)
         # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch below
         # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
         await asyncio.sleep(0.25)
@@ -916,7 +1377,7 @@ async def _ingest_one(
         file_bytes = await asyncio.to_thread(file_path.read_bytes)
         table_key = f"tables/{input.project_id}/{ts}_{safe_name}"
         await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, table_key, file_bytes)
-        await ingest_tabular.aio_run_no_wait(
+        table_ref = await ingest_tabular.aio_run_no_wait(
             IngestTabularInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
@@ -924,6 +1385,7 @@ async def _ingest_one(
                 source_epsg=input.source_epsg,
             )
         )
+        _track_run(dispatched, file_path.name, table_ref)
         await asyncio.sleep(0.25)
         counts["tabular"] += 1
 
