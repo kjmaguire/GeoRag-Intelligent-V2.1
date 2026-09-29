@@ -86,6 +86,11 @@ locals {
   # that makes the second task actually do its job. Keep the two lists in step
   # — a service at desired 1 named here cannot satisfy a 50% floor.
   zero_downtime_services = toset(["laravel-octane", "laravel-reverb"])
+
+  # Desired-1 services that start their replacement BEFORE stopping the old
+  # task on a deploy (100% / 200%). Stateless only — see the note on
+  # deployment_minimum_healthy_percent in services.tf (CHAT-14).
+  overlap_on_deploy_services = toset(["laravel-horizon", "fastapi"])
 }
 
 data "aws_availability_zones" "available" {

@@ -1042,13 +1042,22 @@ it sees is an Octane task. At `RATE_LIMIT_DEFAULT=60/minute` that is a global
 cap of roughly 60 requests per minute per Octane task across all users — a
 crude ceiling that would start returning 429s under ordinary load.
 
-So it is left off, and the CRITICAL line is noise rather than a finding. Worth
-fixing properly at some point — either by keying the limiter on a
-workspace/user header Laravel already forwards, or by narrowing the posture
-check to deployments where FastAPI is internet-facing. Neither belongs in a
-cutover.
+**Superseded 2026-09-29 (audit AWS-10).** The analysis above still holds for
+the 60/minute *default*, but leaving the limiter off stopped being free:
+`alerts.tf` now pages on any CRITICAL line in `/ecs/georag` (the
+`posture-critical` alarm), so the posture line would email every morning and
+teach whoever reads the channel to ignore it. `config.tf` now sets
+`RATE_LIMIT_ENABLED=true` with `RATE_LIMIT_DEFAULT=600/minute` on fastapi and
+the hatchet worker: a runaway-loop backstop that internal traffic does not
+reach, not a per-client control. The per-user query limit keeps its
+20/minute default. The proper fix — keying the global limiter on the user
+Laravel already forwards — is still open.
 
-No CloudWatch alarm watches for CRITICAL log lines, so this does not page.
+This is the first deployment anywhere with the limiter on (compose and the
+Helm chart leave it off). If 429s appear in the fastapi log after the apply,
+remove the two variables from `fastapi_posture_environment` in `config.tf`
+and redeploy; the CRITICAL alarm will then fire once per boot until the
+posture check or the limiter keying is fixed.
 
 ## The reasoning carried over from Azure
 

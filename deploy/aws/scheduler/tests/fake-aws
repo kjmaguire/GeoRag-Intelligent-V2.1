@@ -84,11 +84,19 @@ case "$1 ${2:-}" in
     ;;
 
   "ecs wait")
-    svc=$(arg_after --services "$@") || svc=""
-    if in_list "$svc" "${FAKE_AWS_UNSTABLE:-}"; then
-      echo "Waiter ServicesStable failed" >&2
-      exit 255
-    fi
+    # `--services` takes a LIST (the shutdown sweep waits on a whole tier at
+    # once), so every name up to the next flag counts, not just the first.
+    in_services=0
+    for a in "$@"; do
+      case "$a" in
+        --services) in_services=1; continue ;;
+        --*) in_services=0 ;;
+      esac
+      if [ "$in_services" -eq 1 ] && in_list "$a" "${FAKE_AWS_UNSTABLE:-}"; then
+        echo "Waiter ServicesStable failed" >&2
+        exit 255
+      fi
+    done
     ;;
 
   "rds stop-db-instance")

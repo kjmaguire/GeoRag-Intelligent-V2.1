@@ -600,7 +600,7 @@ echo "  • Step 2  ALTER ROLE georag_app PASSWORD"
 echo "  • Step 4  scripts/init_qdrant.py (CD's post_deploy_smoke check 4 catches a miss)"
 echo "  • HATCHET_CLIENT_TOKEN swapped from placeholder to the engine-minted value"
 echo "  • RERANKER_SCORE_THRESHOLD_HOSTED is Rerank v4's 0.2 carried to 3.5, unvalidated"
-echo "  • TRUST_FORWARDED_FOR / RATE_LIMIT_ENABLED posture decisions (${README})"
+echo "  • TRUST_FORWARDED_FOR posture decision (${README}); RATE_LIMIT_ENABLED is set in config.tf since 2026-09-29"
 echo
 
 if [ "$FAIL" = "0" ] && [ "$WARN" = "0" ]; then

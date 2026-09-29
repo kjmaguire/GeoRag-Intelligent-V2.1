@@ -324,10 +324,28 @@ resource "aws_cloudwatch_composite_alarm" "octane_dead_air_outside_window" {
   # Suppressed while the platform is intentionally stopped. Without this the
   # alarm fires every single night by design, which is how an alert channel
   # becomes noise nobody reads.
+  #
+  # Both periods widened on 2026-09-29 (audit AWS-7), and each covers one end
+  # of the window:
+  #
+  #   extension_period 2700 s (45 min) — the MORNING end. The suppressor is in
+  #     ALARM for exactly the window's length after the shutdown-complete
+  #     marker, so it released the moment the startup sweep FIRED, while the
+  #     platform was still down: RDS starting, three tiers each waiting for
+  #     services-stable (README: ~15 min), then two healthy ALB checks and a
+  #     clean 5-minute HealthyHostCount period. With 60 s the composite
+  #     emailed at about 08:32 every day. 45 min covers a slow start with
+  #     margin; a platform still dead at ~09:15 is a real page.
+  #   wait_period 900 s (15 min) — the EVENING end. The shutdown sweep now
+  #     drains tier by tier (AWS-8), so "shutdown sweep complete" lands
+  #     several minutes after Octane stopped; dead air can reach ALARM before
+  #     the suppressor does. The composite now waits up to 15 min for it.
+  #     Cost: a genuine daytime outage emails up to 15 min later than before
+  #     (on top of the 10 min the dead-air alarm itself needs).
   actions_suppressor {
     alarm            = aws_cloudwatch_metric_alarm.maintenance_window[0].alarm_name
-    wait_period      = 60
-    extension_period = 60
+    wait_period      = 900
+    extension_period = 2700
   }
 }
 
