@@ -78,9 +78,10 @@ class UploadRetiredCategoryTest extends TestCase
         // live Hatchet consumers, so they now belong in the live-category
         // test below rather than here. What remains is what is still
         // genuinely consumer-less.
+        // 2026-09-29: `xyz` was restored too — ingest_geophysics (ING-19);
+        // UploadSourceEpsgTest covers its dispatch.
         return [
             'seismic volumes' => ['seismic', 'line.sgy'],
-            'xyz grids' => ['xyz', 'grid.xyz'],
             'geophysics summaries' => ['geophysics', 'survey.json'],
         ];
     }

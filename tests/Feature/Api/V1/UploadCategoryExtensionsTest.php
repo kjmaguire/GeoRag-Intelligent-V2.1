@@ -229,13 +229,18 @@ class UploadCategoryExtensionsTest extends TestCase
             ->assertUnprocessable();
     }
 
-    // ── Neither change may disturb the retired list ──────────────────────
+    // ── `xyz` left the retired list on 2026-09-29 (ING-19) ───────────────
 
-    public function test_the_retired_xyz_category_still_owns_dat(): void
+    public function test_the_restored_xyz_category_takes_only_xyz(): void
     {
+        // The retired entry listed .dat and .txt too. Restored with those it
+        // would claim a MapInfo/dBASE table and a delimited table that
+        // already belong to `tables` and `collars`, so only .xyz came back.
         $response = $this->actingAs($this->user)->getJson('/api/v1/upload/categories');
         $response->assertOk();
 
-        $this->assertContains('dat', $response->json('retired.xyz'));
+        $this->assertSame(['xyz'], $response->json('categories.xyz'));
+        $this->assertNull($response->json('retired.xyz'));
+        $this->assertContains('dat', $response->json('categories.tables'));
     }
 }
