@@ -116,6 +116,8 @@
             <!-- 2026-09-24: silver.answer_runs / silver.message_feedback are
                  raw-SQL Postgres-only migrations. -->
             <file>tests/Feature/Api/V1/AnswerRunFeedbackControllerTest.php</file>
+            <!-- 2026-09-29 database audit PG-7: FastAPI 201 passthrough. -->
+            <file>tests/Feature/Api/V1/CitationFeedbackControllerTest.php</file>
             <file>tests/Feature/Api/V1/PublicGeoscience/EntityReferencesControllerIDORTest.php</file>
             <!-- MIME-sniffing / bronze.source_files coverage — bronze schema
                  is Postgres-only (driver-gated migration). -->

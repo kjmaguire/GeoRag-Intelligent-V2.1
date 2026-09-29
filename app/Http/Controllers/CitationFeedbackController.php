@@ -13,8 +13,9 @@ use Illuminate\Support\Facades\Http;
  * POST /api/v1/citations/feedback — record a citation thumbs-up/down.
  *
  * Backs the 👍/👎 buttons in ChatMessage. Proxies to FastAPI's
- * /api/v1/citations/feedback endpoint, which writes a row into
- * silver.source_trust_features.
+ * /api/v1/citations/feedback endpoint, which folds the verdict into the
+ * source's citation_accuracy row in silver.source_trust_features and
+ * records the event in the audit ledger.
  */
 class CitationFeedbackController extends Controller
 {
@@ -87,7 +88,9 @@ class CitationFeedbackController extends Controller
             );
         }
 
-        if (! $response->ok()) {
+        // FastAPI answers 201 Created; ok() is true for 200 only, so every
+        // successful write used to come back to the browser as a 502.
+        if (! $response->successful()) {
             return response()->json(
                 ['error' => 'fastapi returned non-2xx',
                     'fastapi_status' => $response->status(),

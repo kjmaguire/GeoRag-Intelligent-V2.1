@@ -55,6 +55,9 @@ tests/test_phase8_embed_verify.py
 # ── Audit / tenancy ───────────────────────────────────────────────────
 tests/test_support_access_audit.py
 tests/test_workspace_export_rls_scope.py
+# 2026-09-29 database audit PG-7: the citation-feedback writer and the
+# admin source-trust list, run as georag_app through FORCE RLS.
+tests/test_citation_feedback_integration.py
 
 # ── Support + operations surfaces ─────────────────────────────────────
 tests/test_support_packet.py
