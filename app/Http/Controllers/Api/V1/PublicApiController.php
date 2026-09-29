@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Services\FastApiJwtMinter;
 use App\Support\PaginationLimit;
 use App\Support\SetsWorkspaceRlsContext;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -36,6 +37,9 @@ use Illuminate\Support\Facades\Http;
 class PublicApiController extends Controller
 {
     use SetsWorkspaceRlsContext;
+
+    /** Ceiling for GET /audit/{workspace_id}?limit= (unchanged from before LAR-16). */
+    private const AUDIT_LIMIT_MAX = 500;
 
     public function answer(Request $request, string $answerRunId): JsonResponse
     {
@@ -200,18 +204,27 @@ class PublicApiController extends Controller
         $svc = config('services.fastapi.service_key');
         $jwt = app(FastApiJwtMinter::class)->mint((string) $user->id, $projectId, []);
 
-        $allNotes = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
-            ->timeout(10)->retry(2, 250)->get("$fastApi/v1/interpretation/notes", ['project_id' => $projectId]);
-        $allZones = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
-            ->timeout(10)->retry(2, 250)->get("$fastApi/v1/interpretation/target-zones", ['project_id' => $projectId]);
-        $allSections = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
-            ->timeout(10)->retry(2, 250)->get("$fastApi/v1/interpretation/section-lines", ['project_id' => $projectId]);
+        // LAR-8 (2026-09-29): each list degrades to [] on its own. With the
+        // bare `retry(2, 250)` the last non-2xx THREW, so the `ok() ? : []`
+        // fallback never ran and one failing FastAPI list 500'd the endpoint.
+        $fetch = function (string $path) use ($fastApi, $svc, $jwt, $projectId): mixed {
+            try {
+                $resp = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
+                    ->timeout(10)
+                    ->retry(2, 250, fn (\Throwable $exc): bool => $exc instanceof ConnectionException, throw: false)
+                    ->get("$fastApi/v1/interpretation/$path", ['project_id' => $projectId]);
+            } catch (ConnectionException) {
+                return [];
+            }
+
+            return $resp->ok() ? $resp->json() : [];
+        };
 
         return response()->json([
             'project_id' => $projectId,
-            'notes' => $allNotes->ok() ? $allNotes->json() : [],
-            'target_zones' => $allZones->ok() ? $allZones->json() : [],
-            'section_lines' => $allSections->ok() ? $allSections->json() : [],
+            'notes' => $fetch('notes'),
+            'target_zones' => $fetch('target-zones'),
+            'section_lines' => $fetch('section-lines'),
         ]);
     }
 
@@ -230,7 +243,9 @@ class PublicApiController extends Controller
         ) {
             return response()->json(['error' => 'not_found'], 404);
         }
-        $limit = (int) $request->query('limit', 50);
+        // LAR-16 (2026-09-29): `min($limit, 500)` had no floor, so
+        // `?limit=-1` reached Postgres as `LIMIT -1` and 500'd.
+        $limit = PaginationLimit::clamp($request, 50, 'limit', self::AUDIT_LIMIT_MAX);
         $rows = DB::select(
             // workspace_id = ? only. This used to OR in every row with a NULL
             // workspace_id: platform-level and unattributed entries that
@@ -248,7 +263,7 @@ class PublicApiController extends Controller
               WHERE workspace_id = ?::uuid
               ORDER BY created_at DESC
               LIMIT ?',
-            [$workspaceId, min($limit, 500)],
+            [$workspaceId, $limit],
         );
 
         return response()->json([
