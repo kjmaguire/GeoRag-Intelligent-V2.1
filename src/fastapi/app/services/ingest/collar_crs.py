@@ -37,11 +37,14 @@ CRS at every hop, after this module:
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 #: Distance beyond the project's known extent at which a collar is called
 #: implausible. Kyle has not set this; 100 km is wide enough for any single
@@ -79,6 +82,7 @@ def _crs(epsg: int) -> Any | None:
     try:
         return CRS.from_epsg(int(epsg))
     except (CRSError, ValueError, TypeError):
+        logger.debug("CRS lookup failed", exc_info=True)
         return None
 
 
@@ -305,6 +309,7 @@ async def project_reference(
             project_id, list(exclude_hole_ids or []),
         )
     except Exception:  # noqa: BLE001 — no reference skips the check; it never fails an ingest
+        logger.debug("no plausibility reference for this project", exc_info=True)
         return None
     if row is None or not row["n"] or row["lon"] is None:
         return None
@@ -323,12 +328,14 @@ def to_lonlat(
     try:
         tf = Transformer.from_crs(f"EPSG:{int(epsg)}", "EPSG:4326", always_xy=True)
     except Exception:  # noqa: BLE001 — an unusable CRS means nothing transforms
+        logger.debug("transformer unavailable", exc_info=True)
         return [None] * len(points)
     out: list[tuple[float, float] | None] = []
     for x, y in points:
         try:
             lon, lat = tf.transform(x, y)
         except Exception:  # noqa: BLE001
+            logger.debug("point (%s, %s) did not transform", x, y, exc_info=True)
             out.append(None)
             continue
         if not (math.isfinite(lon) and math.isfinite(lat)) or abs(lat) > 90 or abs(lon) > 180:

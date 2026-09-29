@@ -711,6 +711,7 @@ def _repair_invalid_wkt(wkt: str) -> tuple[str, str | None]:
             fixed = shapely.multipoints(parts)
         return fixed.wkt, reason
     except Exception:  # noqa: BLE001 — repair is best-effort; PostGIS still validates the WKT
+        log.debug("geometry repair failed; keeping the original WKT", exc_info=True)
         return wkt, None
 
 

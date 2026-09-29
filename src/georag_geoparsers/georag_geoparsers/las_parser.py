@@ -89,12 +89,13 @@ def resolve_las_depth_unit(las: Any) -> LasDepthUnit:
         if las.curves:
             candidates.append(las.curves[0].unit)
     except Exception:  # noqa: BLE001 — a malformed ~C section is reported elsewhere
-        pass
+        logger.debug("LAS ~C section unreadable for depth unit", exc_info=True)
     for mnemonic in ("STRT", "STOP", "STEP"):
         try:
             if mnemonic in las.well:
                 candidates.append(las.well[mnemonic].unit)
         except Exception:  # noqa: BLE001
+            logger.debug("LAS %s unit unreadable", mnemonic, exc_info=True)
             continue
 
     declared: str | None = None

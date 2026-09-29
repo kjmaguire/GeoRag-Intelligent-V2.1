@@ -30,8 +30,11 @@ project grid; for true-north surveys it is wrong by the convergence.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 _TRUE = frozenset({"true", "true_north", "truenorth", "tn"})
 _MAGNETIC = frozenset({"magnetic", "magnetic_north", "magneticnorth", "mag", "mn"})
@@ -115,6 +118,7 @@ def azimuth_correction(
     try:
         project_true = true_north_bearing_in_grid(int(project_epsg), lon, lat)
     except Exception:  # noqa: BLE001 — a geographic/unusable project CRS: nothing to convert
+        logger.debug("EPSG:%s has no grid north", project_epsg, exc_info=True)
         return AzimuthCorrection(0.0, "grid", note=f"EPSG:{project_epsg} has no grid north")
     # grid_P -> true: a - project_true; true -> local grid: + local_true.
     return AzimuthCorrection(local_true - project_true, "grid")
