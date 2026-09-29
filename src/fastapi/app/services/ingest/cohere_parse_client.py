@@ -133,9 +133,24 @@ _DEFAULT_TIMEOUT_S = 120.0
 # a 19,996,997-pixel page, the top of the probe's ladder, so 20 MP is measured
 # rather than guessed; the vendor's real ceiling may be higher. A request over
 # it fails as a 4xx and the page falls back to tesseract, so a too-high value
-# is loud, not silent.
+# is loud, not silent. *Caveat 2026-09-29 (VEN-10):* that ladder's largest
+# request was a 449 KB PNG of a SYNTHETIC page. It measured pixels, not
+# bytes; a real noisy colour scan at 20 MP is far larger, and the request
+# BYTE limit is unprobed -- see COHERE_PARSE_MAX_IMAGE_BYTES below.
 _MAX_PIXELS_ENV = "COHERE_PARSE_MAX_PIXELS"
 _DEFAULT_MAX_PIXELS = 20_000_000
+# Byte ceiling for the rendered PNG (VEN-10, 2026-09-29). The pixel cap above
+# was set from a ladder whose largest request was a 449 KB synthetic page; a
+# noisy colour scan at 20 MP is one to two orders of magnitude larger, and
+# Cohere's request-body limit has NEVER been probed. 0 (the default) means
+# "no byte cap" -- choosing a number without a measurement would either
+# downscale pages for nothing or sit above the real limit. Once the probe
+# records the limit, set this below it and oversized renders are shrunk
+# before sending instead of drawing a 413 and falling to tesseract.
+_MAX_IMAGE_BYTES_ENV = "COHERE_PARSE_MAX_IMAGE_BYTES"
+#: A render above this is logged with its size whatever the cap, so the
+#: first real ingest of a plan sheet produces the evidence the probe lacks.
+_LARGE_IMAGE_LOG_BYTES = 5_000_000
 #: Below this DPI the render has visibly lost text a scanner captured.
 _DOWNSCALE_WARN_DPI = 100.0
 
@@ -270,6 +285,11 @@ def max_pixels() -> int:
     return max(100_000, _env_int(_MAX_PIXELS_ENV, _DEFAULT_MAX_PIXELS))
 
 
+def max_image_bytes() -> int:
+    """PNG byte ceiling; 0 = none (the default until the probe measures one)."""
+    return max(0, _env_int(_MAX_IMAGE_BYTES_ENV, 0))
+
+
 def output_format() -> str:
     raw = (os.environ.get(_OUTPUT_FORMAT_ENV) or _DEFAULT_OUTPUT_FORMAT).strip().lower()
     if raw not in _OUTPUT_FORMATS:
@@ -295,6 +315,42 @@ def pages_per_batch() -> int:
 
 def page_concurrency() -> int:
     return max(1, _env_int(_CONCURRENCY_ENV, _DEFAULT_CONCURRENCY))
+
+
+# One pool of page slots per process (VEN-11, 2026-09-29). pdf_report's group
+# pass runs min(PDF_OCR_PAGE_CONCURRENCY, groups) outer threads, and each
+# group opened its own pool of PDF_OCR_PAGE_CONCURRENCY workers -- up to 16
+# Parse requests and 16 resident page PNGs per document at the defaults,
+# while the docstrings promised PDF_OCR_PAGE_CONCURRENCY. Every render+post
+# now takes a slot from this one semaphore, so the promise holds per
+# process, whatever the nesting and however many documents are in flight.
+_SLOTS_LOCK = threading.Lock()
+_SLOTS: threading.BoundedSemaphore | None = None
+_SLOTS_SIZE = 0
+
+
+def _page_slots() -> threading.BoundedSemaphore:
+    global _SLOTS, _SLOTS_SIZE
+    size = page_concurrency()
+    with _SLOTS_LOCK:
+        # Rebuilt only when the setting changes (tests, a runtime override);
+        # a holder of the old semaphore releases into the old one, which is
+        # harmless.
+        if _SLOTS is None or size != _SLOTS_SIZE:
+            _SLOTS = threading.BoundedSemaphore(size)
+            _SLOTS_SIZE = size
+        return _SLOTS
+
+
+@contextlib.contextmanager
+def _page_slot():
+    """Hold one of the process's PDF_OCR_PAGE_CONCURRENCY page slots."""
+    slots = _page_slots()
+    slots.acquire()
+    try:
+        yield
+    finally:
+        slots.release()
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +436,8 @@ def _render_page(pdf_path: str, page_number: int) -> bytes | None:
             image = image.resize((max(1, int(image.width * shrink)), max(1, int(image.height * shrink))))
         buf = io.BytesIO()
         image.save(buf, format="PNG", optimize=False)
-        return buf.getvalue()
+        png = buf.getvalue()
+        return _fit_image_bytes(image, png, page_number=page_number, pdf_path=pdf_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "cohere_parse: render failed for page %d of '%s': %s",
@@ -389,6 +446,52 @@ def _render_page(pdf_path: str, page_number: int) -> bytes | None:
             exc,
         )
         return None
+
+
+def _fit_image_bytes(image: Any, png: bytes, *, page_number: int, pdf_path: str) -> bytes:
+    """Shrink a render that exceeds ``max_image_bytes()``; log large ones.
+
+    PNG size does not scale exactly with pixel count, so this re-encodes at
+    most three times, each at ``sqrt(cap / size) * 0.9`` of the current
+    linear size. A render that still does not fit is sent as-is: the API
+    then answers with its own verdict (COHERE_PARSE_REJECTED, carrying the
+    byte count), which is better evidence than a guess here.
+    """
+    size = len(png)
+    if size >= _LARGE_IMAGE_LOG_BYTES:
+        logger.info(
+            "cohere_parse: page %d of '%s' rendered to %.1f MB PNG (%dx%d px)",
+            page_number,
+            pdf_path,
+            size / 1e6,
+            image.width,
+            image.height,
+        )
+    cap = max_image_bytes()
+    if cap <= 0 or size <= cap:
+        return png
+    for _ in range(3):
+        shrink = math.sqrt(cap / len(png)) * 0.9
+        image = image.resize((max(1, int(image.width * shrink)), max(1, int(image.height * shrink))))
+        buf = io.BytesIO()
+        image.save(buf, format="PNG", optimize=False)
+        png = buf.getvalue()
+        if len(png) <= cap:
+            break
+    logger.warning(
+        "cohere_parse: page %d of '%s' was %.1f MB, over %s=%d; downscaled to "
+        "%dx%d px / %.1f MB%s",
+        page_number,
+        pdf_path,
+        size / 1e6,
+        _MAX_IMAGE_BYTES_ENV,
+        cap,
+        image.width,
+        image.height,
+        len(png) / 1e6,
+        "" if len(png) <= cap else " (STILL over the cap; sending anyway)",
+    )
+    return png
 
 
 def _render_pages(pdf_path: str, page_numbers: Sequence[int]) -> dict[int, bytes]:
@@ -576,14 +679,36 @@ def _parse_png(png_bytes: bytes, *, log_page: int | None) -> PageOcrResult:
             # went to AWS — so this log line is the whole signal, and the
             # `cohere-parse-rejected` alarm marker is what pages on it.
             logger.error(
-                "COHERE_PARSE_REJECTED: HTTP %s%s for model %s. Falling back "
-                "to tesseract, which extracts no tables. Check that %s is "
-                "valid and entitled to Parse. Detail: %s",
+                "COHERE_PARSE_REJECTED: HTTP %s%s for model %s (PNG %d bytes). "
+                "Falling back to tesseract, which extracts no tables. Check "
+                "that %s is valid and entitled to Parse; a 413 means the page "
+                "is over the API's size limit (see %s). Detail: %s",
                 status,
                 where,
                 model,
+                len(png_bytes),
                 API_KEY_ENV,
+                _MAX_IMAGE_BYTES_ENV,
                 message or exc,
+            )
+        elif status in _RETRYABLE_STATUS:
+            # VEN-11 (2026-09-29): retries exhausted on a throttle or 5xx. This
+            # used to be a WARNING like any transport blip, so a rate-limited
+            # large scan quietly lost a fraction of its tables to tesseract.
+            # Distinct marker, so it can be counted/alarmed separately from
+            # a key problem (COHERE_PARSE_REJECTED). Still WARNING, not
+            # ERROR: a throttle is weather, not an operator error, and a
+            # CloudWatch metric filter matches the marker at any level. No
+            # alarm exists for it yet: that is a deploy/aws/terraform/alerts.tf
+            # change.
+            logger.warning(
+                "COHERE_PARSE_THROTTLED: HTTP %s%s after %d attempts; falling "
+                "back to tesseract, which extracts no tables. Sustained firing "
+                "means PDF_OCR_PAGE_CONCURRENCY is above what the key's rate "
+                "limit allows.",
+                status,
+                where,
+                _MAX_ATTEMPTS,
             )
         else:
             logger.warning("cohere_parse: request failed%s: %s", where, exc)
@@ -829,16 +954,17 @@ def ocr_page_sync(pdf_path: str, page_num: int) -> PageOcrResult:
     caller should surface loudly rather than swallow.
     """
     _require_config()
-    png = _render_page(pdf_path, page_num)
-    if png is None:
-        return PageOcrResult(
-            "",
-            0.0,
-            request_succeeded=False,
-            error="render_failed",
-            confidence_reported=False,
-        )
-    return _parse_png(png, log_page=page_num)
+    with _page_slot():
+        png = _render_page(pdf_path, page_num)
+        if png is None:
+            return PageOcrResult(
+                "",
+                0.0,
+                request_succeeded=False,
+                error="render_failed",
+                confidence_reported=False,
+            )
+        return _parse_png(png, log_page=page_num)
 
 
 def ocr_page_block_sync(pdf_path: str, page_numbers: Sequence[int]) -> dict[int, PageOcrResult]:
@@ -850,8 +976,10 @@ def ocr_page_block_sync(pdf_path: str, page_numbers: Sequence[int]) -> dict[int,
     empty text ran and came back blank, which is a different — cheaper —
     situation. Returns ``{}`` when the file cannot be opened at all.
 
-    Rendering happens inside the worker so at most PDF_OCR_PAGE_CONCURRENCY
-    page PNGs are resident, whatever OCR_PAGES_PER_BATCH is set to.
+    Rendering happens inside the worker, under a process-wide page slot
+    (``_page_slot``), so at most PDF_OCR_PAGE_CONCURRENCY page PNGs are
+    resident and in flight per process, whatever OCR_PAGES_PER_BATCH is set
+    to and however many groups run at once (VEN-11).
     """
     _require_config()
     ordered = sorted(set(int(n) for n in page_numbers))
@@ -869,10 +997,11 @@ def ocr_page_block_sync(pdf_path: str, page_numbers: Sequence[int]) -> dict[int,
         return {}
 
     def _one(page_number: int) -> tuple[int, PageOcrResult | None]:
-        png = _render_page(pdf_path, page_number)
-        if png is None:
-            return page_number, None
-        return page_number, _parse_png(png, log_page=page_number)
+        with _page_slot():
+            png = _render_page(pdf_path, page_number)
+            if png is None:
+                return page_number, None
+            return page_number, _parse_png(png, log_page=page_number)
 
     workers = max(1, min(page_concurrency(), len(ordered)))
     with ThreadPoolExecutor(max_workers=workers) as executor:

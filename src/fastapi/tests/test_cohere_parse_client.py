@@ -390,6 +390,8 @@ class TestFailureModes:
         assert not result.request_succeeded
         assert result.error.startswith("http_429:")
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+        # ...but it is counted: its own marker, distinct from a refusal (VEN-11).
+        assert any(r.getMessage().startswith("COHERE_PARSE_THROTTLED") for r in caplog.records)
 
     def test_transport_error_fails_soft(self, monkeypatch) -> None:
         def boom(model, body):
