@@ -347,6 +347,18 @@ class TestOneFileThreeTables:
         assert note["columns"] == ["Logged_By", "Log_Date"]
         assert "Logged_By" in note["detail"]
 
+    async def test_a_refused_table_does_not_also_list_all_its_columns_as_unread(
+        self, env, monkeypatch,  # noqa: F811
+    ) -> None:
+        """A lithology table with no lithology column is refused with its own
+        warning; a second one naming every column would be noise."""
+        env.conn.preload_collar("TR-01")
+        _serve(monkeypatch, env, "HoleID,From,To,Foo\nTR-01,0,5,x\n")
+
+        await env.run("lithology.csv")
+
+        assert "columns_not_ingested" not in env.codes()
+
     async def test_no_warning_when_every_column_was_read(
         self, env, monkeypatch,  # noqa: F811
     ) -> None:

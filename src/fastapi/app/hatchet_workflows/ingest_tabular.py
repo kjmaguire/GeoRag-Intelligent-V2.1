@@ -2571,10 +2571,13 @@ async def run_ingest_tabular(
                             "rows": comp_stats.get("written", 0),
                             "companion_of": write_type,
                         })
+                    # Only for a table that landed rows. A refused one already has
+                    # its own warning, and listing every column of it as
+                    # "not read" would say the same thing a second, noisier way.
                     unread = [
                         c for c in (getattr(primary_result, "unmapped_columns", None) or [])
                         if c not in claimed_elsewhere
-                    ]
+                    ] if (getattr(primary_result, "records", None) or companion_landed["rows"]) else []
                     note = _columns_not_ingested_warning(
                         label=label, write_type=write_type, columns=unread,
                     )
