@@ -284,7 +284,11 @@ return [
         // `redis-queue` instance (noeviction, AOF) under the staging/prod
         // compose profile. Falls back to the default Redis instance in dev so
         // current Horizon dispatch behaviour is unchanged.
-        // Activate by setting HORIZON_REDIS_CONNECTION=queue in .env.staging.
+        // Activate with REDIS_QUEUE_CONNECTION=queue (config/queue.php →
+        // connections.redis.connection). Corrected 2026-09-29 (LAR-17): this
+        // used to say HORIZON_REDIS_CONNECTION=queue, which names a queue
+        // connection that does not exist and stops Horizon. Not set in AWS,
+        // where `default` and this connection resolve to the same Redis/DB 0.
         'queue' => [
             'host' => env('REDIS_QUEUE_HOST', env('REDIS_HOST', '127.0.0.1')),
             'username' => env('REDIS_QUEUE_USERNAME', env('REDIS_USERNAME')),
