@@ -42,11 +42,13 @@ import logging
 import os
 import re
 import uuid
+from dataclasses import dataclass
 
 import asyncpg
 
 from app import ingest_status as _ingest_status
 from app.db.dsn import build_dsn
+from app.db.scoped_pool import bind_workspace_scope
 
 log = logging.getLogger("georag.hatchet.progress")
 
@@ -339,6 +341,34 @@ async def broadcast_terminal(
 # ---------------------------------------------------------------------------
 # Per-run API (the new Phase 1 surface)
 # ---------------------------------------------------------------------------
+#: The queued-row INSERT shared by :func:`start_run` and :func:`claim_dispatch`.
+_START_RUN_SQL = """
+    INSERT INTO silver.ingest_progress (
+        run_id, workspace_id, project_id, workflow_run_id,
+        minio_key, filename,
+        status, current_stage, current_step,
+        step_index, total_steps,
+        triggered_by, parent_run_id, recovery_reason,
+        attempt_number,
+        started_at, updated_at
+    )
+    SELECT
+        $1::uuid, $2::uuid, $3::uuid, $4,
+        $5, $6,
+        'queued', NULL, 'queued',
+        0, $7,
+        $8, $9::uuid, $10,
+        COALESCE((
+            SELECT MAX(attempt_number) + 1
+            FROM silver.ingest_progress
+            WHERE workspace_id = $2::uuid AND minio_key = $5
+        ), 1),
+        now(), now()
+    ON CONFLICT (run_id) DO NOTHING
+    RETURNING run_id::text
+"""
+
+
 async def start_run(
     *,
     workspace_id: str,
@@ -379,31 +409,7 @@ async def start_run(
     filename = _filename_from_key(minio_key)
     new_run_id = run_id or str(uuid.uuid4())
 
-    sql = """
-        INSERT INTO silver.ingest_progress (
-            run_id, workspace_id, project_id, workflow_run_id,
-            minio_key, filename,
-            status, current_stage, current_step,
-            step_index, total_steps,
-            triggered_by, parent_run_id, recovery_reason,
-            attempt_number,
-            started_at, updated_at
-        )
-        SELECT
-            $1::uuid, $2::uuid, $3::uuid, $4,
-            $5, $6,
-            'queued', NULL, 'queued',
-            0, $7,
-            $8, $9::uuid, $10,
-            COALESCE((
-                SELECT MAX(attempt_number) + 1
-                FROM silver.ingest_progress
-                WHERE workspace_id = $2::uuid AND minio_key = $5
-            ), 1),
-            now(), now()
-        ON CONFLICT (run_id) DO NOTHING
-        RETURNING run_id::text
-    """
+    sql = _START_RUN_SQL
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -429,6 +435,168 @@ async def start_run(
             extra={"workspace_id": workspace_id, "minio_key": minio_key},
         )
         return None
+
+
+#: Serialises check-and-claim for one file. hashtextextended gives a 64-bit
+#: key, so two different files colliding on the lock is vanishingly rare,
+#: and a collision would only serialise them, not dedupe them.
+_CLAIM_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+
+_ACTIVE_RUN_FOR_KEY_SQL = f"""
+    SELECT run_id::text AS run_id, workflow_run_id
+      FROM silver.ingest_progress
+     WHERE workspace_id = $1::uuid AND minio_key = $2
+       AND status NOT IN ({TERMINAL_STATUS_SQL})
+     ORDER BY attempt_number DESC, started_at DESC
+     LIMIT 1
+"""
+
+
+@dataclass(frozen=True)
+class DispatchClaim:
+    """Outcome of :func:`claim_dispatch`.
+
+    ``claimed`` True: this caller inserted the queued row under ``run_id``
+    and must dispatch, then call :func:`stamp_workflow_run_id` (or
+    :func:`release_undispatched` if the dispatch raised).
+
+    ``claimed`` False: a run for this file is already queued or running, or
+    this exact ``run_id`` was already recorded. ``run_id`` and
+    ``workflow_run_id`` identify that run; do not dispatch again.
+    """
+
+    claimed: bool
+    run_id: str
+    workflow_run_id: str | None = None
+
+
+async def claim_dispatch(
+    *,
+    workspace_id: str,
+    project_id: str,
+    minio_key: str,
+    run_id: str | None = None,
+    triggered_by: str = "upload",
+) -> DispatchClaim:
+    """Record the queued progress row BEFORE dispatch, or report a duplicate.
+
+    HAT-6/HAT-12 (2026-09-29). The trigger endpoints used to dispatch first
+    and insert the progress row second. Laravel wraps every trigger call in
+    ``retry(3, 500)`` with a 15 s timeout, so a slow ``aio_run_no_wait``
+    got re-POSTed. The retry found no row yet and dispatched a second run.
+    Two concurrent ingest_tabular runs each DELETE-then-INSERT in their own
+    READ COMMITTED transaction, and both inserts survive, which doubles the
+    interval rows. ingest_pdf's preflight could also race the endpoint and
+    mint its own row.
+
+    Now, under a per-file advisory lock, in one transaction with the
+    workspace scope bound:
+
+    1. an existing non-terminal row for (workspace, key) is returned as a
+       duplicate;
+    2. otherwise the queued row is inserted under ``run_id``. If that
+       run_id is already recorded, ``ON CONFLICT DO NOTHING`` returns
+       nothing, which is a duplicate too: the same caller-minted id arriving
+       twice is a retry, even after the first run finished.
+
+    Raises on a database error. The caller decides whether to fail open.
+    """
+    if triggered_by not in ALLOWED_TRIGGERS:
+        triggered_by = "upload"
+    new_run_id = run_id or str(uuid.uuid4())
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="progress.claim_dispatch",
+        )
+        await conn.execute(
+            _CLAIM_LOCK_SQL,
+            f"ingest_dispatch:{workspace_id}:{project_id}:{minio_key}",
+        )
+        existing = await conn.fetchrow(
+            _ACTIVE_RUN_FOR_KEY_SQL, workspace_id, minio_key,
+        )
+        if existing is not None:
+            return DispatchClaim(
+                claimed=False,
+                run_id=existing["run_id"],
+                workflow_run_id=existing["workflow_run_id"],
+            )
+        inserted = await conn.fetchrow(
+            _START_RUN_SQL,
+            new_run_id,
+            workspace_id,
+            project_id,
+            None,
+            minio_key,
+            _filename_from_key(minio_key),
+            TOTAL_STEPS,
+            triggered_by,
+            None,
+            None,
+        )
+        if inserted is None:
+            prior = await conn.fetchrow(
+                "SELECT workflow_run_id FROM silver.ingest_progress "
+                "WHERE run_id = $1::uuid",
+                new_run_id,
+            )
+            return DispatchClaim(
+                claimed=False,
+                run_id=new_run_id,
+                workflow_run_id=prior["workflow_run_id"] if prior else None,
+            )
+    return DispatchClaim(claimed=True, run_id=new_run_id)
+
+
+async def stamp_workflow_run_id(*, run_id: str, workflow_run_id: str | None) -> None:
+    """Attach the Hatchet run id to a row claimed before dispatch.
+
+    Only fills a NULL, so a workflow that already stamped its own id (the
+    run started before this UPDATE landed) is never overwritten.
+    Best-effort, like every writer here.
+    """
+    if not workflow_run_id:
+        return
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE silver.ingest_progress "
+                "SET workflow_run_id = $2, updated_at = now() "
+                "WHERE run_id = $1::uuid AND workflow_run_id IS NULL",
+                run_id, workflow_run_id,
+            )
+    except Exception as e:
+        log.warning(
+            "progress.stamp_workflow_run_id failed run=%s: %s", run_id, e,
+            extra={"run_id": run_id, "workflow_run_id": workflow_run_id},
+        )
+
+
+async def release_undispatched(*, run_id: str) -> None:
+    """Remove a claimed row whose dispatch raised.
+
+    Nothing was queued in Hatchet, so the row would sit at 'queued' until
+    the stale sweep timed it out. Worse, a caller-minted run_id would make
+    Laravel's own retry of the failed request look like a duplicate. The
+    guard (still queued, no workflow_run_id) means a row a worker has
+    already touched is never removed.
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM silver.ingest_progress "
+                "WHERE run_id = $1::uuid AND status = 'queued' "
+                "AND workflow_run_id IS NULL",
+                run_id,
+            )
+    except Exception as e:
+        log.warning(
+            "progress.release_undispatched failed run=%s: %s", run_id, e,
+            extra={"run_id": run_id},
+        )
 
 
 async def mark_stage_started(

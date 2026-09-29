@@ -217,16 +217,34 @@ class TestDispatchTimeProgressRowsExistForEveryWorkflow:
         ],
     )
     def test_each_trigger_records_the_dispatch(self, workflow: str) -> None:
-        block = re.search(
-            rf"ref = await {workflow}\.aio_run_no_wait\(payload\)(.*?)return ",
+        # HAT-6/HAT-12 (2026-09-29): every trigger dispatches through
+        # _claim_and_dispatch, which writes the row BEFORE the dispatch.
+        assert re.search(
+            rf"_claim_and_dispatch\(\s*{workflow}, payload",
+            self._TRIGGER_SRC,
+        ), (
+            f"{workflow}'s trigger does not go through _claim_and_dispatch, so "
+            "it dispatches without creating an ingest_progress row — a "
+            "queue-saturation cancellation before the first task body leaves "
+            "no trace for the UI, the on_failure hook, or the nightly sweep."
+        )
+        assert f"await {workflow}.aio_run_no_wait(" not in self._TRIGGER_SRC, (
+            f"{workflow} is dispatched directly somewhere in the router"
+        )
+
+    def test_the_row_is_claimed_before_the_dispatch(self) -> None:
+        helper = re.search(
+            r"async def _claim_and_dispatch\((.*?)\n\n\n",
             self._TRIGGER_SRC,
             re.S,
         )
-        assert block, f"no dispatch block found for {workflow}"
-        body = block.group(1)
-        assert "_record_dispatch" in body or "start_run" in body, (
-            f"{workflow}'s trigger dispatches without creating an "
-            "ingest_progress row — a queue-saturation cancellation before the "
-            "first task body leaves no trace for the UI, the on_failure hook, "
-            "or the nightly sweep."
+        assert helper, "no _claim_and_dispatch helper in shadow_trigger.py"
+        body = helper.group(1)
+        claimed_path = body[body.index("if not claim.claimed:"):]
+        assert "claim_dispatch(" in body[: body.index("if not claim.claimed:")]
+        assert "workflow.aio_run_no_wait(payload)" in claimed_path, (
+            "the claimed path must dispatch only after the claim"
+        )
+        assert "release_undispatched" in claimed_path, (
+            "a dispatch that raises must take its claimed row back out"
         )

@@ -19,6 +19,7 @@ tests/test_ingest_progress_state_machine.py).
 from __future__ import annotations
 
 import pathlib
+import re
 
 import pytest
 from georag_geoparsers._drill_schema import (
@@ -345,7 +346,9 @@ def test_ingest_zip_archive_routes_every_tabular_extension_to_ingest_tabular():
         "ingest_zip_archive._ingest_one must route every tabular extension "
         "through one branch, not just .csv"
     )
-    assert "ingest_tabular.aio_run_no_wait" in src
+    # Dispatched through _dispatch_member since HAT-4 (2026-09-29), which
+    # writes the member's own progress row before the dispatch.
+    assert re.search(r"_dispatch_member\(\s*ingest_tabular,", src)
 
     # The counts dict is built from _COUNT_KEYS (2026-09-02) rather than a
     # literal, so the bucket is checked there — the source no longer

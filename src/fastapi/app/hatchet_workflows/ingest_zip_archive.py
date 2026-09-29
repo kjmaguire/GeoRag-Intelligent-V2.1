@@ -73,6 +73,7 @@ import logging
 import os
 import shutil
 import tempfile
+import uuid
 import zipfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -316,10 +317,16 @@ def _wait_timeout_s() -> float:
 
 @dataclass(frozen=True)
 class _MemberRun:
-    """A child ingest_tabular run this archive started."""
+    """A child run this archive started.
+
+    ``run_id`` is the Hatchet workflow run id (what ``_await_runs`` polls).
+    ``progress_run_id`` is the member's own silver.ingest_progress row,
+    written before dispatch by ``_dispatch_member``.
+    """
 
     name: str
     run_id: str
+    progress_run_id: str | None = None
 
 
 @dataclass
@@ -348,13 +355,76 @@ async def _run_status(run_id: str) -> str | None:
     return str(raw).upper() if raw is not None else None
 
 
-def _track_run(dispatched: list[_MemberRun] | None, name: str, ref: Any) -> None:
+def _track_run(
+    dispatched: list[_MemberRun] | None,
+    name: str,
+    ref: Any,
+    progress_run_id: str | None = None,
+) -> None:
     """Remember a child run so the archive can wait for it."""
     if dispatched is None:
         return
     run_id = getattr(ref, "workflow_run_id", None)
     if run_id:
-        dispatched.append(_MemberRun(name=name, run_id=str(run_id)))
+        dispatched.append(
+            _MemberRun(name=name, run_id=str(run_id), progress_run_id=progress_run_id),
+        )
+
+
+async def _dispatch_member(
+    workflow: Any,
+    payload: Any,
+    *,
+    archive: IngestZipArchiveInput,
+    member_name: str,
+    children: list[_MemberRun] | None,
+) -> tuple[Any, str]:
+    """Dispatch one extracted member with its own progress row (HAT-4).
+
+    Every branch used to call ``aio_run_no_wait`` bare: no progress row, no
+    run_id. A PDF, TIFF or spatial member that Hatchet cancelled before its
+    body ran (schedule_timeout, a worker kill) therefore left no
+    ingest_progress row at all. The archive still counted it as dispatched,
+    and nothing could retry it, because the stale sweep and nightly Tier 1
+    both work from progress rows. That is the Cameco failure mode
+    ``shadow_trigger`` has closed for direct uploads since 2026-06-02.
+
+    Tabular members had the other half of the problem. With no run_id,
+    ingest_tabular minted a fresh id per ATTEMPT, so a killed attempt 1 left
+    a ``started`` row the stale sweep later timed out and re-dispatched, a
+    third ingest of a file whose retry had already succeeded.
+
+    So, per member: mint a run_id, write the queued row under it, pass it
+    in the input where the workflow takes one (tabular / spatial /
+    well_logs upsert the same row on every attempt; ingest_pdf and
+    tiff_normalize adopt it through ``lookup_active_run_id``), dispatch,
+    then stamp the Hatchet id so the stale sweep can ask the engine whether
+    the run is alive.
+
+    Returns ``(ref, progress_run_id)``.
+    """
+    progress_run_id = str(uuid.uuid4())
+    if "run_id" in type(payload).model_fields:
+        payload = payload.model_copy(update={"run_id": progress_run_id})
+    recorded = await ingest_progress.start_run(
+        workspace_id=archive.workspace_id,
+        project_id=archive.project_id,
+        minio_key=payload.minio_key,
+        triggered_by="upload",
+        run_id=progress_run_id,
+    )
+    try:
+        ref = await workflow.aio_run_no_wait(payload)
+    except BaseException:
+        if recorded:
+            await ingest_progress.release_undispatched(run_id=progress_run_id)
+        raise
+    await ingest_progress.stamp_workflow_run_id(
+        run_id=progress_run_id,
+        workflow_run_id=getattr(ref, "workflow_run_id", None),
+    )
+    _track_run(children, member_name, ref, progress_run_id)
+    return ref, progress_run_id
 
 
 async def _await_runs(
@@ -945,6 +1015,8 @@ async def run_zip_ingest(
                 wait_warnings: list[dict[str, str]] = []
                 #: Every ingest_tabular child run started, in dispatch order.
                 dispatched_runs: list[_MemberRun] = []
+                #: Every child run of ANY workflow, for the summary (HAT-4).
+                member_runs: list[_MemberRun] = []
 
                 # Collar producers first, dependents (interval tables, LAS)
                 # after the producers' runs have finished — module docstring.
@@ -1023,6 +1095,7 @@ async def run_zip_ingest(
                             counts=counts,
                             dispatched=dispatched_runs,
                             member_warnings=member_warnings,
+                            children=member_runs,
                         )
 
                         # This used to read `if ext not in ("skipped",)`.
@@ -1217,6 +1290,15 @@ async def run_zip_ingest(
         "errors_sample": errors[:20],  # cap sample to keep payload small
         "derive_intervals": derive_intervals_summary,
         "dispatch_plan": {"phase1": len(producers), "phase2": len(dependents)},
+        # Every child run, whatever its workflow, with its own progress row.
+        "member_runs": [
+            {
+                "name": m.name,
+                "workflow_run_id": m.run_id,
+                "progress_run_id": m.progress_run_id,
+            }
+            for m in member_runs
+        ],
         "warnings": [
             *_member_warning_summaries(member_warnings),
             *wait_warnings,
@@ -1350,6 +1432,7 @@ async def _ingest_one(
     counts: dict[str, int],
     dispatched: list[_MemberRun] | None = None,
     member_warnings: list[dict[str, str]] | None = None,
+    children: list[_MemberRun] | None = None,
 ) -> None:
     """Route a single extracted file to its ingester.
 
@@ -1361,6 +1444,9 @@ async def _ingest_one(
     caller can wait for them; ``member_warnings`` collects per-file warnings
     (LAS location, invalid STOP) for the caller to summarise. Both are
     optional so a bare call still works.
+
+    ``children`` collects EVERY child run started (all workflows), each
+    with its own progress row; see ``_dispatch_member``.
     """
 
     if ext in ("las",):
@@ -1480,7 +1566,8 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         tabular_key = f"tabular/{input.project_id}/{ts}_{safe_name}"
         await _put_member(store, tabular_key, file_path)
-        tabular_ref = await ingest_tabular.aio_run_no_wait(
+        tabular_ref, tabular_run_id = await _dispatch_member(
+            ingest_tabular,
             IngestTabularInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
@@ -1488,9 +1575,10 @@ async def _ingest_one(
                 # Forwarded, not defaulted: without this the member is
                 # written as EPSG:32613 wherever it actually came from.
                 source_epsg=input.source_epsg,
-            )
+            ),
+            archive=input, member_name=file_path.name, children=children,
         )
-        _track_run(dispatched, file_path.name, tabular_ref)
+        _track_run(dispatched, file_path.name, tabular_ref, tabular_run_id)
         # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch below
         # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
         await asyncio.sleep(0.25)
@@ -1502,14 +1590,16 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         tiff_key = f"tiff/{input.project_id}/{ts}_{safe_name}"
         tiff_size = await _put_member(store, tiff_key, file_path)
-        await tiff_normalize.aio_run_no_wait(
+        await _dispatch_member(
+            tiff_normalize,
             TiffNormalizeInput(
                 workspace_id=input.workspace_id,  # type: ignore[arg-type]
                 project_id=input.project_id,
                 minio_key=tiff_key,
                 file_size=tiff_size,
                 correlation_token=f"zip-{input.run_id}-{file_path.name}",
-            )
+            ),
+            archive=input, member_name=file_path.name, children=children,
         )
         # F7 (2026-08-11) — throttle the fan-out. An unthrottled burst of
         # dispatches saturates the GROUP_ROUND_ROBIN concurrency queue and
@@ -1524,14 +1614,16 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         pdf_key = f"reports/{input.project_id}/{ts}_{safe_name}"
         pdf_size = await _put_member(store, pdf_key, file_path)
-        await ingest_pdf.aio_run_no_wait(
+        await _dispatch_member(
+            ingest_pdf,
             IngestPdfInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
                 minio_key=pdf_key,
                 file_size=pdf_size,
                 correlation_token=f"zip-{input.run_id}-{file_path.name}",
-            )
+            ),
+            archive=input, member_name=file_path.name, children=children,
         )
         # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch above
         # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
@@ -1581,13 +1673,15 @@ async def _ingest_one(
         finally:
             if payload_path != file_path:
                 payload_path.unlink(missing_ok=True)
-        await ingest_spatial.aio_run_no_wait(
+        await _dispatch_member(
+            ingest_spatial,
             IngestSpatialInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
                 minio_key=spatial_key,
                 source_epsg=input.source_epsg,
-            )
+            ),
+            archive=input, member_name=file_path.name, children=children,
         )
         # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch above
         # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
@@ -1614,15 +1708,17 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         table_key = f"tables/{input.project_id}/{ts}_{safe_name}"
         await _put_member(store, table_key, file_path)
-        table_ref = await ingest_tabular.aio_run_no_wait(
+        table_ref, table_run_id = await _dispatch_member(
+            ingest_tabular,
             IngestTabularInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
                 minio_key=table_key,
                 source_epsg=input.source_epsg,
-            )
+            ),
+            archive=input, member_name=file_path.name, children=children,
         )
-        _track_run(dispatched, file_path.name, table_ref)
+        _track_run(dispatched, file_path.name, table_ref, table_run_id)
         await asyncio.sleep(0.25)
         counts["tabular"] += 1
 
