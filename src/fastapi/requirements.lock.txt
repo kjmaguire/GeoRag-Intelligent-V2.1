@@ -691,7 +691,7 @@ websockets==15.0.1
     #   langgraph-sdk
     #   langsmith
     #   uvicorn
-wrapt==1.17.3
+wrapt==2.4.1
     # via
     #   aiobotocore
     #   deprecated
