@@ -33,6 +33,7 @@ from georag_geoparsers._csv_io import (
 from georag_geoparsers._drill_schema import SAMPLE_ALIASES, SAMPLE_REQUIRED
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
+from georag_geoparsers._optional_enum import BlankedValues, canonical_choice
 from georag_geoparsers._unit_ambiguity import (
     detect_long_format_units,
     detect_wide_format,
@@ -510,11 +511,19 @@ def _validate_row(
     assay_cols: list,
     qaqc_col_present: bool,
     row_warnings: list,
+    blanked: BlankedValues | None = None,
 ) -> tuple:
     """Validate a single raw row dict (keyed by canonical names + original assay col names).
 
     Returns (record, None) on success or (None, skip_entry) on failure.
     *row_warnings* is mutated in-place with per-row soft warnings.
+
+    An unrecognised OPTIONAL ``qaqc_type`` is set to None and recorded in
+    *blanked*; it does not reject the row and it is NOT then re-inferred as
+    "Primary" - a value the lab wrote that we cannot read must not quietly
+    become a plain primary sample (a "CRM" treated as primary would skew
+    every assay statistic). ``sample_type`` is a REQUIRED field and still
+    rejects.
     """
     # --- Required field presence ---
     for req in REQUIRED_FIELDS:
@@ -606,23 +615,24 @@ def _validate_row(
 
     # --- qaqc_type: validate explicit value or detect by prefix ---
     qaqc = record.get("qaqc_type")
-    if qaqc is not None and qaqc not in VALID_QAQC_TYPES:
-        return None, {
-            "row": row_num,
-            "code": _CODE_INVALID_QAQC,
-            "reason": (
-                f"row {row_num}: qaqc_type '{qaqc}' not in "
-                f"allowed set {sorted(VALID_QAQC_TYPES)}"
-            ),
-            "raw": raw,
-            "expected": f"one of {sorted(VALID_QAQC_TYPES)}",
-            "actual": {"value": qaqc},
-            "suggestion": (
-                "Map via COLUMN_ALIASES or consult the lab."
-            ),
-        }
+    qaqc_blanked = False
+    if qaqc is not None:
+        if not qaqc.strip():
+            qaqc = None
+            record["qaqc_type"] = None
+        else:
+            canonical_qaqc = canonical_choice(qaqc, VALID_QAQC_TYPES)
+            if canonical_qaqc is None:
+                if blanked is not None:
+                    blanked.add("qaqc_type", qaqc)
+                qaqc = None
+                qaqc_blanked = True
+                record["qaqc_type"] = None
+            else:
+                qaqc = canonical_qaqc
+                record["qaqc_type"] = canonical_qaqc
 
-    if not qaqc_col_present or qaqc is None:
+    if not qaqc_blanked and (not qaqc_col_present or qaqc is None):
         # Attempt prefix-based detection from sample_id or hole_id
         probe_id = record.get("sample_id") or record.get("hole_id")
         detected = _detect_qaqc_type(probe_id, qaqc)
@@ -944,13 +954,15 @@ def parse_csv_samples(
     # record so long-format unit-ambiguity flags can be re-aligned after
     # validation drops invalid rows.
     pivot_indices_kept: list[int] = []
+    blanked = BlankedValues()
 
     rows_as_dicts = df_trimmed.to_dicts()
     for pivot_idx, raw in enumerate(rows_as_dicts):
         i = pivot_idx + 2  # 1-based CSV line (header is line 1)
         row_warnings: list = []
         record, skip_entry = _validate_row(
-            i, raw, column_map, assay_cols, qaqc_col_present, row_warnings
+            i, raw, column_map, assay_cols, qaqc_col_present, row_warnings,
+            blanked,
         )
         global_warnings.extend(row_warnings)
         if record is not None:
@@ -980,6 +992,14 @@ def parse_csv_samples(
 
     valid_rows = len(records)
     skipped_rows = len(skipped)
+
+    blanked_warning = blanked.as_warning(parser="csv_sample")
+    if blanked_warning is not None:
+        global_warnings.append(blanked_warning)
+        logger.warning(
+            "csv_sample: %d optional value(s) blanked (%s)",
+            blanked.total, ", ".join(blanked_warning["fields"]),
+        )
 
     # CC-01 Item 1 Slice 2 — compute per-record unit ambiguity. Wide-format
     # detector inspects each record's commodity_assays + assay column names;

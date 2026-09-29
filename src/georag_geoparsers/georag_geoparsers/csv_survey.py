@@ -29,6 +29,7 @@ from georag_geoparsers._dip_convention import DipConvention, detect_dip_conventi
 from georag_geoparsers._drill_schema import SURVEY_ALIASES, SURVEY_REQUIRED
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
+from georag_geoparsers._optional_enum import BlankedValues, canonical_choice
 from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,10 @@ REQUIRED_FIELDS: frozenset = SURVEY_REQUIRED
 # Numeric fields that must be castable to float
 NUMERIC_FIELDS: frozenset = frozenset({"depth", "azimuth", "dip"})
 
-# Valid survey methods — SME-defined list (update via config if scope grows)
+# Valid survey methods — SME-defined list (update via config if scope grows).
+# survey_method is OPTIONAL: a value outside this list is blanked (the writer
+# then records "unknown") and reported as ``optional_values_blanked``; it does
+# not reject the station.
 VALID_SURVEY_METHODS: frozenset = frozenset({"Reflex", "Gyro", "Magnetic", "Acid Test"})
 
 # Range checks
@@ -126,12 +130,16 @@ def _validate_row(
     raw: dict,
     column_map: dict,
     dip_convention: DipConvention,
+    blanked: BlankedValues | None = None,
 ) -> tuple:
     """Validate a single raw row dict (keyed by canonical names).
 
     Returns (record, None) on success or (None, skip_entry) on failure.
     skip_entry includes extended diagnostic fields per Sprint 2 contract:
       expected, actual, suggestion.
+
+    An unrecognised optional ``survey_method`` is set to None and recorded in
+    *blanked*; it never rejects the station.
     """
     # --- Required field presence ---
     for req in REQUIRED_FIELDS:
@@ -200,23 +208,19 @@ def _validate_row(
                 ),
             }
 
-    # --- Survey method validation ---
+    # --- Survey method (optional): blank, never reject ---
     method = record.get("survey_method")
-    if method is not None and method not in VALID_SURVEY_METHODS:
-        return None, {
-            "row": row_num,
-            "code": _CODE_INVALID_METHOD,
-            "reason": (
-                f"row {row_num}: survey_method '{method}' not in "
-                f"allowed set {sorted(VALID_SURVEY_METHODS)}"
-            ),
-            "raw": raw,
-            "expected": f"one of {sorted(VALID_SURVEY_METHODS)}",
-            "actual": {"value": method},
-            "suggestion": (
-                "Map via COLUMN_ALIASES or consult the survey instrument vendor."
-            ),
-        }
+    if method is not None:
+        if not method.strip():
+            record["survey_method"] = None
+        else:
+            canonical = canonical_choice(method, VALID_SURVEY_METHODS)
+            if canonical is None:
+                record["survey_method"] = None
+                if blanked is not None:
+                    blanked.add("survey_method", method)
+            else:
+                record["survey_method"] = canonical
 
     # --- hole_id canonicalization ---
     record["hole_id_canonical"] = canonicalize(record.get("hole_id"))
@@ -423,10 +427,11 @@ def parse_csv_surveys(
 
     records: list = []
     skipped: list = []
+    blanked = BlankedValues()
 
     rows_as_dicts = df_trimmed.to_dicts()
     for i, raw in enumerate(rows_as_dicts, start=2):
-        record, skip_entry = _validate_row(i, raw, column_map, dip_convention)
+        record, skip_entry = _validate_row(i, raw, column_map, dip_convention, blanked)
         if record is not None:
             records.append(record)
         else:
@@ -444,6 +449,14 @@ def parse_csv_surveys(
 
     valid_rows = len(records)
     skipped_rows = len(skipped)
+
+    blanked_warning = blanked.as_warning(parser="csv_survey")
+    if blanked_warning is not None:
+        global_warnings.append(blanked_warning)
+        logger.warning(
+            "csv_survey: %d optional value(s) blanked (%s)",
+            blanked.total, ", ".join(blanked_warning["fields"]),
+        )
 
     # --- hole_id collision detection ---
     all_raw_hole_ids = [r["hole_id"] for r in records if r.get("hole_id")]

@@ -44,6 +44,12 @@ PARSER_VERSION = "1.2.0"  # 2026-05-23 — added enumerate_sheets for multi-shee
 # Supported sheet types map directly to the existing CSV parsers.
 SheetType = Literal["collar", "survey", "lithology", "sample"]
 
+#: Codes of parser warnings that describe the data (not the transport) and
+#: are forwarded from the CSV parser to the workbook result.
+_FORWARDED_PARSER_WARNINGS = frozenset({
+    "optional_values_blanked",
+})
+
 # Extension sets for routing to the correct read backend.
 _XLSX_EXTS = frozenset({".xlsx", ".xlsm"})
 _XLS_EXTS = frozenset({".xls"})
@@ -582,6 +588,15 @@ def parse_xlsx_sheet(
         assay_columns = getattr(result, "assay_columns", [])
     else:
         raise ValueError(f"xlsx_parser: unknown sheet_type '{sheet_type}'")
+
+    # The CSV parsers' own warnings are NOT all forwarded: their encoding and
+    # delimiter notes describe the in-memory buffer built above, not the
+    # workbook. The ones about the DATA are, because the CSV path surfaces
+    # them and a workbook must not be the quieter way to lose a value.
+    extra_warnings.extend(
+        w for w in (getattr(result, "warnings", None) or [])
+        if isinstance(w, dict) and w.get("code") in _FORWARDED_PARSER_WARNINGS
+    )
 
     # Populate source_col_map now that the CSV parser has resolved column aliases.
     provenance["source_col_map"] = result.column_map or {}

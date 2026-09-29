@@ -25,6 +25,7 @@ from georag_geoparsers._csv_io import (
 from georag_geoparsers._drill_schema import LITHOLOGY_ALIASES, LITHOLOGY_REQUIRED
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
+from georag_geoparsers._optional_enum import BlankedValues, canonical_choice
 from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,10 @@ REQUIRED_FIELDS: frozenset = LITHOLOGY_REQUIRED
 # Numeric fields that must be castable to float
 NUMERIC_FIELDS: frozenset = frozenset({"from_depth", "to_depth", "rqd", "recovery"})
 
-# Categorical validation sets (None/absent values are allowed)
+# Categorical vocabularies for the OPTIONAL descriptive columns. A value outside
+# its set does NOT reject the row: the field is blanked and the parse records an
+# ``optional_values_blanked`` warning (see _optional_enum for the decision).
+# Required fields (hole id, from/to, lithology code) still reject.
 VALID_GRAIN_SIZES: frozenset = frozenset({"Fine", "Medium", "Coarse", "Very Coarse"})
 VALID_HARDNESS: frozenset = frozenset({"Soft", "Medium", "Hard", "Very Hard"})
 VALID_WEATHERING: frozenset = frozenset({"Fresh", "Slight", "Moderate", "High", "Complete"})
@@ -63,7 +67,7 @@ _CODE_NUMERIC_CAST = "numeric_cast_failed"
 _CODE_DEPTH_ORDER = "depth_order_invalid"
 _CODE_DEPTH_NEG = "depth_negative"
 _CODE_RANGE = "range_check_failed"
-_CODE_CATEGORICAL = "invalid_categorical_value"
+_CODE_CATEGORICAL = "invalid_categorical_value"  # retained: no longer emitted for optional fields
 _CODE_DECIMAL_COMMA = "decimal_comma_detected"
 
 
@@ -136,16 +140,29 @@ def _cast_float(value) -> float:
         return None
 
 
+#: Optional descriptive fields and the vocabulary each is checked against.
+_OPTIONAL_ENUMS: dict = {
+    "grain_size": VALID_GRAIN_SIZES,
+    "hardness": VALID_HARDNESS,
+    "weathering": VALID_WEATHERING,
+}
+
+
 def _validate_row(
     row_num: int,
     raw: dict,
     column_map: dict,
+    blanked: BlankedValues | None = None,
 ) -> tuple:
     """Validate a single raw row dict (keyed by canonical names).
 
     Returns (record, None) on success or (None, skip_entry) on failure.
     skip_entry includes extended diagnostic fields per Sprint 2 contract:
       expected, actual, suggestion.
+
+    An optional enum-like field (grain_size / hardness / weathering) whose
+    value is outside its vocabulary is set to None and recorded in
+    *blanked*; it never rejects the row.
     """
     # --- Required field presence ---
     for req in REQUIRED_FIELDS:
@@ -236,51 +253,21 @@ def _validate_row(
                 "suggestion": f"Check '{field_name}' units; expected range [{lo}, {hi}].",
             }
 
-    # --- Categorical validations (optional fields) ---
-    grain = record.get("grain_size")
-    if grain is not None and grain not in VALID_GRAIN_SIZES:
-        return None, {
-            "row": row_num,
-            "code": _CODE_CATEGORICAL,
-            "reason": (
-                f"row {row_num}: grain_size '{grain}' not in "
-                f"allowed set {sorted(VALID_GRAIN_SIZES)}"
-            ),
-            "raw": raw,
-            "expected": f"one of {sorted(VALID_GRAIN_SIZES)}",
-            "actual": {"value": grain},
-            "suggestion": "Map via COLUMN_ALIASES or consult the geologist.",
-        }
-
-    hardness = record.get("hardness")
-    if hardness is not None and hardness not in VALID_HARDNESS:
-        return None, {
-            "row": row_num,
-            "code": _CODE_CATEGORICAL,
-            "reason": (
-                f"row {row_num}: hardness '{hardness}' not in "
-                f"allowed set {sorted(VALID_HARDNESS)}"
-            ),
-            "raw": raw,
-            "expected": f"one of {sorted(VALID_HARDNESS)}",
-            "actual": {"value": hardness},
-            "suggestion": "Map via COLUMN_ALIASES or consult the geologist.",
-        }
-
-    weathering = record.get("weathering")
-    if weathering is not None and weathering not in VALID_WEATHERING:
-        return None, {
-            "row": row_num,
-            "code": _CODE_CATEGORICAL,
-            "reason": (
-                f"row {row_num}: weathering '{weathering}' not in "
-                f"allowed set {sorted(VALID_WEATHERING)}"
-            ),
-            "raw": raw,
-            "expected": f"one of {sorted(VALID_WEATHERING)}",
-            "actual": {"value": weathering},
-            "suggestion": "Map via COLUMN_ALIASES or consult the geologist.",
-        }
+    # --- Categorical validations (optional fields): blank, never reject ---
+    for field_name, valid in _OPTIONAL_ENUMS.items():
+        value = record.get(field_name)
+        if value is None:
+            continue
+        if not value.strip():
+            record[field_name] = None
+            continue
+        canonical = canonical_choice(value, valid)
+        if canonical is None:
+            record[field_name] = None
+            if blanked is not None:
+                blanked.add(field_name, value)
+        else:
+            record[field_name] = canonical
 
     # --- hole_id canonicalization ---
     record["hole_id_canonical"] = canonicalize(record.get("hole_id"))
@@ -446,10 +433,11 @@ def parse_csv_lithology(
 
     records: list = []
     skipped: list = []
+    blanked = BlankedValues()
 
     rows_as_dicts = df_trimmed.to_dicts()
     for i, raw in enumerate(rows_as_dicts, start=2):
-        record, skip_entry = _validate_row(i, raw, column_map)
+        record, skip_entry = _validate_row(i, raw, column_map, blanked)
         if record is not None:
             records.append(record)
         else:
@@ -467,6 +455,14 @@ def parse_csv_lithology(
 
     valid_rows = len(records)
     skipped_rows = len(skipped)
+
+    blanked_warning = blanked.as_warning(parser="csv_lithology")
+    if blanked_warning is not None:
+        global_warnings.append(blanked_warning)
+        logger.warning(
+            "csv_lithology: %d optional value(s) blanked (%s)",
+            blanked.total, ", ".join(blanked_warning["fields"]),
+        )
 
     # --- hole_id collision detection ---
     all_raw_hole_ids = [r["hole_id"] for r in records if r.get("hole_id")]
