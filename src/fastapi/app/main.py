@@ -53,9 +53,6 @@ from app.routers import (
     admin_tier234 as tier234_router,  # Phase H4 §11.1/§11.10 backups/cold-tier ops (trimmed 2026-07-28, task #31)
 )
 from app.routers import answer_runs as answer_runs_router
-from app.routers import (
-    assessment_summary as assessment_summary_router,  # CC-01 Item 5 — assessment report structured summary
-)
 from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
 from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
 from app.routers import completeness as completeness_router  # CC-03 Item 2 — completeness audit
@@ -68,7 +65,6 @@ from app.routers import metrics_ingestion_events as metrics_ingestion_events_rou
 from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
 from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
 from app.routers import outlier_assist as outlier_assist_router
-from app.routers import pdf as pdf_router
 from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
 from app.routers import public_geo_trigger as public_geo_trigger_router
@@ -1166,7 +1162,11 @@ app.include_router(answer_runs_router.router)
 # §04p Phase 1.A — PDF Ingestion Subsystem (Stage 2 render endpoints).
 # No /internal prefix: these endpoints are called by the Pydantic AI agent
 # tools directly, not routed through the Laravel-to-FastAPI internal path.
-app.include_router(pdf_router.router)
+# API-14 — /pdf/* (6 routes) and /assessment_summary/* (2) were removed
+# 2026-09-29: no caller anywhere, and nothing writes the Bronze
+# ``pdfs/{sha256}.pdf`` layout both read, so every call 404'd. The lifespan
+# services they used (render/extract pools, VL, assessment summarizer) are
+# still initialised above; removing those is a separate lifespan change.
 app.include_router(phase0_ops_router.router)
 app.include_router(shadow_trigger_router.router)
 app.include_router(public_geo_trigger_router.router)  # operator "Sync now" for public_geo_sync
@@ -1187,7 +1187,6 @@ app.include_router(tier1_misc_router.k6_router)
 # were deleted in the reader-core trim. See admin_tier234.py's module
 # docstring. tier234_router.ap_router (Kestra channels) was already removed
 # 2026-05-17.
-app.include_router(assessment_summary_router.router)  # CC-01 Item 5 — assessment report structured summary
 app.include_router(maps_router.router)  # CC-01 Item 3 (stub) — map ingest scaffold
 app.include_router(coverage_router.router)  # CC-03 Item 5 — coverage density heatmap
 app.include_router(smdi_router.router)  # SMDI ingestion plan v1.1 Phase 6 — /public-geo/smdi/features
