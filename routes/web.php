@@ -184,8 +184,10 @@ Route::middleware(['auth:sanctum'])->group(function () {
     })
         ->where('slug', '[a-z0-9\-]+')->name('foundry.corpus');
     // Restored 2026-08-17 (reader-core trim reversal, see plan addendum).
+    // LAR-15: collar_id is a uuid column; a hole-ID-shaped link
+    // (/holes/PLS-20-01/detail) used to reach Postgres and 500 (22P02).
     Route::get('/projects/{slug}/holes/{collarId}/detail', [DrillholeDetailController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.drillhole-detail');
+        ->where('slug', '[a-z0-9\-]+')->whereUuid('collarId')->name('foundry.drillhole-detail');
     // Merged 2026-08-19 into /workspace's COMPARE mode. The standalone page
     // was a strictly weaker duplicate: it hydrated collar metadata plus a
     // plain-text lithology list and hardcoded grade_avg / grade_top /
