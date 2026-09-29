@@ -2010,7 +2010,9 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     never silently presented as fully checked when it wasn't.
     """
     from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
+        enforce_claim_citations,
         validate_and_repair,
+        validate_and_repair_with_findings,
     )
     from app.agent.hallucination.layer5_provenance import (  # noqa: PLC0415
         enrich_provenance,
@@ -2032,8 +2034,10 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             logger.debug("agentic_retrieval.validate: layer5 enrichment failed", exc_info=True)
             return resp
 
-    # Layer 2 — typed-output repair (sync, never raises).
-    response = validate_and_repair(state.response)
+    # Layer 2 — typed-output repair (sync, never raises). An invented
+    # citation marker now takes its claim sentence with it and is a finding
+    # (RAG-7), folded into should_retry below like a Layer 5 rejection.
+    response, layer2_findings = validate_and_repair_with_findings(state.response)
 
     # Layer 5 (gate half), restored 2026-09-24 — reject citations whose
     # chunk was not actually retrieved for this query (or carries no
@@ -2050,14 +2054,41 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         response, layer5_gate_warnings = gate_citation_provenance(
             response, state.tool_results
         )
-    except Exception:  # pragma: no cover — defensive
+    except Exception:
+        # FAIL CLOSED (AGT-11). This used to log and carry on with the
+        # citations unchecked and should_retry untouched, so an answer whose
+        # provenance could not be verified shipped as "clean" — while the
+        # Layer 3/4/6 exception path below already failed closed.
         logger.exception(
             "agentic_retrieval.validate: layer5 provenance GATE raised — "
-            "skipping (citations left unchanged)"
+            "failing CLOSED (answer marked unverified on provenance)"
         )
+        layer5_gate_warnings = [
+            "Layer 5: the chunk-provenance gate could not run — citations in "
+            "this answer are UNVERIFIED against the retrieved chunks, not "
+            "confirmed clean."
+        ]
     else:
         if layer5_gate_warnings:
             response = validate_and_repair(response)
+
+    # CLAUDE.md hard rule 4 — every claim carries a citation or is removed
+    # (2026-09-29, RAG-7). Runs after the marker repairs above so it judges
+    # the markers that survived, and before Layers 3/4/6 so they check the
+    # text that will actually ship. Fails closed like the gate above.
+    rule4_findings: list[str] = []
+    try:
+        response, rule4_findings = enforce_claim_citations(response)
+    except Exception:
+        logger.exception(
+            "agentic_retrieval.validate: rule-4 citation enforcement raised — "
+            "failing CLOSED"
+        )
+        rule4_findings = [
+            "Layer 2: citation enforcement could not run — uncited claims in "
+            "this answer were NOT removed; it is unverified, not confirmed clean."
+        ]
+    citation_findings = [*layer2_findings, *layer5_gate_warnings, *rule4_findings]
 
     try:
         response, warnings, should_retry = await run_post_assembly_validation(
@@ -2085,16 +2116,17 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         response = response.model_copy(update={"validation_state": "unverified"})
         return {
             "response": response,
-            "validation_warnings": [*layer5_gate_warnings, _unverified_warning],
+            "validation_warnings": [*citation_findings, _unverified_warning],
         }
 
-    # Layer 5 gate findings are folded in here (not inside
+    # Layer 2 / Layer 5 / rule-4 findings are folded in here (not inside
     # run_post_assembly_validation, which only sees tool_results/text, not
-    # the citations list) and always force should_retry — a rejected
-    # citation is exactly the "fabrication or a bug shipped a wrong source"
-    # case the other guards' should_retry path exists for.
-    warnings = [*layer5_gate_warnings, *warnings]
-    should_retry = should_retry or bool(layer5_gate_warnings)
+    # the citations list) and always force should_retry — an invented or
+    # rejected citation, or a claim removed for carrying none, is exactly
+    # the "fabrication or a bug shipped a wrong source" case the other
+    # guards' should_retry path exists for.
+    warnings = [*citation_findings, *warnings]
+    should_retry = should_retry or bool(citation_findings)
 
     if should_retry:
         warnings = [

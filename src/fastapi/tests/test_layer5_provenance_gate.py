@@ -178,22 +178,92 @@ class TestChunkMembership:
         assert len(gated.citations) == 1
 
 
+#: Realistic ids: a silver.reports UUID and a Qdrant point UUID.
+_REPORT_UUID = "3f1c2a9e-8b7d-4c61-9a0e-2d5b7f4e1c08"
+_OTHER_REPORT_UUID = "9d0e7b3c-1a2f-4e58-8c6d-5b4a3f2e1d09"
+_POINT_UUID = "6b1e0c52-4f7a-4d2b-9c3e-7a8f9d0e1b24"
+
+
 class TestMissingDocumentId:
-    @pytest.mark.parametrize("report_id", ["", "empty", "unknown", "none"])
-    def test_placeholder_report_id_is_rejected(self, report_id: str) -> None:
+    """Restated 2026-09-29 (audit RAG-8).
+
+    This class used to assert that a placeholder report_id is rejected even
+    when the retrieved chunk itself has no document — which is exactly the
+    ADR-0012 structured summary (nl_summaries.py writes document_id NULL by
+    design). Every citation of those passages was deleted and the answer
+    refused. The gate now checks the citation's document against the
+    RETRIEVED chunk's document: a placeholder where the chunk has a real
+    document is still rejected; an orphan passage is gated on membership.
+    """
+
+    @pytest.mark.parametrize("report_id", ["", "empty", "unknown", "none", "None"])
+    def test_placeholder_citing_a_real_document_chunk_is_rejected(
+        self, report_id: str
+    ) -> None:
         doc_result = DocumentSearchResult(
-            chunks=[_chunk("c1", report_id=report_id)],
+            chunks=[_chunk(_POINT_UUID, report_id=_REPORT_UUID)],
             count=1,
             data_source="qdrant (reranked)",
         )
         response = _response(
-            [_citation(_doc_source_id(report_id=report_id, chunk_id="c1"))]
+            [_citation(_doc_source_id(report_id=report_id, chunk_id=_POINT_UUID))]
         )
         gated, warnings = gate_citation_provenance(
             response, tool_results=[("search_documents", doc_result)]
         )
         assert len(warnings) == 1
         assert "no document id" in warnings[0]
+        assert gated.citations[0].source_chunk_id == "provenance-rejected"
+
+    @pytest.mark.parametrize("report_id", ["", "none", "None"])
+    def test_placeholder_for_an_unretrieved_chunk_is_rejected(
+        self, report_id: str
+    ) -> None:
+        response = _response(
+            [_citation(_doc_source_id(report_id=report_id, chunk_id=_POINT_UUID))]
+        )
+        gated, warnings = gate_citation_provenance(response, tool_results=[])
+        assert len(warnings) == 1
+        assert "no document id" in warnings[0]
+
+    def test_orphan_structured_summary_citation_passes(self) -> None:
+        """RAG-8: the chunk was retrieved, and it genuinely has no document
+        (payload report_id None -> source id "georag_reports:None:...")."""
+        doc_result = DocumentSearchResult(
+            chunks=[_chunk(_POINT_UUID, report_id=None)],  # type: ignore[arg-type]
+            count=1,
+            data_source="qdrant (reranked)",
+        )
+        citation = _citation(
+            f"georag_reports:None:section=unknown:chunk={_POINT_UUID}"
+        )
+        response = _response(
+            [citation],
+            text="Hole 36-1085 returned 0.12% eU3O8 from 120-126 m [NI43-1].",
+        )
+        gated, warnings = gate_citation_provenance(
+            response, tool_results=[("search_documents", doc_result)]
+        )
+        assert warnings == []
+        assert gated is response
+
+    def test_a_citation_naming_the_wrong_document_is_rejected(self) -> None:
+        """Tightened in the same change: membership alone used to pass a
+        citation whose report id was not the chunk's own document."""
+        doc_result = DocumentSearchResult(
+            chunks=[_chunk(_POINT_UUID, report_id=_REPORT_UUID)],
+            count=1,
+            data_source="qdrant (reranked)",
+        )
+        response = _response(
+            [_citation(_doc_source_id(report_id=_OTHER_REPORT_UUID, chunk_id=_POINT_UUID))]
+        )
+        gated, warnings = gate_citation_provenance(
+            response, tool_results=[("search_documents", doc_result)]
+        )
+        assert len(warnings) == 1
+        assert _OTHER_REPORT_UUID in warnings[0]
+        assert gated.citations[0].source_chunk_id == "provenance-rejected"
 
 
 class TestAllCitationsRejected:

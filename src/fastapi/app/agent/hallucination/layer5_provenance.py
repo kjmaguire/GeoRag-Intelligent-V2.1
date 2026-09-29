@@ -5,13 +5,16 @@ Architecture reference: Section 04i, Layer 5.
 Purpose
 -------
 Enrich each Citation in a GeoRAGResponse with provenance metadata that traces
-the cited data back to a specific source file in MinIO with its sha256 hash.
+the cited data back to a specific source file in object storage with its
+sha256 hash.
 
 The provenance chain is:
 
   Citation.source_chunk_id ("georag_reports:<report_id>:…")
-    → silver.reports.source_file_sha256
-      → bronze.source_files (file_path, sha256, bucket)
+    → silver.reports (source_object_key, source_file_sha256)
+
+(It used to continue into bronze.source_files, which PDFs never reach and
+whose column names the query had wrong — see ``_REPORT_SOURCE_SQL``.)
 
 Structured silver.* citations (collars, lithology_logs, samples) have no
 per-row source-file linkage yet and are left unenriched — a wrong sha256
@@ -20,8 +23,8 @@ is worse than none.
 This layer runs AFTER assembly and AFTER Layer 2 validation. It does not
 reject or modify the response — it only enriches Citation objects with
 additional metadata for audit purposes. If the provenance lookup fails
-(e.g. the source file is not yet tracked in bronze.source_files), the
-citation is left unchanged and a warning is logged.
+(e.g. the report predates source_file_sha256), the citation is left
+unchanged; a failed query is logged at WARNING.
 
 The enriched data is added to ``Citation.section`` as a human-readable
 provenance string: ``"source: collars/sample_collars.csv (sha256:743495c…)"``.
@@ -39,8 +42,10 @@ rag-expert follow-up)
 :func:`gate_citation_provenance` is the gate. It runs BEFORE enrichment
 (and before Layer 2's second pass — see ``validate_node``) and REJECTS a
 document-chunk citation outright when its ``source_chunk_id`` does not
-resolve to a chunk actually retrieved for THIS query, or carries no
-document id.
+resolve to a chunk actually retrieved for THIS query, names a document
+other than that chunk's own, or carries no document id although the chunk
+has one. A retrieved chunk that genuinely has no document — an ADR-0012
+structured summary — is gated on membership alone (2026-09-29, RAG-8).
 
 A rejected citation is dropped from the response, and — per CLAUDE.md
 hard rule 4 ("every claim must include a source_chunk_id or be
@@ -49,7 +54,7 @@ only the bracket text (``[NI43-1]``) and leaving the sentence
 ("The grade is 1.85 g/t Au.") would ship an uncited claim, which is
 exactly what rule 4 forbids; a rejected citation means the claim it
 backed is unverified, not that the marker alone was cosmetically wrong.
-:func:`_scrub_rejected_sentences` removes each sentence whose ONLY
+:func:`scrub_rejected_markers` removes each sentence whose ONLY
 marker(s) were rejected; a sentence that ALSO carries a surviving valid
 marker keeps the sentence and that marker, with just the rejected
 marker's bracket text removed. If nothing citeable survives — either
@@ -79,12 +84,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import uuid
 from typing import Any
 
 from app.agent.hallucination.citation_markers import (
-    ALL_MARKER_RE,
     CITATION_MARKER_CAPTURE_RE,
     canonical_marker,
+)
+from app.agent.hallucination.claim_sentences import (
+    Unit,
+    drop_units,
 )
 from app.config import settings
 from app.models.rag import Citation, GeoRAGResponse
@@ -102,59 +111,30 @@ _DOC_CHUNK_SOURCE_RE = re.compile(
 
 #: report_id placeholders that mean "no real document id" rather than a
 #: genuine UUID — see _source_chunk_id_for_doc_chunk / DocumentChunk.report_id.
-_NO_REPORT_ID_PLACEHOLDERS: frozenset[str] = frozenset({"", "empty", "unknown", "none"})
+#: "none" is what an f-string makes of a Python None: the ADR-0012 structured
+#: summaries (nl_summaries.py) are written with document_id NULL by design,
+#: so their payload's report_id is None and their source_chunk_id reads
+#: "georag_reports:None:..." (audit 2026-09-29, RAG-8).
+_NO_REPORT_ID_PLACEHOLDERS: frozenset[str] = frozenset(
+    ("", "empty", "unknown", "none", "null")
+)
 
-# Sentence splitter — same simple regex orchestrator_validators.py's
-# completeness guard uses (no nltk/spacy dependency). Duplicated rather
-# than imported: it is private to that module and this file has no other
-# reason to depend on it.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+def _is_placeholder_report_id(report_id: Any) -> bool:
+    return report_id is None or str(report_id).strip().lower() in _NO_REPORT_ID_PLACEHOLDERS
+
 
 #: Cleans up double-spaces left behind after a marker is removed mid-sentence.
 _MULTI_SPACE_RE = re.compile(r"  +")
 
 
-def _is_marker_only_fragment(piece: str) -> bool:
-    """True when ``piece`` is nothing but citation marker(s) and whitespace.
-
-    The prompts have the model emit citations as a trailing bracket AFTER
-    the sentence's closing period ("The grade is 1.85 g/t Au. [NI43-1]"),
-    not before it. ``_SENTENCE_SPLIT_RE`` splits on ``.`` + whitespace, so
-    that shape produces TWO fragments — "The grade is 1.85 g/t Au." and
-    "[NI43-1]" — and a naive per-fragment marker check would never see the
-    marker and the claim in the same unit. ``verify_completeness`` in
-    orchestrator_validators.py has the identical problem and solves it by
-    also checking "does the NEXT sentence open with a marker"; this is the
-    mirror-image fold used by :func:`_fold_trailing_marker_fragments`.
-    """
-    stripped = piece.strip()
-    return bool(stripped) and not ALL_MARKER_RE.sub("", stripped).strip()
-
-
-def _fold_trailing_marker_fragments(pieces: list[str]) -> list[str]:
-    """Fold a marker-only fragment back onto the sentence before it.
-
-    See :func:`_is_marker_only_fragment`. A fragment that is ONLY markers
-    (optionally several, e.g. "[NI43-1] [DATA-2]") is not a sentence of
-    its own — it is the citation for whatever came before it — so it is
-    appended to the previous unit rather than treated as a standalone one.
-    A leading marker-only fragment (no previous unit to fold onto, e.g.
-    the text opens with a marker) is kept as its own unit unchanged.
-    """
-    units: list[str] = []
-    for piece in pieces:
-        if units and _is_marker_only_fragment(piece):
-            units[-1] = f"{units[-1]} {piece}"
-        else:
-            units.append(piece)
-    return units
-
-
-def _scrub_rejected_sentences(
+def scrub_rejected_markers(
     text: str,
     rejected_citation_ids: set[str],
     valid_citation_ids: set[str],
-) -> str:
+    *,
+    proactive_insights_offset: int | None = None,
+) -> tuple[str, int | None, int]:
     """Remove the sentence(s) that carried a REJECTED marker (hard rule 4).
 
     Per-sentence rule:
@@ -166,123 +146,146 @@ def _scrub_rejected_sentences(
       - A rejected marker and NO surviving valid marker → the whole
         sentence is dropped.
 
-    A trailing marker-only fragment ("Claim. [NI43-1]") is folded back
-    onto the sentence it cites before this rule is applied — see
-    :func:`_fold_trailing_marker_fragments` — so the claim and its
-    (rejected) marker are evaluated and removed together. This is a
-    known simplification, not full NLP: a marker that lands at the START
-    of the FOLLOWING sentence together with more prose of its own (e.g.
-    "Claim. [NI43-1] More text.") is attributed to that following
-    sentence, same ambiguity ``verify_completeness`` already accepts.
+    Sentences come from :func:`app.agent.hallucination.claim_sentences.split_units`,
+    which folds a trailing marker-only fragment ("Claim. [NI43-1]") back
+    onto the sentence it cites, does not break on "approx." / "Fig." /
+    "e.g." (RISK-4), and keeps every separator — so the surviving answer
+    keeps its paragraphs, bullets, tables and headings instead of being
+    re-joined onto one line. Known simplification, unchanged: a marker
+    at the START of a following sentence that has prose of its own
+    ("Claim. [NI43-1] More text.") is attributed to that following
+    sentence.
 
-    Uses ``CITATION_MARKER_CAPTURE_RE`` (numeric DATA/NI43/PUB/PGEO
-    markers only, colon or dash form) — the same marker vocabulary
-    ``layer2_typed_output``'s own orphan-stripping matches against.
+    Shared by Layer 5 (rejected provenance) and Layer 2 (invented markers
+    with no Citation behind them). Only the text before
+    ``proactive_insights_offset`` is touched; the returned offset is moved
+    to match.
 
-    Returns the reassembled text (sentences rejoined with a single
-    space — this does not attempt to preserve original paragraph
-    whitespace, same trade-off ``layer2_typed_output.validate_and_repair``
-    accepts for its own cleanup regex).
+    Returns ``(text, proactive_insights_offset, dropped_sentence_count)``.
     """
     if not rejected_citation_ids:
-        return text
+        return text, proactive_insights_offset, 0
 
-    sentences = _fold_trailing_marker_fragments(_SENTENCE_SPLIT_RE.split(text))
-    kept_sentences: list[str] = []
+    def _ids(piece: str) -> list[str]:
+        return [
+            canonical_marker(m.group(1), m.group(3))
+            for m in CITATION_MARKER_CAPTURE_RE.finditer(piece)
+        ]
 
-    for sentence in sentences:
-        matches = list(CITATION_MARKER_CAPTURE_RE.finditer(sentence))
-        if not matches:
-            kept_sentences.append(sentence)
-            continue
+    def _drop(i: int, units: list[Unit]) -> bool:
+        ids = _ids(units[i].text)
+        if not any(cid in rejected_citation_ids for cid in ids):
+            return False
+        return not any(cid in valid_citation_ids for cid in ids)
 
-        canonical_ids = [canonical_marker(m.group(1), m.group(3)) for m in matches]
-        has_rejected = any(cid in rejected_citation_ids for cid in canonical_ids)
-        if not has_rejected:
-            kept_sentences.append(sentence)
-            continue
+    def _rewrite(i: int, units: list[Unit]) -> str:
+        sentence = units[i].text
+        for m in list(CITATION_MARKER_CAPTURE_RE.finditer(sentence)):
+            if canonical_marker(m.group(1), m.group(3)) in rejected_citation_ids:
+                sentence = sentence.replace(m.group(0), "")
+        if sentence == units[i].text:
+            return sentence
+        return _MULTI_SPACE_RE.sub(" ", sentence).strip()
 
-        has_valid = any(cid in valid_citation_ids for cid in canonical_ids)
-        if not has_valid:
-            # Every marker in this sentence is either rejected or unknown,
-            # and at least one is rejected -- nothing here is safe to ship.
-            continue
+    return drop_units(
+        text,
+        _drop,
+        rewrite=_rewrite,
+        proactive_insights_offset=proactive_insights_offset,
+    )
 
-        cleaned = sentence
-        for match, cid in zip(matches, canonical_ids, strict=True):
-            if cid in rejected_citation_ids:
-                cleaned = cleaned.replace(match.group(0), "")
-        cleaned = _MULTI_SPACE_RE.sub(" ", cleaned).strip()
-        if cleaned:
-            kept_sentences.append(cleaned)
 
-    return " ".join(s for s in kept_sentences if s.strip()).strip()
+def _scrub_rejected_sentences(
+    text: str,
+    rejected_citation_ids: set[str],
+    valid_citation_ids: set[str],
+) -> str:
+    """Text-only form of :func:`scrub_rejected_markers` (no insights offset)."""
+    return scrub_rejected_markers(text, rejected_citation_ids, valid_citation_ids)[0]
+
+
+def _retrieved_chunk_reports(tool_results: list[tuple[str, Any]]) -> dict[str, Any]:
+    """chunk_id → report_id for every chunk retrieved for THIS query."""
+    from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
+
+    out: dict[str, Any] = dict()
+    for _name, result in tool_results:
+        if isinstance(result, DocumentSearchResult):
+            for chunk in result.chunks:
+                out[str(chunk.chunk_id)] = getattr(chunk, "report_id", None)
+    return out
 
 
 def gate_citation_provenance(
     response: GeoRAGResponse,
     tool_results: list[tuple[str, Any]],
+    *,
+    rendered_citation_ids: set[str] | frozenset[str] | None = None,
 ) -> tuple[GeoRAGResponse, list[str]]:
     """Layer 5 (gate half): reject citations whose chunk was not retrieved.
 
     For every Citation whose ``source_chunk_id`` matches the document-chunk
-    format (``georag_reports:<report_id>:section=..:chunk=<chunk_id>``),
-    checks two things:
+    format (``georag_reports:<report_id>:section=..:chunk=<chunk_id>``):
 
-      1. ``report_id`` is present and not a known "no document" placeholder
-         — a citation with no document id has no provenance to speak of.
-      2. ``chunk_id`` is a member of the chunk ids ACTUALLY retrieved for
-         this query (every ``DocumentChunk.chunk_id`` across every
-         ``DocumentSearchResult`` in ``tool_results`` — note this is
-         ``state.tool_results`` for the CURRENT turn only; multi-turn
-         history carries no tool results at all, see
-         ``app.agent.multi_turn_resolver.ConversationTurn``, so a chunk
-         that only appeared in an earlier turn is never in this set).
-         Retrieval is already workspace-scoped server-side
-         (``app.agent.tools.search_documents`` resolves and filters on
-         ``workspace_id`` before querying Qdrant — the GI-9 mandatory
-         tenant filter), so membership in this set proves BOTH "this chunk
-         was really retrieved for this query" and, transitively, "this
-         chunk belongs to the caller's workspace." A citation naming a
-         chunk id outside that set could only arise from a bug (stale
-         citations reused across a retry/reissue, or carried over from a
-         previous conversation turn) or an adversarial marker the LLM
-         invented that happens to collide with a real chunk id from
-         elsewhere — either way, it must not ship.
+      1. ``chunk_id`` must be a member of the chunk ids ACTUALLY retrieved
+         for this query (every ``DocumentChunk.chunk_id`` across every
+         ``DocumentSearchResult`` in ``tool_results`` — ``state.tool_results``
+         for the CURRENT turn only; multi-turn history carries no tool
+         results, so a chunk that only appeared in an earlier turn is never
+         in this set). Retrieval is workspace-scoped server-side (GI-9), so
+         membership proves both "retrieved for this query" and, transitively,
+         "belongs to the caller's workspace". A chunk id outside the set can
+         only come from a bug (stale citations reused across a retry, carried
+         over from a previous turn) or an invented marker colliding with a
+         real id — either way it must not ship.
+      2. The citation's ``report_id`` must be the document the retrieved chunk
+         actually belongs to. A mismatch, or a placeholder where the chunk
+         has a real document, is rejected ("carries no document id").
+      3. An ORPHAN passage — a retrieved chunk that genuinely has no document,
+         the ADR-0012 structured summaries built from silver rows
+         (nl_summaries.py, ``document_id`` NULL by design) — is gated on
+         membership alone. Its citation reads ``georag_reports:None:...``
+         because there is no document to name, and rejecting it for that
+         deleted every citation of exactly the passages built to answer
+         "which holes returned >1% U3O8" (audit 2026-09-29, RAG-8). Real
+         document chunks are NOT relaxed: they still need a matching id.
+      4. ``rendered_citation_ids`` (optional): when the caller knows which
+         citation ids were actually rendered into the model's context, a
+         citation that was retrieved but never rendered is rejected too —
+         the model never read it (RAG-20). NOT WIRED on the live path yet:
+         ``validate_node`` does not pass it, because the context renderer
+         does not record what it rendered. Until it does, check 1 cannot
+         catch a citation to a retrieved-but-truncated chunk.
 
     Non-document-chunk citations (DATA, PGEO, ``no-tool-call``, the
     zero-row sentinels) are left untouched — "chunk provenance" does not
-    apply to them; see the module docstring for why ``enrich_provenance``
-    already draws the same line.
+    apply to them; ``enrich_provenance`` draws the same line.
 
     Rejecting a citation also removes the sentence(s) that cited it (see
-    :func:`_scrub_rejected_sentences`) and drops its ``source_chunk_id``
-    from ``response.sources_used`` — a rejected chunk is not "used," it's
-    refused. If nothing citeable survives, the response becomes a typed
-    refusal (see the module docstring's "Gate half" section).
+    :func:`scrub_rejected_markers`) and drops its ``source_chunk_id`` from
+    ``response.sources_used``. If nothing citeable survives, the response
+    becomes a typed refusal (see the module docstring's "Gate half").
 
     Returns ``(response, warnings)``. ``warnings`` is empty and ``response``
     is returned UNCHANGED (same object) when nothing was rejected. Never
-    raises — pure computation over already-fetched objects, no I/O.
+    raises on well-formed input — pure computation, no I/O.
     """
     if not settings.CHUNK_PROVENANCE_GATE_ENABLED:
         return response, []
     if not response.citations:
         return response, []
 
-    from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
-
-    retrieved_chunk_ids: set[str] = {
-        str(chunk.chunk_id)
-        for _name, result in tool_results
-        if isinstance(result, DocumentSearchResult)
-        for chunk in result.chunks
-    }
+    retrieved = _retrieved_chunk_reports(tool_results)
 
     kept: list[Citation] = []
     warnings: list[str] = []
     rejected_citation_ids: set[str] = set()
     rejected_source_chunk_ids: set[str] = set()
+
+    def _reject(citation: Citation, why: str) -> None:
+        warnings.append(f"Layer 5: citation {citation.citation_id} {why} — rejected")
+        rejected_citation_ids.add(citation.citation_id)
+        rejected_source_chunk_ids.add(citation.source_chunk_id)
 
     for citation in response.citations:
         match = _DOC_CHUNK_SOURCE_RE.match(citation.source_chunk_id or "")
@@ -293,24 +296,50 @@ def gate_citation_provenance(
         report_id = match.group("report_id")
         chunk_id = match.group("chunk_id")
 
-        if report_id.lower() in _NO_REPORT_ID_PLACEHOLDERS:
-            warnings.append(
-                f"Layer 5: citation {citation.citation_id} carries no "
-                f"document id (source_chunk_id={citation.source_chunk_id!r}) "
-                f"— rejected"
-            )
-            rejected_citation_ids.add(citation.citation_id)
-            rejected_source_chunk_ids.add(citation.source_chunk_id)
+        if chunk_id not in retrieved:
+            if _is_placeholder_report_id(report_id):
+                _reject(
+                    citation,
+                    f"carries no document id (source_chunk_id="
+                    f"{citation.source_chunk_id!r}) and its chunk was not "
+                    f"retrieved for this query",
+                )
+            else:
+                _reject(
+                    citation,
+                    f"references chunk {chunk_id!r}, which was not retrieved "
+                    f"for this query (stale or cross-tenant citation)",
+                )
             continue
 
-        if chunk_id not in retrieved_chunk_ids:
-            warnings.append(
-                f"Layer 5: citation {citation.citation_id} references chunk "
-                f"{chunk_id!r}, which was not retrieved for this query "
-                f"(stale or cross-tenant citation) — rejected"
+        retrieved_report = retrieved[chunk_id]
+        if _is_placeholder_report_id(report_id):
+            if not _is_placeholder_report_id(retrieved_report):
+                _reject(
+                    citation,
+                    f"carries no document id (source_chunk_id="
+                    f"{citation.source_chunk_id!r}) although chunk "
+                    f"{chunk_id!r} belongs to document {retrieved_report!r}",
+                )
+                continue
+            # Orphan passage (ADR-0012 summary): membership is the gate.
+        elif _is_placeholder_report_id(retrieved_report) or str(retrieved_report) != report_id:
+            _reject(
+                citation,
+                f"names document {report_id!r} but chunk {chunk_id!r} was "
+                f"retrieved from document {retrieved_report!r}",
             )
-            rejected_citation_ids.add(citation.citation_id)
-            rejected_source_chunk_ids.add(citation.source_chunk_id)
+            continue
+
+        if (
+            rendered_citation_ids is not None
+            and citation.citation_id not in rendered_citation_ids
+        ):
+            _reject(
+                citation,
+                f"references chunk {chunk_id!r}, which was retrieved but never "
+                f"rendered into the model's context",
+            )
             continue
 
         kept.append(citation)
@@ -318,9 +347,12 @@ def gate_citation_provenance(
     if not warnings:
         return response, []
 
-    valid_citation_ids = {c.citation_id for c in kept}
-    scrubbed_text = _scrub_rejected_sentences(
-        response.text, rejected_citation_ids, valid_citation_ids
+    valid_citation_ids = set(c.citation_id for c in kept)
+    scrubbed_text, insights_offset, _dropped = scrub_rejected_markers(
+        response.text,
+        rejected_citation_ids,
+        valid_citation_ids,
+        proactive_insights_offset=response.proactive_insights_offset,
     )
     sources_used = [
         s for s in response.sources_used if s not in rejected_source_chunk_ids
@@ -337,6 +369,7 @@ def gate_citation_provenance(
         )
 
         scrubbed_text = build_refusal_text()
+        insights_offset = None
         kept = []
         sources_used = []
 
@@ -373,16 +406,14 @@ def gate_citation_provenance(
     except Exception:  # noqa: BLE001 — metrics must never break the gate
         logger.debug("CHUNK_PROVENANCE_REJECTED_TOTAL increment failed", exc_info=True)
 
-    return (
-        response.model_copy(
-            update={
-                "citations": kept,
-                "text": scrubbed_text,
-                "sources_used": sources_used,
-            }
-        ),
-        warnings,
+    update: dict[str, Any] = dict(
+        citations=kept,
+        text=scrubbed_text,
+        sources_used=sources_used,
+        proactive_insights_offset=insights_offset,
     )
+    return response.model_copy(update=update), warnings
+
 
 # Parse the source_chunk_id to determine which silver table is cited.
 # Patterns:
@@ -395,19 +426,41 @@ _SOURCE_TABLE_RE = re.compile(
 )
 
 # Only georag_reports citations resolve to a SPECIFIC source file today:
-# the source_chunk_id carries the report_id, and silver.reports records
-# the ingested file's sha256 (source_file_sha256 — written by ingest_pdf's
-# INSERT_REPORT_SQL), which joins to bronze.source_files. The silver.*
-# structured kinds have no per-row file linkage yet; the old LIKE-on-
-# file_path lookups just attached the most-recently-ingested file's sha256
-# to EVERY citation — provenance fabrication. Skip, don't guess.
+# the source_chunk_id carries the report_id, and silver.reports itself
+# records where the PDF came from — ``source_object_key`` (the bronze object
+# the report was parsed from, 2026_08_19_030000) and ``source_file_sha256``
+# (2026_04_13_000000), both written by ingest_pdf's INSERT_REPORT_SQL.
+#
+# This used to JOIN bronze.source_files on bf.sha256 and select
+# bf.file_path / bf.sha256 / bf.file_size. None of those columns exist
+# (bronze.source_files has file_sha256, original_filename, seaweedfs_key,
+# file_size_bytes), so every lookup raised UndefinedColumn, the handler
+# below swallowed it at DEBUG, and enrichment never enriched a single
+# citation. Fixing the column names alone would not have helped:
+# bronze.source_files is written by the drill-upload path only, never by
+# ingest_pdf, so no PDF would ever join (audit 2026-09-29, PG-5).
+#
+# The silver.* structured kinds have no per-row file linkage yet; the old
+# LIKE-on-file_path lookups just attached the most-recently-ingested file's
+# sha256 to EVERY citation — provenance fabrication. Skip, don't guess.
 _REPORT_SOURCE_SQL = (
-    "SELECT bf.file_path, bf.sha256, bf.file_size "
-    "FROM silver.reports r "
-    "JOIN bronze.source_files bf ON bf.sha256 = r.source_file_sha256 "
-    "WHERE r.report_id = $1 "
-    "ORDER BY bf.ingested_at DESC LIMIT 1"
+    "SELECT source_object_key, source_file_sha256 "
+    "FROM silver.reports "
+    "WHERE report_id = $1::uuid"
 )
+
+
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$"
+)
+
+
+def _as_uuid(value: str) -> str | None:
+    """``value`` as a canonical UUID string, or None when it is not one
+    (a placeholder such as "None" / "empty" has no report row)."""
+    if not _UUID_RE.match(value or ""):
+        return None
+    return str(uuid.UUID(value))
 
 
 async def enrich_provenance(
@@ -416,7 +469,7 @@ async def enrich_provenance(
 ) -> GeoRAGResponse:
     """Enrich citations with source file provenance (Layer 5).
 
-    For each citation, resolves the bronze.source_files record and appends
+    For each citation, resolves the silver.reports source record and appends
     the file path + sha256 prefix to the citation's section field.
 
     Args:
@@ -462,21 +515,26 @@ async def enrich_provenance(
         # georag_reports:<report_id>:section=..:chunk=.. — resolve the
         # provenance of THIS report, not whichever PDF was ingested last.
         parts = source_id.split(":", 2)
-        report_id = parts[1] if len(parts) > 1 else ""
-        if not report_id or report_id == "empty":
+        report_uuid = _as_uuid(parts[1]) if len(parts) > 1 else None
+        if report_uuid is None:
+            # Placeholder ("None" for an ADR-0012 summary, "empty") or not a
+            # UUID at all: there is no report row to look up.
             unresolved_count += 1
             continue
 
         try:
             async with pg_pool.acquire() as conn:
                 row = await asyncio.wait_for(
-                    conn.fetchrow(_REPORT_SOURCE_SQL, report_id),
+                    conn.fetchrow(_REPORT_SOURCE_SQL, report_uuid),
                     timeout=settings.TIMEOUT_POSTGIS_S,
                 )
         except Exception:
-            logger.debug(
+            # WARNING, not DEBUG: a query that fails on every call is how
+            # this enrichment went dead unnoticed (PG-5).
+            logger.warning(
                 "layer5_provenance: failed to resolve source for %s",
                 source_id,
+                exc_info=True,
             )
             unresolved_count += 1
             continue
@@ -485,8 +543,8 @@ async def enrich_provenance(
             unresolved_count += 1
             continue
 
-        file_path = row["file_path"]
-        sha256 = (row["sha256"] or "").lower().strip()
+        file_path = row["source_object_key"] or "unknown object"
+        sha256 = (row["source_file_sha256"] or "").lower().strip()
         # Provenance hardening: reject malformed/zero-SHA rows. A zero
         # hash means the ingester computed but never recorded the real
         # digest; a non-hex value means a downstream consumer corrupted

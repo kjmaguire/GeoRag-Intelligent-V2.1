@@ -34,8 +34,10 @@ Writing them found four defects on the first pass, three now fixed:
     nearest the number — so "4200 ppm U3O8", a normal high-grade uranium
     value, was flagged as impossible gold.
 
-The fourth is still open and pinned below under TestKnownGaps, because a fix
-would remove real numbers from grounding, which is the more dangerous error.
+The fourth — bare numeric hole IDs and hyphenated intervals parsing as a
+positive and a NEGATIVE number — was pinned under TestKnownGaps until
+2026-09-29, when the number pattern stopped reading a dash after a digit as a
+minus sign (audit RAG-2/RAG-3). Those two tests now assert the fix.
 """
 
 from __future__ import annotations
@@ -324,36 +326,38 @@ class TestKnownGaps:
     """Pinned, not fixed. A gap nobody has written down is a gap that gets
     rediscovered as a production incident."""
 
-    def test_bare_numeric_hole_ids_still_parse_as_numbers(self) -> None:
-        """36-1085 and 36-1042 are the Cameco Shirley Basin convention, and
-        the identifier strip deliberately does not match them: the same shape
-        is a year range ("2021-2022"), a page range and an interval written
-        with a hyphen ("145.2-148.0 m"). Stripping those would remove REAL
-        numbers from grounding, which is the more dangerous error — a number
-        missing from the grounded set makes a true statement look fabricated.
-
-        Fixing this properly needs the context gate `viz_builder` already
-        applies to the same pattern.
-        """
+    def test_a_bare_numeric_hole_id_no_longer_yields_a_negative(self) -> None:
+        """36-1085 is the Cameco Shirley Basin convention. The generic strip
+        still leaves it alone (the same shape is a year range or an interval,
+        and those numbers are real), but the dash is no longer read as a
+        minus sign — it used to give -1085. When the EVIDENCE names the hole
+        (a collar row's hole_id), the ID is removed from the answer before
+        its numbers are read, so it is not two numerical claims at all."""
         from app.agent.hallucination.orchestrator_validators import (
+            _extract_number_tokens,
             _extract_numbers_from_text,
         )
 
         assert _extract_numbers_from_text("Hole 36-1085 reached 210 m.") == [
-            36.0, -1085.0, 210.0,
+            36.0, 1085.0, 210.0,
         ]
+        assert [
+            v for v, *_tolerances in _extract_number_tokens(
+                "Hole 36-1085 reached 210 m.", frozenset(("36-1085",))
+            )
+        ] == [210.0]
 
-    def test_a_hyphenated_interval_yields_a_spurious_negative(self) -> None:
-        """"145.2-148.0 m" gives -148.0. Same root cause, same reason it is
-        left alone. The "145.2 to 148.0 m" form the model is prompted to use
-        is unaffected."""
+    def test_a_hyphenated_interval_no_longer_yields_a_spurious_negative(self) -> None:
+        """"145.2-148.0 m" used to give -148.0."""
         from app.agent.hallucination.orchestrator_validators import (
             _extract_numbers_from_text,
         )
 
-        assert -148.0 in _extract_numbers_from_text(
+        numbers = _extract_numbers_from_text(
             "The interval 145.2-148.0 m assayed 2.31 g/t."
         )
+        assert -148.0 not in numbers
+        assert 148.0 in numbers
 
     @pytest.mark.asyncio
     async def test_a_fabricated_hole_id_is_now_caught_here(self) -> None:
