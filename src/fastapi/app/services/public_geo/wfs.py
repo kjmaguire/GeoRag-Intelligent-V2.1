@@ -165,6 +165,9 @@ def _first_xy(geometry: Any) -> tuple[float, float] | None:
         try:
             return float(coords[0]), float(coords[1])
         except (TypeError, ValueError):
+            # Unparseable coordinates just skip the axis-order check for this
+            # feature; the row itself is validated again by the sync mapper.
+            logger.debug("public_geo.wfs: non-numeric coordinates %r", coords[:2], exc_info=True)
             return None
     return None
 
