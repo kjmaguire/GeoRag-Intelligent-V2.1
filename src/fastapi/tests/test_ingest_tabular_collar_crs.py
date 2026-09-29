@@ -36,8 +36,9 @@ UTM_COLLARS = [
 
 
 def _source_epsgs(conn: Any) -> set[int]:
-    # _write_collars' last parameter is the source EPSG ($15 in _COLLAR_SQL).
-    return {row[-1] for row in conn.rows_for("silver.collars")}
+    # The source EPSG is $15 in _COLLAR_SQL (index 14); drill_type and
+    # hole_status ($16/$17) follow it since the ING-1/PG-10 fix.
+    return {row[14] for row in conn.rows_for("silver.collars")}
 
 
 def _project_crs(conn: _Conn, epsg: int | None) -> None:
