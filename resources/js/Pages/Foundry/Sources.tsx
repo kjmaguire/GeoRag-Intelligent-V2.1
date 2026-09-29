@@ -26,6 +26,8 @@ interface IngestRunRow {
 
 interface ParserActivityRow {
     parser: string;
+    /** Display name from App\Support\ExtractionMethods — `parser` is the stored value. */
+    parser_label: string;
     version: string;
     rows_written: number;
     last_run: string;
@@ -391,8 +393,8 @@ function ParsersTab({ rows }: { rows: ParserActivityRow[] }) {
                             className="grid grid-cols-[180px_90px_100px_100px_1fr] gap-2 items-center px-4 py-2 border-b text-xs"
                             style={{ borderColor: 'var(--line-1)' }}
                         >
-                            <div style={{ color: 'var(--fg-0)' }}>
-                                <code>{p.parser}</code>
+                            <div style={{ color: 'var(--fg-0)' }} title={p.parser}>
+                                {p.parser_label ?? p.parser}
                             </div>
                             <div className="font-mono text-[11px]" style={{ color: 'var(--fg-3)' }}>
                                 {p.version}

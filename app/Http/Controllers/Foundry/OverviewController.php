@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\QueryAuditLog;
 use App\Services\IngestionSnapshot;
+use App\Support\ExtractionMethods;
 use App\Support\SetsWorkspaceRlsContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
@@ -211,17 +212,7 @@ class OverviewController extends Controller
     private function ocrCoverage(string $projectId, string $workspaceId): array
     {
         /** Engines that read a text layer. Everything else ran OCR. */
-        $native = ['fitz_native', 'pdfplumber_native'];
-
-        $labels = [
-            'fitz_native' => 'Text layer (pdfium)',
-            'pdfplumber_native' => 'Text layer (pdfplumber)',
-            'tesseract' => 'Tesseract OCR',
-            'document_intelligence' => 'Document Intelligence',
-            'cohere_parse' => 'Cohere Parse (Foundry)',
-            'unavailable' => 'No engine available',
-            'unknown' => 'Not recorded',
-        ];
+        $native = ExtractionMethods::NATIVE_PAGE_METHODS;
 
         try {
             $rows = $this->withWorkspaceRls($workspaceId, fn () => DB::table('silver.document_passages as dp')
@@ -264,7 +255,7 @@ class OverviewController extends Controller
 
             $byMethod[] = [
                 'method' => $method,
-                'label' => $labels[$method] ?? $method,
+                'label' => ExtractionMethods::pageMethodLabel($method),
                 'is_ocr' => $isOcr,
                 'count' => $count,
                 'flagged' => $flagged,

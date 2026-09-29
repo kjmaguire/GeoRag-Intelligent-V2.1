@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Services\Figures\FigureResolver;
 use App\Services\StorageService;
+use App\Support\ExtractionMethods;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -485,6 +486,7 @@ class ReportController extends Controller
                 'is_scanned' => (bool) ($row->is_scanned ?? false),
                 'page_count' => isset($row->page_count) ? (int) $row->page_count : null,
                 'parser_used' => (string) ($row->parser_used ?? ''),
+                'parser_label' => ExtractionMethods::parserLabel($row->parser_used ?? null),
                 'created_at' => (string) ($row->created_at ?? ''),
                 'updated_at' => (string) ($row->updated_at ?? ''),
                 // Drives the reader's ORIGINAL tab. A boolean rather than

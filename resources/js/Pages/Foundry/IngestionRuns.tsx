@@ -314,6 +314,8 @@ interface CompletedRow {
     report_id: string;
     title: string;
     parser_used: string | null;
+    /** Display name from App\Support\ExtractionMethods — parser_used is the stored value. */
+    parser_label: string | null;
     parse_quality_pct: number | null;
     /** pages_with_text / page_count. null on rows ingested before the column existed. */
     text_page_coverage_pct: number | null;
@@ -838,8 +840,8 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                     </div>
                                                 )}
                                             </div>
-                                            <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
-                                                {r.parser_used ?? '—'}
+                                            <div className="truncate" style={{ color: 'var(--fg-2)' }} title={r.parser_used ?? undefined}>
+                                                {r.parser_label ?? r.parser_used ?? '—'}
                                             </div>
                                             <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
                                                 {r.parse_quality_pct === null ? '—' : `${qualityPct(r.parse_quality_pct)}%`}
