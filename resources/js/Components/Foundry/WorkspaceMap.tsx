@@ -1312,6 +1312,8 @@ export function WorkspaceMap({
                 preserveState: true,
                 only: [
                     'log_tracks',
+                    'log_available_curves',
+                    'log_selected_curves',
                     'log_hole_id',
                     'log_depth_max',
                     'log_hole_total_depth',
