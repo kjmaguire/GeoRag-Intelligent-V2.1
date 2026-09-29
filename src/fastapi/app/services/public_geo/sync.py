@@ -1,4 +1,4 @@
-"""Sync public-geoscience feeds from the live ArcGIS / WFS services into public_geo.*.
+"""Sync public-geoscience feeds from the live ArcGIS services into public_geo.*.
 
 Public geoscience is kept as a synced mirror of what provincial and federal
 surveys publish: we do not author any of it, and it is refreshed from the
@@ -46,9 +46,9 @@ geometry — which the stored pipeline did — is worse than useless: it says th
 coordinates are in a projection they are not in.
 
 **Nothing fails quietly.** A feed that fetched nothing, or stopped on an HTTP
-status / transport error / in-band ArcGIS error / WFS ExceptionReport, carries
-an ``error`` (+ ``error_kind``) in its stats and is logged at WARNING/ERROR
-with its source_id; row-write failures carry a count and the ``first_error``.
+status / transport error / in-band ArcGIS error, carries an ``error``
+(+ ``error_kind``) in its stats and is logged at WARNING/ERROR with its
+source_id; row-write failures carry a count and the ``first_error``.
 ``sync_all`` rolls those up into ``failed_feeds`` and ``all_empty``, and the
 Hatchet workflow fails the run when ``all_empty`` is true.
 
@@ -64,13 +64,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.services.public_geo import arcgis, wfs
+from app.services.public_geo import arcgis
 from app.services.public_geo.fetch_report import FetchReport, describe_exception
 from app.services.public_geo.registry import PublicGeoSource, sources_for
 
@@ -437,31 +437,6 @@ DISPOSITION_BY_SOURCE: dict[str, tuple[str, str]] = {
     "CA-SK-MINERAL-DISPOSITION-CROWN-OIL-GAS": ("oil_gas", "active"),
 }
 
-# CA-BC-MTA-TENURE is ONE layer carrying three tenure families, so unlike the
-# SK layers above its disposition_type is read per feature. Keys are matched
-# against TENURE_TYPE_DESCRIPTION / TENURE_TYPE_CODE, lowercased [UNVERIFIED
-# spellings — the catalogue names the columns, not their values].
-#
-# Placer is deliberately absent. pg_mineral_disposition.disposition_type is
-# CHECK-constrained to ('mineral','potash','alkali','coal','quarry','oil_gas')
-# and §04e enumerations change only with SME approval, so a placer title has
-# no legal value to write: those features are counted as `unmapped` (and kept
-# nowhere) rather than being mislabelled 'mineral'. Adding 'placer' is a
-# one-line CHECK migration once approved.
-_BC_TENURE_TYPE: dict[str, str] = {
-    "mineral": "mineral",
-    "m": "mineral",
-    "coal": "coal",
-    "c": "coal",
-}
-
-# pg_bedrock_geology.scale is NOT NULL and per-feed: SK publishes one 1:250k
-# compilation, BC's digital geology integrates 1:50k-1:250k mapping.
-_BEDROCK_SCALE_BY_SOURCE: dict[str, str] = {
-    "CA-SK-GEOLOGY-BEDROCK-250K": "250K",
-    "CA-BC-GEOLOGY-BEDROCK": "50-250K",
-}
-
 # Resource_Map layers publish a COMMODITY column on five of eleven layers and
 # nothing on the rest — but pg_resource_potential_zone.commodity is NOT NULL.
 # The commodity is in the source_id because it is what the layer IS, so it is
@@ -540,28 +515,16 @@ def _core(src: PublicGeoSource, feature: dict[str, Any]) -> dict[str, Any] | Non
 def _map_mine(
     src: PublicGeoSource, feature: dict[str, Any], aliases: AliasTables
 ) -> dict[str, Any] | None:
-    """public_geo.pg_mine — CA-SK-MINE-LOC (Mineral_Exploration/1) and
-    CA-BC-MINFILE-MINES (MINFILE producers / past producers, via WFS).
-
-    The BC candidates (MINFILE_NAME1, STATUS_DESCRIPTION, the numbered
-    COMMODITY_DESCRIPTIONn columns) are MINFILE's own field names as read off
-    bcgwpub/137 on 2026-08-20; their presence on the WFS view of the same
-    BCGW object is [UNVERIFIED]. MINFILE publishes no operator, so BC mines
-    carry operator = NULL rather than a guess.
-    """
+    """public_geo.pg_mine — CA-SK-MINE-LOC (Mineral_Exploration/1)."""
     row = _core(src, feature)
     if row is None:
         return None
     props = feature.get("properties") or {}
 
     commodities = _split_list(arcgis.first_present(props, ["COMMODITY", "COMMODITIES"]))
-    if not commodities:
-        commodities = _numbered(props, "COMMODITY_DESCRIPTION", 8)
     row.update({
-        "name": arcgis.first_present(props, ["NAME", "PROPERTY", "MINE_NAME", "MINFILE_NAME1"]),
-        "_status_raw": arcgis.first_present(
-            props, ["STATUS", "DEP_CLASS", "STATUS_DESCRIPTION"]
-        ),
+        "name": arcgis.first_present(props, ["NAME", "PROPERTY", "MINE_NAME"]),
+        "_status_raw": arcgis.first_present(props, ["STATUS", "DEP_CLASS"]),
         "commodities": commodities,
         "commodity_grouping": (
             aliases.grouping(arcgis.first_present(props, ["COMMODITY_GROUPING", "GROUPING"]))
@@ -575,13 +538,17 @@ def _map_mine(
 def _map_mineral_occurrence(
     src: PublicGeoSource, feature: dict[str, Any], aliases: AliasTables
 ) -> dict[str, Any] | None:
-    """public_geo.pg_mineral_occurrence — CA-SK-SMDI and CA-BC-MINFILE.
+    """public_geo.pg_mineral_occurrence — CA-SK-SMDI (and formerly CA-BC-MINFILE).
 
     The two feeds are shaped very differently: SMDI publishes delimited
     PRIMARYCOMMODITIES/ASSOCIATEDCOMMODITIES strings and a GROUPING column,
     MINFILE spreads eight numbered COMMODITY_DESCRIPTION columns and has no
     grouping at all. Both are handled here rather than in two near-identical
     mappers because everything downstream of the field lookup is the same.
+
+    CA-BC-MINFILE is no longer in the registry (BC is not synced since
+    2026-09-29). Its field names stay here because they are how the MINFILE
+    rows already stored were mapped, and they cost nothing on SMDI features.
     """
     row = _core(src, feature)
     if row is None:
@@ -780,15 +747,10 @@ def _map_mineral_disposition(
     props = feature.get("properties") or {}
 
     disp_type, disp_status = DISPOSITION_BY_SOURCE.get(src.source_id, ("mineral", "unknown"))
-    if src.source_id == "CA-BC-MTA-TENURE":
-        bc = _bc_tenure_type_and_status(props)
-        if bc is None:
-            return None  # placer (or unrecognised) — see _BC_TENURE_TYPE
-        disp_type, disp_status = bc
 
     # Area: three different units across the ten layers. Normalised to
     # hectares, which is what the column is.
-    area_ha = _dec(arcgis.first_present(props, ["HECTARES", "PARCELHECT", "AREA_IN_HECTARES"]))
+    area_ha = _dec(arcgis.first_present(props, ["HECTARES", "PARCELHECT"]))
     if area_ha is None:
         acres = _dec(arcgis.first_present(props, ["ACRES"]))
         if acres is not None:
@@ -801,32 +763,20 @@ def _map_mineral_disposition(
     row.update({
         "disposition_number": arcgis.first_present(
             props,
-            [
-                "DISPOSITION", "DISPOSITIO", "DISPID", "DISP_NUM", "DISPACQAPP",
-                "APPLICATIO", "TENURE_NUMBER_ID",
-            ],
+            ["DISPOSITION", "DISPOSITIO", "DISPID", "DISP_NUM", "DISPACQAPP", "APPLICATIO"],
         ),
         "disposition_type": disp_type,
         "status": disp_status,
         "holder_name": arcgis.first_present(
-            # OWNER_NAME: BC MTA [UNVERIFIED]; absent -> NULL, title still stored.
-            props, ["HOLDER", "OWNERS", "LESSEES", "HOLDERDESC", "OWNER_NAME"]
+            props, ["HOLDER", "OWNERS", "LESSEES", "HOLDERDESC"]
         ),
         "issue_date": _as_date(
             arcgis.first_present(
-                props,
-                [
-                    "ISSUEDATE", "ISSUEDDATE", "EFFECTIVEDATE", "EFFECTIVED", "POSTEDON",
-                    "ISSUE_DATE",
-                ],
+                props, ["ISSUEDATE", "ISSUEDDATE", "EFFECTIVEDATE", "EFFECTIVED", "POSTEDON"]
             )
         ),
         "expiry_date": _as_date(
-            # GOOD_TO_DATE: a BC title's good-standing date, which is when it
-            # forfeits unless work or payment is registered — the expiry.
-            arcgis.first_present(
-                props, ["EXPIRYDATE", "RENEWALDATE", "ANNIVERSARYDATE", "GOOD_TO_DATE"]
-            )
+            arcgis.first_present(props, ["EXPIRYDATE", "RENEWALDATE", "ANNIVERSARYDATE"])
         ),
         "area_ha": None if area_ha is None else round(area_ha, 2),
         "commodity_codes": _split_list(arcgis.first_present(props, ["MATERIAL", "COMMODITY"])),
@@ -837,65 +787,38 @@ def _map_mineral_disposition(
     return row
 
 
-def _bc_tenure_type_and_status(props: dict[str, Any]) -> tuple[str, str] | None:
-    """(disposition_type, status) for one CA-BC-MTA-TENURE feature, or None.
-
-    The view holds titles in good standing plus applications; an application
-    is 'pending' (a legal CHECK member), everything else 'active'. None means
-    the tenure family has no legal disposition_type (placer) or is not
-    recognised — the caller counts it as unmapped rather than guessing.
-    """
-    raw_type = arcgis.first_present(props, ["TENURE_TYPE_DESCRIPTION", "TENURE_TYPE_CODE"])
-    disp_type = _BC_TENURE_TYPE.get((raw_type or "").strip().lower())
-    if disp_type is None:
-        return None
-    title = " ".join(
-        v for v in (
-            arcgis.first_present(props, ["TITLE_TYPE_DESCRIPTION"]),
-            arcgis.first_present(props, ["TENURE_SUB_TYPE_DESCRIPTION"]),
-        ) if v
-    ).lower()
-    return disp_type, ("pending" if "application" in title else "active")
-
-
 def _map_bedrock_geology(
     src: PublicGeoSource, feature: dict[str, Any], aliases: AliasTables
 ) -> dict[str, Any] | None:
-    """public_geo.pg_bedrock_geology — CA-SK-GEOLOGY-BEDROCK-250K and
-    CA-BC-GEOLOGY-BEDROCK.
+    """public_geo.pg_bedrock_geology — CA-SK-GEOLOGY-BEDROCK-250K.
 
-    SK names come from the 2026-04-18 table migration's field map (ROCK_CODE,
-    NAME, EON, ERA, PERIOD, GROUP_, FORMATION, MEMBER, DOMAIN, LITHOLOGY). BC
-    Digital Geology's names (STRAT_UNIT, STRAT_NAME, STRAT_AGE, GP_SUITE,
-    FM_LITHODEM, MEM_PHASE, TERRANE, ROCK_TYPE) are [UNVERIFIED] against the
-    WFS view; any that is absent degrades to NULL, and everything is kept in
-    source_attributes regardless.
-
-    Two BC judgement calls, stated: TERRANE fills structural_domain (a
-    terrane is BC's tectonic domain unit, the closest analogue to SK's
-    DOMAIN), and STRAT_AGE backs up PERIOD. unit_code is NOT NULL, so a
-    feature with no unit code at all is unmapped rather than invented.
+    Field names come from the 2026-04-18 table migration's field map
+    (ROCK_CODE, NAME, EON, ERA, PERIOD, GROUP_, FORMATION, MEMBER, DOMAIN,
+    LITHOLOGY); any that is absent degrades to NULL, and everything is kept
+    in source_attributes regardless. unit_code is NOT NULL, so a feature with
+    no unit code at all is unmapped rather than invented. scale is NOT NULL
+    too, and the one bedrock feed is SK's 1:250k compilation.
     """
     row = _core(src, feature)
     if row is None:
         return None
     props = feature.get("properties") or {}
 
-    unit_code = arcgis.first_present(props, ["ROCK_CODE", "STRAT_UNIT", "UNIT_CODE"])
+    unit_code = arcgis.first_present(props, ["ROCK_CODE"])
     if not unit_code:
         return None
     row.update({
         "unit_code": unit_code,
-        "unit_name": arcgis.first_present(props, ["NAME", "STRAT_NAME", "UNIT_NAME"]),
+        "unit_name": arcgis.first_present(props, ["NAME"]),
         "eon": arcgis.first_present(props, ["EON"]),
         "era": arcgis.first_present(props, ["ERA"]),
-        "period": arcgis.first_present(props, ["PERIOD", "STRAT_AGE"]),
-        "group_name": arcgis.first_present(props, ["GROUP_", "GROUP_NAME", "GP_SUITE"]),
-        "formation": arcgis.first_present(props, ["FORMATION", "FM_LITHODEM"]),
-        "member": arcgis.first_present(props, ["MEMBER", "MEM_PHASE"]),
-        "structural_domain": arcgis.first_present(props, ["DOMAIN", "TERRANE"]),
-        "lithology": arcgis.first_present(props, ["LITHOLOGY", "ROCK_TYPE"]),
-        "scale": _BEDROCK_SCALE_BY_SOURCE.get(src.source_id, "250K"),
+        "period": arcgis.first_present(props, ["PERIOD"]),
+        "group_name": arcgis.first_present(props, ["GROUP_"]),
+        "formation": arcgis.first_present(props, ["FORMATION"]),
+        "member": arcgis.first_present(props, ["MEMBER"]),
+        "structural_domain": arcgis.first_present(props, ["DOMAIN"]),
+        "lithology": arcgis.first_present(props, ["LITHOLOGY"]),
+        "scale": "250K",
     })
     return row
 
@@ -1012,23 +935,6 @@ def _fit(value: Any, limit: int | None) -> Any:
     return value[:limit]
 
 
-def iter_source_features(
-    src: PublicGeoSource,
-    *,
-    page_size: int,
-    max_features: int | None,
-    report: FetchReport,
-) -> AsyncIterator[dict[str, Any]]:
-    """Dispatch to the feed's fetcher. Both yield GeoJSON with a stable ``id``."""
-    if src.protocol == "wfs":
-        return wfs.iter_all_features(
-            src, page_size=page_size, max_features=max_features, report=report
-        )
-    return arcgis.iter_all_features(
-        src, page_size=page_size, max_features=max_features, report=report
-    )
-
-
 async def sync_source(
     conn: Any,
     src: PublicGeoSource,
@@ -1067,7 +973,7 @@ async def sync_source(
     truncated = 0
     report = FetchReport()
 
-    async for feature in iter_source_features(
+    async for feature in arcgis.iter_all_features(
         src,
         page_size=page_size or spec.page_size,
         max_features=max_features,
@@ -1116,9 +1022,9 @@ async def sync_source(
                 )[:400]
 
     # Fetch outcome. `error` says WHY a feed stopped early (HTTP status,
-    # transport, in-band ArcGIS error, WFS ExceptionReport); `pages` says how
-    # far it got. A partial walk keeps what it wrote — upsert, never
-    # truncate — but is reported as failed, not as a short clean feed.
+    # transport, in-band ArcGIS error); `pages` says how far it got. A
+    # partial walk keeps what it wrote — upsert, never truncate — but is
+    # reported as failed, not as a short clean feed.
     stats.update(report.as_stats())
     stats["pages"] = report.pages
     if report.error is not None:

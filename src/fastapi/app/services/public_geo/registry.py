@@ -1,13 +1,19 @@
-"""Public-geoscience source registry — the feeds we sync from.
+"""Public-geoscience source registry — the ArcGIS feeds we sync from.
 
 This is ADDRESSING, and it lives in CODE rather than in the database.
 
 Public geoscience is a mirror of what provincial and federal surveys already
 publish. We do not author any of it: ``public_geo_sync`` pulls each feed from
-the survey's own service — ArcGIS REST for Saskatchewan and CA-BC-MINFILE,
-DataBC's WFS (addressed by BC Geographic Warehouse object name) for the other
-BC feeds — and upserts it into ``public_geo.*``, where the map layers, the
-chat tool and the citation resolvers read it.
+the survey's own ArcGIS REST service and upserts it into ``public_geo.*``,
+where the map layers, the chat tool and the citation resolvers read it.
+
+Saskatchewan only. British Columbia is NOT synced: on 2026-09-29 Kyle decided
+to skip BC altogether, so no ``CA-BC`` feed (not even the old CA-BC-MINFILE
+ArcGIS layer) is registered here and ``public_geo_sync`` never contacts a BC
+host. ``JURISDICTIONS`` keeps its ``CA-BC`` entry: it is jurisdiction
+metadata, not addressing, and the sync trigger validates against it (CA-BC
+is a known jurisdiction with no feeds, so a CA-BC-only trigger is refused
+with "no public-geo feeds are registered").
 
 Why the addressing is here and not in a table
 ---------------------------------------------
@@ -56,36 +62,11 @@ class Jurisdiction:
 
 @dataclass(frozen=True)
 class PublicGeoSource:
-    """One live feed: an ArcGIS REST layer, or (BC) a WFS feature type.
+    """One live ArcGIS REST layer.
 
-    ``service_url`` already includes the layer index for most ArcGIS feeds;
-    the separate ``layer_index`` is retained because a few registry rows point
-    at a MapServer root and identify the layer separately. For ``protocol ==
-    "wfs"`` it is the GeoServer OWS endpoint and ``bcgw_object_name`` is the
-    feature type.
-
-    The trailing fields are optional metadata, defaulted so the SK rows below
-    did not need touching:
-
-    ``protocol``          ``"arcgis"`` (default) or ``"wfs"`` — which fetcher
-                          ``sync`` dispatches to.
-    ``bcgw_object_name``  BC Geographic Warehouse object (e.g.
-                          ``WHSE_MINERAL_TENURE.MINFIL_MINERAL_OCCURRENCE``).
-                          The WFS typeName for WFS feeds; for CA-BC-MINFILE,
-                          which stays on ArcGIS, it records what the layer is
-                          supposed to be so the probe can check it.
-    ``catalogue_slug``    BC Data Catalogue (CKAN) dataset slug. VERIFICATION
-                          METADATA ONLY — ``ops/validation/public_geo_probe.py``
-                          resolves it via ``package_show`` and compares the
-                          returned ``object_name``. The sync never calls the
-                          catalogue.
-    ``id_field``          WFS: the attribute used as the stable feature id and
-                          as ``sortBy`` (paging is only deterministic sorted).
-    ``cql_filter``        WFS: a server-side ``CQL_FILTER``.
-    ``verified``          False when the address/field names have NOT been
-                          confirmed against the live service (the sandbox that
-                          wrote them could not reach it). The probe prints
-                          these first; flip to True once a probe run passes.
+    ``service_url`` already includes the layer index for most feeds; the
+    separate ``layer_index`` is retained because a few registry rows point at
+    a MapServer root and identify the layer separately.
     """
 
     source_id: str
@@ -97,12 +78,6 @@ class PublicGeoSource:
     source_crs: int | None
     license_summary: str | None
     license_url: str | None
-    protocol: str = "arcgis"
-    bcgw_object_name: str | None = None
-    catalogue_slug: str | None = None
-    id_field: str | None = None
-    cql_filter: str | None = None
-    verified: bool = True
 
     @property
     def is_queryable(self) -> bool:
@@ -119,11 +94,7 @@ class PublicGeoSource:
         Filtering them here rather than at each call site means a caller
         asking for every resource_potential_zone feed gets the eleven that
         actually answer, instead of ten answers and one error.
-
-        A WFS feed is queryable when it names a feature type.
         """
-        if self.protocol == "wfs":
-            return bool(self.bcgw_object_name)
         tail = self.service_url.rstrip("/").rsplit("/", 1)[-1]
         return tail.isdigit() or self.layer_index is not None
 
@@ -146,91 +117,6 @@ JURISDICTIONS: dict[str, Jurisdiction] = {
     "CA-YT": Jurisdiction(code="CA-YT", display_name="Yukon", license_summary=None, license_url=None),}
 
 SOURCES: list[PublicGeoSource] = [
-    PublicGeoSource(
-        source_id="CA-BC-MINFILE",
-        jurisdiction_code="CA-BC",
-        name="BC MINFILE — Mineral Occurrences",
-        canonical_type="mineral_occurrence",
-        service_url="https://delivery.maps.gov.bc.ca/arcgis/rest/services/mpcm/bcgwpub/MapServer/137",
-        layer_index=137,
-        source_crs=3005,
-        license_summary="Open Government Licence – British Columbia (v2.0)",
-        license_url="https://www2.gov.bc.ca/gov/content/data/open-data/open-government-licence-bc",
-        # Stays on the ArcGIS path: its 406k stored rows are keyed by this
-        # layer's OBJECTIDs, and moving it to WFS would re-key every one of
-        # them. The metadata below lets the probe confirm layer 137 really is
-        # this object — [UNVERIFIED] from the sandbox that added it.
-        bcgw_object_name="WHSE_MINERAL_TENURE.MINFIL_MINERAL_OCCURRENCE",
-        catalogue_slug="minfile-mineral-occurrence-database",
-    ),
-    # ── BC via DataBC WFS (added 2026-09-29) ──────────────────────────────
-    # Addressed by BCGW object name, not by MapServer layer number — see
-    # ``wfs`` module docstring. Object names and catalogue slugs were
-    # confirmed from BC Data Catalogue / openmaps.gov.bc.ca listings via web
-    # search on 2026-09-29; the live endpoints could NOT be reached from the
-    # sandbox that wrote this (egress 403), so every row is verified=False
-    # [UNVERIFIED] until ``ops/validation/public_geo_probe.py`` passes in AWS.
-    PublicGeoSource(
-        # MINFILE producers and past producers ARE BC's mines: the BC
-        # Geological Survey records mine status on the MINFILE occurrence
-        # rather than publishing a separate mines layer. Same object as
-        # CA-BC-MINFILE, narrowed server-side to the two production statuses
-        # (values confirmed by returnDistinctValues on 2026-08-20, see the
-        # 2026_08_20_010000 alias migration). The occurrence rows stay in
-        # pg_mineral_occurrence as well; this feed adds them to pg_mine so the
-        # map's Mines layer and the chat tool's mine type cover BC at all.
-        source_id="CA-BC-MINFILE-MINES",
-        jurisdiction_code="CA-BC",
-        name="BC MINFILE — Producers and Past Producers (mines)",
-        canonical_type="mine",
-        service_url="https://openmaps.gov.bc.ca/geo/ows",
-        layer_index=None,
-        source_crs=3005,
-        license_summary="Open Government Licence – British Columbia (v2.0)",
-        license_url="https://www2.gov.bc.ca/gov/content/data/open-data/open-government-licence-bc",
-        protocol="wfs",
-        bcgw_object_name="WHSE_MINERAL_TENURE.MINFIL_MINERAL_OCCURRENCE",
-        catalogue_slug="minfile-mineral-occurrence-database",
-        id_field="MINFILE_NUMBER",  # [UNVERIFIED] on the WFS view
-        cql_filter="STATUS_DESCRIPTION IN ('Producer','Past Producer')",  # [UNVERIFIED]
-        verified=False,
-    ),
-    PublicGeoSource(
-        # Mineral Titles Online's own spatial view: mineral claims, mining
-        # leases, placer and coal titles in good standing, with applications.
-        source_id="CA-BC-MTA-TENURE",
-        jurisdiction_code="CA-BC",
-        name="BC Mineral, Placer and Coal Tenure (Mineral Titles)",
-        canonical_type="mineral_disposition",
-        service_url="https://openmaps.gov.bc.ca/geo/ows",
-        layer_index=None,
-        source_crs=3005,
-        license_summary="Open Government Licence – British Columbia (v2.0)",
-        license_url="https://www2.gov.bc.ca/gov/content/data/open-data/open-government-licence-bc",
-        protocol="wfs",
-        bcgw_object_name="WHSE_MINERAL_TENURE.MTA_ACQUIRED_TENURE_SVW",
-        catalogue_slug="mta-mineral-placer-and-coal-tenure-spatial-view",
-        id_field="TENURE_NUMBER_ID",  # [UNVERIFIED] — named in the catalogue schema
-        verified=False,
-    ),
-    PublicGeoSource(
-        # BC Digital Geology — the province-wide integrated bedrock map
-        # (compiled from 1:50k-1:250k mapping), unit polygons.
-        source_id="CA-BC-GEOLOGY-BEDROCK",
-        jurisdiction_code="CA-BC",
-        name="BC Digital Geology — Bedrock Units",
-        canonical_type="bedrock_geology",
-        service_url="https://openmaps.gov.bc.ca/geo/ows",
-        layer_index=None,
-        source_crs=3005,
-        license_summary="Open Government Licence – British Columbia (v2.0)",
-        license_url="https://www2.gov.bc.ca/gov/content/data/open-data/open-government-licence-bc",
-        protocol="wfs",
-        bcgw_object_name="WHSE_MINERAL_TENURE.GEOL_BEDROCK_UNIT_POLY_SVW",
-        catalogue_slug="bedrock-geology",
-        id_field="OBJECTID",  # [UNVERIFIED]
-        verified=False,
-    ),
     PublicGeoSource(
         source_id="CA-SK-ASSESSMENT-AIRBORNE",
         jurisdiction_code="CA-SK",

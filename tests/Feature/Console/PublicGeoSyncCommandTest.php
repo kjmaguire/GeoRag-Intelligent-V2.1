@@ -28,12 +28,12 @@ final class PublicGeoSyncCommandTest extends TestCase
     public function test_queues_a_run_for_all_jurisdictions(): void
     {
         Http::fake([self::TRIGGER_URL => Http::response(
-            ['workflow_run_id' => 'run-cli', 'jurisdiction_codes' => null, 'feeds' => 36], 202,
+            ['workflow_run_id' => 'run-cli', 'jurisdiction_codes' => null, 'feeds' => 28], 202,
         )]);
 
         $this->artisan('public-geo:sync')
             ->expectsOutputToContain('Queued public_geo_sync run run-cli')
-            ->expectsOutputToContain('jurisdictions: all · feeds: 36')
+            ->expectsOutputToContain('jurisdictions: all · feeds: 28')
             ->assertSuccessful();
 
         Http::assertSent(fn (HttpRequest $r): bool => $r->hasHeader('X-Service-Key')
@@ -44,14 +44,14 @@ final class PublicGeoSyncCommandTest extends TestCase
     public function test_repeatable_jurisdiction_and_max_features(): void
     {
         Http::fake([self::TRIGGER_URL => Http::response(
-            ['workflow_run_id' => 'run-bc', 'jurisdiction_codes' => ['CA-BC', 'CA-SK'], 'feeds' => 37], 202,
+            ['workflow_run_id' => 'run-sk', 'jurisdiction_codes' => ['CA-SK'], 'feeds' => 28], 202,
         )]);
 
-        $this->artisan('public-geo:sync', ['--jurisdiction' => ['ca-bc', 'CA-SK'], '--max-features' => '25'])
-            ->expectsOutputToContain('jurisdictions: CA-BC, CA-SK')
+        $this->artisan('public-geo:sync', ['--jurisdiction' => ['ca-sk', ' CA-SK '], '--max-features' => '25'])
+            ->expectsOutputToContain('jurisdictions: CA-SK · feeds: 28')
             ->assertSuccessful();
 
-        Http::assertSent(fn (HttpRequest $r): bool => $r['jurisdiction_codes'] === ['CA-BC', 'CA-SK']
+        Http::assertSent(fn (HttpRequest $r): bool => $r['jurisdiction_codes'] === ['CA-SK']
             && $r['max_features_per_source'] === 25);
     }
 
@@ -59,7 +59,7 @@ final class PublicGeoSyncCommandTest extends TestCase
     {
         Http::fake();
 
-        $this->artisan('public-geo:sync', ['--jurisdiction' => ['British Columbia']])
+        $this->artisan('public-geo:sync', ['--jurisdiction' => ['Saskatchewan']])
             ->expectsOutputToContain('Invalid jurisdiction code')
             ->assertExitCode(2);
 

@@ -35,9 +35,6 @@ whole answer. Degrading is not the same as hiding: ``_get_json`` records the
 reason (transport error, HTTP status, non-JSON body, in-band ArcGIS error)
 into an optional ``FetchReport`` and logs it, and the sync copies that into
 the feed's ``error`` field.
-
-Only the ArcGIS feeds come through here. BC's WFS feeds use ``wfs``;
-``sync.iter_source_features`` picks by ``PublicGeoSource.protocol``.
 """
 
 from __future__ import annotations

@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from app.services.public_geo import sync as S
-from app.services.public_geo.registry import CANONICAL_TYPES, source_by_id
+from app.services.public_geo.registry import CANONICAL_TYPES, PublicGeoSource, source_by_id
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -265,9 +265,23 @@ class TestMappers:
         self, aliases: _Aliases,
     ) -> None:
         """CA-BC-MINFILE has no delimited commodity column — it spreads eight
-        numbered ones, and the first is the primary."""
+        numbered ones, and the first is the primary.
+
+        BC is no longer synced (2026-09-29), so the feed is not in the
+        registry; the source is built here from its old registry row."""
+        minfile = PublicGeoSource(
+            source_id="CA-BC-MINFILE",
+            jurisdiction_code="CA-BC",
+            name="BC MINFILE — Mineral Occurrences",
+            canonical_type="mineral_occurrence",
+            service_url="https://delivery.maps.gov.bc.ca/arcgis/rest/services/mpcm/bcgwpub/MapServer/137",
+            layer_index=137,
+            source_crs=3005,
+            license_summary=None,
+            license_url=None,
+        )
         row = S._map_mineral_occurrence(
-            _src("CA-BC-MINFILE"),
+            minfile,
             _feature({
                 "MINFILE_NAME1": "SLIDE",
                 "COMMODITY_DESCRIPTION1": "Uranium",

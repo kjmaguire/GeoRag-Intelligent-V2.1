@@ -1,13 +1,13 @@
-"""Why a public-geo fetch came back short — shared by the ArcGIS and WFS paths.
+"""Why a public-geo fetch came back short.
 
-Both fetchers degrade to "no more features" rather than raising, because one
-dead survey must not end a sync of thirty others. Before this existed that
-degradation was also silent: ``arcgis._get_json`` swallowed the exception,
-returned None, and the feed's stats read ``fetched=0`` with nothing to say
-whether the service was down, 403ing, answering with an in-band ArcGIS
-error, or genuinely empty.
+The ArcGIS fetcher degrades to "no more features" rather than raising,
+because one dead survey must not end a sync of thirty others. Before this
+existed that degradation was also silent: ``arcgis._get_json`` swallowed the
+exception, returned None, and the feed's stats read ``fetched=0`` with
+nothing to say whether the service was down, 403ing, answering with an
+in-band ArcGIS error, or genuinely empty.
 
-A ``FetchReport`` is the sink for that reason. The bulk walkers take one,
+A ``FetchReport`` is the sink for that reason. The bulk walker takes one,
 record the first failure into it, and ``sync.sync_source`` copies it into the
 per-feed stats (and from there into the audit row and the Hatchet output), so
 the ``error`` field says *why* next to the zero.
@@ -28,7 +28,7 @@ class FetchReport:
     #: ``"ArcGIS error 400: Invalid query parameters"``. None = no failure.
     error: str | None = None
     #: Machine-readable class: ``http_status`` | ``transport`` |
-    #: ``invalid_json`` | ``arcgis_error`` | ``wfs_exception``.
+    #: ``invalid_json`` | ``arcgis_error``.
     error_kind: str | None = None
     #: Upstream HTTP status when one was received.
     http_status: int | None = None

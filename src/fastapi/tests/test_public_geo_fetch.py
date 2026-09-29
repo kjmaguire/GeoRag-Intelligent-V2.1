@@ -7,12 +7,11 @@ sandbox these were written in could not have anyway).
 Covers:
   * arcgis._get_json / iter_all_features record WHY they stopped
     (HTTP status, transport, non-JSON, in-band ArcGIS error)
-  * wfs: request shape (pub: typeName, sortBy, CQL, paging), OGC exception
-    bodies, axis-order guard, stable-id promotion
   * sync_source / sync_all: per-feed `error`, row-error count + first error,
     `failed_feeds`, `all_empty`, logging at WARNING/ERROR with the feed id
   * public_geo_sync.finish_run: audit row first, then FAILED on all-empty
-  * BC mappers: MINFILE mines, MTA tenure, bedrock (SK + BC)
+  * mappers: SK dispositions and SK bedrock
+  * registry: SK only — no BC feed, no BC host
   * POST /internal/v1/public-geo/sync/trigger
 """
 
@@ -25,7 +24,7 @@ from typing import Any
 import httpx
 import pytest
 
-from app.services.public_geo import arcgis, fetch_report, wfs
+from app.services.public_geo import arcgis, fetch_report
 from app.services.public_geo import sync as S
 from app.services.public_geo.fetch_report import FetchReport
 from app.services.public_geo.registry import SOURCES, source_by_id
@@ -74,10 +73,7 @@ class _Aliases(S.AliasTables):
     def __init__(self) -> None:
         super().__init__(
             grouping_by_alias={"gold": "precious_metals", "copper": "base_metals"},
-            status_by_source_value={
-                ("CA-BC", "mine", "producer"): "producing",
-                ("CA-BC", "mine", "past producer"): "past-producer",
-            },
+            status_by_source_value={},
         )
 
 
@@ -172,83 +168,6 @@ class TestArcgisReasons:
 
 
 # ---------------------------------------------------------------------------
-# WFS
-# ---------------------------------------------------------------------------
-
-
-class TestWfs:
-    def test_get_feature_params(self) -> None:
-        src = _src("CA-BC-MINFILE-MINES")
-        p = wfs.get_feature_params(src, count=500, start_index=1000)
-        assert p["SERVICE"] == "WFS" and p["VERSION"] == "2.0.0" and p["REQUEST"] == "GetFeature"
-        assert p["typeNames"] == "pub:WHSE_MINERAL_TENURE.MINFIL_MINERAL_OCCURRENCE"
-        assert p["outputFormat"] == "application/json"
-        assert p["srsName"] == "EPSG:4326"
-        assert p["count"] == 500 and p["startIndex"] == 1000
-        assert p["sortBy"] == "MINFILE_NUMBER"
-        assert "Producer" in p["CQL_FILTER"]
-
-    def test_existing_namespace_is_not_doubled(self) -> None:
-        from dataclasses import replace
-
-        src = replace(_src("CA-BC-MTA-TENURE"), bcgw_object_name="pub:WHSE_X.Y")
-        assert wfs.type_name(src) == "pub:WHSE_X.Y"
-
-    async def test_pages_until_number_matched_and_promotes_stable_ids(self, monkeypatch) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            start = int(request.url.params["startIndex"])
-            feats = [
-                _pt(f"WHSE.fid-{start + i}", {"MINFILE_NUMBER": f"082F {start + i:03d}"})
-                for i in range(2 if start == 0 else 1)
-            ]
-            return httpx.Response(200, json=_fc(feats, numberMatched=3, numberReturned=len(feats)))
-
-        seen = _install(monkeypatch, handler)
-        report = FetchReport()
-        got = [
-            f async for f in wfs.iter_all_features(_src("CA-BC-MINFILE-MINES"), page_size=2, report=report)
-        ]
-        assert [f["id"] for f in got] == ["082F 000", "082F 001", "082F 002"]
-        assert report.error is None and report.pages == 2
-        assert [r.url.params["startIndex"] for r in seen] == ["0", "2"]
-        assert all(str(r.url).startswith("https://openmaps.gov.bc.ca/geo/ows") for r in seen)
-
-    async def test_ogc_exception_report_under_http_200_is_a_failure(self, monkeypatch) -> None:
-        xml = (
-            '<?xml version="1.0"?><ows:ExceptionReport><ows:Exception exceptionCode="InvalidParameterValue">'
-            "<ows:ExceptionText>Illegal property name: STATUS_DESCRIPTION</ows:ExceptionText>"
-            "</ows:Exception></ows:ExceptionReport>"
-        )
-        _install(monkeypatch, lambda r: httpx.Response(200, text=xml, headers={"content-type": "application/xml"}))
-        report = FetchReport()
-        got = [f async for f in wfs.iter_all_features(_src("CA-BC-MINFILE-MINES"), report=report)]
-        assert got == []
-        assert report.error_kind == "wfs_exception"
-        assert "InvalidParameterValue" in (report.error or "")
-        assert "STATUS_DESCRIPTION" in (report.error or "")
-
-    async def test_http_403_is_a_failure(self, monkeypatch) -> None:
-        _install(monkeypatch, lambda r: httpx.Response(403, text="denied", headers={"content-type": "text/plain"}))
-        report = FetchReport()
-        assert [f async for f in wfs.iter_all_features(_src("CA-BC-MTA-TENURE"), report=report)] == []
-        assert report.error_kind == "http_status" and report.http_status == 403
-
-    async def test_swapped_axes_fail_the_feed(self, monkeypatch) -> None:
-        feat = _pt("x", {"MINFILE_NUMBER": "1"}, lon=50.2, lat=-120.5)  # (lat, lon)
-        _install(monkeypatch, lambda r: httpx.Response(200, json=_fc([feat], numberMatched=1)))
-        report = FetchReport()
-        assert [f async for f in wfs.iter_all_features(_src("CA-BC-MINFILE-MINES"), report=report)] == []
-        assert report.error_kind == "axis_order"
-
-    def test_axis_guard_leaves_genuine_lon_lat_alone(self) -> None:
-        assert not wfs.looks_axis_swapped((-120.5, 50.2))
-        assert wfs.looks_axis_swapped((50.2, -120.5))
-        assert not wfs.looks_axis_swapped(None)
-        poly = {"type": "MultiPolygon", "coordinates": [[[[-121.0, 49.0], [-120.0, 49.0], [-121.0, 49.0]]]]}
-        assert wfs._first_xy(poly) == (-121.0, 49.0)
-
-
-# ---------------------------------------------------------------------------
 # sync_source / sync_all
 # ---------------------------------------------------------------------------
 
@@ -285,32 +204,20 @@ class TestFailLoudSync:
         assert stats["first_error"].startswith("feature 2: ValueError")
         assert "error" not in stats  # the FETCH was fine
 
-    async def test_wfs_feed_dispatches_to_wfs(self, monkeypatch) -> None:
-        feats = [
-            _pt("fid-1", {"MINFILE_NUMBER": "092HSE001", "MINFILE_NAME1": "Copper Mountain",
-                          "STATUS_DESCRIPTION": "Producer", "COMMODITY_DESCRIPTION1": "Copper",
-                          "COMMODITY_DESCRIPTION2": "Gold"}),
-        ]
-        seen = _install(monkeypatch, lambda r: httpx.Response(200, json=_fc(feats, numberMatched=1)))
-        conn = _FakeConn()
-        stats = await S.sync_source(conn, _src("CA-BC-MINFILE-MINES"), aliases=_Aliases())
-        assert stats["upserted"] == 1 and "error" not in stats
-        assert seen[0].url.params["typeNames"].startswith("pub:WHSE_MINERAL_TENURE")
-        # source_feature_id is the MINFILE number, not GeoServer's fid.
-        assert "092HSE001" in conn.executed[0]
-
     async def test_sync_all_all_empty_and_failed_feeds(self, monkeypatch) -> None:
         _install(monkeypatch, lambda r: httpx.Response(503, text="down"))
-        result = await S.sync_all(_FakeConn(), jurisdiction_codes=["CA-BC"])
-        assert result["feeds"] >= 4
+        result = await S.sync_all(
+            _FakeConn(), source_ids=["CA-SK-MINE-LOC", "CA-SK-SMDI", "CA-SK-GEOLOGY-BEDROCK-250K"]
+        )
+        assert result["feeds"] == 3
         assert result["all_empty"] is True
-        assert {f["source_id"] for f in result["failed_feeds"]} >= {
-            "CA-BC-MINFILE", "CA-BC-MINFILE-MINES", "CA-BC-MTA-TENURE", "CA-BC-GEOLOGY-BEDROCK",
+        assert {f["source_id"] for f in result["failed_feeds"]} == {
+            "CA-SK-MINE-LOC", "CA-SK-SMDI", "CA-SK-GEOLOGY-BEDROCK-250K",
         }
         assert all("503" in f["reason"] for f in result["failed_feeds"])
         summary = S.failure_summary(result)
-        assert summary.startswith(f"all {result['feeds']} feed(s) fetched 0 features")
-        assert "CA-BC-MTA-TENURE: HTTP 503" in summary
+        assert summary.startswith("all 3 feed(s) fetched 0 features")
+        assert "CA-SK-SMDI: HTTP 503" in summary
 
     async def test_sync_all_includes_bedrock_by_default(self, monkeypatch) -> None:
         _install(monkeypatch, lambda r: httpx.Response(200, json=_fc([])))
@@ -400,56 +307,11 @@ class TestWorkflowFinish:
 
 
 # ---------------------------------------------------------------------------
-# BC mappers
+# Mappers
 # ---------------------------------------------------------------------------
 
 
-class TestBcMappers:
-    def test_minfile_mine(self) -> None:
-        row = S._map_mine(
-            _src("CA-BC-MINFILE-MINES"),
-            {"id": "092HSE001", "properties": {
-                "MINFILE_NUMBER": "092HSE001", "MINFILE_NAME1": "Copper Mountain",
-                "STATUS_DESCRIPTION": "Producer",
-                "COMMODITY_DESCRIPTION1": "Copper   ", "COMMODITY_DESCRIPTION2": "Gold",
-            }},
-            _Aliases(),
-        )
-        assert row is not None
-        assert row["name"] == "Copper Mountain"
-        assert row["_status_raw"] == "Producer"
-        assert row["commodities"] == ["Copper", "Gold"]
-        assert row["commodity_grouping"] == "base_metals"
-        assert row["operator"] is None
-        assert row["source_feature_id"] == "092HSE001"
-
-    @pytest.mark.parametrize(
-        ("props", "expected"),
-        [
-            ({"TENURE_TYPE_DESCRIPTION": "Mineral", "TITLE_TYPE_DESCRIPTION": "Claim"}, ("mineral", "active")),
-            ({"TENURE_TYPE_DESCRIPTION": "Coal", "TITLE_TYPE_DESCRIPTION": "Licence Application"}, ("coal", "pending")),
-            ({"TENURE_TYPE_CODE": "M", "TENURE_SUB_TYPE_DESCRIPTION": "Mining Lease"}, ("mineral", "active")),
-        ],
-    )
-    def test_mta_tenure_type_and_status(self, props, expected) -> None:
-        full = {"TENURE_NUMBER_ID": 1234567, "AREA_IN_HECTARES": 20.5,
-                "ISSUE_DATE": "2021-03-04Z", "GOOD_TO_DATE": "2027-03-04Z", **props}
-        row = S._map_mineral_disposition(_src("CA-BC-MTA-TENURE"), {"id": "1234567", "properties": full}, _Aliases())
-        assert row is not None
-        assert (row["disposition_type"], row["status"]) == expected
-        assert row["disposition_number"] == "1234567"
-        assert str(row["area_ha"]) == "20.50"
-        assert row["issue_date"].isoformat() == "2021-03-04"
-        assert row["expiry_date"].isoformat() == "2027-03-04"
-
-    def test_placer_tenure_is_unmapped_not_mislabelled(self) -> None:
-        row = S._map_mineral_disposition(
-            _src("CA-BC-MTA-TENURE"),
-            {"id": "9", "properties": {"TENURE_NUMBER_ID": 9, "TENURE_TYPE_DESCRIPTION": "Placer"}},
-            _Aliases(),
-        )
-        assert row is None
-
+class TestMappers:
     def test_sk_dispositions_unchanged(self) -> None:
         row = S._map_mineral_disposition(
             _src("CA-SK-MINERAL-DISPOSITION-MINING-4"), {"id": 1, "properties": {"DISPOSITIO": "X"}}, _Aliases()
@@ -468,25 +330,9 @@ class TestBcMappers:
         assert row["group_name"] == "Wollaston" and row["structural_domain"] == "Mudjatik"
         assert row["scale"] == "250K"
 
-    def test_bedrock_bc(self) -> None:
-        row = S._map_bedrock_geology(
-            _src("CA-BC-GEOLOGY-BEDROCK"),
-            {"id": 77, "properties": {"STRAT_UNIT": "uTrNi", "STRAT_AGE": "Upper Triassic",
-                                      "GP_SUITE": "Nicola Group", "TERRANE": "Quesnel",
-                                      "ROCK_TYPE": "andesitic volcanic rocks"}},
-            _Aliases(),
-        )
-        assert row is not None
-        assert row["unit_code"] == "uTrNi"
-        assert row["period"] == "Upper Triassic"
-        assert row["group_name"] == "Nicola Group"
-        assert row["structural_domain"] == "Quesnel"
-        assert row["lithology"] == "andesitic volcanic rocks"
-        assert row["scale"] == "50-250K"
-
     def test_bedrock_without_unit_code_is_unmapped(self) -> None:
         assert S._map_bedrock_geology(
-            _src("CA-BC-GEOLOGY-BEDROCK"), {"id": 1, "properties": {"ERA": "x"}}, _Aliases()
+            _src("CA-SK-GEOLOGY-BEDROCK-250K"), {"id": 1, "properties": {"ERA": "x"}}, _Aliases()
         ) is None
 
     def test_bedrock_upsert_targets_the_existing_table(self) -> None:
@@ -501,25 +347,17 @@ class TestBcMappers:
 
 
 class TestRegistry:
-    def test_every_wfs_feed_is_fully_addressed(self) -> None:
-        wfs_feeds = [s for s in SOURCES if s.protocol == "wfs"]
-        assert {s.source_id for s in wfs_feeds} == {
-            "CA-BC-MINFILE-MINES", "CA-BC-MTA-TENURE", "CA-BC-GEOLOGY-BEDROCK",
-        }
-        for s in wfs_feeds:
-            assert s.is_queryable
-            assert s.bcgw_object_name and s.bcgw_object_name.startswith("WHSE_")
-            assert s.id_field, f"{s.source_id}: WFS paging needs a stable sortBy key"
-            assert s.catalogue_slug
-            assert s.canonical_type in S.SPECS
-            assert s.service_url == "https://openmaps.gov.bc.ca/geo/ows"
-            assert s.verified is False  # until a probe run in AWS says otherwise
+    def test_no_british_columbia_feed_is_synced(self) -> None:
+        """Kyle, 2026-09-29: skip BC altogether. No CA-BC feed, no BC host."""
+        assert [s.source_id for s in SOURCES if s.jurisdiction_code == "CA-BC"] == []
+        assert {s.jurisdiction_code for s in SOURCES} == {"CA-SK"}
+        assert not [s.service_url for s in SOURCES if "gov.bc.ca" in s.service_url]
 
-    def test_minfile_keeps_its_source_id_and_arcgis_path(self) -> None:
-        s = _src("CA-BC-MINFILE")
-        assert s.protocol == "arcgis"
-        assert s.service_url.endswith("/MapServer/137")
-        assert s.bcgw_object_name == "WHSE_MINERAL_TENURE.MINFIL_MINERAL_OCCURRENCE"
+    def test_ca_bc_stays_a_known_jurisdiction(self) -> None:
+        """Metadata, not addressing: kept so the trigger can say "no feeds"."""
+        from app.services.public_geo.registry import JURISDICTIONS
+
+        assert JURISDICTIONS["CA-BC"].display_name == "British Columbia"
 
     def test_every_source_type_has_a_mapper(self) -> None:
         for s in SOURCES:
@@ -574,16 +412,16 @@ class TestTriggerEndpoint:
         body = r.json()
         assert body["workflow_run_id"] == "run-123"
         assert body["jurisdiction_codes"] is None
-        assert body["feeds"] > 30
+        assert body["feeds"] == 28
         assert dispatched[0].jurisdiction_codes is None
 
     def test_narrows_by_jurisdiction(self, trigger_client) -> None:
         client, dispatched = trigger_client
-        r = client.post(self.URL, json={"jurisdiction_codes": ["CA-BC", "CA-BC"]}, headers=self._key())
+        r = client.post(self.URL, json={"jurisdiction_codes": ["CA-SK", "CA-SK"]}, headers=self._key())
         assert r.status_code == 202, r.text
-        assert r.json()["jurisdiction_codes"] == ["CA-BC"]
-        assert r.json()["feeds"] == 4
-        assert dispatched[0].jurisdiction_codes == ["CA-BC"]
+        assert r.json()["jurisdiction_codes"] == ["CA-SK"]
+        assert r.json()["feeds"] == 28
+        assert dispatched[0].jurisdiction_codes == ["CA-SK"]
 
     def test_unknown_jurisdiction_is_422(self, trigger_client) -> None:
         client, dispatched = trigger_client
@@ -591,9 +429,11 @@ class TestTriggerEndpoint:
         assert r.status_code == 422
         assert dispatched == []
 
-    def test_jurisdiction_without_feeds_is_422(self, trigger_client) -> None:
+    @pytest.mark.parametrize("code", ["CA-AB", "CA-BC"])
+    def test_jurisdiction_without_feeds_is_422(self, trigger_client, code) -> None:
         client, dispatched = trigger_client
-        r = client.post(self.URL, json={"jurisdiction_codes": ["CA-AB"]}, headers=self._key())
+        r = client.post(self.URL, json={"jurisdiction_codes": [code]}, headers=self._key())
         assert r.status_code == 422
-        assert "CA-AB" in json.dumps(r.json())
+        assert code in json.dumps(r.json())
+        assert "no public-geo feeds are registered" in json.dumps(r.json())
         assert dispatched == []

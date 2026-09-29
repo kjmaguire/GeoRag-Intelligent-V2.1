@@ -12,8 +12,8 @@ use Illuminate\Console\Command;
  * Enqueue the public_geo_sync Hatchet workflow from the CLI.
  *
  *   php artisan public-geo:sync
- *   php artisan public-geo:sync --jurisdiction=CA-BC
- *   php artisan public-geo:sync --jurisdiction=CA-BC --jurisdiction=CA-SK --max-features=50
+ *   php artisan public-geo:sync --jurisdiction=CA-SK
+ *   php artisan public-geo:sync --jurisdiction=CA-SK --max-features=50
  *
  * Same path as the admin "Sync now" button (PublicGeoSyncTrigger → FastAPI
  * `POST /internal/v1/public-geo/sync/trigger` → Hatchet `aio_run_no_wait`),
@@ -31,7 +31,7 @@ use Illuminate\Console\Command;
 class PublicGeoSync extends Command
 {
     protected $signature = 'public-geo:sync
-                            {--jurisdiction=* : Restrict to these jurisdiction codes (e.g. CA-BC). Repeatable; omit for all.}
+                            {--jurisdiction=* : Restrict to these jurisdiction codes (e.g. CA-SK). Repeatable; omit for all.}
                             {--max-features= : Cap features per feed (smoke test).}';
 
     protected $description = 'Queue a public_geo_sync Hatchet run (refresh public_geo.* from the provincial surveys).';
@@ -46,7 +46,7 @@ class PublicGeoSync extends Command
 
         foreach ($codes as $code) {
             if (preg_match('/^[A-Z]{2}-[A-Z]{2,10}$/', $code) !== 1) {
-                $this->error("Invalid jurisdiction code: {$code} (expected e.g. CA-BC)");
+                $this->error("Invalid jurisdiction code: {$code} (expected e.g. CA-SK)");
 
                 return self::INVALID;
             }

@@ -59,7 +59,7 @@ use Illuminate\Support\Facades\DB;
  * returned ONLY when named in `layers=`, in a separate `polygons`
  * FeatureCollection so no point-layer filter can ever match a polygon. Volume
  * is bounded three ways, because a province-wide bbox over ~65k polygons
- * (30,906 SK dispositions alone, plus BC tenure) must not return megabytes:
+ * (30,906 SK dispositions alone) must not return megabytes:
  *
  *   1. a per-layer minimum zoom below which nothing is fetched (mode
  *      'min_zoom' — the UI says "zoom in"), since 30k parcels at zoom 4 are

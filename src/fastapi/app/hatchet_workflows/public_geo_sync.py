@@ -46,7 +46,7 @@ and the per-feature loop inside ``sync_source`` catches per-row, because a
 survey going offline or publishing one malformed polygon must not stop the
 other feeds from refreshing. What it does instead is *report*: each feed's
 stats carry an ``error`` saying why it came back short (HTTP status,
-transport error, in-band ArcGIS error, WFS exception, or plain empty), the
+transport error, in-band ArcGIS error, or plain empty), the
 row-write error count and the first row error, and this workflow copies all
 of it into an audit row.
 

@@ -37,7 +37,10 @@ final class PublicGeoscienceSyncControllerTest extends TestCase
         Cache::forget(PublicGeoscienceSyncController::COOLDOWN_KEY);
     }
 
-    private function fakeAccepted(string $runId = 'run-abc', ?array $codes = null, int $feeds = 36): void
+    /**
+     * @param list<string>|null $codes
+     */
+    private function fakeAccepted(string $runId = 'run-abc', ?array $codes = null, int $feeds = 28): void
     {
         Http::fake([
             self::TRIGGER_URL => Http::response([
@@ -67,20 +70,20 @@ final class PublicGeoscienceSyncControllerTest extends TestCase
 
     public function test_admin_trigger_calls_fastapi_with_both_credentials_and_returns_the_run_id(): void
     {
-        $this->fakeAccepted('run-123', ['CA-BC'], 4);
+        $this->fakeAccepted('run-123', ['CA-SK'], 28);
         $admin = User::factory()->admin()->create();
 
         $this->actingAs($admin)
-            ->postJson('/api/v1/public-geoscience/sync', ['jurisdiction_codes' => ['CA-BC', 'CA-BC']])
+            ->postJson('/api/v1/public-geoscience/sync', ['jurisdiction_codes' => ['CA-SK', 'CA-SK']])
             ->assertStatus(202)
-            ->assertJson(['workflow_run_id' => 'run-123', 'jurisdiction_codes' => ['CA-BC'], 'feeds' => 4]);
+            ->assertJson(['workflow_run_id' => 'run-123', 'jurisdiction_codes' => ['CA-SK'], 'feeds' => 28]);
 
         Http::assertSent(function (HttpRequest $request) use ($admin): bool {
             return $request->url() === self::TRIGGER_URL
                 && $request->method() === 'POST'
                 && $request->hasHeader('X-Service-Key', 'test-service-key-must-be-at-least-32-bytes-long')
                 && str_starts_with($request->header('Authorization')[0] ?? '', 'Bearer ')
-                && $request['jurisdiction_codes'] === ['CA-BC']
+                && $request['jurisdiction_codes'] === ['CA-SK']
                 && $request['requested_by'] === 'web:'.$admin->email;
         });
     }
@@ -115,7 +118,7 @@ final class PublicGeoscienceSyncControllerTest extends TestCase
         Http::fake([
             self::TRIGGER_URL => Http::sequence()
                 ->push(['detail' => "no public-geo feeds are registered for ['CA-AB']"], 422)
-                ->push(['workflow_run_id' => 'run-retry', 'jurisdiction_codes' => null, 'feeds' => 36], 202),
+                ->push(['workflow_run_id' => 'run-retry', 'jurisdiction_codes' => null, 'feeds' => 28], 202),
         ]);
         $admin = User::factory()->admin()->create();
 
@@ -155,7 +158,7 @@ final class PublicGeoscienceSyncControllerTest extends TestCase
         Http::fake();
 
         $this->actingAs(User::factory()->admin()->create())
-            ->postJson('/api/v1/public-geoscience/sync', ['jurisdiction_codes' => ["CA-BC'; DROP"]])
+            ->postJson('/api/v1/public-geoscience/sync', ['jurisdiction_codes' => ["CA-SK'; DROP"]])
             ->assertUnprocessable();
 
         Http::assertNothingSent();

@@ -41,7 +41,7 @@ router = APIRouter(prefix="/internal/v1/public-geo", tags=["public_geo"])
 class PublicGeoSyncTriggerRequest(BaseModel):
     jurisdiction_codes: list[str] | None = Field(
         default=None,
-        description="Restrict to these jurisdictions (CA-BC, CA-SK, …). Empty = all.",
+        description="Restrict to these jurisdictions (e.g. CA-SK). Empty = all.",
         max_length=20,
     )
     max_features_per_source: int | None = Field(default=None, ge=1, le=1_000_000)
