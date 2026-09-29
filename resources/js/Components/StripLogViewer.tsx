@@ -2,12 +2,25 @@ import * as React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '../lib/utils';
 import { formatWhen } from '../lib/time';
+import {
+    AlterationTrack,
+    MineralizationTrack,
+    type TrackFrame,
+} from './Foundry/StripTracks';
+import {
+    edgeOf,
+    isDisplayColour,
+    lithologyColourMap,
+    type StripAlterationBand,
+    type StripMineralBand,
+} from '../lib/stripLog';
 
 /**
  * StripLogViewer
  *
  * Renders a vertical SVG strip log for a single drill hole, per Section 04g
- * of the GeoRAG architecture specification.
+ * of the GeoRAG architecture specification: depth axis, lithology (coloured
+ * by code), alteration, mineralization, LAS curves and RQD / recovery.
  *
  * Props:
  *   holeId    {string} - The hole_id string (e.g. "DH-001")
@@ -29,8 +42,29 @@ interface LithologyLog {
     depth_from_m?: number | null;
     depth_to_m?: number | null;
     lithology_code?: string | null;
+    lithology_description?: string | null;
     description?: string | null;
+    color?: string | null;
     [k: string]: unknown;
+}
+interface AlterationRow {
+    alteration_id?: string;
+    from_depth?: number | null;
+    to_depth?: number | null;
+    alteration_type?: string | null;
+    intensity?: string | null;
+    minerals?: string[] | null;
+    notes?: string | null;
+}
+interface MineralizationRow {
+    mineralization_id?: string;
+    from_depth?: number | null;
+    to_depth?: number | null;
+    mineral?: string | null;
+    abundance_pct?: number | null;
+    form?: string | null;
+    grain_size?: string | null;
+    notes?: string | null;
 }
 interface WellLogCurve {
     curve_name?: string | null;
@@ -49,6 +83,8 @@ interface CollarRecord {
     elevation?: number | null;
     total_depth?: number | null;
     lithology_logs?: LithologyLog[];
+    alterations?: AlterationRow[];
+    mineralization?: MineralizationRow[];
     well_log_curves?: WellLogCurve[];
     [k: string]: unknown;
 }
@@ -62,28 +98,21 @@ interface TooltipPos {
     y: number;
 }
 
-// ── Lithology colour palette ──────────────────────────────────────────────────
-// Colours are derived from standard geological conventions.
-// SST  Sandstone      — warm yellow
-// CGL  Conglomerate   — tan/brown
-// PGN  Pelitic Gneiss — dark gray (medium metamorphic)
-// GPT  Graphitic Pelite — near-black (carbonaceous)
-// Default                 light gray (unknown / not logged)
-const LITHO_COLORS = {
-    SST:     { fill: '#d4a843', stroke: '#b8892a', label: 'Sandstone' },
-    CGL:     { fill: '#a07850', stroke: '#856038', label: 'Conglomerate' },
-    PGN:     { fill: '#5a5a6e', stroke: '#44445a', label: 'Pelitic Gneiss' },
-    GPT:     { fill: '#2a2a30', stroke: '#1a1a20', label: 'Graphitic Pelite' },
-    DEFAULT: { fill: '#6b7280', stroke: '#4b5563', label: 'Unknown' },
-};
-
-function getLithoColor(code) {
-    return LITHO_COLORS[code?.toUpperCase()] ?? LITHO_COLORS.DEFAULT;
+// ── Lithology colour ──────────────────────────────────────────────────────────
+// The data's own hex colour when it gave one, else a stable legend colour per
+// code (lib/stripLog). There is no table of codes to colours: what a code MEANS
+// is the geologist's, and a colour described in words ("dark grey") is shown in
+// the tooltip, not guessed into a fill.
+function getLithoColor(colours: Map<string, string>, code) {
+    const fill = colours.get(code ?? '?') ?? '#6b7280';
+    return { fill, stroke: edgeOf(fill) };
 }
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 const DEPTH_AXIS_WIDTH  = 70;   // px — left depth scale column
 const LITHO_COL_WIDTH   = 160;  // px — lithology rectangles
+const ALT_COL_WIDTH     = 100;  // px — alteration track
+const MIN_COL_WIDTH     = 110;  // px — mineralization track
 const CURVE_COL_WIDTH   = 180;  // px — LAS continuous curves column (GR, RHOB)
 const DETAIL_COL_WIDTH  = 180;  // px — RQD/recovery bars column
 const STRIP_HEIGHT      = 600;  // px — default SVG height (fills container via viewBox)
@@ -233,7 +262,7 @@ function GridLines({ totalDepth, svgHeight, svgWidth }: { totalDepth: number; sv
 /**
  * Lithology column — coloured rectangles.
  */
-function LithologyColumn({ intervals, totalDepth, svgHeight, onIntervalHover, onIntervalLeave, hoveredLogId }) {
+function LithologyColumn({ intervals, totalDepth, svgHeight, onIntervalHover, onIntervalLeave, hoveredLogId, colours }) {
     const x = DEPTH_AXIS_WIDTH;
 
     return (
@@ -251,7 +280,7 @@ function LithologyColumn({ intervals, totalDepth, svgHeight, onIntervalHover, on
                 const y1 = depthToY(interval.from_depth, totalDepth, svgHeight);
                 const y2 = depthToY(interval.to_depth, totalDepth, svgHeight);
                 const h  = Math.max(y2 - y1, 1);
-                const { fill, stroke } = getLithoColor(interval.lithology_code);
+                const { fill, stroke } = getLithoColor(colours, interval.lithology_code);
                 const isHovered = hoveredLogId === interval.log_id;
 
                 return (
@@ -347,10 +376,9 @@ function getCurveColor(name) {
 /**
  * Continuous LAS curve traces — SVG polylines rendered in a column after lithology.
  */
-function CurveTraces({ curves, totalDepth, svgHeight }) {
+function CurveTraces({ curves, totalDepth, svgHeight, x }) {
     if (!curves || curves.length === 0) return null;
 
-    const x = DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH;
     const w = CURVE_COL_WIDTH;
 
     return (
@@ -427,8 +455,8 @@ function CurveTraces({ curves, totalDepth, svgHeight }) {
  * RQD / Recovery bar chart in the detail column.
  * Renders thin horizontal bars proportional to the value (0–100).
  */
-function RqdBars({ intervals, totalDepth, svgHeight }) {
-    const x    = DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH + CURVE_COL_WIDTH + 4;
+function RqdBars({ intervals, totalDepth, svgHeight, x: columnX }) {
+    const x    = columnX + 4;
     const colW = 60;
 
     return (
@@ -471,10 +499,10 @@ function RqdBars({ intervals, totalDepth, svgHeight }) {
 /**
  * Tooltip overlay — rendered as HTML positioned over the SVG container.
  */
-function IntervalTooltip({ interval, position, totalDepth }) {
+function IntervalTooltip({ interval, position, totalDepth, colours }) {
     if (!interval || !position) return null;
 
-    const { fill, label } = getLithoColor(interval.lithology_code);
+    const { fill } = getLithoColor(colours, interval.lithology_code);
     const thickness = (interval.to_depth - interval.from_depth).toFixed(1);
 
     return (
@@ -498,7 +526,6 @@ function IntervalTooltip({ interval, position, totalDepth }) {
                     <span className="font-mono font-bold text-gray-100">
                         {interval.lithology_code ?? '?'}
                     </span>
-                    <span className="text-gray-400">{label}</span>
                 </div>
 
                 {/* Depth range */}
@@ -506,6 +533,13 @@ function IntervalTooltip({ interval, position, totalDepth }) {
                     {interval.from_depth} – {interval.to_depth} m
                     <span className="ml-2 text-gray-500">({thickness} m)</span>
                 </div>
+
+                {/* Colour as described, grain size, hardness */}
+                {(interval.color || interval.grain_size || interval.hardness) && (
+                    <div className="text-gray-500 border-t border-gray-700/50 pt-1.5">
+                        {[interval.color && `Colour: ${interval.color}`, interval.grain_size && `Grain: ${interval.grain_size}`, interval.hardness && `Hardness: ${interval.hardness}`].filter(Boolean).join(' · ')}
+                    </div>
+                )}
 
                 {/* Description */}
                 {interval.lithology_description && (
@@ -544,7 +578,7 @@ function IntervalTooltip({ interval, position, totalDepth }) {
 /**
  * Column header labels rendered above the SVG.
  */
-function ColumnHeaders({ hasCurves = false }) {
+function ColumnHeaders({ hasCurves = false, hasAlteration = false, hasMineralization = false }) {
     return (
         <div
             className="flex text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800 bg-gray-900 shrink-0"
@@ -554,6 +588,16 @@ function ColumnHeaders({ hasCurves = false }) {
             <div style={{ width: LITHO_COL_WIDTH }} className="px-1 py-1.5 text-center">
                 Lithology
             </div>
+            {hasAlteration && (
+                <div style={{ width: ALT_COL_WIDTH }} className="px-1 py-1.5 text-center">
+                    Alteration
+                </div>
+            )}
+            {hasMineralization && (
+                <div style={{ width: MIN_COL_WIDTH }} className="px-1 py-1.5 text-center">
+                    Minerals
+                </div>
+            )}
             {hasCurves && (
                 <div style={{ width: CURVE_COL_WIDTH }} className="px-1 py-1.5 text-center">
                     Well Logs
@@ -569,30 +613,26 @@ function ColumnHeaders({ hasCurves = false }) {
 /**
  * Colour legend rendered below the strip log.
  */
-function Legend({ usedCodes }) {
-    if (!usedCodes || usedCodes.length === 0) return null;
+function Legend({ entries }: { entries: { code: string; fill: string; label: string }[] }) {
+    if (!entries || entries.length === 0) return null;
 
     return (
         <div className="px-4 py-3 border-t border-gray-800 bg-gray-900 shrink-0">
             <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Legend</p>
             <div className="flex flex-wrap gap-3">
-                {usedCodes.map((code) => {
-                    const { fill, label } = getLithoColor(code);
-                    return (
-                        <div key={code} className="flex items-center gap-1.5">
-                            <span
-                                className="w-3 h-3 rounded-sm border border-gray-600"
-                                style={{ background: fill }}
-                                aria-hidden="true"
-                            />
-                            <span className="text-xs text-gray-400">
-                                <span className="font-mono text-gray-300">{code}</span>
-                                {' '}
-                                {label}
-                            </span>
-                        </div>
-                    );
-                })}
+                {entries.map(({ code, fill, label }) => (
+                    <div key={code} className="flex items-center gap-1.5">
+                        <span
+                            className="w-3 h-3 rounded-sm border border-gray-600"
+                            style={{ background: fill }}
+                            aria-hidden="true"
+                        />
+                        <span className="text-xs text-gray-400">
+                            <span className="font-mono text-gray-300">{code}</span>
+                            {label ? ` ${label}` : ''}
+                        </span>
+                    </div>
+                ))}
             </div>
         </div>
     );
@@ -690,29 +730,82 @@ export default function StripLogViewer({
 
     const lithologyLogs = collar?.lithology_logs ?? [];
     const wellLogCurves = collar?.well_log_curves ?? [];
-    const totalDepth    = collar?.total_depth ?? 0;
+
+    // One band per alteration / mineral row; overlapping rows share the track side by side.
+    const alterationBands: StripAlterationBand[] = (collar?.alterations ?? [])
+        .filter((a) => a.alteration_type && a.from_depth != null && a.to_depth != null)
+        .map((a) => ({
+            from: Number(a.from_depth),
+            to: Number(a.to_depth),
+            label: a.intensity ? `${a.alteration_type} (${a.intensity})` : String(a.alteration_type),
+            alterations: [{
+                type: String(a.alteration_type),
+                intensity: a.intensity ?? null,
+                minerals: Array.isArray(a.minerals) ? a.minerals : [],
+                notes: a.notes ?? null,
+            }],
+        }));
+    const mineralBands: StripMineralBand[] = (collar?.mineralization ?? [])
+        .filter((m) => m.mineral && m.from_depth != null && m.to_depth != null)
+        .map((m) => ({
+            from: Number(m.from_depth),
+            to: Number(m.to_depth),
+            mineral: String(m.mineral),
+            abundance_pct: m.abundance_pct ?? null,
+            form: m.form ?? null,
+            grain_size: m.grain_size ?? null,
+            notes: m.notes ?? null,
+        }));
+    const hasAlteration = alterationBands.length > 0;
+    const hasMineralization = mineralBands.length > 0;
+
+    // The collar's total depth is 0 when the collar file carried none; the
+    // deepest logged interval then sets the scale instead of dividing by zero.
+    const deepestLogged = Math.max(
+        0,
+        ...lithologyLogs.map((l) => Number(l.to_depth ?? l.depth_to_m ?? 0)),
+        ...alterationBands.map((b) => b.to),
+        ...mineralBands.map((b) => b.to),
+    );
+    const totalDepth    = Math.max(collar?.total_depth ?? 0, deepestLogged);
 
     // Sort intervals top-to-bottom
     const sortedLogs = [...lithologyLogs].sort(
         (a, b) => ((a.from_depth ?? 0) as number) - ((b.from_depth ?? 0) as number),
     );
 
-    // Derive the set of unique codes used (for legend)
-    const usedCodes = [...new Set(sortedLogs.map((l) => l.lithology_code).filter(Boolean))];
+    // The codes used, in the colour each is drawn in, labelled with the first description logged for it.
+    // One colour per code on this hole: the log's hex colour, else a legend colour no other code shares.
+    const lithoColours = lithologyColourMap(
+        sortedLogs.map((l) => ({ code: l.lithology_code ?? '?', color: isDisplayColour(l.color) ? l.color : null })),
+    );
+    const legendEntries = [...new Set(sortedLogs.map((l) => l.lithology_code).filter(Boolean))].map((code) => {
+        const first = sortedLogs.find((l) => l.lithology_code === code);
+        return {
+            code: String(code),
+            fill: getLithoColor(lithoColours, code).fill,
+            label: String(first?.lithology_description ?? '').slice(0, 40),
+        };
+    });
 
     // SVG dimensions — add curve column width only if curves exist
     const hasCurves = wellLogCurves.length > 0;
     const svgHeight = Math.min(Math.max(totalDepth * 8, 400), 1200);
-    const svgWidth  = DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH
-                    + (hasCurves ? CURVE_COL_WIDTH : 0)
-                    + DETAIL_COL_WIDTH;
+    const altX      = DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH;
+    const minX      = altX + (hasAlteration ? ALT_COL_WIDTH : 0);
+    const curveX    = minX + (hasMineralization ? MIN_COL_WIDTH : 0);
+    const detailX   = curveX + (hasCurves ? CURVE_COL_WIDTH : 0);
+    const svgWidth  = detailX + DETAIL_COL_WIDTH;
+    const yOf       = (depth: number) => depthToY(depth, totalDepth, svgHeight);
+    const altFrame: TrackFrame = { x: altX + 2, width: ALT_COL_WIDTH - 4, yOf };
+    const minFrame: TrackFrame = { x: minX + 2, width: MIN_COL_WIDTH - 4, yOf };
 
     // ── Early return states ───────────────────────────────────────────────────
 
     if (loading) return <LoadingState />;
     if (error)   return <ErrorState message={error} />;
     if (!holeId || !collar) return <EmptyState holeId={holeId} />;
-    if (lithologyLogs.length === 0) return <EmptyState holeId={holeId} />;
+    if (lithologyLogs.length === 0 && !hasAlteration && !hasMineralization) return <EmptyState holeId={holeId} />;
 
     // ── Full render ───────────────────────────────────────────────────────────
 
@@ -799,7 +892,7 @@ export default function StripLogViewer({
             </div>
 
             {/* ── Column headers ── */}
-            <ColumnHeaders hasCurves={hasCurves} />
+            <ColumnHeaders hasCurves={hasCurves} hasAlteration={hasAlteration} hasMineralization={hasMineralization} />
 
             {/* ── SVG strip log ── */}
             <div
@@ -847,6 +940,7 @@ export default function StripLogViewer({
                         onIntervalHover={handleIntervalHover}
                         onIntervalLeave={handleIntervalLeave}
                         hoveredLogId={hoveredLogId}
+                        colours={lithoColours}
                     />
 
                     {/* Lithology code text labels */}
@@ -857,12 +951,27 @@ export default function StripLogViewer({
                         horizontal={horizontal}
                     />
 
+                    {/* Alteration and mineralization tracks */}
+                    {hasAlteration && (
+                        <>
+                            <rect x={altX} y={0} width={ALT_COL_WIDTH} height={svgHeight} fill="#0a0a0f" />
+                            <AlterationTrack bands={alterationBands} frame={altFrame} />
+                        </>
+                    )}
+                    {hasMineralization && (
+                        <>
+                            <rect x={minX} y={0} width={MIN_COL_WIDTH} height={svgHeight} fill="#0a0a0f" />
+                            <MineralizationTrack bands={mineralBands} frame={minFrame} />
+                        </>
+                    )}
+
                     {/* LAS continuous curves (GR, RHOB, etc.) */}
                     {hasCurves && (
                         <CurveTraces
                             curves={wellLogCurves}
                             totalDepth={totalDepth}
                             svgHeight={svgHeight}
+                            x={curveX}
                         />
                     )}
 
@@ -871,13 +980,14 @@ export default function StripLogViewer({
                         intervals={sortedLogs}
                         totalDepth={totalDepth}
                         svgHeight={svgHeight}
+                        x={curveX + (hasCurves ? CURVE_COL_WIDTH : 0)}
                     />
 
                     {/* RQD column header rule */}
                     <line
-                        x1={DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH + (hasCurves ? CURVE_COL_WIDTH : 0)}
+                        x1={detailX}
                         y1={0}
-                        x2={DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH + (hasCurves ? CURVE_COL_WIDTH : 0)}
+                        x2={detailX}
                         y2={svgHeight}
                         stroke="#1f2937"
                         strokeWidth={1}
@@ -890,11 +1000,12 @@ export default function StripLogViewer({
                     interval={hoveredInterval}
                     position={tooltipPos}
                     totalDepth={totalDepth}
+                    colours={lithoColours}
                 />
             </div>
 
             {/* ── Legend ── */}
-            <Legend usedCodes={usedCodes} />
+            <Legend entries={legendEntries} />
         </div>
     );
 }

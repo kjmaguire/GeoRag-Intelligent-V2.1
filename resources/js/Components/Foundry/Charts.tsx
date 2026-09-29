@@ -1,4 +1,21 @@
 import * as React from 'react';
+import { useState } from 'react';
+import {
+    AlterationTrack,
+    IntervalDetail,
+    LithologyTrack,
+    MineralizationTrack,
+    SwatchLegend,
+    type TrackFrame,
+} from '@/Components/Foundry/StripTracks';
+import {
+    alterationColourMap,
+    lithologyColourMap,
+    mineralColourMap,
+    type LithologyDetail,
+    type StripAlterationBand,
+    type StripMineralBand,
+} from '@/lib/stripLog';
 
 /**
  * Foundry chart primitives — pure SVG, no external deps. Ports the prototype's
@@ -421,7 +438,10 @@ export interface LithologyInterval {
     to: number;
     code: string;
     label: string;
+    /** A hex display colour, or '' - the strip log assigns a legend colour per code. */
     color: string;
+    /** Description, colour as described, grain size, hardness, weathering, RQD, recovery. */
+    detail?: LithologyDetail;
 }
 
 /**
@@ -455,17 +475,26 @@ export function LithologyStripColumn({
     depthMax,
     height = 520,
     width = 220,
+    alteration = [],
+    mineralization = [],
+    truncated,
 }: {
     intervals: LithologyInterval[];
     holeId: string | null;
     depthMax: number;
     height?: number;
     width?: number;
+    alteration?: StripAlterationBand[];
+    mineralization?: StripMineralBand[];
+    /** Tracks the server cut at its per-track bound. */
+    truncated?: { lithology?: boolean; alteration?: boolean; mineralization?: boolean };
 }) {
-    if (!intervals.length) {
+    const [selected, setSelected] = useState<string[] | null>(null);
+    const hasOther = alteration.length > 0 || mineralization.length > 0;
+    if (!intervals.length && !hasOther) {
         return (
             <div className="text-[11px] font-mono p-4 text-center" style={{ color: 'var(--fg-3)', background: 'var(--bg-1)', border: '1px solid var(--line-1)', borderRadius: 6 }}>
-                No derived lithology for this hole.
+                No lithology logged for this hole.
             </div>
         );
     }
@@ -475,14 +504,38 @@ export function LithologyStripColumn({
     // Fit the depth axis to this hole's actual data + a small buffer,
     // rounded up to a friendly tick. Without this a 130 m hole on a
     // 300 m global axis leaves half the column visually empty.
-    const dataMax = intervals[intervals.length - 1].to;
+    const dataMax = Math.max(
+        1,
+        ...intervals.map((i) => i.to),
+        ...alteration.map((b) => b.to),
+        ...mineralization.map((b) => b.to),
+    );
     const denom = roundUpDepth(dataMax);
+    const yOf = (d: number) => padT + (d / denom) * usableH;
+    const derived = intervals.some((i) => i.code.startsWith('DERIVED-'));
     const oreCount = intervals.filter((i) => i.code.endsWith('-ORE')).length;
 
-    // Layout: left depth axis (40px) + band column (rest)
+    // Layout: left depth axis (40px) + one column per kind of logging. The
+    // lithology column keeps the larger share; alteration and mineralization
+    // appear only when the hole has them.
     const axisW = 40;
     const bandX = axisW + 4;
-    const bandW = width - bandX - 6;
+    const totalW = width - bandX - 6;
+    const weights = [
+        { key: 'lith', w: 2 },
+        ...(alteration.length ? [{ key: 'alt', w: 1.4 }] : []),
+        ...(mineralization.length ? [{ key: 'min', w: 1.4 }] : []),
+    ];
+    const gap = 4;
+    const usable = totalW - gap * (weights.length - 1);
+    const weightSum = weights.reduce((a, c) => a + c.w, 0);
+    const frames: Record<string, TrackFrame> = {};
+    let cursor = bandX;
+    for (const { key, w } of weights) {
+        const colW = (usable * w) / weightSum;
+        frames[key] = { x: cursor, width: colW, yOf };
+        cursor += colW + gap;
+    }
 
     // Grid lines every 25m up to denom, capped at 12 lines to avoid clutter.
     const gridStepM = denom > 600 ? 100 : denom > 300 ? 50 : 25;
@@ -491,23 +544,28 @@ export function LithologyStripColumn({
         gridLines.push(d);
     }
 
-    // Build a unique legend of lithology codes seen in this hole.
+    // Build a unique legend of lithology codes seen in this hole, in the colour
+    // each is drawn in (the data's hex colour, else the code's legend colour).
     const legendCodes = Array.from(new Set(intervals.map((i) => i.code)));
-    const legendColors = new Map<string, string>();
-    intervals.forEach((iv) => {
-        if (!legendColors.has(iv.code)) legendColors.set(iv.code, iv.color);
-    });
+    const legendColors = lithologyColourMap(intervals);
+    const altTypes = Array.from(new Set(alteration.flatMap((b) => b.alterations.map((a) => a.type))));
+    const minerals = Array.from(new Set(mineralization.map((b) => b.mineral)));
+    const altColours = alterationColourMap(altTypes);
+    const mineralColours = mineralColourMap(minerals);
+    const cut = Object.entries(truncated ?? {}).filter(([, v]) => v).map(([k]) => k);
 
     return (
         <div style={{ background: 'var(--bg-1)', border: '1px solid var(--line-1)', borderRadius: 6, padding: 10, width: width + 20 }}>
             <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
-                Lithology · derived
+                {derived ? 'Lithology · derived' : 'Lithology'}
             </div>
             <div className="text-[10px] font-mono" style={{ color: 'var(--fg-2)' }}>
-                {holeId ?? '—'} · {intervals.length} bands · {oreCount} U-host
+                {holeId ?? '—'} · {intervals.length} bands
+                {oreCount > 0 ? ` · ${oreCount} U-host` : ''}
+                {alteration.length > 0 ? ` · ${alteration.length} alteration` : ''}
+                {mineralization.length > 0 ? ` · ${mineralization.length} mineral` : ''}
             </div>
-            {/* Legend — moved from below the SVG so the colour key is right
-                under the header, before the user's eye reaches the bars. */}
+            {/* Legend — right under the header, before the user's eye reaches the bars. */}
             <div className="mt-1.5 mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono" style={{ color: 'var(--fg-2)' }}>
                 {legendCodes.map((code) => {
                     const short = LITHO_SHORT[code] ?? code.replace('DERIVED-', '');
@@ -520,18 +578,28 @@ export function LithologyStripColumn({
                     );
                 })}
             </div>
-            <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }}>
+            <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }} role="img" aria-label="Lithology strip log">
                 {/* Header */}
                 <text x={axisW / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
                     DEPTH (m)
                 </text>
-                <text x={bandX + bandW / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
+                <text x={frames.lith.x + frames.lith.width / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
                     LITHOLOGY
                 </text>
+                {frames.alt && (
+                    <text x={frames.alt.x + frames.alt.width / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
+                        ALTERATION
+                    </text>
+                )}
+                {frames.min && (
+                    <text x={frames.min.x + frames.min.width / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
+                        MINERALS
+                    </text>
+                )}
 
                 {/* Depth grid lines across the band area */}
                 {gridLines.map((d) => {
-                    const y = padT + (d / denom) * usableH;
+                    const y = yOf(d);
                     return (
                         <g key={`grid-${d}`}>
                             <line x1={axisW - 2} y1={y} x2={width} y2={y} stroke="var(--line-1)" strokeWidth="0.5" strokeDasharray="2 3" opacity="0.5" />
@@ -540,52 +608,29 @@ export function LithologyStripColumn({
                     );
                 })}
 
-                {/* Lithology bands */}
-                {intervals.map((iv, i) => {
-                    const y1 = padT + (iv.from / denom) * usableH;
-                    const y2 = padT + (iv.to / denom) * usableH;
-                    const h = Math.max(0.5, y2 - y1);
-                    const isOre = iv.code.endsWith('-ORE');
-                    const short = LITHO_SHORT[iv.code] ?? iv.code.replace('DERIVED-', '');
-                    return (
-                        <g key={i}>
-                            <rect
-                                x={bandX}
-                                y={y1}
-                                width={bandW}
-                                height={h}
-                                fill={iv.color}
-                                stroke={isOre ? '#fff' : 'rgba(0,0,0,0.20)'}
-                                strokeWidth={isOre ? '0.8' : '0.4'}
-                            />
-                            {h >= 12 && (
-                                <text
-                                    x={bandX + 6}
-                                    y={y1 + h / 2 + 3}
-                                    fontSize="9"
-                                    fill={isOre ? '#1a1a1a' : '#1a1a1a'}
-                                    fontFamily="var(--font-mono)"
-                                    fontWeight={isOre ? '700' : '500'}
-                                >
-                                    {short}
-                                </text>
-                            )}
-                            {h >= 14 && (
-                                <text
-                                    x={bandX + bandW - 6}
-                                    y={y1 + h / 2 + 3}
-                                    textAnchor="end"
-                                    fontSize="8"
-                                    fill="rgba(0,0,0,0.65)"
-                                    fontFamily="var(--font-mono)"
-                                >
-                                    {iv.from.toFixed(0)}–{iv.to.toFixed(0)}
-                                </text>
-                            )}
-                        </g>
-                    );
-                })}
+                {/* Lithology bands: coloured by code, code in the band, description on hover and click */}
+                <LithologyTrack
+                    bands={intervals}
+                    frame={frames.lith}
+                    onSelect={setSelected}
+                    // A gamma-derived band shows its short form (ORE, SST ...).
+                    codeLabel={(code) => LITHO_SHORT[code] ?? code.replace('DERIVED-', '')}
+                />
+                {frames.alt && <AlterationTrack bands={alteration} frame={frames.alt} onSelect={setSelected} />}
+                {frames.min && <MineralizationTrack bands={mineralization} frame={frames.min} onSelect={setSelected} />}
             </svg>
+            <IntervalDetail lines={selected} onClose={() => setSelected(null)} />
+            {(altTypes.length > 0 || minerals.length > 0) && (
+                <div className="mt-2 flex flex-col gap-1">
+                    <SwatchLegend title="Alteration" entries={altTypes.map((t) => ({ key: t, colour: altColours.get(t) ?? '#6b7280', label: t }))} />
+                    <SwatchLegend title="Minerals" entries={minerals.map((m) => ({ key: m, colour: mineralColours.get(m) ?? '#6b7280', label: m }))} />
+                </div>
+            )}
+            {cut.length > 0 && (
+                <div className="mt-1 text-[10px] font-mono" style={{ color: 'var(--warn, #d97706)' }} role="note">
+                    Showing the first intervals only ({cut.join(', ')}).
+                </div>
+            )}
         </div>
     );
 }
