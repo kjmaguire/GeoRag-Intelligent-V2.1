@@ -29,9 +29,25 @@ from typing import Any
 import httpx
 import pytest
 
-from app.agent import llm_cohere
+from app.agent import llm_cohere, llm_common
+from app.agent.llm_calls import _llm_call_counter
 from app.agent.llm_cohere import CohereResponseShapeError, call_cohere_llm
 from app.config import settings
+
+
+@pytest.fixture(autouse=True)
+def slept(monkeypatch: pytest.MonkeyPatch):
+    """Record pre-stream backoff waits instead of sleeping through them."""
+    delays: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(llm_common, "_sleep", _fake_sleep)
+    token = _llm_call_counter.set(0)
+    yield delays
+    _llm_call_counter.reset(token)
+
 
 # ---------------------------------------------------------------------------
 # A transport under test control
@@ -532,6 +548,160 @@ async def test_a_failure_after_a_token_has_been_sent_is_not_retried(
     with pytest.raises(RuntimeError, match="socket went away"):
         await call_cohere_llm("q", 0.2, token_callback=_cb)
     assert attempts["n"] == 1, "a stream that reached the user must not be replayed"
+
+
+@pytest.mark.asyncio
+async def test_retries_back_off_with_jitter_and_are_charged_to_the_call_budget(
+    monkeypatch: pytest.MonkeyPatch, slept: list[float]
+) -> None:
+    """VEN-2/AGT-8: the default backend used to re-send three times in ~1 s."""
+    attempts = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(429, json={"message": "rate limited"})
+
+    _install(monkeypatch, _handler)
+    with pytest.raises(llm_cohere.CoherePreStreamError):
+        await call_cohere_llm("q", 0.2)
+    assert attempts["n"] == 3
+    assert len(slept) == 2
+    assert 2.0 <= slept[0] <= 2.5, slept
+    assert 4.0 <= slept[1] <= 5.0, slept
+    assert _llm_call_counter.get() == 2, "each retry must count against MAX_LLM_CALLS_PER_QUERY"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_is_honoured(monkeypatch: pytest.MonkeyPatch, slept: list[float]) -> None:
+    attempts = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "7"}, json={"message": "slow down"})
+        return httpx.Response(200, json={"message": {"content": [{"text": "ok"}]}})
+
+    _install(monkeypatch, _handler)
+    assert await call_cohere_llm("q", 0.2) == "ok"
+    assert slept == [7.0]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_beyond_the_cap_is_not_waited_on(
+    monkeypatch: pytest.MonkeyPatch, slept: list[float]
+) -> None:
+    attempts = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(429, headers={"Retry-After": "600"}, json={"message": "slow down"})
+
+    _install(monkeypatch, _handler)
+    with pytest.raises(llm_cohere.CoherePreStreamError):
+        await call_cohere_llm("q", 0.2)
+    assert attempts["n"] == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_no_retry_when_the_per_query_call_budget_is_spent(
+    monkeypatch: pytest.MonkeyPatch, slept: list[float]
+) -> None:
+    attempts = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(503, json={"message": "overloaded"})
+
+    _install(monkeypatch, _handler)
+    monkeypatch.setattr(settings, "MAX_LLM_CALLS_PER_QUERY", 4)
+    _llm_call_counter.set(4)
+    with pytest.raises(llm_cohere.CoherePreStreamError):
+        await call_cohere_llm("q", 0.2)
+    assert attempts["n"] == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_no_retry_when_the_query_deadline_cannot_fit_the_wait(
+    monkeypatch: pytest.MonkeyPatch, slept: list[float]
+) -> None:
+    attempts = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(503, json={"message": "overloaded"})
+
+    _install(monkeypatch, _handler)
+    monkeypatch.setattr(settings, "TIMEOUT_GATHER_S", 1.0)
+    with pytest.raises(llm_cohere.CoherePreStreamError):
+        await call_cohere_llm("q", 0.2)
+    assert attempts["n"] == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_a_non_streaming_read_timeout_is_not_re_issued(
+    monkeypatch: pytest.MonkeyPatch, slept: list[float]
+) -> None:
+    """A read timeout on a unary call is a generation Cohere may still bill.
+
+    Re-issuing it blindly paid for the same answer up to three times.
+    """
+    attempts = {"n": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    _install(monkeypatch, _handler)
+    with pytest.raises(httpx.ReadTimeout):
+        await call_cohere_llm("q", 0.2)
+    assert attempts["n"] == 1
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_read_timeout_before_any_event_is_retried(
+    monkeypatch: pytest.MonkeyPatch, slept: list[float]
+) -> None:
+    attempts = {"n": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise httpx.ReadTimeout("read timed out", request=request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=b'data: {"delta": {"text": "late but fine"}}\n\n',
+        )
+
+    _install(monkeypatch, _handler)
+    deltas: list[str] = []
+    assert await call_cohere_llm("q", 0.2, token_callback=await _collect(deltas)) == "late but fine"
+    assert attempts["n"] == 2
+    assert len(slept) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_4xx_carries_cohere_error_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """VEN-17: a context overflow answers 400; the reason must survive."""
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"message": "too many tokens: 140000 > 128000"})
+
+    _install(monkeypatch, _handler)
+    deltas: list[str] = []
+    with pytest.raises(httpx.HTTPStatusError, match="too many tokens"):
+        await call_cohere_llm("q", 0.2, token_callback=await _collect(deltas))
+
+
+@pytest.mark.asyncio
+async def test_a_unary_4xx_carries_cohere_error_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, lambda _r: httpx.Response(400, json={"message": "too many tokens"}))
+    with pytest.raises(httpx.HTTPStatusError, match="too many tokens"):
+        await call_cohere_llm("q", 0.2)
 
 
 @pytest.mark.asyncio
