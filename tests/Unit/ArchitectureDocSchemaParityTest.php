@@ -25,12 +25,30 @@ use PHPUnit\Framework\TestCase;
  *
  * This checks names, not columns. Column-level drift is real too, but a name
  * that resolves to nothing is the failure that sends someone writing a query
- * against a table that cannot be created.
+ * against a table that cannot be created. (Code-vs-schema drift is checked
+ * separately, against a migrated database, by
+ * scripts/ci/check_sql_against_schema.py.)
+ *
+ * Tightened 2026-09-29 (database audit PG-15). It used to check only five
+ * schemas, and "exists" meant the name appeared anywhere in any .php/.sql file
+ * under database/ — including database/raw/_archive/, comments, and RLS
+ * policy lists. `silver.section_lines` passed only because an archived file
+ * mentioned it, and `silver.pdf_text_blocks` would have passed because an RLS
+ * migration lists it. Now every application schema is covered, and a name
+ * counts only if a migration or a live raw file CREATEs it (or moves/renames
+ * a table to it).
  */
 final class ArchitectureDocSchemaParityTest extends TestCase
 {
-    /** Schemas whose tables are created by migrations in this repo. */
-    private const SCHEMAS = ['bronze', 'silver', 'gold', 'audit', 'eval'];
+    /** Every schema whose tables are created by migrations in this repo. */
+    private const SCHEMAS = [
+        'audit', 'backups', 'bronze', 'eval', 'gold', 'interpretation', 'ops',
+        'outbox', 'public_geo', 'silver', 'targeting', 'usage', 'workflow',
+        'workspace',
+    ];
+
+    /** database/raw/ directories that are history or scratch, not DDL. */
+    private const EXCLUDED_RAW_DIRS = ['_archive', '_adhoc'];
 
     /**
      * Names that appear in the doc but are deliberately not in a migration,
@@ -38,7 +56,12 @@ final class ArchitectureDocSchemaParityTest extends TestCase
      *
      * @var array<string, string>
      */
-    private const EXPECTED_ABSENT = [];
+    private const EXPECTED_ABSENT = [
+        // Reverb broadcastAs() event names in the doc's event table, not
+        // tables; they share their prefix with the `workspace` schema.
+        'workspace.activity' => 'broadcast event name (WorkspaceActivityBroadcast), not a table',
+        'workspace.data_updated' => 'broadcast event name (WorkspaceDataUpdated), not a table',
+    ];
 
     private function repoRoot(): string
     {
@@ -69,25 +92,88 @@ final class ArchitectureDocSchemaParityTest extends TestCase
         return $names;
     }
 
-    /** Every migration and raw-SQL file, concatenated. */
-    private function schemaSource(): string
+    /**
+     * Every `schema.name` a migration or live raw-SQL file creates.
+     *
+     * Creating means: CREATE TABLE / VIEW / MATERIALIZED VIEW / FUNCTION with
+     * a qualified name (identifiers optionally quoted), Schema::create() with
+     * a qualified name, or an ALTER TABLE ... SET SCHEMA / RENAME TO that
+     * lands a table at the name. Mentions in comments, GRANTs, policies or
+     * ALTERs of an existing table do not count — naming is not creating.
+     *
+     * @return array<string, true>
+     */
+    private function createdNames(): array
     {
-        $source = '';
-        $dir = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->repoRoot().'/database'),
-        );
+        $created = [];
+        $ident = '"?([a-z_][a-z0-9_]*)"?';
 
-        foreach ($dir as $file) {
-            if (! $file->isFile()) {
-                continue;
+        foreach ($this->schemaFiles() as $path) {
+            $src = (string) file_get_contents($path);
+
+            $patterns = [
+                '/CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'.$ident.'\s*\.\s*'.$ident.'/i',
+                '/CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?'.$ident.'\s*\.\s*'.$ident.'/i',
+                '/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+'.$ident.'\s*\.\s*'.$ident.'/i',
+                '/(?:Schema::|->)\s*create\(\s*[\'"]([a-z_][a-z0-9_]*)\.([a-z0-9_]+)[\'"]/i',
+            ];
+            foreach ($patterns as $pattern) {
+                preg_match_all($pattern, $src, $m, PREG_SET_ORDER);
+                foreach ($m as $hit) {
+                    $created[strtolower($hit[1].'.'.$hit[2])] = true;
+                }
             }
-            if (! in_array($file->getExtension(), ['php', 'sql'], true)) {
-                continue;
+
+            // ALTER TABLE [schema.]t SET SCHEMA s  ->  s.t
+            preg_match_all(
+                '/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:'.$ident.'\s*\.\s*)?'.$ident.'\s+SET\s+SCHEMA\s+'.$ident.'/i',
+                $src,
+                $moves,
+                PREG_SET_ORDER,
+            );
+            foreach ($moves as $hit) {
+                $created[strtolower($hit[3].'.'.$hit[2])] = true;
             }
-            $source .= file_get_contents($file->getPathname());
+
+            // ALTER TABLE s.t RENAME TO u  ->  s.u
+            preg_match_all(
+                '/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?'.$ident.'\s*\.\s*'.$ident.'\s+RENAME\s+TO\s+'.$ident.'/i',
+                $src,
+                $renames,
+                PREG_SET_ORDER,
+            );
+            foreach ($renames as $hit) {
+                $created[strtolower($hit[1].'.'.$hit[3])] = true;
+            }
         }
 
-        return $source;
+        return $created;
+    }
+
+    /** @return list<string> migrations + raw SQL, minus archive/scratch. */
+    private function schemaFiles(): array
+    {
+        $files = glob($this->repoRoot().'/database/migrations/*.php') ?: [];
+
+        $raw = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->repoRoot().'/database/raw', \FilesystemIterator::SKIP_DOTS),
+        );
+        foreach ($raw as $file) {
+            if (! $file->isFile() || $file->getExtension() !== 'sql') {
+                continue;
+            }
+            $path = str_replace(DIRECTORY_SEPARATOR, '/', $file->getPathname());
+            foreach (self::EXCLUDED_RAW_DIRS as $skip) {
+                if (str_contains($path, '/'.$skip.'/')) {
+                    continue 2;
+                }
+            }
+            $files[] = $path;
+        }
+
+        sort($files);
+
+        return $files;
     }
 
     #[Test]
@@ -111,14 +197,14 @@ final class ArchitectureDocSchemaParityTest extends TestCase
     #[Test]
     public function every_table_the_doc_names_exists_in_a_migration(): void
     {
-        $schema = $this->schemaSource();
+        $created = $this->createdNames();
 
         $missing = [];
         foreach ($this->tablesNamedInDoc() as $name) {
             if (array_key_exists($name, self::EXPECTED_ABSENT)) {
                 continue;
             }
-            if (! str_contains($schema, $name)) {
+            if (! isset($created[$name])) {
                 $missing[] = $name;
             }
         }
@@ -126,8 +212,9 @@ final class ArchitectureDocSchemaParityTest extends TestCase
         self::assertSame(
             [],
             $missing,
-            'georag-architecture.html names tables that no migration or raw '
-            ."SQL file creates:\n  ".implode("\n  ", $missing)."\n\n"
+            'georag-architecture.html names tables that no migration or live raw '
+            ."SQL file CREATEs (database/raw/_archive and _adhoc do not count):\n  "
+            .implode("\n  ", $missing)."\n\n"
             .'Either the table was renamed and the doc was not updated, or '
             .'the doc describes something nobody built. Fix the doc, or -- if '
             .'the name is genuinely provisioned outside this repo -- record it '
@@ -140,11 +227,11 @@ final class ArchitectureDocSchemaParityTest extends TestCase
     {
         // An entry that IS now in a migration means the exemption outlived
         // its reason, and a stale exemption is how the next phantom hides.
-        $schema = $this->schemaSource();
+        $created = $this->createdNames();
 
         $stale = [];
         foreach (array_keys(self::EXPECTED_ABSENT) as $name) {
-            if (str_contains($schema, $name)) {
+            if (isset($created[$name])) {
                 $stale[] = $name;
             }
         }

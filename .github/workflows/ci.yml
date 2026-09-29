@@ -952,6 +952,40 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Database audit 2026-09-29 PG-15. The step above guards one table's two
+      # columns; the audit found a dozen live surfaces naming tables, columns
+      # or functions that no migration creates (a chat history query on a
+      # column that does not exist, APP_KEY rotation on an unqualified
+      # audit.* table, a feedback writer on three phantom columns...). Each
+      # was a 500 or a swallowed exception, and none could fail a build.
+      #
+      # So: build the database the way the AWS migrate task does (migrate,
+      # above, then the db:apply-raw manifest), then PREPARE every SQL literal
+      # in src/**/*.py and app/**/*.php against it and check every
+      # DB::table() chain and Eloquent $table against its catalog, with
+      # search_path=public like production. Undefined table / column /
+      # function / schema fails the build unless allow-listed, with a reason,
+      # in scripts/ci/schema-sql-allowlist.txt. PREPARE never executes, so
+      # this cannot write anything.
+      - name: Apply the db:apply-raw manifest (as the AWS migrate task does)
+        run: php artisan db:apply-raw
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Code names only schema objects the migrations create (§04e)
+        run: uv run --no-project --with asyncpg python scripts/ci/check_sql_against_schema.py
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGDATABASE: georag_test
+          PGUSER: georag
+          PGPASSWORD: test_password
+
       # The concrete check for the second live incident: init_qdrant.py IS
       # the bootstrap script, but nothing in this deployment's runtime path
       # ever calls it automatically — provisioning has always been a manual
