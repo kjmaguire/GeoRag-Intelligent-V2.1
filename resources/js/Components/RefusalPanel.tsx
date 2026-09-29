@@ -10,8 +10,10 @@
  *     `LLM_UNAVAILABLE`, `QUOTA_EXCEEDED` — see
  *     `src/fastapi/app/agent/errors.py::classify_error`), or
  *   - a `completed` SSE frame carrying `refusal_payload`
- *     (`GeoRAGResponse.refusal_payload` — Plan §4b Stage 2, gated behind
- *     `REPAIR_LOOP_TERMINAL_ENABLED`; `reason_code` is a `GuardErrorCode`
+ *     (`GeoRAGResponse.refusal_payload` — always stamped on the Layer 1
+ *     retrieval-gate refusal, `reason_code` `insufficient_evidence`, since
+ *     CHAT-10; also by Plan §4b Stage 2 terminal strategies, gated behind
+ *     `REPAIR_LOOP_TERMINAL_ENABLED`, where `reason_code` is a `GuardErrorCode`
  *     value such as `MISSING_ASSAY_UNITS`, `AMBIGUOUS_HOLE_ID`,
  *     `CONFLICTING_SOURCES`; `guard_codes` lists every code that fired).
  *
