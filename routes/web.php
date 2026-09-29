@@ -18,6 +18,7 @@ use App\Http\Controllers\Foundry\WorkspaceController;
 use App\Http\Controllers\Internal\MetricsController;
 use App\Http\Controllers\OAuthIngestController;
 use App\Http\Controllers\PublicGeoscience\TileProxyController as PublicGeoscienceTileProxy;
+use App\Http\Middleware\RequireConfigFlag;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -234,17 +235,20 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // grep-discoverability.
 
     // §8.5 (step 3 deferred branch) — OAuth flows for cloud-source ingestion.
-    // Functional scaffold; requires per-provider OAuth app registration
-    // (see OAuthIngestController docstring + config/services.php).
-    Route::get('/oauth/{provider}/authorize',
-        [OAuthIngestController::class, 'start'])
-        ->name('oauth.authorize')->where('provider', 'sharepoint|onedrive|googledrive');
-    Route::get('/oauth/{provider}/callback',
-        [OAuthIngestController::class, 'callback'])
-        ->name('oauth.callback')->where('provider', 'sharepoint|onedrive|googledrive');
-    Route::get('/oauth/connections',
-        [OAuthIngestController::class, 'listConnections'])
-        ->name('oauth.connections');
+    // Dormant and gated OFF (LAR-10): 404 unless
+    // services.cloud_ingest_oauth.enabled. See the OAuthIngestController
+    // docblock for what turning it on requires (a migration first).
+    Route::middleware(RequireConfigFlag::class.':services.cloud_ingest_oauth.enabled')->group(function () {
+        Route::get('/oauth/{provider}/authorize',
+            [OAuthIngestController::class, 'start'])
+            ->name('oauth.authorize')->where('provider', 'sharepoint|onedrive|googledrive');
+        Route::get('/oauth/{provider}/callback',
+            [OAuthIngestController::class, 'callback'])
+            ->name('oauth.callback')->where('provider', 'sharepoint|onedrive|googledrive');
+        Route::get('/oauth/connections',
+            [OAuthIngestController::class, 'listConnections'])
+            ->name('oauth.connections');
+    });
 
     Route::post('/logout', function (Request $request) {
         Auth::guard('web')->logout();
@@ -265,22 +269,27 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // in every environment) and the compose kestra + caddy services are
     // gone. See database/raw/phase3/95-kestra-sunset.sql.
 
-    // Phase 4 Step 5 — per-sender HMAC registry enable/disable toggle.
-    Route::patch('/admin/integrations/senders/{id}/{action}', [IntegrationsController::class, 'toggleSender'])
-        ->where('id', '[0-9a-fA-F-]{36}')
-        ->where('action', '(disable|enable)')
-        ->name('admin.integrations.sender-toggle');
+    // Sender + flow-JWT-key operator actions. Dormant and gated OFF
+    // (LAR-11): 404 unless services.admin_integrations.enabled; see the
+    // IntegrationsController docblock.
+    Route::middleware(RequireConfigFlag::class.':services.admin_integrations.enabled')->group(function () {
+        // Phase 4 Step 5 — per-sender HMAC registry enable/disable toggle.
+        Route::patch('/admin/integrations/senders/{id}/{action}', [IntegrationsController::class, 'toggleSender'])
+            ->where('id', '[0-9a-fA-F-]{36}')
+            ->where('action', '(disable|enable)')
+            ->name('admin.integrations.sender-toggle');
 
-    // Phase 9 Step 2 (R-P8-1) — rotate-with-overlap for per-flow JWT keys.
-    Route::post('/admin/integrations/jwt-keys/rotate', [IntegrationsController::class, 'rotateFlowKey'])
-        ->name('admin.integrations.jwt-keys.rotate');
+        // Phase 9 Step 2 (R-P8-1) — rotate-with-overlap for per-flow JWT keys.
+        Route::post('/admin/integrations/jwt-keys/rotate', [IntegrationsController::class, 'rotateFlowKey'])
+            ->name('admin.integrations.jwt-keys.rotate');
 
-    // Phase 10 Step 3 — register a new external_notification sender.
-    Route::post('/admin/integrations/senders', [IntegrationsController::class, 'registerSender'])
-        ->name('admin.integrations.senders.register');
+        // Phase 10 Step 3 — register a new external_notification sender.
+        Route::post('/admin/integrations/senders', [IntegrationsController::class, 'registerSender'])
+            ->name('admin.integrations.senders.register');
 
-    // Phase 12 Step 4 (R-P10-1) — rotate a sender's HMAC.
-    Route::post('/admin/integrations/senders/{id}/rotate-hmac', [IntegrationsController::class, 'rotateSenderHmac'])
-        ->where('id', '[0-9a-fA-F-]{36}')
-        ->name('admin.integrations.senders.rotate-hmac');
+        // Phase 12 Step 4 (R-P10-1) — rotate a sender's HMAC.
+        Route::post('/admin/integrations/senders/{id}/rotate-hmac', [IntegrationsController::class, 'rotateSenderHmac'])
+            ->where('id', '[0-9a-fA-F-]{36}')
+            ->name('admin.integrations.senders.rotate-hmac');
+    });
 });
