@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
@@ -504,6 +505,42 @@ final class IngestionRunsControllerTest extends TestCase
         $this->actingAs($this->user)
             ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
                 'minio_key' => 'collars/'.Str::uuid().'/20260824_204518_someone_elses.csv',
+                'sheet_type' => 'collar',
+                'column_map' => ['hole_id' => 'Site Ref'],
+            ])
+            ->assertStatus(422);
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * SEC-9: the ownership check used to be a substring test for
+     * `/<project_id>/`, which these all pass. Each is refused before any
+     * workflow is triggered.
+     *
+     * @return array<string, array{0: callable(string): string}>
+     */
+    public static function spoofedKeys(): array
+    {
+        return [
+            'dot-dot into another project' => [fn (string $pid): string => "collars/{$pid}/../".Str::uuid().'/x.csv'],
+            'own id buried deeper' => [fn (string $pid): string => 'collars/'.Str::uuid()."/{$pid}/x.csv"],
+            'leading slash' => [fn (string $pid): string => "/collars/{$pid}/x.csv"],
+            'extra segment' => [fn (string $pid): string => "collars/{$pid}/sub/x.csv"],
+            'dot-dot as the name' => [fn (string $pid): string => "collars/{$pid}/.."],
+            'backslash traversal' => [fn (string $pid): string => "collars/{$pid}/..\\x.csv"],
+            'uppercase category' => [fn (string $pid): string => "../{$pid}/x.csv"],
+        ];
+    }
+
+    #[DataProvider('spoofedKeys')]
+    public function test_a_key_that_only_mentions_this_project_is_refused(callable $key): void
+    {
+        Http::fake();
+
+        $this->actingAs($this->user)
+            ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
+                'minio_key' => $key((string) $this->project->project_id),
                 'sheet_type' => 'collar',
                 'column_map' => ['hole_id' => 'Site Ref'],
             ])
