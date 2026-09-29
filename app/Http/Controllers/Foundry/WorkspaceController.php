@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Support\HoleStripTracks;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -275,6 +276,33 @@ class WorkspaceController extends Controller
             } catch (\Throwable $e) { /* fallback */
             }
 
+            // A hole whose geology was logged but which has no LAS curves used
+            // to be unreachable here: the picker listed curve holes only, and
+            // the panel below drew nothing without curves - so a lithology,
+            // alteration or mineralization log ingested for a hole never
+            // showed as a strip log. Holes with any of those are listed too.
+            try {
+                $withIntervals = array_flip((new HoleStripTracks)->collarsWithIntervals(
+                    array_map('strval', $collars->pluck('collar_id')->all()),
+                ));
+                $listed = array_column($logHoleOptions, 'collar_id');
+                $added = false;
+                foreach ($collars as $c) {
+                    $cid = (string) $c->collar_id;
+                    if (isset($withIntervals[$cid]) && ! in_array($cid, $listed, true)) {
+                        $logHoleOptions[] = [
+                            'collar_id' => $cid,
+                            'hole_id' => (string) ($c->hole_id_canonical ?? $c->hole_id),
+                        ];
+                        $added = true;
+                    }
+                }
+                if ($added) {
+                    usort($logHoleOptions, fn ($a, $b) => strcmp($a['hole_id'], $b['hole_id']));
+                }
+            } catch (\Throwable $e) { /* fallback: curve holes only */
+            }
+
             // Pull the selected (or first) hole's curves and render them in the
             // LOGS panel. ?log_hole= overrides the default picker selection;
             // ?log_curves=A,B,C overrides which curves are drawn (default:
@@ -290,6 +318,9 @@ class WorkspaceController extends Controller
             $logHoleEasting = null;
             $logHoleNorthing = null;
             $logLithologyIntervals = [];
+            $logAlterationIntervals = [];
+            $logMineralizationIntervals = [];
+            $logTracksTruncated = ['lithology' => false, 'alteration' => false, 'mineralization' => false];
             try {
                 $requestedHole = $request->query('log_hole');
                 $sampleCollar = null;
@@ -309,18 +340,14 @@ class WorkspaceController extends Controller
                 // strip-log column in the LOGS panel. Reads gold.drillhole_intervals_visual
                 // which is populated by the derive_intervals pipeline.
                 if ($sampleCollar) {
-                    $logLithologyIntervals = DB::table('gold.drillhole_intervals_visual')
-                        ->where('collar_id', $sampleCollar->collar_id)
-                        ->where('interval_kind', 'lithology')
-                        ->orderBy('depth_from')
-                        ->get(['depth_from', 'depth_to', 'lithology_code', 'lithology_label', 'color_hint'])
-                        ->map(fn ($r) => [
-                            'from' => (float) $r->depth_from,
-                            'to' => (float) $r->depth_to,
-                            'code' => (string) $r->lithology_code,
-                            'label' => (string) $r->lithology_label,
-                            'color' => (string) $r->color_hint,
-                        ])->values()->all();
+                    // Lithology (with the attributes gold has no column for),
+                    // alteration and mineralization: one reader, so the LOGS
+                    // panel, the compare payload and the hole page agree.
+                    $strip = (new HoleStripTracks)->forCollar((string) $sampleCollar->collar_id);
+                    $logLithologyIntervals = $strip['lithology'];
+                    $logAlterationIntervals = $strip['alteration'];
+                    $logMineralizationIntervals = $strip['mineralization'];
+                    $logTracksTruncated = $strip['truncated'];
                 }
                 if ($sampleCollar) {
                     $logHoleId = (string) ($sampleCollar->hole_id_canonical ?? $sampleCollar->hole_id);
@@ -950,6 +977,9 @@ class WorkspaceController extends Controller
                 'log_hole_easting' => $logHoleEasting,
                 'log_hole_northing' => $logHoleNorthing,
                 'log_lithology_intervals' => $logLithologyIntervals,
+                'log_alteration_intervals' => $logAlterationIntervals,
+                'log_mineralization_intervals' => $logMineralizationIntervals,
+                'log_tracks_truncated' => $logTracksTruncated,
                 'first_holes_intervals' => $firstHolesIntervals,
                 // 3D mode payload — surveys feed MultiHole3DTrace; structures
                 // feed the 3D Stereosphere. Both may be empty arrays.
@@ -1023,18 +1053,7 @@ class WorkspaceController extends Controller
                 $selectedCurves,
             );
 
-            $lithologyIntervals = DB::table('gold.drillhole_intervals_visual')
-                ->where('collar_id', $collar->collar_id)
-                ->where('interval_kind', 'lithology')
-                ->orderBy('depth_from')
-                ->get(['depth_from', 'depth_to', 'lithology_code', 'lithology_label', 'color_hint'])
-                ->map(fn ($r) => [
-                    'from' => (float) $r->depth_from,
-                    'to' => (float) $r->depth_to,
-                    'code' => (string) $r->lithology_code,
-                    'label' => (string) $r->lithology_label,
-                    'color' => (string) $r->color_hint,
-                ])->values()->all();
+            $strip = (new HoleStripTracks)->forCollar((string) $collar->collar_id);
 
             $oreStats = DB::table('gold.drillhole_intervals_visual')
                 ->where('collar_id', $collar->collar_id)
@@ -1060,7 +1079,9 @@ class WorkspaceController extends Controller
                 'log_available_curves' => $availableCurves,
                 'log_selected_curves' => $selectedCurves,
                 'log_depth_max' => $logDepthMax > 0 ? $logDepthMax : 600.0,
-                'lithology_intervals' => $lithologyIntervals,
+                'lithology_intervals' => $strip['lithology'],
+                'alteration_intervals' => $strip['alteration'],
+                'mineralization_intervals' => $strip['mineralization'],
                 'ore_bands' => (int) ($oreStats->n ?? 0),
                 'ore_thickness_m' => round((float) ($oreStats->thickness ?? 0), 2),
                 'mean_u3o8_pct' => $meanGrade && $meanGrade->mean_grade !== null

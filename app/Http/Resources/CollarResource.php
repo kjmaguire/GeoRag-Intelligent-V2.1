@@ -92,6 +92,18 @@ class CollarResource extends JsonResource
                 'alteration_type' => $a->alteration_type,
                 'intensity' => $a->intensity,
                 'minerals' => $a->minerals,
+                'notes' => $a->notes,
+            ]),
+            ),
+            'mineralization' => $this->whenLoaded('mineralization', fn () => $this->mineralization->map(fn ($m) => [
+                'mineralization_id' => $m->id,
+                'from_depth' => $m->from_depth,
+                'to_depth' => $m->to_depth,
+                'mineral' => $m->mineral,
+                'abundance_pct' => $m->abundance_pct,
+                'form' => $m->form,
+                'grain_size' => $m->grain_size,
+                'notes' => $m->notes,
             ]),
             ),
             'structures' => $this->whenLoaded('structures', fn () => $this->structures->map(fn ($s) => [

@@ -151,6 +151,7 @@ class CollarController extends Controller
                 'surveys',
                 'lithologyLogs',
                 'alterations',
+                'mineralization',
                 'structures',
                 'samples',
                 'geochemistry',
