@@ -92,12 +92,22 @@ page's strip log and the 3-D bands draw. Per hole it now carries:
     per interval and kind).
   * ``sample_window`` rows, as before.
 
-Mineralization (silver.mineralization) has NO gold row. The table's CHECK allows
-lithology / alteration / structure / assay_high_grade / sample_window / other,
-and none of them is a mineral occurrence; bending 'other' or alteration_payload
-to carry it would be a guess about what the schema intends. The strip log reads
-silver.mineralization directly, the way the hole page already reads
-silver.assays_v2. A ``mineralization`` kind is proposed for §04e (SME sign-off).
+  * ``mineralization`` rows - one per interval, ``mineralization_payload`` =
+    ``{"minerals": [{"mineral", "abundance_pct", "form", "grain_size",
+    "notes"}, ...]}``, ordered by silver ``created_at, id``. silver.mineralization
+    holds one row PER MINERAL, and the table's unique key is per interval and
+    kind, so every mineral logged over one interval shares a row (the same shape
+    as alteration). ``lithology_label`` is the one-line summary ("Pyrite 3%;
+    Chalcopyrite"). The ``mineralization`` interval_kind and its payload column
+    were added by ``2026_09_29_120000`` (§04e, SME-approved 2026-09-29, Kyle);
+    until that migration is applied the mineralization statements fail, so the
+    migration must run before this image rolls (CD runs ``artisan migrate``
+    first).
+
+Mineralization is rebuilt like alteration - a pure function of silver - so a
+re-uploaded log with different intervals or minerals leaves no ghost bands. The
+gamma-derived ``DERIVED-*`` bands are ``lithology`` rows and are untouched: the
+rebuild deletes ``interval_kind = 'mineralization'`` only.
 
 IDEMPOTENCY
 ===========
@@ -176,6 +186,9 @@ class PromoteSilverToGoldOutput(BaseModel):
     #: 'alteration' rows rebuilt this run (a subset of nothing above: they are
     #: rebuilt, not upserted, so the count is the project's whole set).
     alteration_intervals_written: int = 0
+    #: 'mineralization' rows rebuilt this run - one per (hole, from, to), each
+    #: carrying every mineral logged over the interval. Rebuilt like alteration.
+    mineralization_intervals_written: int = 0
     #: Lithology intervals that shared a (collar, from, to) key with another and
     #: were folded into one gold band. The table's unique key is per interval.
     lithology_duplicate_intervals: int = 0
@@ -865,6 +878,70 @@ SELECT gen_random_uuid(), a.collar_id, c.workspace_id, c.project_id,
  GROUP BY a.collar_id, c.workspace_id, c.project_id, a.depth_from, a.depth_to
 """
 
+#: Mineralization intervals, rebuilt per project exactly as alteration is (§04e
+#: ``mineralization`` kind, SME-approved 2026-09-29). silver.mineralization is
+#: one row PER MINERAL; the gold table's unique key is (collar, from, to, kind),
+#: so every mineral over one interval shares a row and travels in
+#: ``mineralization_payload``. Scope comes through the collar (the table has no
+#: project_id) and workspace_id from the COLLAR, so a mis-stamped row cannot
+#: write a band into another tenant's project. Same depth guards as alteration:
+#: a NUMERIC(10,3) overflow or a zero-width interval after rounding would fail
+#: the one INSERT ... SELECT and promote nothing for the project.
+#:
+#: The clear only ever touches ``interval_kind = 'mineralization'``; lithology
+#: (including the DERIVED-* gamma bands derive_intervals owns), alteration and
+#: sample_window rows are other kinds and are not in its WHERE clause.
+_INTERVALS_MINERALIZATION_CLEAR = """
+DELETE FROM gold.drillhole_intervals_visual
+ WHERE project_id = $1::uuid AND interval_kind = 'mineralization'
+"""
+
+_INTERVALS_MINERALIZATION = """
+INSERT INTO gold.drillhole_intervals_visual (
+    visual_id, collar_id, workspace_id, project_id,
+    depth_from, depth_to, interval_kind,
+    lithology_code, lithology_label, color_hint,
+    assay_payload, alteration_payload, structure_payload,
+    mineralization_payload,
+    computed_at, created_at
+)
+SELECT gen_random_uuid(), m.collar_id, c.workspace_id, c.project_id,
+       m.depth_from, m.depth_to, 'mineralization',
+       NULL,
+       LEFT(string_agg(
+           m.mineral
+           || CASE WHEN m.abundance_pct IS NOT NULL
+                   THEN ' ' || trim_scale(m.abundance_pct)::text || '%'
+                   ELSE '' END,
+           '; ' ORDER BY m.created_at, m.id), 500),
+       NULL,
+       '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+       jsonb_build_object('minerals', jsonb_agg(
+           jsonb_build_object(
+               'mineral', m.mineral,
+               'abundance_pct', m.abundance_pct,
+               'form', m.form,
+               'grain_size', m.grain_size,
+               'notes', m.notes)
+           ORDER BY m.created_at, m.id)),
+       NOW(), NOW()
+  FROM (
+        SELECT x.id, x.collar_id, x.mineral, x.abundance_pct, x.form,
+               x.grain_size, x.notes, x.created_at,
+               round(x.from_depth, 3) AS depth_from,
+               round(x.to_depth, 3) AS depth_to
+          FROM silver.mineralization x
+          JOIN silver.collars cx ON cx.collar_id = x.collar_id
+         WHERE cx.project_id = $1::uuid
+           AND x.from_depth >= 0
+           AND x.to_depth < 10000000
+           AND round(x.to_depth, 3) > round(x.from_depth, 3)
+       ) m
+  JOIN silver.collars c ON c.collar_id = m.collar_id
+ WHERE c.project_id = $1::uuid
+ GROUP BY m.collar_id, c.workspace_id, c.project_id, m.depth_from, m.depth_to
+"""
+
 #: Sampled windows. `commodity_assays` is already JSONB on silver.samples,
 #: so the payload is carried across rather than re-derived — the strip log
 #: colours by grade and needs the values, not a boolean.
@@ -1046,6 +1123,11 @@ async def promote(
                 await conn.execute(_INTERVALS_ALTERATION_CLEAR, project_id)
                 status = await conn.execute(_INTERVALS_ALTERATION, project_id)
             out.alteration_intervals_written += _affected(status)
+            # Mineralization: likewise a pure function of silver.mineralization.
+            async with conn.transaction():
+                await conn.execute(_INTERVALS_MINERALIZATION_CLEAR, project_id)
+                status = await conn.execute(_INTERVALS_MINERALIZATION, project_id)
+            out.mineralization_intervals_written += _affected(status)
             # Clear-and-rebuild in one transaction: see _STRUCTURES_VISUAL for
             # why an append (the old ON CONFLICT DO NOTHING) duplicated rows.
             async with conn.transaction():
@@ -1057,10 +1139,12 @@ async def promote(
 
     log.info(
         "promote_silver_to_gold: %d project(s), %d trace(s) written "
-        "(%d unchanged, %d without geometry), %d interval(s), %d structure(s), "
+        "(%d unchanged, %d without geometry), %d interval(s), "
+        "%d alteration / %d mineralization interval(s), %d structure(s), "
         "%d canonical lithology row(s) (%d unresolved code(s))",
         out.projects_seen, out.traces_written, out.traces_unchanged,
         out.traces_skipped_no_geometry, out.intervals_written,
+        out.alteration_intervals_written, out.mineralization_intervals_written,
         out.structures_written, out.lithology_rows_promoted,
         out.lithology_codes_unresolved,
     )
