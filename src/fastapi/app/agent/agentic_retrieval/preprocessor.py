@@ -62,6 +62,20 @@ TOOL_DATA_SOURCE_MAP: dict[str, set[DataSource]] = {
     # and was allowed under EVERY narrowing, including ones that explicitly
     # excluded it.
     "search_public_geoscience": {"public_geoscience"},
+    # Audit AGT-16 (2026-09-29): these five were unmapped, so the
+    # `surfaces is None` default allowed them under EVERY narrowing — the
+    # same bug the comment above fixed for search_public_geoscience. An
+    # envelope restricted to public_geoscience still ran the hole-ID
+    # collar pre-pass, the project summary and both viz cards.
+    # query_collar_details carries headline assay grades as well as the
+    # collar row; coverage gap reports attribute coverage across collars,
+    # samples and logs; stereonet plots downhole structure measurements.
+    "query_collar_details": {"drill_logs", "assays"},
+    "query_project_summary": {"drill_logs", "technical_reports"},
+    "query_coverage_gap": {"drill_logs", "assays"},
+    "query_stereonet": {"drill_logs"},
+    "query_drill_traces_3d": {"drill_logs", "maps"},
+    "query_spatial_geometry": {"maps"},
     # Geophysics surfaces aren't wired to a tool yet (Phase 4) — when they
     # land they should be added here so the data-source filter picks them up.
 }

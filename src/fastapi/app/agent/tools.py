@@ -427,6 +427,14 @@ class DocumentSearchResult:
     #: path regardless, which made a reranker outage invisible in every
     #: trace, log field and API response.
     rerank_degraded: bool = False
+    #: Why this result is empty when the search did not actually run to
+    #: completion (audit RAG-12): "timeout", "sparse_encoder_unavailable",
+    #: "error", "model_not_loaded", "workspace_unresolved". None for a
+    #: search that ran — including one that genuinely matched nothing.
+    #: execute_node reads this BEFORE _worth_citing drops the empty
+    #: result, which is what made a backend outage indistinguishable from
+    #: an empty corpus.
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -1907,6 +1915,25 @@ async def query_assay_data(
     )
 
 
+def _payload_page(payload: dict[str, Any]) -> int | None:
+    """Page a Qdrant chunk payload points at (audit RAG-15).
+
+    passage_embedder writes page_first / page_last / page_number, never
+    "page", so every georag_chunks citation had page=None and neither the
+    evidence inspector nor the model was ever told a page. "page" is read
+    first for georag_reports points, which do carry it.
+    """
+    for key in ("page", "page_first", "page_number"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
 def _build_document_scope_filter(project_id: str):
     """Build a Qdrant ``Filter`` for ``search_documents`` per project-scope policy.
 
@@ -2058,7 +2085,10 @@ async def search_documents(
         logger.info(
             "search_documents: embedding model not loaded — returning empty results"
         )
-        return DocumentSearchResult(chunks=[], count=0, data_source="Qdrant (model not loaded)")
+        return DocumentSearchResult(
+            chunks=[], count=0, data_source="Qdrant (model not loaded)",
+            retrieval_failure="model_not_loaded",
+        )
 
 
     # ADR-0010 — hard flag flip between the legacy and canonical document
@@ -2109,6 +2139,7 @@ async def search_documents(
         return DocumentSearchResult(
             chunks=[], count=0,
             data_source="Qdrant (workspace unresolved — refused)",
+            retrieval_failure="workspace_unresolved",
         )
     _workspace_id = str(_workspace_id)
 
@@ -2252,7 +2283,7 @@ async def search_documents(
                     section_number=section_number,
                     section_title=section_title,
                     section=section_label,
-                    page=payload.get("page"),
+                    page=_payload_page(payload),
                     document_type=payload.get("document_type", "NI43"),
                     report_id=payload.get("report_id", ""),
                     relevance_score=float(point.score),  # overwritten by reranker below
@@ -2280,7 +2311,10 @@ async def search_documents(
             project_id,
             query_hash(query_text),
         )
-        return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (timeout)")
+        return DocumentSearchResult(
+            chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (timeout)",
+            retrieval_failure="timeout",
+        )
     except Exception as exc:
         # SPARSE_ENCODER_UNAVAILABLE is a marker with a CloudWatch alarm on it
         # (deploy/aws/terraform/alerts.tf). Without it a dead sparse sidecar is
@@ -2305,9 +2339,13 @@ async def search_documents(
                 chunks=[],
                 count=0,
                 data_source=f"Qdrant {_doc_collection} (sparse encoder unavailable)",
+                retrieval_failure="sparse_encoder_unavailable",
             )
         logger.exception("search_documents failed for project=%s", project_id)
-        return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (error)")
+        return DocumentSearchResult(
+            chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (error)",
+            retrieval_failure="error",
+        )
 
     if not chunks:
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection}")

@@ -106,6 +106,12 @@ class AgenticRetrievalState(BaseModel):
     # in Chat.tsx) read from this when present.
     evidence_packet: EvidencePacket | None = None
 
+    # Audit RAG-12 — "<data_source> via <tool>" for every document search
+    # that did not run to completion (timeout, model not loaded) but did not
+    # fail the query outright. assemble_node folds these into the response's
+    # degraded_sources and refuses to present an outage as "no evidence".
+    retrieval_failures: list[str] = Field(default_factory=list)
+
     # ── Assemble node output ─────────────────────────────────────────────
     response: GeoRAGResponse | None = None
 

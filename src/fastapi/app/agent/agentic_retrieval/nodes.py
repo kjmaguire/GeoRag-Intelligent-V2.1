@@ -579,6 +579,31 @@ def _build_adversarial_query(query: str) -> str:
     )
 
 
+#: search_documents failures that FAIL the query (RAG-12, GI-11): the
+#: sparse leg is gone or Qdrant errored, and there is no dense-only
+#: fallback by design. A timeout or an unloaded model is surfaced in
+#: degraded_sources instead (and turns a Layer 1 refusal into a failure,
+#: see assemble_node), since the next query may well succeed.
+_HARD_RETRIEVAL_FAILURES = frozenset({"sparse_encoder_unavailable", "error"})
+
+
+def _evidence_units(results: list[tuple[str, Any]]) -> int:
+    """Pieces of evidence, not tool results (AGT-18): each document chunk
+    and public-geoscience record counts once; a structured lookup counts
+    once however many rows it returned."""
+    units = 0
+    for _name, result in results:
+        chunks = getattr(result, "chunks", None)
+        records = getattr(result, "records", None)
+        if chunks is not None:
+            units += len(chunks)
+        elif records is not None:
+            units += len(records)
+        else:
+            units += 1
+    return units
+
+
 async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Dispatch the profile's primary (and optionally secondary) tools.
 
@@ -681,10 +706,38 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         result = await _call_tool_safely(tool_name, state.query, state.deps)
         return tool_name, result
 
+    # Audit RAG-12: a document search that FAILED (sparse encoder down,
+    # Qdrant error, timeout) returns an empty result that _worth_citing
+    # then drops, so the outage looked exactly like an empty corpus — a
+    # false "no passages cleared the threshold" refusal, or an answer built
+    # without documents and degraded_sources empty. Read the failure before
+    # the drop.
+    retrieval_failures: list[str] = []
+
+    def _note_retrieval_failure(tool_name: str, result: Any) -> None:
+        failure = getattr(result, "retrieval_failure", None)
+        if not failure:
+            return
+        label = f"{getattr(result, 'data_source', 'Qdrant')} via {tool_name}"
+        retrieval_failures.append(label)
+        if failure in _HARD_RETRIEVAL_FAILURES:
+            from app.agent.errors import RetrievalBackendUnavailable  # noqa: PLC0415
+
+            logger.error(
+                "agentic_retrieval.execute: %s — failing the query rather "
+                "than answering without document retrieval (GI-11)", label,
+            )
+            raise RetrievalBackendUnavailable(failure)
+        logger.warning(
+            "agentic_retrieval.execute: %s — continuing, surfaced in "
+            "degraded_sources", label,
+        )
+
     primary_results = await asyncio.gather(
         *(_dispatch_primary(tool_name) for tool_name in profile.primary_tools)
     )
     for tool_name, result in primary_results:
+        _note_retrieval_failure(tool_name, result)
         if _worth_citing(tool_name, result):
             results.append((tool_name, result))
 
@@ -695,6 +748,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         result = await _call_tool_safely(
             "search_documents", adversarial_query, state.deps
         )
+        _note_retrieval_failure("search_documents_adversarial", result)
         if result is not None:
             # The disconfirming framing re-retrieves much of the primary
             # pass's chunk set; drop duplicates so the context doesn't
@@ -723,14 +777,17 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 )
 
     # Secondary tools — best-effort; failures don't block the pipeline.
-    # We invoke them only when the primary pass yielded fewer than a small
-    # hardcoded number of results, a cheap heuristic for "we need more
-    # coverage". NOTE (audit 2026-06-28): this threshold is a literal, NOT
-    # profile.max_chunks — that field is declared but not yet wired (see
-    # RetrievalProfile). Keep the comment honest so the config isn't assumed
-    # to drive this branch.
+    # They fire only when the primary pass yielded fewer than
+    # _SECONDARY_COVERAGE_THRESHOLD pieces of EVIDENCE (audit AGT-18). This
+    # used to be `len(results)` — one entry per TOOL — so factual_lookup,
+    # whose only primary tool is search_documents, always had 1 < 3 and
+    # always paid for search_public_geoscience, contrary to the profile's
+    # "only when the internal corpus came back under threshold".
     _SECONDARY_COVERAGE_THRESHOLD = 3
-    if len(results) < _SECONDARY_COVERAGE_THRESHOLD and profile.secondary_tools:
+    if (
+        _evidence_units(results) < _SECONDARY_COVERAGE_THRESHOLD
+        and profile.secondary_tools
+    ):
         # Same independence argument as the primary pass — gather instead
         # of serial awaits.
         async def _dispatch_secondary(tool_name: str) -> tuple[str, Any | None]:
@@ -743,6 +800,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             *(_dispatch_secondary(tool_name) for tool_name in profile.secondary_tools)
         )
         for tool_name, result in secondary_results:
+            _note_retrieval_failure(tool_name, result)
             if _worth_citing(tool_name, result):
                 results.append((tool_name, result))
 
@@ -866,7 +924,11 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "downstream consumers will see evidence_packet=None"
         )
 
-    return {"tool_results": results, "evidence_packet": evidence_packet}
+    return {
+        "tool_results": results,
+        "evidence_packet": evidence_packet,
+        "retrieval_failures": retrieval_failures,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1286,6 +1348,11 @@ def _prune_tool_results(
             except (TypeError, ValueError):
                 # Not a dataclass we can rebuild; keep it whole rather than
                 # lose evidence that was (partly) rendered.
+                logger.debug(
+                    "agentic_retrieval.assemble: could not prune %s result "
+                    "(%s); keeping it whole", tool_name, type(result).__name__,
+                    exc_info=True,
+                )
                 pruned.append((tool_name, result))
     return pruned
 
@@ -1487,6 +1554,17 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     "agentic_retrieval.assemble: status_callback raised",
                     exc_info=True,
                 )
+        if state.retrieval_failures:
+            # Audit RAG-12: the refusal text says nothing cleared the
+            # relevance floor. With a document search that never completed
+            # that is false — the corpus was not searched — so fail the
+            # query instead (no LLM call either way; the Layer 1 hard gate
+            # still holds).
+            from app.agent.errors import RetrievalBackendUnavailable  # noqa: PLC0415
+
+            raise RetrievalBackendUnavailable(
+                "; ".join(state.retrieval_failures)
+            )
         response = assemble_response(build_refusal_text(), state.tool_results)
         # CHAT-10 — stamp the machine-readable refusal UNCONDITIONALLY.
         # refusal_payload used to be set only by repair_stage2 behind
@@ -1815,6 +1893,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         envelope_notes=state.envelope_notes,
         unspecified_descriptions=unspecified_field_descriptions(state.context_envelope),
     )
+    response = _with_retrieval_failures(response, state.retrieval_failures)
     update: dict[str, Any] = {"response": response, **_fold_token_usage(state)}
     # Audit AGT-5: the in-place `state.X = ...` writes above are visible to
     # the rest of THIS node only. LangGraph rebuilds the state for the next
@@ -1827,6 +1906,21 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     if rendered_results is not state.tool_results:
         update["tool_results"] = rendered_results
     return update
+
+
+def _with_retrieval_failures(
+    response: GeoRAGResponse, failures: list[str],
+) -> GeoRAGResponse:
+    """Add document searches that did not complete to degraded_sources.
+
+    response_assembler derives degraded_sources from tool_results, but a
+    failed search returns an EMPTY result that _worth_citing drops before
+    assembly, so the timeout never reached it (audit RAG-12).
+    """
+    if not failures:
+        return response
+    merged = list(dict.fromkeys([*(response.degraded_sources or []), *failures]))
+    return response.model_copy(update={"degraded_sources": merged})
 
 
 def _assemble_state_writes(state: AgenticRetrievalState) -> dict[str, Any]:
@@ -3053,7 +3147,7 @@ async def _reissue_llm_only(
         unspecified_descriptions=unspecified_field_descriptions(state.context_envelope),
     )
     state.tool_results = rendered_results
-    state.response = new_response
+    state.response = _with_retrieval_failures(new_response, state.retrieval_failures)
 
 
 async def _reissue_retrieval(
@@ -3422,38 +3516,70 @@ async def _write_chat_usage_event(
         )
 
 
+#: Whole-persist wall-clock budget (audit AGT-6). persist_node sits on the
+#: path to the `completed` SSE frame — routers/queries.py queues `done` only
+#: after the graph returns — so an unbounded pool wait or retry ladder here
+#: can turn a fully streamed answer into a TIMEOUT frame. Past this budget
+#: the lineage row is given up (logged + counted), not the answer.
+_PERSIST_BUDGET_S = 5.0
+#: Separate, smaller budget for the usage metering INSERT that follows.
+_USAGE_BUDGET_S = 2.0
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """Worth retrying: connection loss, pool/resource pressure, operator
+    intervention, deadlock/serialization. A CHECK violation, an undefined
+    column or bad data fails identically on every attempt, so retrying it
+    only adds sleep to the user's time-to-completed."""
+    return isinstance(exc, (
+        TimeoutError,
+        OSError,  # includes ConnectionError
+        asyncpg.exceptions.PostgresConnectionError,
+        asyncpg.exceptions.InterfaceError,
+        asyncpg.exceptions.InsufficientResourcesError,
+        asyncpg.exceptions.OperatorInterventionError,
+        asyncpg.exceptions.TransactionRollbackError,
+    ))
+
+
 async def _insert_answer_run_with_retry(
     pg_pool: Any,
     sql: str,
     *args: Any,
 ) -> Any:
-    """Run the silver.answer_runs INSERT with bounded exponential backoff.
+    """Run the silver.answer_runs INSERT, retrying transient failures.
 
-    Three attempts spaced 0.5s → 1.0s → 2.0s. Transient asyncpg /
-    PostgreSQL errors during answer write-out (PgBouncer saturation, brief
-    network blip, PG restart) shouldn't cost us a lineage row. The final
-    failure re-raises so the caller can decide whether to escalate.
+    Three attempts, 0.25 s then 0.5 s apart (was 0.5/1.0/2.0 — 3.5 s of
+    sleep on the critical path before `completed`, AGT-6). Only transient
+    errors (``_is_transient_db_error``) are retried; a deterministic one
+    re-raises at once. The caller bounds the whole thing with
+    ``_PERSIST_BUDGET_S``.
     """
-    import asyncio as _asyncio  # noqa: PLC0415
-
     last_exc: BaseException | None = None
-    delays = (0.5, 1.0, 2.0)
+    delays = (0.25, 0.5, 0.0)
     for attempt, delay in enumerate(delays, start=1):
         try:
             async with pg_pool.acquire() as conn:
                 return await conn.fetchrow(sql, *args)
-        except Exception as exc:  # noqa: BLE001 — bounded retry surface
+        except Exception as exc:  # noqa: BLE001 — classified below
             last_exc = exc
+            if not _is_transient_db_error(exc):
+                logger.warning(
+                    "agentic_retrieval.persist: answer_runs INSERT failed "
+                    "with a non-transient %s — not retrying",
+                    type(exc).__name__,
+                )
+                raise
             if attempt < len(delays):
                 logger.warning(
                     "agentic_retrieval.persist: answer_runs INSERT "
-                    "attempt %d/%d failed (%s) — retrying in %.1fs",
+                    "attempt %d/%d failed (%s) — retrying in %.2fs",
                     attempt,
                     len(delays),
                     type(exc).__name__,
                     delay,
                 )
-                await _asyncio.sleep(delay)
+                await asyncio.sleep(delay)
             else:
                 logger.warning(
                     "agentic_retrieval.persist: answer_runs INSERT "
@@ -3480,9 +3606,12 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
       2. Insert a single row into ``silver.answer_runs`` carrying the OIUR
          schema version, lineage JSONB columns, and basic model metadata.
          The INSERT is wrapped in
-         :func:`_insert_answer_run_with_retry` — 3 attempts with
-         exponential backoff (0.5s, 1.0s, 2.0s) so transient asyncpg /
-         PgBouncer / PG flaps don't silently lose lineage rows.
+         :func:`_insert_answer_run_with_retry` — 3 attempts, 0.25 s / 0.5 s
+         apart, transient errors only — and the FK check + INSERT together
+         are bounded by ``_PERSIST_BUDGET_S`` (audit AGT-6: this node is on
+         the path to the `completed` frame). Child rows and usage metering
+         have their own smaller budgets; the trace is enqueued whatever
+         happened to the INSERT.
       3. On terminal failure (all 3 retries exhausted) the answer has
          already been streamed back to the caller, so the answer_runs
          write is non-fatal — but we escalate: ``logger.error`` with
@@ -3574,38 +3703,6 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             (_time_for_latency.monotonic() - state.run_start_monotonic) * 1000
         )
 
-    # FK-safety (option (b) from §39 follow-up). silver.answer_runs.project_id
-    # has a FK to silver.projects. Real production callers occasionally pass
-    # workspace UUIDs or stale project_ids that don't resolve — the resulting
-    # ForeignKeyViolationError used to take down the whole persist (incl. the
-    # trace row, because enqueue_trace was inside `if row is not None`).
-    # Validate-then-NULL keeps the row alive at the cost of one cheap
-    # SELECT — far cheaper than retrying the INSERT 3× and then losing the
-    # trace forever. The FK column itself is nullable (ON DELETE SET NULL).
-    if project_id is not None:
-        try:
-            async with pg_pool.acquire() as _fk_conn:
-                _project_exists = await _fk_conn.fetchval(
-                    "SELECT 1 FROM silver.projects WHERE project_id = $1::uuid",
-                    project_id,
-                )
-            if _project_exists is None:
-                logger.warning(
-                    "agentic_retrieval.persist: project_id %s not present in "
-                    "silver.projects — dropping to NULL on INSERT",
-                    project_id,
-                )
-                project_id = None
-        except Exception:
-            # Don't let the FK pre-check fail the persist. If the SELECT
-            # itself dies, fall through with the original project_id — the
-            # retry helper will handle the eventual FK error.
-            logger.debug(
-                "agentic_retrieval.persist: project_id FK pre-check failed; "
-                "trusting caller-supplied value",
-                exc_info=True,
-            )
-
     # Run totals folded across every LLM-capable node — see
     # `_fold_token_usage` for why these ride on the state instead of being
     # read from the contextvar here.
@@ -3618,7 +3715,7 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     _answer_run_id: str | None = None
 
     # §04i guard outcomes + refusal reason (2026-09-07 — see the helpers
-    # above). Computed once here; the trace block below reuses the codes.
+    # above). Computed once here; the trace below reuses the codes.
     _guard_codes: list[Any] = _classify_persist_guards(state, citation_state)
     _guard_failure_codes: list[str] = [c.value for c in _guard_codes]
     _guard_results_json = _json.dumps(_build_guard_results(_guard_failure_codes))
@@ -3626,345 +3723,95 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         state, citation_state, _guard_failure_codes,
     )
 
+    # Audit AGT-17: what the user SEES (guard codes for the error renderer,
+    # the evidence packet for the per-kind cards, the "Interpreted as" chip)
+    # is stamped before any database work. It used to be stamped inside the
+    # trace block, which sat inside the INSERT's try — an INSERT exception
+    # skipped it, and the UI lost the cards and the chip.
+    _stamp_response_for_ui(state, _guard_failure_codes)
+
+    row: Any = None
+    _retr_count = 0
+    _cite_count = 0
     try:
-        row = await _insert_answer_run_with_retry(
-            pg_pool,
-            """
-            INSERT INTO silver.answer_runs (
+        # Audit AGT-6: bounded. Every step below waits on the pool; with no
+        # bound, pool pressure or a slow RDS kept a fully streamed answer
+        # from reaching `completed` until the 180 s deadline turned it into
+        # a TIMEOUT frame.
+        async with asyncio.timeout(_PERSIST_BUDGET_S):
+            project_id = await _fk_checked_project_id(pg_pool, project_id)
+            row = await _insert_answer_run_with_retry(
+                pg_pool,
+                _ANSWER_RUN_INSERT_SQL,
                 workspace_id,
                 project_id,
-                query_text,
-                query_class,
-                workspace_data_version_at_query,
-                citation_lifecycle_state,
-                model_name,
-                backend_used,
-                session_id,
-                lineage_retrieved_sources,
-                lineage_filters_applied,
-                lineage_qaqc_filters_applied,
-                answer_schema_version,
-                confidence,
-                latency_ms,
-                input_tokens,
-                output_tokens,
-                rejection_reason,
-                hallucination_guard_results,
-                reranker_version
-            ) VALUES (
-                $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
-                $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
-                $17, $18::jsonb, $19
+                # What the user asked, not the multi-turn rewrite (AGT-1);
+                # the rewrite is in the trace's multi_turn_resolution.
+                state.query_original or state.query,
+                spec_query_class,
+                citation_state,
+                # The model that actually answered, not the one configured.
+                # `llm_calls.record_run_llm_model()` stamps this inside the
+                # same node as the LLM call and it rides here on the
+                # response object; `settings.effective_llm_model` is only a
+                # fallback for runs that produced no answer-bearing call.
+                _answering_model,
+                # Audit 2026-08-14 (finding 5): record the active LLM
+                # backend, normalised onto the answer_runs_backend_valid
+                # CHECK list so an unrecognised value persists as 'unknown'.
+                _backend_label,
+                cols["session_id"],
+                _json.dumps(cols["lineage_retrieved_sources"]),
+                _json.dumps(cols["lineage_filters_applied"]),
+                _json.dumps(cols["lineage_qaqc_filters_applied"]),
+                cols["answer_schema_version"],
+                _response_confidence,
+                _latency_ms,
+                _input_tokens,
+                _output_tokens,
+                _rejection_reason,
+                _guard_results_json,
+                _reranker_version_for_run(state),
             )
-            RETURNING answer_run_id
-            """,
-            workspace_id,
-            project_id,
-            state.query,
-            spec_query_class,
-            citation_state,
-            # The model that actually answered, not the one configured.
-            # `llm_calls.record_run_llm_model()` stamps this inside the same
-            # node as the LLM call and it rides here on the response object;
-            # `settings.effective_llm_model` is only a fallback for runs that
-            # produced no answer-bearing call. The identical bug on
-            # `audit.query_audit_log.llm_model` was fixed on 2026-08-21 —
-            # this was its second home.
-            _answering_model,
-            # Audit 2026-08-14 (finding 5): the agentic path previously
-            # never wrote backend_used (silent NULL). Record the active
-            # LLM backend, normalised onto the answer_runs_backend_valid
-            # CHECK list so an unrecognised value persists as 'unknown'
-            # instead of violating the constraint.
-            _normalize_backend(getattr(_settings, "LLM_BACKEND", None)),
-            cols["session_id"],
-            _json.dumps(cols["lineage_retrieved_sources"]),
-            _json.dumps(cols["lineage_filters_applied"]),
-            _json.dumps(cols["lineage_qaqc_filters_applied"]),
-            cols["answer_schema_version"],
-            _response_confidence,
-            _latency_ms,
-            # These two columns have existed since 2026-04-21 and had never
-            # been written: production held exactly one answer_runs row and
-            # `count(input_tokens)` was 0. `llm_calls.py` even documents the
-            # orchestrator as reading `get_run_token_usage()` "immediately
-            # before the answer_runs INSERT" — the INSERT named 15 columns
-            # and neither token column was among them.
-            _input_tokens,
-            _output_tokens,
-            _rejection_reason,
-            _guard_results_json,
-            _reranker_version_for_run(state),
+    except TimeoutError:
+        _report_persist_failure(
+            "answer_runs INSERT failed after retries: persist budget of "
+            f"{_PERSIST_BUDGET_S}s exceeded (pool wait or slow database)",
+            exc_info=False,
         )
+    except Exception:
+        _report_persist_failure("answer_runs INSERT failed after retries")
 
-        if row is not None:
-            _answer_run_id = str(row["answer_run_id"])
-
-        if row and state.response is not None:
-            from uuid import UUID as _UUID  # noqa: PLC0415
-            try:
-                state.response.answer_run_id = _UUID(str(row["answer_run_id"]))
-            except Exception:
-                # Pydantic assignment must never break observability.
-                logger.debug(
-                    "agentic_retrieval.persist: failed to stamp "
-                    "answer_run_id on response",
-                    exc_info=True,
-                )
+    if row is not None:
+        _answer_run_id = str(row["answer_run_id"])
+        from uuid import UUID as _UUID  # noqa: PLC0415
+        try:
+            state.response.answer_run_id = _UUID(_answer_run_id)
+        except Exception:
+            # Pydantic assignment must never break observability.
+            logger.debug(
+                "agentic_retrieval.persist: failed to stamp "
+                "answer_run_id on response",
+                exc_info=True,
+            )
 
         # RetrievalInspector follow-up — also persist the retrieval +
         # citation children so the inspector's Retrieval / Context panels
-        # have data to render. Best-effort: any failure logs + continues.
-        _retr_count = 0
-        _cite_count = 0
-        if row is not None:
-            try:
+        # have data to render. Best-effort and separately bounded: the
+        # parent row already landed.
+        try:
+            async with asyncio.timeout(_CHILD_ROWS_BUDGET_S):
                 _retr_count, _cite_count = await _persist_retrieval_and_citation_items(
                     pg_pool=pg_pool,
-                    answer_run_id=str(row["answer_run_id"]),
+                    answer_run_id=_answer_run_id,
                     workspace_id=workspace_id,
                     state=state,
                 )
-            except Exception:
-                logger.exception(
-                    "agentic_retrieval.persist: child-row INSERTs failed (non-fatal)"
-                )
-
-        # Plan §0e retrieval-trace observability — enqueue a RetrievalTrace
-        # for the silver.query_traces buffer. Fire-and-forget: the writer
-        # never raises, so this can't break the answer path.
-        #
-        # §39 follow-up (c): the trace is now emitted even when the
-        # answer_runs INSERT failed (row is None). Previously this block
-        # was gated on `if row is not None:`, which meant FK violations or
-        # pool exhaustion that killed the row also killed observability.
-        # `answer_run_id` falls through as None in that case — the
-        # RetrievalTrace schema explicitly allows it (trace_writer.py L91).
-        if True:  # noqa: SIM103 — see comment above; trace must run regardless
-            try:
-                from app.services.trace_writer import (  # noqa: PLC0415
-                    GuardResults,
-                    LatencyBreakdown,
-                    RawResultsPerSource,
-                    RetrievalTrace,
-                    enqueue_trace,
-                )
-
-                # Per-source candidate counts — best-effort scrape from
-                # the tool_results list. The shape varies by tool, so we
-                # only count entries that come back as lists/tuples.
-                _source_counts: dict[str, int] = {
-                    "qdrant_dense": 0,
-                    "qdrant_sparse": 0,
-                    "postgis": 0,
-                    "neo4j": 0,
-                }
-                for tool_name, tool_payload in state.tool_results:
-                    if tool_name == "search_documents" and isinstance(tool_payload, list):
-                        _source_counts["qdrant_dense"] += len(tool_payload)
-                    elif tool_name == "traverse_knowledge_graph" and isinstance(
-                        tool_payload, list
-                    ):
-                        _source_counts["neo4j"] += len(tool_payload)
-                    elif tool_name in (
-                        "query_spatial_collars",
-                        "query_assay_data",
-                        "query_downhole_logs",
-                    ) and isinstance(tool_payload, list):
-                        _source_counts["postgis"] += len(tool_payload)
-
-                _candidate_total = sum(_source_counts.values())
-
-                # Plan §3a/§3b wiring — prefer the typed EvidencePacket's
-                # `kind` list when it's available; fall back to the legacy
-                # tool-name list otherwise. The packet's order is canonical
-                # (authority-ranked) so the trace shows what the assembler
-                # actually read first.
-                if state.evidence_packet is not None and state.evidence_packet.evidence:
-                    _evidence_types = [e.kind for e in state.evidence_packet.evidence]
-                else:
-                    _evidence_types = [
-                        name for name, _ in state.tool_results if name
-                    ]
-
-                _selected_groups = (
-                    len(state.response.citations) if state.response is not None else 0
-                )
-
-                # Plan §3f — when the packet exists, its remaining_budget
-                # is the truth (system_prompt_tokens + total_tokens already
-                # subtracted). persist_node writes it directly to
-                # silver.query_traces.remaining_context_budget so dashboards
-                # can spot tight-budget queries before they fail.
-                _remaining_context_budget: int | None = None
-                if state.evidence_packet is not None:
-                    _remaining_context_budget = state.evidence_packet.remaining_budget
-
-                # Plan §4b foundation — typed guard error codes. Classified
-                # once before the answer_runs INSERT (`_guard_codes` /
-                # `_guard_failure_codes`, see `_classify_persist_guards`);
-                # the trace stores the enum values (".value" strings) for
-                # forward-compat with the §4b repair-strategy dispatcher.
-                from app.agent.guards import GuardErrorCode  # noqa: PLC0415
-
-                # Plan §4b — also stamp the typed codes onto the response
-                # so the Laravel / React side has the data for the user-
-                # facing renderer (Job 3). Mirror of the trace field; both
-                # are best-effort and never fail the answer path.
-                if state.response is not None:
-                    try:
-                        state.response.guard_error_codes = list(_guard_failure_codes)
-                    except Exception:  # pragma: no cover — defensive
-                        logger.debug(
-                            "agentic_retrieval.persist: failed to stamp "
-                            "guard_error_codes on response",
-                            exc_info=True,
-                        )
-
-                # Plan §3a/§3b — stamp the typed evidence packet onto the
-                # response in `.model_dump()` form so the Laravel SSE
-                # bridge can serialise it straight through to Chat.tsx.
-                # Frontend reads `evidence_packet.evidence[].kind` to
-                # dispatch per-kind cards (spatial → MapLibre, table →
-                # table card, etc.). None-safe: missing packet leaves the
-                # field at its default None.
-                if state.response is not None and state.evidence_packet is not None:
-                    try:
-                        state.response.evidence_packet = (
-                            state.evidence_packet.model_dump(mode="json")
-                        )
-                    except Exception:  # pragma: no cover — defensive
-                        logger.debug(
-                            "agentic_retrieval.persist: failed to stamp "
-                            "evidence_packet on response",
-                            exc_info=True,
-                        )
-
-                # Plan §3e — stamp the multi-turn resolution audit onto
-                # the response so the Chat.tsx preview chip can render
-                # "Interpreted as: …". Mirror of the JSONB trace field;
-                # both writes are independent for forward-compat.
-                if (
-                    state.response is not None
-                    and state.query_original is not None
-                    and state.resolution_trace
-                ):
-                    try:
-                        state.response.multi_turn_resolution = {
-                            "original_query": state.query_original,
-                            "rewritten_query": state.query,
-                            "trace": list(state.resolution_trace),
-                            "overall_confidence": state.resolution_confidence,
-                        }
-                    except Exception:  # pragma: no cover — defensive
-                        logger.debug(
-                            "agentic_retrieval.persist: failed to stamp "
-                            "multi_turn_resolution on response",
-                            exc_info=True,
-                        )
-
-                _guard_results = GuardResults(
-                    numeric_grounding=GuardErrorCode.NUMERIC_GROUNDING_FAILED not in _guard_codes,
-                    entity_grounding=GuardErrorCode.ENTITY_NOT_FOUND not in _guard_codes,
-                    citation_completeness=GuardErrorCode.CITATION_INCOMPLETE not in _guard_codes,
-                    refusal_triggered=citation_state == "rejected",
-                )
-
-                # Plan §0e denorm extras (audit follow-up) — populate
-                # tool_plan, generated_filters, reranker_scores into the
-                # payload so dashboard queries don't have to JSONB-parse.
-                _tool_plan_str = (
-                    ", ".join(state.retrieval_profile.primary_tools)
-                    if state.retrieval_profile else None
-                )
-                _tool_calls_list = [
-                    {"name": name, "result_kind": type(payload).__name__}
-                    for name, payload in state.tool_results
-                ]
-                _generated_filters: dict[str, Any] = {}
-                if state.retrieval_filters is not None:
-                    try:
-                        _generated_filters = (
-                            state.retrieval_filters.model_dump(exclude_none=True)
-                            if hasattr(state.retrieval_filters, "model_dump")
-                            else dict(state.retrieval_filters.__dict__)
-                        )
-                    except Exception:  # pragma: no cover — defensive
-                        _generated_filters = {}
-
-                _trace = RetrievalTrace(
-                    workspace_id=workspace_id,
-                    project_id=project_id,
-                    # §39 follow-up (c) — answer_run_id may be None when
-                    # the INSERT failed; the schema allows it.
-                    answer_run_id=(row["answer_run_id"] if row is not None else None),
-                    otel_trace_id=None,
-                    user_query=state.query,
-                    system_prompt_tokens=getattr(
-                        state, "system_prompt_tokens_estimate", None
-                    ),
-                    remaining_context_budget=_remaining_context_budget,
-                    router_decision=str(state.intent) if state.intent else None,
-                    router_confidence=(
-                        float(state.intent_result.confidence)
-                        if state.intent_result is not None
-                        else None
-                    ),
-                    effective_intent=(
-                        str(state.effective_intent) if state.effective_intent else None
-                    ),
-                    tool_plan=_tool_plan_str,
-                    tool_calls=_tool_calls_list,
-                    generated_filters=_generated_filters,
-                    raw_results_per_source=RawResultsPerSource(**_source_counts),
-                    candidate_count_pre_rerank=_candidate_total or None,
-                    selected_context_groups=_selected_groups or None,
-                    evidence_types_in_context=_evidence_types,
-                    guard_results=_guard_results,
-                    guard_failure_codes=_guard_failure_codes,
-                    # Plan §4b/§4c Stage 1 — repair_strategies_used picks up
-                    # the shadow-mode planner output. In shadow mode the
-                    # strategies are what the loop WOULD have attempted;
-                    # in full mode they're what it DID attempt. The trace
-                    # field name doesn't disambiguate (intentionally — it's
-                    # the same observability surface for both modes).
-                    repair_strategies_used=list(state.repair_strategy_history),
-                    repair_attempts=len(state.repair_attempts),
-                    death_loop_triggered=False,  # full loop will set this
-                    cache_hit=False,
-                    cache_type=None,
-                    latency_ms=LatencyBreakdown(total=_latency_ms),
-                    # Plan §3 context-prep audit — populated when
-                    # assemble_node ran prepare_evidence_for_intent and
-                    # stamped the result on state.context_prep_audit_payload.
-                    # Falls through to None when the flag was off OR the
-                    # packet was empty.
-                    context_prep_audit=getattr(
-                        state, "context_prep_audit_payload", None,
-                    ),
-                    # Plan §3e multi-turn resolution — when resolve_node
-                    # rewrote the query, the trace + confidence are on
-                    # state.resolution_trace + state.resolution_confidence.
-                    # Compose into a single JSONB.
-                    multi_turn_resolution=(
-                        {
-                            "original_query": state.query_original,
-                            "rewritten_query": state.query,
-                            "trace": list(state.resolution_trace),
-                            "overall_confidence": state.resolution_confidence,
-                        }
-                        if state.query_original is not None
-                        and state.resolution_trace
-                        else None
-                    ),
-                )
-
-                await enqueue_trace(pg_pool, _trace)
-            except Exception:
-                logger.warning(
-                    "agentic_retrieval.persist: trace enqueue failed (non-fatal)",
-                    exc_info=True,
-                )
+        except Exception:
+            logger.exception(
+                "agentic_retrieval.persist: child-row INSERTs failed or "
+                "exceeded their budget (non-fatal)"
+            )
 
         logger.info(
             "agentic_retrieval.persist: wrote answer_runs row "
@@ -3976,54 +3823,360 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             len(cols.get("lineage_retrieved_sources") or []),
             _response_confidence,
             _latency_ms,
-            row["answer_run_id"] if row else None,
+            _answer_run_id,
             _retr_count,
             _cite_count,
         )
-    except Exception:
-        # Terminal failure after 3 retries — escalate via structured log
-        # (Alertmanager picks up extra={"alert": True}) and bump the
-        # Prometheus counter so dashboards/PromQL can rate-alert. The
-        # answer is already streamed back to the user so we keep this
-        # path non-fatal — but the lineage row is permanently lost.
-        try:
-            from app.metrics import AGENTIC_PERSIST_FAILURES  # noqa: PLC0415
 
-            AGENTIC_PERSIST_FAILURES.labels(stage="answer_runs").inc()
-        except Exception:  # pragma: no cover — never block on metrics
-            logger.debug(
-                "agentic_retrieval.persist: AGENTIC_PERSIST_FAILURES "
-                "counter inc failed",
-                exc_info=True,
-            )
-        logger.error(
-            "agentic_retrieval.persist: answer_runs INSERT failed after retries",
-            exc_info=True,
-            extra={"alert": True},
-        )
-
-    # L1546 — meter the spend. Deliberately outside the try above: the
-    # tokens were bought whether or not the lineage row landed, and a cost
-    # record that vanishes whenever persistence fails is precisely the
-    # blind spot this closes. `_answer_run_id` is None when the INSERT
-    # never returned one; usage.usage_events.invocation_id is nullable.
-    await _write_chat_usage_event(
-        pg_pool,
+    # Plan §0e retrieval-trace observability. Audit AGT-17: this runs
+    # whatever happened to the INSERT — it used to sit inside the INSERT's
+    # try, so the "must run regardless" comment only covered `row is None`,
+    # not an exception. `answer_run_id` is None when no row landed; the
+    # RetrievalTrace schema allows it. enqueue_trace is a non-blocking
+    # buffer append that never raises.
+    await _enqueue_persist_trace(
+        state,
+        pg_pool=pg_pool,
         workspace_id=workspace_id,
-        model_id=_answering_model,
-        backend=_backend_label,
-        input_tokens=_input_tokens,
-        output_tokens=_output_tokens,
+        project_id=project_id,
+        answer_run_id=row["answer_run_id"] if row is not None else None,
+        guard_codes=_guard_codes,
+        guard_failure_codes=_guard_failure_codes,
+        citation_state=citation_state,
         latency_ms=_latency_ms,
-        trace_id=getattr(state.deps, "trace_id", None),
-        answer_run_id=_answer_run_id,
     )
 
+    # L1546 — meter the spend. Deliberately independent of the INSERT: the
+    # tokens were bought whether or not the lineage row landed.
+    # `_answer_run_id` is None when the INSERT never returned one;
+    # usage.usage_events.invocation_id is nullable.
+    try:
+        async with asyncio.timeout(_USAGE_BUDGET_S):
+            await _write_chat_usage_event(
+                pg_pool,
+                workspace_id=workspace_id,
+                model_id=_answering_model,
+                backend=_backend_label,
+                input_tokens=_input_tokens,
+                output_tokens=_output_tokens,
+                latency_ms=_latency_ms,
+                trace_id=getattr(state.deps, "trace_id", None),
+                answer_run_id=_answer_run_id,
+            )
+    except TimeoutError:
+        logger.error(
+            "agentic_retrieval.persist: usage.usage_events INSERT exceeded its "
+            "%.1fs budget — this query's spend is unmetered",
+            _USAGE_BUDGET_S,
+            extra={"alert": True, "workspace_id": workspace_id},
+        )
+
     # Return the (possibly mutated) response so LangGraph propagates the
-    # stamped answer_run_id back to the caller. Mutation-in-place would
-    # also work because Pydantic models are reference types, but returning
-    # explicitly makes the data flow obvious.
-    return {"response": state.response} if state.response is not None else {}
+    # stamped answer_run_id back to the caller.
+    return {"response": state.response}
+
+
+_ANSWER_RUN_INSERT_SQL = """
+    INSERT INTO silver.answer_runs (
+        workspace_id,
+        project_id,
+        query_text,
+        query_class,
+        workspace_data_version_at_query,
+        citation_lifecycle_state,
+        model_name,
+        backend_used,
+        session_id,
+        lineage_retrieved_sources,
+        lineage_filters_applied,
+        lineage_qaqc_filters_applied,
+        answer_schema_version,
+        confidence,
+        latency_ms,
+        input_tokens,
+        output_tokens,
+        rejection_reason,
+        hallucination_guard_results,
+        reranker_version,
+        citation_mode
+    ) VALUES (
+        $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
+        $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
+        $17, $18::jsonb, $19,
+        -- Audit RAG-22: never written before, so always NULL. CLAUDE.md
+        -- rule 4: citation_mode is always posthoc_span_resolution.
+        'posthoc_span_resolution'
+    )
+    RETURNING answer_run_id
+"""
+
+#: Child retrieval/citation rows — separately bounded (AGT-6).
+_CHILD_ROWS_BUDGET_S = 2.0
+
+
+def _report_persist_failure(message: str, *, exc_info: bool = True) -> None:
+    """Terminal answer_runs failure: page, count, keep the answer.
+
+    The answer has already streamed, so this path stays non-fatal — but the
+    lineage row is permanently lost, so it logs at ERROR with
+    ``extra={"alert": True}`` (Alertmanager) and increments
+    AGENTIC_PERSIST_FAILURES (Prometheus rate alert).
+    """
+    try:
+        from app.metrics import AGENTIC_PERSIST_FAILURES  # noqa: PLC0415
+
+        AGENTIC_PERSIST_FAILURES.labels(stage="answer_runs").inc()
+    except Exception:  # pragma: no cover — never block on metrics
+        logger.debug(
+            "agentic_retrieval.persist: AGENTIC_PERSIST_FAILURES counter inc failed",
+            exc_info=True,
+        )
+    logger.error(
+        "agentic_retrieval.persist: %s", message,
+        exc_info=exc_info, extra={"alert": True},
+    )
+
+
+async def _fk_checked_project_id(pg_pool: Any, project_id: Any) -> Any:
+    """FK-safety (option (b) from §39 follow-up).
+
+    silver.answer_runs.project_id has a FK to silver.projects. Callers
+    occasionally pass workspace UUIDs or stale project_ids that don't
+    resolve; the resulting ForeignKeyViolationError used to take down the
+    whole persist. Validate-then-NULL keeps the row alive at the cost of one
+    cheap SELECT. The FK column is nullable (ON DELETE SET NULL).
+    """
+    if project_id is None:
+        return None
+    try:
+        async with pg_pool.acquire() as fk_conn:
+            exists = await fk_conn.fetchval(
+                "SELECT 1 FROM silver.projects WHERE project_id = $1::uuid",
+                project_id,
+            )
+    except TimeoutError:
+        raise
+    except Exception:
+        # Don't let the FK pre-check fail the persist: fall through with
+        # the original project_id and let the INSERT decide.
+        logger.debug(
+            "agentic_retrieval.persist: project_id FK pre-check failed; "
+            "trusting caller-supplied value",
+            exc_info=True,
+        )
+        return project_id
+    if exists is None:
+        logger.warning(
+            "agentic_retrieval.persist: project_id %s not present in "
+            "silver.projects — dropping to NULL on INSERT",
+            project_id,
+        )
+        return None
+    return project_id
+
+
+def _stamp_response_for_ui(
+    state: AgenticRetrievalState, guard_failure_codes: list[str],
+) -> None:
+    """Fields the Laravel bridge / Chat.tsx render, stamped on the response.
+
+    Each write is independent and best-effort; none may fail the answer.
+    """
+    response = state.response
+    if response is None:
+        return
+    # Plan §4b — typed guard codes for the user-facing error renderer.
+    try:
+        response.guard_error_codes = list(guard_failure_codes)
+    except Exception:  # pragma: no cover — defensive
+        logger.debug(
+            "agentic_retrieval.persist: failed to stamp guard_error_codes",
+            exc_info=True,
+        )
+    # Plan §3a/§3b — the typed evidence packet, in `.model_dump()` form so
+    # the SSE bridge can serialise it straight through; Chat.tsx dispatches
+    # per-kind cards off `evidence_packet.evidence[].kind`.
+    if state.evidence_packet is not None:
+        try:
+            response.evidence_packet = state.evidence_packet.model_dump(mode="json")
+        except Exception:  # pragma: no cover — defensive
+            logger.debug(
+                "agentic_retrieval.persist: failed to stamp evidence_packet",
+                exc_info=True,
+            )
+    # Plan §3e — the multi-turn resolution audit, for the "Interpreted as"
+    # chip.
+    if state.query_original is not None and state.resolution_trace:
+        try:
+            response.multi_turn_resolution = _multi_turn_resolution_payload(state)
+        except Exception:  # pragma: no cover — defensive
+            logger.debug(
+                "agentic_retrieval.persist: failed to stamp multi_turn_resolution",
+                exc_info=True,
+            )
+
+
+def _multi_turn_resolution_payload(state: AgenticRetrievalState) -> dict[str, Any]:
+    return {
+        "original_query": state.query_original,
+        "rewritten_query": state.query,
+        "trace": list(state.resolution_trace),
+        "overall_confidence": state.resolution_confidence,
+    }
+
+
+def _result_row_count(result: Any) -> int:
+    """Rows/chunks a tool result carries (AGT-17).
+
+    The trace's per-source counts used to test isinstance(payload, list);
+    every tool returns a dataclass, so raw_results_per_source was always 0
+    and candidate_count_pre_rerank always None.
+    """
+    for attr in ("chunks", "records"):
+        items = getattr(result, attr, None)
+        if items is not None:
+            return len(items)
+    count = getattr(result, "count", None)
+    if isinstance(count, int) and not isinstance(count, bool):
+        return count
+    if isinstance(result, (list, tuple)):
+        return len(result)
+    return 0
+
+
+_POSTGIS_TOOLS = frozenset({
+    "query_spatial_collars", "query_assay_data", "query_downhole_logs",
+    "query_collar_details", "query_project_overview",
+})
+
+
+async def _enqueue_persist_trace(
+    state: AgenticRetrievalState,
+    *,
+    pg_pool: Any,
+    workspace_id: Any,
+    project_id: Any,
+    answer_run_id: Any,
+    guard_codes: list[Any],
+    guard_failure_codes: list[str],
+    citation_state: str,
+    latency_ms: int | None,
+) -> None:
+    """Enqueue the silver.query_traces row. Never raises."""
+    try:
+        from app.agent.guards import GuardErrorCode  # noqa: PLC0415
+        from app.services.trace_writer import (  # noqa: PLC0415
+            GuardResults,
+            LatencyBreakdown,
+            RawResultsPerSource,
+            RetrievalTrace,
+            enqueue_trace,
+        )
+
+        source_counts: dict[str, int] = {
+            "qdrant_dense": 0,
+            "qdrant_sparse": 0,
+            "postgis": 0,
+            "neo4j": 0,
+        }
+        for tool_name, payload in state.tool_results:
+            n = _result_row_count(payload)
+            if tool_name in ("search_documents", "search_documents_adversarial"):
+                # Hybrid retrieval returns one fused list; the dense/sparse
+                # split is not recoverable here, so it is all booked dense.
+                source_counts["qdrant_dense"] += n
+            elif tool_name in _POSTGIS_TOOLS:
+                source_counts["postgis"] += n
+        candidate_total = sum(source_counts.values())
+
+        # Plan §3a/§3b — prefer the typed EvidencePacket's `kind` list when
+        # it's available (authority-ranked); fall back to tool names.
+        if state.evidence_packet is not None and state.evidence_packet.evidence:
+            evidence_types = [e.kind for e in state.evidence_packet.evidence]
+        else:
+            evidence_types = [name for name, _ in state.tool_results if name]
+
+        selected_groups = (
+            len(state.response.citations) if state.response is not None else 0
+        )
+        # Plan §3f — the packet's remaining_budget already has the system
+        # prompt and evidence subtracted.
+        remaining_budget = (
+            state.evidence_packet.remaining_budget
+            if state.evidence_packet is not None else None
+        )
+
+        generated_filters: dict[str, Any] = {}
+        if state.retrieval_filters is not None:
+            try:
+                generated_filters = (
+                    state.retrieval_filters.model_dump(exclude_none=True)
+                    if hasattr(state.retrieval_filters, "model_dump")
+                    else dict(state.retrieval_filters.__dict__)
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.debug(
+                    "agentic_retrieval.persist: retrieval_filters dump failed",
+                    exc_info=True,
+                )
+
+        trace = RetrievalTrace(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            answer_run_id=answer_run_id,
+            otel_trace_id=None,
+            user_query=state.query_original or state.query,
+            system_prompt_tokens=state.system_prompt_tokens_estimate,
+            remaining_context_budget=remaining_budget,
+            router_decision=str(state.intent) if state.intent else None,
+            router_confidence=(
+                float(state.intent_result.confidence)
+                if state.intent_result is not None else None
+            ),
+            effective_intent=(
+                str(state.effective_intent) if state.effective_intent else None
+            ),
+            tool_plan=(
+                ", ".join(state.retrieval_profile.primary_tools)
+                if state.retrieval_profile else None
+            ),
+            tool_calls=[
+                {"name": name, "result_kind": type(payload).__name__}
+                for name, payload in state.tool_results
+            ],
+            generated_filters=generated_filters,
+            raw_results_per_source=RawResultsPerSource(**source_counts),
+            candidate_count_pre_rerank=candidate_total or None,
+            selected_context_groups=selected_groups or None,
+            evidence_types_in_context=evidence_types,
+            guard_results=GuardResults(
+                numeric_grounding=GuardErrorCode.NUMERIC_GROUNDING_FAILED not in guard_codes,
+                entity_grounding=GuardErrorCode.ENTITY_NOT_FOUND not in guard_codes,
+                citation_completeness=GuardErrorCode.CITATION_INCOMPLETE not in guard_codes,
+                refusal_triggered=citation_state == "rejected",
+            ),
+            guard_failure_codes=guard_failure_codes,
+            # Plan §4b/§4c — what the repair planner would have attempted
+            # (shadow) or did attempt (full).
+            repair_strategies_used=list(state.repair_strategy_history),
+            repair_attempts=len(state.repair_attempts),
+            death_loop_triggered=state.repair_terminal_reason == "death loop detected",
+            cache_hit=False,
+            cache_type=None,
+            latency_ms=LatencyBreakdown(total=latency_ms),
+            context_prep_audit=state.context_prep_audit_payload,
+            multi_turn_resolution=(
+                _multi_turn_resolution_payload(state)
+                if state.query_original is not None and state.resolution_trace
+                else None
+            ),
+        )
+        await enqueue_trace(pg_pool, trace)
+    except Exception:
+        logger.warning(
+            "agentic_retrieval.persist: trace enqueue failed (non-fatal)",
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -4249,6 +4402,70 @@ def _extract_citation_rows(
     return rows
 
 
+async def _batched_executemany(
+    conn: Any, sql: str, args: list[tuple[Any, ...]],
+) -> int | None:
+    """One executemany; the row count on success, None if the batch was
+    rejected (asyncpg's executemany is atomic, so nothing landed and the
+    caller's per-row path can run without duplicating anything)."""
+    if not args:
+        return 0
+    try:
+        await conn.executemany(sql, args)
+    except Exception:
+        logger.debug(
+            "agentic_retrieval.persist: batched child-row INSERT rejected — "
+            "falling back to per-row inserts",
+            exc_info=True,
+        )
+        return None
+    return len(args)
+
+
+async def _batched_retrieval_insert(
+    conn: Any,
+    retr_rows: list[dict[str, Any]],
+    cited_chunk_ids: set[str],
+    answer_run_id: str,
+    workspace_id: str,
+    sql_with_passage: str,
+    sql_null_passage: str,
+) -> int | None:
+    """Both retrieval-item batches in one transaction, or neither."""
+    import json as _json  # noqa: PLC0415
+
+    with_passage: list[tuple[Any, ...]] = []
+    null_passage: list[tuple[Any, ...]] = []
+    for r in retr_rows:
+        ref = r.get("candidate_ref") or {}
+        used = str(ref.get("chunk_id") or "") in cited_chunk_ids
+        stage = r.get("stage") or "retrieved"
+        tail = (_json.dumps(ref), r.get("retriever_score"), r.get("reranker_score"), used)
+        if r.get("passage_id") is not None:
+            with_passage.append(
+                (answer_run_id, workspace_id, stage, r["source_store"], r["passage_id"], *tail)
+            )
+        else:
+            null_passage.append(
+                (answer_run_id, workspace_id, stage, r["source_store"], *tail)
+            )
+    try:
+        async with conn.transaction():
+            if with_passage:
+                await conn.executemany(sql_with_passage, with_passage)
+            if null_passage:
+                await conn.executemany(sql_null_passage, null_passage)
+    except Exception:
+        logger.debug(
+            "agentic_retrieval.persist: batched retrieval_item INSERT rejected "
+            "(typically a passage not in silver.document_passages) — falling "
+            "back to per-row inserts",
+            exc_info=True,
+        )
+        return None
+    return len(with_passage) + len(null_passage)
+
+
 async def _persist_retrieval_and_citation_items(
     *,
     pg_pool: Any,
@@ -4308,7 +4525,15 @@ async def _persist_retrieval_and_citation_items(
             )
         """
         async with pg_pool.acquire() as conn:
-            for r in retr_rows:
+            # AGT-6: one round trip for the whole batch when every row is
+            # clean; the per-row loop below (with its FK -> NULL-passage
+            # fallback) runs only if the batch was rejected.
+            batched = await _batched_retrieval_insert(
+                conn, retr_rows, cited_chunk_ids, answer_run_id, workspace_id,
+                retr_sql_with_passage, retr_sql_null_passage,
+            )
+            retr_count = batched or 0
+            for r in (retr_rows if batched is None else ()):
                 ref_dict = r.get("candidate_ref") or {}
                 used_in_citation = (
                     str(ref_dict.get("chunk_id") or "") in cited_chunk_ids
@@ -4378,7 +4603,16 @@ async def _persist_retrieval_and_citation_items(
             ON CONFLICT (answer_run_id, marker_text) DO NOTHING
         """
         async with pg_pool.acquire() as conn:
-            for c in cite_rows:
+            cite_args = [
+                (
+                    answer_run_id, workspace_id, c["passage_id"], c["marker_text"],
+                    c.get("source_store"), c.get("confidence"),
+                )
+                for c in cite_rows
+            ]
+            batched = await _batched_executemany(conn, cite_sql, cite_args)
+            cite_count = batched or 0
+            for c in (cite_rows if batched is None else ()):
                 try:
                     await conn.execute(
                         cite_sql,
