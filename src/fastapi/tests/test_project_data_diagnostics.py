@@ -97,16 +97,25 @@ class FakeConn:
         if "set_config('app.workspace_id'" in sql:
             self.scope = (args[0] if args else "") or None
 
+    def _projects_matching(self, slug: str) -> list[dict]:
+        """What _PROJECT_KEY_SQL returns in the bound scope: exact slug first, then the
+        ``{slug}-{8 x [a-z0-9]}`` slugs, sorted."""
+        seen = self.projects_by_scope.get(self.scope)
+        rows = [] if seen is None else (seen if isinstance(seen, list) else [seen])
+        suffixed = re.compile(rf"^{re.escape(slug)}-[a-z0-9]{{8}}$")
+        hits = [r for r in rows if r["slug"] == slug or suffixed.match(r["slug"])]
+        return sorted(hits, key=lambda r: (r["slug"] != slug, r["slug"]))
+
     async def fetchrow(self, sql, *args):
         self.sql.append(sql)
         self.args.append(args)
-        if "WHERE p.slug = $1" in sql:
-            return self.projects_by_scope.get(self.scope)
         return self._answer(sql, args, None)
 
     async def fetch(self, sql, *args):
         self.sql.append(sql)
         self.args.append(args)
+        if "WHERE p.slug = $1" in sql:
+            return self._projects_matching(args[0])
         if "silver.workspaces" in sql:
             return [{"workspace_id": w} for w in self.workspaces]
         return self._answer(sql, args, [])
@@ -228,28 +237,58 @@ class TestArgs:
 class TestFindProject:
     def test_unscoped_hit_then_binds_the_projects_workspace(self) -> None:
         conn = FakeConn(projects_by_scope={None: _project_row()})
-        project, tried = _run(pdd.find_project(conn, "red-star"))
+        project, tried, _ = _run(pdd.find_project(conn, "red-star"))
         assert project is not None and project.project_id == _PID and project.workspace_id == _WS_B
         assert tried == ["unscoped"]
         assert conn.scope == _WS_B  # every later query runs inside the project's workspace
 
     def test_rls_hiding_the_row_falls_back_to_walking_workspaces(self) -> None:
         conn = FakeConn(projects_by_scope={None: None, _WS_A: None, _WS_B: _project_row()}, workspaces=(_WS_A, _WS_B))
-        project, tried = _run(pdd.find_project(conn, "red-star"))
+        project, tried, _ = _run(pdd.find_project(conn, "red-star"))
         assert project is not None and project.workspace_id == _WS_B
         assert tried == ["unscoped", f"workspace {_WS_A}", f"workspace {_WS_B}"]
         assert conn.scope == _WS_B
 
     def test_not_found_leaves_the_session_unscoped(self) -> None:
         conn = FakeConn(projects_by_scope={}, workspaces=(_WS_A, _WS_B))
-        project, tried = _run(pdd.find_project(conn, "nope"))
-        assert project is None
+        project, tried, ambiguous = _run(pdd.find_project(conn, "nope"))
+        assert project is None and ambiguous == []
         assert tried == ["unscoped", f"workspace {_WS_A}", f"workspace {_WS_B}"]
         assert conn.scope is None
 
+    def test_the_name_part_finds_the_suffixed_slug_a_new_project_gets(self) -> None:
+        # Project::makeSlug: "Red Star" -> red-star-{8 random [a-z0-9]} (LAR-14).
+        conn = FakeConn(
+            projects_by_scope={None: None, _WS_B: _project_row(slug="red-star-k3j9x0qa")}, workspaces=(_WS_B,)
+        )
+        project, _, ambiguous = _run(pdd.find_project(conn, "red-star"))
+        assert project is not None and project.slug == "red-star-k3j9x0qa" and ambiguous == []
+        assert conn.scope == _WS_B
+
+    def test_an_exact_slug_beats_suffixed_ones(self) -> None:
+        rows = [_project_row(slug="red-star-k3j9x0qa"), _project_row(slug="red-star")]
+        conn = FakeConn(projects_by_scope={None: rows})
+        project, _, _ = _run(pdd.find_project(conn, "red-star"))
+        assert project is not None and project.slug == "red-star"
+
+    def test_two_suffixed_matches_pick_neither_and_name_both(self) -> None:
+        rows = [_project_row(slug="red-star-zzzzzzzz"), _project_row(slug="red-star-aaaaaaaa")]
+        conn = FakeConn(projects_by_scope={None: rows}, workspaces=(_WS_A,))
+        project, tried, ambiguous = _run(pdd.find_project(conn, "red-star"))
+        assert project is None
+        assert ambiguous == ["red-star-aaaaaaaa", "red-star-zzzzzzzz"]
+        assert tried == ["unscoped"]  # the first scope that sees candidates decides
+        assert conn.scope is None
+
+    def test_a_longer_name_sharing_the_prefix_is_not_a_match(self) -> None:
+        rows = [_project_row(slug="red-star-north-k3j9x0qa"), _project_row(slug="red-star-k3j9x0q")]
+        conn = FakeConn(projects_by_scope={None: rows})
+        project, _, ambiguous = _run(pdd.find_project(conn, "red-star"))
+        assert project is None and ambiguous == []
+
     def test_a_project_with_no_workspace_is_read_unscoped(self) -> None:
         conn = FakeConn(projects_by_scope={None: _project_row(ws=None)})
-        project, _ = _run(pdd.find_project(conn, "red-star"))
+        project, _, _ = _run(pdd.find_project(conn, "red-star"))
         assert project is not None and project.workspace_id is None
         assert conn.scope is None
 
@@ -871,6 +910,17 @@ class TestRun:
         md, js = _parse(cap.out)
         assert "PROJECT NOT FOUND OR NOT VISIBLE" in md
         assert js["project"] is None and js["meta"]["scopes_tried"][0] == "unscoped"
+
+    def test_an_ambiguous_name_is_exit_2_listing_the_full_slugs(self, capsys) -> None:
+        rows = [_project_row(slug="red-star-aaaaaaaa"), _project_row(slug="red-star-bbbbbbbb")]
+        conn = FakeConn(projects_by_scope={None: rows})
+        rc = _run(pdd.run(argparse.Namespace(project_slug="red-star"), conn))
+        cap = capsys.readouterr()
+        assert rc == 2
+        assert "PROJECT AMBIGUOUS" in cap.err
+        md, js = _parse(cap.out)
+        assert "MORE THAN ONE PROJECT MATCHES" in md and "`red-star-bbbbbbbb`" in md
+        assert js["meta"]["ambiguous_slugs"] == ["red-star-aaaaaaaa", "red-star-bbbbbbbb"]
 
     def test_main_maps_an_unexpected_error_to_exit_1(self, monkeypatch, capsys) -> None:
         async def boom():

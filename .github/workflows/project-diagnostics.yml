@@ -49,7 +49,7 @@ on:
   workflow_dispatch:
     inputs:
       project_slug:
-        description: "Project slug (a-z, 0-9, hyphen; the Projects page URL, e.g. red-star)"
+        description: "Project slug from the Projects page URL (e.g. red-star-k3j9x0qa), or just its name part (red-star)"
         required: true
         type: string
 
@@ -255,7 +255,7 @@ jobs:
                   --start-from-head --limit 10000 --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
               else
                 resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" \
-                  --start-from-head --limit 10000 --next-forward-token "$token" --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+                  --start-from-head --limit 10000 --next-token "$token" --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
               fi
               echo "$resp" | jq -r '.events[].message' >> "$RAW"
               next=$(echo "$resp" | jq -r '.nextForwardToken')

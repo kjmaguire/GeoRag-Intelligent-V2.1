@@ -226,12 +226,27 @@ class Project:
     slug: str
 
 
+#: The exact slug, or the slug the Projects page mints from the NAME: Project::makeSlug
+#: appends ``-`` plus 8 random ``[a-z0-9]`` (LAR-14), so the project called "Red Star"
+#: is ``red-star-k3j9x0qa`` and ``--project-slug=red-star`` finds it. $1 is validated
+#: against ``^[a-z0-9-]+$`` before it gets here, so it carries no regex metacharacters.
 _PROJECT_KEY_SQL = """
 SELECT p.project_id::text AS project_id, p.workspace_id::text AS workspace_id, p.slug
   FROM silver.projects p
- WHERE p.slug = $1
- LIMIT 1
+ WHERE p.slug = $1 OR p.slug ~ ('^' || $1 || '-[a-z0-9]{8}$')
+ ORDER BY (p.slug = $1) DESC, p.slug
+ LIMIT 10
 """
+
+
+def _pick(rows: list[Any], slug: str) -> tuple[Any | None, list[str]]:
+    """``(row, ambiguous_slugs)``: the exact match, else the one suffixed match; two or
+    more suffixed matches (and no exact one) pick nothing and name them all."""
+    if not rows:
+        return None, []
+    if rows[0]["slug"] == slug or len(rows) == 1:
+        return rows[0], []
+    return None, [r["slug"] for r in rows]
 
 
 async def open_readonly_connection() -> Any:
@@ -251,17 +266,20 @@ async def open_readonly_connection() -> Any:
     return conn
 
 
-async def find_project(conn: Any, slug: str) -> tuple[Project | None, list[str]]:
-    """Find the project by slug, then leave the session bound to its workspace.
+async def find_project(conn: Any, slug: str) -> tuple[Project | None, list[str], list[str]]:
+    """Find the project by slug (or by the name part of one), then leave the session
+    bound to its workspace.
 
-    Returns ``(project, scopes_tried)``. Unscoped first (silver.projects is a bootstrap
-    table); else walk silver.workspaces binding ``app.workspace_id`` to each."""
+    Returns ``(project, scopes_tried, ambiguous_slugs)``. Unscoped first (silver.projects
+    is a bootstrap table); else walk silver.workspaces binding ``app.workspace_id`` to
+    each. The first scope that sees any candidate decides; if it sees several suffixed
+    slugs and no exact one, nothing is picked and they are all returned."""
     from app.db import bind_workspace_scope  # noqa: PLC0415
 
     tried = ["unscoped"]
     await conn.execute("SELECT set_config('app.workspace_id', '', false)")
-    row = await conn.fetchrow(_PROJECT_KEY_SQL, slug)
-    if row is None:
+    rows = list(await conn.fetch(_PROJECT_KEY_SQL, slug))
+    if not rows:
         workspaces = [
             r["workspace_id"]
             for r in await conn.fetch(
@@ -271,12 +289,13 @@ async def find_project(conn: Any, slug: str) -> tuple[Project | None, list[str]]
         for ws in workspaces:
             await bind_workspace_scope(conn, workspace_id=ws, site="project_data_diagnostics", is_local=False)
             tried.append(f"workspace {ws}")
-            row = await conn.fetchrow(_PROJECT_KEY_SQL, slug)
-            if row is not None:
+            rows = list(await conn.fetch(_PROJECT_KEY_SQL, slug))
+            if rows:
                 break
+    row, ambiguous = _pick(rows, slug)
     if row is None:
         await conn.execute("SELECT set_config('app.workspace_id', '', false)")
-        return None, tried
+        return None, tried, ambiguous
 
     project = Project(project_id=row["project_id"], workspace_id=row["workspace_id"], slug=row["slug"])
     if project.workspace_id:
@@ -284,7 +303,7 @@ async def find_project(conn: Any, slug: str) -> tuple[Project | None, list[str]]
         await bind_workspace_scope(
             conn, workspace_id=project.workspace_id, site="project_data_diagnostics", is_local=False
         )
-    return project, tried
+    return project, tried, []
 
 
 async def project_details(conn: Any, project: Project) -> dict[str, Any]:
@@ -1109,9 +1128,19 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines.append(f"- requested slug: `{meta['project_slug']}`  |  read-only  |  generated {meta['generated_at']}")
     project = result.get("project")
     if project is None:
+        ambiguous = meta.get("ambiguous_slugs") or []
+        if ambiguous:
+            lines += [
+                "",
+                f"**MORE THAN ONE PROJECT MATCHES** `{meta['project_slug']}`. Re-run with one of these full slugs:",
+                "",
+            ]
+            lines += [f"- `{a}`" for a in ambiguous]
+            return "\n".join(lines)
         lines += [
             "",
-            f"**PROJECT NOT FOUND OR NOT VISIBLE.** No silver.projects row with slug `{meta['project_slug']}` was visible "
+            f"**PROJECT NOT FOUND OR NOT VISIBLE.** No silver.projects row with slug `{meta['project_slug']}` "
+            f"(or `{meta['project_slug']}-` plus the 8-character suffix a new project gets) was visible "
             f"(tried: {', '.join(meta['scopes_tried'])}). Check the slug (Projects page URL) and that RLS is not hiding it.",
         ]
         return "\n".join(lines)
@@ -1150,12 +1179,17 @@ def _count_statuses(checks: dict[str, dict[str, Any]]) -> Counter[str]:
 
 
 def build_result(
-    slug: str, project: dict[str, Any] | None, scopes_tried: list[str], checks: dict[str, dict[str, Any]]
+    slug: str,
+    project: dict[str, Any] | None,
+    scopes_tried: list[str],
+    checks: dict[str, dict[str, Any]],
+    ambiguous_slugs: list[str] | None = None,
 ) -> dict[str, Any]:
     statuses = _count_statuses(checks)
     return {
         "meta": {
             "project_slug": slug,
+            "ambiguous_slugs": list(ambiguous_slugs or []),
             "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "scopes_tried": scopes_tried,
             "checks_ok": statuses["ok"],
@@ -1186,13 +1220,19 @@ async def run(args: argparse.Namespace, conn: Any | None = None) -> int:
     if conn is None:
         conn = await open_readonly_connection()
     try:
-        project, tried = await find_project(conn, args.project_slug)
+        project, tried, ambiguous = await find_project(conn, args.project_slug)
         if project is None:
-            emit(build_result(args.project_slug, None, tried, {}))
-            print(
-                f"PROJECT NOT FOUND: no silver.projects row with slug {args.project_slug!r} was visible (tried: {', '.join(tried)}).",
-                file=sys.stderr,
-            )
+            emit(build_result(args.project_slug, None, tried, {}, ambiguous))
+            if ambiguous:
+                print(
+                    f"PROJECT AMBIGUOUS: {args.project_slug!r} matches {', '.join(ambiguous)}; re-run with one of them.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"PROJECT NOT FOUND: no silver.projects row with slug {args.project_slug!r} was visible (tried: {', '.join(tried)}).",
+                    file=sys.stderr,
+                )
             return 2
         details = await project_details(conn, project)
         checks = await run_checks(conn, project)
