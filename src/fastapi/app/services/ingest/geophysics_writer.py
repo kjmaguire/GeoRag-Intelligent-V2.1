@@ -410,8 +410,9 @@ def assumed_crs_warning(label: str, epsg: int, lines: int) -> dict[str, Any]:
             f"nor its project declares one, so the X/Y values were read as "
             f"EPSG:{epsg}, the platform default. If the survey was flown or "
             f"walked in another zone or datum it is in the wrong place on the "
-            f"map. Re-upload with the EPSG typed in the Import wizard, or set the "
-            f"project's CRS — re-uploading replaces this survey in place."
+            f"map. Re-upload with the EPSG typed in the Import wizard — "
+            f"re-uploading replaces this survey in place. A project's coordinate "
+            f"system can only be set when the project is created."
         ),
     }
 
