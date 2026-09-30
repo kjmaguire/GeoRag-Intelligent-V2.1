@@ -588,6 +588,19 @@ resource "aws_ecs_service" "this" {
     weight            = 1
   }
 
+  # ECS will not change a service's capacity provider without a new
+  # deployment, and the provider refuses at plan time unless this is set:
+  # "force_new_deployment should be true when capacity_provider_strategy is
+  # being updated". That blocked the first plan after qdrant was pinned to
+  # on-demand (spot.tf, pinned_on_demand) while it was still running on
+  # Spot, and it would block every flip of `fargate_capacity` or
+  # `on_demand_services`, which is what the escape hatch is for. It only
+  # acts when the service is updated anyway; it adds no diff of its own. The
+  # cost is that any in-place change to a service also restarts its tasks,
+  # which for hatchet/qdrant/redis is what the apply workflow's vendor roll
+  # does straight afterwards regardless.
+  force_new_deployment = true
+
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.tasks.id]
