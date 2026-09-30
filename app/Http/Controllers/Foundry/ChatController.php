@@ -52,7 +52,7 @@ class ChatController extends Controller
         // / region). Other defaults (active data sources) lean on
         // commodity / status when relevant; the UI treats missing values as
         // unspecified per the Phase 2.4 contract.
-        $projectCrsEpsg = $this->parseEpsgFromCrsDatum($project->crs_datum ?? null);
+        $projectCrsEpsg = $project->effectiveCrsEpsg();
 
         return Inertia::render('Foundry/Chat', [
             'project' => [
@@ -121,25 +121,5 @@ class ChatController extends Controller
             ->orderBy('message_id')
             ->limit(200)
             ->get();
-    }
-
-    /**
-     * Parse "EPSG:NNNN" style strings into the integer code. Returns null
-     * for malformed or unset values; the query-builder UI surfaces this as
-     * "unspecified" so the geologist sees what the default is doing.
-     */
-    private function parseEpsgFromCrsDatum(?string $crsDatum): ?int
-    {
-        if ($crsDatum === null || $crsDatum === '') {
-            return null;
-        }
-        if (preg_match('/^EPSG:(\d+)$/i', trim($crsDatum), $matches) === 1) {
-            $epsg = (int) $matches[1];
-            if ($epsg >= 1024 && $epsg <= 32767) {
-                return $epsg;
-            }
-        }
-
-        return null;
     }
 }

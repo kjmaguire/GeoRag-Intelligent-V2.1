@@ -922,7 +922,7 @@ async def _build_project_preamble(
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT project_name, commodity, crs_datum, region
+                SELECT project_name, commodity, crs_epsg, crs_datum, region
                 FROM silver.projects
                 WHERE project_id = $1::uuid
                 """,
@@ -941,7 +941,13 @@ async def _build_project_preamble(
         parts.append(f"Project: {name}")
         if row.get("commodity"):
             parts.append(f"Commodity focus: {row['commodity']}")
-        if row.get("crs_datum"):
+        # crs_epsg first: crs_datum is free text every project is created
+        # with as "EPSG:32613" (Project::$attributes) whatever EPSG the
+        # geologist chose, so it told the model an Alaska project (Red Star,
+        # EPSG:26904) was in UTM zone 13N (2026-09-30).
+        if row.get("crs_epsg"):
+            parts.append(f"CRS: EPSG:{row['crs_epsg']}")
+        elif row.get("crs_datum"):
             parts.append(f"CRS: {row['crs_datum']}")
         if row.get("region"):
             parts.append(f"Region: {row['region']}")
