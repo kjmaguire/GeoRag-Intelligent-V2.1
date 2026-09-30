@@ -133,6 +133,41 @@ class Project extends Model
      * VARCHAR(255) (22001). The suffix is now random (36^8 ≈ 2.8e12) and the
      * base is truncated to leave room for it.
      */
+    /**
+     * The project's coordinate system as an EPSG code: `crs_epsg`, else an
+     * `EPSG:n` in the deprecated `crs_datum`, else null.
+     *
+     * `crs_epsg` must win. `crs_datum` is free text that every project is
+     * created with as `EPSG:32613` (the attribute default above), whatever
+     * EPSG the geologist chose, so reading it first told chat that an Alaska
+     * project (Red Star, EPSG:26904) was in UTM zone 13N (2026-09-30).
+     */
+    public function effectiveCrsEpsg(): ?int
+    {
+        $epsg = $this->crs_epsg;
+        if ($epsg !== null && $epsg !== '' && (int) $epsg > 0) {
+            return (int) $epsg;
+        }
+
+        return self::parseEpsgFromCrsDatum($this->crs_datum);
+    }
+
+    /** `EPSG:n` (n in 1024..32767) from the free-text `crs_datum`, else null. */
+    public static function parseEpsgFromCrsDatum(?string $crsDatum): ?int
+    {
+        if ($crsDatum === null || $crsDatum === '') {
+            return null;
+        }
+        if (preg_match('/^EPSG:(\d+)$/i', trim($crsDatum), $matches) === 1) {
+            $epsg = (int) $matches[1];
+            if ($epsg >= 1024 && $epsg <= 32767) {
+                return $epsg;
+            }
+        }
+
+        return null;
+    }
+
     public static function makeSlug(string $projectName): string
     {
         $maxBase = self::SLUG_MAX_LENGTH - 1 - self::SLUG_SUFFIX_LENGTH;
