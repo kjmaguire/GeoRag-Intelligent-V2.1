@@ -833,6 +833,23 @@ def _page_from_payload(payload: Any) -> PageOcrResult:
             return _page_from_blocks(blocks)
         if "markdown" in page:
             return _page_from_markdown(page.get("markdown"))
+        # A page object with no content key at all is a blank page, not an
+        # unrecognised body (2026-09-30). The probe recorded Cohere's page as
+        # `{blocks, index, type}` (cohere_probe_20260924T060435Z.json,
+        # formats.blocks.page0_keys); the first production ingest then sent
+        # one page as `{index, type}` — the same object with `blocks` omitted
+        # rather than empty. It raised COHERE_PARSE_UNRECOGNISED_RESPONSE for
+        # a page with nothing on it. `index` is what marks the dict as
+        # Cohere's page rather than some other shape; a dict without it still
+        # falls through to the error below. The `type` value is a short
+        # enum, not document text, so it is logged to learn what Cohere calls
+        # such a page.
+        if "index" in page:
+            logger.info(
+                "cohere_parse: page with no content blocks (type=%s); treated as blank",
+                str(page.get("type"))[:40],
+            )
+            return PageOcrResult("", 0.0, confidence_reported=False)
 
     # Fixed 2026-09-15: every path above used to fall through to
     # `_page_from_markdown(page.get("markdown"))`, which returns an empty

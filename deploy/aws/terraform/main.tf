@@ -76,7 +76,16 @@ locals {
     # SPLADE++ — the one model with no managed equivalent anywhere,
     # including on Cohere (ADR-0022 decision 4). ~440 MB, CPU only. Without
     # it the sparse leg of hybrid retrieval does not exist.
-    sparse = { cpu = 512, memory = 2048, desired = 1 }
+    #
+    # 1 vCPU / 4 GiB since 2026-09-30. At 0.5 / 2 the first production
+    # ingest OOM-killed it twice: a forward pass's output is batch x 512 x
+    # 30,522 float32, and three concurrent embed requests each held several
+    # copies. sparse_encoder.py now pools in place and serialises forward
+    # passes, which brings the peak to roughly model + one 250-500 MB tensor;
+    # the memory is headroom on top of that. The extra vCPU is for the
+    # serialisation: a user's query encode now waits behind at most one
+    # ingest forward pass, and on half a core that pass is slow.
+    sparse = { cpu = 1024, memory = 4096, desired = 1 }
   }
 }
 

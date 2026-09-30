@@ -328,6 +328,23 @@ class TestResponseAdapter:
         assert result.request_succeeded
         assert result.text == ""
 
+    def test_a_page_with_blocks_omitted_is_blank_not_unrecognised(self, monkeypatch, caplog) -> None:
+        """Production, 2026-09-30: Cohere sent one page as `{index, type}` —
+        its normal page object with `blocks` left out. That is a blank page,
+        and it must not raise the COHERE_PARSE_UNRECOGNISED_RESPONSE alarm or
+        spend a tesseract fallback on it."""
+        _capture_invoke(monkeypatch, [_body({"pages": [{"index": 0, "type": "page"}]})])
+
+        with caplog.at_level(logging.INFO, logger="georag.ingest.cohere_parse"):
+            result = cpc.ocr_page_sync("/x.pdf", 1)
+
+        assert result.request_succeeded
+        assert result.error is None
+        assert result.text == ""
+        assert result.tables == []
+        assert not any("COHERE_PARSE_UNRECOGNISED_RESPONSE" in r.getMessage() for r in caplog.records)
+        assert any("treated as blank" in r.getMessage() for r in caplog.records)
+
     def test_page_text_is_stripped_so_joiner_arithmetic_stays_exact(self, monkeypatch) -> None:
         _capture_invoke(
             monkeypatch,
@@ -420,6 +437,7 @@ class TestFailureModes:
         [
             {"result": {"content": "surprise"}},  # plausible alternative shape
             {"pages": [{"unexpected": 1}]},  # page dict, no blocks/markdown
+            {"pages": [{"type": "page"}]},  # no `index`: not Cohere's page object
             {"pages": "not-a-list"},
             [],  # top-level array
         ],
