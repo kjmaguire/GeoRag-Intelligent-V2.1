@@ -89,6 +89,58 @@ def test_windowed_encode_keeps_tokens_past_512():
     assert vec[1000 + 1299] == pytest.approx(0.6931, abs=1e-3)  # log1p(1)
 
 
+def test_in_place_splade_weights_match_the_out_of_place_formula():
+    """2026-09-30: the aggregation was rewritten in place to stop the sparse
+    sidecar allocating four vocab-sized tensors per forward pass (it was
+    OOM-killed on the first production ingest). The numbers must not move,
+    or every stored sparse vector stops matching new query vectors."""
+    import torch
+
+    from app.services.sparse_encoder import _splade_weights
+
+    torch.manual_seed(0)
+    logits = torch.randn(3, 7, 50)
+    mask = torch.tensor([[1] * 7, [1] * 4 + [0] * 3, [1] * 2 + [0] * 5])
+    expected = (torch.log1p(torch.relu(logits)) * mask.unsqueeze(-1)).amax(dim=1)
+
+    got = _splade_weights(logits.clone(), mask).amax(dim=1)
+
+    assert torch.allclose(got, expected)
+
+
+class _RecordingModel(_Model):
+    """Records each forward's batch size and whether the lock was held."""
+
+    def __init__(self):
+        self.batches: list[int] = []
+        self.locked: list[bool] = []
+
+    def __call__(self, input_ids, attention_mask):
+        from app.services.sparse_encoder import _FORWARD_LOCK
+
+        self.batches.append(int(input_ids.shape[0]))
+        self.locked.append(_FORWARD_LOCK.locked())
+        return super().__call__(input_ids, attention_mask)
+
+
+def test_long_text_forwards_are_bounded_and_serialised():
+    from app.services.sparse_encoder import (
+        _WINDOWS_PER_FORWARD,
+        _encode_windows,
+        _window_token_ids,
+    )
+
+    tok = _Tok()
+    windows = _window_token_ids(tok, " ".join(["w"] * 3000))
+    model = _RecordingModel()
+    vec = _encode_windows(tok, model, windows)
+
+    assert len(windows) > _WINDOWS_PER_FORWARD  # the input really was split
+    assert max(model.batches) <= _WINDOWS_PER_FORWARD <= 4
+    assert all(model.locked), "every forward pass must hold _FORWARD_LOCK"
+    assert 1000 + 2999 in vec  # still covers the whole text
+
+
 def test_batch_mixes_short_and_long_in_order(monkeypatch):
     import app.services.sparse_encoder as se
 

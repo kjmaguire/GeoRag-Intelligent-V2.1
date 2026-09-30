@@ -65,6 +65,9 @@ thread-safe in the general case, but is safe here because:
 If you remove the GIL (free-threaded CPython 3.13+), add an explicit
 threading.Lock around the first call.
 
+Forward passes, by contrast, ARE serialised: ``_FORWARD_LOCK`` below. See
+"Peak memory" further down for why.
+
 Lifespan pre-warm
 -----------------
 Calling encode_sparse() during FastAPI lifespan startup triggers the
@@ -82,6 +85,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from functools import lru_cache
 from typing import Any
 
@@ -229,7 +233,46 @@ _WINDOW_CONTENT_TOKENS = 510
 #: by a boundary is seen whole in one window.
 _WINDOW_STRIDE = 384
 #: Windows per forward pass — bounds peak memory on a very long input.
-_WINDOWS_PER_FORWARD = 8
+#: Was 8 until 2026-09-30; see "Peak memory" below.
+_WINDOWS_PER_FORWARD = 4
+
+#: Texts per forward pass in encode_sparse_batch. Was 32; see below.
+_SHORT_BATCH_SIZE = 8
+
+
+# ---------------------------------------------------------------------------
+# Peak memory (2026-09-30)
+# ---------------------------------------------------------------------------
+# SPLADE's output is a logit per position per VOCABULARY entry: batch x
+# seq_len x 30,522 float32. At 8 windows x 512 positions that is 500 MB for
+# ONE tensor, and the aggregation used to be written out-of-place —
+# relu(), log1p() and the mask multiply each allocated another 500 MB, so a
+# single long passage peaked near 2 GB above the model. The sidecar runs
+# every request in its own thread (asyncio.to_thread) and the embed sweep
+# keeps EMBED_CONCURRENCY=3 requests in flight, so the first real ingest in
+# production (Red Star, 2026-09-30) OOM-killed the 2 GB sparse task twice
+# and every chunk in flight went back to the queue.
+#
+# Three changes, any one of which would have helped:
+#   * the aggregation is done IN PLACE on the logits (_splade_weights), so a
+#     forward pass holds one vocab-sized tensor, not four;
+#   * fewer windows / texts per forward pass (above), which halves or
+#     quarters that tensor;
+#   * forward passes are serialised by _FORWARD_LOCK. On CPU torch already
+#     spreads one forward across every core, so running two at once buys no
+#     throughput — it only multiplies peak memory by the number of
+#     concurrent requests, which nothing bounds.
+_FORWARD_LOCK = threading.Lock()
+
+
+def _splade_weights(logits: Any, attention_mask: Any) -> Any:
+    """``log(1 + ReLU(logits))`` with padded positions zeroed, IN PLACE.
+
+    Overwrites ``logits`` and returns it. Mathematically identical to the
+    out-of-place ``torch.log1p(torch.relu(logits)) * mask.unsqueeze(-1)``;
+    it just does not allocate three more vocab-sized tensors to get there.
+    """
+    return logits.relu_().log1p_().mul_(attention_mask.unsqueeze(-1).to(logits.dtype))
 
 
 def _window_token_ids(tokenizer: Any, text: str) -> list[list[int]] | None:
@@ -264,10 +307,10 @@ def _encode_windows(tokenizer: Any, model: Any, windows: list[list[int]]) -> dic
         if torch.cuda.is_available():
             input_ids = input_ids.cuda()
             attention_mask = attention_mask.cuda()
-        with torch.no_grad():
+        with _FORWARD_LOCK, torch.no_grad():
             logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
-        weights = torch.log1p(torch.relu(logits)) * attention_mask.unsqueeze(-1)
-        pooled = weights.amax(dim=(0, 1))  # over windows AND positions
+            pooled = _splade_weights(logits, attention_mask).amax(dim=(0, 1))  # windows AND positions
+            del logits
         nz = pooled.nonzero(as_tuple=False).squeeze(-1)
         for tid, w in zip(nz.tolist(), pooled[nz].cpu().float().tolist(), strict=False):
             if w > merged.get(tid, 0.0):
@@ -318,19 +361,15 @@ def encode_sparse(text: str) -> dict[int, float]:
     if torch.cuda.is_available():
         inputs = {k: v.cuda() for k, v in inputs.items()}
 
-    with torch.no_grad():
-        logits = model(**inputs).logits  # shape: (1, seq_len, vocab_size)
-
     # SPLADE aggregation:
     #   1. ReLU: zero out negative logits
     #   2. log(1 + x): compress dynamic range
     #   3. max over sequence: take the strongest activation per token
-    attention_mask = inputs["attention_mask"]  # shape: (1, seq_len)
-    # Mask padded positions before max-pool by zeroing their contributions
-    weights = torch.max(
-        torch.log1p(torch.relu(logits)) * attention_mask.unsqueeze(-1),
-        dim=1,
-    ).values  # shape: (1, vocab_size)
+    # Padded positions are zeroed before the max-pool (_splade_weights).
+    with _FORWARD_LOCK, torch.no_grad():
+        logits = model(**inputs).logits  # shape: (1, seq_len, vocab_size)
+        weights = _splade_weights(logits, inputs["attention_mask"]).amax(dim=1)  # (1, vocab_size)
+        del logits
 
     # Extract non-zero vocabulary entries
     nz = weights[0].nonzero(as_tuple=False).squeeze(-1)
@@ -358,7 +397,7 @@ def encode_sparse(text: str) -> dict[int, float]:
     return dict(zip(indices, values, strict=False))
 
 
-def encode_sparse_batch(texts: list[str], batch_size: int = 32) -> list[dict[int, float]]:
+def encode_sparse_batch(texts: list[str], batch_size: int = _SHORT_BATCH_SIZE) -> list[dict[int, float]]:
     """Encode a batch of texts into SPLADE++ sparse vectors.
 
     More efficient than calling encode_sparse() in a loop when indexing
@@ -409,14 +448,10 @@ def _encode_short_batch(tokenizer: Any, model: Any, batch: list[str]) -> list[di
         if torch.cuda.is_available():
             inputs = {k: v.cuda() for k, v in inputs.items()}
 
-        with torch.no_grad():
+        with _FORWARD_LOCK, torch.no_grad():
             logits = model(**inputs).logits  # (batch, seq_len, vocab)
-
-        attention_mask = inputs["attention_mask"]
-        weights = torch.max(
-            torch.log1p(torch.relu(logits)) * attention_mask.unsqueeze(-1),
-            dim=1,
-        ).values  # (batch, vocab)
+            weights = _splade_weights(logits, inputs["attention_mask"]).amax(dim=1)  # (batch, vocab)
+            del logits
 
         for i in range(weights.shape[0]):
             nz = weights[i].nonzero(as_tuple=False).squeeze(-1)

@@ -93,7 +93,11 @@ async def test_undeclared_utm_collars_are_assumed_and_warned_once(
     assumed = [w for w in env.warnings if w.get("code") == "collar_crs_assumed"]
     assert len(assumed) == 1
     assert "Import wizard" in assumed[0]["detail"]
-    assert "Edit project" in assumed[0]["detail"]
+    # UpdateProjectRequest deliberately leaves crs_epsg out of its rules, so
+    # the advice must not send the geologist to an edit screen that has no
+    # CRS field (it did until 2026-09-30).
+    assert "Edit project" not in assumed[0]["detail"]
+    assert "when the project is created" in assumed[0]["detail"]
 
 
 @pytest.mark.asyncio

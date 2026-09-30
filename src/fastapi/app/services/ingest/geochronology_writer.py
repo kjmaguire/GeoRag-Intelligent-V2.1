@@ -201,8 +201,9 @@ async def write_geochronology(
                     f"EPSG:{decision.epsg}, the platform default. If the samples "
                     f"were located in another zone or datum they are misplaced on "
                     f"the map (the ages themselves are unaffected). Re-upload with "
-                    f"the EPSG, or set the project's CRS — re-uploading replaces "
-                    f"these rows."
+                    f"the EPSG typed in the Import wizard — re-uploading replaces "
+                    f"these rows. A project's coordinate system can only be set "
+                    f"when the project is created."
                 ),
             })
 

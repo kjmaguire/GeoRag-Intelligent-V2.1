@@ -1922,10 +1922,11 @@ def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
             f"datum they are now in the wrong place on the map: another UTM "
             f"zone is hundreds to thousands of kilometres off, NAD27 in the "
             f"same zone about 200 m. To fix it, re-upload with the correct EPSG "
-            f"code: type it for this file in the Import wizard, or set the "
-            f"project's coordinate system (Edit project -> CRS / EPSG) so every "
-            f"future upload uses it. Re-uploading replaces these collars in "
-            f"place."
+            f"code typed for this file in the Import wizard; re-uploading "
+            f"replaces these collars in place. A project's coordinate system "
+            f"can only be set when the project is created (so it never holds "
+            f"holes in two systems), so on a project created without one, "
+            f"type the EPSG for every CSV or spreadsheet you upload."
         ),
     }
 
