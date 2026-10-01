@@ -240,7 +240,7 @@ jobs:
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="region=${AWS_REGION}"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: terraform-changes
           path: approved
