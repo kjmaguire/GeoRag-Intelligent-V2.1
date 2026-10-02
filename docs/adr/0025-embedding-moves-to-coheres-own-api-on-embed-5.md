@@ -108,9 +108,34 @@ measured step (see sub-decision).**
   poor retrieval, not as an error.
 - A new `_CohereEmbedding` class in `app/services/embedding.py`, a sibling
   of `_BedrockEmbedding`. It exposes the same surface the callers already
-  use: `encode()`, `encode_query()`, `embed_image()` and
+  use: `encode()`, `embed_query()`, `embed_image()` and
   `get_sentence_embedding_dimension()`. `main.py`'s startup dimension check
-  calls the last of these.
+  calls the last of these. **The names are a contract enforced only by duck
+  typing.** `agent/tools.py:2241` checks `hasattr(_model, "embed_query")`;
+  if the method is missing or named differently, every question falls back
+  to `.encode()` and is embedded as `search_document`, with no error. The
+  passage embedder does the same with `embed_image` (an `AttributeError`
+  logged once per batch). The adapter's tests must assert that the query
+  path sends `input_type: "search_query"` through the real `tools.py` call
+  site, not only through the class.
+- **Every dense point records the model that produced it.** The Qdrant
+  payload built in `passage_embedder.py:588` gains `embed_model`
+  (for example `embed-v5.0-pro`). Today nothing records it: the payload has
+  no model field, and `answer_runs.embedding_model` /
+  `embedding_model_version` exist (`models/answer_run.py:158`) but nothing
+  writes them. Without the tag, a collection holding both v4 and v5
+  vectors (Gotcha 2) cannot be detected from the data. With it, step 6
+  becomes a count rather than an inference. The query path writes the
+  query model into `answer_runs`, so any answer can be traced to the
+  vector space that retrieved it.
+- `COHERE_EMBED_TIMEOUT_S` and a separate query-path client, mirroring
+  `BEDROCK_EMBED_TIMEOUT_S` and the budgeted query-path client (VEN-6,
+  `embedding.py:84`). Embedding a question sits inside the chat latency
+  budget; ingest batches do not, and must not share its timeout.
+- **The code default for `EMBEDDING_BACKEND` moves from `bedrock` to
+  `cohere`.** This follows the rule CLAUDE.md records for the current
+  default: an unset value selects the hosted backend production actually
+  uses, never one that does not exist there.
 - New settings: `COHERE_EMBED_MODEL` (default `embed-v5.0-pro`),
   `COHERE_EMBED_QUERY_MODEL` (default: same as `COHERE_EMBED_MODEL`) and
   `COHERE_EMBED_DIMENSION` (default `1024`, validated against
@@ -196,10 +221,18 @@ Rolling it back is the same.
 6. **Verify**:
    - the count of points with a dense vector equals the count of passages
      with `embedding_id IS NOT NULL`;
+   - **zero points lack `embed_model = embed-v5.0-pro`**;
    - no passage is left with `embedding_id IS NULL`;
    - page-image points are present;
    - a fixed set of known questions on Red Star and one other project
      return cited answers.
+
+   Run the same fixed set **before** step 4 and record refusals and
+   citations. `RERANKER_SCORE_THRESHOLD_HOSTED` does not change, but the
+   candidates reaching the reranker do, so the Layer 1 gate's refusal rate
+   can move in either direction. A before/after comparison on the same
+   questions is the only signal available until the threshold is
+   properly measured (ADR-0023 follow-up).
 7. **Hold the rollback** (the snapshot plus `EMBEDDING_BACKEND=bedrock`) for
    14 days, then remove the Bedrock embed IAM grant and variable.
 
@@ -263,6 +296,14 @@ Rolling it back is the same.
   different vector space and needs a re-embed (or the snapshot).
 - **A one-time full re-embed with a degraded retrieval window**, and a
   second one if we ever move back without the snapshot.
+- **Cohere's data-retention terms now cover the whole corpus, and they have
+  never been checked.** Neither ADR-0023 nor this ADR records whether
+  Cohere's API keeps request content, for how long, or whether it may be
+  used for training under our account's terms. Bedrock's terms are AWS's.
+  Under ADR-0023 this already applied to questions, answers and scanned
+  pages. After this move it applies to every chunk of every document.
+  **Confirm the account's retention and training settings before
+  cutover**, and record what was found in this ADR.
 - **IAM's short-lived credentials are swapped for a long-lived key on
   another hot path.** The key already exists, so the exposure is not new,
   but rotating it now interrupts three capabilities at once.
@@ -298,6 +339,13 @@ was checked:
   (ADR-0023's trigger). Moving rerank to Cohere v4 then would leave
   Bedrock with nothing to serve and remove the `bedrock_probe.py` half of
   `aws-preflight.sh` A-11.
+- **On-prem has no embedding backend set.** `charts/georag/` and the
+  `kubernetes/manifests/` files set no `EMBEDDING_BACKEND`, so an on-prem
+  install takes the code default. That is `bedrock` today and would be
+  `cohere` after this ADR, and an air-gapped site can reach neither. This
+  problem exists today and is not created here, but this move would
+  change which wrong backend it picks. Have the chart set `local` (the
+  sidecars) explicitly, before any on-prem install.
 - **Give `georag_chunks` an alias** before the corpus is large enough that
   a full re-embed cannot finish in one evening. With an alias, a future
   model change builds a new collection and swaps it in, with no degraded
