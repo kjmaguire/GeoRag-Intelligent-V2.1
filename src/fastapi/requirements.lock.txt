@@ -337,7 +337,7 @@ numpy==2.5.3
     #   transformers
     #   xgboost
     #   xgboost-cpu
-openai==2.54.0
+openai==3.15.0
     # via
     #   langfuse
     #   pydantic-ai-slim
