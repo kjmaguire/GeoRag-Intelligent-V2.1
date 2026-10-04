@@ -770,6 +770,11 @@ async def heartbeat_loop(
         log.warning(
             "progress.heartbeat_loop: no run_id and no (workspace, key) to "
             "resolve one from - this task will NOT heartbeat",
+            extra={
+                "workspace_id": workspace_id,
+                "minio_key": minio_key,
+                "interval_seconds": interval_seconds,
+            },
         )
 
     async def _ticker() -> None:
