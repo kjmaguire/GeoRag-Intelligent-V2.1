@@ -69,7 +69,6 @@ return new class extends Migration
             'silver.document_passages',
             '(workspace_id, created_at, passage_id) WHERE embedding_id IS NULL',
         ],
-        'idx_document_passages_text_trgm' => ['silver.document_passages', 'USING gin (text gin_trgm_ops)'],
         'idx_entity_aliases_norm_trgm' => ['silver.entity_aliases', 'USING gin (alias_normalised gin_trgm_ops)'],
     ];
 

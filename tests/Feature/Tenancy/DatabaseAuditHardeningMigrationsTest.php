@@ -41,7 +41,6 @@ final class DatabaseAuditHardeningMigrationsTest extends TestCase
             'samples created_at' => ['silver.samples', 'idx_samples_created_at', '(created_at DESC)'],
             'lithology created_at' => ['silver.lithology_logs', 'idx_lithology_logs_created_at', '(created_at DESC)'],
             'pending embed backlog' => ['silver.document_passages', 'idx_document_passages_pending_created', '(workspace_id, created_at, passage_id) WHERE (embedding_id IS NULL)'],
-            'passage text trigram' => ['silver.document_passages', 'idx_document_passages_text_trgm', 'USING gin (text gin_trgm_ops)'],
             'alias trigram' => ['silver.entity_aliases', 'idx_entity_aliases_norm_trgm', 'USING gin (alias_normalised gin_trgm_ops)'],
             'external notification dedup' => ['audit.audit_ledger', 'audit_ledger_external_notification_id_idx', "WHERE (action_type = 'external_notification.received'::text)"],
             'zones project' => ['targeting.target_candidate_zones', 'idx_target_candidate_zones_project_id', '(project_id)'],
