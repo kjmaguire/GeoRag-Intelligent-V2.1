@@ -754,25 +754,47 @@ async def heartbeat_loop(
         ):
             await do_long_work()
 
-    Best-effort: if the run_id can't be resolved, the loop becomes a
-    no-op. The surrounding task keeps running.
+    Best-effort: if the run_id can't be resolved at entry the ticker keeps
+    trying to resolve it (from workspace_id + minio_key) on every tick; with
+    neither a run_id nor a key it logs a warning and does nothing. The
+    surrounding task keeps running.
     """
     if run_id is None and workspace_id and minio_key:
         run_id = await lookup_active_run_id(
             workspace_id=workspace_id, minio_key=minio_key,
         )
+    resolve_key: tuple[str, str] | None = (
+        (workspace_id, minio_key) if workspace_id and minio_key else None
+    )
+    if run_id is None and resolve_key is None:
+        log.warning(
+            "progress.heartbeat_loop: no run_id and no (workspace, key) to "
+            "resolve one from - this task will NOT heartbeat",
+        )
+
+    async def _ticker() -> None:
+        # A lookup that failed at entry (a DB blip returns None) used to make
+        # the whole loop a silent no-op for a 1-4 h scanned-PDF parse, which
+        # the stale sweep then read as a dead worker. Re-resolve on every
+        # tick until it sticks.
+        current = run_id
+        try:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                if current is None and resolve_key is not None:
+                    current = await lookup_active_run_id(
+                        workspace_id=resolve_key[0], minio_key=resolve_key[1],
+                    )
+                if current is not None:
+                    await mark_heartbeat(run_id=current)
+        except asyncio.CancelledError:
+            pass
+
     task: asyncio.Task | None = None
-    if run_id is not None:
-
-        async def _ticker() -> None:
-            try:
-                while True:
-                    await asyncio.sleep(interval_seconds)
-                    await mark_heartbeat(run_id=run_id)
-            except asyncio.CancelledError:
-                pass
-
-        task = asyncio.create_task(_ticker(), name=f"hb-{run_id[:8]}")
+    if run_id is not None or resolve_key is not None:
+        task = asyncio.create_task(
+            _ticker(), name=f"hb-{(run_id or minio_key or 'unresolved')[:8]}",
+        )
     try:
         yield run_id
     finally:

@@ -3,8 +3,9 @@ landed 2026-05-25 in response to the Ontario-project mass timeout:
 
   1. Race recovery — embedding-stage rows with zero unembedded passages
      get marked completed instead of timed_out.
-  2. Retry dispatch — preflight/parse/persist failures inside the attempt
-     cap spawn a fresh ingest_pdf with parent_run_id linkage.
+  2. Retry dispatch — any non-embed stage (queued/preflight/parse/persist)
+     inside the attempt
+     cap spawns a fresh ingest_pdf with parent_run_id linkage.
   3. Default — every other case becomes terminal timed_out.
 
 Integration tests against the live Postgres schema, matching the
@@ -265,25 +266,15 @@ async def test_stale_run_over_attempt_cap_does_not_dispatch_recovery():
 # ---------------------------------------------------------------------------
 # Resolution 3 — non-retry stages still terminal
 # ---------------------------------------------------------------------------
-async def test_stale_run_in_unknown_step_marks_timed_out_only():
-    """A row that died at a non-retry-eligible step (e.g. 'queued') is
-    still marked timed_out with no recovery dispatch."""
-    key = _unique_key("queued-stale")
+async def test_stale_run_with_an_unroutable_key_marks_timed_out_only():
+    """A row we cannot route to a workflow is still marked timed_out with no
+    recovery dispatch (dispatching a guessed workflow would manufacture a
+    second, misleading failure)."""
+    key = f"mystery/_stale_detector_test_/{uuid.uuid4()}_unroutable.bin"
     run_id = await ingest_progress.start_run(
         workspace_id=_TEST_WORKSPACE, project_id=_TEST_PROJECT, minio_key=key,
     )
-    # Force into started without advancing to any retry-eligible stage:
-    # mark a stage then NULL out current_step so the detector's
-    # filter-by-stage doesn't qualify it for retry.
-    await ingest_progress.mark_stage_started(run_id=run_id, stage="preflight")
-    conn = await asyncpg.connect(ingest_progress._dsn(), statement_cache_size=0)
-    try:
-        await conn.execute(
-            "UPDATE silver.ingest_progress SET current_step = 'queued' "
-            "WHERE run_id = $1::uuid", run_id,
-        )
-    finally:
-        await conn.close()
+    await ingest_progress.mark_stage_started(run_id=run_id, stage="parse")
     await _force_stale_heartbeat(run_id)
     try:
         dispatched: list[object] = []
@@ -298,9 +289,49 @@ async def test_stale_run_in_unknown_step_marks_timed_out_only():
                       side_effect=_fake_dispatch):
             await detect(srd.StaleRunDetectorInput(stale_minutes=15), MagicMock())
 
-        # Our row should not have triggered a dispatch.
         assert all(p.minio_key != key for p in dispatched)
         terminal = await ingest_progress.get_run(run_id=run_id)
         assert terminal["status"] == "timed_out"
+    finally:
+        await _cleanup_runs_for_key(key)
+
+
+async def test_stale_run_still_queued_is_redispatched():
+    """Red Star 2026-09-30: a run lost at step 0 of 5 (``queued``, nothing
+    recorded yet) used to be closed with no child run. "Never progressed" is
+    not "will never progress" - it is re-dispatched like any other stage."""
+    key = _unique_key("queued-stale")
+    run_id = await ingest_progress.start_run(
+        workspace_id=_TEST_WORKSPACE, project_id=_TEST_PROJECT, minio_key=key,
+    )
+    await _force_stale_heartbeat(run_id)
+    try:
+        dispatched: list[object] = []
+
+        async def _fake_dispatch(payload):
+            dispatched.append(payload)
+            return MagicMock(workflow_run_id="fake-wf-" + uuid.uuid4().hex[:8])
+
+        detect = _unwrap_task(srd.detect)
+        with patch.object(srd, "post_ingestion_progress", AsyncMock()), \
+                patch.object(srd, "_hatchet_run_status", AsyncMock(return_value=None)), \
+                patch("app.hatchet_workflows.ingest_pdf.ingest_pdf.aio_run_no_wait",
+                      side_effect=_fake_dispatch):
+            await detect(srd.StaleRunDetectorInput(stale_minutes=15), MagicMock())
+
+        assert any(p.minio_key == key for p in dispatched)
+        terminal = await ingest_progress.get_run(run_id=run_id)
+        assert terminal["status"] == "timed_out"
+        conn = await asyncpg.connect(ingest_progress._dsn(), statement_cache_size=0)
+        try:
+            child = await conn.fetchrow(
+                "SELECT triggered_by, attempt_number FROM silver.ingest_progress "
+                "WHERE minio_key = $1 AND parent_run_id = $2::uuid",
+                key, run_id,
+            )
+        finally:
+            await conn.close()
+        assert child is not None and child["triggered_by"] == "stale_run_sweep"
+        assert child["attempt_number"] == 2
     finally:
         await _cleanup_runs_for_key(key)

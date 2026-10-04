@@ -8,7 +8,7 @@
     "AttributeError+ImportError": 1,
     "AttributeError+TypeError+ValueError": 1,
     "CancelledError": 1,
-    "Exception": 94,
+    "Exception": 93,
     "FileNotFoundError": 1,
     "HTTPError+ValueError": 2,
     "ImportError": 31,
@@ -63,7 +63,7 @@
     "src/fastapi/app/hatchet_workflows/_progress.py": 6,
     "src/fastapi/app/hatchet_workflows/_restore_extras.py": 4,
     "src/fastapi/app/hatchet_workflows/_workspace_input.py": 1,
-    "src/fastapi/app/hatchet_workflows/ingest_pdf.py": 13,
+    "src/fastapi/app/hatchet_workflows/ingest_pdf.py": 12,
     "src/fastapi/app/hatchet_workflows/ingest_spatial.py": 1,
     "src/fastapi/app/hatchet_workflows/ingest_tabular.py": 1,
     "src/fastapi/app/hatchet_workflows/nightly_ingestion_integrity.py": 1,
@@ -131,5 +131,5 @@
     "src/georag_geoparsers/georag_geoparsers/xlsx_parser.py": 1,
     "src/georag_geoparsers/georag_geoparsers/xyz_parser.py": 1
   },
-  "total": 228
+  "total": 227
 }

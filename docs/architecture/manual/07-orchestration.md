@@ -131,7 +131,7 @@ three times and will move again.
 | `tiff_normalize` | — | Lossless TIFF → PDF, then routes into `ingest_pdf` (ADR-0005) |
 | `ingest_zip_archive` | — | Extracts and fans out by extension |
 | `ingest_spatial`, `ingest_tabular`, `ingest_well_logs`, `ingest_geophysics` | — | Vector, drill CSV/XLSX (+ geochronology tables), LAS, Geosoft XYZ + DCIP2D (2026-09-29) ingest ([Ch 04 §4](04-ingestion-flow.md#4-the-other-ingest-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
-| `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `started` past 15 min: completes finished-but-unmarked embeds, re-dispatches dead parses in-process, times out the rest |
+| `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `queued`/`started` past 15 min: completes finished-but-unmarked embeds, re-dispatches a dead run from any stage except the two embed stages (`queued` included — a run lost behind the per-workspace cap or before preflight recorded a stage was closed with no retry until 2026-10-04) up to `RECOVERY_MAX_ATTEMPTS`, times out the rest and logs the rule that declined each retry |
 | `nightly_ingestion_integrity` | `0 17 * * *`, `0 19 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
 | `reliability_metrics_publisher` | `* * * * *` | Refreshes in-process Prometheus gauges that nothing scrapes in production ([Ch 12](12-observability.md)) |
 | `storage_tiering_run` | `0 18 * * *` | Phase 0 agent |
@@ -439,7 +439,7 @@ own dashboard. [Ch 12](12-observability.md) covers the rest.
 |---|---|---|
 | Horizon job | `tries` on the class (1 for the two long jobs, 3 for the debounce) | `failed_jobs` table; Horizon UI |
 | Hatchet task | `retries=` per task (mostly 0 or 1) | Run marked failed in the engine; `on_failure` hook only on the four ingestion workflows |
-| `ingest_*` runs left `started` | `stale_run_detector` re-dispatches parse-stage deaths up to `RECOVERY_MAX_ATTEMPTS`, then `timed_out` | `silver.ingest_progress` |
+| `ingest_*` runs left `started` | `stale_run_detector` re-dispatches deaths in any non-embed stage (`queued` included since 2026-10-04) up to `RECOVERY_MAX_ATTEMPTS`, then `timed_out` with the declining rule logged | `silver.ingest_progress` |
 | Outbox row | 3 transient failures | `dead_lettered` + `silver.store_reconciliation_findings` |
 | Cron missed while Postgres is stopped | none — not backfilled | nothing records it |
 

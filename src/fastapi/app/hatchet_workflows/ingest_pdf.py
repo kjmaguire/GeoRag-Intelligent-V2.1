@@ -1094,19 +1094,25 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
 
     async def _relay_progress() -> None:
         run_id: str | None = None
-        try:
-            if input.workspace_id:
-                run_id = await ingest_progress.lookup_active_run_id(
-                    workspace_id=str(input.workspace_id),
-                    minio_key=input.minio_key,
-                )
-        except Exception:
-            run_id = None
-        if run_id is None:
-            return
         import json as _json
         while True:
             await asyncio.sleep(3)
+            # Resolve (and re-resolve) the run row inside the loop: a lookup
+            # that failed once used to end this relay for the whole parse, so
+            # a multi-hour scanned PDF showed no progress at all.
+            if run_id is None:
+                if not input.workspace_id:
+                    return
+                try:
+                    run_id = await ingest_progress.lookup_active_run_id(
+                        workspace_id=str(input.workspace_id),
+                        minio_key=input.minio_key,
+                    )
+                except Exception:  # noqa: BLE001 - relay is best-effort
+                    log.debug("ingest_pdf.parse: run lookup failed", exc_info=True)
+                    run_id = None
+                if run_id is None:
+                    continue
             try:
                 with open(_progress_path, encoding="utf-8") as fh:
                     beat = _json.load(fh)
