@@ -1485,12 +1485,11 @@ async def query_collar_details(
     norm_hole_sql_c2 = _hole_norm_sql("c2.hole_id")
     # Explicit columns, not SELECT *: the subquery used to drag every column
     # of silver.collars (geometry included) through the UNION ALL, and gains
-    # whatever a migration adds next (audit item 28).
-    _cols = (
-        "collar_id, hole_id, hole_id_canonical, project_id, easting, northing, "
-        "elevation, total_depth, drill_type, hole_type, azimuth, dip, "
-        "drill_date, geologist"
-    )
+    # whatever a migration adds next (audit item 28). The list is written out
+    # in each branch rather than interpolated: scripts/ci/check_sql_against_schema.py
+    # PREPAREs every SQL literal it can read, and a `{name}` placeholder
+    # renders as a dummy value, which made the outer SELECT look like it
+    # named columns the subquery does not produce.
     collar_sql = (
         "SELECT collar_id::text, hole_id, hole_id_canonical, project_id::text, "
         # easting/northing from the COLUMNS: they hold the untouched source
@@ -1501,16 +1500,22 @@ async def query_collar_details(
         "total_depth, drill_type, hole_type, azimuth, dip, "
         "drill_date::text, geologist, match_priority "
         "FROM ("
-        f"  SELECT {_cols}, 1 AS match_priority FROM silver.collars "
+        "  SELECT collar_id, hole_id, hole_id_canonical, project_id, easting, northing, "
+        "elevation, total_depth, drill_type, hole_type, azimuth, dip, drill_date, geologist, "
+        "1 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
         "    AND UPPER(hole_id) = UPPER($3) "
         "  UNION ALL "
-        f"  SELECT {_cols}, 2 AS match_priority FROM silver.collars "
+        "  SELECT collar_id, hole_id, hole_id_canonical, project_id, easting, northing, "
+        "elevation, total_depth, drill_type, hole_type, azimuth, dip, drill_date, geologist, "
+        "2 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
         "    AND hole_id_canonical IS NOT NULL "
         "    AND UPPER(hole_id_canonical) = UPPER($3) "
         "  UNION ALL "
-        f"  SELECT {_cols}, 3 AS match_priority FROM silver.collars "
+        "  SELECT collar_id, hole_id, hole_id_canonical, project_id, easting, northing, "
+        "elevation, total_depth, drill_type, hole_type, azimuth, dip, drill_date, geologist, "
+        "3 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
         f"    AND {norm_hole_sql} = $4 "
         "    AND UPPER(hole_id) <> UPPER($3) "
