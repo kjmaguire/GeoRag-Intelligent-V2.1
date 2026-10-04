@@ -42,6 +42,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import asyncpg
@@ -737,7 +738,7 @@ async def heartbeat_loop(
     minio_key: str | None = None,
     run_id: str | None = None,
     interval_seconds: float = 30.0,
-):
+) -> AsyncIterator[str | None]:
     """Async context manager that runs a background heartbeat ticker.
 
     Resolves the active run_id from (workspace_id, minio_key) once at
@@ -768,13 +769,9 @@ async def heartbeat_loop(
     )
     if run_id is None and resolve_key is None:
         log.warning(
-            "progress.heartbeat_loop: no run_id and no (workspace, key) to "
-            "resolve one from - this task will NOT heartbeat",
-            extra={
-                "workspace_id": workspace_id,
-                "minio_key": minio_key,
-                "interval_seconds": interval_seconds,
-            },
+            "progress.heartbeat_loop: needs run_id, or BOTH workspace_id and "
+            "minio_key to resolve one - this task will NOT heartbeat",
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
         )
 
     async def _ticker() -> None:
@@ -794,6 +791,20 @@ async def heartbeat_loop(
                     await mark_heartbeat(run_id=current)
         except asyncio.CancelledError:
             pass
+        except Exception:
+            # The with-block swallows the task's result on exit, so without
+            # this line a ticker that died on its first tick would leave a
+            # 1-4 h parse unheartbeated and the stale sweep would read it as
+            # a dead worker, with nothing in the log to say why.
+            log.exception(
+                "progress.heartbeat_loop: ticker died - this task will NOT "
+                "heartbeat from here on",
+                extra={
+                    "run_id": current,
+                    "workspace_id": workspace_id,
+                    "minio_key": minio_key,
+                },
+            )
 
     task: asyncio.Task | None = None
     if run_id is not None or resolve_key is not None:
@@ -1357,23 +1368,44 @@ async def mark_started(
     minio_key: str,
     step: str,
     workflow_run_id: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     """LEGACY shim — resolves to the active run_id and calls mark_stage_started.
 
     If no active run exists (first call for this file), creates one with
     triggered_by='upload'. This preserves the original "one helper, one
     side effect" contract while threading through the per-run schema.
+
+    Pass ``run_id`` when the workflow input carries the id its row was
+    claimed under (``IngestPdfInput.run_id`` since 2026-10-04). The stage
+    is then marked on THAT row, with no (workspace, key) lookup that could
+    land on a sibling non-terminal row for the same file; ``start_run`` is
+    an upsert, so a row that already exists is left as it is.
     """
-    run_id = await lookup_active_run_id(workspace_id=workspace_id, minio_key=minio_key)
     if run_id is None:
+        run_id = await lookup_active_run_id(
+            workspace_id=workspace_id, minio_key=minio_key,
+        )
+        if run_id is None:
+            run_id = await start_run(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                minio_key=minio_key,
+                workflow_run_id=workflow_run_id,
+            )
+    else:
+        # Upsert under the caller's id: a no-op when the trigger endpoint
+        # (or the ZIP fan-out, or the sweep) already claimed the row, and
+        # the row's birth when a workflow was run directly with an id.
         run_id = await start_run(
             workspace_id=workspace_id,
             project_id=project_id,
             minio_key=minio_key,
             workflow_run_id=workflow_run_id,
+            run_id=run_id,
         )
-        if run_id is None:
-            return  # DB failure — best-effort
+    if run_id is None:
+        return  # DB failure — best-effort
     await mark_stage_started(run_id=run_id, stage=step)
 
 

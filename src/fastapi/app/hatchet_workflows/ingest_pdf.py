@@ -605,21 +605,38 @@ class IngestPdfInput(BaseModel):
         ..., description="Shared token for shadow_runs row pairing — also the dedupe key."
     )
     actor_id: int | None = Field(default=None, description="public.users.id of uploader.")
+    # The silver.ingest_progress row id the caller claimed before dispatch
+    # (Laravel mints it per upload, the trigger endpoint writes the queued
+    # row under it, ingest_zip_archive and the stale sweep do the same for
+    # their children). parse and persist heartbeat THIS row by id. Before
+    # 2026-10-04 the field did not exist: every stage re-resolved the row
+    # from (workspace, key) on every tick, and a newer non-terminal row for
+    # the same key (a sweep child, a re-upload) took the heartbeats while
+    # the row of the parse actually running went stale. Optional because
+    # tiff_normalize dispatches the derived PDF without one and preflight
+    # then mints the row.
+    run_id: str | None = Field(
+        default=None,
+        description="Caller-claimed silver.ingest_progress run_id (uuid4 string).",
+    )
 
     # Defence-in-depth UUID guard; see class docstring.
     from pydantic import field_validator as _fv
 
-    @_fv("project_id")
+    @_fv("project_id", "run_id")
     @classmethod
-    def _validate_project_id_uuid(cls, v: str) -> str:
+    def _validate_uuid_fields(cls, v: str | None, info) -> str | None:
         import re as _re
+        if v is None:
+            return v
         if not _re.fullmatch(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
             v,
             _re.IGNORECASE,
         ):
             raise ValueError(
-                "IngestPdfInput.project_id must be a UUID (canonical 8-4-4-4-12 form)."
+                f"IngestPdfInput.{info.field_name} must be a UUID "
+                "(canonical 8-4-4-4-12 form)."
             )
         return v
 
@@ -861,6 +878,7 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
             minio_key=input.minio_key,
             step="preflight",
             workflow_run_id=getattr(ctx, "workflow_run_id", None),
+            run_id=input.run_id,
         )
     # Hard cap: GEORAG_MAX_UPLOAD_BYTES, the same ceiling the upload stack
     # (OCTANE_MAX_REQUEST_SIZE / PHP_UPLOAD_MAX_FILESIZE / Laravel validator)
@@ -1016,6 +1034,7 @@ async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
             project_id=str(input.project_id),
             minio_key=input.minio_key,
             step="parse",
+            run_id=input.run_id,
         )
     pre = ctx.task_output(preflight)
     pre = pre.model_dump() if hasattr(pre, "model_dump") else dict(pre)
@@ -1031,7 +1050,8 @@ async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
     # detector knows we're alive on multi-minute parses. The async ctxmgr
     # cancels the ticker on exit (normal + exception path).
     async with ingest_progress.heartbeat_loop(
-        workspace_id=str(input.workspace_id) if input.workspace_id else "",
+        run_id=input.run_id,
+        workspace_id=str(input.workspace_id),
         minio_key=input.minio_key,
     ):
         return await _parse_body(input, pre)
@@ -1748,11 +1768,13 @@ async def persist(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOut:
             project_id=str(input.project_id),
             minio_key=input.minio_key,
             step="persist",
+            run_id=input.run_id,
         )
     # Reliability spec Fix 1d — keep last_heartbeat_at fresh while the
     # potentially-slow persist transaction runs.
     async with ingest_progress.heartbeat_loop(
-        workspace_id=str(input.workspace_id) if input.workspace_id else "",
+        run_id=input.run_id,
+        workspace_id=str(input.workspace_id),
         minio_key=input.minio_key,
     ):
         return await _persist_body(input, ctx)
@@ -2701,6 +2723,7 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
             project_id=str(input.project_id),
             minio_key=input.minio_key,
             step="embed_verify",
+            run_id=input.run_id,
         )
 
     pool = await asyncpg.create_pool(
@@ -2830,6 +2853,7 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
                 project_id=str(input.project_id),
                 minio_key=input.minio_key,
                 step="embedding",
+                run_id=input.run_id,
             )
 
         # Unembedded passages remain — dispatch embed_pending_passages.

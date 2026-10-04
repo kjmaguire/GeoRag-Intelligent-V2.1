@@ -738,6 +738,13 @@ class UploadController extends Controller
                 [],
             );
 
+            // run_id is the silver.ingest_progress row the trigger endpoint
+            // claims before dispatch. Every other upload path minted one;
+            // the PDF/TIFF path did not, so the row was born under an id
+            // the workflow never saw and every stage re-resolved it from
+            // (workspace, key) — which is how a long parse heartbeated a
+            // sibling row and went stale itself.
+            $runId = Str::uuid()->toString();
             $payload = [
                 'workspace_id' => $workspaceId,
                 'project_id' => $projectId,
@@ -745,6 +752,7 @@ class UploadController extends Controller
                 'file_size' => $fileSize,
                 'vendor_profile_id' => $vendorProfileId,
                 'correlation_token' => 'upload-'.Str::uuid()->toString(),
+                'run_id' => $runId,
             ];
 
             // ADR-0005: TIFF uploads route to the normalize endpoint;
@@ -779,6 +787,7 @@ class UploadController extends Controller
                     'dispatched' => true,
                     'hatchet_workflow_run_id' => $body['hatchet_workflow_run_id'] ?? $body['workflow_run_id'] ?? null,
                     'correlation_token' => $payload['correlation_token'],
+                    'run_id' => $runId,
                 ];
                 Log::info('UploadController: ingest_pdf dispatched', [
                     'workspace_id' => $workspaceId,

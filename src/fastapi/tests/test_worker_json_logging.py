@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -217,19 +218,59 @@ async def test_progress_key_scoped_failures_carry_workspace_and_key(monkeypatch,
     assert getattr(matching[0], "minio_key", None) == "reports/x.pdf"
 
 
+def _bare_progress_log_calls() -> list[str]:
+    """Every ``log.<level>(...)`` call in ``_progress.py`` without ``extra=``.
+
+    Walks the AST rather than counting substrings: a docstring or comment
+    that mentions ``extra={`` must not be able to cover for a bare call.
+    """
+    import ast
+
+    tree = ast.parse(PROGRESS_SRC.read_text(encoding="utf-8"))
+    levels = {"debug", "info", "warning", "error", "exception", "critical"}
+    bare: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "log"
+            and func.attr in levels
+        ):
+            continue
+        if not any(kw.arg == "extra" for kw in node.keywords):
+            bare.append(f"line {node.lineno}: log.{func.attr}(...)")
+    return bare
+
+
 def test_every_progress_log_call_carries_structured_context():
     """A new call site added without `extra=` silently loses correlation.
 
-    Counting is crude but it fails loudly the moment someone adds a bare
-    `log.warning(...)` back into this module, which is the only way this
-    regresses.
+    Fails loudly the moment someone adds a bare `log.warning(...)` back into
+    this module, which is the only way this regresses.
     """
-    source = PROGRESS_SRC.read_text(encoding="utf-8")
-
-    log_calls = source.count("log.warning(") + source.count("log.error(") + source.count("log.info(")
-    extras = source.count("extra={")
-
-    assert extras >= log_calls, (
-        f"{log_calls} log calls but only {extras} carry extra={{...}} — "
-        "a call site was added without correlation IDs."
+    bare = _bare_progress_log_calls()
+    assert not bare, (
+        "log calls in _progress.py without extra={...} (no correlation IDs):\n  "
+        + "\n  ".join(bare)
     )
+
+
+def test_the_structured_context_guard_is_not_fooled_by_prose(monkeypatch, tmp_path):
+    """The old guard counted ``extra={`` substrings, so a comment mentioning
+    it could mask a bare call. The AST walk cannot be fooled that way."""
+    decoy = tmp_path / "_progress.py"
+    decoy.write_text(
+        '"""pass extra={...} for correlation"""\n'
+        "import logging\n"
+        "log = logging.getLogger(__name__)\n"
+        "def f(run_id):\n"
+        "    # always pass extra={'run_id': run_id}\n"
+        '    log.warning("bare %s", run_id)\n'
+        '    log.info("ok", extra={"run_id": run_id})\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "PROGRESS_SRC", decoy)
+    assert _bare_progress_log_calls() == ["line 6: log.warning(...)"]

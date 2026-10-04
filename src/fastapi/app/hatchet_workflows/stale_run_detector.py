@@ -463,12 +463,14 @@ def _build_recovery_payload(
     Two shapes of workflow live here, and the difference is how each one
     finds its progress row:
 
-    * ingest_pdf and tiff_normalize take no ``run_id``. They call
-      `lookup_active_run_id(workspace_id, minio_key)` and adopt whichever
-      non-terminal row they find - which is the one `start_run` created a
+    * tiff_normalize takes no ``run_id``. It calls
+      `lookup_active_run_id(workspace_id, minio_key)` and adopts whichever
+      non-terminal row it finds - which is the one `start_run` created a
       moment ago.
-    * the three geology workflows and ingest_zip_archive take ``run_id``
-      explicitly and upsert the row under it.
+    * ingest_pdf (since 2026-10-04), the three geology workflows and
+      ingest_zip_archive take ``run_id`` explicitly and upsert the row
+      under it, so their stages and heartbeats land on the recovery row
+      and never on a sibling non-terminal row for the same key.
 
     ``file_size`` is informational for the PDF/TIFF pair: preflight
     re-downloads and re-derives the real size against the 2 GB cap, so 0 is
@@ -487,6 +489,7 @@ def _build_recovery_payload(
             minio_key=minio_key,
             file_size=0,
             correlation_token=correlation_token,
+            run_id=recovery_run_id,
         )
 
     if workflow_name == "tiff_normalize":

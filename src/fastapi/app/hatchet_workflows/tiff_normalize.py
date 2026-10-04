@@ -86,23 +86,33 @@ class TiffNormalizeInput(BaseModel):
         description="Shared token for shadow_runs row pairing — also the dedupe key.",
     )
     actor_id: int | None = Field(default=None, description="public.users.id of uploader.")
+    # Mirrors IngestPdfInput.run_id: the progress row the trigger endpoint
+    # claimed under the caller's id. The derived PDF gets its own row,
+    # minted by ingest_pdf's preflight, so it is NOT forwarded downstream.
+    run_id: str | None = Field(
+        default=None,
+        description="Caller-claimed silver.ingest_progress run_id (uuid4 string).",
+    )
 
     # Defence-in-depth UUID guard on project_id (typed str for downstream
     # ergonomics). Mirrors IngestPdfInput + IngestZipArchiveInput.
     # 2026-06-03 audit — see AUDIT_AND_FIX_REPORT.md Theme G.
     from pydantic import field_validator as _fv
 
-    @_fv("project_id")
+    @_fv("project_id", "run_id")
     @classmethod
-    def _validate_project_id_uuid(cls, v: str) -> str:
+    def _validate_uuid_fields(cls, v: str | None, info) -> str | None:
         import re as _re
+        if v is None:
+            return v
         if not _re.fullmatch(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
             v,
             _re.IGNORECASE,
         ):
             raise ValueError(
-                "TiffNormalizeInput.project_id must be a UUID (canonical 8-4-4-4-12 form)."
+                f"TiffNormalizeInput.{info.field_name} must be a UUID "
+                "(canonical 8-4-4-4-12 form)."
             )
         return v
 
@@ -286,6 +296,7 @@ async def normalize(
         minio_key=input.minio_key,
         step="preflight",
         workflow_run_id=getattr(ctx, "workflow_run_id", None),
+        run_id=input.run_id,
     )
 
     suffix = Path(input.minio_key).suffix.lower()
