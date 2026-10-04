@@ -236,6 +236,75 @@ def merge_flags(
     return out
 
 
+# What the detectors' strings say, so a caller can aggregate them per column.
+# Each pattern is pinned against the detectors' real output in
+# tests/test_csv_sample_assays.py, so a reworded detector string fails there
+# rather than silently dropping out of the summary.
+_FLAG_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(?P<col>.+?): bare noble-metal column has no unit suffix"),
+     "bare_noble_metal"),
+    (re.compile(r"^(?P<col>.+?): bare base-metal column with value"),
+     "bare_base_metal"),
+    (re.compile(r"^(?P<col>.+?) column: row has no unit"), "missing_unit_noble_metal"),
+    (re.compile(
+        r"^(?P<col>.+?) column: unit '(?P<unit>[^']*)' differs from file "
+        r"majority '(?P<majority>[^']*)'"),
+     "unit_cross_mixing"),
+)
+
+
+def summarize_unit_ambiguity(
+    outlier_flags: list[dict[str, list[str]]] | None,
+) -> list[dict[str, Any]]:
+    """Collapse per-record ``unit_ambiguity`` strings to one entry per column.
+
+    *outlier_flags* is ``SampleParseResult.outlier_flags``: one dict per
+    record, ``{"unit_ambiguity": [str, ...]}`` or ``{}``. Returns a list of
+    ``{"column", "kind", "inferred_unit", "alternative_unit", "records",
+    "example"}`` sorted by column, where
+
+    * ``inferred_unit`` is what the parser STORED the values as - ``ppm`` for
+      every bare / unit-less assay (csv_sample reads them as ppm), or the
+      row's own unit for a cross-mixing flag;
+    * ``alternative_unit`` is the other reading the flag is about - ``g/t``
+      for a noble metal, ``pct`` for a base metal, the file-majority unit for
+      cross-mixing;
+    * ``records`` is how many records carried the flag.
+
+    The base-metal detector string says the column "defaults to pct"; the
+    parser does not - ``parse_assay_header`` stores a unit-less column as
+    ppm - so the summary reports what was actually stored.
+    """
+    found: dict[tuple[str, str, str | None, str | None], dict[str, Any]] = {}
+    for per_record in outlier_flags or []:
+        for text in (per_record or {}).get("unit_ambiguity", []):
+            kind, column, inferred, alternative = "other", None, None, None
+            for pattern, name in _FLAG_PATTERNS:
+                match = pattern.match(text)
+                if match is None:
+                    continue
+                kind, column = name, match.group("col")
+                if name in ("bare_noble_metal", "missing_unit_noble_metal"):
+                    inferred, alternative = "ppm", "g/t"
+                elif name == "bare_base_metal":
+                    inferred, alternative = "ppm", "pct"
+                else:
+                    inferred, alternative = match.group("unit"), match.group("majority")
+                break
+            if column is None:
+                column = text.split(":", 1)[0].strip() or text
+            entry = found.setdefault((column, kind, inferred, alternative), {
+                "column": column,
+                "kind": kind,
+                "inferred_unit": inferred,
+                "alternative_unit": alternative,
+                "records": 0,
+                "example": text[:300],
+            })
+            entry["records"] += 1
+    return sorted(found.values(), key=lambda e: (e["column"], e["kind"]))
+
+
 __all__ = [
     "BARE_BASE_METAL_DEFAULT_UNIT",
     "NOBLE_METALS",
@@ -243,4 +312,5 @@ __all__ = [
     "detect_long_format_units",
     "detect_wide_format",
     "merge_flags",
+    "summarize_unit_ambiguity",
 ]

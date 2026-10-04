@@ -307,18 +307,24 @@ DO UPDATE SET
 _SURVEY_SQL = """
 INSERT INTO silver.surveys (
     survey_id, workspace_id, collar_id, depth, azimuth, dip,
-    survey_method, azimuth_reference, created_at, updated_at
-) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7, NOW(), NOW())
+    survey_method, azimuth_reference, created_at, updated_at,
+    source_file, source_file_sha256
+) VALUES (
+    gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7, NOW(), NOW(),
+    $8, $9
+)
 """
 
 _LITHOLOGY_SQL = """
 INSERT INTO silver.lithology_logs (
     log_id, workspace_id, collar_id, from_depth, to_depth,
     lithology_code, lithology_description, grain_size, color,
-    hardness, rqd, recovery, weathering, created_at, updated_at
+    hardness, rqd, recovery, weathering, created_at, updated_at,
+    source_file, source_file_sha256
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4,
-    $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW()
+    $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(),
+    $13, $14
 )
 """
 
@@ -327,10 +333,10 @@ INSERT INTO silver.samples (
     sample_id, workspace_id, collar_id, from_depth, to_depth,
     sample_type, lab_id, qaqc_type,
     commodity_assays, commodity_assay_flags,
-    created_at, updated_at
+    created_at, updated_at, source_file, source_file_sha256
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
-    $8::jsonb, $9::jsonb, NOW(), NOW()
+    $8::jsonb, $9::jsonb, NOW(), NOW(), $10, $11
 )
 """
 
@@ -350,12 +356,12 @@ _STRUCTURE_SQL = """
 INSERT INTO silver.structure (
     id, workspace_id, collar_id, depth, structure_type,
     alpha_angle, beta_angle, true_dip, true_dip_dir,
-    roughness, infill, notes, created_at
+    roughness, infill, notes, created_at, source_file, source_file_sha256
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3::double precision, $4,
     $5::double precision, $6::double precision,
     $7::double precision, $8::double precision,
-    $9, $10, $11, NOW()
+    $9, $10, $11, NOW(), $12, $13
 )
 """
 
@@ -368,22 +374,24 @@ INSERT INTO silver.structure (
 _ALTERATION_SQL = """
 INSERT INTO silver.alteration (
     id, workspace_id, collar_id, from_depth, to_depth,
-    alteration_type, intensity, minerals, notes, created_at
+    alteration_type, intensity, minerals, notes, created_at,
+    source_file, source_file_sha256
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid,
     $3::double precision, $4::double precision,
-    $5, $6, $7::text[], $8, NOW()
+    $5, $6, $7::text[], $8, NOW(), $9, $10
 )
 """
 
 _MINERALIZATION_SQL = """
 INSERT INTO silver.mineralization (
     id, workspace_id, collar_id, from_depth, to_depth,
-    mineral, abundance_pct, form, grain_size, notes, created_at
+    mineral, abundance_pct, form, grain_size, notes, created_at,
+    source_file, source_file_sha256
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid,
     $3::double precision, $4::double precision,
-    $5, $6::double precision, $7, $8, $9, NOW()
+    $5, $6::double precision, $7, $8, $9, NOW(), $10, $11
 )
 """
 
@@ -403,10 +411,11 @@ _ASSAYS_V2_SQL = """
 INSERT INTO silver.assays_v2 (
     id, workspace_id, collar_id, sample_id, from_depth, to_depth,
     element, value, unit, value_ppm, detection_limit,
-    over_detection, under_detection, half_dl_substituted, lab_name
+    over_detection, under_detection, half_dl_substituted, lab_name,
+    source_file, source_file_sha256
 ) VALUES (
     $1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12, $13, $14, $15
+    $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
 ON CONFLICT (id) DO UPDATE SET
     value               = EXCLUDED.value,
@@ -416,7 +425,10 @@ ON CONFLICT (id) DO UPDATE SET
     over_detection      = EXCLUDED.over_detection,
     under_detection     = EXCLUDED.under_detection,
     half_dl_substituted = EXCLUDED.half_dl_substituted,
-    lab_name            = EXCLUDED.lab_name
+    lab_name            = EXCLUDED.lab_name,
+    -- Last writer owns the row, so a later same-file replace finds it.
+    source_file         = EXCLUDED.source_file,
+    source_file_sha256  = EXCLUDED.source_file_sha256
 """
 
 
@@ -1329,12 +1341,18 @@ async def _write_collars(
 #: delete the first (ING-2). ``run_ingest_tabular`` now carries a
 #: ``replaced_scope`` so later sheets of the same run append.
 #:
-#: The caveat, stated because it is a real workflow: if one hole's intervals
-#: are split across two SEPARATE uploads (two files uploaded one after the
-#: other, or two members of a ZIP — each member is its own run), loading the
-#: second replaces the first. The replaced count is in the run's output; the
-#: tables carry no source-file column, so which upload wrote the replaced
-#: rows cannot be told apart and no warning claims to.
+#: ACROSS runs the replace is scoped to the SAME logical source file
+#: (``source_file``, the upload name without its timestamp prefix; migration
+#: 2026_10_04_100000). One hole's intervals split across two files - Au.csv
+#: and Cu.csv in a ZIP, or a 3-row correction file next to the original -
+#: now coexist instead of the later run deleting the earlier one's rows (the
+#: ZIP members run concurrently, so which file survived used to be
+#: arbitrary). A corrected re-upload of the SAME file name still replaces
+#: its predecessor. Rows written before the column existed carry
+#: ``source_file IS NULL``; they cannot be attributed to a file, so a
+#: re-upload still replaces them (leaving them would double the hole) and
+#: the run says how many it replaced that way (``intervals_replaced`` /
+#: ``samples_replaced`` warnings, ``_replaced_warning``).
 _INTERVAL_TABLES = {
     "survey": "silver.surveys",
     "lithology": "silver.lithology_logs",
@@ -1370,6 +1388,8 @@ async def _write_intervals(
     records: list[dict], index: dict[str, str],
     issues: RowIssues | None = None,
     replaced_scope: set[tuple[str, str]] | None = None,
+    source_file: str | None = None,
+    source_file_sha256: str | None = None,
 ) -> dict[str, int]:
     """Write survey / lithology / sample (and structure, alteration, mineralization) rows against resolved collars.
 
@@ -1388,6 +1408,16 @@ async def _write_intervals(
     a scope, a hole is cleared once per table per ingest run — the first
     sheet replaces what an EARLIER upload wrote, later sheets append.
     ``None`` keeps the per-call replace for callers outside a run.
+
+    ``source_file`` (the LOGICAL upload name, see ``_logical_source_name``)
+    and ``source_file_sha256`` are stamped on every row written, and
+    ``source_file`` scopes the replace: only rows from the same file - plus
+    pre-migration rows with no source, which cannot be attributed - are
+    deleted, never another file's rows for the same hole. With
+    ``source_file=None`` the replace is the legacy unscoped per-collar one;
+    every call site inside ``run_ingest_tabular`` passes it. When it is
+    given the stats also carry ``replaced_legacy`` (rows replaced that had
+    no source) and, for samples, ``assay_replaced_legacy``.
 
     Rows the tables' constraints would refuse are handled per ROW, never per
     batch (ING-1): an interval with no readable or an inverted from/to is
@@ -1549,40 +1579,66 @@ async def _write_intervals(
     ] if sheet_type == "sample" else []
     replaced = 0
     assay_replaced = 0
+    replaced_legacy = 0
+    assay_replaced_legacy = 0
     written = 0
+    scoped = source_file is not None
+
+    async def _replace(target: str, collar_ids: list[str]) -> tuple[int, int]:
+        """Delete *collar_ids*' rows in *target*; return (deleted, legacy)."""
+        if not scoped:
+            deleted = int(
+                await conn.fetchval(
+                    f"WITH d AS (DELETE FROM {target} "  # noqa: S608
+                    "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
+                    "SELECT count(*) FROM d",
+                    collar_ids,
+                ) or 0
+            )
+            return deleted, 0
+        legacy = int(
+            await conn.fetchval(
+                f"SELECT count(*) FROM {target} "  # noqa: S608
+                "WHERE collar_id = ANY($1::uuid[]) AND source_file IS NULL",
+                collar_ids,
+            ) or 0
+        )
+        deleted = int(
+            await conn.fetchval(
+                f"WITH d AS (DELETE FROM {target} "  # noqa: S608
+                "WHERE collar_id = ANY($1::uuid[]) "
+                "AND (source_file = $2 OR source_file IS NULL) RETURNING 1) "
+                "SELECT count(*) FROM d",
+                collar_ids, source_file,
+            ) or 0
+        )
+        return deleted, min(legacy, deleted)
 
     async with conn.transaction():
         if touched:
-            replaced = int(
-                await conn.fetchval(
-                    f"WITH d AS (DELETE FROM {table} "  # noqa: S608
-                    "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
-                    "SELECT count(*) FROM d",
-                    touched,
-                ) or 0
-            )
+            replaced, replaced_legacy = await _replace(table, touched)
         if assay_touched:
             # Same replace semantics for the canonical assay table —
             # a corrected sample file must replace its holes' element
             # rows too, or the doubled-composite failure the interval
             # tables guard against comes back one table over.
-            assay_replaced = int(
-                await conn.fetchval(
-                    "WITH d AS (DELETE FROM silver.assays_v2 "
-                    "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
-                    "SELECT count(*) FROM d",
-                    assay_touched,
-                ) or 0
+            assay_replaced, assay_replaced_legacy = await _replace(
+                "silver.assays_v2", assay_touched,
             )
 
         for start in range(0, len(rows), _INSERT_BATCH):
             chunk = rows[start:start + _INSERT_BATCH]
-            await conn.executemany(sql, chunk)
+            await conn.executemany(
+                sql, [(*r, source_file, source_file_sha256) for r in chunk],
+            )
             written += len(chunk)
 
         for start in range(0, len(assay_rows), _INSERT_BATCH):
             chunk = assay_rows[start:start + _INSERT_BATCH]
-            await conn.executemany(_ASSAYS_V2_SQL, chunk)
+            await conn.executemany(
+                _ASSAYS_V2_SQL,
+                [(*r, source_file, source_file_sha256) for r in chunk],
+            )
 
     if replaced_scope is not None:
         # Recorded once this call's transaction (or savepoint) has
@@ -1597,11 +1653,137 @@ async def _write_intervals(
         "orphaned": orphaned,
         "replaced": replaced,
     }
+    if scoped:
+        stats["replaced_legacy"] = replaced_legacy
     if sheet_type == "sample":
         stats["assay_rows"] = len(assay_rows)
         stats["assay_rows_skipped"] = assay_skipped
         stats["assay_replaced"] = assay_replaced
+        if scoped:
+            stats["assay_replaced_legacy"] = assay_replaced_legacy
     return stats
+
+
+#: The upload timestamp every bronze key carries in front of the user's file
+#: name: ``{Ymd_His}_`` from UploadController, ``%Y%m%d_%H%M%S_%f_`` from the
+#: ZIP fan-out. Same pattern as ingest_spatial._UPLOAD_STAMP_RE (kept local so
+#: this workflow does not import another one).
+_UPLOAD_STAMP_RE = re.compile(r"^[0-9]{8}_[0-9]{6}(?:_[0-9]{1,6})?_")
+
+
+def _logical_source_name(filename: str) -> str:
+    """The file's name as the user gave it, without the upload timestamp.
+
+    The replace key of ``_write_intervals``: every upload gets a fresh
+    timestamp prefix, so the full name never matches an earlier upload of
+    the same file, while the logical name does - a corrected ``lith.csv``
+    replaces the old ``lith.csv`` and leaves ``Cu.csv`` alone.
+    """
+    return _UPLOAD_STAMP_RE.sub("", filename, count=1) or filename
+
+
+def _replaced_warning(
+    *, sheet_type: str, label: str, stats: dict[str, int],
+) -> dict[str, Any] | None:
+    """Say that this write replaced rows an earlier upload had written.
+
+    A replace used to land only in the run's output stats. Rows disappearing
+    from a hole is something the geologist must be told in the run, so it
+    is a warning (``intervals_replaced`` / ``samples_replaced``) with the
+    counts, and names how many of the replaced rows predate source tracking
+    and so may have come from a different file.
+    """
+    replaced = int(stats.get("replaced", 0) or 0)
+    assay_replaced = int(stats.get("assay_replaced", 0) or 0)
+    if replaced <= 0 and assay_replaced <= 0:
+        return None
+    legacy = int(stats.get("replaced_legacy", 0) or 0)
+    assay_legacy = int(stats.get("assay_replaced_legacy", 0) or 0)
+    is_sample = sheet_type == "sample"
+    code = "samples_replaced" if is_sample else "intervals_replaced"
+    noun = "sample interval(s)" if is_sample else f"{sheet_type} row(s)"
+    parts = [f"{replaced} {noun}"]
+    if is_sample and assay_replaced:
+        parts.append(f"{assay_replaced} element assay row(s)")
+    detail = (
+        f"{' and '.join(parts)} from an earlier upload of {label} for the "
+        f"holes it covers were replaced by this one."
+    )
+    total_legacy = legacy + assay_legacy
+    if total_legacy:
+        detail += (
+            f" {total_legacy} of them were written before uploads recorded "
+            f"their source file, so they may have come from a different "
+            f"file; if so, re-upload that file."
+        )
+    return {
+        "code": code,
+        "message": f"{replaced} {noun} replaced by a re-upload of {label}",
+        "detail": detail,
+        "table": sheet_type,
+        "replaced": replaced,
+        "assay_replaced": assay_replaced,
+        "replaced_legacy": total_legacy,
+    }
+
+
+#: Columns named in an assay_unit_ambiguous warning.
+_UNIT_AMBIGUITY_MAX_COLUMNS = 12
+
+
+def _unit_ambiguity_warning(*, label: str, result: Any) -> dict[str, Any] | None:
+    """Surface the parser's ``unit_ambiguity`` flags as a run warning.
+
+    ``csv_sample`` computes ``outlier_flags[i]["unit_ambiguity"]`` per record
+    (``_unit_ambiguity``: bare noble-metal columns, unit-less long-format
+    rows, mixed units, bare base-metal values that look like ppm) and nothing
+    downstream read it: a Cu column in % stored as ppm was a 10,000x error
+    with no trace in the run. Collapsed to one entry per column, saying what
+    was STORED (``inferred_unit``) and what the flag suspects instead
+    (``alternative_unit``). The values themselves are not changed - this is
+    "tell the geologist", never a silent re-read.
+
+    There is no review-queue item: no shared writer for ``silver.review_queue``
+    exists (the OCR path inlines its own INSERT in ingest_pdf), and Laravel's
+    quality rollup counts every pending ``review_required`` row as awaiting
+    OCR, so a drill-assay row would be miscounted there.
+    """
+    from georag_geoparsers._unit_ambiguity import (  # noqa: PLC0415
+        summarize_unit_ambiguity,
+    )
+
+    items = summarize_unit_ambiguity(getattr(result, "outlier_flags", None))
+    if not items:
+        return None
+    columns = sorted({i["column"] for i in items})
+    shown = columns[:_UNIT_AMBIGUITY_MAX_COLUMNS]
+    more = len(columns) - len(shown)
+    described = "; ".join(
+        f"{i['column']!r} stored as {i['inferred_unit']} (could be "
+        f"{i['alternative_unit']})"
+        if i["inferred_unit"] and i["alternative_unit"]
+        else f"{i['column']!r}"
+        for i in items[:_UNIT_AMBIGUITY_MAX_COLUMNS]
+    )
+    return {
+        "code": "assay_unit_ambiguous",
+        "message": (
+            f"{len(columns)} assay column(s) in {label} have an ambiguous unit"
+        ),
+        "detail": (
+            f"The unit of these assay columns is ambiguous, so the stored "
+            f"values may be off by orders of magnitude: {described}"
+            + (f" and {more} more" if more else "")
+            + ". Confirm the unit with the lab or the file's author; if it "
+            "is not the stored one, rename the column with its unit "
+            "(e.g. 'Cu_pct', 'Au_gpt') and re-upload."
+        )[:900],
+        "columns": shown,
+        "ambiguities": [
+            {k: i[k] for k in ("column", "kind", "inferred_unit", "alternative_unit", "records")}
+            for i in items[:50]
+        ],
+    }
 
 
 def _result_headers(result: Any) -> list[str]:
@@ -2833,6 +3015,12 @@ async def run_ingest_tabular(
             await asyncio.to_thread(
                 store.get_file, Bucket.BRONZE, input.minio_key, local,
             )
+            #: Lineage + replace key stamped on every drill row this run
+            #: writes (see _write_intervals): the logical file name scopes
+            #: the per-hole replace to THIS file, the hash records which
+            #: exact bytes wrote the row.
+            source_name = _logical_source_name(filename)
+            source_sha = await asyncio.to_thread(_sha256_file, local)
 
             if run_id:
                 await _progress.mark_stage_started(run_id=run_id, stage="parse")
@@ -3226,7 +3414,15 @@ async def run_ingest_tabular(
                             records=comp_records, index=index,
                             issues=comp_issues,
                             replaced_scope=replaced_scope,
+                            source_file=source_name,
+                            source_file_sha256=source_sha,
                         )
+                        comp_note = _replaced_warning(
+                            sheet_type=companion_type, label=label,
+                            stats=comp_stats,
+                        )
+                        if comp_note is not None:
+                            warnings.append(comp_note)
                         warnings.extend(issue_warnings(
                             comp_issues, label=label, table=companion_type,
                         ))
@@ -3317,7 +3513,20 @@ async def run_ingest_tabular(
                             records=records, index=index,
                             issues=row_issues,
                             replaced_scope=replaced_scope,
+                            source_file=source_name,
+                            source_file_sha256=source_sha,
                         )
+                        replaced_note = _replaced_warning(
+                            sheet_type=write_type, label=label, stats=stats,
+                        )
+                        if replaced_note is not None:
+                            warnings.append(replaced_note)
+                        if write_type == "sample":
+                            ambiguity_note = _unit_ambiguity_warning(
+                                label=label, result=result,
+                            )
+                            if ambiguity_note is not None:
+                                warnings.append(ambiguity_note)
                         if write_type in _COMPANION_TYPES:
                             await _write_companions(
                                 result, write_type, table, target_sheet, index,
@@ -3684,7 +3893,15 @@ async def run_ingest_tabular(
                                     records=stations,
                                     index=survey_index,
                                     issues=trace_issues,
+                                    source_file=source_name,
+                                    source_file_sha256=source_sha,
                                 )
+                                trace_note = _replaced_warning(
+                                    sheet_type="survey", label=filename,
+                                    stats=written["survey"],
+                                )
+                                if trace_note is not None:
+                                    warnings.append(trace_note)
                                 sheets.append({
                                     "sheet": filename,
                                     "type": "survey",

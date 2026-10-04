@@ -51,7 +51,15 @@ def _silver_structure_columns() -> set[str]:
         match = re.match(r"\s*([a-z_]+)\s+(?:uuid|numeric|text|timestamptz)\b", line)
         if match:
             columns.add(match.group(1))
-    return columns
+    # Source-file lineage / replace key, added by
+    # 2026_10_04_100000_add_source_file_to_drill_interval_tables.
+    lineage = (
+        SILVER_MIGRATION.parent
+        / "2026_10_04_100000_add_source_file_to_drill_interval_tables.php"
+    ).read_text()
+    assert "ADD COLUMN IF NOT EXISTS source_file text" in lineage
+    assert "ADD COLUMN IF NOT EXISTS source_file_sha256" in lineage
+    return columns | {"source_file", "source_file_sha256"}
 
 
 def _gold_type_vocabulary() -> set[str]:
@@ -158,7 +166,7 @@ class TestWriteIntervalsForStructure:
         assert sql == it._STRUCTURE_SQL
         assert rows == [(
             WS, _COLLAR_ID, 10.5, "fault", 45.0, 120.0, 60.0, 210.0,
-            None, "chlorite", "gouge",
+            None, "chlorite", "gouge", None, None,
         )]
 
     @pytest.mark.asyncio

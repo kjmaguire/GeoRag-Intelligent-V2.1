@@ -323,6 +323,12 @@ def _pivot_long_to_wide(
     if not group_key_cols:
         return None
 
+    # Elements whose unit the file never stated and that were therefore read as
+    # ppm. Reported once below as ``assay_unit_assumed`` (the wide-format
+    # counterpart is _assay_column_warnings): Cu in % read as ppm is a 10,000x
+    # error, so a default here is never silent.
+    assumed_unit_elements: list[str] = []
+
     # Unit normalization: add a synthetic column with canonical unit names
     # and build element→unit mapping for column naming
     if unit_col:
@@ -338,6 +344,10 @@ def _pivot_long_to_wide(
             elem = str(pair.get(element_col, "") or "").strip()
             unit = str(pair.get(unit_col, "") or "").strip()
             canonical_unit, changed = _normalize_unit(unit)
+            if not unit and elem and elem not in assumed_unit_elements:
+                # A blank unit CELL is the same assumption as a missing
+                # unit column: _normalize_unit falls back to ppm.
+                assumed_unit_elements.append(elem)
             element_unit_map[elem] = canonical_unit
             if changed:
                 global_warnings.append({
@@ -350,6 +360,28 @@ def _pivot_long_to_wide(
         # No unit column — default all to ppm
         elements = df[element_col].unique().to_list()
         element_unit_map = {str(e): "ppm" for e in elements if e is not None}
+        assumed_unit_elements = sorted(element_unit_map)
+
+    if assumed_unit_elements:
+        shown = ", ".join(repr(e) for e in assumed_unit_elements[:12])
+        if len(assumed_unit_elements) > 12:
+            shown += f" and {len(assumed_unit_elements) - 12} more"
+        global_warnings.append({
+            "row": None,
+            "code": _CODE_ASSAY_UNIT_ASSUMED,
+            "message": (
+                f"{len(assumed_unit_elements)} assayed element(s) name no unit "
+                f"and were read as ppm"
+            ),
+            "detail": (
+                f"This long-format file has no usable unit for these elements, "
+                f"so their values were stored as ppm: {shown}. That is an "
+                f"assumption, not something the file says - if an element is "
+                f"in %, g/t or ppb, add a unit column (or use a header such as "
+                f"'Cu_pct', 'Au_ppb') and re-upload."
+            )[:900],
+            "context": {"elements": assumed_unit_elements[:50]},
+        })
 
     # Build wide-format records via groupby + manual pivot.
     # Flags live in a parallel dict (same key) so they stay out of the DataFrame

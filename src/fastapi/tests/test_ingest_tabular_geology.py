@@ -80,7 +80,15 @@ def _table_columns(table: str) -> set[str]:
         match = re.match(r"\s*([a-z_]+)\s+(?:uuid|numeric|text|timestamptz|integer)", line)
         if match:
             columns.add(match.group(1))
-    return columns
+    # Source-file lineage / replace key, added by
+    # 2026_10_04_100000_add_source_file_to_drill_interval_tables.
+    lineage = (
+        SILVER_MIGRATION.parent
+        / "2026_10_04_100000_add_source_file_to_drill_interval_tables.php"
+    ).read_text()
+    assert "ADD COLUMN IF NOT EXISTS source_file text" in lineage
+    assert "ADD COLUMN IF NOT EXISTS source_file_sha256" in lineage
+    return columns | {"source_file", "source_file_sha256"}
 
 
 def _inserted_columns(sql: str, table: str) -> list[str]:
@@ -189,7 +197,7 @@ class TestWriteIntervals:
         assert sql == it._ALTERATION_SQL
         assert rows == [(
             WS, _COLLAR, 0.0, 5.0, "Chlorite", "Strong",
-            ["chlorite", "sericite"], "pervasive",
+            ["chlorite", "sericite"], "pervasive", None, None,
         )]
 
     @pytest.mark.asyncio
@@ -206,7 +214,10 @@ class TestWriteIntervals:
         )
         (sql, rows), = conn.executemany_calls
         assert sql == it._MINERALIZATION_SQL
-        assert rows == [(WS, _COLLAR, 5.0, 10.0, "Pyrite", 3.0, "Disseminated", None, None)]
+        assert rows == [(
+            WS, _COLLAR, 5.0, 10.0, "Pyrite", 3.0, "Disseminated", None, None,
+            None, None,
+        )]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("sheet_type,table", [
@@ -274,10 +285,13 @@ class TestOneFileThreeTables:
 
         lith = env.conn.rows_for("silver.lithology_logs")
         # (ws, collar, from, to, code, desc, grain, colour, hardness, rqd, recovery, weathering)
-        assert lith[0] == (
+        # ... then source_file, source_file_sha256 (lineage; the run's file).
+        assert lith[0][:12] == (
             WS, collar_id, 0.0, 5.0, "GRN", "Grey granite", "Fine", "grey",
             None, 85.0, 98.0, None,
         )
+        assert lith[0][12] == "geology.csv"
+        assert len(lith[0][13]) == 64
         assert lith[1][9] == 90.0            # "90%": the percent sign is a unit
 
         alt = env.conn.rows_for("silver.alteration")
@@ -459,6 +473,7 @@ class TestDbaseAndAccess:
         # moment earlier in THIS run, so its alteration is not an orphan.
         assert out.written["alteration"] == {
             "written": 1, "skipped": 0, "orphaned": 0, "replaced": 0,
+            "replaced_legacy": 0,
         }
 
     async def test_a_standalone_alteration_table_in_access(

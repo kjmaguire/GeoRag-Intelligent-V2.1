@@ -84,7 +84,12 @@ class TestItIsActuallyReachable:
         """A corrected sample file must not double its holes' element rows."""
         source = (WORKFLOWS / "ingest_tabular.py").read_text(encoding="utf-8")
         writer = _function_node(ast.parse(source), "_write_intervals")
-        assert "DELETE FROM silver.assays_v2" in _string_constants(writer)
+        constants = _string_constants(writer)
+        # The delete is one parametrised helper (DELETE FROM {target}) so the
+        # interval table and silver.assays_v2 share the source-file scoping
+        # (an f-string, so only its literal head is a Constant).
+        assert "DELETE FROM " in constants
+        assert "'silver.assays_v2'" in ast.unparse(writer)
 
     def test_lithology_canonical_promotion_is_wired_into_promote(self):
         """The promote task must call the silver→silver step."""
@@ -187,7 +192,9 @@ class TestDeriveAssayV2Rows:
             int(m) for m in re.findall(r"\$(\d+)", _ASSAYS_V2_SQL)
         )
         rows, _ = _derive(_rec())
-        assert len(rows[0]) == placeholders
+        # The last two placeholders (source_file, source_file_sha256) are
+        # appended by _write_intervals at insert time, not by the deriver.
+        assert len(rows[0]) == placeholders - 2
 
     def test_ppb_converts_to_ppm(self):
         rows, skipped = _derive(_rec(commodity_assays={"Au_ppb": 1000.0}))
