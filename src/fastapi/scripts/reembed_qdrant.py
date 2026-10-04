@@ -360,7 +360,7 @@ def _reembed_collection(
             "the caption). If the embedding MODEL changed, set "
             "silver.document_passages.embedding_id = NULL for the "
             "modality='image' rows so embed_pending_passages re-embeds them "
-            "through embed_image() (scripts/reset_embeddings_for_reencode.py "
+            "through embed_image() (src/fastapi/scripts/reset_embeddings_for_reencode.py "
             "only resets contextualized text passages).",
             collection_name,
             skipped_images,

@@ -248,7 +248,7 @@ Switching embedding models (bge → Qwen3 in June, Qwen3 → Cohere Embed v4
 on Foundry, Embed v4 on Bedrock → Embed 5 on Cohere's own API per
 [ADR-0025](../../adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md))
 keeps the 1024-dim schema but still requires a full re-embed:
-`scripts/reset_embeddings_for_reencode.py --all` deletes every point and
+`src/fastapi/scripts/reset_embeddings_for_reencode.py --all` deletes every point and
 clears `embedding_id` on every passage, text and `modality='image'` alike,
 so the embed workflow re-processes everything (the default mode, without
 `--all`, only touches enriched rows and would leave a mixed collection). A
@@ -430,7 +430,7 @@ agent went with them. What remains:
 | Store | Recovery story | Evidence |
 |---|---|---|
 | PostgreSQL | RDS automated backups, 35-day PITR. No repo-side dump or WAL upload runs. | [Ch 14](14-status-matrix.md); `docker/postgresql/backup.sh` and `wal-upload.sh` have no caller |
-| Qdrant | Derived data: reset `embedding_id` and let `embed_pending_passages` rebuild from `silver.document_passages` | `scripts/reset_embeddings_for_reencode.py` |
+| Qdrant | Derived data: reset `embedding_id` and let `embed_pending_passages` rebuild from `silver.document_passages` | `src/fastapi/scripts/reset_embeddings_for_reencode.py` |
 | Redis | AOF on an EFS volume since 2026-09-08. The Azure app had `--appendonly yes` with **no volume**, so every nightly restart dropped sessions and any queued Horizon job | `deploy/aws/terraform/services.tf`; `scripts/check_redis_manifests.py` |
 | Object storage | S3 versioning with 90-day non-current retention since 2026-09-08. On Azure it was the one irreplaceable copy: LRS only, no backup workflow, no restore procedure | `deploy/aws/terraform/`; ADR-0022 |
 | `backups.snapshot_runs` | Table exists and the admin router lists it; no workflow writes to it | `app/routers/admin_tier234.py` |

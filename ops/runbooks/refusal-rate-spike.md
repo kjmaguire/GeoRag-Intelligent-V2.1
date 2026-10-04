@@ -246,7 +246,7 @@ still on `local` embeds new passages with Qwen3 while queries embed with
 Cohere Embed v4; both are 1024-dim so nothing errors — the vectors are
 just unrelated, and every query returns junk below the reranker floor.
 Switching backends **requires a full re-embed**
-(`scripts/reset_embeddings_for_reencode.py`, then `embed_pending_passages`).
+(`src/fastapi/scripts/reset_embeddings_for_reencode.py`, then `embed_pending_passages`).
 
 ```bash
 for app in fastapi-cc hatchet-worker-cc; do

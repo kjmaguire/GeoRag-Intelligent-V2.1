@@ -356,7 +356,7 @@ variable "embedding_backend" {
     This is the ADR-0025 cutover switch, and it is deliberately NOT flipped
     by the code change. Setting it to "cohere" and applying IS migration
     step 4: every stored vector is in the v4 space and must be rewritten in
-    the same sitting (`scripts/reset_embeddings_for_reencode.py --all`, then
+    the same sitting (`src/fastapi/scripts/reset_embeddings_for_reencode.py --all`, then
     the embed sweep), after the credentialed probe run (step 1) and the
     Qdrant snapshot (step 3). Until then it stays "bedrock" so an apply for
     any other reason cannot move production into a mixed vector space.

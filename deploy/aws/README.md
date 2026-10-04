@@ -1061,6 +1061,29 @@ with `is_tenant`, and `workspace_id` filters keep working while the index
 rebuilds, only slower. If the log says `is_tenant UNKNOWN` instead, Qdrant did
 not report the index's parameters and the flag changes nothing.
 
+
+### Embed 5 cutover (ADR-0025), from GitHub Actions
+
+Nothing in this cutover needs a shell inside AWS. Each step is one dispatch of
+**Embed 5 cutover (ADR-0025)** (`.github/workflows/embed5-cutover.yml`), which
+runs `src/fastapi/scripts/ops/embed5_cutover.py` as a one-off ECS task on the
+worker's task definition and puts the report in the step summary. Order:
+
+| # | dispatch | what it proves / does |
+|---|---|---|
+| 1 | `embed5-cutover` step=**probe** | Embed 5 answers the production key: document + query 1024-dim, which image shape is accepted, the 96-text limit, the real adapter end to end. Read-only. Commit the report under `ops/validation/reports/`. |
+| 2 | `embed5-cutover` step=**questions** label=before | six fixed questions per project through `/internal/queries`; counts of citations, refusals, terminal frames. The baseline. |
+| 3 | `embed5-cutover` step=**snapshot** | every Qdrant collection to `s3://<backups>/_ops/qdrant-snapshots/<ts>-before-embed5/`. **Note the prefix.** |
+| 4 | `terraform` action=apply **embedding_backend=cohere** | registers fastapi + hatchet-worker revisions with `EMBEDDING_BACKEND=cohere`. Approve on the `production` environment. |
+| 5 | `cd` (sha = main) | the seven first-party services only pick up a new revision on a CD run (above). Both services must be RUNNING `cohere` before step 6; the workflow checks. |
+| 6 | `embed5-cutover` step=**reset** snapshot_prefix=… confirm=`reset-all-embeddings` | deletes every point, nulls `embedding_id` on every passage (workspace by workspace under RLS). Retrieval is degraded from here until step 7 passes. |
+| 7 | `embed5-cutover` step=**verify** | re-run until exit 0: every point tagged `embed_model=embed-v5.0-pro`, no passage left to embed, image points present. Exit 3 = the 10-minute sweep is still working. |
+| 8 | `embed5-cutover` step=**questions** label=after | compare with step 2. |
+
+Rollback inside the 14-day hold: `terraform` apply with `embedding_backend=bedrock`,
+`cd`, then restore the step-3 snapshot (`PUT /collections/georag_chunks/snapshots/recover`
+with the S3 location) — the v4 vectors come back without a re-embed.
+
 ## One posture decision left open: X-Forwarded-For
 
 `TRUSTED_PROXIES` is set for you (`config.tf`, the VPC CIDR) because without

@@ -38,7 +38,7 @@ The Azure deployment had the same class of problem with Azure Files
 - Qdrant is the one store with **no backup of its own**. EFS automatic backups
   are off, and `upgrade-qdrant.sh` takes the only snapshots, and only when it
   runs. Rebuilding means re-embedding from `silver.document_passages`
-  (`scripts/reset_embeddings_for_reencode.py`), which costs Bedrock calls and
+  (`src/fastapi/scripts/reset_embeddings_for_reencode.py`), which costs Bedrock calls and
   hours.
 
 ## Decision (tonight, 2026-09-29)

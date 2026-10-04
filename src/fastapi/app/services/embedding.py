@@ -114,7 +114,7 @@ COHERE_EMBED_TIMEOUT_S = float(os.environ.get("COHERE_EMBED_TIMEOUT_S", "30"))
 # The rollback for ADR-0025 and the route back if Bedrock lists Embed 5. Reaches
 # Bedrock with the ECS task role's SigV4 credentials (app.services._bedrock)
 # rather than an endpoint plus API key. Vectors are Embed v4's: switching to or
-# from it needs a full re-embed (scripts/reset_embeddings_for_reencode.py --all)
+# from it needs a full re-embed (src/fastapi/scripts/reset_embeddings_for_reencode.py --all)
 # or a Qdrant snapshot.
 # Bedrock model id for Cohere Embed v4, or the ARN of a Bedrock Marketplace
 # endpoint serving it. [UNVERIFIED] that this exact id is offered in the

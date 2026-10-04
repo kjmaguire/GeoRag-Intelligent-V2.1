@@ -268,7 +268,7 @@ Invocation: [`embed_pending_passages`](../../../src/fastapi/app/hatchet_workflow
 plus `services/passage_embedder.py`.
 
 **Switching backends requires a full re-embed** — dimensions match, but the
-vector spaces do not. `scripts/reset_embeddings_for_reencode.py --all` is the
+vector spaces do not. `src/fastapi/scripts/reset_embeddings_for_reencode.py --all` is the
 tool (it clears every point and every passage, image passages included).
 Every dense point is tagged with `embed_model`, and the query path writes the
 model that embedded the question to `silver.answer_runs.embedding_model`.
