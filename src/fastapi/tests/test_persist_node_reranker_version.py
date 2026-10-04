@@ -207,3 +207,60 @@ async def test_a_failed_search_records_no_embedding_model() -> None:
         chunks=[], count=0, data_source="Qdrant (timeout)", retrieval_failure="timeout",
     )
     assert await _written_embedding_model([("search_documents", failed)], _NamedModel()) is None
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 item 10: RRF scores never masquerade as reranker scores
+# ---------------------------------------------------------------------------
+
+
+def _doc_result(*, degraded: bool, score: float):
+    from app.agent.tools import DocumentChunk, DocumentSearchResult
+
+    chunk = DocumentChunk(
+        chunk_id="b5c3f0e2-9d8a-4a55-8d66-0a1b2c3d4e5f", text="Resource 12.5 Mt",
+        source_document_id="rep-1", document_title="R", section_number=None,
+        section_title=None, section=None, page=1, document_type="NI43",
+        report_id="rep-1", relevance_score=score,
+    )
+    return DocumentSearchResult(
+        chunks=[chunk], count=1, data_source="qdrant", rerank_degraded=degraded,
+    )
+
+
+def test_a_reranked_chunk_keeps_its_reranker_score() -> None:
+    from app.agent.agentic_retrieval.nodes import _extract_retrieval_rows
+
+    (row,) = _extract_retrieval_rows([("search_documents", _doc_result(degraded=False, score=0.83))])
+    assert row["stage"] == "reranked"
+    assert row["reranker_score"] == 0.83
+    assert row["retriever_score"] is None
+
+
+def test_a_degraded_chunk_is_not_a_reranked_row() -> None:
+    from app.agent.agentic_retrieval.nodes import _extract_retrieval_rows
+
+    (row,) = _extract_retrieval_rows([("search_documents", _doc_result(degraded=True, score=0.0328))])
+    # 'retrieved' is the stage the table's CHECK allows; the harvest reads
+    # only stage='reranked'.
+    assert row["stage"] == "retrieved"
+    assert row["retriever_score"] == 0.0328
+    assert row["reranker_score"] is None
+
+
+def test_the_stage_is_one_the_table_accepts() -> None:
+    import pathlib
+    import re
+
+    from app.agent.agentic_retrieval.nodes import _extract_retrieval_rows
+
+    migrations = pathlib.Path(__file__).resolve().parents[3] / "database" / "migrations"
+    if not migrations.is_dir():
+        pytest.skip("migrations directory not available in this checkout")
+    ddl = (migrations / "2026_04_21_110000_create_answer_retrieval_items.php").read_text()
+    allowed = set(re.findall(r"CHECK \(stage IN \(([^)]*)\)", ddl)[0].replace("\\'", "").replace(" ", "").split(","))
+    for degraded in (False, True):
+        (row,) = _extract_retrieval_rows(
+            [("search_documents", _doc_result(degraded=degraded, score=0.5))]
+        )
+        assert row["stage"] in allowed

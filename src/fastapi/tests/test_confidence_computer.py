@@ -441,9 +441,8 @@ class TestBothLayer3GuardsDemote:
 
         from app.agent.hallucination import orchestrator_validators
 
-        source = inspect.getsource(
-            orchestrator_validators.run_post_assembly_validation
-        )
+        # The classifier lives in _severity_buckets since 2026-10-04.
+        source = inspect.getsource(orchestrator_validators._severity_buckets)
 
         assert "LAYER3_WARNING_PREFIXES" in source, (
             "the severity classifier has stopped using the shared prefix "

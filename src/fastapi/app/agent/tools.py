@@ -37,6 +37,7 @@ report "insufficient information" rather than fabricating data.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 # ---------------------------------------------------------------------------
 # P1 #16 — per-tool latency + result-count metrics.
@@ -49,7 +50,9 @@ import asyncio
 import functools as _functools  # noqa: E402
 import logging
 import re
+import threading
 import time as _metric_time  # noqa: E402
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -259,6 +262,63 @@ def _metered(tool_name: str):
 logger = logging.getLogger(__name__)
 
 
+class _TTLCache:
+    """Tiny thread-safe LRU with a per-entry TTL.
+
+    For the two per-call lookups that repeated identical work (audit item 26):
+    the query embedding (same text, same model, within a conversation or a
+    retry) and a project's assayed-element metadata. Bounded, so it cannot
+    grow; short-lived, so it cannot serve stale metadata for long.
+    """
+
+    def __init__(self, *, max_entries: int, ttl_s: float) -> None:
+        self._max = max_entries
+        self._ttl = ttl_s
+        self._data: OrderedDict[Any, tuple[float, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: Any) -> Any | None:
+        now = _metric_time.monotonic()
+        with self._lock:
+            hit = self._data.get(key)
+            if hit is None:
+                return None
+            stored_at, value = hit
+            if now - stored_at > self._ttl:
+                del self._data[key]
+                return None
+            self._data.move_to_end(key)
+            return value
+
+    def put(self, key: Any, value: Any) -> None:
+        with self._lock:
+            self._data[key] = (_metric_time.monotonic(), value)
+            self._data.move_to_end(key)
+            while len(self._data) > self._max:
+                self._data.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
+
+#: (model identity, query text) -> embedding. 120 s: long enough for a retry or
+#: a follow-up that re-expands to the same text, short enough that a re-embed
+#: (a model switch) cannot be served from here for long.
+_QUERY_EMBEDDING_CACHE = _TTLCache(max_entries=256, ttl_s=120.0)
+
+#: (workspace, project) -> assayed element keys; (workspace, project, holes) ->
+#: per-element summaries. 60 s, so a fresh ingest shows up within a minute.
+_ASSAY_META_CACHE = _TTLCache(max_entries=256, ttl_s=60.0)
+
+
+def clear_query_caches() -> None:
+    """Drop the per-process query caches (tests, and any model/data switch)."""
+    _QUERY_EMBEDDING_CACHE.clear()
+    _ASSAY_META_CACHE.clear()
+
+
+
 # ---------------------------------------------------------------------------
 # Tool return types
 # ---------------------------------------------------------------------------
@@ -304,8 +364,18 @@ class SpatialQueryResult:
     """Return type for query_spatial_collars."""
 
     collars: list[CollarRecord]
+    #: Rows RETURNED (``len(collars)``, capped by ``limit``) -- NOT how many
+    #: holes the project has. Use ``total_count`` for that.
     count: int
     data_source: str  # always "PostGIS silver.collars" — supports provenance Layer 5
+    #: Rows that MATCHED, before the LIMIT (``COUNT(*) OVER()``). None only
+    #: for a result built without the query (tests, failures). "How many
+    #: holes" is answered from this; the LIMIT 50 sample used to be
+    #: reported as the count on a 567-hole project (audit item 3).
+    total_count: int | None = None
+    #: "timeout" / "error" when the query did not complete, so an outage is
+    #: reported rather than read as "no holes" (audit item 12).
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -429,7 +499,8 @@ class DocumentSearchResult:
     rerank_degraded: bool = False
     #: Why this result is empty when the search did not actually run to
     #: completion (audit RAG-12): "timeout", "sparse_encoder_unavailable",
-    #: "error", "model_not_loaded", "workspace_unresolved". None for a
+    #: "error", "model_not_loaded", "workspace_unresolved",
+    #: "reranker_unavailable", "sparse_query_empty". None for a
     #: search that ran — including one that genuinely matched nothing.
     #: execute_node reads this BEFORE _worth_citing drops the empty
     #: result, which is what made a backend outage indistinguishable from
@@ -474,6 +545,10 @@ class ProjectOverviewResult:
                              #   _is_empty_tool_result/_build_retrieval_summary
                              #   path which expects a `count` attribute
     data_source: str = "PostGIS silver.projects + silver.well_log_curves + silver.reports"
+    #: "timeout" / "error" when one of the overview queries did not finish.
+    #: The fields it would have filled are then zero/empty, which is NOT
+    #: "the project has none" (audit item 12).
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -593,6 +668,14 @@ class AssayDataResult:
     requested_commodity_unavailable: bool = False
     #: Hole IDs the rows and aggregates are restricted to (empty = project).
     hole_filter: list[str] = field(default_factory=list)
+    #: Population standard deviation over the FULL matching set (SQL
+    #: STDDEV_POP). ``samples`` is the top of the distribution, not the
+    #: whole of it, so a mean / sigma computed from it describes the top 50
+    #: values -- anomaly_detector reads this instead (audit item 4).
+    std_value: float | None = None
+    #: "timeout" / "error" when the query did not complete, so an outage is
+    #: reported rather than read as "no assays" (audit item 12).
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -779,12 +862,16 @@ class CollarDetailsResult:
     dip: float | None
     geologist: str | None
     # Aggregates over downstream tables.
-    assay_count: int
-    lithology_count: int
-    sample_count: int
-    structure_count: int
+    #
+    # None means the aggregate query FAILED (timeout / error), not "zero":
+    # each used to fall back to 0, so a Postgres timeout read as "this hole
+    # has no samples" (audit item 11). The renderer says "unavailable".
+    assay_count: int | None
+    lithology_count: int | None
+    sample_count: int | None
+    structure_count: int | None
     max_assay_value: dict | None  # {element, value, unit, depth_from, depth_to}
-    lithology_summary: list[dict]  # top-N {rock_code, total_metres}
+    lithology_summary: list[dict] | None  # top-N {rock_code, total_metres}
     # Citation.
     source_row_ids: list[str]
     count: int  # 1 if found, 0 if not — drives _is_empty_tool_result
@@ -792,6 +879,11 @@ class CollarDetailsResult:
         "PostGIS silver.collars + silver.assays_v2 + silver.lithology_logs "
         "+ silver.samples + silver.structure"
     )
+    #: "timeout" / "error" when the header lookup did not complete (the
+    #: result is then an empty miss that is NOT "no such hole"), or
+    #: "aggregates_unavailable" when the hole was found but its aggregates
+    #: were not (audit item 12).
+    retrieval_failure: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -918,7 +1010,10 @@ async def query_spatial_collars(
         "total_depth, hole_type, azimuth, dip, status, "
         "drill_date::text, "
         "ST_X(geom_4326) AS longitude, "
-        "ST_Y(geom_4326) AS latitude "
+        "ST_Y(geom_4326) AS latitude, "
+        # Matching rows BEFORE the LIMIT: the sample below is alphabetical
+        # and capped, so len(rows) says nothing about the project.
+        "COUNT(*) OVER() AS total_count "
         "FROM silver.collars "
         f"WHERE project_id = $1{workspace_filter}{spatial_filter}{type_filter}{status_clause}"
         f" ORDER BY hole_id{limit_clause}"
@@ -934,9 +1029,10 @@ async def query_spatial_collars(
         limit,
     )
 
-    async def _run_query() -> list[CollarRecord]:
+    async def _run_query() -> tuple[list[CollarRecord], int]:
         async with ctx.deps.acquire_scoped() as conn:
             rows = await conn.fetch(sql, *bind_args)
+            _total = int(rows[0].get("total_count") or len(rows)) if rows else 0
             return [
                 CollarRecord(
                     hole_id=row["hole_id"],
@@ -954,10 +1050,14 @@ async def query_spatial_collars(
                     latitude=row["latitude"],
                 )
                 for row in rows
-            ]
+            ], _total
 
+    failure: str | None = None
+    total_count: int | None = None
     try:
-        collars = await asyncio.wait_for(_run_query(), timeout=settings.TIMEOUT_POSTGIS_S)
+        collars, total_count = await asyncio.wait_for(
+            _run_query(), timeout=settings.TIMEOUT_POSTGIS_S
+        )
     except TimeoutError:
         logger.warning(
             "query_spatial_collars timed out after %.1fs for project=%s",
@@ -965,14 +1065,18 @@ async def query_spatial_collars(
             project_id,
         )
         collars = []
+        failure = "timeout"
     except Exception:
         logger.exception("query_spatial_collars failed for project=%s", project_id)
         collars = []
+        failure = "error"
 
     return SpatialQueryResult(
         collars=collars,
         count=len(collars),
         data_source="PostGIS silver.collars",
+        total_count=total_count,
+        retrieval_failure=failure,
     )
 
 
@@ -1073,6 +1177,7 @@ async def query_project_overview(
             parser_breakdown = {r["parser"]: int(r["n"]) for r in breakdown_rows}
 
     logger.info("query_project_overview: project=%s workspace=%s", project_id, workspace_id)
+    failure: str | None = None
     try:
         await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
     except TimeoutError:
@@ -1081,10 +1186,12 @@ async def query_project_overview(
             settings.TIMEOUT_POSTGIS_S,
             project_id,
         )
+        failure = "timeout"
     except Exception:
         logger.exception(
             "query_project_overview failed for project=%s", project_id
         )
+        failure = "error"
 
     # `count` is the union signal for the empty-result filter — if the
     # project genuinely has no metadata AND no curves AND no reports, the
@@ -1101,6 +1208,7 @@ async def query_project_overview(
         report_count=report_count,
         parser_breakdown=parser_breakdown,
         count=count,
+        retrieval_failure=failure,
     )
 
 
@@ -1375,6 +1483,14 @@ async def query_collar_details(
     # answer.
     norm_hole_sql = _hole_norm_sql("hole_id")
     norm_hole_sql_c2 = _hole_norm_sql("c2.hole_id")
+    # Explicit columns, not SELECT *: the subquery used to drag every column
+    # of silver.collars (geometry included) through the UNION ALL, and gains
+    # whatever a migration adds next (audit item 28).
+    _cols = (
+        "collar_id, hole_id, hole_id_canonical, project_id, easting, northing, "
+        "elevation, total_depth, drill_type, hole_type, azimuth, dip, "
+        "drill_date, geologist"
+    )
     collar_sql = (
         "SELECT collar_id::text, hole_id, hole_id_canonical, project_id::text, "
         # easting/northing from the COLUMNS: they hold the untouched source
@@ -1385,16 +1501,16 @@ async def query_collar_details(
         "total_depth, drill_type, hole_type, azimuth, dip, "
         "drill_date::text, geologist, match_priority "
         "FROM ("
-        "  SELECT *, 1 AS match_priority FROM silver.collars "
+        f"  SELECT {_cols}, 1 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
         "    AND UPPER(hole_id) = UPPER($3) "
         "  UNION ALL "
-        "  SELECT *, 2 AS match_priority FROM silver.collars "
+        f"  SELECT {_cols}, 2 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
         "    AND hole_id_canonical IS NOT NULL "
         "    AND UPPER(hole_id_canonical) = UPPER($3) "
         "  UNION ALL "
-        "  SELECT *, 3 AS match_priority FROM silver.collars "
+        f"  SELECT {_cols}, 3 AS match_priority FROM silver.collars "
         "  WHERE workspace_id = $1::uuid AND project_id = $2::uuid "
         f"    AND {norm_hole_sql} = $4 "
         "    AND UPPER(hole_id) <> UPPER($3) "
@@ -1411,29 +1527,28 @@ async def query_collar_details(
     # legacy silver.samples join. silver.lithology_logs is the
     # always-populated legacy table; silver.lithology is the v2 sibling
     # we sum metres on when present.
-    assay_counts_sql = (
-        "SELECT COUNT(*) AS n FROM silver.assays_v2 "
-        "WHERE workspace_id = $1::uuid AND collar_id = $2::uuid"
-    )
-    sample_counts_sql = (
-        "SELECT COUNT(*) AS n FROM silver.samples "
-        "WHERE collar_id = $1::uuid"
-    )
-    litho_counts_sql = (
-        "SELECT COUNT(*) AS n FROM silver.lithology_logs "
-        "WHERE collar_id = $1::uuid"
-    )
-    structure_counts_sql = (
-        "SELECT COUNT(*) AS n FROM silver.structure "
-        "WHERE workspace_id = $1::uuid AND collar_id = $2::uuid"
-    )
-    max_assay_sql = (
-        "SELECT element, value, unit, from_depth, to_depth "
-        "FROM silver.assays_v2 "
-        "WHERE workspace_id = $1::uuid AND collar_id = $2::uuid "
-        "  AND value IS NOT NULL "
-        "ORDER BY value DESC NULLS LAST "
-        "LIMIT 1"
+    # One round-trip for the four counts AND the headline assay (was six).
+    aggregates_sql = (
+        "SELECT "
+        "  (SELECT COUNT(*) FROM silver.assays_v2 "
+        "    WHERE workspace_id = $1::uuid AND collar_id = $2::uuid) AS assay_count, "
+        "  (SELECT COUNT(*) FROM silver.samples "
+        "    WHERE collar_id = $2::uuid) AS sample_count, "
+        "  (SELECT COUNT(*) FROM silver.lithology_logs "
+        "    WHERE collar_id = $2::uuid) AS litho_count, "
+        "  (SELECT COUNT(*) FROM silver.structure "
+        "    WHERE workspace_id = $1::uuid AND collar_id = $2::uuid) AS structure_count, "
+        "  m.element AS max_element, m.value AS max_value, m.unit AS max_unit, "
+        "  m.from_depth AS max_from, m.to_depth AS max_to "
+        "FROM (SELECT 1) one "
+        "LEFT JOIN LATERAL ("
+        "  SELECT element, value, unit, from_depth, to_depth "
+        "  FROM silver.assays_v2 "
+        "  WHERE workspace_id = $1::uuid AND collar_id = $2::uuid "
+        "    AND value IS NOT NULL "
+        "  ORDER BY value DESC NULLS LAST "
+        "  LIMIT 1"
+        ") m ON true"
     )
     # Lithology summary — sum metres per rock_code from the populated
     # lithology_logs table (which has lithology_code, not rock_code).
@@ -1459,75 +1574,37 @@ async def query_collar_details(
 
             collar_id = collar_row["collar_id"]
 
-            assay_count = 0
-            sample_count = 0
-            litho_count = 0
-            structure_count = 0
+            assay_count: int | None = None
+            sample_count: int | None = None
+            litho_count: int | None = None
+            structure_count: int | None = None
             max_assay: dict | None = None
-            litho_summary: list[dict] = []
+            litho_summary: list[dict] | None = None
+            aggregates_failed = False
 
             try:
-                row = await conn.fetchrow(
-                    assay_counts_sql, workspace_id, collar_id
-                )
-                assay_count = int(row["n"]) if row and row["n"] is not None else 0
+                agg = await conn.fetchrow(aggregates_sql, workspace_id, collar_id)
+                if agg is None:
+                    raise LookupError("aggregates query returned no row")
+                assay_count = int(agg["assay_count"] or 0)
+                sample_count = int(agg["sample_count"] or 0)
+                litho_count = int(agg["litho_count"] or 0)
+                structure_count = int(agg["structure_count"] or 0)
+                if agg["max_value"] is not None:
+                    max_assay = {
+                        "element": agg["max_element"],
+                        "value": float(agg["max_value"]),
+                        "unit": agg["max_unit"],
+                        "depth_from": float(agg["max_from"]) if agg["max_from"] is not None else None,
+                        "depth_to": float(agg["max_to"]) if agg["max_to"] is not None else None,
+                    }
             except Exception:
+                aggregates_failed = True
                 logger.exception(
-                    "query_collar_details: assay_counts failed collar=%s",
-                    collar_id,
+                    "query_collar_details: aggregates failed collar=%s", collar_id,
                 )
 
-            try:
-                row = await conn.fetchrow(sample_counts_sql, collar_id)
-                sample_count = int(row["n"]) if row and row["n"] is not None else 0
-            except Exception:
-                logger.exception(
-                    "query_collar_details: sample_counts failed collar=%s",
-                    collar_id,
-                )
-
-            try:
-                row = await conn.fetchrow(litho_counts_sql, collar_id)
-                litho_count = int(row["n"]) if row and row["n"] is not None else 0
-            except Exception:
-                logger.exception(
-                    "query_collar_details: litho_counts failed collar=%s",
-                    collar_id,
-                )
-
-            try:
-                row = await conn.fetchrow(
-                    structure_counts_sql, workspace_id, collar_id
-                )
-                structure_count = (
-                    int(row["n"]) if row and row["n"] is not None else 0
-                )
-            except Exception:
-                logger.exception(
-                    "query_collar_details: structure_counts failed collar=%s",
-                    collar_id,
-                )
-
-            if assay_count > 0:
-                try:
-                    row = await conn.fetchrow(
-                        max_assay_sql, workspace_id, collar_id
-                    )
-                    if row is not None:
-                        max_assay = {
-                            "element": row["element"],
-                            "value": float(row["value"]) if row["value"] is not None else None,
-                            "unit": row["unit"],
-                            "depth_from": float(row["from_depth"]) if row["from_depth"] is not None else None,
-                            "depth_to": float(row["to_depth"]) if row["to_depth"] is not None else None,
-                        }
-                except Exception:
-                    logger.exception(
-                        "query_collar_details: max_assay failed collar=%s",
-                        collar_id,
-                    )
-
-            if litho_count > 0:
+            if litho_count:
                 try:
                     rows = await conn.fetch(litho_summary_sql, collar_id)
                     litho_summary = [
@@ -1538,10 +1615,13 @@ async def query_collar_details(
                         for r in rows
                     ]
                 except Exception:
+                    aggregates_failed = True
                     logger.exception(
                         "query_collar_details: litho_summary failed collar=%s",
                         collar_id,
                     )
+            elif litho_count == 0:
+                litho_summary = []
 
             return CollarDetailsResult(
                 collar_id=collar_id,
@@ -1591,6 +1671,7 @@ async def query_collar_details(
                 lithology_summary=litho_summary,
                 source_row_ids=[collar_id],
                 count=1,
+                retrieval_failure="aggregates_unavailable" if aggregates_failed else None,
             )
 
     try:
@@ -1603,7 +1684,7 @@ async def query_collar_details(
             settings.TIMEOUT_POSTGIS_S,
             hole_id,
         )
-        return empty
+        return dataclasses.replace(empty, retrieval_failure="timeout")
     except Exception:
         logger.exception(
             "query_collar_details failed workspace=%s project=%s hole=%s",
@@ -1611,11 +1692,11 @@ async def query_collar_details(
             project_id,
             hole_id,
         )
-        return empty
+        return dataclasses.replace(empty, retrieval_failure="error")
 
     logger.info(
-        "query_collar_details: hole=%s match=%s assays=%d litho=%d samples=%d "
-        "structure=%d",
+        "query_collar_details: hole=%s match=%s assays=%s litho=%s samples=%s "
+        "structure=%s",
         hole_id,
         result.hole_id,
         result.assay_count,
@@ -1632,7 +1713,7 @@ async def query_assay_data(
     project_id: str,
     element: str | None = None,
     hole_id: str | None = None,
-    limit: int = 5000,
+    limit: int = 50,
     *,
     commodity: str | None = None,
     hole_ids: list[str] | None = None,
@@ -1650,9 +1731,15 @@ async def query_assay_data(
     P1 #29 — LIMIT cap. A real exploration project can have 50k+ assays;
     pulling all of them and serialising to the LLM context is wasteful and
     risks blowing the token budget. We cap raw sample rows to ``limit``
-    (default 5000) but compute aggregates (min/max/mean/median, sample
+    (default 50) but compute aggregates (min/max/mean/median/stddev, sample
     count) over the FULL unfiltered set in SQL — so statistics stay
     correct even when the rendered sample list is truncated.
+
+    The rows are the HIGHEST ``limit`` values (``ORDER BY value DESC NULLS
+    LAST``), not the first ``limit`` by hole id: the context renderer shows
+    "highest N of {count} samples", and it used to take those N from a list
+    ordered by hole id, so the label was false (audit item 4). A caller that
+    needs the whole set for a plot passes an explicit larger ``limit``.
 
     Args:
         project_id: UUID scope.
@@ -1664,10 +1751,10 @@ async def query_assay_data(
         commodity: Canonical commodity the question named ("gold"; see
             :func:`commodities_in_query`). Mapped to this project's key.
         hole_ids: Optional filter to several holes (unioned with hole_id).
-        limit: Max raw sample rows to return (1 to 20000). Aggregates are
-            ALWAYS computed over the full unfiltered set, so capping
-            ``limit`` only affects what's available for plotting, not the
-            stats the LLM cites.
+        limit: Max raw sample rows to return (1 to 20000, default 50 -- the
+            highest values). Aggregates are ALWAYS computed over the full
+            unfiltered set, so capping ``limit`` only affects the rows
+            available, not the stats the LLM cites.
 
     Returns:
         AssayDataResult with raw samples (≤ limit), aggregates over the
@@ -1675,7 +1762,7 @@ async def query_assay_data(
     """
     # Guard the cap. The agent can ask for arbitrarily large limits via
     # tool calls; clamp here so a misrouted query can't OOM the worker.
-    limit = max(1, min(int(limit or 5000), 20000))
+    limit = max(1, min(int(limit or 50), 20000))
     # Tenancy gap fix (2026-08-15 audit): silver.samples carries workspace_id
     # directly (same table query_collar_details's assay aggregates scope
     # on). Bind whenever AgentDeps carries a workspace — lenient/absent
@@ -1704,8 +1791,21 @@ async def query_assay_data(
                 f"WHERE c.project_id = $1{avail_workspace_clause} "
                 "ORDER BY elem"
             )
-            avail_rows = await conn.fetch(avail_sql, *avail_bind)
-            available = [r["elem"] for r in avail_rows]
+            # Audit item 26: DISTINCT jsonb_object_keys over every sample of
+            # the project is the first of four JSONB passes this tool makes
+            # per call and changes only on ingest; cached 60 s per
+            # (workspace, project). An empty result is never cached (a
+            # project that has not been ingested yet must be seen the moment
+            # it is).
+            _avail_key = ("avail", workspace_id, project_id)
+            available = _ASSAY_META_CACHE.get(_avail_key)
+            if available is None:
+                avail_rows = await conn.fetch(avail_sql, *avail_bind)
+                available = [r["elem"] for r in avail_rows]
+                if available:
+                    _ASSAY_META_CACHE.put(_avail_key, list(available))
+            else:
+                available = list(available)
 
             if not available:
                 return AssayDataResult(
@@ -1825,15 +1925,22 @@ async def query_assay_data(
                     "  AND kv.value ~ '^\\s*[-+]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][-+]?[0-9]+)?\\s*$' "
                     "GROUP BY kv.key ORDER BY kv.key"
                 )
-                for r in await conn.fetch(summary_sql, project_id, *summary_binds):
-                    summaries.append(ElementSummary(
-                        element=r["elem"],
-                        count=int(r["n"] or 0),
-                        min_value=float(r["min_v"]) if r["min_v"] is not None else None,
-                        max_value=float(r["max_v"]) if r["max_v"] is not None else None,
-                        mean_value=float(r["mean_v"]) if r["mean_v"] is not None else None,
-                        median_value=float(r["median_v"]) if r["median_v"] is not None else None,
-                    ))
+                _summary_key = ("summary", workspace_id, project_id, tuple(holes_upper))
+                _cached_summaries = _ASSAY_META_CACHE.get(_summary_key)
+                if _cached_summaries is not None:
+                    summaries = list(_cached_summaries)
+                else:
+                    for r in await conn.fetch(summary_sql, project_id, *summary_binds):
+                        summaries.append(ElementSummary(
+                            element=r["elem"],
+                            count=int(r["n"] or 0),
+                            min_value=float(r["min_v"]) if r["min_v"] is not None else None,
+                            max_value=float(r["max_v"]) if r["max_v"] is not None else None,
+                            mean_value=float(r["mean_v"]) if r["mean_v"] is not None else None,
+                            median_value=float(r["median_v"]) if r["median_v"] is not None else None,
+                        ))
+                    if summaries:
+                        _ASSAY_META_CACHE.put(_summary_key, list(summaries))
 
             # Step 2: aggregates computed over the FULL unfiltered set in
             # SQL so they don't degrade when we cap raw rows for context
@@ -1846,7 +1953,7 @@ async def query_assay_data(
             agg_sql = (
                 "SELECT "
                 "  MIN(val) AS min_v, MAX(val) AS max_v, "
-                "  AVG(val) AS mean_v, "
+                "  AVG(val) AS mean_v, STDDEV_POP(val) AS std_v, "
                 "  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY val) AS median_v, "
                 "  COUNT(*) AS total_n "
                 "FROM ("
@@ -1895,7 +2002,7 @@ async def query_assay_data(
                 "JOIN silver.collars c ON c.collar_id = s.collar_id "
                 f"WHERE c.project_id = $1 AND s.commodity_assays ? $2{scope_sql} "
                 "  AND (s.commodity_assays->>$2) IS NOT NULL "
-                f"ORDER BY c.hole_id, s.from_depth "
+                f"ORDER BY val DESC NULLS LAST, c.hole_id, s.from_depth "
                 f"LIMIT ${limit_idx}"
             )
             rows = await conn.fetch(data_sql, *bind, limit)
@@ -1932,14 +2039,20 @@ async def query_assay_data(
                 max_value=float(agg_row["max_v"]) if agg_row["max_v"] is not None else None,
                 mean_value=float(agg_row["mean_v"]) if agg_row["mean_v"] is not None else None,
                 median_value=float(agg_row["median_v"]) if agg_row["median_v"] is not None else None,
+                std_value=(
+                    float(agg_row["std_v"])
+                    if _row_get(agg_row, "std_v") is not None else None
+                ),
                 data_source="PostGIS silver.samples",
                 **provenance,
             )
 
+    failure = "error"
     try:
         return await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
     except TimeoutError:
         logger.warning("query_assay_data timed out project=%s", project_id)
+        failure = "timeout"
     except Exception:
         logger.exception("query_assay_data failed project=%s", project_id)
 
@@ -1953,7 +2066,17 @@ async def query_assay_data(
         mean_value=None,
         median_value=None,
         data_source="PostGIS silver.samples",
+        retrieval_failure=failure,
     )
+
+
+def _row_get(row: Any, key: str) -> Any:
+    """``row[key]`` for an asyncpg Record or a dict, None when absent."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        logger.debug("row has no column %r", key, exc_info=True)
+        return None
 
 
 def _payload_page(payload: dict[str, Any]) -> int | None:
@@ -2239,9 +2362,27 @@ async def search_documents(
             # SentenceTransformer, the sidecar proxy) don't define
             # embed_query, so this falls back to the prior .encode() call.
             _model = ctx.deps.embedding_model
+            # Audit item 26: the same (model, text) used to be re-embedded --
+            # a network round-trip on the hosted backend -- on every retry and
+            # follow-up. Keyed on the model's own name so a model switch can
+            # never serve a vector from the other space; a model that names
+            # nothing is not cached at all rather than guessed at.
+            _cache_key: tuple[str, str, str] | None = None
+            _name = getattr(_model, "query_model_name", None) or getattr(
+                _model, "model_name", None
+            )
+            if isinstance(_name, str) and _name:
+                _cache_key = (type(_model).__name__, _name, _embed_input)
+                _cached = _QUERY_EMBEDDING_CACHE.get(_cache_key)
+                if _cached is not None:
+                    return list(_cached)
             if hasattr(_model, "embed_query"):
-                return _model.embed_query(_embed_input).tolist()
-            return _model.encode(_embed_input, normalize_embeddings=True).tolist()
+                _vec = _model.embed_query(_embed_input).tolist()
+            else:
+                _vec = _model.encode(_embed_input, normalize_embeddings=True).tolist()
+            if _cache_key is not None:
+                _QUERY_EMBEDDING_CACHE.put(_cache_key, list(_vec))
+            return _vec
 
         # Dense query embedding + sparse SPLADE++ query encoding are mutually
         # independent (different models, different executor threads) — gather
@@ -2267,11 +2408,21 @@ async def search_documents(
 
         async def _sparse_leg() -> dict[int, float]:
             try:
-                return await loop.run_in_executor(
+                vector = await loop.run_in_executor(
                     None, lambda: encode_sparse(_expanded_query)
                 )
             except Exception as exc:  # noqa: BLE001 — re-raised, typed
                 raise SparseEncoderUnavailable(str(exc)) from exc
+            if not vector:
+                # Audit item 27: encode_sparse returns {} for text with no
+                # encodable tokens, and that empty vector used to go straight
+                # to Qdrant -- a silent dense-only query, which GI-11 forbids.
+                # It is the QUESTION that cannot be searched, not an outage,
+                # so it is its own typed error (no alarm, "rephrase" message).
+                from app.agent.errors import EmptySparseQuery  # noqa: PLC0415
+
+                raise EmptySparseQuery()
+            return vector
 
         query_vector: list[float]
         query_sparse: dict[int, float]
@@ -2386,9 +2537,22 @@ async def search_documents(
         # hole IDs, sample numbers, NTS codes -- every answer still streams,
         # and nothing anywhere reports it. `sparse` runs at desired=1 on
         # Fargate Spot, so a reclamation produces exactly this window.
+        from app.agent.errors import EmptySparseQuery  # noqa: PLC0415
         from app.services.sparse_encoder import (  # noqa: PLC0415
             SparseEncoderUnavailable,
         )
+
+        if isinstance(exc, EmptySparseQuery):
+            logger.warning(
+                "search_documents: the query has no sparse terms (project=%s "
+                "query_hash=%s) -- refusing a dense-only search",
+                project_id, query_hash(query_text),
+            )
+            return DocumentSearchResult(
+                chunks=[], count=0,
+                data_source=f"Qdrant {_doc_collection} (query not searchable)",
+                retrieval_failure="sparse_query_empty",
+            )
 
         if isinstance(exc, SparseEncoderUnavailable):
             logger.error(
@@ -2416,11 +2580,10 @@ async def search_documents(
 
     # Stage 2: cross-encoder reranking (Layer 1 precision gate).
     #
-    # False on the no-reranker-configured path too: that deployment never
-    # promised a precision stage, so its results are not DEGRADED, they are
-    # what it always returns. Degraded means "we have a reranker and it did
-    # not run".
-    rerank_degraded = False
+    # A configured reranker that fails (twice) is a typed retrieval failure,
+    # not a silent RRF fallback (audit item 1). The no-reranker-configured
+    # path further down still returns RRF order flagged rerank_degraded:
+    # that deployment never promised a precision stage.
     if ctx.deps.reranker is not None:
         logger.info(
             "search_documents: reranking %d candidates for project=%s query_hash=%s",
@@ -2440,46 +2603,87 @@ async def search_documents(
             else settings.RERANKER_INPUT_CHAR_BUDGET
         )
         pairs = [(query_text, (c.text or "")[:_budget]) for c in chunks]
-        try:
-            # CrossEncoder.predict is synchronous and CPU-bound; run in executor
-            # to avoid blocking the asyncio event loop. Wrap in an inner
-            # wait_for so a wedged reranker doesn't blow the outer
-            # search_documents branch budget — the orchestrator's per-branch
-            # wait_for catches the longer cases (latency-fix follow-up).
-            #
-            # 2026-08-20 — this wait_for is a BACKSTOP, not the primary
-            # bound. Cancelling it does not stop the executor thread, so
-            # the reranker enforces the same budget internally (see
-            # reranker._caller_budget_s, which reads TIMEOUT_RERANKER_S)
-            # and returns rather than being cancelled out from under. If
-            # this branch fires, the backend blew through its own deadline
-            # — that is a real anomaly now, not the routine outcome of a
-            # single 429 that it used to be.
-            scores: list[float] = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: list(ctx.deps.reranker.predict(pairs)),
-                ),
-                timeout=settings.TIMEOUT_RERANKER_S,
-            )
-        except TimeoutError:
-            logger.warning(
-                "search_documents: reranker timed out after %.1fs on %d pairs "
-                "for project=%s — falling back to Qdrant cosine ordering",
-                settings.TIMEOUT_RERANKER_S,
-                len(pairs),
+        # CrossEncoder.predict is synchronous and CPU-bound; run in executor
+        # to avoid blocking the asyncio event loop. Wrap in an inner
+        # wait_for so a wedged reranker doesn't blow the outer
+        # search_documents branch budget — the orchestrator's per-branch
+        # wait_for catches the longer cases (latency-fix follow-up).
+        #
+        # 2026-08-20 — this wait_for is a BACKSTOP, not the primary
+        # bound. Cancelling it does not stop the executor thread, so
+        # the reranker enforces the same budget internally (see
+        # reranker._caller_budget_s, which reads TIMEOUT_RERANKER_S)
+        # and returns rather than being cancelled out from under. If
+        # this branch fires, the backend blew through its own deadline
+        # — that is a real anomaly now, not the routine outcome of a
+        # single 429 that it used to be.
+        #
+        # 2026-10-04 (audit item 1): a reranker timeout or exception used to
+        # fall back to the top-RERANKER_TOP_K chunks in RRF order with NO
+        # score floor, which meant Layer 1's hard refusal could never fire
+        # during a Bedrock throttle — the least trustworthy moment to ship an
+        # answer built from unfiltered candidates. It is now treated exactly
+        # like a dead sparse leg: one retry, then a typed retrieval failure
+        # that execute_node raises as RetrievalBackendUnavailable. The only
+        # remaining rerank_degraded path is the explicit "no reranker
+        # configured" branch below, which never promised a precision stage.
+        scores: list[float] = []
+        _rerank_ok = False
+        for _attempt in (1, 2):
+            try:
+                scores = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: list(ctx.deps.reranker.predict(pairs)),
+                    ),
+                    timeout=settings.TIMEOUT_RERANKER_S,
+                )
+                if len(scores) != len(pairs):
+                    # A short or empty score list would zip() away the
+                    # unscored candidates (or, empty, skip the floor
+                    # entirely). That is a failed rerank, not a result.
+                    raise ValueError(
+                        f"reranker returned {len(scores)} scores for "
+                        f"{len(pairs)} pairs"
+                    )
+                _rerank_ok = True
+                break
+            except TimeoutError:
+                logger.warning(
+                    "search_documents: reranker timed out after %.1fs on %d "
+                    "pairs for project=%s (attempt %d/2)",
+                    settings.TIMEOUT_RERANKER_S,
+                    len(pairs),
+                    project_id,
+                    _attempt,
+                )
+            except Exception:
+                logger.exception(
+                    "search_documents: reranker.predict failed for "
+                    "project=%s (attempt %d/2)",
+                    project_id,
+                    _attempt,
+                )
+        if not _rerank_ok:
+            logger.error(
+                "RERANKER_UNAVAILABLE search_documents: the reranker failed "
+                "twice for project=%s; refusing to return %d unfiltered "
+                "RRF-order candidates. This is NOT an empty corpus.",
                 project_id,
+                len(chunks),
             )
-            scores = []
-            rerank_degraded = True
-        except Exception:
-            logger.exception(
-                "search_documents: reranker.predict failed for project=%s — "
-                "falling back to Qdrant cosine ordering",
-                project_id,
+            try:
+                from app.metrics import RERANK_DEGRADED_TOTAL  # noqa: PLC0415
+
+                RERANK_DEGRADED_TOTAL.inc()
+            except Exception:  # noqa: BLE001
+                logger.debug("RERANK_DEGRADED_TOTAL increment failed", exc_info=True)
+            return DocumentSearchResult(
+                chunks=[],
+                count=0,
+                data_source=f"Qdrant {_doc_collection} (reranker unavailable)",
+                retrieval_failure="reranker_unavailable",
             )
-            scores = []
-            rerank_degraded = True
 
         if scores:
             # Cross-encoder/qwen3_causal backends output raw logits
@@ -2503,7 +2707,13 @@ async def search_documents(
             import math
 
             raw_scores: list[float] = [float(s) for s in scores]
-            needs_sigmoid = RERANKER_BACKEND != "bedrock"
+            # Probability-scale backends: bedrock (Cohere's calibrated
+            # relevance score) and qwen3_causal (softmax P(yes) over the
+            # yes/no logits, see _Qwen3CausalReranker.predict). Both are
+            # ALREADY in [0, 1]; sigmoiding them squeezes every score into
+            # [0.5, 0.73] (audit item 21). Only the cross_encoder backend
+            # emits raw unbounded logits.
+            needs_sigmoid = RERANKER_BACKEND not in ("bedrock", "qwen3_causal")
 
             # Pair chunks with raw scores, threshold, sort, top-K.
             #
@@ -2568,35 +2778,10 @@ async def search_documents(
                 project_id,
             )
 
-        if rerank_degraded:
-            # Without the reranker, initial_limit was RETRIEVAL_TOP_N (40)
-            # rather than the ~12 the precision stage would have returned,
-            # so passing everything through let 40 low-relevance chunks
-            # crowd the context budget and push the structured collar and
-            # assay blocks out of it entirely. RRF rank is a worse ordering
-            # than a cross-encoder, but it is an ordering; take the same
-            # number of chunks the ranked path would have.
-            chunks = chunks[: settings.RERANKER_TOP_K]
-            logger.warning(
-                "search_documents: returning %d chunks in RRF order for "
-                "project=%s — the reranking stage did not run",
-                len(chunks), project_id,
-            )
-            try:
-                from app.metrics import RERANK_DEGRADED_TOTAL  # noqa: PLC0415
-                RERANK_DEGRADED_TOTAL.inc()
-            except Exception:  # noqa: BLE001
-                pass
-
         return DocumentSearchResult(
             chunks=chunks,
             count=len(chunks),
-            rerank_degraded=rerank_degraded,
-            data_source=(
-                f"qdrant:{_doc_collection} (rerank unavailable)"
-                if rerank_degraded
-                else f"qdrant:{_doc_collection} (reranked)"
-            ),
+            data_source=f"qdrant:{_doc_collection} (reranked)",
         )
 
     # No reranker at all — get_reranker_or_none() returned None. That is not

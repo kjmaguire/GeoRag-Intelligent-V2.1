@@ -106,6 +106,11 @@ class PayloadIndex:
     field_name: str
     # Qdrant field schema types: "keyword", "integer", "float", "geo", "text"
     field_schema: str
+    # Keyword indexes only: Qdrant's multitenancy optimisation (>= 1.11). It
+    # co-locates each tenant's points on disk, so a workspace-filtered query
+    # does not touch other tenants' segments. Only meaningful on the field
+    # EVERY query filters on first (workspace_id, GI-9).
+    is_tenant: bool = False
 
 
 @dataclass
@@ -135,10 +140,14 @@ COLLECTIONS: list[CollectionSpec] = [
             # report_id + section_number match what _build_payload emits and
             # back citation lookups. (document_type/source_id/chunk_index were
             # removed: no live point carries them — audit IND-3.)
-            PayloadIndex("workspace_id",   "keyword"),
+            PayloadIndex("workspace_id",   "keyword", is_tenant=True),
             PayloadIndex("project_id",     "keyword"),
             PayloadIndex("report_id",      "keyword"),
             PayloadIndex("section_number", "keyword"),
+            # search_documents filters on chunk_kind (tools.py: the
+            # structured_summary / kg_narrative project-scope branch). With no
+            # index every such filter was a full payload scan (audit item 29).
+            PayloadIndex("chunk_kind",     "keyword"),
         ],
     ),
     CollectionSpec(
@@ -203,10 +212,30 @@ async def _create_payload_index(
     """Issue a PUT /collections/{name}/index request to create a payload index."""
     body = {
         "field_name": index.field_name,
-        "field_schema": index.field_schema,
+        "field_schema": index_field_schema(index),
     }
     resp = await client.put(f"/collections/{collection_name}/index", json=body)
     _ok(resp, f"Index '{index.field_name}' on '{collection_name}'")
+
+
+def index_field_schema(index: PayloadIndex) -> str | dict:
+    """The ``field_schema`` Qdrant expects: a bare type name, or the
+    parameterised form when the index carries options (``is_tenant``)."""
+    if index.is_tenant:
+        return {"type": index.field_schema, "is_tenant": True}
+    return index.field_schema
+
+
+async def _existing_payload_fields(client: httpx.AsyncClient, name: str) -> set[str]:
+    """Fields that already have a payload index on an existing collection."""
+    resp = await client.get(f"/collections/{name}")
+    if resp.status_code != 200:
+        return set()
+    try:
+        schema = resp.json()["result"].get("payload_schema") or {}
+    except (KeyError, ValueError):
+        return set()
+    return set(schema)
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +277,15 @@ async def bootstrap() -> None:
         for spec in COLLECTIONS:
             print(f"--- Collection: {spec.name} ---")
 
+            already_indexed: set[str] = set()
             if await _collection_exists(client, spec.name):
                 print("  Already exists — skipping creation.")
+                # Idempotent on a live collection: an index that is already
+                # there is left exactly as it is. Re-PUTting workspace_id with
+                # is_tenant would REBUILD it on a collection serving traffic,
+                # so adopting is_tenant on an existing collection is a
+                # deliberate, manual step (drop the index, re-run this).
+                already_indexed = await _existing_payload_fields(client, spec.name)
             else:
                 await _create_collection(client, spec)
                 print(
@@ -259,8 +295,12 @@ async def bootstrap() -> None:
                 )
 
             for idx in spec.payload_indices:
+                if idx.field_name in already_indexed:
+                    print(f"  Index present  '{idx.field_name}' — left as is")
+                    continue
                 await _create_payload_index(client, spec.name, idx)
-                print(f"  Index OK  '{idx.field_name}' ({idx.field_schema})")
+                tenant = ", is_tenant" if idx.is_tenant else ""
+                print(f"  Index OK  '{idx.field_name}' ({idx.field_schema}{tenant})")
 
             print()
 

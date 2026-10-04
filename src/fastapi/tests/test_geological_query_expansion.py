@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.services.geological_query_expansion import expand_query
 
 
@@ -78,3 +80,38 @@ class TestNoOp:
     def test_query_with_no_abbreviations(self) -> None:
         original = "What is the deepest drillhole in this project?"
         assert expand_query(original) == original
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 item 13: hole ids are not mangled by the abbreviation table
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("hole_id", ["DDH-07", "RC-22-11", "AC-04", "RAB-12", "ddh-07"])
+def test_hole_ids_survive_expansion_untouched(hole_id: str) -> None:
+    from app.services.geological_query_expansion import expand_query
+
+    out = expand_query(f"What did {hole_id} intersect?")
+    assert hole_id in out
+    assert f"({'diamond drillhole'})-" not in out
+    assert "reverse circulation)-" not in out
+    assert "air core)-" not in out
+    assert "air blast)-" not in out
+
+
+def test_abbreviations_outside_hole_ids_still_expand() -> None:
+    from app.services.geological_query_expansion import expand_query
+
+    out = expand_query("Au grade in DDH-07 over 3 g/t, and in a DDH program")
+    assert "DDH-07" in out
+    assert "Au (gold)" in out
+    assert "g/t (grams per tonne)" in out
+    # The free-standing "DDH" is not part of an id, so it is still annotated.
+    assert "DDH (diamond drillhole) program" in out
+
+
+def test_several_hole_ids_are_restored_in_order() -> None:
+    from app.services.geological_query_expansion import expand_query
+
+    out = expand_query("compare RC-22-11 with AC-04 and DDH-07")
+    assert out.index("RC-22-11") < out.index("AC-04") < out.index("DDH-07")

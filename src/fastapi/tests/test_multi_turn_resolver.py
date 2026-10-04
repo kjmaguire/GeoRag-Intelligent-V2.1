@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.agent.multi_turn_resolver import (
     ConversationTurn,
     EntityMention,
@@ -470,3 +472,49 @@ def test_typed_demonstratives_still_resolve():
     assert "Crackingstone" in resolve_multi_turn(
         "reports on this project", history,
     ).rewritten_query
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 item 20: plural pronouns never name one hole
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("query", [
+    "Which holes did they intersect?",
+    "what were their depths?",
+    "tell me about them",
+])
+def test_plural_pronouns_resolve_below_the_rewrite_threshold(query):
+    from app.agent.multi_turn_resolver import REWRITE_MIN_CONFIDENCE
+
+    history = [_turn(0, "tell me about hole PLS-22-08", mentions=[_hole(0, "PLS-22-08")])]
+    result = resolve_multi_turn(query, history)
+    assert result.overall_confidence < REWRITE_MIN_CONFIDENCE
+    assert all(
+        s.confidence < REWRITE_MIN_CONFIDENCE
+        for s in result.resolution_trace if s.original_phrase.lower() in ("they", "them", "their")
+    )
+
+
+def test_singular_pronouns_still_clear_the_threshold():
+    from app.agent.multi_turn_resolver import REWRITE_MIN_CONFIDENCE
+
+    history = [_turn(0, "x", mentions=[_hole(0, "PLS-22-08")])]
+    for query in ("how deep is it?", "what are its assays?"):
+        assert resolve_multi_turn(query, history).overall_confidence >= REWRITE_MIN_CONFIDENCE
+
+
+@pytest.mark.asyncio
+async def test_resolve_node_keeps_the_users_words_for_a_plural_pronoun():
+    from app.agent.agentic_retrieval.nodes import resolve_node
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+    from app.config import settings
+
+    history = [_turn(0, "tell me about hole PLS-22-08", mentions=[_hole(0, "PLS-22-08")])]
+    state = AgenticRetrievalState(
+        query="Which holes did they intersect?", deps=object(), history=history,
+    )
+    object.__setattr__(settings, "MULTI_TURN_RESOLUTION_ENABLED", True)
+    update = await resolve_node(state)
+    assert "query" not in update  # not rewritten
+    assert update["resolution_confidence"] < 0.6

@@ -272,6 +272,7 @@ async def _agent_rag_stream(
     app_state: Any,
     user: UserContext | None = None,
     stamper: EventStamper | None = None,
+    resolved_workspace_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Run the full geo_agent RAG pipeline and yield SSE events.
 
@@ -382,7 +383,17 @@ async def _agent_rag_stream(
         # to the default tenant. Was missing → agentic path logged
         # "workspace_id missing — falling back to default tenant" on every query
         # (harmless single-tenant today; a cross-tenant leak once tenant #2 lands).
-        workspace_id=(getattr(user, "workspace_id", None) if user else None),
+        #
+        # Audit item 18 (2026-10-04): when the JWT carries no workspace claim,
+        # fall back to the workspace of the PROJECT ROW, resolved once in
+        # post_query. Document retrieval already derived it from the project
+        # row while the structured tools, persist and the cache key fell back
+        # to the legacy default tenant, so one answer could mix two tenants.
+        # Every consumer now reads this one value.
+        workspace_id=(
+            (getattr(user, "workspace_id", None) if user else None)
+            or resolved_workspace_id
+        ),
         # Cross-service join key for the usage / cost rows the graph
         # writes. Comes off the stamper so there is exactly one trace
         # id per request rather than two that nearly agree.
@@ -876,6 +887,10 @@ async def post_query(
     # the row; we pass the workspace_id from the JWT (or None to stay single-
     # tenant). The guard raises HTTPException on non-active states so FastAPI
     # handles it before the streaming context opens.
+    #
+    # The same transaction resolves the project's workspace ONCE (audit item
+    # 18), so every consumer of deps.workspace_id agrees (see _agent_rag_stream).
+    _resolved_workspace_id: str | None = None
     try:
         from app.middleware.project_lifecycle import require_active_project  # noqa: PLC0415
         _pg_pool = request.app.state.pg_pool
@@ -895,16 +910,54 @@ async def post_query(
                 await require_active_project(
                     project_id=body.project_id, conn=_lc_conn
                 )
+                _ws_row = await _lc_conn.fetchrow(
+                    "SELECT workspace_id::text AS workspace_id "
+                    "FROM silver.projects WHERE project_id = $1::uuid",
+                    body.project_id,
+                )
+                if _ws_row is not None and _ws_row["workspace_id"]:
+                    _resolved_workspace_id = str(_ws_row["workspace_id"])
     except HTTPException:
         raise
     except Exception as _lc_err:
-        # If the lifecycle check itself fails (e.g. pool not yet ready),
-        # log a warning and let the request proceed rather than blocking
-        # legitimate queries. This keeps the guard non-fatal on startup.
-        logger.warning(
-            "post_query: lifecycle check failed (non-fatal) project=%s err=%s",
+        # FAIL CLOSED (audit item 19, 2026-10-04). This used to log and let
+        # the request through, so a database blip -- exactly when the
+        # suspended / archived / past-due gate cannot be read -- let every
+        # query on a blocked project run. A typed 503 lets Laravel tell the
+        # user to retry instead of reporting a mystery failure.
+        logger.error(
+            "post_query: lifecycle check could not run -- refusing the query "
+            "(fail closed) project=%s err=%s",
             body.project_id,
             _lc_err,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="project_lifecycle_check_unavailable",
+            headers={"Retry-After": "5"},
+        ) from _lc_err
+
+    # Audit item 18: a JWT workspace claim that is not the project's own
+    # workspace is a cross-tenant request. (With RLS on and the GUC set the
+    # row would not have been visible at all; this catches the connection
+    # that bypasses RLS.)
+    _jwt_workspace = getattr(user, "workspace_id", None) if user else None
+    if (
+        _jwt_workspace
+        and _resolved_workspace_id
+        and str(_jwt_workspace).lower() != _resolved_workspace_id.lower()
+    ):
+        logger.error(
+            "post_query: JWT workspace %s does not own project %s (workspace %s) "
+            "-- rejecting",
+            _jwt_workspace,
+            body.project_id,
+            _resolved_workspace_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="JWT workspace does not match the project's workspace.",
         )
 
     # M7B1 — Create a request-scoped EventStamper. The UUID is pre-generated
@@ -945,7 +998,8 @@ async def post_query(
 
         try:
             async for chunk in _agent_rag_stream(
-                body, request.app.state, user=user, stamper=_stamper
+                body, request.app.state, user=user, stamper=_stamper,
+                resolved_workspace_id=_resolved_workspace_id,
             ):
                 yield chunk
         except asyncio.CancelledError:

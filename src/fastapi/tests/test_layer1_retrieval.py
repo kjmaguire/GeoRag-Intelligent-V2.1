@@ -214,3 +214,49 @@ class TestFeatureFlag:
         verdict = assess_retrieval_quality([])
         assert verdict.refuse is False
         assert verdict.weak is False
+
+
+class TestDrillDataQuestionGate:
+    """Audit 2026-10-04 item 15: ordinary words no longer satisfy the
+    zero-evidence gate with an unrelated project-wide collar dump."""
+
+    @pytest.mark.parametrize("query", [
+        "What is the core business of the operator?",
+        "Who is the lead investigator on the PEA?",
+        "Is there a log of the community meetings?",
+        "How deep is the commitment to ESG?",
+        "Is Co. Ltd the operator?",
+        "Au revoir from the project team",
+        "What metallurgical recovery did the PEA assume?",
+    ])
+    def test_unrelated_question_is_refused_despite_a_collar_dump(self, query: str) -> None:
+        verdict = assess_retrieval_quality(
+            [("query_spatial_collars", _OtherToolResult(count=5))],
+            intent="factual_lookup", query=query,
+        )
+        assert verdict.refuse is True
+
+    @pytest.mark.parametrize("query", [
+        "How many holes were drilled?",
+        "What was the best gold grade?",
+        "Show the collar locations",
+        "Which assays exceeded 1%?",
+        "What are the depths of the core samples?",
+        "Tell me about PLS-22-08",
+        "What are the lithology logs for the Au zone?",
+        "average g/t over the interval",
+    ])
+    def test_drill_data_question_keeps_the_structured_dump_as_evidence(self, query: str) -> None:
+        verdict = assess_retrieval_quality(
+            [("query_spatial_collars", _OtherToolResult(count=5))],
+            intent="factual_lookup", query=query,
+        )
+        assert verdict.refuse is False
+        assert verdict.other_evidence_present is True
+
+    def test_two_weak_words_are_a_signal_but_one_is_not(self) -> None:
+        from app.agent.hallucination.layer1_retrieval import _is_drill_data_question
+
+        assert _is_drill_data_question("depths of the core samples")
+        assert not _is_drill_data_question("what is the core strategy")
+        assert not _is_drill_data_question("core core core")

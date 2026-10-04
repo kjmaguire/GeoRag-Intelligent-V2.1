@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -80,6 +81,32 @@ from app.services.qdrant_conn import qdrant_client_kwargs
 configure_json_logging(level=settings.LOG_LEVEL.upper())
 
 logger = logging.getLogger(__name__)
+
+
+def _statement_cache_size_from_env() -> int:
+    """asyncpg ``statement_cache_size`` from ``ASYNCPG_STATEMENT_CACHE_SIZE``.
+
+    0 (the default, and the value for anything unset, blank, negative or not
+    an integer) is the PgBouncer-transaction-mode-safe setting. A positive
+    value is only valid where asyncpg talks to Postgres directly (the AWS
+    deployment has no pooler, so it can set 100).
+    """
+    raw = (os.environ.get("ASYNCPG_STATEMENT_CACHE_SIZE") or "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "ASYNCPG_STATEMENT_CACHE_SIZE=%r is not an integer — using 0", raw,
+        )
+        return 0
+    if value < 0:
+        logger.warning(
+            "ASYNCPG_STATEMENT_CACHE_SIZE=%d is negative — using 0", value,
+        )
+        return 0
+    return value
 
 
 def qdrant_dense_dim(vectors_config: Any) -> int | None:
@@ -222,6 +249,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # paragraph above about reporting a host you did not connect to.
     logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))
     _pg_pool_min, _pg_pool_max = 2, 12
+    # Audit item 30: the prepared-statement cache is only unsafe BEHIND
+    # PgBouncer in transaction mode (compose). It is a real cost everywhere
+    # else (every query re-parsed), so it is env-driven. Default 0 = the
+    # PgBouncer-safe value, which is what compose and any unset environment
+    # get. The AWS deployment has NO pooler and may set
+    # ASYNCPG_STATEMENT_CACHE_SIZE=100. Never set it above 0 behind
+    # transaction-mode PgBouncer: it fails under load with
+    # `prepared statement "__asyncpg_stmt_N__" does not exist`.
+    _stmt_cache_size = _statement_cache_size_from_env()
     pg_pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=pg_dsn,
         min_size=_pg_pool_min,
@@ -251,7 +287,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # makes asyncpg send queries via the simple protocol (one-shot parse),
         # which is fully compatible with transaction pooling. The per-query
         # parse cost is ~100 µs, dwarfed by network + PostGIS time.
-        statement_cache_size=0,
+        statement_cache_size=_stmt_cache_size,
         server_settings={
             # Visible in pg_stat_activity.application_name for triage.
             "application_name": "georag-fastapi",
@@ -279,10 +315,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.pg_pool = pg_pool
     logger.info(
-        "asyncpg pool ready (min=%d max=%d per worker, statement_cache_size=0, "
+        "asyncpg pool ready (min=%d max=%d per worker, statement_cache_size=%d, "
         "jit=off)",
         _pg_pool_min,
         _pg_pool_max,
+        _stmt_cache_size,
     )
 
     # -------------------------------------------------------------------------
@@ -901,6 +938,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _rewarm_task = getattr(app.state, "embedding_rewarm_task", None)
     if _rewarm_task is not None and not _rewarm_task.done():
         _rewarm_task.cancel()
+
+    # Audit item 17: child rows and usage metering are written by retained
+    # background tasks (agentic_retrieval.persist_node). Let them finish while
+    # the pg_pool is still open.
+    try:
+        from app.agent.agentic_retrieval.nodes import (  # noqa: PLC0415
+            drain_persist_background,
+        )
+
+        await drain_persist_background(timeout=10.0)
+    except Exception:
+        logger.exception("Persist background drain failed (non-fatal)")
 
     # Plan §0e — stop the trace flush loop FIRST so the final drain can
     # write any buffered traces while the pg_pool is still open.

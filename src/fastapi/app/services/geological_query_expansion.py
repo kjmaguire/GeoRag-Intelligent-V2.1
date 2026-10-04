@@ -139,6 +139,37 @@ _SYNONYM_PATTERN = re.compile(
 ) if _SYNONYMS else None
 
 
+_MASK_OPEN = "\ue000"
+_MASK_CLOSE = "\ue001"
+_MASK_RE = re.compile(f"{_MASK_OPEN}(\\d+){_MASK_CLOSE}")
+
+
+def _mask_hole_ids(query: str) -> tuple[str, list[str]]:
+    """Replace every drill-hole id with an inert placeholder.
+
+    "DDH-07" would otherwise become "DDH (diamond drillhole)-07" -- the
+    abbreviation table matches the "DDH" inside the id, and the mangled token
+    then went to BOTH the dense and the sparse encoder, so the exact-token
+    match on the hole the user named was destroyed (audit item 13). The same
+    for "RC-22-11" and "AC-04".
+    """
+    from app.agent.hole_id_patterns import HOLE_ID_RE  # noqa: PLC0415
+
+    originals: list[str] = []
+
+    def _mask(match: re.Match[str]) -> str:
+        originals.append(match.group(0))
+        return f"{_MASK_OPEN}{len(originals) - 1}{_MASK_CLOSE}"
+
+    return HOLE_ID_RE.sub(_mask, query), originals
+
+
+def _unmask_hole_ids(text: str, originals: list[str]) -> str:
+    if not originals:
+        return text
+    return _MASK_RE.sub(lambda m: originals[int(m.group(1))], text)
+
+
 def expand_query(query: str, *, max_expansions: int = 6) -> str:
     """Return the query with up to ``max_expansions`` geological terms
     annotated with their canonical full forms.
@@ -153,7 +184,8 @@ def expand_query(query: str, *, max_expansions: int = 6) -> str:
     """
     if not query:
         return query
-    expanded = query
+    masked, hole_ids = _mask_hole_ids(query)
+    expanded = masked
     used: set[str] = set()
     expansions_added = 0
 
@@ -206,7 +238,7 @@ def expand_query(query: str, *, max_expansions: int = 6) -> str:
 
         expanded = _SYNONYM_PATTERN.sub(_annotate, expanded)
 
-    return expanded
+    return _unmask_hole_ids(expanded, hole_ids)
 
 
 __all__ = ["expand_query"]

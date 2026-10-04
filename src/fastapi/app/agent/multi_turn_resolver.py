@@ -266,6 +266,16 @@ REWRITE_MIN_CONFIDENCE = 0.6
 # Per-step confidence when a pronoun had to fall back to a secondary type.
 _SECONDARY_TYPE_CONFIDENCE = 0.6
 
+# Plural pronouns. "they / them / their" were resolved to ONE hole at 0.75 --
+# above REWRITE_MIN_CONFIDENCE -- so "Which holes did they intersect?" after a
+# turn that named PLS-22-08 was rewritten into a question about that single
+# hole (audit item 20). A plural cannot name one entity: the step is still
+# reported, but capped BELOW the rewrite threshold so resolve_node keeps the
+# user's own words.
+_PLURAL_PRONOUNS: frozenset[str] = frozenset({"they", "them", "their"})
+_PLURAL_PRONOUN_CONFIDENCE = 0.5
+assert _PLURAL_PRONOUN_CONFIDENCE < REWRITE_MIN_CONFIDENCE
+
 # Demonstratives — these include a TYPE noun, so the resolver knows
 # what to look for. The phrase is replaced with the surface form of
 # the latest mention of that type.
@@ -677,6 +687,8 @@ def _resolve_pronouns(
         else:
             replacement = latest.surface_form
             confidence = min(0.75, confidence_cap)
+        if pronoun in _PLURAL_PRONOUNS:
+            confidence = min(confidence, _PLURAL_PRONOUN_CONFIDENCE)
         rewritten = (
             rewritten[: match.start()] + replacement + rewritten[match.end():]
         )

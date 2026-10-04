@@ -26,8 +26,10 @@ additional metadata for audit purposes. If the provenance lookup fails
 (e.g. the report predates source_file_sha256), the citation is left
 unchanged; a failed query is logged at WARNING.
 
-The enriched data is added to ``Citation.section`` as a human-readable
-provenance string: ``"source: collars/sample_collars.csv (sha256:743495c…)"``.
+The enriched data is added to ``Citation.provenance`` (not rendered) as a
+human-readable provenance string:
+``"source: collars/sample_collars.csv (sha256:743495c…)"``. It used to be
+appended to ``Citation.section``, which the chat displays.
 
 Usage
 -----
@@ -60,8 +62,8 @@ marker keeps the sentence and that marker, with just the rejected
 marker's bracket text removed. If nothing citeable survives — either
 every citation was rejected, or the only sentences left after scrubbing
 were empty — the whole response falls through to the same refusal text
-Layer 1's hard gate uses (:func:`app.agent.hallucination.layer1_retrieval.build_refusal_text`),
-with citations reset to the same inert "nothing to cite" placeholder
+its own plain text (:data:`app.agent.hallucination.refusals.PROVENANCE_REFUSAL_TEXT`,
+stamped with an ``unsupported_by_sources`` ``refusal_payload``), with citations reset to the same inert "nothing to cite" placeholder
 ``response_assembler.assemble_response`` uses for a no-tool-call answer.
 That placeholder is deliberately not referenced by any marker in the
 text — safe here specifically because the text is now itself a refusal
@@ -94,6 +96,11 @@ from app.agent.hallucination.citation_markers import (
 from app.agent.hallucination.claim_sentences import (
     Unit,
     drop_units,
+)
+from app.agent.hallucination.refusals import (
+    PROVENANCE_REFUSAL_TEXT,
+    UNSUPPORTED_BY_SOURCES_MESSAGE,
+    make_refusal_payload,
 )
 from app.config import settings
 from app.models.rag import Citation, GeoRAGResponse
@@ -362,16 +369,20 @@ def gate_citation_provenance(
     # rejected, or the sentence(s) that carried a rejected marker were the
     # only substantive content. Shipping whatever prose is left, backed by
     # zero real citations, would itself be an uncited claim. Fall through
-    # to the same refusal text Layer 1's hard gate uses.
+    # to a provenance-specific refusal.
+    refusal_payload: dict[str, Any] | None = None
     if not kept or not scrubbed_text.strip():
-        from app.agent.hallucination.layer1_retrieval import (  # noqa: PLC0415
-            build_refusal_text,
-        )
-
-        scrubbed_text = build_refusal_text()
+        # Its own text, NOT Layer 1's build_refusal_text(): that one says
+        # "Document search found no passages that cleared the relevance
+        # threshold", which is false here -- passages were found and the
+        # draft cited ones that were not among them (audit item 8).
+        scrubbed_text = PROVENANCE_REFUSAL_TEXT
         insights_offset = None
         kept = []
         sources_used = []
+        refusal_payload = make_refusal_payload(
+            "unsupported_by_sources", UNSUPPORTED_BY_SOURCES_MESSAGE
+        )
 
     if not kept:
         # GeoRAGResponse.citations requires >= 1 entry. Same "nothing to
@@ -384,7 +395,7 @@ def gate_citation_provenance(
                 citation_id="[DATA-1]",
                 citation_type="DATA",
                 source_chunk_id="provenance-rejected",
-                document_title="No citation passed the provenance gate",
+                document_title="No supporting source",
                 section=None,
                 page=None,
                 relevance_score=0.0,
@@ -412,6 +423,8 @@ def gate_citation_provenance(
         sources_used=sources_used,
         proactive_insights_offset=insights_offset,
     )
+    if refusal_payload is not None:
+        update["refusal_payload"] = refusal_payload
     return response.model_copy(update=update), warnings
 
 
@@ -443,10 +456,14 @@ _SOURCE_TABLE_RE = re.compile(
 # The silver.* structured kinds have no per-row file linkage yet; the old
 # LIKE-on-file_path lookups just attached the most-recently-ingested file's
 # sha256 to EVERY citation — provenance fabrication. Skip, don't guess.
+#
+# One statement for every distinct report the answer cites (audit item 16):
+# it used to be one round-trip per CITATION, so twelve chunks of one report
+# cost twelve identical queries on the path to the `completed` frame.
 _REPORT_SOURCE_SQL = (
-    "SELECT source_object_key, source_file_sha256 "
+    "SELECT report_id::text AS report_id, source_object_key, source_file_sha256 "
     "FROM silver.reports "
-    "WHERE report_id = $1::uuid"
+    "WHERE report_id = ANY($1::uuid[])"
 )
 
 
@@ -492,6 +509,8 @@ async def enrich_provenance(
     _SHA256_OK = _re_local.compile(r"^[0-9a-f]{64}$")
     _ZERO_SHA = "0" * 64
 
+    # Pass 1: which citations name a looked-up report, and which reports.
+    pending: list[tuple[Citation, str, str]] = []  # (citation, source_id, report uuid)
     for citation in response.citations:
         source_id = citation.source_chunk_id
         if not source_id:
@@ -521,24 +540,30 @@ async def enrich_provenance(
             # UUID at all: there is no report row to look up.
             unresolved_count += 1
             continue
+        pending.append((citation, source_id, report_uuid))
 
+    # Pass 2: ONE query for the distinct report ids.
+    rows_by_report: dict[str, Any] = {}
+    if pending:
+        distinct_ids = list(dict.fromkeys(rid for _c, _s, rid in pending))
         try:
             async with pg_pool.acquire() as conn:
-                row = await asyncio.wait_for(
-                    conn.fetchrow(_REPORT_SOURCE_SQL, report_uuid),
+                fetched = await asyncio.wait_for(
+                    conn.fetch(_REPORT_SOURCE_SQL, distinct_ids),
                     timeout=settings.TIMEOUT_POSTGIS_S,
                 )
+            rows_by_report = {str(r["report_id"]).lower(): r for r in fetched}
         except Exception:
             # WARNING, not DEBUG: a query that fails on every call is how
             # this enrichment went dead unnoticed (PG-5).
             logger.warning(
-                "layer5_provenance: failed to resolve source for %s",
-                source_id,
+                "layer5_provenance: failed to resolve sources for %d report(s)",
+                len(distinct_ids),
                 exc_info=True,
             )
-            unresolved_count += 1
-            continue
 
+    for citation, source_id, report_uuid in pending:
+        row = rows_by_report.get(report_uuid.lower())
         if row is None:
             unresolved_count += 1
             continue
@@ -561,12 +586,10 @@ async def enrich_provenance(
             continue
         sha_short = sha256[:12]
 
-        # Enrich the section field with provenance info.
-        provenance_str = f"source: {file_path} (sha256:{sha_short}…)"
-        if citation.section:
-            citation.section = f"{citation.section} | {provenance_str}"
-        else:
-            citation.section = provenance_str
+        # Technical detail goes in its own field, NOT in ``section``: section
+        # renders on the citation chip, and an S3 object key plus a hash is
+        # not a section heading (audit item 22).
+        citation.provenance = f"source: {file_path} (sha256:{sha_short}…)"
 
         enriched_count += 1
 

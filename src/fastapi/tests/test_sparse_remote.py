@@ -21,18 +21,17 @@ class _Resp:
 
 
 def test_remote_encode_restores_int_keys(monkeypatch):
-    import httpx
-
     captured = {}
 
-    def fake_post(url, json=None, timeout=None, headers=None):
-        captured["url"] = url
-        captured["json"] = json
-        # The sidecar returns JSON, which stringifies the int token-id keys.
-        return _Resp({"sparse": [{"123": 0.5, "456": 1.25}]})
+    class _FakeClient:
+        def post(self, url, json=None, timeout=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            # The sidecar returns JSON, which stringifies the int token-id keys.
+            return _Resp({"sparse": [{"123": 0.5, "456": 1.25}]})
 
     monkeypatch.setattr(se, "SPARSE_SERVICE_URL", "http://sparse:8000/")
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(se, "_REMOTE_CLIENT", _FakeClient())
 
     out = se._remote_encode_sparse(["uranium grade"])
     assert out == [{123: 0.5, 456: 1.25}]
@@ -173,3 +172,67 @@ class TestTextShape:
         }
 
         assert sum(counts.values()) == len(sample)
+
+
+def test_remote_encode_reuses_one_pooled_client(monkeypatch):
+    """Audit item 26: one shared httpx.Client, not a client per query."""
+    import httpx
+
+    built: list[object] = []
+    real_client = httpx.Client
+
+    class _Counting(real_client):  # type: ignore[misc, valid-type]
+        def __init__(self, *a, **k):
+            built.append(self)
+            super().__init__(*a, **k)
+
+        def post(self, url, **kw):
+            return _Resp({"sparse": [{"1": 0.5}]})
+
+    monkeypatch.setattr(se, "SPARSE_SERVICE_URL", "http://sparse:8000")
+    monkeypatch.setattr(se, "_REMOTE_CLIENT", None)
+    monkeypatch.setattr(httpx, "Client", _Counting)
+    try:
+        for _ in range(5):
+            se._remote_encode_sparse(["uranium"])
+        assert len(built) == 1
+    finally:
+        client = se._REMOTE_CLIENT
+        monkeypatch.setattr(se, "_REMOTE_CLIENT", None)
+        if client is not None:
+            client.close()
+
+
+def test_remote_encode_retries_once_on_a_stale_kept_alive_socket(monkeypatch):
+    import httpx
+
+    calls = []
+
+    class _Flaky:
+        def post(self, url, **kw):
+            calls.append(url)
+            if len(calls) == 1:
+                raise httpx.RemoteProtocolError("Server disconnected")
+            return _Resp({"sparse": [{"9": 1.0}]})
+
+    monkeypatch.setattr(se, "SPARSE_SERVICE_URL", "http://sparse:8000")
+    monkeypatch.setattr(se, "_REMOTE_CLIENT", _Flaky())
+    assert se._remote_encode_sparse(["x"]) == [{9: 1.0}]
+    assert len(calls) == 2
+
+
+def test_a_persistent_failure_is_not_retried_forever(monkeypatch):
+    import httpx
+
+    calls = []
+
+    class _Down:
+        def post(self, url, **kw):
+            calls.append(url)
+            raise httpx.RemoteProtocolError("Server disconnected")
+
+    monkeypatch.setattr(se, "SPARSE_SERVICE_URL", "http://sparse:8000")
+    monkeypatch.setattr(se, "_REMOTE_CLIENT", _Down())
+    with pytest.raises(httpx.RemoteProtocolError):
+        se._remote_encode_sparse(["x"])
+    assert len(calls) == 2

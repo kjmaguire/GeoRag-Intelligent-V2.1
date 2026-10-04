@@ -91,3 +91,47 @@ def test_terminal_refusal_message_has_no_internal_references(strategy) -> None:
     # Routing and audit still get the machine values, in their own fields.
     assert payload["strategy"] == strategy.value
     assert payload["guard_codes"] == [GuardErrorCode.CONFLICTING_SOURCES.value]
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 (items 2, 7, 8): withheld answers read as refusals
+# ---------------------------------------------------------------------------
+
+
+def test_system_refusal_texts_and_payload_messages_have_no_internal_references() -> None:
+    from app.agent.hallucination.layer2_typed_output import CITATION_REFUSAL_TEXT
+    from app.agent.hallucination.refusals import (
+        MODEL_NO_OUTPUT_MESSAGE,
+        MODEL_NO_OUTPUT_TEXT,
+        PROVENANCE_REFUSAL_TEXT,
+        UNSUPPORTED_BY_SOURCES_MESSAGE,
+        make_refusal_payload,
+    )
+
+    for text in (
+        CITATION_REFUSAL_TEXT, PROVENANCE_REFUSAL_TEXT, MODEL_NO_OUTPUT_TEXT,
+        MODEL_NO_OUTPUT_MESSAGE, UNSUPPORTED_BY_SOURCES_MESSAGE,
+    ):
+        assert not _INTERNAL.search(text), text
+    payload = make_refusal_payload("unsupported_by_sources", UNSUPPORTED_BY_SOURCES_MESSAGE)
+    assert payload["type"] == "refusal"
+    assert payload["reason_code"] == "unsupported_by_sources"
+
+
+def test_operator_budget_text_is_never_the_user_text() -> None:
+    from app.agent.hallucination.refusals import MODEL_NO_OUTPUT_TEXT
+    from app.agent.llm_common import BUDGET_EXHAUSTED_FALLBACK
+
+    assert "token budget" in BUDGET_EXHAUSTED_FALLBACK
+    assert "budget" not in MODEL_NO_OUTPUT_TEXT.lower()
+    assert "raise the configured" not in MODEL_NO_OUTPUT_TEXT
+
+
+def test_banner_for_a_system_refusal_is_skipped_but_the_floor_applies() -> None:
+    from app.agent.hallucination.refusals import PROVENANCE_REFUSAL_TEXT
+    from app.agent.response_assembler import assemble_response
+
+    response = assemble_response(PROVENANCE_REFUSAL_TEXT, [])
+    out = _floor_confidence_with_warning_banner(response, _banner_reason("Layer 5: x"))
+    assert out.text == PROVENANCE_REFUSAL_TEXT
+    assert out.confidence <= 0.1

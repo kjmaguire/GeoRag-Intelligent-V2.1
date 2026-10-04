@@ -79,3 +79,45 @@ def test_numeric_ids_need_a_hole_context_word() -> None:
 def test_case_insensitive() -> None:
     assert HOLE_ID_RE.fullmatch("pls-22-08")
     assert HOLE_ID_RE.fullmatch("Pls-22-08")
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 item 24: separator positions between digit groups matter
+# ---------------------------------------------------------------------------
+
+
+def test_hole_id_key_distinguishes_digit_group_boundaries() -> None:
+    from app.agent.hole_id_patterns import canonical_hole_id, hole_id_key
+
+    # The legacy separator-free form merges two different holes ...
+    assert canonical_hole_id("PLS-2-28") == canonical_hole_id("PLS-22-8")
+    # ... the key does not.
+    assert hole_id_key("PLS-2-28") != hole_id_key("PLS-22-8")
+    assert hole_id_key("PLS-2-28") == "PLS2-28"
+    assert hole_id_key("PLS-22-8") == "PLS22-8"
+
+
+def test_hole_id_key_still_unifies_harmless_spelling_variants() -> None:
+    from app.agent.hole_id_patterns import hole_id_key
+
+    for variants in (
+        ("PLS-22-08", "pls 22 08", "PLS22-08", "PLS_22.08", "PLS 22-08"),
+        ("BH-12", "BH12", "bh 12", "Bh_12"),
+        ("36-1085", "36 1085", "36.1085", "36_1085"),
+        ("GH08-212", "gh08-212", "GH08 212"),
+    ):
+        assert len({hole_id_key(v) for v in variants}) == 1, variants
+
+
+def test_hole_id_key_keeps_leading_zeros_like_the_canonical_form() -> None:
+    from app.agent.hole_id_patterns import hole_id_key
+
+    assert hole_id_key("BH-1") != hole_id_key("BH-01")
+
+
+def test_hole_id_key_is_total() -> None:
+    from app.agent.hole_id_patterns import hole_id_key
+
+    assert hole_id_key("") == ""
+    assert hole_id_key(None) == ""  # type: ignore[arg-type]
+    assert hole_id_key("---") == ""

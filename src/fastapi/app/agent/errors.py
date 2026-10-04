@@ -29,6 +29,22 @@ class RetrievalBackendUnavailable(RuntimeError):
         super().__init__(f"document retrieval unavailable: {reason}")
 
 
+class EmptySparseQuery(RuntimeError):
+    """The query produced no sparse (SPLADE) terms, so hybrid retrieval cannot run.
+
+    ``encode_sparse`` returns ``{}`` for text with no encodable tokens
+    (symbol-only, or some non-Latin input). ``search_documents`` used to hand
+    that empty vector to Qdrant, which silently turned a hybrid query into a
+    dense-only one -- exactly what GI-11 forbids (audit item 27). It is a
+    property of THIS QUESTION, not an outage, so it is its own error: the
+    user is told to rephrase, and nothing is paged.
+    """
+
+    def __init__(self, detail: str = "query has no searchable terms") -> None:
+        self.detail = detail
+        super().__init__(detail)
+
+
 class ErrorCode(StrEnum):
     """Structured error codes for the RAG pipeline."""
     TIMEOUT = "TIMEOUT"
@@ -39,6 +55,7 @@ class ErrorCode(StrEnum):
     RATE_LIMITED = "RATE_LIMITED"
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
     RETRIEVAL_UNAVAILABLE = "RETRIEVAL_UNAVAILABLE"
+    QUERY_NOT_SEARCHABLE = "QUERY_NOT_SEARCHABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -81,6 +98,11 @@ USER_MESSAGES: dict[ErrorCode, str] = {
         "Document search is temporarily unavailable, so this question could "
         "not be checked against your reports. Please try again in a few "
         "minutes."
+    ),
+    ErrorCode.QUERY_NOT_SEARCHABLE: (
+        "This question has no searchable words in it, so the documents "
+        "could not be searched. Please rephrase it in plain words, for "
+        "example with a hole ID, a commodity or a place name."
     ),
     ErrorCode.INTERNAL_ERROR: (
         "An unexpected error occurred. The team has been notified. "
@@ -156,6 +178,12 @@ def classify_error(exc: Exception) -> tuple[ErrorCode, str]:
             "WorkspaceQuotaExceeded branch was skipped for %s",
             type(exc).__name__,
             exc_info=True,
+        )
+
+    if isinstance(exc, EmptySparseQuery):
+        return (
+            ErrorCode.QUERY_NOT_SEARCHABLE,
+            USER_MESSAGES[ErrorCode.QUERY_NOT_SEARCHABLE],
         )
 
     if isinstance(exc, RetrievalBackendUnavailable):

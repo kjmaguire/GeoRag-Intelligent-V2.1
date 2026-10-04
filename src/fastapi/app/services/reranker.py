@@ -367,8 +367,9 @@ class _RemoteReranker:
     Mirrors ``CrossEncoder.predict(list[(query, passage)]) -> list[float]`` by
     POSTing the pairs to the reranker sidecar. Kept deliberately minimal so it
     is a drop-in for ``get_reranker_or_none()`` consumers (orchestrator +
-    eval Layer 5). A wedged/absent sidecar raises here; callers already treat a
-    reranker failure as a soft-degrade to RRF order (spec B6 fallback).
+    eval Layer 5). A wedged/absent sidecar raises here. search_documents retries
+    once and then fails the query with ``retrieval_failure="reranker_unavailable"``
+    (2026-10-04): an RRF-order answer would skip the Layer 1 score floor.
     """
 
     def __init__(self, base_url: str, timeout_s: float) -> None:

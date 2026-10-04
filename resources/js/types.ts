@@ -283,7 +283,9 @@ export type RefusalReasonCode =
   | 'guard_entity_fail'
   | 'guard_completeness_fail'
   | 'llm_unavailable'
-  | 'budget_exhausted';
+  | 'budget_exhausted'
+  | 'model_no_output'
+  | 'unsupported_by_sources';
 
 export interface NearestCandidate {
   marker: string;

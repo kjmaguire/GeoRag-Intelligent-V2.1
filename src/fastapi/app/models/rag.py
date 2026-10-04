@@ -148,6 +148,16 @@ class Citation(BaseModel):
             "Only set on PGEO citations."
         ),
     )
+    provenance: str | None = Field(
+        default=None,
+        description=(
+            "Technical provenance for audit and the evidence inspector -- the "
+            "source object key and a sha256 prefix, set by Layer 5 enrichment. "
+            "NOT FOR DISPLAY: it used to be appended to ``section``, which the "
+            "chat renders, so a citation chip showed an S3 key and a hash "
+            "(audit 2026-10-04, item 22). Optional and additive."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

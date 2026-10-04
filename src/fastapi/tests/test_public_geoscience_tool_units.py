@@ -395,7 +395,28 @@ class TestSearchPublicGeoscience:
         )
         sql, *args = pool._conn.fetch.await_args.args
         assert "DROP TABLE" not in sql
-        assert args[1] == "'; DROP TABLE pg_mine; --"
+        # Bound, and with the LIKE wildcard "_" escaped (audit item 14).
+        assert args[1] == "'; DROP TABLE pg\\_mine; --"
+
+    @pytest.mark.asyncio
+    async def test_like_wildcards_in_the_text_query_are_escaped(self) -> None:
+        pool = _mock_pool([])
+        ctx = _MockRunContext(deps=_make_deps(pg_pool=pool))
+        await search_public_geoscience(  # type: ignore[arg-type]
+            ctx, canonical_types=["mine"], text_query="50%_Cu\\x",
+        )
+        _sql, *args = pool._conn.fetch.await_args.args
+        assert args[1] == "50\\%\\_Cu\\\\x"
+
+    @pytest.mark.asyncio
+    async def test_blank_text_query_binds_none(self) -> None:
+        pool = _mock_pool([])
+        ctx = _MockRunContext(deps=_make_deps(pg_pool=pool))
+        await search_public_geoscience(  # type: ignore[arg-type]
+            ctx, canonical_types=["mine"], text_query="   ",
+        )
+        _sql, *args = pool._conn.fetch.await_args.args
+        assert args[1] is None
 
     @pytest.mark.asyncio
     async def test_limit_per_type_is_capped(self) -> None:

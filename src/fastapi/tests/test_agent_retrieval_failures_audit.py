@@ -91,7 +91,7 @@ async def test_timeout_is_recorded_not_dropped(monkeypatch):
     _patch_tools(monkeypatch, timed_out, [])
     update = await execute_node(_state())
     assert update["retrieval_failures"] == [
-        "Qdrant georag_chunks (timeout) via search_documents",
+        "Documents (temporarily unavailable)",
     ]
     assert update["tool_results"] == []
 

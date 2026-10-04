@@ -63,6 +63,13 @@ EMPTY_SOURCE_SENTINELS: frozenset[str] = frozenset({
     "georag_reports:empty",
     "pg_public_geoscience:empty",
     "silver.collars:miss",
+    # Placeholder citations a WITHHELD answer carries (GeoRAGResponse needs
+    # >= 1 citation): rule-4 enforcement (layer2_typed_output) and the
+    # chunk-provenance gate (layer5_provenance). Not listed here, a withheld
+    # answer persisted as citation_state="committed" with no rejection_reason
+    # (audit item 9).
+    "citation-rejected",
+    "provenance-rejected",
 })
 
 #: Suffixes `_extract_source_id` mints when a result carried no rows.
@@ -332,7 +339,10 @@ def assemble_response(
                 citation_id="[DATA-1]",
                 citation_type="DATA",
                 source_chunk_id="no-tool-call",
-                document_title="No tool call executed",
+                # Rendered as a chip. The technical story is in
+                # source_chunk_id ("no-tool-call"); the title says what the
+                # reader needs: nothing was retrieved to cite.
+                document_title="No source retrieved",
                 section=None,
                 page=None,
                 relevance_score=0.0,
@@ -425,6 +435,35 @@ _DEGRADED_MARKERS: tuple[str, ...] = (
 )
 
 
+#: What the reader calls each retrieval surface. ``degraded_sources`` renders
+#: as a warning chip, so it names the thing that did not work in the user's
+#: terms -- not "Qdrant georag_chunks (timeout) via search_documents", which
+#: names a vector database, a collection and a tool function (audit item 22).
+#: The technical label is logged at the point of failure.
+_SOURCE_LABELS: dict[str, str] = {
+    "search_documents": "Documents",
+    "search_documents_adversarial": "Documents",
+    "search_public_geoscience": "Public geoscience records",
+    "query_spatial_collars": "Drill-hole collars",
+    "query_collar_details": "Drill-hole details",
+    "query_assay_data": "Assay data",
+    "query_downhole_logs": "Downhole logs",
+    "query_project_overview": "Project overview",
+    "query_project_summary": "Project summary",
+    "query_coverage_gap": "Coverage data",
+    "query_stereonet": "Structural measurements",
+    "query_drill_traces_3d": "Drill traces",
+}
+
+
+def plain_source_label(tool_name: str) -> str:
+    """User-facing label for a degraded retrieval surface."""
+    name = _SOURCE_LABELS.get(tool_name)
+    if name is None:
+        name = tool_name.removeprefix("query_").removeprefix("search_").replace("_", " ").capitalize()
+    return f"{name} (temporarily unavailable)"
+
+
 def _collect_degraded_sources(tool_results: list[tuple[str, Any]]) -> list[str]:
     """Human-readable labels for retrieval surfaces that did not fully work.
 
@@ -447,12 +486,12 @@ def _collect_degraded_sources(tool_results: list[tuple[str, Any]]) -> list[str]:
             # One label per surface. This result's data_source also carries
             # the "(rerank unavailable)" marker, and reporting both would
             # tell the reader the same thing twice in different words.
-            labels.append("Document ranking (reranker unavailable)")
+            labels.append("Document ranking (temporarily unavailable)")
             continue
 
         source = str(getattr(result, "data_source", "") or "")
         if any(marker in source for marker in _DEGRADED_MARKERS):
-            labels.append(f"{source} via {tool_name}")
+            labels.append(plain_source_label(tool_name))
 
     # Stable order, no duplicates — two tools hitting the same dead backend
     # is one degraded source to a reader, not two.
@@ -842,6 +881,11 @@ _REFUSAL_PHRASES_ANYWHERE = (
     "i can only answer geological",
     "i can only answer questions",
     "only geological questions",
+    # System-written "the model gave nothing back" texts (audit item 2).
+    # BUDGET_EXHAUSTED_FALLBACK is operator wording and must never be shown,
+    # but if it ever reaches here it is a non-answer, not a confident one.
+    "the model returned no content",
+    "the model did not produce an answer",
 )
 
 #: Ordinary geological vocabulary that only means refusal when the answer
