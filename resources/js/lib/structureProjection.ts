@@ -73,10 +73,7 @@ export function strikeOfPlane(dipDirectionDeg: number): number {
  * measurement at 0° north, and plotting it there would invent a
  * north-dipping population out of incomplete logging.
  */
-export function structurePoles(
-    planes: readonly PlaneAttitude[],
-    derived: readonly DerivedPole[],
-): StereonetPole[] {
+export function structurePoles(planes: readonly PlaneAttitude[], derived: readonly DerivedPole[]): StereonetPole[] {
     const fromPlanes = planes
         .filter((p) => p.true_dip !== null && p.dip_direction !== null)
         .map((p) => poleOfPlane(p.dip_direction as number, p.true_dip as number));
@@ -90,10 +87,7 @@ export function structurePoles(
 }
 
 /** Every strike across both sources, for the rose diagram. */
-export function structureStrikes(
-    planes: readonly PlaneAttitude[],
-    derived: readonly DerivedPole[],
-): number[] {
+export function structureStrikes(planes: readonly PlaneAttitude[], derived: readonly DerivedPole[]): number[] {
     const fromPlanes = planes
         .filter((p) => p.dip_direction !== null)
         .map((p) => strikeOfPlane(p.dip_direction as number));

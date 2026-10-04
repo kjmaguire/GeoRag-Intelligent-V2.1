@@ -112,6 +112,13 @@ class AgenticRetrievalState(BaseModel):
     # degraded_sources and refuses to present an outage as "no evidence".
     retrieval_failures: list[str] = Field(default_factory=list)
 
+    # Audit item E (2026-10-04) — True when one of those failures was a
+    # DOCUMENT search (search_documents / its adversarial pass). assemble_node
+    # raises RetrievalBackendUnavailable on a Layer 1 refusal only then: the
+    # list above also carries structured-tool failures (a PostGIS timeout),
+    # and "Document search is temporarily unavailable" is false for those.
+    document_search_failed: bool = False
+
     # ── Assemble node output ─────────────────────────────────────────────
     response: GeoRAGResponse | None = None
 

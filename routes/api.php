@@ -86,7 +86,7 @@ Route::prefix('v1')->group(function () {
         // silver.ingest_progress. Returns 404 (not 403) on cross-workspace
         // run_ids so an attacker can't fingerprint existence.
         Route::get('ingest-progress/{run_id}', [IngestProgressController::class, 'show'])
-            ->where('run_id', '[0-9a-f-]{36}')
+            ->whereUuid('run_id')
             ->name('ingest_progress.show');
 
         // LAR-15 (2026-09-29): every {project}/{collar}/{export} below is a
@@ -107,7 +107,7 @@ Route::prefix('v1')->group(function () {
 
         // CC-03 Item 5 — coverage density GeoJSON for the MapView heatmap layer.
         Route::get('projects/{projectId}/coverage-density', [CoverageDensityController::class, 'show'])
-            ->where('projectId', '[0-9a-f-]{36}');
+            ->whereUuid('projectId');
 
         // RAG query — two-phase subscribe-ACK handshake so the client is
         // guaranteed to be on the Echo channel before the Horizon job
@@ -122,26 +122,26 @@ Route::prefix('v1')->group(function () {
             ->middleware('throttle:queries');
         Route::post('queries/{queryId}/start', [QueryController::class, 'start'])
             ->middleware('throttle:queries')
-            ->where('queryId', '[0-9a-f-]{36}');
+            ->whereUuid('queryId');
         // Recovery + control for a query already streaming. Not on the
         // `queries` limiter: neither starts an LLM run. result() serves the
         // finalised audit row to a tab that lost the terminal frame
         // (CHAT-8); cancel() lets Stop actually stop the job (CHAT-18).
         Route::get('queries/{queryId}/result', [QueryController::class, 'result'])
             ->middleware('throttle:60,1')
-            ->where('queryId', '[0-9a-f-]{36}');
+            ->whereUuid('queryId');
         Route::post('queries/{queryId}/cancel', [QueryController::class, 'cancel'])
             ->middleware('throttle:30,1')
-            ->where('queryId', '[0-9a-f-]{36}');
+            ->whereUuid('queryId');
 
         // Chat history sync (localStorage-first, durable server-side store).
         Route::get('conversations', [ChatConversationController::class, 'index']);
         Route::get('conversations/{conversationId}', [ChatConversationController::class, 'show'])
-            ->where('conversationId', '[0-9a-f-]{36}');
+            ->whereUuid('conversationId');
         Route::put('conversations/{conversationId}', [ChatConversationController::class, 'upsert'])
-            ->where('conversationId', '[0-9a-f-]{36}');
+            ->whereUuid('conversationId');
         Route::delete('conversations/{conversationId}', [ChatConversationController::class, 'destroy'])
-            ->where('conversationId', '[0-9a-f-]{36}');
+            ->whereUuid('conversationId');
 
         // Exports — scoped to a project; dispatch Horizon jobs, poll status
         Route::apiResource('projects.exports', ExportController::class)
@@ -184,7 +184,7 @@ Route::prefix('v1')->group(function () {
         Route::get(
             'answer-runs/{id}/trust-summary',
             [TrustController::class, 'trustSummary'],
-        )->where('id', '[0-9a-fA-F-]{36}');
+        )->whereUuid('id');
 
         // §10p Answer feedback — 👍/👎 + optional taxonomy category + note.
         // Proxies to FastAPI's POST /v1/answer_runs/{id}/feedback, which
@@ -194,18 +194,18 @@ Route::prefix('v1')->group(function () {
         Route::post(
             'answer-runs/{id}/feedback',
             [AnswerRunFeedbackController::class, 'store'],
-        )->where('id', '[0-9a-fA-F-]{36}');
+        )->whereUuid('id');
 
         // §3.3 Public REST API breadth — 8 endpoint groups + self-describing index.
         Route::get('', [PublicApiController::class, 'index']);
         Route::get('openapi.json', [PublicApiController::class, 'openapi']);
-        Route::get('answers/{answer_run_id}', [PublicApiController::class, 'answer'])->where('answer_run_id', '[0-9a-fA-F-]{36}');
-        Route::get('maps/{project_id}/layers', [PublicApiController::class, 'mapLayers'])->where('project_id', '[0-9a-fA-F-]{36}');
+        Route::get('answers/{answer_run_id}', [PublicApiController::class, 'answer'])->whereUuid('answer_run_id');
+        Route::get('maps/{project_id}/layers', [PublicApiController::class, 'mapLayers'])->whereUuid('project_id');
         Route::get('reports', [PublicApiController::class, 'reports']);
-        Route::get('targets/{project_id}', [PublicApiController::class, 'targets'])->where('project_id', '[0-9a-fA-F-]{36}');
-        Route::get('interpretations/{project_id}', [PublicApiController::class, 'interpretations'])->where('project_id', '[0-9a-fA-F-]{36}');
-        Route::get('audit/{workspace_id}', [PublicApiController::class, 'audit'])->where('workspace_id', '[0-9a-fA-F-]{36}');
-        Route::get('usage/{workspace_id}', [PublicApiController::class, 'usage'])->where('workspace_id', '[0-9a-fA-F-]{36}');
+        Route::get('targets/{project_id}', [PublicApiController::class, 'targets'])->whereUuid('project_id');
+        Route::get('interpretations/{project_id}', [PublicApiController::class, 'interpretations'])->whereUuid('project_id');
+        Route::get('audit/{workspace_id}', [PublicApiController::class, 'audit'])->whereUuid('workspace_id');
+        Route::get('usage/{workspace_id}', [PublicApiController::class, 'usage'])->whereUuid('workspace_id');
         Route::get('webhooks', [PublicApiController::class, 'webhooks']);
 
         // HAT-13 (2026-09-29) — triggers for the Hatchet workflows that were
@@ -269,7 +269,7 @@ Route::middleware('service.key')->prefix('internal')->group(function () {
     Route::post('admin/reports/{build_id}/progress',
         [ReportBuildProgressController::class, 'broadcast'])
         ->middleware('throttle:bridge:report-progress')
-        ->where('build_id', '[0-9a-f-]{36}')
+        ->whereUuid('build_id')
         ->name('internal.reports.progress');
 
     // Reliability spec Phase 1 — FastAPI on_failure_task / stale_run_sweep /

@@ -8,12 +8,7 @@ import {
     SwatchLegend,
     type TrackFrame,
 } from '@/Components/Foundry/StripTracks';
-import {
-    alterationColourMap,
-    lithologyLegend,
-    mineralColourMap,
-    type StripTracks,
-} from '@/lib/stripLog';
+import { alterationColourMap, lithologyLegend, mineralColourMap, type StripTracks } from '@/lib/stripLog';
 
 /**
  * The hole page's strip log: a depth axis and one column per kind of logging.
@@ -85,16 +80,19 @@ export default function DrillholeStripLog({
     const yOf = (depth: number) => PAD_TOP + (depth / deepest) * usable;
 
     const layout = useMemo(() => {
+        // Tracks sit left to right; each one that is present advances the
+        // cursor by its width plus the gutter.
         let x = AXIS_W;
-        const place = (width: number): TrackFrame => {
-            const frame = { x, width, yOf };
-            x += width + GAP;
-            return frame;
-        };
-        const lithology = place(TRACKS.lithology);
-        const alteration = tracks.alteration.length ? place(TRACKS.alteration) : null;
-        const mineralization = tracks.mineralization.length ? place(TRACKS.mineralization) : null;
-        const samples = sampleWindows.length ? place(TRACKS.samples) : null;
+        const lithology: TrackFrame = { x, width: TRACKS.lithology, yOf };
+        x += TRACKS.lithology + GAP;
+        const alteration: TrackFrame | null = tracks.alteration.length ? { x, width: TRACKS.alteration, yOf } : null;
+        if (alteration) x += TRACKS.alteration + GAP;
+        const mineralization: TrackFrame | null = tracks.mineralization.length
+            ? { x, width: TRACKS.mineralization, yOf }
+            : null;
+        if (mineralization) x += TRACKS.mineralization + GAP;
+        const samples: TrackFrame | null = sampleWindows.length ? { x, width: TRACKS.samples, yOf } : null;
+        if (samples) x += TRACKS.samples + GAP;
         return { lithology, alteration, mineralization, samples, width: x };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [tracks.alteration.length, tracks.mineralization.length, sampleWindows.length, deepest]);
@@ -109,7 +107,9 @@ export default function DrillholeStripLog({
     const altColours = alterationColourMap(altTypes);
     const mineralColours = mineralColourMap(minerals);
     const truncated = tracks.truncated
-        ? Object.entries(tracks.truncated).filter(([, cut]) => cut).map(([name]) => name)
+        ? Object.entries(tracks.truncated)
+              .filter(([, cut]) => cut)
+              .map(([name]) => name)
         : [];
 
     return (
@@ -151,8 +151,24 @@ export default function DrillholeStripLog({
                     </text>
                     {ticks.map((d) => (
                         <g key={d}>
-                            <line x1={AXIS_W - 4} y1={yOf(d)} x2={layout.width} y2={yOf(d)} stroke="var(--line-1)" strokeWidth={0.5} strokeDasharray="2 3" opacity={0.6} />
-                            <text x={AXIS_W - 7} y={yOf(d) + 3} textAnchor="end" fontSize={9} fontFamily="ui-monospace, monospace" fill="var(--fg-3)">
+                            <line
+                                x1={AXIS_W - 4}
+                                y1={yOf(d)}
+                                x2={layout.width}
+                                y2={yOf(d)}
+                                stroke="var(--line-1)"
+                                strokeWidth={0.5}
+                                strokeDasharray="2 3"
+                                opacity={0.6}
+                            />
+                            <text
+                                x={AXIS_W - 7}
+                                y={yOf(d) + 3}
+                                textAnchor="end"
+                                fontSize={9}
+                                fontFamily="ui-monospace, monospace"
+                                fill="var(--fg-3)"
+                            >
                                 {d}
                             </text>
                         </g>
@@ -161,7 +177,16 @@ export default function DrillholeStripLog({
                     {/* Column backgrounds */}
                     {[layout.lithology, layout.alteration, layout.mineralization, layout.samples].map((frame, i) =>
                         frame ? (
-                            <rect key={i} x={frame.x} y={PAD_TOP} width={frame.width} height={usable} fill="var(--bg-2)" stroke="var(--line-1)" strokeWidth={0.5} />
+                            <rect
+                                key={i}
+                                x={frame.x}
+                                y={PAD_TOP}
+                                width={frame.width}
+                                height={usable}
+                                fill="var(--bg-2)"
+                                stroke="var(--line-1)"
+                                strokeWidth={0.5}
+                            />
                         ) : null,
                     )}
 
@@ -170,7 +195,11 @@ export default function DrillholeStripLog({
                         <AlterationTrack bands={tracks.alteration} frame={layout.alteration} onSelect={setSelected} />
                     )}
                     {layout.mineralization && (
-                        <MineralizationTrack bands={tracks.mineralization} frame={layout.mineralization} onSelect={setSelected} />
+                        <MineralizationTrack
+                            bands={tracks.mineralization}
+                            frame={layout.mineralization}
+                            onSelect={setSelected}
+                        />
                     )}
                     {layout.samples &&
                         sampleWindows.map((w, i) => {
@@ -204,7 +233,12 @@ export default function DrillholeStripLog({
             <div className="mt-3 flex flex-col gap-1.5">
                 <SwatchLegend
                     title="Lithology"
-                    entries={lithLegend.map((e) => ({ key: e.code, colour: e.colour, label: e.label ? `${e.code} · ${e.label.slice(0, 40)}` : e.code, hint: e.label }))}
+                    entries={lithLegend.map((e) => ({
+                        key: e.code,
+                        colour: e.colour,
+                        label: e.label ? `${e.code} · ${e.label.slice(0, 40)}` : e.code,
+                        hint: e.label,
+                    }))}
                 />
                 <SwatchLegend
                     title="Alteration"
@@ -216,7 +250,8 @@ export default function DrillholeStripLog({
                 />
                 {truncated.length > 0 && (
                     <div className="text-[10px] font-mono" style={{ color: 'var(--warn, #d97706)' }} role="note">
-                        Showing the first intervals only ({truncated.join(', ')}) - this hole has more than the strip log draws.
+                        Showing the first intervals only ({truncated.join(', ')}) - this hole has more than the strip
+                        log draws.
                     </div>
                 )}
             </div>

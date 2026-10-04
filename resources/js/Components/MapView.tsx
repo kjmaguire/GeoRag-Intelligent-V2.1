@@ -15,11 +15,7 @@ import type {
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { MVT_LAYERS, MVT_INTERACTIVE_LAYERS, MVT_DEFAULT_VISIBILITY, mvtSourceId } from '../lib/mvtLayers';
-import {
-    mergeLayerVisibility,
-    readLayerVisibility,
-    writeLayerVisibility,
-} from '../lib/layerVisibilityStorage';
+import { mergeLayerVisibility, readLayerVisibility, writeLayerVisibility } from '../lib/layerVisibilityStorage';
 import { buildSilverTileUrl } from '../lib/tileUrl';
 import { createTileFailureWatchdog } from '../lib/tileFailureWatchdog';
 import { escapeHtml } from '../lib/escapeHtml';
@@ -114,15 +110,15 @@ interface CoverageFeatureCollection {
 }
 
 const COVERAGE_CELL_SIZES: ReadonlyArray<{ value: number; label: string }> = [
-    { value: 500,   label: '500 m' },
-    { value: 1000,  label: '1 km' },
-    { value: 5000,  label: '5 km' },
+    { value: 500, label: '500 m' },
+    { value: 1000, label: '1 km' },
+    { value: 5000, label: '5 km' },
     { value: 10000, label: '10 km' },
 ];
 
 const COVERAGE_KIND_OPTIONS: ReadonlyArray<{ value: CoverageKind; label: string }> = [
-    { value: 'collars',          label: 'Collars' },
-    { value: 'reports',          label: 'Reports' },
+    { value: 'collars', label: 'Collars' },
+    { value: 'reports', label: 'Reports' },
     { value: 'spatial_features', label: 'Features' },
 ];
 
@@ -210,10 +206,13 @@ interface MapViewProps {
     onCollarClick?: (holeId: string) => void;
     selectedHoleId?: string;
     useMartinTiles?: boolean;
-    inlineGeoJson?: { type: 'FeatureCollection'; features: Array<{
-        geometry?: { type: string; coordinates: number[] } | null;
-        properties?: Record<string, unknown> | null;
-    }> } | null;
+    inlineGeoJson?: {
+        type: 'FeatureCollection';
+        features: Array<{
+            geometry?: { type: string; coordinates: number[] } | null;
+            properties?: Record<string, unknown> | null;
+        }>;
+    } | null;
     inlineBbox?: [number, number, number, number] | null;
     compact?: boolean;
     crs?: string;
@@ -230,11 +229,14 @@ interface MapViewProps {
 function useMapStyles(): Record<string, { label: string; url: string }> {
     const positron = useBasemapStyleUrl('positron');
     const bright = useBasemapStyleUrl('bright');
-    return useMemo(() => ({
-        default:   { label: 'Default',   url: positron },
-        satellite: { label: 'Satellite', url: bright },  // base for hybrid
-        terrain:   { label: 'Terrain',   url: bright },
-    }), [positron, bright]);
+    return useMemo(
+        () => ({
+            default: { label: 'Default', url: positron },
+            satellite: { label: 'Satellite', url: bright }, // base for hybrid
+            terrain: { label: 'Terrain', url: bright },
+        }),
+        [positron, bright],
+    );
 }
 
 // ── Performance-tuned DEM + satellite source definitions ─────────────────
@@ -310,25 +312,16 @@ export const UNCERTAINTY_RINGS_MVT_SOURCE_ID = 'mvt-collars-source';
 export const UNCERTAINTY_RINGS_MVT_SOURCE_LAYER = 'collars';
 export const UNCERTAINTY_RINGS_GEOJSON_LAYER_ID = 'uncertainty-rings';
 
-
-// ── Tile request cancellation on rapid panning ───────────────────────────
-// When the user pans quickly (common in Rockies exploration), MapLibre
-// queues dozens of tile requests for intermediate viewports that are
-// immediately superseded. An AbortController per source lets us cancel
-// stale requests instead of saturating the browser's connection pool.
-// This is wired into the MVT source's transformRequest option.
-const tileAbortControllers = new Map<string, AbortController>();
-function cancelStaleTileRequests(sourceName: string): AbortSignal {
-    const prev = tileAbortControllers.get(sourceName);
-    if (prev) prev.abort();
-    const ac = new AbortController();
-    tileAbortControllers.set(sourceName, ac);
-    return ac.signal;
+/**
+ * Human-readable layer name for a MapLibre vector source id, for the
+ * tile-failure toast. Several registry entries may share one source (the
+ * collars source also backs the uncertainty rings); the first entry's label
+ * is used. Returns null for a source the registry does not own (basemap,
+ * DEM), so the toast never prints an internal id or tile path.
+ */
+export function tileSourceLabel(sourceId: string): string | null {
+    return MVT_LAYERS.find((layer) => mvtSourceId(layer) === sourceId)?.label ?? null;
 }
-
-// Suppress unused-variable warning — cancelStaleTileRequests is declared
-// for the tile-abort pattern; used in the transformRequest scope.
-void cancelStaleTileRequests;
 
 // MAP_STYLE / MAP_STYLES are now read inside the component via useMapStyles()
 // so URLs are config-driven (Inertia shared props → config/services.php).
@@ -361,7 +354,9 @@ async function getProj4(crs = 'EPSG:32613') {
     if (def) {
         try {
             proj4.defs(crs, def);
-        } catch { /* already registered */ }
+        } catch {
+            /* already registered */
+        }
     }
     return proj4;
 }
@@ -397,10 +392,14 @@ function computeBbox(collars: CollarRow[]): [[number, number], [number, number]]
 function markerColor(status: string | undefined, isSelected: boolean): string {
     if (isSelected) return '#f59e0b'; // amber — selected
     switch (status) {
-        case 'Completed': return '#22c55e';   // green
-        case 'Active':    return '#eab308';   // yellow
-        case 'Abandoned': return '#ef4444';   // red
-        default:          return '#6b7280';   // gray
+        case 'Completed':
+            return '#22c55e'; // green
+        case 'Active':
+            return '#eab308'; // yellow
+        case 'Abandoned':
+            return '#ef4444'; // red
+        default:
+            return '#6b7280'; // gray
     }
 }
 
@@ -410,10 +409,14 @@ function markerColor(status: string | undefined, isSelected: boolean): string {
  */
 function markerShape(status: string | undefined): string {
     switch (status) {
-        case 'Completed': return '●';   // circle — complete
-        case 'Active':    return '◆';   // diamond — active/in-progress
-        case 'Abandoned': return '✕';   // cross — abandoned
-        default:          return '○';   // open circle — unknown
+        case 'Completed':
+            return '●'; // circle — complete
+        case 'Active':
+            return '◆'; // diamond — active/in-progress
+        case 'Abandoned':
+            return '✕'; // cross — abandoned
+        default:
+            return '○'; // open circle — unknown
     }
 }
 
@@ -435,13 +438,12 @@ export default function MapView({
     // `selectedHoleId` wasn't passed as a prop. Prop wins when both
     // are present (explicit parent control overrides the global pin).
     const evidenceMapPin = useEvidenceMapPin();
-    const effectiveSelectedHoleId = selectedHoleId ?? (
-        evidenceMapPin?.kind === 'hole_id' ? evidenceMapPin.hole_id : undefined
-    );
+    const effectiveSelectedHoleId =
+        selectedHoleId ?? (evidenceMapPin?.kind === 'hole_id' ? evidenceMapPin.hole_id : undefined);
     const mapContainer = useRef<HTMLDivElement | null>(null);
-    const mapRef       = useRef<MapLibreMap | null>(null);
-    const markersRef   = useRef<Record<string, Marker>>({});
-    const popupRef     = useRef<ExtendedPopup | null>(null);
+    const mapRef = useRef<MapLibreMap | null>(null);
+    const markersRef = useRef<Record<string, Marker>>({});
+    const popupRef = useRef<ExtendedPopup | null>(null);
     const mvtLayersAddedRef = useRef(false);
 
     // Workspace data_version drives the cache-bust suffix on silver MVT
@@ -460,9 +462,7 @@ export default function MapView({
     // historical bug where Foundry/Explorer's MVT URLs were stuck at `&v=0`
     // can no longer happen because the Echo signal supersedes the prop.
     const { props: pageProps } = usePage<PageProps>();
-    const [workspaceDataVersion, setWorkspaceDataVersion] = useState<number>(
-        pageProps.workspace?.data_version ?? 0,
-    );
+    const [workspaceDataVersion, setWorkspaceDataVersion] = useState<number>(pageProps.workspace?.data_version ?? 0);
 
     useSilverTileInvalidation(projectId, (newVersion) => {
         setWorkspaceDataVersion((prev) => (newVersion > prev ? newVersion : prev));
@@ -477,15 +477,15 @@ export default function MapView({
     // repoints them also gets them into the CSP's connect-src.
     const demTilesUrl = useTerrainDemUrl();
     const imageryTilesUrl = useImageryTileUrl();
-    const [error, setError]     = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
     const [mapReady, setMapReady] = useState(false);
     // V1.5-11 — initialise from localStorage when present, falling through
     // to MVT_DEFAULT_VISIBILITY for missing keys (so a layer that's been
     // added since the prefs were saved appears with its default state).
     // useState initialiser runs once per mount; the effect below persists
     // every change.
-    const [visibleLayers, setVisibleLayers] = useState<Record<string, boolean>>(
-        () => mergeLayerVisibility(MVT_DEFAULT_VISIBILITY, readLayerVisibility()),
+    const [visibleLayers, setVisibleLayers] = useState<Record<string, boolean>>(() =>
+        mergeLayerVisibility(MVT_DEFAULT_VISIBILITY, readLayerVisibility()),
     );
 
     // Persist on every change. Best-effort; storage failures are swallowed
@@ -520,21 +520,23 @@ export default function MapView({
     interface TileToast {
         sourceId: string;
         count: number;
-        urlPrefix: string;
+        label: string | null;
     }
     const [tileToast, setTileToast] = useState<TileToast | null>(null);
     const tileToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Watchdog instance — one per MapView mount.
     // Stored in a ref so the effect callbacks close over a stable reference.
-    const watchdogRef = useRef(createTileFailureWatchdog({
-        onThreshold: (sourceId, count, urlPrefix) => {
-            setTileToast({ sourceId, count, urlPrefix });
-            // Auto-dismiss after 8 s
-            if (tileToastTimerRef.current) clearTimeout(tileToastTimerRef.current);
-            tileToastTimerRef.current = setTimeout(() => setTileToast(null), 8_000);
-        },
-    }));
+    const watchdogRef = useRef(
+        createTileFailureWatchdog({
+            onThreshold: (sourceId, count) => {
+                setTileToast({ sourceId, count, label: tileSourceLabel(sourceId) });
+                // Auto-dismiss after 8 s
+                if (tileToastTimerRef.current) clearTimeout(tileToastTimerRef.current);
+                tileToastTimerRef.current = setTimeout(() => setTileToast(null), 8_000);
+            },
+        }),
+    );
 
     // Determine rendering mode: inlineGeoJson always uses legacy GeoJSON,
     // otherwise respect the useMartinTiles flag.
@@ -563,7 +565,9 @@ export default function MapView({
                 const props = feat.properties ?? {};
                 const su = typeof props.spatial_uncertainty_m === 'number' ? props.spatial_uncertainty_m : null;
                 const cc = typeof props.crs_confidence === 'number' ? props.crs_confidence : null;
-                const gm = (typeof props.georef_method === 'string' ? props.georef_method : null) as GeorefMethod | null;
+                const gm = (
+                    typeof props.georef_method === 'string' ? props.georef_method : null
+                ) as GeorefMethod | null;
                 return {
                     ...props,
                     spatial_uncertainty_m: su,
@@ -590,18 +594,15 @@ export default function MapView({
         try {
             // Auth via Sanctum session cookie (same-origin). No bearer token from
             // localStorage — localStorage is an XSS-exfiltration target (types.ts:11-12).
-            const res = await fetch(
-                `/api/v1/projects/${projectId}/collars?per_page=500`,
-                {
-                    credentials: 'same-origin',
-                    headers: {
-                        Accept: 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest',
-                    },
+            const res = await fetch(`/api/v1/projects/${projectId}/collars?per_page=500`, {
+                credentials: 'same-origin',
+                headers: {
+                    Accept: 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
                 },
-            );
+            });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const body = await res.json() as { data?: CollarRow[] } | CollarRow[];
+            const body = (await res.json()) as { data?: CollarRow[] } | CollarRow[];
             const list: CollarRow[] = (Array.isArray(body) ? body : (body as { data?: CollarRow[] }).data) ?? [];
 
             // Resolve lon/lat for each collar.
@@ -642,34 +643,24 @@ export default function MapView({
         const map = new maplibregl.Map({
             container: mapContainer.current,
             style: mapStyles.default.url,
-            center: [-107, 55],   // Default: central Canada (exploration country)
+            center: [-107, 55], // Default: central Canada (exploration country)
             zoom: 5,
             pitch: 0,
             maxPitch: 85,
             // attributionControl defaults to enabled; do not pass true (invalid type — only false | options)
 
             // ── Performance tuning ──────────────────────────────────────
-            maxTileCacheSize: 150,          // cap memory for tile cache (default unbounded)
-            fadeDuration: 0,                // instant vector tile appearance (no fade)
-            trackResize: true,              // auto-resize on container changes
-            collectResourceTiming: false,   // disable resource timing API (saves GC pressure)
+            maxTileCacheSize: 150, // cap memory for tile cache (default unbounded)
+            fadeDuration: 0, // instant vector tile appearance (no fade)
+            trackResize: true, // auto-resize on container changes
+            collectResourceTiming: false, // disable resource timing API (saves GC pressure)
             // ── Request tuning ──────────────────────────────────────────
             // /tiles/* routes sit under auth:sanctum in web.php. MapLibre
             // sends same-origin requests with cookies by default (no explicit
-            // credentials option needed in transformRequest). The Sanctum
-            // session cookie is the canonical credential — no bearer token
-            // from localStorage (XSS-exfiltration target; types.ts:11-12).
-            transformRequest: (url) => {
-                if (url.startsWith('/tiles/')) {
-                    return {
-                        url,
-                        headers: {
-                            'Accept-Encoding': 'gzip, br',
-                        },
-                    };
-                }
-                return { url };
-            },
+            // credentials option needed). The Sanctum session cookie is the
+            // canonical credential — no bearer token from localStorage
+            // (XSS-exfiltration target; types.ts:11-12). Accept-Encoding is a
+            // forbidden request header the browser sets itself, so none is set here.
         });
 
         // Navigation with pitch visualization for 3D terrain
@@ -689,16 +680,6 @@ export default function MapView({
             setMapReady(true);
         });
 
-        // ── Cancel stale tile fetches during rapid panning ──────────────
-        // When the user drags quickly through the Rockies, MapLibre queues
-        // tiles for intermediate viewports. These saturate the browser's
-        // 6-connection-per-origin limit, delaying the tiles the user
-        // actually needs. Cancelling on movestart keeps the pipe clear.
-        map.on('movestart', () => {
-            tileAbortControllers.forEach((ac) => ac.abort());
-            tileAbortControllers.clear();
-        });
-
         mapRef.current = map;
 
         return () => {
@@ -706,6 +687,7 @@ export default function MapView({
             mapRef.current = null;
             setMapReady(false);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- the map is built exactly once per mount; a changing style URL is applied by the style-switching effect below, not by rebuilding the map.
     }, []);
 
     // ── Style switching — lazy source creation + visibility toggle ──────────
@@ -734,7 +716,7 @@ export default function MapView({
                     map.addLayer({
                         id: 'hills',
                         type: 'hillshade',
-                        source: 'demSource',      // single DEM source, not a duplicate
+                        source: 'demSource', // single DEM source, not a duplicate
                         layout: { visibility: 'visible' },
                         paint: { 'hillshade-shadow-color': '#473B24' },
                     });
@@ -742,16 +724,17 @@ export default function MapView({
             };
             const ensureSatelliteLayer = () => {
                 if (!map.getLayer('satellite')) {
-                    const firstNonBg = map.getStyle().layers.find(
-                        (l) => l.type !== 'background',
+                    const firstNonBg = map.getStyle().layers.find((l) => l.type !== 'background');
+                    map.addLayer(
+                        {
+                            id: 'satellite',
+                            type: 'raster',
+                            source: 'satelliteSource',
+                            layout: { visibility: 'visible' },
+                            paint: { 'raster-opacity': 1, 'raster-fade-duration': 0 },
+                        },
+                        firstNonBg?.id,
                     );
-                    map.addLayer({
-                        id: 'satellite',
-                        type: 'raster',
-                        source: 'satelliteSource',
-                        layout: { visibility: 'visible' },
-                        paint: { 'raster-opacity': 1, 'raster-fade-duration': 0 },
-                    }, firstNonBg?.id);
                 }
             };
 
@@ -761,10 +744,10 @@ export default function MapView({
             // down as the user zooms in to keep terrain readable.
             const exaggeration = (() => {
                 const z = map.getZoom();
-                if (z <= 8) return 1.2;     // overview — slight emphasis
-                if (z <= 11) return 1.0;    // regional
-                if (z <= 13) return 0.7;    // property scale — reduce
-                return 0.4;                 // drill-site — minimal
+                if (z <= 8) return 1.2; // overview — slight emphasis
+                if (z <= 11) return 1.0; // regional
+                if (z <= 13) return 0.7; // property scale — reduce
+                return 0.4; // drill-site — minimal
             })();
 
             if (mapStyle === 'satellite') {
@@ -816,11 +799,17 @@ export default function MapView({
             else if (z <= 11) ex = 1.0;
             else if (z <= 13) ex = 0.7;
             else ex = 0.4;
-            try { map.setTerrain({ source: 'demSource', exaggeration: ex }); } catch { /* ignore */ }
+            try {
+                map.setTerrain({ source: 'demSource', exaggeration: ex });
+            } catch {
+                /* ignore */
+            }
         };
 
         map.on('zoomend', updateExaggeration);
-        return () => { map.off('zoomend', updateExaggeration); };
+        return () => {
+            map.off('zoomend', updateExaggeration);
+        };
     }, [mapStyle, mapReady]);
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -896,7 +885,7 @@ export default function MapView({
                 type: 'circle',
                 source: collarSourceId,
                 'source-layer': 'collars',
-                filter: ['==', ['get', 'hole_id'], ''],  // empty initially
+                filter: ['==', ['get', 'hole_id'], ''], // empty initially
                 paint: {
                     'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 3, 8, 5, 12, 9, 16, 14],
                     'circle-color': '#f59e0b',
@@ -925,10 +914,13 @@ export default function MapView({
                     filter: UNCERTAINTY_RINGS_FILTER,
                     paint: UNCERTAINTY_RINGS_PAINT,
                 } as unknown as AddLayerObject);
-            } catch { /* race with style swap; safe to ignore */ }
+            } catch {
+                /* race with style swap; safe to ignore */
+            }
         }
 
         mvtLayersAddedRef.current = true;
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleLayers and workspaceDataVersion are read once to seed the layers; later changes are applied by the visibility and data_version hot-swap effects, and re-running this would re-add layers.
     }, [mapReady, useMvt, projectId]);
 
     // ── Workspace data_version hot-swap — swap tile URLs without map re-init ──
@@ -954,7 +946,9 @@ export default function MapView({
             const source = map.getSource(sourceId);
             // VectorTileSource has setTiles; guard with type check before calling
             if (source && (source as VectorTileSource).setTiles) {
-                (source as VectorTileSource).setTiles([buildSilverTileUrl(layer.functionName, projectId, workspaceDataVersion)]);
+                (source as VectorTileSource).setTiles([
+                    buildSilverTileUrl(layer.functionName, projectId, workspaceDataVersion),
+                ]);
                 swapped.add(sourceId);
             }
         });
@@ -983,10 +977,11 @@ export default function MapView({
         if (!map || !mapReady || !useMvt) return;
         if (!map.getLayer('mvt-collars-selected')) return;
 
-        map.setFilter('mvt-collars-selected',
+        map.setFilter(
+            'mvt-collars-selected',
             effectiveSelectedHoleId
                 ? ['==', ['get', 'hole_id'], effectiveSelectedHoleId]
-                : ['==', ['get', 'hole_id'], ''],  // match nothing
+                : ['==', ['get', 'hole_id'], ''], // match nothing
         );
     }, [effectiveSelectedHoleId, mapReady, useMvt]);
 
@@ -1008,13 +1003,16 @@ export default function MapView({
                 // to_json(text[])::text — parse it back to an array for display.
                 let elementList = '—';
                 try {
-                    const parsed = typeof props.assay_element_codes === 'string'
-                        ? JSON.parse(props.assay_element_codes) as unknown
-                        : props.assay_element_codes;
+                    const parsed =
+                        typeof props.assay_element_codes === 'string'
+                            ? (JSON.parse(props.assay_element_codes) as unknown)
+                            : props.assay_element_codes;
                     if (Array.isArray(parsed) && parsed.length > 0) {
                         elementList = (parsed as string[]).map(escapeHtml).join(', ');
                     }
-                } catch { /* ignore — display fallback */ }
+                } catch {
+                    /* ignore — display fallback */
+                }
                 return wrap(`
                     <div style="font-weight: 700; font-size: 13px; color: #84cc16; margin-bottom: 3px;">Geochem Sample</div>
                     <div style="color: #d1d5db;">${escapeHtml(props.sample_id ?? '—')}</div>
@@ -1040,18 +1038,17 @@ export default function MapView({
             // means the outline's position is a guess, and a geologist must be
             // able to see that before trusting it.
             if (
-                sourceLayer === 'imported_points'
-                || sourceLayer === 'imported_lines'
-                || sourceLayer === 'imported_polygons'
+                sourceLayer === 'imported_points' ||
+                sourceLayer === 'imported_lines' ||
+                sourceLayer === 'imported_polygons'
             ) {
-                const crsConf = props.crs_confidence != null
-                    ? `${(parseFloat(String(props.crs_confidence)) * 100).toFixed(0)}%`
-                    : null;
+                const crsConf =
+                    props.crs_confidence != null
+                        ? `${(parseFloat(String(props.crs_confidence)) * 100).toFixed(0)}%`
+                        : null;
                 const georef = props.georef_method != null ? String(props.georef_method) : null;
                 // Red for a guessed CRS, amber for a human override, grey otherwise.
-                const georefColor = georef === 'assumed'
-                    ? '#ef4444'
-                    : georef === 'manual' ? '#f59e0b' : '#9ca3af';
+                const georefColor = georef === 'assumed' ? '#ef4444' : georef === 'manual' ? '#f59e0b' : '#9ca3af';
                 const originLabel = [props.source_layer, props.source_file]
                     .filter((part) => part != null && String(part) !== '')
                     .map(escapeHtml)
@@ -1065,7 +1062,8 @@ export default function MapView({
             }
 
             // Default collar/working popup
-            const totalDepth = props.total_depth != null ? parseFloat(String(props.total_depth)).toFixed(0) + ' m TD' : '—';
+            const totalDepth =
+                props.total_depth != null ? parseFloat(String(props.total_depth)).toFixed(0) + ' m TD' : '—';
             return wrap(`
                 <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 3px;">${escapeHtml(props.hole_id ?? props.working_name ?? props.feature_name ?? '—')}</div>
                 ${props.hole_type ? `<div style="color: #9ca3af;">${escapeHtml(props.hole_type)} · ${totalDepth}</div>` : ''}
@@ -1093,8 +1091,10 @@ export default function MapView({
 
             popupRef.current?.remove();
             const popup = new maplibregl.Popup({
-                closeButton: true, closeOnClick: false,
-                className: 'georag-map-popup', maxWidth: '240px',
+                closeButton: true,
+                closeOnClick: false,
+                className: 'georag-map-popup',
+                maxWidth: '240px',
             })
                 .setLngLat(e.lngLat)
                 .setHTML(buildPopupHtml(props, sourceLayer))
@@ -1109,7 +1109,18 @@ export default function MapView({
             });
             map.getCanvas().style.cursor = features.length ? 'pointer' : '';
 
-            if (!features.length) return;
+            if (!features.length) {
+                // The pointer left every interactive feature: drop the hover
+                // popup. mouseleave is registered per layer and does not fire
+                // when the pointer moves between layers or off the last one
+                // quickly, so without this the popup sticks. Click popups
+                // (closeButton) stay until dismissed.
+                if (popupRef.current && !popupRef.current.options?.closeButton) {
+                    popupRef.current.remove();
+                    popupRef.current = null;
+                }
+                return;
+            }
 
             // Debounce — don't recreate popup on every pixel move
             const feat = features[0];
@@ -1119,14 +1130,16 @@ export default function MapView({
             // with 4 args, so feat.id is undefined for them. Without it the
             // debounce compares undefined against the initial undefined
             // _hoverFeatureKey, returns early, and no hover popup ever opens.
-            const featureKey = props.hole_id ?? props.survey_name ?? props.sample_id
-                ?? props.feature_id ?? feat.id;
+            const featureKey = props.hole_id ?? props.survey_name ?? props.sample_id ?? props.feature_id ?? feat.id;
             if (popupRef.current?._hoverFeatureKey === featureKey) return;
 
             popupRef.current?.remove();
             const popup = new maplibregl.Popup({
-                closeButton: false, closeOnClick: false,
-                className: 'georag-map-popup', maxWidth: '240px', offset: 12,
+                closeButton: false,
+                closeOnClick: false,
+                className: 'georag-map-popup',
+                maxWidth: '240px',
+                offset: 12,
             })
                 .setLngLat(e.lngLat)
                 .setHTML(buildPopupHtml(props, feat.sourceLayer ?? ''))
@@ -1145,6 +1158,7 @@ export default function MapView({
             // Only remove hover popups (no close button), not click popups
             if (popupRef.current && !popupRef.current.options?.closeButton) {
                 popupRef.current.remove();
+                popupRef.current = null;
             }
         };
 
@@ -1193,7 +1207,7 @@ export default function MapView({
                     },
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const body = await res.json() as CoverageFeatureCollection;
+                const body = (await res.json()) as CoverageFeatureCollection;
                 if (!cancelled) setCoverageData(body);
             } catch (err) {
                 if (!cancelled) {
@@ -1206,7 +1220,9 @@ export default function MapView({
         };
 
         void fetchCoverage();
-        return () => { cancelled = true; };
+        return () => {
+            cancelled = true;
+        };
     }, [coverageEnabled, coverageKind, coverageCellSize, projectId]);
 
     // Add / update the coverage-density source + layers on data change.
@@ -1256,26 +1272,38 @@ export default function MapView({
                     // normalised against this run's max so even a sparse
                     // dataset spans the full palette.
                     'fill-color': [
-                        'interpolate', ['linear'],
+                        'interpolate',
+                        ['linear'],
                         ['get', 'record_count'],
-                        0,            '#440154',
-                        maxCount * 0.25, '#3b528b',
-                        maxCount * 0.50, '#21918c',
-                        maxCount * 0.75, '#5ec962',
-                        maxCount,        '#fde725',
+                        0,
+                        '#440154',
+                        maxCount * 0.25,
+                        '#3b528b',
+                        maxCount * 0.5,
+                        '#21918c',
+                        maxCount * 0.75,
+                        '#5ec962',
+                        maxCount,
+                        '#fde725',
                     ],
                 },
             } as unknown as AddLayerObject);
         } else {
             // Refresh the interpolation stop set when max_count moves.
             map.setPaintProperty(fillId, 'fill-color', [
-                'interpolate', ['linear'],
+                'interpolate',
+                ['linear'],
                 ['get', 'record_count'],
-                0,            '#440154',
-                maxCount * 0.25, '#3b528b',
-                maxCount * 0.50, '#21918c',
-                maxCount * 0.75, '#5ec962',
-                maxCount,        '#fde725',
+                0,
+                '#440154',
+                maxCount * 0.25,
+                '#3b528b',
+                maxCount * 0.5,
+                '#21918c',
+                maxCount * 0.75,
+                '#5ec962',
+                maxCount,
+                '#fde725',
             ]);
         }
 
@@ -1324,8 +1352,7 @@ export default function MapView({
             const count = Number(props.record_count ?? 0);
             const biased = props.bias_warning === true || String(props.bias_warning) === 'true';
             const kindLabel =
-                COVERAGE_KIND_OPTIONS.find((o) => o.value === coverageKind)?.label.toLowerCase() ??
-                coverageKind;
+                COVERAGE_KIND_OPTIONS.find((o) => o.value === coverageKind)?.label.toLowerCase() ?? coverageKind;
 
             map.getCanvas().style.cursor = 'pointer';
             activePopup?.remove();
@@ -1338,8 +1365,11 @@ export default function MapView({
                        <div style="font-weight: 700; color: #f9fafb;">${count} ${kindLabel}</div>
                    </div>`;
             activePopup = new maplibregl.Popup({
-                closeButton: false, closeOnClick: false,
-                className: 'georag-map-popup', maxWidth: '260px', offset: 8,
+                closeButton: false,
+                closeOnClick: false,
+                className: 'georag-map-popup',
+                maxWidth: '260px',
+                offset: 8,
             })
                 .setLngLat(e.lngLat)
                 .setHTML(html)
@@ -1365,16 +1395,27 @@ export default function MapView({
     // ██  PUBLIC GEOSCIENCE LAYER (2026-08-17 rebuild — see controller docblock)
     // ══════════════════════════════════════════════════════════════════════════
 
-    // Fetch once when enabled — not project-scoped, so no projectId gate and
-    // no re-fetch on project change.
+    // Fetch when enabled, then again (debounced) after every pan / zoom so the
+    // overlay tracks the viewport — the request is bbox-scoped, so a single
+    // fetch goes stale the moment the camera moves. Not project-scoped, so no
+    // projectId gate and no re-fetch on project change.
     useEffect(() => {
         if (!publicGeoEnabled) {
             setPublicGeoData(null);
             return;
         }
-        let cancelled = false;
+        const map = mapRef.current;
+        let inflight: AbortController | null = null;
+        let moveTimer: ReturnType<typeof setTimeout> | undefined;
+        let disposed = false;
 
         const fetchPublicGeo = async () => {
+            // A newer request supersedes the one still in flight.
+            inflight?.abort();
+            const controller = new AbortController();
+            inflight = controller;
+            const { signal } = controller;
+
             setPublicGeoLoading(true);
             setPublicGeoError(null);
             try {
@@ -1384,33 +1425,50 @@ export default function MapView({
                 // layer comes back aggregated no matter how far you zoom in
                 // — the overlay could never resolve to individual records.
                 const params = new URLSearchParams();
-                const m = mapRef.current;
-                if (m) {
-                    const b = m.getBounds();
-                    params.set('bbox', [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-                        .map((n) => n.toFixed(5)).join(','));
-                    params.set('zoom', String(Math.round(m.getZoom() * 10) / 10));
+                if (map) {
+                    const b = map.getBounds();
+                    params.set(
+                        'bbox',
+                        [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((n) => n.toFixed(5)).join(','),
+                    );
+                    params.set('zoom', String(Math.round(map.getZoom() * 10) / 10));
                 }
                 const res = await fetch(`/api/v1/public-geoscience/map?${params.toString()}`, {
                     credentials: 'same-origin',
+                    signal,
                     headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const body = await res.json() as PublicGeoFeatureCollection;
-                if (!cancelled) setPublicGeoData(body);
+                const body = (await res.json()) as PublicGeoFeatureCollection;
+                if (!signal.aborted) setPublicGeoData(body);
             } catch (err) {
-                if (!cancelled) {
+                if (!signal.aborted) {
                     setPublicGeoError(err instanceof Error ? err.message : String(err));
                     setPublicGeoData(null);
                 }
             } finally {
-                if (!cancelled) setPublicGeoLoading(false);
+                // A superseded request must not clear the newer one's spinner.
+                if (!signal.aborted && !disposed) setPublicGeoLoading(false);
             }
         };
 
+        // Same 300 ms debounce as Pages/Foundry/PublicGeoscience.tsx.
+        const onMoveEnd = () => {
+            clearTimeout(moveTimer);
+            moveTimer = setTimeout(() => {
+                void fetchPublicGeo();
+            }, 300);
+        };
+
         void fetchPublicGeo();
-        return () => { cancelled = true; };
-    }, [publicGeoEnabled]);
+        map?.on('moveend', onMoveEnd);
+        return () => {
+            disposed = true;
+            clearTimeout(moveTimer);
+            inflight?.abort();
+            map?.off('moveend', onMoveEnd);
+        };
+    }, [publicGeoEnabled, mapReady]);
 
     // Add / update the public-geoscience source + circle layer, colour-coded
     // by entity layer (mine / mineral_occurrence / drillhole_collar / rock_sample).
@@ -1463,8 +1521,7 @@ export default function MapView({
                     'circle-radius': [
                         'case',
                         ['==', ['get', 'cluster'], true],
-                        ['interpolate', ['linear'], ['get', 'point_count'],
-                            1, 8, 100, 15, 1000, 22, 10000, 30],
+                        ['interpolate', ['linear'], ['get', 'point_count'], 1, 8, 100, 15, 1000, 22, 10000, 30],
                         5,
                     ],
                     'circle-color': colorExpr,
@@ -1534,16 +1591,19 @@ export default function MapView({
             // through the tile boundary, so `cluster` arrives as the
             // string "true" in some paths; compare loosely on purpose.
             const body = props.cluster
-                ? `<div style="font-weight: 700; color: #f9fafb;">${props.point_count.toLocaleString()} records</div>
-                       <div style="color: #9ca3af;">${layerLabel} · zoom in to resolve</div>`
-                : `<div style="font-weight: 700; color: #f9fafb;">${props.label ?? '(unnamed)'}</div>
-                       <div style="color: #9ca3af;">${layerLabel} · ${props.jurisdiction_code}</div>`;
+                ? `<div style="font-weight: 700; color: #f9fafb;">${escapeHtml(Number(props.point_count).toLocaleString())} records</div>
+                       <div style="color: #9ca3af;">${escapeHtml(layerLabel)} · zoom in to resolve</div>`
+                : `<div style="font-weight: 700; color: #f9fafb;">${escapeHtml(props.label ?? '(unnamed)')}</div>
+                       <div style="color: #9ca3af;">${escapeHtml(layerLabel)} · ${escapeHtml(props.jurisdiction_code)}</div>`;
             const html = `<div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 8px;">
                        ${body}
                    </div>`;
             activePopup = new maplibregl.Popup({
-                closeButton: false, closeOnClick: false,
-                className: 'georag-map-popup', maxWidth: '260px', offset: 8,
+                closeButton: false,
+                closeOnClick: false,
+                className: 'georag-map-popup',
+                maxWidth: '260px',
+                offset: 8,
             })
                 .setLngLat(e.lngLat)
                 .setHTML(html)
@@ -1590,7 +1650,7 @@ export default function MapView({
                 return;
             }
             if (status === 403) {
-                setError('Access denied for this project\'s map data.');
+                setError("Access denied for this project's map data.");
                 return;
             }
 
@@ -1598,9 +1658,8 @@ export default function MapView({
             // Martin returns 204 for valid but empty tiles; that is NOT an error.
             if (status === 204) return;
 
-            // Build the URL prefix for the toast display
-            const urlPrefix = `/tiles/silver/ [source: ${evt.sourceId}]`;
-            watchdog.recordFailure(evt.sourceId, urlPrefix);
+            // The toast names the layer, not the tile path (see tileSourceLabel).
+            watchdog.recordFailure(evt.sourceId);
             console.warn(`Tile error [${evt.sourceId}] status=${status ?? 'unknown'}:`, e.error);
         };
 
@@ -1640,14 +1699,19 @@ export default function MapView({
         collars.forEach((collar) => {
             const el = document.createElement('div');
             el.setAttribute('role', 'button');
-            el.setAttribute('aria-label', `Drill hole ${String(collar.hole_id ?? '')} — ${collar.status ?? 'unknown'} ${markerShape(collar.status)}`);
+            el.setAttribute(
+                'aria-label',
+                `Drill hole ${String(collar.hole_id ?? '')} — ${collar.status ?? 'unknown'} ${markerShape(collar.status)}`,
+            );
             el.setAttribute('tabindex', '0');
             Object.assign(el.style, { cursor: 'pointer', padding: '4px' });
 
             const dot = document.createElement('div');
             const color = markerColor(collar.status, false);
             Object.assign(dot.style, {
-                width: '10px', height: '10px', borderRadius: '50%',
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
                 background: color,
                 border: '1.5px solid rgba(0,0,0,0.4)',
                 boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
@@ -1662,19 +1726,25 @@ export default function MapView({
             el.addEventListener('mouseenter', () => {
                 dot.style.transform = 'scale(1.4)';
                 popupRef.current?.remove();
-                const totalDepth = collar.total_depth != null ? parseFloat(String(collar.total_depth)).toFixed(0) + ' m TD' : '—';
+                const totalDepth =
+                    collar.total_depth != null ? parseFloat(String(collar.total_depth)).toFixed(0) + ' m TD' : '—';
                 const popup = new maplibregl.Popup({
-                    closeButton: false, closeOnClick: false,
-                    className: 'georag-map-popup', maxWidth: '220px', offset: 12,
+                    closeButton: false,
+                    closeOnClick: false,
+                    className: 'georag-map-popup',
+                    maxWidth: '220px',
+                    offset: 12,
                 })
                     .setLngLat([collar._lon, collar._lat])
-                    .setHTML(`
+                    .setHTML(
+                        `
                         <div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 8px;">
                             <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 3px;">${escapeHtml(collar.hole_id ?? '')}</div>
                             <div style="color: #9ca3af;">${escapeHtml(collar.hole_type ?? '—')} · ${totalDepth}</div>
                             <div style="color: ${color}; margin-top: 2px;">${escapeHtml(collar.status ?? '—')}</div>
                         </div>
-                    `)
+                    `,
+                    )
                     .addTo(map);
                 popupRef.current = popup as ExtendedPopup;
             });
@@ -1687,25 +1757,33 @@ export default function MapView({
             const handleClick = () => {
                 if (collar.hole_id) onCollarClick?.(String(collar.hole_id));
                 popupRef.current?.remove();
-                const totalDepth = collar.total_depth != null ? parseFloat(String(collar.total_depth)).toFixed(0) + ' m TD' : '—';
+                const totalDepth =
+                    collar.total_depth != null ? parseFloat(String(collar.total_depth)).toFixed(0) + ' m TD' : '—';
                 const popup = new maplibregl.Popup({
-                    closeButton: true, closeOnClick: false,
-                    className: 'georag-map-popup', maxWidth: '220px',
+                    closeButton: true,
+                    closeOnClick: false,
+                    className: 'georag-map-popup',
+                    maxWidth: '220px',
                 })
                     .setLngLat([collar._lon, collar._lat])
-                    .setHTML(`
+                    .setHTML(
+                        `
                         <div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 2px;">
                             <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 4px;">${escapeHtml(collar.hole_id ?? '')}</div>
                             <div style="color: #9ca3af;">${escapeHtml(collar.hole_type ?? '—')} · ${totalDepth}</div>
                             <div style="color: ${color}; margin-top: 2px;">${escapeHtml(collar.status ?? '—')}</div>
                         </div>
-                    `)
+                    `,
+                    )
                     .addTo(map);
                 popupRef.current = popup as ExtendedPopup;
             };
             el.addEventListener('click', handleClick);
             el.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(); }
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleClick();
+                }
             });
 
             const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
@@ -1715,9 +1793,12 @@ export default function MapView({
         });
 
         // Fit to bounding box
-        let bbox: LngLatBoundsLike | null = null;
+        let bbox: LngLatBoundsLike | null;
         if (inlineBbox && inlineBbox.length === 4) {
-            bbox = [[inlineBbox[0], inlineBbox[1]], [inlineBbox[2], inlineBbox[3]]];
+            bbox = [
+                [inlineBbox[0], inlineBbox[1]],
+                [inlineBbox[2], inlineBbox[3]],
+            ];
         } else {
             bbox = computeBbox(collars);
         }
@@ -1729,16 +1810,18 @@ export default function MapView({
     // ── Lightweight selection highlight — legacy DOM path only ────────────────
     const prevSelectedRef = useRef<string | null>(null);
     useEffect(() => {
-        if (useMvt) return;  // MVT path handles selection via paint filter
+        if (useMvt) return; // MVT path handles selection via paint filter
         const prev = prevSelectedRef.current;
         const next = effectiveSelectedHoleId ?? null;
 
         // Deselect previous
         if (prev && markersRef.current[prev]) {
-            const dot = markersRef.current[prev].getElement().querySelector('div') as (HTMLElement & { dataset: DOMStringMap }) | null;
+            const dot = markersRef.current[prev].getElement().querySelector('div') as
+                (HTMLElement & { dataset: DOMStringMap }) | null;
             if (dot) {
                 Object.assign(dot.style, {
-                    width: '10px', height: '10px',
+                    width: '10px',
+                    height: '10px',
                     background: dot.dataset.baseColor,
                     border: '1.5px solid rgba(0,0,0,0.4)',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
@@ -1751,7 +1834,8 @@ export default function MapView({
             const dot = markersRef.current[next].getElement().querySelector('div') as HTMLElement | null;
             if (dot) {
                 Object.assign(dot.style, {
-                    width: '14px', height: '14px',
+                    width: '14px',
+                    height: '14px',
                     background: '#f59e0b',
                     border: '2px solid #f59e0b',
                     boxShadow: '0 0 8px rgba(245,158,11,0.8)',
@@ -1804,7 +1888,9 @@ export default function MapView({
         } else {
             try {
                 map.addSource('collars-geojson', { type: 'geojson', data: geojson });
-            } catch { /* source may already exist after style change */ }
+            } catch {
+                /* source may already exist after style change */
+            }
         }
 
         // ── Uncertainty rings layer (CC-01 Item 2) ────────────────────────
@@ -1833,7 +1919,9 @@ export default function MapView({
                     filter: UNCERTAINTY_RINGS_FILTER,
                     paint: UNCERTAINTY_RINGS_PAINT,
                 } as unknown as AddLayerObject);
-            } catch { /* layer add can race with style swaps; safe to ignore */ }
+            } catch {
+                /* layer add can race with style swaps; safe to ignore */
+            }
         }
     }, [collars, mapReady, useMvt]);
 
@@ -1871,7 +1959,10 @@ export default function MapView({
                     <span>Map error: {error}</span>
                     <button
                         type="button"
-                        onClick={() => { setError(null); void fetchCollars(); }}
+                        onClick={() => {
+                            setError(null);
+                            void fetchCollars();
+                        }}
                         className="ml-2 text-red-300 hover:text-white underline"
                     >
                         Retry
@@ -1890,15 +1981,20 @@ export default function MapView({
                     aria-live="assertive"
                 >
                     <div className="flex-1 min-w-0">
-                        <span className="font-semibold">Tile layer failing: </span>
-                        <span className="font-mono">{tileToast.sourceId}</span>
+                        <span className="font-semibold">
+                            {tileToast.label
+                                ? `Map tiles for ${tileToast.label} failed to load`
+                                : 'Map tiles failed to load'}
+                        </span>
                         <span> — {tileToast.count} errors in the last 30s. Showing partial data.</span>
-                        <div className="mt-0.5 font-mono text-amber-500 truncate">{tileToast.urlPrefix}</div>
                     </div>
                     <button
                         type="button"
                         aria-label="Dismiss tile error notification"
-                        onClick={() => { setTileToast(null); if (tileToastTimerRef.current) clearTimeout(tileToastTimerRef.current); }}
+                        onClick={() => {
+                            setTileToast(null);
+                            if (tileToastTimerRef.current) clearTimeout(tileToastTimerRef.current);
+                        }}
                         className="ml-2 flex-shrink-0 text-amber-400 hover:text-white leading-none text-sm"
                     >
                         ✕
@@ -1916,7 +2012,9 @@ export default function MapView({
             {/* Collar count badge + status legend (legacy path) */}
             {!useMvt && collars.length > 0 && (
                 <div className="absolute top-2 left-2 z-10 bg-gray-900/90 border border-gray-700 rounded px-2.5 py-1.5 text-xs text-gray-300 font-mono pointer-events-none space-y-1">
-                    <div>{collars.length} collar{collars.length !== 1 ? 's' : ''}</div>
+                    <div>
+                        {collars.length} collar{collars.length !== 1 ? 's' : ''}
+                    </div>
                     {!compact && (
                         <div className="flex gap-2 text-[9px]">
                             <span style={{ color: '#22c55e' }}>● Complete</span>
@@ -1958,52 +2056,56 @@ export default function MapView({
                     {/* Toggle list */}
                     {layerPanelOpen && (
                         <div id="map-layer-toggles" className="px-2.5 pb-2.5 space-y-1.5">
-                            {useMvt && <>
-                            {MVT_LAYERS.map((layer) => {
-                                const checkId = `layer-toggle-${layer.id}`;
-                                // Pick a representative color for the swatch
-                                const swatchColor: string = (
-                                    typeof layer.paint['circle-color'] === 'string'
-                                        ? layer.paint['circle-color']
-                                        : typeof layer.paint['fill-color'] === 'string'
-                                        ? layer.paint['fill-color']
-                                        : typeof layer.paint['line-color'] === 'string'
-                                        ? layer.paint['line-color']
-                                        : '#6b7280'
-                                ) as string;
+                            {useMvt && (
+                                <>
+                                    {MVT_LAYERS.map((layer) => {
+                                        const checkId = `layer-toggle-${layer.id}`;
+                                        // Pick a representative color for the swatch
+                                        const swatchColor: string = (
+                                            typeof layer.paint['circle-color'] === 'string'
+                                                ? layer.paint['circle-color']
+                                                : typeof layer.paint['fill-color'] === 'string'
+                                                  ? layer.paint['fill-color']
+                                                  : typeof layer.paint['line-color'] === 'string'
+                                                    ? layer.paint['line-color']
+                                                    : '#6b7280'
+                                        ) as string;
 
-                                return (
-                                    <div key={layer.id} className="flex items-center gap-2">
-                                        <input
-                                            type="checkbox"
-                                            id={checkId}
-                                            checked={visibleLayers[layer.id] ?? true}
-                                            onChange={() => setVisibleLayers((prev) => ({
-                                                ...prev,
-                                                [layer.id]: !(prev[layer.id] ?? true),
-                                            }))}
-                                            className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 focus:ring-1 cursor-pointer"
-                                        />
-                                        <label
-                                            htmlFor={checkId}
-                                            className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-300 hover:text-gray-100 select-none"
-                                        >
-                                            <span
-                                                className="w-2 h-2 rounded-full inline-block flex-shrink-0"
-                                                style={{ background: swatchColor }}
-                                                aria-hidden="true"
-                                            />
-                                            {layer.label}
-                                        </label>
+                                        return (
+                                            <div key={layer.id} className="flex items-center gap-2">
+                                                <input
+                                                    type="checkbox"
+                                                    id={checkId}
+                                                    checked={visibleLayers[layer.id] ?? true}
+                                                    onChange={() =>
+                                                        setVisibleLayers((prev) => ({
+                                                            ...prev,
+                                                            [layer.id]: !(prev[layer.id] ?? true),
+                                                        }))
+                                                    }
+                                                    className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 focus:ring-1 cursor-pointer"
+                                                />
+                                                <label
+                                                    htmlFor={checkId}
+                                                    className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-300 hover:text-gray-100 select-none"
+                                                >
+                                                    <span
+                                                        className="w-2 h-2 rounded-full inline-block flex-shrink-0"
+                                                        style={{ background: swatchColor }}
+                                                        aria-hidden="true"
+                                                    />
+                                                    {layer.label}
+                                                </label>
+                                            </div>
+                                        );
+                                    })}
+                                    <div className="flex gap-2 text-[9px] text-gray-500 mt-1.5 pt-1.5 border-t border-gray-700">
+                                        <span style={{ color: '#22c55e' }}>● Done</span>
+                                        <span style={{ color: '#eab308' }}>◆ Active</span>
+                                        <span style={{ color: '#ef4444' }}>✕ Abandoned</span>
                                     </div>
-                                );
-                            })}
-                            <div className="flex gap-2 text-[9px] text-gray-500 mt-1.5 pt-1.5 border-t border-gray-700">
-                                <span style={{ color: '#22c55e' }}>● Done</span>
-                                <span style={{ color: '#eab308' }}>◆ Active</span>
-                                <span style={{ color: '#ef4444' }}>✕ Abandoned</span>
-                            </div>
-                            </>}
+                                </>
+                            )}
 
                             {/* ── Coverage density toggle (CC-03 Item 5) ─────────────── */}
                             {projectId && (
@@ -2047,7 +2149,9 @@ export default function MapView({
                                                     className="flex-1 text-[11px] bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
                                                 >
                                                     {COVERAGE_KIND_OPTIONS.map((o) => (
-                                                        <option key={o.value} value={o.value}>{o.label}</option>
+                                                        <option key={o.value} value={o.value}>
+                                                            {o.label}
+                                                        </option>
                                                     ))}
                                                 </select>
                                             </div>
@@ -2065,7 +2169,9 @@ export default function MapView({
                                                     className="flex-1 text-[11px] bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
                                                 >
                                                     {COVERAGE_CELL_SIZES.map((o) => (
-                                                        <option key={o.value} value={o.value}>{o.label}</option>
+                                                        <option key={o.value} value={o.value}>
+                                                            {o.label}
+                                                        </option>
                                                     ))}
                                                 </select>
                                             </div>
@@ -2118,14 +2224,17 @@ export default function MapView({
                                 {publicGeoEnabled && (
                                     <div className="pl-5 space-y-1">
                                         {publicGeoLoading && (
-                                            <div className="text-[10px] text-gray-500">Loading public geoscience data…</div>
+                                            <div className="text-[10px] text-gray-500">
+                                                Loading public geoscience data…
+                                            </div>
                                         )}
                                         {publicGeoError && (
                                             <div className="text-[10px] text-red-400">{publicGeoError}</div>
                                         )}
                                         {!publicGeoLoading && !publicGeoError && publicGeoData && (
                                             <div className="text-[10px] text-gray-500">
-                                                {publicGeoData.feature_count} features · mines, occurrences, public drillholes, rock samples
+                                                {publicGeoData.feature_count} features · mines, occurrences, public
+                                                drillholes, rock samples
                                             </div>
                                         )}
                                     </div>
@@ -2159,11 +2268,7 @@ export default function MapView({
             )}
 
             {/* Map container */}
-            <div
-                ref={mapContainer}
-                className="w-full h-full"
-                aria-label="Drill collar map"
-            />
+            <div ref={mapContainer} className="w-full h-full" aria-label="Drill collar map" />
 
             {/* Popup dark-mode style injection */}
             <style>{`

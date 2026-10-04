@@ -26,9 +26,15 @@ import { render, cleanup } from '@testing-library/react';
 if (typeof globalThis.ResizeObserver === 'undefined') {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).ResizeObserver = class {
-        observe() { /* noop */ }
-        unobserve() { /* noop */ }
-        disconnect() { /* noop */ }
+        observe() {
+            /* noop */
+        }
+        unobserve() {
+            /* noop */
+        }
+        disconnect() {
+            /* noop */
+        }
     };
 }
 
@@ -51,11 +57,7 @@ vi.mock('plotly.js-dist-min', () => {
     return { default: api, ...api };
 });
 
-import DrillTrace3D, {
-    type CollarPoint,
-    type IntervalPoint,
-    type StructurePoint,
-} from '../DrillTrace3D';
+import DrillTrace3D, { type CollarPoint, type IntervalPoint, type StructurePoint } from '../DrillTrace3D';
 
 // Trace shape extractor — mirrors what the legacy factory mock used to
 // surface so the per-test assertions read naturally.
@@ -195,7 +197,9 @@ describe('DrillTrace3D — trace_points', () => {
 
     it('draws the scene at true scale on all three axes (GIS-9)', () => {
         render(<DrillTrace3D collars={[COLLAR_WITH_TRACE]} />);
-        const layout = reactCalls[reactCalls.length - 1].layout as { scene: { aspectmode: string; xaxis: { title: { text: string } } } };
+        const layout = reactCalls[reactCalls.length - 1].layout as {
+            scene: { aspectmode: string; xaxis: { title: { text: string } } };
+        };
         expect(layout.scene.aspectmode).toBe('data');
         expect(layout.scene.xaxis.title.text).toMatch(/\(m\)/);
     });
@@ -242,11 +246,32 @@ describe('DrillTrace3D — server metric offsets (GIS-9)', () => {
 describe('DrillTrace3D — intervals', () => {
     const INTERVALS: IntervalPoint[] = [
         // depth 0–50 — color A
-        { collar_id: 'c-001', depth_from: 0, depth_to: 50, interval_kind: 'lithology', color_hint: '#a83232', label: 'Granite' },
+        {
+            collar_id: 'c-001',
+            depth_from: 0,
+            depth_to: 50,
+            interval_kind: 'lithology',
+            color_hint: '#a83232',
+            label: 'Granite',
+        },
         // depth 50–100 — color B
-        { collar_id: 'c-001', depth_from: 50, depth_to: 100, interval_kind: 'alteration', color_hint: '#3232a8', label: 'Sericite' },
+        {
+            collar_id: 'c-001',
+            depth_from: 50,
+            depth_to: 100,
+            interval_kind: 'alteration',
+            color_hint: '#3232a8',
+            label: 'Sericite',
+        },
         // depth 100–150 — color A again (must batch with the first)
-        { collar_id: 'c-001', depth_from: 100, depth_to: 150, interval_kind: 'lithology', color_hint: '#a83232', label: 'Granite' },
+        {
+            collar_id: 'c-001',
+            depth_from: 100,
+            depth_to: 150,
+            interval_kind: 'lithology',
+            color_hint: '#a83232',
+            label: 'Granite',
+        },
     ];
 
     beforeEach(() => {
@@ -284,7 +309,14 @@ describe('DrillTrace3D — intervals', () => {
             <DrillTrace3D
                 collars={[COLLAR_BASIC]}
                 intervals={[
-                    { collar_id: 'c-MISSING', depth_from: 10, depth_to: 20, interval_kind: 'assay', color_hint: '#ffffff', label: 'Au' },
+                    {
+                        collar_id: 'c-MISSING',
+                        depth_from: 10,
+                        depth_to: 20,
+                        interval_kind: 'assay',
+                        color_hint: '#ffffff',
+                        label: 'Au',
+                    },
                 ]}
             />,
         );
@@ -297,9 +329,30 @@ describe('DrillTrace3D — intervals', () => {
 
 describe('DrillTrace3D — structures', () => {
     const STRUCTURES: StructurePoint[] = [
-        { collar_id: 'c-001', depth: 25, structure_type: 'foliation', strike_deg: 45, dip_deg: 60, source_row_id: 'r1' },
-        { collar_id: 'c-001', depth: 80, structure_type: 'foliation', strike_deg: 50, dip_deg: 65, source_row_id: 'r2' },
-        { collar_id: 'c-001', depth: 120, structure_type: 'fault', strike_deg: null, dip_deg: null, source_row_id: 'r3' },
+        {
+            collar_id: 'c-001',
+            depth: 25,
+            structure_type: 'foliation',
+            strike_deg: 45,
+            dip_deg: 60,
+            source_row_id: 'r1',
+        },
+        {
+            collar_id: 'c-001',
+            depth: 80,
+            structure_type: 'foliation',
+            strike_deg: 50,
+            dip_deg: 65,
+            source_row_id: 'r2',
+        },
+        {
+            collar_id: 'c-001',
+            depth: 120,
+            structure_type: 'fault',
+            strike_deg: null,
+            dip_deg: null,
+            source_row_id: 'r3',
+        },
     ];
 
     beforeEach(() => {
@@ -330,10 +383,7 @@ describe('DrillTrace3D — structures', () => {
         const traces = getTraces();
         const fol = traces.find((t) => t.name === 'foliation');
         const fau = traces.find((t) => t.name === 'fault');
-        expect(fol!.text).toEqual([
-            'foliation · 25m · strike 45/dip 60',
-            'foliation · 80m · strike 50/dip 65',
-        ]);
+        expect(fol!.text).toEqual(['foliation · 25m · strike 45/dip 60', 'foliation · 80m · strike 50/dip 65']);
         expect(fau!.text).toEqual(['fault · 120m · strike —/dip —']);
     });
 
@@ -344,7 +394,14 @@ describe('DrillTrace3D — structures', () => {
             <DrillTrace3D
                 collars={[COLLAR_BASIC]}
                 structures={[
-                    { collar_id: 'c-MISSING', depth: 30, structure_type: 'joint', strike_deg: 10, dip_deg: 20, source_row_id: 'rx' },
+                    {
+                        collar_id: 'c-MISSING',
+                        depth: 30,
+                        structure_type: 'joint',
+                        strike_deg: 10,
+                        dip_deg: 20,
+                        source_row_id: 'rx',
+                    },
                 ]}
             />,
         );
@@ -360,10 +417,24 @@ describe('DrillTrace3D — all overlays together', () => {
             <DrillTrace3D
                 collars={[COLLAR_WITH_TRACE]}
                 intervals={[
-                    { collar_id: 'c-002', depth_from: 0, depth_to: 100, interval_kind: 'lithology', color_hint: '#a83232', label: 'Granite' },
+                    {
+                        collar_id: 'c-002',
+                        depth_from: 0,
+                        depth_to: 100,
+                        interval_kind: 'lithology',
+                        color_hint: '#a83232',
+                        label: 'Granite',
+                    },
                 ]}
                 structures={[
-                    { collar_id: 'c-002', depth: 150, structure_type: 'vein', strike_deg: 0, dip_deg: 45, source_row_id: 'r1' },
+                    {
+                        collar_id: 'c-002',
+                        depth: 150,
+                        structure_type: 'vein',
+                        strike_deg: 0,
+                        dip_deg: 45,
+                        source_row_id: 'r1',
+                    },
                 ]}
             />,
         );

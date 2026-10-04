@@ -32,7 +32,13 @@ class _FakeConn:
         structure_count: int = 0,
         max_assay: dict | None = None,
         litho_rows: list[dict] | None = None,
+        aggregates_error: Exception | None = None,
+        litho_error: Exception | None = None,
+        collar_error: Exception | None = None,
     ) -> None:
+        self._aggregates_error = aggregates_error
+        self._litho_error = litho_error
+        self._collar_error = collar_error
         self._collar_row = collar_row
         self._assay_count = assay_count
         self._sample_count = sample_count
@@ -45,21 +51,31 @@ class _FakeConn:
     async def fetchrow(self, sql: str, *args: Any):
         self.fetchrow_calls.append((sql, args))
         if "FROM silver.collars" in sql and "match_priority" in sql:
+            if self._collar_error is not None:
+                raise self._collar_error
             return self._collar_row
-        if "silver.assays_v2" in sql and "COUNT" in sql:
-            return {"n": self._assay_count}
-        if "silver.samples" in sql and "COUNT" in sql:
-            return {"n": self._sample_count}
-        if "silver.lithology_logs" in sql and "COUNT" in sql:
-            return {"n": self._litho_count}
-        if "silver.structure" in sql and "COUNT" in sql:
-            return {"n": self._structure_count}
-        if "silver.assays_v2" in sql and "ORDER BY value DESC" in sql:
-            return self._max_assay
+        if "AS assay_count" in sql:
+            # One round-trip for the four counts and the headline assay.
+            if self._aggregates_error is not None:
+                raise self._aggregates_error
+            m = self._max_assay or {}
+            return {
+                "assay_count": self._assay_count,
+                "sample_count": self._sample_count,
+                "litho_count": self._litho_count,
+                "structure_count": self._structure_count,
+                "max_element": m.get("element"),
+                "max_value": m.get("value"),
+                "max_unit": m.get("unit"),
+                "max_from": m.get("from_depth"),
+                "max_to": m.get("to_depth"),
+            }
         return None
 
     async def fetch(self, sql: str, *args: Any):
         if "lithology_logs" in sql and "GROUP BY lithology_code" in sql:
+            if self._litho_error is not None:
+                raise self._litho_error
             return self._litho_rows
         return []
 
@@ -206,3 +222,84 @@ async def test_no_aggregate_calls_on_zero_counts() -> None:
     assert result.count == 1
     assert result.max_assay_value is None
     assert result.lithology_summary == []
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 items 11, 12, 28
+# ---------------------------------------------------------------------------
+
+
+async def test_failed_aggregates_are_none_not_zero() -> None:
+    """A Postgres timeout in the aggregates used to read as "no samples"."""
+    conn = _FakeConn(
+        collar_row=_collar_row(), aggregates_error=TimeoutError("statement timeout"),
+    )
+    result = await query_collar_details(_FakeDeps(conn), WORKSPACE, PROJECT, "36-1085")
+
+    assert result.count == 1
+    assert result.hole_id == "36-1085"
+    assert result.assay_count is None
+    assert result.sample_count is None
+    assert result.lithology_count is None
+    assert result.structure_count is None
+    assert result.max_assay_value is None
+    assert result.lithology_summary is None
+    assert result.retrieval_failure == "aggregates_unavailable"
+
+
+async def test_failed_aggregates_render_as_unavailable() -> None:
+    from app.agent.agentic_retrieval.nodes import _render_structured_result
+
+    conn = _FakeConn(collar_row=_collar_row(), aggregates_error=RuntimeError("boom"))
+    result = await query_collar_details(_FakeDeps(conn), WORKSPACE, PROJECT, "36-1085")
+    text = _render_structured_result(result)
+    assert "assay_count=unavailable" in text
+    assert "sample_count=unavailable" in text
+    assert "assay_count=0" not in text
+    assert "assay_count=None" not in text
+
+
+async def test_a_genuine_zero_still_renders_as_zero() -> None:
+    from app.agent.agentic_retrieval.nodes import _render_structured_result
+
+    conn = _FakeConn(collar_row=_collar_row(), assay_count=0, sample_count=0)
+    result = await query_collar_details(_FakeDeps(conn), WORKSPACE, PROJECT, "36-1085")
+    assert result.retrieval_failure is None
+    assert result.assay_count == 0
+    assert "assay_count=0" in _render_structured_result(result)
+
+
+async def test_failed_litho_summary_is_unavailable_not_empty() -> None:
+    conn = _FakeConn(
+        collar_row=_collar_row(), litho_count=18, litho_error=RuntimeError("boom"),
+    )
+    result = await query_collar_details(_FakeDeps(conn), WORKSPACE, PROJECT, "36-1085")
+    assert result.lithology_count == 18
+    assert result.lithology_summary is None
+    assert result.retrieval_failure == "aggregates_unavailable"
+
+
+async def test_header_failure_is_reported_not_a_miss() -> None:
+    conn = _FakeConn(collar_row=None, collar_error=RuntimeError("connection reset"))
+    result = await query_collar_details(_FakeDeps(conn), WORKSPACE, PROJECT, "36-1085")
+    assert result.count == 0
+    assert result.retrieval_failure == "error"
+
+
+async def test_a_genuine_miss_has_no_failure() -> None:
+    result = await query_collar_details(
+        _FakeDeps(_FakeConn(collar_row=None)), WORKSPACE, PROJECT, "NOPE-1",
+    )
+    assert result.count == 0
+    assert result.retrieval_failure is None
+
+
+async def test_aggregates_are_one_round_trip_and_collar_subquery_has_explicit_columns() -> None:
+    conn = _FakeConn(collar_row=_collar_row(), assay_count=3, litho_count=0)
+    await query_collar_details(_FakeDeps(conn), WORKSPACE, PROJECT, "36-1085")
+    sqls = [sql for sql, _ in conn.fetchrow_calls]
+    # collar header + ONE aggregates query (was header + four counts + max).
+    assert len(sqls) == 2
+    header = next(sql for sql in sqls if "match_priority" in sql)
+    assert "SELECT *" not in header
+    assert "SELECT collar_id, hole_id," in header

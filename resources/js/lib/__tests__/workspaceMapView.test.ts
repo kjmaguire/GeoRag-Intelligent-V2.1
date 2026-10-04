@@ -9,7 +9,13 @@ import {
 
 describe('initialMapView (FE-3)', () => {
     it('fits positioned collars first, padded', () => {
-        const v = initialMapView([[-105, 58], [-104, 59]], [-120, 40, -110, 45]);
+        const v = initialMapView(
+            [
+                [-105, 58],
+                [-104, 59],
+            ],
+            [-120, 40, -110, 45],
+        );
         expect(v.bounds).toEqual([-105.01, 57.99, -103.99, 59.01]);
     });
 
@@ -36,11 +42,22 @@ describe('initialMapView (FE-3)', () => {
 
 describe('hasNonCollarMapData', () => {
     it('is true when an imported / MVT layer has rows', () => {
-        expect(hasNonCollarMapData([{ id: 'collars', count: 0 }, { id: 'imported-polygons', count: 3 }])).toBe(true);
+        expect(
+            hasNonCollarMapData([
+                { id: 'collars', count: 0 },
+                { id: 'imported-polygons', count: 3 },
+            ]),
+        ).toBe(true);
     });
 
     it('is false for collar-derived layers only', () => {
-        expect(hasNonCollarMapData([{ id: 'collars', count: 0 }, { id: 'traces', count: 5 }, { id: 'geochem', count: 0 }])).toBe(false);
+        expect(
+            hasNonCollarMapData([
+                { id: 'collars', count: 0 },
+                { id: 'traces', count: 5 },
+                { id: 'geochem', count: 0 },
+            ]),
+        ).toBe(false);
     });
 
     it('only names real MVT layer ids', () => {

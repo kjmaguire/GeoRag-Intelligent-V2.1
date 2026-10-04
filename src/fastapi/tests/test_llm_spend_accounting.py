@@ -299,13 +299,14 @@ def test_answer_runs_insert_carries_the_token_columns():
     assert "input_tokens" in stmt and "output_tokens" in stmt, (
         "These columns existed for four months and were never written."
     )
-    # 19 bind parameters, plus the literal 0 for
+    # 20 bind parameters, plus the literal 0 for
     # workspace_data_version_at_query — check the highest placeholder so a
     # column/parameter mismatch fails here rather than at runtime.
     # ($17 / $18 are rejection_reason / hallucination_guard_results,
-    # written since 2026-09-07; $19 is reranker_version, since 2026-09-24.)
-    assert "$19" in stmt
-    assert "$20" not in stmt
+    # written since 2026-09-07; $19 is reranker_version, since 2026-09-24;
+    # $20 is embedding_model, since ADR-0025, 2026-10-04.)
+    assert "$20" in stmt and "embedding_model" in stmt
+    assert "$21" not in stmt
 
 
 def test_answer_runs_records_the_answering_model_not_the_configured_one():
@@ -325,28 +326,46 @@ def test_the_usage_event_is_written_outside_the_lineage_try():
     `_insert_answer_run_with_retry` re-raises after three attempts. With
     the usage write inside that `try`, a PgBouncer flap would lose both
     the lineage row AND the cost record for the same query.
+
+    Since 2026-10-04 (audit item 17) the write lives in `_persist_followups`,
+    a retained background task `persist_node` spawns after the INSERT -- so
+    it is outside the lineage try by construction. This pins that: the one
+    usage write is in `_persist_followups`, `persist_node` itself no longer
+    awaits it, and the spawn is not inside the INSERT's try either.
     """
     source = NODES_SRC.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "persist_node"
+    def _fn(name: str) -> ast.AsyncFunctionDef:
+        return next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+        )
+
+    def _usage_calls(fn: ast.AsyncFunctionDef) -> list[int]:
+        return [
+            n.lineno for n in ast.walk(fn)
+            if isinstance(n, ast.Await)
+            and isinstance(n.value, ast.Call)
+            and getattr(n.value.func, "id", None) == "_write_chat_usage_event"
+        ]
+
+    assert len(_usage_calls(_fn("_persist_followups"))) == 1, "expected exactly one usage write"
+    assert _usage_calls(_fn("persist_node")) == [], (
+        "persist_node awaits the usage write again -- it belongs in the "
+        "background task, off the path to `completed`."
     )
 
-    call_lines = [
-        n.lineno
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Await)
-        and isinstance(n.value, ast.Call)
-        and getattr(n.value.func, "id", None) == "_write_chat_usage_event"
+    persist = _fn("persist_node")
+    spawn_lines = [
+        n.lineno for n in ast.walk(persist)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_spawn_persist_background"
     ]
-    assert len(call_lines) == 1, "expected exactly one usage write"
+    assert len(spawn_lines) == 1, "persist_node must spawn the follow-ups exactly once"
 
     try_ranges = [
         (n.lineno, max(getattr(c, "lineno", n.lineno) for c in ast.walk(n)))
-        for n in ast.walk(fn)
+        for n in ast.walk(persist)
         if isinstance(n, ast.Try)
         and any(
             isinstance(x, ast.Call)
@@ -356,11 +375,11 @@ def test_the_usage_event_is_written_outside_the_lineage_try():
     ]
     assert try_ranges, "could not locate the answer_runs try block"
 
-    line = call_lines[0]
+    line = spawn_lines[0]
     for start, end in try_ranges:
         assert not (start <= line <= end), (
-            "The usage write sits inside the answer_runs try block, so a "
-            "failed lineage INSERT also loses the cost record."
+            "The usage write is spawned inside the answer_runs try block, so "
+            "a failed lineage INSERT also loses the cost record."
         )
 
 

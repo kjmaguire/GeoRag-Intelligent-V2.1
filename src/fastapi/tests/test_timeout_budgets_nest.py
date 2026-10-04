@@ -49,13 +49,17 @@ def env(**overrides: str):
 def test_the_shipped_defaults_nest_correctly() -> None:
     settings = Settings()
 
-    embed = float(os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30") or "30")
+    # Cohere is the default embedder since ADR-0025; the Bedrock budget is
+    # the rollback's and is held under the same ceiling.
+    embed = float(os.environ.get("COHERE_EMBED_TIMEOUT_S", "30") or "30")
+    rollback = float(os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30") or "30")
     sparse = float(os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30")
 
     assert embed < settings.TIMEOUT_QDRANT_S, (
         f"TIMEOUT_QDRANT_S={settings.TIMEOUT_QDRANT_S} wraps a "
         f"{embed}s embedding call"
     )
+    assert rollback < settings.TIMEOUT_QDRANT_S
     assert sparse < settings.TIMEOUT_QDRANT_S, (
         f"TIMEOUT_QDRANT_S={settings.TIMEOUT_QDRANT_S} wraps a "
         f"{sparse}s sparse encode"
@@ -89,11 +93,29 @@ def test_the_value_that_shipped_is_now_rejected() -> None:
     assert "EMPTY" in message
 
 
+def test_the_default_hosted_embedder_budget_is_checked_too() -> None:
+    """ADR-0025: unset EMBEDDING_BACKEND is cohere, so the budget that is in
+    the code path is COHERE_EMBED_TIMEOUT_S -- not the Bedrock one, which the
+    check used to name whenever the backend was unset."""
+    previous = os.environ.pop("EMBEDDING_BACKEND", None)
+    try:
+        with env(TIMEOUT_QDRANT_S="6.0"), pytest.raises(ValidationError) as caught:
+            Settings()
+    finally:
+        if previous is not None:
+            os.environ["EMBEDDING_BACKEND"] = previous
+
+    message = str(caught.value)
+    assert "COHERE_EMBED_TIMEOUT_S" in message
+    assert "BEDROCK_EMBED_TIMEOUT_S" not in message
+
+
 @pytest.mark.parametrize(
     ("variable", "activating"),
     [
         # Each inner budget is only checked when it is actually in the code
         # path, so each case has to select that path first.
+        ("COHERE_EMBED_TIMEOUT_S", {"EMBEDDING_BACKEND": "cohere"}),
         ("BEDROCK_EMBED_TIMEOUT_S", {"EMBEDDING_BACKEND": "bedrock"}),
         ("SPARSE_SERVICE_TIMEOUT_S", {"SPARSE_SERVICE_URL": "http://sparse:8000"}),
     ],
@@ -118,7 +140,15 @@ def test_a_budget_no_call_reaches_is_not_checked() -> None:
     numbers nothing was ever going to read.
     """
     # Local embedder: the Bedrock budget is unreachable, however large.
-    with env(EMBEDDING_BACKEND="local", BEDROCK_EMBED_TIMEOUT_S="600"):
+    with env(
+        EMBEDDING_BACKEND="local", BEDROCK_EMBED_TIMEOUT_S="600", COHERE_EMBED_TIMEOUT_S="600"
+    ):
+        Settings()
+
+    # And each hosted budget is unreachable under the OTHER hosted backend.
+    with env(EMBEDDING_BACKEND="cohere", BEDROCK_EMBED_TIMEOUT_S="600"):
+        Settings()
+    with env(EMBEDDING_BACKEND="bedrock", COHERE_EMBED_TIMEOUT_S="600"):
         Settings()
 
     # No sidecar URL: encode_sparse runs in-process and never consults the

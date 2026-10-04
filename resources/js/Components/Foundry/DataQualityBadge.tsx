@@ -49,7 +49,7 @@ function pickTone(counters: DataQualityBadgeProps['counters']): 'accent' | 'info
 }
 
 function defaultLabel(counters: DataQualityBadgeProps['counters']): string {
-    const { exact, fuzzy, unmapped, total } = counters;
+    const { fuzzy, unmapped, total } = counters;
     if (total === 0) return 'No lithology';
     if (unmapped > 0) {
         return `${unmapped} / ${total} unmapped`;
@@ -70,12 +70,7 @@ function tooltipText(counters: DataQualityBadgeProps['counters']): string {
     return parts.join(' · ');
 }
 
-export function DataQualityBadge({
-    counters,
-    href,
-    label,
-    className = '',
-}: DataQualityBadgeProps) {
+export function DataQualityBadge({ counters, href, label, className = '' }: DataQualityBadgeProps) {
     if (counters.total === 0) {
         return null;
     }

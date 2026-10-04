@@ -8,7 +8,7 @@
  *   FE-18 the hole's coordinates are labelled with the project CRS
  *   FE-25 quick prompts follow the project commodity
  */
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
@@ -21,7 +21,11 @@ const inertia = vi.hoisted(() => ({
 
 vi.mock('@inertiajs/react', () => ({
     Head: () => null,
-    Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => <a href={href} {...rest}>{children}</a>,
+    Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
+        <a href={href} {...rest}>
+            {children}
+        </a>
+    ),
     router: { reload: inertia.reload, get: inertia.get, visit: vi.fn() },
     usePage: () => ({ props: inertia.pageProps }),
     Deferred: ({ data, fallback, children }: { data: string | string[]; fallback: ReactNode; children: ReactNode }) => {
@@ -46,16 +50,41 @@ import FoundryWorkspace from '../Workspace';
 function props(over: Record<string, unknown> = {}): Record<string, unknown> {
     return {
         project: {
-            project_id: 'p-1', project_name: 'Red Star', slug: 'red-star', company: null,
-            commodity: 'Gold', region: null, crs_epsg: 26912, data_version: 4,
+            project_id: 'p-1',
+            project_name: 'Red Star',
+            slug: 'red-star',
+            company: null,
+            commodity: 'Gold',
+            region: null,
+            crs_epsg: 26912,
+            data_version: 4,
         },
         project_extent: null,
-        project_summary: { total_drilled_m: 0, mean_td_m: null, ore_hole_count: 0, total_ore_thickness_m: 0, mean_u3o8_pct: null },
+        project_summary: {
+            total_drilled_m: 0,
+            mean_td_m: null,
+            ore_hole_count: 0,
+            total_ore_thickness_m: 0,
+            mean_u3o8_pct: null,
+        },
         project_aoi: null,
-        collars: [{
-            collar_id: 'c-1', hole_id: 'RS-1', hole_id_canonical: 'RS-1', easting: 500000, northing: 6000000,
-            total_depth: 200, lat: 54, lng: -110, ore_bands: 0, ore_thickness_m: 0, azimuth: 45, dip: -60, elevation: 400,
-        }],
+        collars: [
+            {
+                collar_id: 'c-1',
+                hole_id: 'RS-1',
+                hole_id_canonical: 'RS-1',
+                easting: 500000,
+                northing: 6000000,
+                total_depth: 200,
+                lat: 54,
+                lng: -110,
+                ore_bands: 0,
+                ore_thickness_m: 0,
+                azimuth: 45,
+                dip: -60,
+                elevation: 400,
+            },
+        ],
         sections_count: 0,
         intervals_count: 0,
         structures_count: 0,
@@ -80,7 +109,10 @@ function props(over: Record<string, unknown> = {}): Record<string, unknown> {
         strat_source: 'reference',
         project_country: 'CA',
         empty: false,
-        truncation: { collars: { shown: 1, total: 1, truncated: false }, interval_holes: { shown: 1, total: 1, truncated: false } },
+        truncation: {
+            collars: { shown: 1, total: 1, truncated: false },
+            interval_holes: { shown: 1, total: 1, truncated: false },
+        },
         ...over,
     };
 }
@@ -100,12 +132,14 @@ afterEach(() => {
 
 describe('Foundry/Workspace', () => {
     it('shows the map for a GIS-only project instead of "no drill data" (FE-3)', () => {
-        renderPage(props({
-            collars: [],
-            empty: true,
-            project_extent: [-106, 57, -105, 58],
-            project_layers: [{ id: 'imported-polygons', label: 'Imported areas', count: 3, on: true }],
-        }));
+        renderPage(
+            props({
+                collars: [],
+                empty: true,
+                project_extent: [-106, 57, -105, 58],
+                project_layers: [{ id: 'imported-polygons', label: 'Imported areas', count: 3, on: true }],
+            }),
+        );
         const map = screen.getByTestId('workspace-map');
         expect(map).toHaveAttribute('data-extent', '[-106,57,-105,58]');
         expect(map).toHaveAttribute('data-version', '4');
@@ -126,11 +160,20 @@ describe('Foundry/Workspace', () => {
 
     it('renders the 3D panel once the deferred group is present', () => {
         window.history.replaceState({}, '', '/projects/red-star/workspace?mode=3d');
-        renderPage(props({
-            first_holes_intervals: [], surveys_3d: [], structures_3d: [], assay_composites_3d: [],
-            assay_elements_3d: [], significant_intersections_3d: [], structures_visual_3d: [],
-            commodity_samples_3d: [], commodity_keys_3d: [], survey_holes_downsampled: 0,
-        }));
+        renderPage(
+            props({
+                first_holes_intervals: [],
+                surveys_3d: [],
+                structures_3d: [],
+                assay_composites_3d: [],
+                assay_elements_3d: [],
+                significant_intersections_3d: [],
+                structures_visual_3d: [],
+                commodity_samples_3d: [],
+                commodity_keys_3d: [],
+                survey_holes_downsampled: 0,
+            }),
+        );
         expect(screen.queryByTestId('deferred-skeleton')).toBeNull();
         expect(screen.getByText('3D drill trajectories')).toBeInTheDocument();
     });
@@ -156,7 +199,10 @@ describe('Foundry/Workspace', () => {
         renderPage(props());
         expect(screen.getByText(/EPSG:26912 · E 500,000/)).toBeInTheDocument();
         expect(screen.queryByText(/UTM 13N/)).toBeNull();
-        expect(screen.getByRole('link', { name: /open hole page/i })).toHaveAttribute('href', '/projects/red-star/holes/c-1/detail');
+        expect(screen.getByRole('link', { name: /open hole page/i })).toHaveAttribute(
+            'href',
+            '/projects/red-star/holes/c-1/detail',
+        );
         // The regional reference column is opt-in, not presented as this project's (FE-25).
         expect(screen.queryByText(/Athabasca Group · Wollaston Domain/)).toBeNull();
         expect(screen.getByRole('button', { name: /show a regional reference column/i })).toBeInTheDocument();
@@ -166,5 +212,36 @@ describe('Foundry/Workspace', () => {
         renderPage(props());
         expect(screen.getByText('Which holes have the best Gold intervals?')).toBeInTheDocument();
         expect(screen.queryByText(/Smith Ranch|U₃O₈/)).toBeNull();
+    });
+
+    it('uses plain language in every empty 3D view (no table names, tiers, pipelines)', () => {
+        window.history.replaceState({}, '', '/projects/red-star/workspace?mode=3d');
+        const { container } = renderPage(
+            props({
+                first_holes_intervals: [],
+                surveys_3d: [],
+                structures_3d: [],
+                assay_composites_3d: [],
+                assay_elements_3d: [],
+                significant_intersections_3d: [],
+                structures_visual_3d: [],
+                commodity_samples_3d: [],
+                commodity_keys_3d: [],
+                survey_holes_downsampled: 0,
+            }),
+        );
+        const internal = /silver|gold\.|bronze|§|ADR-|pipeline|derive_|_visual|\bTier\b/i;
+        const expected: Array<[string, RegExp]> = [
+            ['Lithology', /No 3D intervals for this project yet/],
+            ['Assay Grade', /No assay composites yet/],
+            ['Intersections', /No significant intersections yet/],
+            ['Commodity Samples', /No commodity samples for this project yet/],
+            ['Structure Discs', /No structural measurements to display in 3D yet/],
+        ];
+        for (const [label, copy] of expected) {
+            fireEvent.click(screen.getByRole('button', { name: label }));
+            expect(screen.getByText(copy)).toBeInTheDocument();
+            expect(container.textContent ?? '').not.toMatch(internal);
+        }
     });
 });

@@ -53,9 +53,10 @@ export default function CitationPGEODetail({ citation }: CitationPGEODetailProps
     // Authority header — source name em-dash authority. Source name comes
     // from the resolver envelope; fall back to the Citation.document_title
     // which is already jurisdiction-qualified ("Saskatchewan -- ...").
-    const authorityLine = resolved?.source?.name && resolved?.jurisdiction?.authority
-        ? `${resolved.source.name} -- ${resolved.jurisdiction.authority}`
-        : citation.document_title;
+    const authorityLine =
+        resolved?.source?.name && resolved?.jurisdiction?.authority
+            ? `${resolved.source.name} -- ${resolved.jurisdiction.authority}`
+            : citation.document_title;
 
     return (
         <div className="space-y-3">
@@ -63,9 +64,7 @@ export default function CitationPGEODetail({ citation }: CitationPGEODetailProps
                 <div className="text-[11px] uppercase tracking-wider text-rose-400 font-semibold">
                     {citation.jurisdiction_name ?? citation.jurisdiction_code ?? 'Public Geoscience'}
                 </div>
-                <h3 className="text-sm font-semibold text-gray-100 leading-snug">
-                    {authorityLine}
-                </h3>
+                <h3 className="text-sm font-semibold text-gray-100 leading-snug">{authorityLine}</h3>
                 <p className="text-[11px] text-gray-500 leading-snug">
                     {sourceHost ?? resolved?.source?.service_url ?? 'public geoscience record'}
                     {citation.staleness_seconds != null && (
@@ -76,8 +75,8 @@ export default function CitationPGEODetail({ citation }: CitationPGEODetailProps
                                     staleness.level === 'fresh'
                                         ? 'text-gray-500'
                                         : staleness.level === 'stale'
-                                            ? 'text-amber-400'
-                                            : 'text-red-400'
+                                          ? 'text-amber-400'
+                                          : 'text-red-400'
                                 }
                                 title={staleness.long_label}
                             >
@@ -96,7 +95,9 @@ export default function CitationPGEODetail({ citation }: CitationPGEODetailProps
                         variant="outline"
                         className="bg-gray-950/50 border-gray-700 text-gray-400 text-[10px] leading-tight max-w-full"
                     >
-                        <span className="mr-1 text-gray-500" aria-hidden="true">(c)</span>
+                        <span className="mr-1 text-gray-500" aria-hidden="true">
+                            (c)
+                        </span>
                         <span className="truncate">{citation.license_summary}</span>
                     </Badge>
                     {citation.license_url && (
@@ -128,8 +129,8 @@ export default function CitationPGEODetail({ citation }: CitationPGEODetailProps
             {/* fresh threshold. Keeps the UI quiet for fresh data. */}
             {staleness.level !== 'fresh' && citation.staleness_seconds != null && (
                 <p className="text-[11px] text-amber-300/80 leading-snug bg-amber-950/30 border border-amber-800/40 rounded px-2 py-1.5">
-                    <span className="font-semibold">Cached data:</span> {staleness.long_label}.
-                    The upstream may have newer records.
+                    <span className="font-semibold">Cached data:</span> {staleness.long_label}. The upstream may have
+                    newer records.
                 </p>
             )}
 
@@ -137,15 +138,13 @@ export default function CitationPGEODetail({ citation }: CitationPGEODetailProps
             <div>
                 <button
                     type="button"
-                    onClick={() => setShowDetails(v => !v)}
+                    onClick={() => setShowDetails((v) => !v)}
                     className="text-xs text-rose-400 hover:text-rose-300 border border-rose-800/50 hover:border-rose-700 bg-rose-950/30 hover:bg-rose-950/50 rounded px-2 py-1 transition-colors w-full text-left"
                 >
                     {resolving ? 'Loading details...' : showDetails ? 'Hide details' : 'View details'}
                 </button>
 
-                {resolveError && (
-                    <p className="text-[11px] text-red-400 mt-1">Failed to load: {resolveError}</p>
-                )}
+                {resolveError && <p className="text-[11px] text-red-400 mt-1">Failed to load: {resolveError}</p>}
 
                 {showDetails && resolved && (
                     <div className="mt-2 space-y-3">
@@ -332,9 +331,7 @@ function pickHighlightedFields(
 function formatValue(value: unknown): string {
     if (value === null || value === undefined) return '-';
     if (Array.isArray(value)) {
-        const clean = value
-            .map(v => (v == null ? '' : String(v)))
-            .filter(Boolean);
+        const clean = value.map((v) => (v == null ? '' : String(v))).filter(Boolean);
         return clean.length > 0 ? clean.join(', ') : '-';
     }
     if (typeof value === 'boolean') return value ? 'yes' : 'no';

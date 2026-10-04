@@ -452,7 +452,28 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
             # planner's state — narrowing on hints this layer cannot see
             # would silently drop results, whereas the unfiltered call is
             # merely slower.
-            return await fn(ctx, text_query=query)
+            #
+            # What it IS passed (audit item 14): entity / commodity TOKENS,
+            # never the whole question. The tool does a contains-match
+            # (`name ILIKE '%'||q||'%'`) across seven UNION ALL tables, so a
+            # full sentence matched nothing and cost seven scans per call.
+            # No token, no call.
+            entity_names = _entity_names_from_query(query)
+            commodities = _t.commodities_in_query(query)
+            text_token = entity_names[0] if entity_names else None
+            if text_token is None:
+                named_holes = _hole_ids_from_query(query)
+                text_token = named_holes[0] if named_holes else None
+            if text_token is None and not commodities:
+                logger.info(
+                    "agentic_retrieval.execute: %s no entity / commodity token "
+                    "in query — public geoscience search skipped",
+                    real_name,
+                )
+                return None
+            return await fn(
+                ctx, text_query=text_token, commodities=commodities or None,
+            )
         if real_name == "query_downhole_logs":
             # Hole-ID NER lands via extract_hole_ids (PR-3 / 2026-05-25).
             # When the query names a hole we route through; otherwise we
@@ -582,11 +603,15 @@ def _build_adversarial_query(query: str) -> str:
 
 
 #: search_documents failures that FAIL the query (RAG-12, GI-11): the
-#: sparse leg is gone or Qdrant errored, and there is no dense-only
-#: fallback by design. A timeout or an unloaded model is surfaced in
-#: degraded_sources instead (and turns a Layer 1 refusal into a failure,
-#: see assemble_node), since the next query may well succeed.
-_HARD_RETRIEVAL_FAILURES = frozenset({"sparse_encoder_unavailable", "error"})
+#: sparse leg is gone, Qdrant errored, or the configured reranker failed
+#: twice (an unfiltered RRF-order answer would bypass Layer 1's floor), and
+#: there is no degraded fallback by design. A timeout or an unloaded model is surfaced in
+#: degraded_sources instead (and, for a DOCUMENT search only, turns a Layer 1
+#: refusal into a failure, see assemble_node), since the next query may well
+#: succeed.
+_HARD_RETRIEVAL_FAILURES = frozenset(
+    {"sparse_encoder_unavailable", "error", "reranker_unavailable"}
+)
 
 
 def _evidence_units(results: list[tuple[str, Any]]) -> int:
@@ -632,6 +657,60 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     results: list[tuple[str, Any]] = []
 
+    # Audit RAG-12: a document search that FAILED (sparse encoder down,
+    # Qdrant error, reranker down, timeout) returns an empty result that
+    # _worth_citing then drops, so the outage looked exactly like an empty
+    # corpus — a false "no passages cleared the threshold" refusal, or an
+    # answer built without documents and degraded_sources empty. Read the
+    # failure before the drop. Audit item 12: the same for the structured
+    # tools (a Postgres timeout used to read as "no holes / no assays").
+    retrieval_failures: list[str] = []
+    # Audit item E: did a DOCUMENT search (not a structured tool) fail? One
+    # element so the nested function can set it without `nonlocal`.
+    document_search_failed: list[bool] = [False]
+
+    def _note_retrieval_failure(tool_name: str, result: Any) -> None:
+        failure = getattr(result, "retrieval_failure", None)
+        if not failure:
+            return
+        if tool_name.startswith("search_documents"):
+            document_search_failed[0] = True
+        # Technical detail for the log; the plain label is what the response's
+        # degraded_sources (a warning chip) shows (audit item 22).
+        from app.agent.response_assembler import plain_source_label  # noqa: PLC0415
+
+        technical = f"{getattr(result, 'data_source', 'Qdrant')} via {tool_name}"
+        label = plain_source_label(tool_name)
+        retrieval_failures.append(label)
+        # Only a DOCUMENT search outage is hard: there is no dense-only
+        # fallback by design. A structured (PostGIS) tool that timed out is
+        # reported in degraded_sources, but does not fail a query the other
+        # stores can still answer -- not even one that ends in a Layer 1
+        # refusal (assemble_node raises only for a document-search failure). Its "error"/"timeout" value is the same
+        # string a document search uses, hence the tool-name check.
+        if failure == "sparse_query_empty" and tool_name.startswith("search_documents"):
+            # The question has no searchable terms (audit item 27): a typed
+            # query error with its own "rephrase" message, not an outage.
+            from app.agent.errors import EmptySparseQuery  # noqa: PLC0415
+
+            logger.warning(
+                "agentic_retrieval.execute: %s — failing the query rather "
+                "than searching densely only (GI-11)", technical,
+            )
+            raise EmptySparseQuery()
+        if failure in _HARD_RETRIEVAL_FAILURES and tool_name.startswith("search_documents"):
+            from app.agent.errors import RetrievalBackendUnavailable  # noqa: PLC0415
+
+            logger.error(
+                "agentic_retrieval.execute: %s — failing the query rather "
+                "than answering without document retrieval (GI-11)", technical,
+            )
+            raise RetrievalBackendUnavailable(failure)
+        logger.warning(
+            "agentic_retrieval.execute: %s — continuing, surfaced in "
+            "degraded_sources as %r", technical, label,
+        )
+
     # Hole-ID pre-pass — if the user named a specific drill hole, look it
     # up directly via query_collar_details for every hole mentioned (up to
     # 3). This runs ALONGSIDE the profile's primary_tools so factual_lookup
@@ -646,50 +725,56 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # Pure observability — does NOT modify the retrieval path. Stage 4
     # of ADR-0009 swaps the resolved canonical name into the query;
     # for now we just collect data on alias frequency / miss rate.
-    if hole_ids:
-        await _entity_resolver_shadow(state, hole_ids)
-    if hole_ids and _allowed("query_collar_details"):
+    # Audit item 17: none of the passes below consumes another's output, so
+    # the pre-pass, the primary tools and the adversarial search run
+    # CONCURRENTLY (they used to run back to back). The shadow pass is
+    # best-effort telemetry and rides along without being waited on by
+    # anything's result.
+    async def _shadow_pass() -> None:
+        if hole_ids:
+            try:
+                await _entity_resolver_shadow(state, hole_ids)
+            except Exception:  # pragma: no cover — telemetry must not sink a query
+                logger.exception("agentic_retrieval.execute: entity resolver shadow failed")
+
+    async def _hole_prepass() -> list[tuple[str, Any]]:
+        if not (hole_ids and _allowed("query_collar_details")):
+            return []
         try:
             from app.agent.tools import query_collar_details  # noqa: PLC0415
         except Exception:
             logger.exception(
                 "agentic_retrieval.execute: query_collar_details import failed"
             )
-        else:
-            from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
-            workspace_id = WorkspaceContext.from_state(
-                state.deps, site="agentic_retrieval.execute_node.collar_details",
-            ).workspace_id
-            project_id = getattr(state.deps, "project_id", None)
-            if project_id is not None:
-                # Independent per-hole lookups — gather instead of awaiting
-                # serially. Each call is individually exception-guarded so a
-                # single bad hole_id can't sink the others.
-                async def _lookup_collar(hid: str) -> Any | None:
-                    try:
-                        return await query_collar_details(
-                            state.deps, workspace_id, project_id, hid
-                        )
-                    except Exception:
-                        logger.exception(
-                            "agentic_retrieval.execute: query_collar_details failed"
-                            " hole=%s",
-                            hid,
-                        )
-                        return None
+            return []
+        from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+        workspace_id = WorkspaceContext.from_state(
+            state.deps, site="agentic_retrieval.execute_node.collar_details",
+        ).workspace_id
+        project_id = getattr(state.deps, "project_id", None)
+        if project_id is None:
+            return []
 
-                collar_results = await asyncio.gather(
-                    *(_lookup_collar(hid) for hid in hole_ids)
+        # Independent per-hole lookups — gather instead of awaiting
+        # serially. Each call is individually exception-guarded so a
+        # single bad hole_id can't sink the others.
+        async def _lookup_collar(hid: str) -> Any | None:
+            try:
+                return await query_collar_details(
+                    state.deps, workspace_id, project_id, hid
                 )
-                for result in collar_results:
-                    if _worth_citing("query_collar_details", result):
-                        results.append(("query_collar_details", result))
-                logger.info(
-                    "agentic_retrieval.execute: hole-id pre-pass yielded %d result(s)"
-                    " for %d hole_id(s)",
-                    sum(1 for n, _ in results if n == "query_collar_details"),
-                    len(hole_ids),
+            except Exception:
+                logger.exception(
+                    "agentic_retrieval.execute: query_collar_details failed"
+                    " hole=%s",
+                    hid,
                 )
+                return None
+
+        collar_results = await asyncio.gather(
+            *(_lookup_collar(hid) for hid in hole_ids)
+        )
+        return [("query_collar_details", r) for r in collar_results if r is not None]
 
     # Primary pass — every primary tool is invoked once with the user query.
     # Perf audit 2026-08-15: primary tools are mutually independent (each
@@ -708,48 +793,47 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         result = await _call_tool_safely(tool_name, state.query, state.deps)
         return tool_name, result
 
-    # Audit RAG-12: a document search that FAILED (sparse encoder down,
-    # Qdrant error, timeout) returns an empty result that _worth_citing
-    # then drops, so the outage looked exactly like an empty corpus — a
-    # false "no passages cleared the threshold" refusal, or an answer built
-    # without documents and degraded_sources empty. Read the failure before
-    # the drop.
-    retrieval_failures: list[str] = []
+    # Adversarial pass (hypothesis-generation only) — re-issue the
+    # document-search tool against a disconfirming query framing. Dispatched
+    # with the primary pass (audit item 17) and de-duplicated against it
+    # afterwards, below.
+    run_adversarial = (
+        profile.adversarial_pass_enabled and _allowed("search_documents_adversarial")
+    )
 
-    def _note_retrieval_failure(tool_name: str, result: Any) -> None:
-        failure = getattr(result, "retrieval_failure", None)
-        if not failure:
-            return
-        label = f"{getattr(result, 'data_source', 'Qdrant')} via {tool_name}"
-        retrieval_failures.append(label)
-        if failure in _HARD_RETRIEVAL_FAILURES:
-            from app.agent.errors import RetrievalBackendUnavailable  # noqa: PLC0415
-
-            logger.error(
-                "agentic_retrieval.execute: %s — failing the query rather "
-                "than answering without document retrieval (GI-11)", label,
-            )
-            raise RetrievalBackendUnavailable(failure)
-        logger.warning(
-            "agentic_retrieval.execute: %s — continuing, surfaced in "
-            "degraded_sources", label,
+    async def _adversarial_search() -> Any | None:
+        if not run_adversarial:
+            return None
+        return await _call_tool_safely(
+            "search_documents", _build_adversarial_query(state.query), state.deps
         )
 
-    primary_results = await asyncio.gather(
-        *(_dispatch_primary(tool_name) for tool_name in profile.primary_tools)
+    _shadow, prepass_results, primary_results, adversarial_result = await asyncio.gather(
+        _shadow_pass(),
+        _hole_prepass(),
+        asyncio.gather(*(_dispatch_primary(tool_name) for tool_name in profile.primary_tools)),
+        _adversarial_search(),
     )
+
+    for tool_name, result in prepass_results:
+        _note_retrieval_failure(tool_name, result)
+        if _worth_citing(tool_name, result):
+            results.append((tool_name, result))
+    if hole_ids:
+        logger.info(
+            "agentic_retrieval.execute: hole-id pre-pass yielded %d result(s)"
+            " for %d hole_id(s)",
+            sum(1 for n, _ in results if n == "query_collar_details"),
+            len(hole_ids),
+        )
+
     for tool_name, result in primary_results:
         _note_retrieval_failure(tool_name, result)
         if _worth_citing(tool_name, result):
             results.append((tool_name, result))
 
-    # Adversarial pass (hypothesis-generation only) — re-issue the
-    # document-search tool against a disconfirming query framing.
-    if profile.adversarial_pass_enabled and _allowed("search_documents_adversarial"):
-        adversarial_query = _build_adversarial_query(state.query)
-        result = await _call_tool_safely(
-            "search_documents", adversarial_query, state.deps
-        )
+    if run_adversarial:
+        result = adversarial_result
         _note_retrieval_failure("search_documents_adversarial", result)
         if result is not None:
             # The disconfirming framing re-retrieves much of the primary
@@ -930,6 +1014,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         "tool_results": results,
         "evidence_packet": evidence_packet,
         "retrieval_failures": retrieval_failures,
+        "document_search_failed": document_search_failed[0],
     }
 
 
@@ -1130,6 +1215,43 @@ def _render_assay_result(result: Any) -> str:
     return "\n".join(lines)
 
 
+#: CollarDetailsResult aggregate fields that are None when their query failed.
+_AGGREGATE_FIELDS: frozenset[str] = frozenset({
+    "assay_count", "lithology_count", "sample_count", "structure_count",
+    "max_assay_value", "lithology_summary",
+})
+
+
+def _render_spatial_result(result: Any) -> str:
+    """Header-first rendering of a SpatialQueryResult (audit item 3).
+
+    The query returns an ALPHABETICAL, LIMIT-capped sample. Rendering only
+    ``count`` (the sample size) and "showing 12 of 50" made the model answer
+    "how many holes" with 50 on a 567-hole project, and Layer 3 grounded it
+    because 50 was in the evidence. The matching total is stated first and
+    the sample is labelled as a sample.
+    """
+    collars = list(getattr(result, "collars", None) or [])
+    returned = len(collars)
+    total = getattr(result, "total_count", None)
+    total = int(total) if total is not None else returned
+    lines = [
+        f"data_source={_short(getattr(result, 'data_source', ''))} "
+        f"total_holes_matching={total}"
+    ]
+    if total > returned:
+        lines.append(
+            f"NOTE: the project has {total} matching holes; only {returned} "
+            f"are retrieved (an alphabetical sample by hole id, not a "
+            f"ranking). State the total as {total}, never as {returned}."
+        )
+    shown = collars[:_STRUCTURED_ROW_SAMPLE]
+    suffix = " (alphabetical sample)" if total > len(shown) else ""
+    lines.append(f"collars: showing {len(shown)} of {total}{suffix}")
+    lines.extend(f"  {_short(item, 400)}" for item in shown)
+    return "\n".join(lines)[:_STRUCTURED_CAP]
+
+
 def _render_structured_result(result: Any) -> str:
     """Render one structured tool result: scalars first, then row samples.
 
@@ -1138,19 +1260,30 @@ def _render_structured_result(result: Any) -> str:
     aggregates, data_source) come first, nested records next, then each
     list as "showing k of N" with a bounded sample.
     """
-    from app.agent.tools import AssayDataResult  # noqa: PLC0415
+    from app.agent.tools import AssayDataResult, SpatialQueryResult  # noqa: PLC0415
 
     if isinstance(result, AssayDataResult):
         return _render_assay_result(result)[:_STRUCTURED_CAP]
+    if isinstance(result, SpatialQueryResult):
+        return _render_spatial_result(result)
     if not dataclasses.is_dataclass(result) or isinstance(result, type):
         return _short(result, _STRUCTURED_CAP)
 
     scalars: list[str] = []
     nested: list[str] = []
     lists: list[tuple[str, list[Any]]] = []
+    # A failed aggregate is None, not zero (audit item 11): say so instead of
+    # printing "assay_count=None", which reads as "no assays".
+    unavailable = (
+        _AGGREGATE_FIELDS
+        if getattr(result, "retrieval_failure", None) == "aggregates_unavailable"
+        else frozenset()
+    )
     for f in dataclasses.fields(result):
         value = getattr(result, f.name, None)
-        if isinstance(value, (list, tuple)):
+        if value is None and f.name in unavailable:
+            scalars.append(f"{f.name}=unavailable")
+        elif isinstance(value, (list, tuple)):
             lists.append((f.name, list(value)))
         elif dataclasses.is_dataclass(value) and not isinstance(value, type):
             nested.append(f"{f.name}: {_short(value, 800)}")
@@ -1556,18 +1689,27 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     "agentic_retrieval.assemble: status_callback raised",
                     exc_info=True,
                 )
-        if state.retrieval_failures:
+        if state.document_search_failed:
             # Audit RAG-12: the refusal text says nothing cleared the
             # relevance floor. With a document search that never completed
             # that is false — the corpus was not searched — so fail the
             # query instead (no LLM call either way; the Layer 1 hard gate
             # still holds).
+            #
+            # Audit item E (2026-10-04): ONLY a document-search failure
+            # qualifies. The failure list also carries structured-tool
+            # failures (a PostGIS timeout); raising on those told the user
+            # "Document search is temporarily unavailable" about a corpus
+            # that WAS searched. Those fall through to the ordinary Layer 1
+            # refusal below, and _with_retrieval_failures keeps them in
+            # degraded_sources.
             from app.agent.errors import RetrievalBackendUnavailable  # noqa: PLC0415
 
             raise RetrievalBackendUnavailable(
                 "; ".join(state.retrieval_failures)
             )
         response = assemble_response(build_refusal_text(), state.tool_results)
+        response = _with_retrieval_failures(response, state.retrieval_failures)
         # CHAT-10 — stamp the machine-readable refusal UNCONDITIONALLY.
         # refusal_payload used to be set only by repair_stage2 behind
         # REPAIR_LOOP_TERMINAL_ENABLED (off everywhere), so this — the
@@ -1870,6 +2012,36 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         redis_client=getattr(state.deps, "redis_client", None),
         pg_pool=getattr(state.deps, "pg_pool", None),
     )
+
+    # Audit item 2 (2026-10-04): the adapters return BUDGET_EXHAUSTED_FALLBACK
+    # -- operator wording about token budgets -- when the model produced no
+    # content. Assembled as ordinary text it shipped as a clean answer: not a
+    # refusal to _is_refusal, exempt from every guard as "system text", and
+    # confidence = mean retrieval relevance. Replace it with plain user text,
+    # floor the confidence, stamp the refusal and drop the retrieved
+    # citations (nothing was claimed, so nothing is cited).
+    from app.agent.hallucination.refusals import (  # noqa: PLC0415
+        MODEL_NO_OUTPUT_MESSAGE,
+        MODEL_NO_OUTPUT_TEXT,
+        is_budget_exhausted_text,
+        make_refusal_payload,
+    )
+
+    if is_budget_exhausted_text(text):
+        logger.error(
+            "agentic_retrieval.assemble: the model returned no content "
+            "(BUDGET_EXHAUSTED_FALLBACK) -- replacing with a plain "
+            "model_no_output refusal"
+        )
+        no_output = assemble_response(MODEL_NO_OUTPUT_TEXT, [])
+        no_output = no_output.model_copy(update={
+            "confidence": min(float(no_output.confidence), 0.1),
+            "refusal_payload": make_refusal_payload(
+                "model_no_output", MODEL_NO_OUTPUT_MESSAGE
+            ),
+        })
+        no_output = _with_retrieval_failures(no_output, state.retrieval_failures)
+        return {"response": no_output, **_fold_token_usage(state)}
 
     # ADR-0007 PR-1 — for project_summary / coverage_gap, pre-build the
     # chat-card payloads from the structured tool results BEFORE the
@@ -2316,6 +2488,22 @@ def _floor_confidence_with_warning_banner(
     unchanged rather than risk losing the answer entirely.
     """
     try:
+        from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
+            _is_system_text,
+        )
+
+        if _is_system_text(response.text):
+            # A withheld answer (rule-4 or provenance refusal, the model's
+            # empty-output notice, Layer 1's refusal) is the system's own
+            # text, not an answer a fact-checker "flagged": a banner saying
+            # "treat the following with caution" in front of "I don't have
+            # an answer I can support" is wrong, and it hid the refusal
+            # (audit item 8). Floor the confidence, leave the text alone.
+            return response.model_copy(update={
+                "confidence": min(
+                    float(getattr(response, "confidence", 0.1) or 0.1), 0.1
+                ),
+            })
         floored = min(float(getattr(response, "confidence", 0.2) or 0.2), 0.2)
         banner = (
             "**Note: automated fact-checking flagged a potential issue "
@@ -2332,6 +2520,56 @@ def _floor_confidence_with_warning_banner(
             exc_info=True,
         )
         return response
+
+
+#: What the banner tells a geologist about each guard, keyed by the layer
+#: number that opens a validator warning ("Layer 3: ...", "Layer 4/6: ...").
+#: The warnings themselves are written for operators — they name rule
+#: numbers, internal layers and design docs — so they stay in
+#: ``validation_warnings`` and the logs, and never reach the answer text.
+_BANNER_REASON_BY_LAYER: dict[str, str] = {
+    "1": "the documents found were only a weak match for the question",
+    "2": "some statements had no supporting source and were removed",
+    "3": "a number in the answer could not be matched to the source documents",
+    "4": "a hole, project or report named in the answer could not be found in the project's records",
+    "5": "a citation did not point to a document found for this question",
+    "6": "a value in the answer failed a geological consistency check",
+}
+_BANNER_REASON_DEFAULT = "part of the answer could not be checked against the sources"
+_LAYER_PREFIX = re.compile(r"^\s*Layer\s+(\d)")
+
+
+def _banner_reason(warning: str | None) -> str:
+    """Plain-language reason for the caveat banner, from a validator warning."""
+    match = _LAYER_PREFIX.match(warning or "")
+    if match is None:
+        return _BANNER_REASON_DEFAULT
+    return _BANNER_REASON_BY_LAYER.get(match.group(1), _BANNER_REASON_DEFAULT)
+
+
+#: Which finding the banner names when several fire, most to least telling a
+#: geologist what to distrust: an invented hole, a failed geological
+#: constraint, an ungrounded number, a citation that pointed at the wrong
+#: document, a claim that had no source. Layer 1 (weak retrieval) and the
+#: completeness guard never appear: they are advisory and never trigger the
+#: banner, they only used to be first in the list.
+_BANNER_LAYER_PRIORITY: tuple[str, ...] = ("4", "6", "3", "5", "2")
+
+
+def _banner_reason_for_triggers(trigger_warnings: list[str]) -> str:
+    """Plain-language banner reason from the warnings that forced ``should_retry``.
+
+    ``warnings[0]`` was used before (2026-10-04, audit item 7), which is
+    usually Layer 1's weak-retrieval advisory and so hid the real reason --
+    a Layer 4 fabricated hole id -- behind "the documents found were only a
+    weak match".
+    """
+    for layer in _BANNER_LAYER_PRIORITY:
+        for warning in trigger_warnings:
+            match = _LAYER_PREFIX.match(warning or "")
+            if match is not None and match.group(1) == layer:
+                return _banner_reason(warning)
+    return _BANNER_REASON_DEFAULT
 
 
 def _extract_conflicts_safely(text: str) -> list[dict[str, Any]] | None:
@@ -2419,6 +2657,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         gate_citation_provenance,
     )
     from app.agent.hallucination.orchestrator_validators import (  # noqa: PLC0415
+        retry_trigger_warnings,
         run_post_assembly_validation,
     )
 
@@ -2494,6 +2733,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         response, warnings, should_retry = await run_post_assembly_validation(
             response, state.tool_results, state.deps
         )
+        validator_trigger_warnings = retry_trigger_warnings(warnings)
     except Exception:
         logger.exception(
             "agentic_retrieval.validate: post-assembly validation raised — "
@@ -2554,7 +2794,17 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         # with the fail-closed exception path above, 2026-08-15) so a
         # genuine guard failure and a validation-couldn't-run exception
         # present identically to the user.
-        _reason = warnings[0] if warnings else "an unverified claim"
+        # The reason comes from the warning that TRIGGERED should_retry (item
+        # 7), not warnings[0]: that is usually Layer 1's weak-retrieval
+        # advisory, which never triggers anything.
+        # Fallback: if recomputing the buckets finds no trigger (the
+        # classification here and in the validators have diverged), pick from
+        # every warning by the same priority -- Layer 1 and Completeness are
+        # still never chosen, they are not in the priority list.
+        _reason = _banner_reason_for_triggers(
+            [*citation_findings, *validator_trigger_warnings]
+            or [w for w in warnings if not w.startswith("Layer 4/6: fabrication")]
+        )
         response = _floor_confidence_with_warning_banner(response, _reason)
         logger.error(
             "agentic_retrieval.validate: should_retry=True — confidence "
@@ -2574,7 +2824,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # nothing, a violated geological constraint — not chatter; `should_retry`
     # is the subset severe enough to also floor the confidence and prepend a
     # banner, but a single ungrounded number in an otherwise clean answer is
-    # exactly the case the old UX lost entirely (below NUMERIC_RETRY_THRESHOLD,
+    # exactly the case the old UX lost entirely (below the old Layer 3 count threshold,
     # so no banner, no floor, and demote_node is a no-op while
     # GEO_ANSWER_OIUR_ENABLED is False).
     response = await _enrich_provenance_safely(response)
@@ -2853,6 +3103,7 @@ async def _run_repair_loop(
     history_str: list[str] = list(state.repair_strategy_history)
     current_plan = initial_plan
     death_loop_triggered = False
+    _loop_started = _time_mod.monotonic()
 
     for _iter in range(max_attempts):
         # Choose the next strategy to apply.
@@ -2873,77 +3124,100 @@ async def _run_repair_loop(
         # leaves the validated answer exactly as validate/demote left it.
         before = _repair_checkpoint(state)
 
-        # Stage 3 path — LLM-only retry.
-        suffix = apply_llm_only_strategy(next_strategy)
-        if suffix is not None and _settings.REPAIR_LOOP_LOWCOST_ENABLED:
-            try:
-                await _reissue_llm_only(state, suffix)
-                applied = True
-                logger.info(
-                    "agentic_retrieval.repair_loop: Stage 3 — applied %s (LLM-only re-issue)",
-                    next_strategy.value,
-                )
-            except Exception:
-                _restore_repair_checkpoint(state, before)
-                logger.warning(
-                    "repair_loop: LLM-only re-issue failed for %s",
-                    next_strategy.value,
-                    exc_info=True,
-                )
-
-        # Stage 4 path — retrieval-side. Only fires when the strategy
-        # is NOT Stage-3-eligible AND the FULL flag is on.
-        if not applied and _settings.REPAIR_LOOP_FULL_ENABLED:
-            snapshot = {
-                "retrieval_profile": _snapshot_field(state.retrieval_profile),
-                "retrieval_filters": _snapshot_field(state.retrieval_filters),
-                "context_envelope": _snapshot_field(state.context_envelope),
-            }
-            mutations = apply_retrieval_strategy(next_strategy, snapshot)
-            if mutations:
-                try:
-                    await _reissue_retrieval(state, mutations)
-                    applied = True
-                    logger.info(
-                        "agentic_retrieval.repair_loop: Stage 4 — applied %s "
-                        "(retrieval + assemble re-issued)",
-                        next_strategy.value,
-                    )
-                except Exception:
-                    _restore_repair_checkpoint(state, before)
-                    logger.warning(
-                        "repair_loop: retrieval re-issue failed for %s",
-                        next_strategy.value,
-                        exc_info=True,
-                    )
-
-        if not applied:
-            # Neither stage's flag matched this strategy. Skip and exit
-            # — the strategy isn't actionable under the current flag set.
-            logger.info(
-                "repair_loop: strategy %s not actionable under current flags; "
-                "exiting loop",
-                next_strategy.value,
+        # Audit item 25: the repair loop used to run inside the query's one
+        # TIMEOUT_GATHER_S deadline, so a slow re-issue could eat the budget
+        # the already-validated answer needed and turn a good answer into a
+        # TIMEOUT frame. It has its own budget now; on expiry the attempt is
+        # rolled back and the answer that already passed the guards ships.
+        remaining_s = _REPAIR_LOOP_BUDGET_S - (_time_mod.monotonic() - _loop_started)
+        if remaining_s <= 0:
+            logger.warning(
+                "repair_loop: budget of %.0fs spent after %d attempt(s) — "
+                "keeping the validated answer",
+                _REPAIR_LOOP_BUDGET_S, len(attempts),
             )
             break
-
-        # Audit AGT-3 / RAG-19: a re-issued answer goes through the SAME
-        # validate -> demote chain the first answer did before it may
-        # replace it — Layer 2 marker repair, the Layer 5 provenance gate,
-        # Layers 3/4/6, the confidence floor + banner, demotion. It used to
-        # be swapped in straight from assemble_response, and the loop's
-        # re-classification below read the STALE validation_warnings, so it
-        # could declare "no codes fire" about text nothing had checked. If
-        # validation itself fails, the attempt is discarded: the answer
-        # that already passed the guards is what ships.
         try:
-            await _revalidate_repaired_answer(state)
-        except Exception:
+            async with asyncio.timeout(remaining_s):
+                # Stage 3 path — LLM-only retry.
+                suffix = apply_llm_only_strategy(next_strategy)
+                if suffix is not None and _settings.REPAIR_LOOP_LOWCOST_ENABLED:
+                    try:
+                        await _reissue_llm_only(state, suffix)
+                        applied = True
+                        logger.info(
+                            "agentic_retrieval.repair_loop: Stage 3 — applied %s (LLM-only re-issue)",
+                            next_strategy.value,
+                        )
+                    except Exception:
+                        _restore_repair_checkpoint(state, before)
+                        logger.warning(
+                            "repair_loop: LLM-only re-issue failed for %s",
+                            next_strategy.value,
+                            exc_info=True,
+                        )
+
+                # Stage 4 path — retrieval-side. Only fires when the strategy
+                # is NOT Stage-3-eligible AND the FULL flag is on.
+                if not applied and _settings.REPAIR_LOOP_FULL_ENABLED:
+                    snapshot = {
+                        "retrieval_profile": _snapshot_field(state.retrieval_profile),
+                        "retrieval_filters": _snapshot_field(state.retrieval_filters),
+                        "context_envelope": _snapshot_field(state.context_envelope),
+                    }
+                    mutations = apply_retrieval_strategy(next_strategy, snapshot)
+                    if mutations:
+                        try:
+                            await _reissue_retrieval(state, mutations)
+                            applied = True
+                            logger.info(
+                                "agentic_retrieval.repair_loop: Stage 4 — applied %s "
+                                "(retrieval + assemble re-issued)",
+                                next_strategy.value,
+                            )
+                        except Exception:
+                            _restore_repair_checkpoint(state, before)
+                            logger.warning(
+                                "repair_loop: retrieval re-issue failed for %s",
+                                next_strategy.value,
+                                exc_info=True,
+                            )
+
+                if not applied:
+                    # Neither stage's flag matched this strategy. Skip and exit
+                    # — the strategy isn't actionable under the current flag set.
+                    logger.info(
+                        "repair_loop: strategy %s not actionable under current flags; "
+                        "exiting loop",
+                        next_strategy.value,
+                    )
+                    break
+
+                # Audit AGT-3 / RAG-19: a re-issued answer goes through the SAME
+                # validate -> demote chain the first answer did before it may
+                # replace it — Layer 2 marker repair, the Layer 5 provenance gate,
+                # Layers 3/4/6, the confidence floor + banner, demotion. It used to
+                # be swapped in straight from assemble_response, and the loop's
+                # re-classification below read the STALE validation_warnings, so it
+                # could declare "no codes fire" about text nothing had checked. If
+                # validation itself fails, the attempt is discarded: the answer
+                # that already passed the guards is what ships.
+                try:
+                    await _revalidate_repaired_answer(state)
+                except Exception:
+                    _restore_repair_checkpoint(state, before)
+                    logger.exception(
+                        "repair_loop: re-validation of the %s re-issue failed — "
+                        "discarding it and keeping the validated answer",
+                        next_strategy.value,
+                    )
+                    break
+        except TimeoutError:
             _restore_repair_checkpoint(state, before)
-            logger.exception(
-                "repair_loop: re-validation of the %s re-issue failed — "
-                "discarding it and keeping the validated answer",
-                next_strategy.value,
+            logger.warning(
+                "repair_loop: attempt %s exceeded the loop's %.0fs budget — "
+                "rolled back; keeping the validated answer",
+                next_strategy.value, _REPAIR_LOOP_BUDGET_S,
             )
             break
 
@@ -3036,8 +3310,15 @@ async def _run_repair_loop(
     }
 
 
+#: Wall-clock budget for the WHOLE repair loop (audit item 25). It is spent
+#: after the answer has been validated, outside the query's own deadline's
+#: concern: when it runs out the validated answer ships as it is.
+_REPAIR_LOOP_BUDGET_S = 45.0
+
 _REPAIR_CHECKPOINT_FIELDS = (
     "response",
+    "retrieval_failures",
+    "document_search_failed",
     "validation_warnings",
     "demotion_reasons",
     "tool_results",
@@ -3045,6 +3326,14 @@ _REPAIR_CHECKPOINT_FIELDS = (
     "retrieval_filters",
     "retrieval_profile",
 )
+
+
+class RepairReissueNoOutputError(RuntimeError):
+    """A repair re-issue got no content from the model.
+
+    Raised so the repair loop's ``except Exception`` restores the checkpoint
+    and the answer that already passed the guards ships unchanged.
+    """
 
 
 def _repair_checkpoint(state: AgenticRetrievalState) -> dict[str, Any]:
@@ -3134,6 +3423,22 @@ async def _reissue_llm_only(
         pg_pool=getattr(state.deps, "pg_pool", None),
     )
 
+    # Audit item A (2026-10-04): the adapters return BUDGET_EXHAUSTED_FALLBACK
+    # (operator wording about token budgets) when the model produced no
+    # content. Assembled here it would REPLACE the validated answer as clean,
+    # high-confidence text -- the exact defect assemble_node closes for the
+    # first pass. A repair attempt that produced nothing is no improvement
+    # on an answer that already passed the guards: raise, and the caller
+    # restores the checkpoint so the validated answer ships unchanged.
+    from app.agent.hallucination.refusals import (  # noqa: PLC0415
+        is_budget_exhausted_text,
+    )
+
+    if is_budget_exhausted_text(text):
+        raise RepairReissueNoOutputError(
+            "repair re-issue (LLM-only): the model returned no content"
+        )
+
     # Same card payloads and envelope notes assemble_node attaches — a
     # Stage 3 answer used to lose its map/viz cards and OIUR notes.
     map_payload, viz_payload = _build_chat_card_payloads(
@@ -3194,15 +3499,60 @@ async def _reissue_retrieval(
         "token_callback": None, "status_callback": None,
     })
     exec_update = await execute_node(silent)
-    for name in ("tool_results", "evidence_packet"):
+    # retrieval_failures too (audit item 25): the list from the FIRST
+    # retrieval described searches that no longer apply to these results, so a
+    # re-issue that succeeded was still reported as degraded -- and a Layer 1
+    # refusal on the re-issue was turned into a failure by the stale entry.
+    for name in (
+        "tool_results", "evidence_packet", "retrieval_failures",
+        "document_search_failed",
+    ):
         if name in exec_update:
             setattr(silent, name, exec_update[name])
             setattr(state, name, exec_update[name])
 
     asm_update = await assemble_node(silent)
+    # assemble_node turns a no-content model reply into a model_no_output
+    # refusal. That is right for a first answer and wrong for a repair: the
+    # caller's checkpoint restore keeps the already-validated answer.
+    reissued = asm_update.get("response")
+    payload = getattr(reissued, "refusal_payload", None)
+    if isinstance(payload, dict) and payload.get("reason_code") == "model_no_output":
+        raise RepairReissueNoOutputError(
+            "repair re-issue (retrieval): the model returned no content"
+        )
     for name in ("response", "tool_results", "evidence_packet"):
         if name in asm_update:
             setattr(state, name, asm_update[name])
+
+
+#: The refusal panel shows ``message`` to the geologist, so it says what to
+#: do next in plain terms. Keyed by RepairStrategy value; the strategy and
+#: guard codes travel in their own fields for routing and audit.
+_TERMINAL_REFUSAL_MESSAGES: dict[str, str] = {
+    "ASK_FOR_DISAMBIGUATION": (
+        "The question matches more than one hole, project or report. "
+        "Name the one you mean and ask again."
+    ),
+    "REQUEST_UNIT_CLARIFICATION": (
+        "The assay units are missing or unclear in the sources. Say which "
+        "units you want (for example g/t or %) and ask again."
+    ),
+    "REQUEST_DEPTH_CLARIFICATION": (
+        "The question needs a depth interval. Give the from and to depths "
+        "and ask again."
+    ),
+    "SURFACE_CONFLICT": (
+        "The sources disagree on this. Compare them side by side before "
+        "relying on either."
+    ),
+    "REFUSE_OUT_OF_SCOPE": (
+        "This question is outside what the project's data can answer."
+    ),
+}
+_TERMINAL_REFUSAL_MESSAGE_DEFAULT = (
+    "This question could not be answered from the project's sources."
+)
 
 
 def _build_terminal_refusal_payload(
@@ -3270,9 +3620,8 @@ def _build_terminal_refusal_payload(
         "type": "refusal",
         "reason_code": primary_code,
         "strategy": strategy.value,
-        "message": (
-            f"Terminal repair strategy triggered: {strategy.value}. "
-            f"See the user-facing surface for next steps."
+        "message": _TERMINAL_REFUSAL_MESSAGES.get(
+            strategy.value, _TERMINAL_REFUSAL_MESSAGE_DEFAULT,
         ),
         "candidates": [],
         "guard_codes": code_values,
@@ -3326,6 +3675,47 @@ def _reranker_version_for_run(state: AgenticRetrievalState) -> str | None:
     except Exception:  # noqa: BLE001
         # Observability must never fail the persist.
         logger.debug("agentic_retrieval.persist: reranker_version unavailable", exc_info=True)
+        return None
+
+
+# answer_runs.embedding_model, the record of which vector space retrieved a run
+# (ADR-0025). The column has existed since 2026-04-21 and nothing wrote it.
+# With the Embed v4 -> Embed 5 re-embed in flight, "which space did this
+# answer's candidates come from" is the question a before/after comparison of
+# refusal rates needs answered per row. embedding_model_version stays NULL:
+# Cohere publishes no version beyond the model name, which already pins it.
+#
+# What was USED: only a run whose document search actually ran records a
+# model. One that failed before or during the embed (model not loaded, timeout,
+# error) records NULL rather than a model that never produced a vector.
+_EMBEDDING_MODEL_MAX_LEN = 128  # answer_runs.embedding_model is VARCHAR(128)
+
+
+def _embedding_model_for_run(state: AgenticRetrievalState) -> str | None:
+    """The model that embedded this run's document-search query, or None."""
+    try:
+        from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
+
+        searched = any(
+            isinstance(result, DocumentSearchResult) and result.retrieval_failure is None
+            for _name, result in state.tool_results or []
+        )
+        if not searched:
+            return None
+        model = getattr(state.deps, "embedding_model", None)
+        if model is None:
+            return None
+        name = getattr(model, "query_model_name", None) or getattr(model, "model_name", None)
+        if not isinstance(name, str) or not name:
+            # The local SentenceTransformer / sidecar proxy name nothing; they
+            # only ever serve the configured model.
+            from app.config import settings  # noqa: PLC0415
+
+            name = settings.EMBEDDING_MODEL_NAME
+        return name[:_EMBEDDING_MODEL_MAX_LEN]
+    except Exception:  # noqa: BLE001
+        # Observability must never fail the persist.
+        logger.debug("agentic_retrieval.persist: embedding_model unavailable", exc_info=True)
         return None
 
 
@@ -3733,15 +4123,15 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     _stamp_response_for_ui(state, _guard_failure_codes)
 
     row: Any = None
-    _retr_count = 0
-    _cite_count = 0
     try:
         # Audit AGT-6: bounded. Every step below waits on the pool; with no
         # bound, pool pressure or a slow RDS kept a fully streamed answer
         # from reaching `completed` until the 180 s deadline turned it into
         # a TIMEOUT frame.
         async with asyncio.timeout(_PERSIST_BUDGET_S):
-            project_id = await _fk_checked_project_id(pg_pool, project_id)
+            # No FK pre-check round-trip (audit item 17): the INSERT itself
+            # resolves project_id through a sub-select, so an id that does not
+            # resolve lands as NULL instead of raising a FK violation.
             row = await _insert_answer_run_with_retry(
                 pg_pool,
                 _ANSWER_RUN_INSERT_SQL,
@@ -3774,6 +4164,7 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 _rejection_reason,
                 _guard_results_json,
                 _reranker_version_for_run(state),
+                _embedding_model_for_run(state),
             )
     except TimeoutError:
         _report_persist_failure(
@@ -3786,6 +4177,12 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     if row is not None:
         _answer_run_id = str(row["answer_run_id"])
+        if project_id is not None and _row_value(row, "project_id") is None:
+            logger.warning(
+                "agentic_retrieval.persist: project_id %s not present in "
+                "silver.projects — stored as NULL on the answer_runs row",
+                project_id,
+            )
         from uuid import UUID as _UUID  # noqa: PLC0415
         try:
             state.response.answer_run_id = _UUID(_answer_run_id)
@@ -3796,39 +4193,6 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 "answer_run_id on response",
                 exc_info=True,
             )
-
-        # RetrievalInspector follow-up — also persist the retrieval +
-        # citation children so the inspector's Retrieval / Context panels
-        # have data to render. Best-effort and separately bounded: the
-        # parent row already landed.
-        try:
-            async with asyncio.timeout(_CHILD_ROWS_BUDGET_S):
-                _retr_count, _cite_count = await _persist_retrieval_and_citation_items(
-                    pg_pool=pg_pool,
-                    answer_run_id=_answer_run_id,
-                    workspace_id=workspace_id,
-                    state=state,
-                )
-        except Exception:
-            logger.exception(
-                "agentic_retrieval.persist: child-row INSERTs failed or "
-                "exceeded their budget (non-fatal)"
-            )
-
-        logger.info(
-            "agentic_retrieval.persist: wrote answer_runs row "
-            "(intent=%s schema_version=%s retrieved_sources=%d "
-            "confidence=%s latency_ms=%s answer_run_id=%s "
-            "retrieval_items=%d citation_items=%d)",
-            state.effective_intent or state.intent,
-            cols["answer_schema_version"],
-            len(cols.get("lineage_retrieved_sources") or []),
-            _response_confidence,
-            _latency_ms,
-            _answer_run_id,
-            _retr_count,
-            _cite_count,
-        )
 
     # Plan §0e retrieval-trace observability. Audit AGT-17: this runs
     # whatever happened to the INSERT — it used to sit inside the INSERT's
@@ -3848,30 +4212,29 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         latency_ms=_latency_ms,
     )
 
-    # L1546 — meter the spend. Deliberately independent of the INSERT: the
-    # tokens were bought whether or not the lineage row landed.
-    # `_answer_run_id` is None when the INSERT never returned one;
-    # usage.usage_events.invocation_id is nullable.
-    try:
-        async with asyncio.timeout(_USAGE_BUDGET_S):
-            await _write_chat_usage_event(
-                pg_pool,
-                workspace_id=workspace_id,
-                model_id=_answering_model,
-                backend=_backend_label,
-                input_tokens=_input_tokens,
-                output_tokens=_output_tokens,
-                latency_ms=_latency_ms,
-                trace_id=getattr(state.deps, "trace_id", None),
-                answer_run_id=_answer_run_id,
-            )
-    except TimeoutError:
-        logger.error(
-            "agentic_retrieval.persist: usage.usage_events INSERT exceeded its "
-            "%.1fs budget — this query's spend is unmetered",
-            _USAGE_BUDGET_S,
-            extra={"alert": True, "workspace_id": workspace_id},
-        )
+    # Child rows and usage metering run in a RETAINED BACKGROUND TASK (audit
+    # item 17): the answer_run_id is known and stamped, so neither needs to
+    # hold up the `completed` frame. Each keeps its own hard upper bound and
+    # logs its failures; the task is held in _PERSIST_BACKGROUND_TASKS until
+    # it finishes (an un-referenced task can be garbage-collected mid-flight)
+    # and drained at shutdown by drain_persist_background().
+    _spawn_persist_background(
+        _persist_followups(
+            state,
+            pg_pool=pg_pool,
+            workspace_id=workspace_id,
+            answer_run_id=_answer_run_id,
+            have_row=row is not None,
+            model_id=_answering_model,
+            backend=_backend_label,
+            input_tokens=_input_tokens,
+            output_tokens=_output_tokens,
+            latency_ms=_latency_ms,
+            response_confidence=_response_confidence,
+            cols=cols,
+        ),
+        name="persist_followups",
+    )
 
     # Return the (possibly mutated) response so LangGraph propagates the
     # stamped answer_run_id back to the caller.
@@ -3900,20 +4263,161 @@ _ANSWER_RUN_INSERT_SQL = """
         rejection_reason,
         hallucination_guard_results,
         reranker_version,
+        embedding_model,
         citation_mode
     ) VALUES (
-        $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
+        $1::uuid,
+        -- FK-safe project id: NULL when the project does not resolve (the
+        -- column is nullable, ON DELETE SET NULL). Replaces the separate
+        -- SELECT 1 pre-check round-trip that used to precede this INSERT.
+        (SELECT p.project_id FROM silver.projects p WHERE p.project_id = $2::uuid),
+        $3, $4, 0, $5, $6, $7, $8::uuid,
         $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
-        $17, $18::jsonb, $19,
+        $17, $18::jsonb, $19, $20,
         -- Audit RAG-22: never written before, so always NULL. CLAUDE.md
         -- rule 4: citation_mode is always posthoc_span_resolution.
         'posthoc_span_resolution'
     )
-    RETURNING answer_run_id
+    RETURNING answer_run_id, project_id
 """
 
 #: Child retrieval/citation rows — separately bounded (AGT-6).
 _CHILD_ROWS_BUDGET_S = 2.0
+
+#: Background persistence tasks still in flight. Held here so the event loop's
+#: weak reference is not the only one (a task nothing references can be
+#: collected before it finishes), and so shutdown can wait for them.
+_PERSIST_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _spawn_persist_background(coro: Any, *, name: str) -> asyncio.Task[None]:
+    task = asyncio.get_running_loop().create_task(coro, name=name)
+    _PERSIST_BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_PERSIST_BACKGROUND_TASKS.discard)
+    return task
+
+
+async def drain_persist_background(timeout: float = 10.0) -> None:
+    """Wait for in-flight background persistence (shutdown, and tests).
+
+    Bounded: whatever is still running after ``timeout`` is left to the
+    loop's own teardown and logged, never waited on forever.
+    """
+    pending = [t for t in _PERSIST_BACKGROUND_TASKS if not t.done()]
+    if not pending:
+        return
+    _done, still = await asyncio.wait(pending, timeout=timeout)
+    if still:
+        logger.error(
+            "agentic_retrieval.persist: %d background persistence task(s) did "
+            "not finish within %.1fs of shutdown — child rows / usage metering "
+            "for those runs may be lost",
+            len(still), timeout, extra={"alert": True},
+        )
+
+
+def _row_value(row: Any, key: str) -> Any:
+    """``row[key]`` for an asyncpg Record or a dict; None when absent."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        logger.debug("row has no column %r", key, exc_info=True)
+        return None
+
+
+async def _persist_followups(
+    state: AgenticRetrievalState,
+    *,
+    pg_pool: Any,
+    workspace_id: str,
+    answer_run_id: str | None,
+    have_row: bool,
+    model_id: str | None,
+    backend: str,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: int | None,
+    response_confidence: float | None,
+    cols: dict[str, Any],
+) -> None:
+    """Child rows + usage metering, off the path to the `completed` frame."""
+    retr_count = cite_count = 0
+    if have_row and answer_run_id is not None:
+        # RetrievalInspector follow-up — also persist the retrieval +
+        # citation children so the inspector's Retrieval / Context panels
+        # have data to render. Best-effort and separately bounded: the
+        # parent row already landed.
+        try:
+            async with asyncio.timeout(_CHILD_ROWS_BUDGET_S):
+                retr_count, cite_count = await _persist_retrieval_and_citation_items(
+                    pg_pool=pg_pool,
+                    answer_run_id=answer_run_id,
+                    workspace_id=workspace_id,
+                    state=state,
+                )
+        except Exception:
+            logger.exception(
+                "agentic_retrieval.persist: child-row INSERTs failed or "
+                "exceeded their budget (non-fatal)",
+                extra={"alert": True},
+            )
+
+        # Audit item I: this summary line used to index cols[...] bare, OUTSIDE
+        # any guard, so a missing key raised past the usage metering below and
+        # the query's spend went unrecorded. It is observability only: a
+        # failure here is logged and the metering still runs.
+        try:
+            logger.info(
+                "agentic_retrieval.persist: wrote answer_runs row "
+                "(intent=%s schema_version=%s retrieved_sources=%d "
+                "confidence=%s latency_ms=%s answer_run_id=%s "
+                "retrieval_items=%d citation_items=%d)",
+                state.effective_intent or state.intent,
+                cols["answer_schema_version"],
+                len(cols.get("lineage_retrieved_sources") or []),
+                response_confidence,
+                latency_ms,
+                answer_run_id,
+                retr_count,
+                cite_count,
+            )
+        except Exception:
+            logger.warning(
+                "agentic_retrieval.persist: could not log the answer_runs "
+                "summary line (usage metering continues)",
+                exc_info=True,
+            )
+
+    # L1546 — meter the spend. Deliberately independent of the INSERT: the
+    # tokens were bought whether or not the lineage row landed.
+    # `answer_run_id` is None when the INSERT never returned one;
+    # usage.usage_events.invocation_id is nullable.
+    try:
+        async with asyncio.timeout(_USAGE_BUDGET_S):
+            await _write_chat_usage_event(
+                pg_pool,
+                workspace_id=workspace_id,
+                model_id=model_id,
+                backend=backend,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+                trace_id=getattr(state.deps, "trace_id", None),
+                answer_run_id=answer_run_id,
+            )
+    except TimeoutError:
+        logger.error(
+            "agentic_retrieval.persist: usage.usage_events INSERT exceeded its "
+            "%.1fs budget — this query's spend is unmetered",
+            _USAGE_BUDGET_S,
+            extra={"alert": True, "workspace_id": workspace_id},
+        )
+    except Exception:
+        logger.exception(
+            "agentic_retrieval.persist: usage metering failed — this query's "
+            "spend is unmetered",
+            extra={"alert": True, "workspace_id": workspace_id},
+        )
 
 
 def _report_persist_failure(message: str, *, exc_info: bool = True) -> None:
@@ -3937,44 +4441,6 @@ def _report_persist_failure(message: str, *, exc_info: bool = True) -> None:
         "agentic_retrieval.persist: %s", message,
         exc_info=exc_info, extra={"alert": True},
     )
-
-
-async def _fk_checked_project_id(pg_pool: Any, project_id: Any) -> Any:
-    """FK-safety (option (b) from §39 follow-up).
-
-    silver.answer_runs.project_id has a FK to silver.projects. Callers
-    occasionally pass workspace UUIDs or stale project_ids that don't
-    resolve; the resulting ForeignKeyViolationError used to take down the
-    whole persist. Validate-then-NULL keeps the row alive at the cost of one
-    cheap SELECT. The FK column is nullable (ON DELETE SET NULL).
-    """
-    if project_id is None:
-        return None
-    try:
-        async with pg_pool.acquire() as fk_conn:
-            exists = await fk_conn.fetchval(
-                "SELECT 1 FROM silver.projects WHERE project_id = $1::uuid",
-                project_id,
-            )
-    except TimeoutError:
-        raise
-    except Exception:
-        # Don't let the FK pre-check fail the persist: fall through with
-        # the original project_id and let the INSERT decide.
-        logger.debug(
-            "agentic_retrieval.persist: project_id FK pre-check failed; "
-            "trusting caller-supplied value",
-            exc_info=True,
-        )
-        return project_id
-    if exists is None:
-        logger.warning(
-            "agentic_retrieval.persist: project_id %s not present in "
-            "silver.projects — dropping to NULL on INSERT",
-            project_id,
-        )
-        return None
-    return project_id
 
 
 def _stamp_response_for_ui(
@@ -4278,6 +4744,18 @@ def _extract_retrieval_rows(
         # panel filters on stage='reranked' so this lights it up.
         chunks = getattr(result, "chunks", None)
         if chunks is not None:
+            # Audit item 10: when the precision stage did not run
+            # (rerank_degraded -- today only "no reranker configured"), the
+            # chunk's relevance_score is a Qdrant RRF fusion score, NOT a
+            # reranker score. Stamping it stage='reranked' put those RRF
+            # numbers into the distribution ops/validation/
+            # rerank_threshold_probe.py --harvest-since reads to re-measure
+            # the relevance floor. They are written as stage='retrieved'
+            # (the table's CHECK allows retrieved/reranked/in_context/cited
+            # only -- a new 'retrieved_rrf' value would fail the INSERT and
+            # lose the whole batch) with the score in retriever_score and
+            # reranker_score NULL; the harvest filters stage='reranked'.
+            degraded = bool(getattr(result, "rerank_degraded", False))
             for chunk in chunks:
                 chunk_id = getattr(chunk, "chunk_id", None)
                 passage_id = _maybe_uuid(chunk_id)
@@ -4293,13 +4771,14 @@ def _extract_retrieval_rows(
                     "document_type": getattr(chunk, "document_type", None),
                     "snippet": (getattr(chunk, "text", "") or "")[:280],
                 }
+                score = getattr(chunk, "relevance_score", None)
                 rows.append({
-                    "stage": "reranked",
+                    "stage": "retrieved" if degraded else "reranked",
                     "source_store": "qdrant",
                     "passage_id": passage_id,
                     "candidate_ref": candidate_ref,
-                    "reranker_score": getattr(chunk, "relevance_score", None),
-                    "retriever_score": None,
+                    "reranker_score": None if degraded else score,
+                    "retriever_score": score if degraded else None,
                 })
             continue
 

@@ -63,7 +63,11 @@ function cellsFromMarkdownRow(line: string): Cell[] {
  */
 function isWorthRendering(head: Cell[][], body: Cell[][]): boolean {
     const widest = [...head, ...body].reduce(
-        (n, row) => Math.max(n, row.reduce((w, c) => w + c.colSpan, 0)),
+        (n, row) =>
+            Math.max(
+                n,
+                row.reduce((w, c) => w + c.colSpan, 0),
+            ),
         0,
     );
     return widest > 1 && head.length + body.length > 1;
@@ -179,7 +183,11 @@ export function parseDocumentBlocks(body: string): Block[] {
  */
 export function tableWidth(block: TableBlock): number {
     return [...block.head, ...block.body].reduce(
-        (n, row) => Math.max(n, row.reduce((w, c) => w + c.colSpan, 0)),
+        (n, row) =>
+            Math.max(
+                n,
+                row.reduce((w, c) => w + c.colSpan, 0),
+            ),
         0,
     );
 }

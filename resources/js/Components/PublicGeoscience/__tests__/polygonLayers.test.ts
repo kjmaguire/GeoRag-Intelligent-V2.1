@@ -75,7 +75,13 @@ describe('polygonLayerStatus', () => {
 
     it('never lets a capped layer pass for a complete one', () => {
         expect(
-            polygonLayerStatus({ mode: 'polygons', min_zoom: 6, total_in_view: 30906, returned: 1500, truncated: true }),
+            polygonLayerStatus({
+                mode: 'polygons',
+                min_zoom: 6,
+                total_in_view: 30906,
+                returned: 1500,
+                truncated: true,
+            }),
         ).toBe(`${(1500).toLocaleString()} of ${(30906).toLocaleString()} — zoom in for all`);
     });
 

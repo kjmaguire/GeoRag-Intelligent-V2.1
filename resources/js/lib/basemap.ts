@@ -54,8 +54,8 @@ export const BASEMAP_OPTIONS: ReadonlyArray<{ id: BasemapId; label: string }> = 
  * or a unit test that doesn't render through Inertia).
  */
 const DEFAULT_STYLE_URLS: Record<BasemapStyleId, string> = {
-    positron:    'https://tiles.openfreemap.org/styles/positron',
-    bright:      'https://tiles.openfreemap.org/styles/bright',
+    positron: 'https://tiles.openfreemap.org/styles/positron',
+    bright: 'https://tiles.openfreemap.org/styles/bright',
     dark_matter: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
 };
 
@@ -72,8 +72,7 @@ interface SharedPropsWithBasemap {
  * Font-PBF endpoint for styles we build inline rather than fetch.
  * MapLibre needs one for any style object that renders text.
  */
-const DEFAULT_GLYPHS_URL =
-    'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/glyphs/{fontstack}/{range}.pbf';
+const DEFAULT_GLYPHS_URL = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/glyphs/{fontstack}/{range}.pbf';
 
 /** Esri World Imagery — free, no key. */
 const DEFAULT_SATELLITE_TILES =
@@ -85,8 +84,7 @@ const DEFAULT_SATELLITE_ATTRIBUTION = 'Tiles © Esri';
 const DEFAULT_DEM_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 
 /** Sentinel-2 cloudless imagery used by MapView's satellite mode. */
-const DEFAULT_IMAGERY_TILES =
-    'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg';
+const DEFAULT_IMAGERY_TILES = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg';
 
 /**
  * Returns the configured style.json URL for a named basemap.

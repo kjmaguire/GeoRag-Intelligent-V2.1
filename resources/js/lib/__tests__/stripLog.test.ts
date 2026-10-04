@@ -93,7 +93,10 @@ describe('packLanes', () => {
     });
 
     it('keeps the input order and handles no intervals', () => {
-        const input = [{ from: 20, to: 30 }, { from: 0, to: 5 }];
+        const input = [
+            { from: 20, to: 30 },
+            { from: 0, to: 5 },
+        ];
         expect(packLanes(input).placed.map((p) => p.item)).toEqual(input);
         expect(packLanes([]).lanes).toBe(1);
     });
@@ -102,17 +105,33 @@ describe('packLanes', () => {
 describe('tooltip text', () => {
     it('lists the attributes of a lithology band', () => {
         const lines = lithologyLines({
-            from: 0, to: 5, code: 'GRN', label: 'Grey granite', color: '',
+            from: 0,
+            to: 5,
+            code: 'GRN',
+            label: 'Grey granite',
+            color: '',
             detail: {
-                description: 'Grey granite', colour: 'dark grey', grain_size: 'Fine', hardness: 'Hard',
-                weathering: 'Fresh', rqd: 85, recovery: 98,
+                description: 'Grey granite',
+                colour: 'dark grey',
+                grain_size: 'Fine',
+                hardness: 'Hard',
+                weathering: 'Fresh',
+                rqd: 85,
+                recovery: 98,
             },
         });
         expect(lines[0]).toBe('GRN  0-5 m');
-        expect(lines).toEqual(expect.arrayContaining([
-            'Grey granite', 'Colour: dark grey', 'Grain size: Fine', 'Hardness: Hard',
-            'Weathering: Fresh', 'RQD: 85%', 'Recovery: 98%',
-        ]));
+        expect(lines).toEqual(
+            expect.arrayContaining([
+                'Grey granite',
+                'Colour: dark grey',
+                'Grain size: Fine',
+                'Hardness: Hard',
+                'Weathering: Fresh',
+                'RQD: 85%',
+                'Recovery: 98%',
+            ]),
+        );
     });
 
     it('does not repeat a label that is only the code', () => {
@@ -121,14 +140,20 @@ describe('tooltip text', () => {
 
     it('shows every alteration of an interval with its intensity and minerals', () => {
         const lines = alterationLines({
-            from: 0, to: 5, label: '',
+            from: 0,
+            to: 5,
+            label: '',
             alterations: [
                 { type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite', 'sericite'], notes: null },
                 { type: 'Silica', intensity: null, minerals: [], notes: 'patchy' },
             ],
         });
         expect(lines).toEqual([
-            'Alteration  0-5 m', 'Chlorite (Strong)', '  minerals: chlorite, sericite', 'Silica', '  patchy',
+            'Alteration  0-5 m',
+            'Chlorite (Strong)',
+            '  minerals: chlorite, sericite',
+            'Silica',
+            '  patchy',
         ]);
     });
 
@@ -138,7 +163,9 @@ describe('tooltip text', () => {
         expect(mineralText({ ...base, mineral: 'Pyrite', abundance_pct: 3.5 })).toBe('Pyrite 3.5%');
         expect(mineralText({ ...base, mineral: 'Pyrite', abundance_pct: null })).toBe('Pyrite');
         expect(mineralLines({ ...base, mineral: 'Pyrite', abundance_pct: null })).toEqual([
-            'Pyrite  5-10 m', 'Style: Disseminated', 'abundance: trace',
+            'Pyrite  5-10 m',
+            'Style: Disseminated',
+            'abundance: trace',
         ]);
     });
 
@@ -150,7 +177,14 @@ describe('tooltip text', () => {
 describe('legend and fallbacks', () => {
     it('lists each code once, in the colour it is drawn in, with the first description', () => {
         const legend = lithologyLegend([
-            { from: 0, to: 5, code: 'GRN', label: 'Grey granite', color: '#112233', detail: { description: 'Grey granite' } },
+            {
+                from: 0,
+                to: 5,
+                code: 'GRN',
+                label: 'Grey granite',
+                color: '#112233',
+                detail: { description: 'Grey granite' },
+            },
             { from: 5, to: 9, code: 'GRN', label: 'Other', color: '' },
             { from: 9, to: 12, code: 'SST', label: 'SST', color: '' },
         ]);
@@ -161,8 +195,22 @@ describe('legend and fallbacks', () => {
 
     it('builds lithology bands from gold interval rows for an older payload, dropping text colours', () => {
         const tracks = tracksFromIntervals([
-            { depth_from: 0, depth_to: 5, interval_kind: 'lithology', lithology_code: 'GRN', lithology_label: 'x', color_hint: 'grey' },
-            { depth_from: 5, depth_to: 9, interval_kind: 'lithology', lithology_code: 'SST', lithology_label: 'y', color_hint: '#abcdef' },
+            {
+                depth_from: 0,
+                depth_to: 5,
+                interval_kind: 'lithology',
+                lithology_code: 'GRN',
+                lithology_label: 'x',
+                color_hint: 'grey',
+            },
+            {
+                depth_from: 5,
+                depth_to: 9,
+                interval_kind: 'lithology',
+                lithology_code: 'SST',
+                lithology_label: 'y',
+                color_hint: '#abcdef',
+            },
             { depth_from: 0, depth_to: 1, interval_kind: 'sample_window' },
         ]);
         expect(tracks.lithology.map((b) => b.color)).toEqual(['', '#abcdef']);
@@ -179,19 +227,46 @@ describe('legend and fallbacks', () => {
                 lithology_label: 'Pyrite 3%; Chalcopyrite',
                 mineralization_payload: {
                     minerals: [
-                        { mineral: 'Pyrite', abundance_pct: 3, form: 'Disseminated', grain_size: 'Fine', notes: 'vein-hosted' },
+                        {
+                            mineral: 'Pyrite',
+                            abundance_pct: 3,
+                            form: 'Disseminated',
+                            grain_size: 'Fine',
+                            notes: 'vein-hosted',
+                        },
                         { mineral: 'Chalcopyrite', abundance_pct: null, form: null, grain_size: null, notes: null },
                     ],
                 },
             },
             // JSONB can arrive as text, and a row with no readable minerals adds no band.
-            { depth_from: 20, depth_to: 22, interval_kind: 'mineralization', mineralization_payload: '{"minerals":[{"mineral":"Galena","abundance_pct":"0.5"}]}' },
+            {
+                depth_from: 20,
+                depth_to: 22,
+                interval_kind: 'mineralization',
+                mineralization_payload: '{"minerals":[{"mineral":"Galena","abundance_pct":"0.5"}]}',
+            },
             { depth_from: 30, depth_to: 31, interval_kind: 'mineralization', mineralization_payload: {} },
             { depth_from: 40, depth_to: 41, interval_kind: 'mineralization', mineralization_payload: 'not json' },
         ]);
         expect(tracks.mineralization).toEqual([
-            { from: 5, to: 10, mineral: 'Pyrite', abundance_pct: 3, form: 'Disseminated', grain_size: 'Fine', notes: 'vein-hosted' },
-            { from: 5, to: 10, mineral: 'Chalcopyrite', abundance_pct: null, form: null, grain_size: null, notes: null },
+            {
+                from: 5,
+                to: 10,
+                mineral: 'Pyrite',
+                abundance_pct: 3,
+                form: 'Disseminated',
+                grain_size: 'Fine',
+                notes: 'vein-hosted',
+            },
+            {
+                from: 5,
+                to: 10,
+                mineral: 'Chalcopyrite',
+                abundance_pct: null,
+                form: null,
+                grain_size: null,
+                notes: null,
+            },
             { from: 20, to: 22, mineral: 'Galena', abundance_pct: 0.5, form: null, grain_size: null, notes: null },
         ]);
         expect(tracks.lithology).toEqual([]);
@@ -204,11 +279,21 @@ describe('legend and fallbacks', () => {
                 depth_to: 5,
                 interval_kind: 'alteration',
                 lithology_label: 'Chlorite (Strong)',
-                alteration_payload: { alterations: [{ type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite'], notes: null }, { intensity: 'x' }] },
+                alteration_payload: {
+                    alterations: [
+                        { type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite'], notes: null },
+                        { intensity: 'x' },
+                    ],
+                },
             },
         ]);
         expect(tracks.alteration).toEqual([
-            { from: 0, to: 5, label: 'Chlorite (Strong)', alterations: [{ type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite'], notes: null }] },
+            {
+                from: 0,
+                to: 5,
+                label: 'Chlorite (Strong)',
+                alterations: [{ type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite'], notes: null }],
+            },
         ]);
     });
 });

@@ -70,9 +70,18 @@ def _assay_anomalies(result: AssayDataResult) -> list[str]:
     if len(vals) < 3:
         return insights
 
-    mean = sum(vals) / len(vals)
-    variance = sum((v - mean) ** 2 for v in vals) / len(vals)
-    std = math.sqrt(variance) if variance > 0 else 0
+    # The samples are the HIGHEST values (query_assay_data, audit item 4),
+    # not the project: a mean / sigma taken from them describes the top of
+    # the distribution and flags nothing. Use the full-set aggregates the
+    # query computed in SQL; fall back to the rows for a result built
+    # without them.
+    if result.mean_value is not None and result.std_value is not None:
+        mean = float(result.mean_value)
+        std = float(result.std_value)
+    else:
+        mean = sum(vals) / len(vals)
+        variance = sum((v - mean) ** 2 for v in vals) / len(vals)
+        std = math.sqrt(variance) if variance > 0 else 0
 
     if std == 0:
         return insights

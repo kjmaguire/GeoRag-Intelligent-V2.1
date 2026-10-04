@@ -119,6 +119,11 @@ RefusalReasonCode = Literal[
     "guard_completeness_fail",
     "llm_unavailable",
     "budget_exhausted",
+    # 2026-10-04: the model returned nothing usable (the BUDGET_EXHAUSTED_FALLBACK
+    # case), and an answer withheld because its claims or citations did not
+    # resolve to anything retrieved (rule-4 / chunk-provenance refusals).
+    "model_no_output",
+    "unsupported_by_sources",
 ]
 
 

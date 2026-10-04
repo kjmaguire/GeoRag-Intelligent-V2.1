@@ -1,13 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from '@inertiajs/react';
-import {
-    Sheet,
-    SheetContent,
-    SheetDescription,
-    SheetFooter,
-    SheetHeader,
-    SheetTitle,
-} from '@/Components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/Components/ui/sheet';
 
 /**
  * EvidenceInspector — §10s Evidence Inspector (chat-adjacent slice, built
@@ -22,9 +15,9 @@ import {
  * streamed `Citation` objects don't carry; `citations/resolve` is keyed by
  * the `source_chunk_id` every citation already has, is already exercised
  * in production, and returns the same shape §10s asks for: exact passage
- * text, document title, section, and a generic `metadata` bag (filing
- * date / company / commodity for reports; collar/hole ids for structured
- * sources). `support_type` is not rendered — §10s's own corrected note
+ * text, document title, section, and a generic `metadata` bag. Only an
+ * allow-listed handful of its keys are shown (see evidenceFacts); the bag
+ * itself carries ids and raw rows. `support_type` is not rendered — §10s's own corrected note
  * says the field does not exist anywhere in the schema.
  *
  * Renders nothing (Sheet stays closed) when `citation` is null.
@@ -52,31 +45,81 @@ interface Props {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     projectSlug: string;
+    // The answer this citation belongs to. Feedback is recorded against an
+    // answer run, so without one (a turn that errored before a run was
+    // persisted) there is nowhere to send a report and the button is not
+    // offered.
+    answerRunId?: string | null;
     // Wired by the caller to pre-fill FeedbackControls' thumbs-down
     // taxonomy to 'citation_issue' (§10p) — the inspector itself has no
     // opinion on how feedback is collected, it just raises the intent.
     onReportIssue?: (citation: EvidenceCitation) => void;
 }
 
-// Keys already shown elsewhere in the panel (title / section) — skipped
-// from the generic metadata dump so nothing renders twice.
-const METADATA_LABEL_OVERRIDES: Record<string, string> = {
-    filing_date: 'Filing date',
-    report_id: 'Report ID',
-    company: 'Company',
-    commodity: 'Commodity',
-    hole_id: 'Hole ID',
-    collar_id: 'Collar ID',
-};
-
-function humanizeKey(key: string): string {
-    return METADATA_LABEL_OVERRIDES[key] ?? key
-        .split('_')
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(' ');
+/** One labelled fact shown under the passage text. */
+interface EvidenceFact {
+    label: string;
+    value: string;
 }
 
-export default function EvidenceInspector({ citation, open, onOpenChange, projectSlug, onReportIssue }: Props) {
+function textValue(v: unknown): string | null {
+    if (typeof v === 'string') return v.trim() === '' ? null : v.trim();
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    return null;
+}
+
+function depthValue(v: unknown): number | null {
+    const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+    return typeof n === 'number' && Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The facts a geologist reads off a source: where in the document, which
+ * hole and interval, when it was filed, how sure the match is.
+ *
+ * Deliberately an allow-list. The resolve endpoint's `metadata` is a raw bag
+ * that differs per source type (a whole collar row, an assay row with lab and
+ * certificate fields, internal ids), and printing it key by key put ids and
+ * database columns in front of the reader. A key that is not listed here is
+ * not shown; add it when a reader has a reason to want it.
+ */
+function evidenceFacts(metadata: Record<string, unknown> | undefined): EvidenceFact[] {
+    if (!metadata) return [];
+    const facts: EvidenceFact[] = [];
+    const push = (label: string, value: string | null) => {
+        if (value !== null) facts.push({ label, value });
+    };
+
+    push('Document', textValue(metadata.document_title));
+    push('Section', textValue(metadata.section));
+    push('Page', textValue(metadata.page) ?? textValue(metadata.page_number) ?? textValue(metadata.page_first));
+    push('Hole', textValue(metadata.hole_id));
+
+    const from = depthValue(metadata.from_depth);
+    const to = depthValue(metadata.to_depth);
+    if (from !== null && to !== null) push('Depth', `${from}–${to} m`);
+
+    const filed = textValue(metadata.filing_date);
+    push('Report date', filed ? filed.slice(0, 10) : null);
+
+    const confidence = depthValue(metadata.confidence);
+    if (confidence !== null) {
+        push(
+            'Confidence',
+            confidence >= 0 && confidence <= 1 ? `${Math.round(confidence * 100)}%` : String(confidence),
+        );
+    }
+    return facts;
+}
+
+export default function EvidenceInspector({
+    citation,
+    open,
+    onOpenChange,
+    projectSlug,
+    answerRunId,
+    onReportIssue,
+}: Props) {
     const [resolved, setResolved] = useState<ResolvedEvidence | 'loading' | 'error' | null>(null);
 
     useEffect(() => {
@@ -104,17 +147,18 @@ export default function EvidenceInspector({ citation, open, onOpenChange, projec
         };
     }, [open, citation?.source_chunk_id]);
 
-    const metadataEntries = (() => {
-        if (!resolved || resolved === 'loading' || resolved === 'error' || !resolved.metadata) return [];
-        return Object.entries(resolved.metadata).filter(([, v]) => v !== null && v !== undefined && v !== '');
-    })();
+    const facts = resolved && resolved !== 'loading' && resolved !== 'error' ? evidenceFacts(resolved.metadata) : [];
 
     const reportId =
         resolved && resolved !== 'loading' && resolved !== 'error' && typeof resolved.metadata?.report_id === 'string'
             ? (resolved.metadata.report_id as string)
             : null;
     const sectionParam =
-        resolved && resolved !== 'loading' && resolved !== 'error' && resolved.section_number && resolved.section_number !== 'unknown'
+        resolved &&
+        resolved !== 'loading' &&
+        resolved !== 'error' &&
+        resolved.section_number &&
+        resolved.section_number !== 'unknown'
             ? resolved.section_number
             : null;
 
@@ -154,12 +198,12 @@ export default function EvidenceInspector({ citation, open, onOpenChange, projec
                             <div className="whitespace-pre-wrap leading-relaxed" data-testid="evidence-inspector-text">
                                 {resolved.text}
                             </div>
-                            {metadataEntries.length > 0 && (
+                            {facts.length > 0 && (
                                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                                    {metadataEntries.map(([key, value]) => (
-                                        <div key={key} className="contents">
-                                            <dt className="font-mono uppercase tracking-wider">{humanizeKey(key)}</dt>
-                                            <dd>{String(value)}</dd>
+                                    {facts.map((fact) => (
+                                        <div key={fact.label} className="contents">
+                                            <dt className="font-mono uppercase tracking-wider">{fact.label}</dt>
+                                            <dd>{fact.value}</dd>
                                         </div>
                                     ))}
                                 </dl>
@@ -177,7 +221,7 @@ export default function EvidenceInspector({ citation, open, onOpenChange, projec
                 </div>
 
                 <SheetFooter>
-                    {citation && onReportIssue && (
+                    {citation && answerRunId && onReportIssue && (
                         <button
                             type="button"
                             onClick={() => onReportIssue(citation)}

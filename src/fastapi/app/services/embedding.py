@@ -1,4 +1,10 @@
-"""Embedding model access — local SentenceTransformer or shared sidecar proxy.
+"""Embedding model access — Cohere Embed 5 (default), Bedrock Embed v4, or local.
+
+``EMBEDDING_BACKEND=cohere`` (the default since ADR-0025, 2026-10-04) calls
+Cohere's own API (:class:`_CohereEmbedding`); ``bedrock`` is the rollback
+(:class:`_BedrockEmbedding`); ``local`` is the sidecar / SentenceTransformer
+path described below, selected explicitly by ``.env.example`` and by the
+Helm chart.
 
 By default each uvicorn worker loads its OWN SentenceTransformer
 (``settings.EMBEDDING_MODEL_NAME``) on CPU. For Qwen3-Embedding-0.6B that is
@@ -24,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -47,20 +54,68 @@ EMBEDDING_MODEL_REVISION = (
 _HTTP_TIMEOUT_S = float(os.environ.get("EMBEDDING_SERVICE_TIMEOUT_S", "30") or "30")
 
 # ---------------------------------------------------------------------------
+# Backend selection — EMBEDDING_BACKEND=cohere | bedrock | local
+# ---------------------------------------------------------------------------
+# Both hosted values take precedence over EMBEDDING_SERVICE_URL below; neither
+# loads a local model or needs a sidecar.
+#
+# Default was "foundry" from 2026-09-06 until the AWS move on 2026-09-08, then
+# "bedrock" until ADR-0025 (2026-10-04) moved dense embedding to Cohere's own
+# API for Embed 5, which Bedrock does not serve. It is "cohere" now for the
+# same reason it was "foundry" and "bedrock" before: production has no GPU
+# host, so an UNSET variable used to select a model host that does not exist
+# there and the query path silently ran with no embedding model (ADR-0021
+# gotcha 1). Unset means Cohere in code, in docker-compose.yml and in
+# Terraform alike; .env.example sets EMBEDDING_BACKEND=local explicitly to use
+# the self-hosted sidecar, and charts/georag/ does the same for on-prem.
+#
+# The query path (here) and the ingest path (passage_embedder.
+# load_embedding_model) MUST agree on this value. A mismatch writes one vector
+# space and queries another, and fails as poor retrieval, not as an error.
+EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "cohere").strip().lower()
+
+# ---------------------------------------------------------------------------
+# Cohere's own API (Embed 5) — EMBEDDING_BACKEND=cohere (ADR-0025)
+# ---------------------------------------------------------------------------
+# POST {COHERE_BASE_URL}/v2/embed with COHERE_API_KEY, the same host and key
+# as chat (llm_cohere.py) and Parse (cohere_parse_client.py). Embed 5 is not
+# on Bedrock; the SageMaker listing is a Marketplace endpoint that bills while
+# idle, which is why this is the host (ADR-0025 options B and C).
+#
+# [UNVERIFIED] on every point below: model names, output dimensions, the
+# image request shape and the per-request input limit come from Cohere's
+# 2026-09-30 publications, not from a call made with our key. Every field is
+# Status.ASSUMED in cohere_wire.EMBED; ops/validation/cohere_probe.py
+# probe_embed() is how the first credentialed run turns that into a diff.
+#
+# Ingest (documents and page images) uses COHERE_EMBED_MODEL. Queries use
+# COHERE_EMBED_QUERY_MODEL, which defaults to the SAME model: Cohere says
+# embed-v5.0-pro and embed-v5.0-fast share an embedding space, but that is a
+# vendor claim about the one property that fails silently when false, so
+# moving queries to Fast waits for the probe's cross-model measurement.
+COHERE_EMBED_MODEL = (os.environ.get("COHERE_EMBED_MODEL") or "embed-v5.0-pro").strip()
+COHERE_EMBED_QUERY_MODEL = (
+    os.environ.get("COHERE_EMBED_QUERY_MODEL") or COHERE_EMBED_MODEL
+).strip()
+# Embed 5 Pro offers 2048/1536/1024/768/512/256. 1024 matches the existing
+# georag_chunks collection, so no Qdrant migration. MUST match
+# settings.EMBEDDING_DIMENSION: config.py fails startup when they differ and
+# main.py's dimension check re-asserts it against get_sentence_embedding_dimension().
+COHERE_EMBED_DIMENSION = int(os.environ.get("COHERE_EMBED_DIMENSION", "1024"))
+# Total budget for the QUERY path (config.py validates it under
+# TIMEOUT_QDRANT_S, like BEDROCK_EMBED_TIMEOUT_S). On the ingest path this is
+# only the per-request read timeout: a sweep has no wall clock and must not
+# inherit a query's budget, nor the query its sweep's patience.
+COHERE_EMBED_TIMEOUT_S = float(os.environ.get("COHERE_EMBED_TIMEOUT_S", "30"))
+
+# ---------------------------------------------------------------------------
 # Amazon Bedrock (Cohere Embed v4) backend — EMBEDDING_BACKEND=bedrock
 # ---------------------------------------------------------------------------
-# Takes precedence over EMBEDDING_SERVICE_URL below. No local model, no
-# sidecar, at all. Reaches Bedrock with the ECS task role's SigV4 credentials
-# (app.services._bedrock) rather than an endpoint plus API key.
-#
-# Default was "foundry" from 2026-09-06 until the AWS move on 2026-09-08; it
-# is "bedrock" now for the same reason it was "foundry" then. Production has
-# no GPU host, so an UNSET variable used to select a model host that does not
-# exist there and the query path silently ran with no embedding model
-# (ADR-0021 gotcha 1). Unset means Bedrock in code and in docker-compose.yml
-# alike; .env.example sets EMBEDDING_BACKEND=local explicitly to use the
-# self-hosted sidecar.
-EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "bedrock").strip().lower()
+# The rollback for ADR-0025 and the route back if Bedrock lists Embed 5. Reaches
+# Bedrock with the ECS task role's SigV4 credentials (app.services._bedrock)
+# rather than an endpoint plus API key. Vectors are Embed v4's: switching to or
+# from it needs a full re-embed (scripts/reset_embeddings_for_reencode.py --all)
+# or a Qdrant snapshot.
 # Bedrock model id for Cohere Embed v4, or the ARN of a Bedrock Marketplace
 # endpoint serving it. [UNVERIFIED] that this exact id is offered in the
 # target region — ADR-0022 step 0.
@@ -79,6 +134,11 @@ BEDROCK_EMBED_TIMEOUT_S = float(os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30"))
 #: caller can exceed it: reembed_qdrant.py pages 100 points at a time, and a
 #: single 100-text call would be rejected on every page (VEN-3, 2026-09-29).
 EMBED_V4_MAX_TEXTS_PER_CALL = 96
+#: The same figure for Embed 5 on Cohere's own API. [ASSUMED] -- carried over
+#: from v4, not read from any Embed 5 response; the probe's input-count ladder
+#: (cohere_probe.probe_embed) is what measures it. Kept a separate name so the
+#: two can diverge without one silently moving the other.
+COHERE_EMBED_MAX_TEXTS_PER_CALL = 96
 
 #: Query-path read timeout per attempt. One short query string, so this is
 #: the cold-connection ceiling rather than a batch budget. The total query
@@ -137,6 +197,15 @@ class _BedrockEmbedding:
         self._model_id = model_id
         self._dimension = dimension
         self._timeout_s = timeout_s
+
+    @property
+    def model_name(self) -> str:
+        """The model id, recorded as ``embed_model`` on every point it writes.
+
+        Not the host: ``cohere.embed-v4:0`` and ``embed-v5.0-pro`` are what a
+        reader needs to tell two vector spaces apart (ADR-0025).
+        """
+        return self._model_id
 
     def _client(self, *, query_path: bool = False):
         from app.services._bedrock import (  # noqa: PLC0415
@@ -321,6 +390,410 @@ class _BedrockEmbedding:
         return self._dimension
 
 
+class CohereEmbeddingHttpError(RuntimeError):
+    """A non-2xx from ``POST /v2/embed`` that was not (or is no longer) retried.
+
+    Carries the status because ``embed_image`` branches on it: 400/422 means
+    the body's SHAPE was refused and the alternate image shape is worth one
+    try; anything else means the request was understood.
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(f"HTTP {status_code} from Cohere embed: {message}")
+        self.status_code = status_code
+        self.message = message
+
+
+#: Statuses worth another try, the same set llm_cohere.py and
+#: cohere_parse_client.py retry. 4xx other than 429 are a rejected request.
+_COHERE_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+#: Ingest has no wall clock, so it can afford the full ladder (2, 4, 8 s plus
+#: any Retry-After). The query path is capped by _QUERY_MAX_ATTEMPTS and, more
+#: tightly, by its time budget.
+_COHERE_INGEST_MAX_ATTEMPTS = 4
+#: Ceiling on an honoured Retry-After during ingest. A sweep that is told to
+#: wait longer than this has hit a quota, not a blip; it records the error and
+#: the next sweep retries, rather than parking a pool thread for minutes.
+_COHERE_INGEST_MAX_RETRY_AFTER_S = 60.0
+_COHERE_CONNECT_TIMEOUT_S = 10.0
+#: Indirection so tests can run the pacing without real sleeps.
+_sleep = time.sleep
+
+
+class _CohereEmbedding:
+    """Cohere Embed 5 on Cohere's own API, behind the SentenceTransformer surface.
+
+    A sibling of :class:`_BedrockEmbedding` with the same duck-typed surface
+    (``encode`` / ``embed_query`` / ``embed_image`` /
+    ``get_sentence_embedding_dimension``). **The names are a contract enforced
+    only by duck typing**: ``tools.py`` checks ``hasattr(model, "embed_query")``
+    and, if it is missing, silently embeds every question as
+    ``search_document``. test_embedding_cohere.py drives the real call site.
+
+    Wire shape (ADR-0025)::
+
+        POST {COHERE_BASE_URL}/v2/embed
+        Authorization: bearer $COHERE_API_KEY
+        {"model": "embed-v5.0-pro", "texts": [str, ...],
+         "input_type": "search_document"|"search_query",
+         "embedding_types": ["float"], "output_dimension": 1024}
+        -> {"embeddings": {"float": [[...], ...]}}
+
+    **[UNVERIFIED]** — nothing here has been observed from a call made with our
+    key; every field is ``Status.ASSUMED`` in ``cohere_wire.EMBED``. Run
+    ``ops/validation/cohere_probe.py`` (``probe_embed``) and commit its report.
+
+    Synchronous httpx on purpose, like :class:`_RemoteEmbedding`: every caller
+    already runs these in an executor thread, so the event loop is never
+    blocked. ``model_name`` is the DOCUMENT model (what ingest tags points
+    with); ``query_model_name`` is what questions are embedded with and what
+    ``answer_runs.embedding_model`` records.
+    """
+
+    def __init__(
+        self,
+        model: str = COHERE_EMBED_MODEL,
+        *,
+        query_model: str | None = None,
+        dimension: int = COHERE_EMBED_DIMENSION,
+        timeout_s: float = COHERE_EMBED_TIMEOUT_S,
+        client: Any = None,
+    ) -> None:
+        self._model = model
+        self._query_model = query_model or model
+        self._dimension = dimension
+        self._timeout_s = timeout_s
+        self._client_obj = client
+        self._client_lock = threading.Lock()
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    @property
+    def query_model_name(self) -> str:
+        return self._query_model
+
+    # -- transport --------------------------------------------------------
+
+    def _headers(self) -> dict[str, str]:
+        from app.config import settings  # noqa: PLC0415
+
+        key = (settings.COHERE_API_KEY or "").strip()
+        if not key:
+            raise RuntimeError(
+                "COHERE_API_KEY is empty but EMBEDDING_BACKEND=cohere. It is the "
+                "same key as chat and Parse, written to Secrets Manager out of "
+                "band (deploy/aws/README.md Step 3); ECS will not start a task "
+                "referencing a key that does not exist, so reaching this line "
+                "means the value is present but blank."
+            )
+        return {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    def _url(self) -> str:
+        from app.config import settings  # noqa: PLC0415
+
+        return f"{(settings.COHERE_BASE_URL or 'https://api.cohere.com').rstrip('/')}/v2/embed"
+
+    def _http(self) -> Any:
+        """One pooled ``httpx.Client`` per instance, built on first use."""
+        import httpx  # noqa: PLC0415
+
+        with self._client_lock:
+            if self._client_obj is None:
+                self._client_obj = httpx.Client(
+                    timeout=httpx.Timeout(self._timeout_s, connect=_COHERE_CONNECT_TIMEOUT_S)
+                )
+            return self._client_obj
+
+    def _retry_wait_s(
+        self,
+        attempt: int,
+        retry_after_s: float | None,
+        *,
+        deadline: float | None,
+    ) -> float | None:
+        """Seconds to wait before retry ``attempt``, or None if it must not happen.
+
+        The ladder and the ``Retry-After`` rule are the shared ones
+        (llm_common.pre_stream_backoff_s). What differs is the budget: a query
+        gives up when the wait would not fit its deadline or the host asks for
+        more than PRE_STREAM_RETRY_AFTER_CAP_S; ingest clamps Retry-After to
+        _COHERE_INGEST_MAX_RETRY_AFTER_S and keeps going.
+        """
+        from app.agent.llm_common import (  # noqa: PLC0415
+            PRE_STREAM_RETRY_AFTER_CAP_S,
+            pre_stream_backoff_s,
+        )
+
+        if deadline is None:
+            if retry_after_s is not None:
+                retry_after_s = min(retry_after_s, _COHERE_INGEST_MAX_RETRY_AFTER_S)
+            return pre_stream_backoff_s(attempt, retry_after_s=retry_after_s)
+        if retry_after_s is not None and retry_after_s > PRE_STREAM_RETRY_AFTER_CAP_S:
+            return None
+        delay = pre_stream_backoff_s(attempt, retry_after_s=retry_after_s)
+        # Leave at least a second for the attempt the wait is buying.
+        return delay if time.monotonic() + delay + 1.0 < deadline else None
+
+    def _request(self, body: dict[str, Any], *, query_path: bool = False) -> dict[str, Any]:
+        """POST one embed body; retry 429/5xx/transport faults; return the JSON.
+
+        Retries are explicit because httpx has none (botocore did this under
+        Bedrock, which is why this host would otherwise regress under load).
+        On the query path the whole call, waits included, stays inside
+        COHERE_EMBED_TIMEOUT_S (config.py validates it under TIMEOUT_QDRANT_S);
+        on the ingest path it does not.
+        """
+        import httpx  # noqa: PLC0415
+
+        headers = self._headers()
+        url = self._url()
+        started = time.monotonic()
+        deadline = started + self._timeout_s if query_path else None
+        max_attempts = _QUERY_MAX_ATTEMPTS if query_path else _COHERE_INGEST_MAX_ATTEMPTS
+
+        for attempt in range(1, max_attempts + 1):
+            read_timeout = self._timeout_s
+            if deadline is not None:
+                read_timeout = max(1.0, min(_QUERY_READ_TIMEOUT_S, deadline - time.monotonic()))
+            retry_after_s: float | None = None
+            try:
+                resp = self._http().post(
+                    url,
+                    headers=headers,
+                    json=body,
+                    timeout=httpx.Timeout(read_timeout, connect=_COHERE_CONNECT_TIMEOUT_S),
+                )
+            except (httpx.TransportError, httpx.StreamError) as exc:
+                # Retried below; the final failure is raised with its cause.
+                logger.debug("cohere embed: transport error, will retry if budget allows", exc_info=True)
+                failure: Exception = exc
+            else:
+                if resp.status_code < 300:
+                    try:
+                        payload = resp.json()
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            f"Cohere embed answered HTTP {resp.status_code} with a body that is not JSON"
+                        ) from exc
+                    if not isinstance(payload, dict):
+                        raise RuntimeError("Cohere embed answered with a JSON body that is not an object")
+                    return payload
+                failure = CohereEmbeddingHttpError(resp.status_code, resp.text[:200])
+                if resp.status_code not in _COHERE_RETRYABLE_STATUS:
+                    raise failure
+                from app.agent.llm_common import parse_retry_after  # noqa: PLC0415
+
+                retry_after_s = parse_retry_after(resp.headers.get("retry-after"))
+
+            wait = (
+                self._retry_wait_s(attempt, retry_after_s, deadline=deadline)
+                if attempt < max_attempts
+                else None
+            )
+            if wait is None:
+                raise failure
+            logger.warning(
+                "cohere embed: %s (attempt %d/%d, %s path) -- retrying in %.1fs",
+                type(failure).__name__ if not isinstance(failure, CohereEmbeddingHttpError)
+                else f"HTTP {failure.status_code}",
+                attempt,
+                max_attempts,
+                "query" if query_path else "ingest",
+                wait,
+            )
+            _sleep(wait)
+        raise RuntimeError("cohere embed: retry loop exited without a result")  # pragma: no cover
+
+    def _vectors(self, payload: dict[str, Any], expected_rows: int, model: str) -> np.ndarray:
+        try:
+            raw = payload["embeddings"]["float"]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"Cohere embed answered without embeddings.float (model {model!r}; "
+                f"top-level keys {sorted(payload)})"
+            ) from exc
+        vectors = np.asarray(raw, dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape[0] != expected_rows:
+            # Concatenating a short answer would silently attach every later
+            # vector to the wrong text.
+            raise RuntimeError(
+                f"Cohere embed returned shape {tuple(vectors.shape)} for {expected_rows} input(s) "
+                f"(model {model!r})"
+            )
+        if vectors.shape[1] != self._dimension:
+            raise RuntimeError(
+                f"Cohere embed returned {vectors.shape[1]}-dim vectors but "
+                f"COHERE_EMBED_DIMENSION={self._dimension} (model {model!r}); "
+                "writing them would corrupt georag_chunks"
+            )
+        return vectors
+
+    # -- text -------------------------------------------------------------
+
+    def _post(self, texts: list[str], input_type: str, *, query_path: bool = False) -> np.ndarray:
+        """Embed ``texts``, in requests of at most COHERE_EMBED_MAX_TEXTS_PER_CALL.
+
+        Chunked here, not at each caller, for the reason ``_BedrockEmbedding._post``
+        gives: ``encode()`` absorbs ``batch_size``, so a caller's batch size was
+        never a bound on the request.
+        """
+        if not texts:
+            return np.zeros((0, self._dimension), dtype=np.float32)
+        model = self._query_model if input_type == "search_query" else self._model
+        parts: list[np.ndarray] = []
+        for start in range(0, len(texts), COHERE_EMBED_MAX_TEXTS_PER_CALL):
+            chunk = texts[start : start + COHERE_EMBED_MAX_TEXTS_PER_CALL]
+            body = {
+                "model": model,
+                "texts": chunk,
+                "input_type": input_type,
+                "embedding_types": ["float"],
+                "output_dimension": self._dimension,
+            }
+            payload = self._request(body, query_path=query_path)
+            parts.append(self._vectors(payload, len(chunk), model))
+        return parts[0] if len(parts) == 1 else np.concatenate(parts, axis=0)
+
+    def encode(
+        self,
+        sentences: str | list[str],
+        normalize_embeddings: bool = False,  # noqa: ARG002 — vectors are assumed pre-normalized
+        input_type: str = "search_document",
+        **_kwargs: Any,  # absorbs show_progress_bar, batch_size, prompt_name, etc.
+    ) -> np.ndarray:
+        single = isinstance(sentences, str)
+        texts = [sentences] if single else list(sentences)
+        arr = self._post(texts, input_type)
+        return arr[0] if single else arr
+
+    def embed_query(self, text: str) -> np.ndarray:
+        """Query-time embedding with ``input_type="search_query"``.
+
+        On the budgeted query path (COHERE_EMBED_TIMEOUT_S), with the query
+        model, not the ingest one.
+        """
+        return self._post([text], "search_query", query_path=True)[0]
+
+    # -- multimodal (page-image) embedding --------------------------------
+    #
+    # Same constraints and the same reason as _BedrockEmbedding: image vectors
+    # share the text space, so a page image lands in the existing dense slot;
+    # text and image inputs cannot be mixed in one call; callers downscale
+    # first (page_image.render_page_png). The pixel cap for Embed 5 is
+    # UNOBSERVED (v4's was 2M px) -- cohere_probe.probe_embed measures it.
+    #
+    # Which image request shape Embed 5 accepts is also unobserved (ADR-0025
+    # gotcha 4). The try-primary, fall-back-once strategy carries over, but a
+    # schema rejection is an HTTP 400/422 here, not a botocore
+    # ValidationException. Collapse to the winner once the probe or the first
+    # ingest log names it.
+    _IMAGE_WIRE_SHAPE: str | None = None  # None = undetermined; set on first success
+
+    def embed_image(self, png_bytes: bytes, *, mime: str = "image/png") -> np.ndarray:
+        """Embed ONE page image, returning a ``COHERE_EMBED_DIMENSION`` vector.
+
+        Single-image on purpose, for the memory reason in
+        ``_BedrockEmbedding.embed_image`` (the 2026-08-07 SPLADE OOM).
+        """
+        import base64  # noqa: PLC0415
+
+        data_uri = f"data:{mime};base64,{base64.b64encode(png_bytes).decode('ascii')}"
+
+        def _body_images() -> dict[str, Any]:
+            return {
+                "model": self._model,
+                "images": [data_uri],
+                "input_type": "image",
+                "embedding_types": ["float"],
+                "output_dimension": self._dimension,
+            }
+
+        def _body_inputs() -> dict[str, Any]:
+            return {
+                "model": self._model,
+                "inputs": [{"content": [{"type": "image_url", "image_url": {"url": data_uri}}]}],
+                "input_type": "image",
+                "embedding_types": ["float"],
+                "output_dimension": self._dimension,
+            }
+
+        shapes: list[tuple[str, Any]] = (
+            [("images", _body_images), ("inputs", _body_inputs)]
+            if _CohereEmbedding._IMAGE_WIRE_SHAPE in (None, "images")
+            else [("inputs", _body_inputs), ("images", _body_images)]
+        )
+
+        last_exc: Exception | None = None
+        for name, build_body in shapes:
+            try:
+                payload = self._request(build_body())
+            except CohereEmbeddingHttpError as exc:
+                # Only a schema rejection is worth re-shaping for. Anything
+                # else (auth, throttling that outlasted its retries, 5xx)
+                # means the request was understood and different JSON just
+                # burns another call.
+                if exc.status_code in (400, 422):
+                    last_exc = exc
+                    logger.debug(
+                        "cohere image embed: wire shape %r rejected (HTTP %d) — trying alternate",
+                        name, exc.status_code,
+                    )
+                    continue
+                raise
+
+            if name != _CohereEmbedding._IMAGE_WIRE_SHAPE:
+                _CohereEmbedding._IMAGE_WIRE_SHAPE = name
+                logger.info("cohere image embed: using wire shape %r", name)
+            return self._vectors(payload, 1, self._model)[0]
+
+        raise RuntimeError(
+            "Cohere Embed rejected both documented image wire shapes "
+            f"(images[], inputs[]) on model {self._model!r}"
+        ) from last_exc
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._dimension
+
+
+def build_cohere_embedding() -> _CohereEmbedding:
+    """The one construction site for ``EMBEDDING_BACKEND=cohere``.
+
+    Called by BOTH ``get_embedding_model`` (query path) and
+    ``passage_embedder.load_embedding_model`` (ingest path), so the two cannot
+    drift apart on model, dimension or credentials -- a mismatch writes one
+    vector space and queries another (ADR-0021 migration step 2, ADR-0025
+    gotcha 1). Fails loudly on a blank key rather than at the first call.
+    """
+    from app.config import settings  # noqa: PLC0415
+    from app.services._bedrock import assert_no_retired_foundry_env  # noqa: PLC0415
+
+    assert_no_retired_foundry_env(context="EMBEDDING_BACKEND=cohere")
+    if not (settings.COHERE_API_KEY or "").strip():
+        raise RuntimeError(
+            "EMBEDDING_BACKEND=cohere but COHERE_API_KEY is empty. It is the same "
+            "key as chat and Parse, so a key that only covers chat will fail "
+            "here too. Set it, or set EMBEDDING_BACKEND=bedrock / local."
+        )
+    if not COHERE_EMBED_MODEL:
+        raise RuntimeError("EMBEDDING_BACKEND=cohere but COHERE_EMBED_MODEL is empty")
+    logger.info(
+        "Embedding model via Cohere API: documents=%s queries=%s dim=%d",
+        COHERE_EMBED_MODEL, COHERE_EMBED_QUERY_MODEL, COHERE_EMBED_DIMENSION,
+    )
+    return _CohereEmbedding(
+        COHERE_EMBED_MODEL,
+        query_model=COHERE_EMBED_QUERY_MODEL,
+        dimension=COHERE_EMBED_DIMENSION,
+        timeout_s=COHERE_EMBED_TIMEOUT_S,
+    )
+
+
 class _RemoteEmbedding:
     """HTTP proxy to the shared embedding sidecar.
 
@@ -499,9 +972,10 @@ def get_embedding_model(
 ) -> Any:
     """Return the embedding model for the FastAPI query path.
 
-    Precedence: EMBEDDING_BACKEND=bedrock (Cohere Embed v4, no local model at
-    all) > a shared-sidecar HTTP proxy when EMBEDDING_SERVICE_URL is set >
-    locally-loaded SentenceTransformer on CPU (the prior default).
+    Precedence: EMBEDDING_BACKEND=cohere (Cohere Embed 5 on Cohere's own API,
+    the default; no local model at all) > bedrock (Cohere Embed v4, the
+    rollback) > a shared-sidecar HTTP proxy when EMBEDDING_SERVICE_URL is set >
+    locally-loaded SentenceTransformer on CPU.
     """
     from app.services._bedrock import (  # noqa: PLC0415
         assert_no_retired_foundry_env,
@@ -516,6 +990,8 @@ def get_embedding_model(
     # retrieves nothing while reporting success (ADR-0021 gotcha 1).
     reject_retired_backend(EMBEDDING_BACKEND, setting="EMBEDDING_BACKEND")
 
+    if EMBEDDING_BACKEND == "cohere":
+        return build_cohere_embedding()
     if EMBEDDING_BACKEND == "bedrock":
         assert_no_retired_foundry_env(context="EMBEDDING_BACKEND=bedrock")
         if not BEDROCK_EMBED_MODEL_ID:

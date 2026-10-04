@@ -108,7 +108,11 @@ describe('EditProjectSheet', () => {
 
         it("shows a legacy 'grid_north' project as grid north", () => {
             render(
-                <EditProjectSheet project={{ ...project, orientation_reference: 'grid_north' }} open onOpenChange={() => {}} />,
+                <EditProjectSheet
+                    project={{ ...project, orientation_reference: 'grid_north' }}
+                    open
+                    onOpenChange={() => {}}
+                />,
             );
             expect(screen.getByLabelText(/Azimuth reference/)).toHaveValue('grid');
             // No declination box until it is needed.
@@ -134,7 +138,9 @@ describe('EditProjectSheet', () => {
 
             fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'magnetic' } });
 
-            expect(screen.getByText('Magnetic north needs a declination (degrees, east positive).')).toBeInTheDocument();
+            expect(
+                screen.getByText('Magnetic north needs a declination (degrees, east positive).'),
+            ).toBeInTheDocument();
             const save = screen.getByRole('button', { name: 'Save changes' });
             expect(save).toBeDisabled();
             fireEvent.click(save);

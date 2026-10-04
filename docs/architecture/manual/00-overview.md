@@ -54,9 +54,12 @@ The repo is a single monorepo containing:
 - Three **model sidecars** built from the same FastAPI image
   ([docker-compose.yml](../../../docker-compose.yml) `reranker`, `embedding`,
   `sparse`): Qwen3-Reranker-0.6B on the one GPU, Qwen3-Embedding-0.6B and
-  SPLADE++ on CPU. In production the dense embedder and reranker are
-  Amazon Bedrock (Cohere Embed v4 / **Rerank 3.5** — Bedrock does not serve
-  v4, [ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md),
+  SPLADE++ on CPU. In production the dense embedder is **Cohere Embed 5 on
+  Cohere's own API** (`EMBEDDING_BACKEND=cohere`, same `COHERE_API_KEY` as
+  chat and Parse; Bedrock does not serve Embed 5 —
+  [ADR-0025](../../adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md))
+  and the reranker is Amazon Bedrock (Cohere **Rerank 3.5** — Bedrock does
+  not serve v4, [ADR-0022](../../adr/0022-aws-replaces-azure-as-the-production-cloud.md),
   superseding [ADR-0021](../../adr/0021-foundry-embed-rerank-replace-self-hosted-models.md));
   SPLADE++ has no hosted equivalent anywhere and runs as its own `sparse`
   service in production.
@@ -215,8 +218,10 @@ The on-prem / air-gapped target is still the Helm chart at
         └──── hatchet-worker (WORKER_POOL=all, direct PG) ◀───┘              {workflow}/trigger
 ```
 
-PgBouncer fronts the async application paths (asyncpg with
-`statement_cache_size=0`); Martin, the Hatchet worker and migrations
+PgBouncer fronts the async application paths in compose (asyncpg with
+`statement_cache_size=0`, the default of `ASYNCPG_STATEMENT_CACHE_SIZE`);
+the AWS deployment has no pooler and sets `ASYNCPG_STATEMENT_CACHE_SIZE=100`
+for fastapi in `deploy/aws/terraform/config.tf`. Martin, the Hatchet worker and migrations
 connect to Postgres directly. FastAPI uses Redis db 2, isolated from
 Laravel. Every internal hop carries `X-Service-Key`; both sides accept the
 previous key during rotation (`ops/runbooks/secret-rotation.md`).
@@ -274,7 +279,7 @@ was **not** re-derived.
 | 05 PDF stack | pdfminer.six + pdfplumber (PyMuPDF removed on licence grounds); parsers moved to `georag_geoparsers`; SEG-Y and Word ingest are gone |
 | 06 Retrieval + agents | graph tools removed; support-cockpit trace sources corrected |
 | 07 Orchestration | Horizon's three jobs, the 51-workflow registry with every cron, the schedulers, the 2026-08-21 review findings |
-| 08 LLM + ML | the hosted backend as default; Embed v4 / Rerank; SPLADE++ has no hosted equivalent *(host predates ADR-0022)* |
+| 08 LLM + ML | the hosted backend as default; Embed 5 on Cohere's API (ADR-0025, was Embed v4 on Bedrock) / Rerank 3.5 on Bedrock; SPLADE++ has no hosted equivalent *(host predates ADR-0022)* |
 | 09 Martin + MapLibre | nothing scrapes Martin's `/metrics`; no alert replaced the deleted rules |
 | 10 Frontend | **sixteen pages exist**, not the eighty this chapter listed; no admin console, no dashboards, no React Flow |
 | 11 Tenancy + RLS | the Kestra and Caddy auth hops are gone; the per-flow JWT machinery has no caller |

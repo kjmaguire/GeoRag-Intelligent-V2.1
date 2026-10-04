@@ -105,15 +105,7 @@ function fieldLabel(field: string): string {
  * two that actually need an answer, and the eight that resolved are shown
  * as read-only context so the user can see the parser is not lost.
  */
-function ColumnMapper({
-    slug,
-    minioKey,
-    facts,
-}: {
-    slug: string;
-    minioKey: string;
-    facts: RemapFacts;
-}) {
+function ColumnMapper({ slug, minioKey, facts }: { slug: string; minioKey: string; facts: RemapFacts }) {
     const [open, setOpen] = useState(false);
     const [choices, setChoices] = useState<Record<string, string>>({});
     const [busy, setBusy] = useState(false);
@@ -135,9 +127,7 @@ function ColumnMapper({
         setBusy(true);
         setError(null);
         try {
-            const token = document
-                .querySelector('meta[name="csrf-token"]')
-                ?.getAttribute('content');
+            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
             const res = await fetch(`/projects/${slug}/ingestion-runs/remap`, {
                 method: 'POST',
                 headers: {
@@ -166,8 +156,7 @@ function ColumnMapper({
     if (sent) {
         return (
             <div className="text-[10px] mt-1" style={{ color: 'var(--accent)' }}>
-                Re-running “{facts.label}” with your mapping — it will reappear above as
-                a new run.
+                Re-running “{facts.label}” with your mapping — it will reappear above as a new run.
             </div>
         );
     }
@@ -202,9 +191,7 @@ function ColumnMapper({
                         </span>
                         <select
                             value={choices[field] ?? ''}
-                            onChange={(e) =>
-                                setChoices((c) => ({ ...c, [field]: e.target.value }))
-                            }
+                            onChange={(e) => setChoices((c) => ({ ...c, [field]: e.target.value }))}
                             className="flex-1 min-w-0 rounded border px-2 py-1"
                             style={{
                                 background: 'var(--bg-1)',
@@ -234,8 +221,7 @@ function ColumnMapper({
 
             {duplicate && (
                 <div className="mt-2 text-[10px]" style={{ color: 'var(--warn)' }}>
-                    Two fields are pointing at the same column — each column can only
-                    stand for one.
+                    Two fields are pointing at the same column — each column can only stand for one.
                 </div>
             )}
             {error && (
@@ -368,13 +354,15 @@ function FileLedger({ totals }: { totals: RunTotals }) {
     if (totals.files === undefined || totals.files === 0) return null;
 
     type Cell = { label: string; value: number; tone?: 'accent' | 'warn' };
-    const cells: Cell[] = ([
-        { label: 'Completed', value: totals.files_completed ?? 0 },
-        { label: 'Partial', value: totals.files_partial ?? 0, tone: 'warn' },
-        { label: 'Failed', value: totals.files_failed ?? 0, tone: 'warn' },
-        { label: 'Timed out', value: totals.files_timed_out ?? 0, tone: 'warn' },
-        { label: 'Running', value: totals.files_running ?? 0, tone: 'accent' },
-    ] satisfies Cell[]).filter((c) => c.value > 0);
+    const cells: Cell[] = (
+        [
+            { label: 'Completed', value: totals.files_completed ?? 0 },
+            { label: 'Partial', value: totals.files_partial ?? 0, tone: 'warn' },
+            { label: 'Failed', value: totals.files_failed ?? 0, tone: 'warn' },
+            { label: 'Timed out', value: totals.files_timed_out ?? 0, tone: 'warn' },
+            { label: 'Running', value: totals.files_running ?? 0, tone: 'accent' },
+        ] satisfies Cell[]
+    ).filter((c) => c.value > 0);
 
     return (
         <section className="px-8 pb-5">
@@ -383,10 +371,7 @@ function FileLedger({ totals }: { totals: RunTotals }) {
                 style={{ borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}
             >
                 <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                    <span
-                        className="text-[10px] font-mono uppercase tracking-widest"
-                        style={{ color: 'var(--fg-3)' }}
-                    >
+                    <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
                         Files ingested
                     </span>
                     <span
@@ -414,13 +399,11 @@ function FileLedger({ totals }: { totals: RunTotals }) {
                     ))}
                 </div>
                 <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--fg-3)' }}>
-                    This counts uploaded objects, which is not always the number of files you
-                    picked. A shapefile&rsquo;s <code>.shp</code>/<code>.shx</code>/
-                    <code>.dbf</code>/<code>.prj</code> are zipped into one upload, and a
-                    TIFF, RRD or JPEG appears twice — once as itself and once as the PDF it is
-                    normalised into. Sidecars whose master file was not in the selection
-                    (a lone <code>.shx</code>, an orphan <code>.prj</code>) are reported at
-                    the import screen and never uploaded.
+                    This counts uploaded objects, which is not always the number of files you picked. A
+                    shapefile&rsquo;s <code>.shp</code>/<code>.shx</code>/<code>.dbf</code>/<code>.prj</code> are zipped
+                    into one upload, and a TIFF, RRD or JPEG appears twice — once as itself and once as the PDF it is
+                    normalised into. Sidecars whose master file was not in the selection (a lone <code>.shx</code>, an
+                    orphan <code>.prj</code>) are reported at the import screen and never uploaded.
                 </p>
             </div>
         </section>
@@ -449,14 +432,6 @@ const POLL_BACKOFF_MS = 30000;
 // interval means 10s of failure with something in flight, or a minute when
 // idle, which is long enough to be real.
 const STALE_AFTER_FAILURES = 2;
-
-function formatBytes(bytes: number | null): string {
-    if (bytes === null) return '—';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
 
 /**
  * Reverb event payload — must match
@@ -546,18 +521,12 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                 if (!cancelled) setFailedPolls((n) => n + 1);
             } finally {
                 if (!cancelled) {
-                    timerRef.current = setTimeout(
-                        tick,
-                        runs.totals.in_flight > 0 ? POLL_INTERVAL_MS : POLL_BACKOFF_MS,
-                    );
+                    timerRef.current = setTimeout(tick, runs.totals.in_flight > 0 ? POLL_INTERVAL_MS : POLL_BACKOFF_MS);
                 }
             }
         }
 
-        timerRef.current = setTimeout(
-            tick,
-            runs.totals.in_flight > 0 ? POLL_INTERVAL_MS : POLL_BACKOFF_MS,
-        );
+        timerRef.current = setTimeout(tick, runs.totals.in_flight > 0 ? POLL_INTERVAL_MS : POLL_BACKOFF_MS);
 
         return () => {
             cancelled = true;
@@ -622,7 +591,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
                 <PageHeader
                     eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · INGESTION RUNS`}
-                    title="Pipeline activity"
+                    title="Import activity"
                     sub={
                         <span>
                             {runs.totals.in_flight} in flight · {runs.totals.completed} completed
@@ -633,10 +602,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                 <span style={{ color: 'var(--warn, #d97706)' }}>
                                     {' · '}
                                     live updates paused
-                                    {lastFetched
-                                        ? ` — last updated ${formatTime(lastFetched)}`
-                                        : ''}
-                                    {' '}
+                                    {lastFetched ? ` — last updated ${formatTime(lastFetched)}` : ''}{' '}
                                     <button
                                         type="button"
                                         onClick={() => setFailedPolls(0)}
@@ -660,7 +626,10 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     }
                 />
 
-                <section className="grid grid-cols-2 sm:grid-cols-4 gap-px px-8 py-5" style={{ background: 'var(--line-1)' }}>
+                <section
+                    className="grid grid-cols-2 sm:grid-cols-4 gap-px px-8 py-5"
+                    style={{ background: 'var(--line-1)' }}
+                >
                     <Stat
                         label="IN FLIGHT"
                         value={String(runs.totals.in_flight)}
@@ -671,7 +640,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                         so a drill CSV or a shapefile is absent from it by
                         design — they produce no document. The file ledger
                         below is what reconciles against an upload. */}
-                    <Stat label="DOCUMENTS" value={String(runs.totals.completed)} sub="reports in silver" />
+                    <Stat label="DOCUMENTS" value={String(runs.totals.completed)} sub="reports processed" />
                     <Stat
                         label="PASSAGES"
                         value={String(runs.completed.reduce((sum, r) => sum + r.passages, 0))}
@@ -680,7 +649,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     <Stat
                         label="EMBEDDED"
                         value={String(runs.completed.reduce((sum, r) => sum + r.embedded, 0))}
-                        sub="vectors in Qdrant"
+                        sub="ready for search"
                     />
                 </section>
 
@@ -737,11 +706,19 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                             style={{ borderColor: 'var(--line-1)' }}
                                         >
                                             <div className="min-w-0">
-                                                <div className="truncate" style={{ color: 'var(--fg-0)' }} title={f.filename}>
+                                                <div
+                                                    className="truncate"
+                                                    style={{ color: 'var(--fg-0)' }}
+                                                    title={f.filename}
+                                                >
                                                     {f.filename}
                                                 </div>
                                                 {f.failed && f.error_text && (
-                                                    <div className="text-[10px] font-mono mt-0.5 truncate" style={{ color: 'var(--warn)' }} title={f.error_text}>
+                                                    <div
+                                                        className="text-[10px] font-mono mt-0.5 truncate"
+                                                        style={{ color: 'var(--warn)' }}
+                                                        title={f.error_text}
+                                                    >
                                                         {f.error_text}
                                                     </div>
                                                 )}
@@ -764,14 +741,25 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                     </div>
                                                 ))}
                                             </div>
-                                            <div className="text-[11px]" style={{ color: (f.failed || f.status === 'partial') ? 'var(--warn)' : 'var(--fg-1)' }}>
-                                                <Pill tone={(f.failed || f.status === 'partial') ? 'warn' : 'accent'} dot>
+                                            <div
+                                                className="text-[11px]"
+                                                style={{
+                                                    color:
+                                                        f.failed || f.status === 'partial'
+                                                            ? 'var(--warn)'
+                                                            : 'var(--fg-1)',
+                                                }}
+                                            >
+                                                <Pill tone={f.failed || f.status === 'partial' ? 'warn' : 'accent'} dot>
                                                     {outcomeLabel(f) ?? prettyStage(f)}
                                                 </Pill>
                                                 {(f.status === 'partial' || f.status === 'completed') &&
                                                     f.rows_written !== null &&
                                                     f.rows_written > 0 && (
-                                                        <span className="ml-2 font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
+                                                        <span
+                                                            className="ml-2 font-mono text-[10px] tabular-nums"
+                                                            style={{ color: 'var(--fg-2)' }}
+                                                        >
                                                             {f.rows_written.toLocaleString()} rows
                                                         </span>
                                                     )}
@@ -780,11 +768,14 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                 <div className="flex-1 min-w-0">
                                                     <ProgressBar
                                                         value={f.progress_pct}
-                                                        tone={(f.failed || f.status === 'partial') ? 'warn' : 'accent'}
+                                                        tone={f.failed || f.status === 'partial' ? 'warn' : 'accent'}
                                                         height={6}
                                                     />
                                                 </div>
-                                                <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
+                                                <span
+                                                    className="font-mono text-[10px] tabular-nums"
+                                                    style={{ color: 'var(--fg-2)' }}
+                                                >
                                                     {f.progress_pct}%
                                                 </span>
                                             </div>
@@ -801,7 +792,11 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
 
                 {runs.completed.length > 0 && (
                     <section className="px-8 py-5 pb-8">
-                        <Card eyebrow={`COMPLETED · ${runs.completed.length}`} title="Ingested into silver" padded={false}>
+                        <Card
+                            eyebrow={`COMPLETED · ${runs.completed.length}`}
+                            title="Processed documents"
+                            padded={false}
+                        >
                             {/* Fixed-px columns don't collapse below `lg:` — scroll
                                 horizontally instead of clipping/overlapping on narrow
                                 viewports. */}
@@ -834,16 +829,25 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                             <div className="truncate" style={{ color: 'var(--fg-0)' }} title={r.title}>
                                                 {r.title}
                                                 {r.filename && (
-                                                    <div className="text-[10px] font-mono mt-0.5 truncate" style={{ color: 'var(--fg-3)' }}>
+                                                    <div
+                                                        className="text-[10px] font-mono mt-0.5 truncate"
+                                                        style={{ color: 'var(--fg-3)' }}
+                                                    >
                                                         {r.filename}
                                                     </div>
                                                 )}
                                             </div>
-                                            <div className="truncate" style={{ color: 'var(--fg-2)' }} title={r.parser_used ?? undefined}>
+                                            <div
+                                                className="truncate"
+                                                style={{ color: 'var(--fg-2)' }}
+                                                title={r.parser_used ?? undefined}
+                                            >
                                                 {r.parser_label ?? r.parser_used ?? '—'}
                                             </div>
                                             <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
-                                                {r.parse_quality_pct === null ? '—' : `${qualityPct(r.parse_quality_pct)}%`}
+                                                {r.parse_quality_pct === null
+                                                    ? '—'
+                                                    : `${qualityPct(r.parse_quality_pct)}%`}
                                             </div>
                                             <div
                                                 className="font-mono"
@@ -865,7 +869,10 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                         height={4}
                                                     />
                                                 </div>
-                                                <span className="font-mono text-[10px]" style={{ color: 'var(--fg-2)' }}>
+                                                <span
+                                                    className="font-mono text-[10px]"
+                                                    style={{ color: 'var(--fg-2)' }}
+                                                >
                                                     {r.embedded}/{r.passages}
                                                 </span>
                                             </div>

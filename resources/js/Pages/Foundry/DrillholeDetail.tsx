@@ -110,13 +110,23 @@ interface Props {
 }
 
 const SECTIONS = [
-    { id: 'strip-log',   label: 'Strip Log' },
-    { id: 'assays',      label: 'Assays' },
-    { id: 'structures',  label: 'Structures' },
+    { id: 'strip-log', label: 'Strip Log' },
+    { id: 'assays', label: 'Assays' },
+    { id: 'structures', label: 'Structures' },
     { id: 'cross-section', label: 'Cross Section' },
 ];
 
-export default function DrillholeDetail({ project, collar, intervals, strip_tracks, assays, structures, cross_sections, lithology_quality, data_quality_flags }: Props) {
+export default function DrillholeDetail({
+    project,
+    collar,
+    intervals,
+    strip_tracks,
+    assays,
+    structures,
+    cross_sections,
+    lithology_quality,
+    data_quality_flags,
+}: Props) {
     // Reliability spec Phase 2b — drill-hole-level data depends on
     // silver.collars + silver.intervals + silver.assays. Refetch the
     // relevant Inertia props if this project saw collars/assays move.
@@ -126,14 +136,18 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
         // page is where a shapefile of structural readings and a LAS file
         // of downhole curves actually show up, and filtering them out left
         // the strip log showing the state before the upload.
-        if (
-            t.includes('collars')
-            || t.includes('assays')
-            || t.includes('structures')
-            || t.includes('curves')
-        ) {
+        if (t.includes('collars') || t.includes('assays') || t.includes('structures') || t.includes('curves')) {
             router.reload({
-                only: ['collar', 'intervals', 'strip_tracks', 'assays', 'structures', 'cross_sections', 'lithology_quality', 'data_quality_flags'],
+                only: [
+                    'collar',
+                    'intervals',
+                    'strip_tracks',
+                    'assays',
+                    'structures',
+                    'cross_sections',
+                    'lithology_quality',
+                    'data_quality_flags',
+                ],
             });
         }
     });
@@ -143,15 +157,20 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
     const azimuth = collar.azimuth_deg ?? collar.azimuth ?? null;
     const dip = collar.dip_deg ?? collar.dip ?? null;
     const sampleWindows = intervals.filter((i) => i.interval_kind === 'sample_window');
-    const hasStrip = tracks.lithology.length + tracks.alteration.length + tracks.mineralization.length + sampleWindows.length > 0;
-    const maxDepth = totalDepth && totalDepth > 0 ? totalDepth : Math.max(...intervals.map((i) => Number(i.depth_to)), 100);
+    const hasStrip =
+        tracks.lithology.length + tracks.alteration.length + tracks.mineralization.length + sampleWindows.length > 0;
+    const maxDepth =
+        totalDepth && totalDepth > 0 ? totalDepth : Math.max(...intervals.map((i) => Number(i.depth_to)), 100);
 
     return (
         <AppLayout>
             <Head title={`${collar.hole_id} · ${project.project_name}`} />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
-                <div className="sticky top-0 z-10" style={{ background: 'var(--bg-0)', borderBottom: '1px solid var(--line-1)' }}>
+                <div
+                    className="sticky top-0 z-10"
+                    style={{ background: 'var(--bg-0)', borderBottom: '1px solid var(--line-1)' }}
+                >
                     <PageHeader
                         eyebrow={`HOLE · ${project.project_name.toUpperCase()}`}
                         title={collar.hole_id}
@@ -173,7 +192,7 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
                     />
 
                     <nav className="flex gap-1 px-8 py-2" aria-label="Section navigation">
-                        {SECTIONS.map(s => (
+                        {SECTIONS.map((s) => (
                             <a
                                 key={s.id}
                                 href={`#${s.id}`}
@@ -230,7 +249,7 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
                             <div className="px-4 py-6">
                                 <EmptyState
                                     title="No assays for this hole."
-                                    detail="Either silver.assays_v2 has no rows for this collar, or the migration that adds value_ppm hasn't run."
+                                    detail="No assay results have been loaded for this drill hole, or the loaded results have no numeric grade values. Import an assay file for this project to see them here."
                                 />
                             </div>
                         ) : (
@@ -240,10 +259,7 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
                 </section>
 
                 <section id="structures" className="px-8 py-6">
-                    <Card
-                        eyebrow="STRUCTURES"
-                        title={`Stereonet · ${structures.length} measurements`}
-                    >
+                    <Card eyebrow="STRUCTURES" title={`Stereonet · ${structures.length} measurements`}>
                         {structures.length === 0 ? (
                             <EmptyState
                                 title="No structure measurements yet."
@@ -270,7 +286,7 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
                             </div>
                         ) : (
                             <div>
-                                {cross_sections.map(p => (
+                                {cross_sections.map((p) => (
                                     <div
                                         key={p.panel_id}
                                         className="flex justify-between items-center px-4 py-3 border-b"
@@ -278,7 +294,9 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
                                     >
                                         <div style={{ color: 'var(--fg-0)' }}>{p.section_name}</div>
                                         <div className="flex gap-3 items-center">
-                                            <Pill tone="neutral" dot>{p.hole_count} holes</Pill>
+                                            <Pill tone="neutral" dot>
+                                                {p.hole_count} holes
+                                            </Pill>
                                         </div>
                                     </div>
                                 ))}
@@ -303,12 +321,15 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
  * the markup framework-free (no shadcn Tooltip dependency on what is a tiny
  * informational chip).
  */
-const GEOREF_METHOD_VOCAB: Record<GeorefMethod, { tone: 'accent' | 'info' | 'warn' | 'danger' | 'neutral'; help: string }> = {
+const GEOREF_METHOD_VOCAB: Record<
+    GeorefMethod,
+    { tone: 'accent' | 'info' | 'warn' | 'danger' | 'neutral'; help: string }
+> = {
     declared: { tone: 'accent', help: 'declared — CRS stated explicitly in source metadata' },
-    detected: { tone: 'info',   help: 'detected — CRS inferred by the spatial pipeline from coordinate ranges' },
-    assumed:  { tone: 'warn',   help: 'assumed — fallback projection (e.g. UTM zone derived from project bbox)' },
-    manual:   { tone: 'accent', help: 'manual — geologist set the CRS / location in the UI' },
-    survey:   { tone: 'accent', help: 'survey — exact survey instrument datum (highest provenance)' },
+    detected: { tone: 'info', help: 'detected — CRS inferred automatically from the coordinate ranges' },
+    assumed: { tone: 'warn', help: 'assumed — fallback projection (e.g. UTM zone derived from project bbox)' },
+    manual: { tone: 'accent', help: 'manual — geologist set the CRS / location in the UI' },
+    survey: { tone: 'accent', help: 'survey — exact survey instrument datum (highest provenance)' },
 };
 
 function SpatialConfidenceBadge({ collar }: { collar: Collar }) {
@@ -325,8 +346,12 @@ function SpatialConfidenceBadge({ collar }: { collar: Collar }) {
         gm ? `Georef method: ${vocab?.help ?? gm}` : null,
         '',
         'Vocabulary:',
-        ...(Object.entries(GEOREF_METHOD_VOCAB) as Array<[GeorefMethod, { help: string }]>).map(([, v]) => `  • ${v.help}`),
-    ].filter(Boolean).join('\n');
+        ...(Object.entries(GEOREF_METHOD_VOCAB) as Array<[GeorefMethod, { help: string }]>).map(
+            ([, v]) => `  • ${v.help}`,
+        ),
+    ]
+        .filter(Boolean)
+        .join('\n');
 
     return (
         <span title={tooltip} className="inline-flex items-center gap-1.5">
@@ -345,7 +370,10 @@ function SpatialConfidenceBadge({ collar }: { collar: Collar }) {
 function AssayTable({ rows }: { rows: AssayRow[] }) {
     return (
         <>
-            <div className="grid grid-cols-[1fr_100px_100px_80px_100px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b" style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}>
+            <div
+                className="grid grid-cols-[1fr_100px_100px_80px_100px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
+                style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
+            >
                 <div>Sample</div>
                 <div>From</div>
                 <div>To</div>
@@ -358,14 +386,24 @@ function AssayTable({ rows }: { rows: AssayRow[] }) {
                     className="grid grid-cols-[1fr_100px_100px_80px_100px] text-xs px-4 py-2 border-b"
                     style={{ borderColor: 'var(--line-1)' }}
                 >
-                    <div className="truncate" style={{ color: 'var(--fg-0)' }}>{r.sample_id ?? '—'}</div>
-                    <div className="font-mono" style={{ color: 'var(--fg-2)' }}>{r.from_depth !== undefined ? Number(r.from_depth).toFixed(2) : '—'}</div>
-                    <div className="font-mono" style={{ color: 'var(--fg-2)' }}>{r.to_depth !== undefined ? Number(r.to_depth).toFixed(2) : '—'}</div>
-                    <div className="font-mono" style={{ color: 'var(--fg-2)' }}>{r.element ?? '—'}</div>
+                    <div className="truncate" style={{ color: 'var(--fg-0)' }}>
+                        {r.sample_id ?? '—'}
+                    </div>
+                    <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
+                        {r.from_depth !== undefined ? Number(r.from_depth).toFixed(2) : '—'}
+                    </div>
+                    <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
+                        {r.to_depth !== undefined ? Number(r.to_depth).toFixed(2) : '—'}
+                    </div>
+                    <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
+                        {r.element ?? '—'}
+                    </div>
                     <div className="font-mono" style={{ color: 'var(--fg-0)' }}>
                         {r.value_ppm !== undefined && r.value_ppm !== null
                             ? `${r.value_ppm} ppm`
-                            : (r.value !== undefined && r.value !== null ? String(r.value) : '—')}
+                            : r.value !== undefined && r.value !== null
+                              ? String(r.value)
+                              : '—'}
                     </div>
                 </div>
             ))}
@@ -374,10 +412,7 @@ function AssayTable({ rows }: { rows: AssayRow[] }) {
 }
 
 function Stereonet({ points }: { points: StructureRow[] }) {
-    const valid = useMemo(
-        () => points.filter(p => p.stereonet_x !== null && p.stereonet_y !== null),
-        [points],
-    );
+    const valid = useMemo(() => points.filter((p) => p.stereonet_x !== null && p.stereonet_y !== null), [points]);
     return (
         <div className="flex justify-center">
             <svg viewBox="-1.6 -1.6 3.2 3.2" className="w-64 h-64">
@@ -390,7 +425,13 @@ function Stereonet({ points }: { points: StructureRow[] }) {
                         cx={p.stereonet_x ?? 0}
                         cy={-(p.stereonet_y ?? 0)}
                         r={0.025}
-                        fill={p.structure_type === 'fault' ? '#dc2626' : p.structure_type === 'bedding' ? '#2563eb' : 'var(--fg-1)'}
+                        fill={
+                            p.structure_type === 'fault'
+                                ? '#dc2626'
+                                : p.structure_type === 'bedding'
+                                  ? '#2563eb'
+                                  : 'var(--fg-1)'
+                        }
                     />
                 ))}
             </svg>

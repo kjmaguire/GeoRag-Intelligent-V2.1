@@ -209,13 +209,15 @@ async def resolve_entity(
                 """
                 SELECT alias_id, canonical_name, canonical_uri, confidence
                 FROM silver.entity_aliases
-                WHERE entity_type = $1
+                WHERE workspace_id = $3::uuid
+                  AND entity_type = $1
                   AND alias_normalised = $2
                 ORDER BY confidence DESC, canonical_name ASC
                 LIMIT 1
                 """,
                 entity_type,
                 normalised,
+                str(workspace_id),
             )
             if row is not None:
                 return EntityResolution(
@@ -227,9 +229,29 @@ async def resolve_entity(
                     alias_id=str(row["alias_id"]),
                 )
 
-            # Fuzzy lookup. Uses pg_trgm similarity — the migration
-            # already created a trigram GIN index on
-            # alias_normalised when pg_trgm is installed.
+            # Fuzzy lookup. Uses pg_trgm similarity, served by
+            # idx_entity_aliases_norm_trgm (GIN, gin_trgm_ops — migration
+            # 2026_10_04_200200). Two things make that index usable:
+            #
+            #   * the `%` OPERATOR, not a `similarity(...) >= x` call — a
+            #     function call in the WHERE is opaque to the index. `%`
+            #     compares against the pg_trgm.similarity_threshold GUC, so
+            #     the caller's fuzzy_threshold is set as that GUC for this
+            #     transaction (set_config(..., true) is SET LOCAL, which is
+            #     what we want inside this block);
+            #   * the explicit workspace predicate. RLS adds one too, but
+            #     the scan used to carry no workspace_id of its own, which
+            #     leaves isolation resting on the GUC alone.
+            #
+            # The similarity() >= $3 test stays as an exact recheck on the
+            # handful of rows the index returns, so the accepted set is
+            # identical to the pre-index query's.
+            await conn.execute(
+                "SELECT set_config('pg_trgm.similarity_threshold', $1, true)",
+                # Clamped: the GUC rejects values outside 0..1, where the old
+                # inline comparison just matched everything / nothing.
+                repr(min(1.0, max(0.0, float(fuzzy_threshold)))),
+            )
             row = await conn.fetchrow(
                 """
                 SELECT
@@ -239,7 +261,9 @@ async def resolve_entity(
                     confidence,
                     similarity(alias_normalised, $2) AS sim
                 FROM silver.entity_aliases
-                WHERE entity_type = $1
+                WHERE workspace_id = $4::uuid
+                  AND entity_type = $1
+                  AND alias_normalised % $2
                   AND similarity(alias_normalised, $2) >= $3
                 ORDER BY sim DESC, confidence DESC, canonical_name ASC
                 LIMIT 1
@@ -247,6 +271,7 @@ async def resolve_entity(
                 entity_type,
                 normalised,
                 float(fuzzy_threshold),
+                str(workspace_id),
             )
             if row is not None:
                 return EntityResolution(

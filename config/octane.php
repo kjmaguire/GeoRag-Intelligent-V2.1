@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\Http\PooledHttpClient;
 use App\Support\Uploads;
 use Laravel\Octane\Contracts\OperationTerminated;
 use Laravel\Octane\Events\RequestHandled;
@@ -188,6 +189,17 @@ return [
 
     'warm' => [
         ...Octane::defaultServicesToWarm(),
+
+        // The Guzzle client pool (keep-alive sockets to Martin / FastAPI) is
+        // only worth having if it outlives a request. Octane drops container
+        // instances that were first resolved DURING a request when that
+        // request ends (FlushTemporaryContainerInstances), so a singleton that
+        // nothing warms is rebuilt, empty, on every request: the "pool" then
+        // opens a fresh curl handle per tile exactly like Http:: did. Warming
+        // resolves it once at worker boot. It holds only Guzzle clients keyed
+        // by base URL (bounded, LRU) and the HTTP Factory; no request, user
+        // or tenant data. See app/Support/Http/PooledHttpClient.php.
+        PooledHttpClient::class,
     ],
 
     'flush' => [

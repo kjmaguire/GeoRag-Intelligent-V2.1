@@ -9,6 +9,7 @@ use App\Models\Project;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -35,17 +36,32 @@ class ChatController extends Controller
             ->limit(50)
             ->get();
 
-        $activeId = $request->query('thread');
-        $activeMessages = collect();
+        // `?thread=` is client input. Only a UUID naming a thread that belongs
+        // to THIS user AND THIS project selects one; anything else -- garbage,
+        // another user's id, another project's id -- yields no active thread
+        // (the client then starts a fresh one). Loading messages by bare
+        // conversation_id was an IDOR, and a non-UUID value 500'd on the
+        // uuid column cast.
+        $requestedId = $request->query('thread');
         $activeThread = null;
-        if ($activeId) {
-            $activeThread = $threads->firstWhere('conversation_id', $activeId);
-            $activeMessages = $this->threadMessages((string) $activeId);
+        if (is_string($requestedId) && $requestedId !== '') {
+            if (Str::isUuid($requestedId)) {
+                // Looked up directly rather than from the 50-row list so a
+                // user's older thread is still reachable by link.
+                $activeThread = DB::table('public.chat_conversations')
+                    ->where('conversation_id', strtolower($requestedId))
+                    ->where('user_id', $user->id)
+                    ->where('project_id', $project->project_id)
+                    ->first();
+            }
         } elseif ($threads->isNotEmpty()) {
-            $activeId = (string) $threads->first()->conversation_id;
             $activeThread = $threads->first();
-            $activeMessages = $this->threadMessages((string) $activeId);
         }
+
+        $activeId = $activeThread !== null ? (string) $activeThread->conversation_id : null;
+        $activeMessages = $activeThread !== null
+            ? $this->threadMessages($activeId, (int) $user->id, (string) $project->project_id)
+            : collect();
 
         // Phase 3 / Step 3.2 — surface the active project's context so the
         // query-builder UI can pre-populate smart defaults (CRS, jurisdiction
@@ -104,22 +120,38 @@ class ChatController extends Controller
     }
 
     /**
-     * The first 200 messages of a thread in thread order.
+     * The LAST 200 messages of a thread, in thread order.
+     *
+     * Ownership is enforced here as well as by the caller: the conversation
+     * must belong to this user AND this project.
      *
      * Ordered by `position` (CHAT-2 / LAR-5): every sync re-inserts the
      * whole thread within one second, so `created_at` alone ties and
-     * Postgres returns ties in physical, not insertion, order.
+     * Postgres returns ties in physical, not insertion, order. The query
+     * takes the newest 200 (descending, limit) and reverses them, so a
+     * long thread keeps its tail rather than losing the latest answers.
      *
      * @return Collection<int, \stdClass>
      */
-    private function threadMessages(string $conversationId): Collection
+    private function threadMessages(string $conversationId, int $userId, string $projectId): Collection
     {
+        $owned = DB::table('public.chat_conversations')
+            ->where('conversation_id', $conversationId)
+            ->where('user_id', $userId)
+            ->where('project_id', $projectId)
+            ->exists();
+        if (! $owned) {
+            return collect();
+        }
+
         return DB::table('public.chat_messages')
             ->where('conversation_id', $conversationId)
-            ->orderBy('position')
-            ->orderBy('created_at')
-            ->orderBy('message_id')
+            ->orderByDesc('position')
+            ->orderByDesc('created_at')
+            ->orderByDesc('message_id')
             ->limit(200)
-            ->get();
+            ->get()
+            ->reverse()
+            ->values();
     }
 }

@@ -30,7 +30,11 @@ export default function FoundryProjects({ workspace_id, projects, empty }: Proje
                         <Link
                             href="/foundry/projects/new"
                             className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                            style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                            style={{
+                                color: 'var(--accent)',
+                                background: 'var(--accent-bg)',
+                                borderColor: 'var(--accent-dim)',
+                            }}
                         >
                             + New project
                         </Link>
@@ -46,7 +50,11 @@ export default function FoundryProjects({ workspace_id, projects, empty }: Proje
                                 <Link
                                     href="/foundry/projects/new"
                                     className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                    style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                                    style={{
+                                        color: 'var(--accent)',
+                                        background: 'var(--accent-bg)',
+                                        borderColor: 'var(--accent-dim)',
+                                    }}
                                 >
                                     + Create first project
                                 </Link>
@@ -64,16 +72,27 @@ export default function FoundryProjects({ workspace_id, projects, empty }: Proje
                             >
                                 <div className="flex items-center gap-2 mb-2">
                                     <StatusDot status={p.status} />
-                                    <span className="text-[9px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                    <span
+                                        className="text-[9px] font-mono uppercase tracking-wider"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
                                         {p.commodity ?? '—'}
                                     </span>
                                     {p.status !== 'active' && <Pill tone={statusTone(p.status)}>{p.status}</Pill>}
                                 </div>
-                                <h3 className="text-base font-semibold leading-tight mb-1" style={{ color: 'var(--fg-0)' }}>
+                                <h3
+                                    className="text-base font-semibold leading-tight mb-1"
+                                    style={{ color: 'var(--fg-0)' }}
+                                >
                                     {p.project_name}
                                 </h3>
-                                <div className="text-[11px]" style={{ color: 'var(--fg-3)' }}>{p.region ?? '—'}</div>
-                                <div className="mt-3 flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                <div className="text-[11px]" style={{ color: 'var(--fg-3)' }}>
+                                    {p.region ?? '—'}
+                                </div>
+                                <div
+                                    className="mt-3 flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider"
+                                    style={{ color: 'var(--fg-3)' }}
+                                >
                                     <span>EPSG:{p.crs_epsg ?? '—'}</span>
                                     <span>·</span>
                                     <span>v{p.data_version}</span>

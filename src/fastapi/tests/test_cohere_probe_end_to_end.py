@@ -50,11 +50,15 @@ def probe(monkeypatch):
             monkeypatch.setenv("COHERE_BASE_URL", f"http://127.0.0.1:{port}")
             monkeypatch.delenv("COHERE_CHAT_MODEL", raising=False)
             monkeypatch.delenv("COHERE_PARSE_MODEL", raising=False)
+            for name in ("COHERE_EMBED_MODEL", "COHERE_EMBED_QUERY_MODEL", "COHERE_EMBED_FAST_MODEL",
+                         "COHERE_EMBED_DIMENSION"):
+                monkeypatch.delenv(name, raising=False)
             report = {
                 "reachability": cohere_probe.probe_reachability(),
                 "chat": cohere_probe.probe_chat(),
                 "chat_stream": cohere_probe.probe_chat_stream(),
                 "parse": cohere_probe.probe_parse(pdf, [1]) if pdf else {"skipped": "no pdf"},
+                "embed": cohere_probe.probe_embed(pdf, 1),
                 "latency": cohere_probe.probe_latency(1),
             }
             report["verdict"] = cohere_probe.verdict(report)
@@ -217,11 +221,136 @@ class TestTheFirstLiveRunsFalseGreens:
         assert blocks["adapter_page_ok"]["chars"] > 0
 
 
+class TestEmbed:
+    """ADR-0025 migration step 1, against a fake: the section must MEASURE.
+
+    `fake_cohere` is not Cohere -- its /v2/embed is the shape cohere_wire.EMBED
+    declares -- so these prove the probe reads and reports each thing it is
+    for, and catches the two failures it exists to catch. They say nothing
+    about whether Embed 5 behaves this way.
+    """
+
+    def test_it_observes_document_query_and_dimension(self, probe) -> None:
+        embed = probe()["embed"]
+        assert embed["model"] == "embed-v5.0-pro"
+        assert embed["dimension"] == 1024
+        assert embed["dimension_honoured"] is True
+        assert embed["top_level_keys"] == ["embeddings", "id", "meta", "response_type", "texts"]
+        assert embed["query"]["dimension"] == 1024
+        assert abs(embed["l2_norm"] - 1.0) < 1e-3
+        assert "embed" in probe()["verdict"]["sections_ok"]
+
+    def test_it_catches_a_host_that_ignores_output_dimension(self, probe) -> None:
+        """200 OK, fluent vectors, wrong width: nothing errors until Qdrant 400s
+        every upsert, or a query vector cannot match the collection."""
+        embed = probe("embed_ignores_dimension")["embed"]
+        assert embed["dimension"] == 1536
+        assert embed["dimension_honoured"] is False
+
+    def test_it_records_the_per_request_input_limit(self, probe) -> None:
+        limit = probe()["embed"]["input_limit"]
+        assert limit["adapter_chunk_size"] == 96
+        assert limit["sent"]["96"]["accepted"] is True and limit["sent"]["96"]["vectors_back"] == 96
+        assert limit["sent"]["97"]["accepted"] is False
+        assert limit["adapter_chunk_size_ok"] is True
+        assert "exact" in limit["limit"]
+
+    def test_it_sends_an_image_and_records_the_shape_that_won(self, probe) -> None:
+        image = probe()["embed"]["image"]
+        assert image["source"].startswith("generated")
+        assert image["shape_accepted"] == "images"
+        assert image["dimension"] == 1024 and image["dimension_honoured"] is True
+        assert image["rejected_first"] is None
+        assert image["pixel_ladder"] == {"skipped": "no --pdf: a generated image cannot be scaled"}
+
+    def test_it_falls_back_to_the_other_image_shape_like_the_adapter(self, probe) -> None:
+        image = probe("embed_images_refused")["embed"]["image"]
+        assert image["shape_accepted"] == "inputs"
+        assert image["rejected_first"]["images"]["status"] == 400
+
+    def test_it_climbs_the_image_pixel_ladder_with_a_real_page(self, probe) -> None:
+        pytest.importorskip("pypdfium2")
+        if not FIXTURE_PDF.exists():
+            pytest.skip("OCR fixture PDF not present")
+        image = probe(pdf=FIXTURE_PDF)["embed"]["image"]
+        assert image["source"].startswith("PLS-2024")
+        ladder = image["pixel_ladder"]
+        assert set(ladder) == {str(p) for p in cohere_probe.EMBED_IMAGE_PIXEL_LADDER}
+        assert all(rung["accepted"] is True for rung in ladder.values())
+
+    def test_it_measures_pro_against_fast_without_deciding(self, probe) -> None:
+        cross = probe()["embed"]["cross_model"]
+        assert (cross["pro_model"], cross["fast_model"]) == ("embed-v5.0-pro", "embed-v5.0-fast")
+        assert cross["queries"] == len(cohere_probe._EMBED_QUERIES)
+        cosine = cross["same_query_cosine"]
+        # fake_cohere's Fast is Pro plus a small perturbation: close, not equal.
+        assert 0.9 < cosine["min"] <= cosine["median"] < 1.0
+        assert 0 <= cross["top1_agrees"] <= cross["queries"]
+        assert "No threshold" in cross["note"]
+
+    def test_cross_model_is_skipped_when_the_two_models_are_the_same(self, probe, monkeypatch) -> None:
+        monkeypatch.setenv("COHERE_EMBED_FAST_MODEL", "embed-v5.0-pro")
+        # The fixture clears the variable at the start of each run; set it
+        # through the probe's own accessor instead.
+        monkeypatch.setattr(cohere_probe, "_embed_fast_model", lambda: "embed-v5.0-pro")
+        assert "skipped" in probe()["embed"]["cross_model"]
+
+    def test_an_unknown_model_fails_the_section_and_names_it(self, probe, monkeypatch) -> None:
+        monkeypatch.setattr(cohere_probe, "_embed_model", lambda: "embed-v9-imaginary")
+        report = probe()
+        assert report["embed"]["error"]["status"] == 404
+        assert "embed" in report["verdict"]["sections_failed"]
+
+    def test_the_embed_section_alone_cannot_pass_an_unauthorized_run(self, probe) -> None:
+        report = probe("unauthorized")
+        assert report["embed"]["error"]["code"] == "AuthenticationError"
+        assert "embed" in report["verdict"]["sections_failed"]
+        assert report["verdict"]["verified_anything"] is False
+
+    def test_no_key_skips_the_section(self, monkeypatch) -> None:
+        monkeypatch.delenv("COHERE_API_KEY", raising=False)
+        assert cohere_probe.probe_embed() == {"skipped": "COHERE_API_KEY unset"}
+
+    def test_the_generated_png_is_a_valid_png(self) -> None:
+        import struct
+        import zlib
+
+        png = cohere_probe._generated_png(8, 4)
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        width, height = struct.unpack(">II", png[16:24])
+        assert (width, height) == (8, 4)
+        idat = png.index(b"IDAT")
+        length = struct.unpack(">I", png[idat - 4 : idat])[0]
+        assert len(zlib.decompress(png[idat + 4 : idat + 4 + length])) == 4 * (1 + 8)
+
+    def test_the_cosine_helper_is_a_cosine(self) -> None:
+        assert cohere_probe._cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
+        assert cohere_probe._cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
+        assert cohere_probe._cosine([1.0, 0.0], [-1.0, 0.0]) == pytest.approx(-1.0)
+        assert cohere_probe._cosine([0.0, 0.0], [1.0, 0.0]) == 0.0
+
+
 class TestTheContractDiffIsWiredUp:
     def test_the_diff_resolves_and_observes_the_calls_it_reached(self, probe) -> None:
         diff = probe()["contract_diff"]
         assert "skipped" not in diff, "app.services.cohere_wire failed to import"
         assert "chat_v2" in diff["calls_observed"]
+
+    def test_the_embed_contract_is_observed_and_holds(self, probe) -> None:
+        """First credentialed run == a diff, not a discovery: the fake answers
+        in the declared shape, so nothing is undeclared and nothing required is
+        missing. Against the real API this is the line that will have news."""
+        diff = probe()["contract_diff"]
+        embed = diff["calls"]["embed"]
+        assert embed["status"] == "observed"
+        assert embed["confirmed"] == ["embeddings", "id", "images", "meta", "response_type", "texts"]
+        assert embed["undeclared"] == [] and embed["required_missing"] == []
+        assert "embed" in diff["calls_observed"]
+        assert "embed" not in diff["undeclared_fields"]
+
+    def test_an_image_reply_key_is_declared_too(self, probe) -> None:
+        embed = probe()["contract_diff"]["calls"]["embed"]
+        assert "images" not in embed["undeclared"]
 
     def test_a_healthy_run_declares_everything_it_sees(self, probe) -> None:
         """An UNDECLARED field is the contract's discovery half working — but

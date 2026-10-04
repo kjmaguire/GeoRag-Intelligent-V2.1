@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Api\V1\PublicGeoscience;
 
+use App\Models\Project;
 use App\Models\User;
 use App\Support\SetsWorkspaceRlsContext;
 use Carbon\Carbon;
@@ -290,8 +291,20 @@ class CitationControllerPgeoTest extends TestCase
     {
         $reportId = 'bbbbbbbb-0000-0000-0000-000000000002';
 
+        // Report citations are project-scoped: the caller needs a project with
+        // a workspace to be authorised against. Created before DB is mocked.
+        $project = Project::create([
+            'project_name' => 'Pgeo report scope '.uniqid(),
+            'orientation_reference' => 'BOH',
+        ]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+        DB::table('silver.projects')
+            ->where('project_id', $project->project_id)
+            ->update(['workspace_id' => 'a0000000-0000-0000-0000-000000000001']);
+
         $reportBuilder = \Mockery::mock('query_builder_report');
         $reportBuilder->shouldReceive('where')->withAnyArgs()->andReturn($reportBuilder);
+        $reportBuilder->shouldReceive('whereIn')->withAnyArgs()->andReturn($reportBuilder);
         $reportBuilder->shouldReceive('first')->once()->andReturn((object) [
             'report_id' => $reportId,
             'title' => 'NI 43-101 Test Report',

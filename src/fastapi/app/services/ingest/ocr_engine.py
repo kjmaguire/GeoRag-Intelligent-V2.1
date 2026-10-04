@@ -10,6 +10,13 @@ downgrade already happened once; this module makes the retired value loud.
 
 Read from ``os.environ`` at call time (not frozen at import) to match the
 adapter convention, so tests can flip it with ``monkeypatch.setenv``.
+
+Default (audit 2026-10-04): an UNSET ``OCR_ENGINE`` selects ``cohere_parse``,
+the hosted engine production actually runs, the same rule ``EMBEDDING_BACKEND``
+follows. This is fail-safe: with no ``COHERE_API_KEY`` the per-page ladder
+(``pdf_report._ocr_single_page``) logs ONE CRITICAL per process and runs
+Tesseract, and ``pdf_report._effective_parse_mode`` degrades ``PDF_PARSE_MODE``
+to ``ocr_only``. ``tesseract`` stays selectable (air-gapped sites set it).
 """
 
 from __future__ import annotations
@@ -35,12 +42,14 @@ _WARNED: set[str] = set()
 def selected_engine() -> str:
     """``"cohere_parse"`` or ``"tesseract"`` — never anything else.
 
-    Unset and ``"tesseract"`` both mean the local engine. A retired value
-    logs CRITICAL once per process (CRITICAL pages — georag-fastapi-critical)
-    and runs Tesseract so ingestion keeps moving; an unknown value warns
-    once and does the same.
+    Unset (or blank) means ``"cohere_parse"``; ``"tesseract"`` must be asked
+    for explicitly. Whether the hosted engine is *configured* (``COHERE_API_KEY``)
+    is the caller's question — a keyless worker falls back to Tesseract loudly
+    (see ``pdf_report._ocr_single_page``). A retired value logs CRITICAL once
+    per process (CRITICAL pages — georag-fastapi-critical) and runs Tesseract
+    so ingestion keeps moving; an unknown value warns once and does the same.
     """
-    raw = (os.environ.get(ENGINE_ENV) or TESSERACT).strip().lower()
+    raw = (os.environ.get(ENGINE_ENV) or "").strip().lower() or COHERE_PARSE
     if raw == COHERE_PARSE:
         return COHERE_PARSE
     if raw == TESSERACT:
@@ -76,8 +85,9 @@ def selected_engine() -> str:
 
 PARSE_MODE_ENV = "PDF_PARSE_MODE"
 
-#: Today's behaviour, and the default: the remote engine reads only the pages
-#: with no usable text layer. Tesseract is the floor for those.
+#: The remote engine reads only the pages with no usable text layer.
+#: Tesseract is the floor for those. This is what a worker degrades to when
+#: the engine is not usable (OCR_ENGINE=tesseract, or no COHERE_API_KEY).
 PARSE_MODE_OCR_ONLY = "ocr_only"
 #: Native text stays for prose. Native pages on which a table is detected are
 #: ALSO sent to the remote engine, and the engine's table grids replace the
@@ -97,8 +107,13 @@ _PARSE_MODE_WARNED: set[str] = set()
 def selected_parse_mode() -> str:
     """``"ocr_only"``, ``"tables"`` or ``"all"`` — never anything else.
 
-    Unset (or blank) is ``ocr_only`` and logs nothing, so the default path is
-    indistinguishable from before this setting existed.
+    Unset (or blank) is ``all`` — the production setting (Kyle, 2026-09-29),
+    so a dev box exercises the path production runs. It is safe on a box that
+    cannot run it: with ``OCR_ENGINE=tesseract`` this function degrades to
+    ``ocr_only`` (warning once), and with no ``COHERE_API_KEY``
+    ``pdf_report._effective_parse_mode`` degrades to ``ocr_only`` (CRITICAL
+    once) — native text keeps flowing either way. The "needs OCR_ENGINE"
+    warning is only logged when ``PDF_PARSE_MODE`` was set explicitly.
 
     ``tables`` and ``all`` only make sense when the remote engine is the one
     selected: Tesseract on a born-digital page is strictly worse than the text
@@ -111,13 +126,16 @@ def selected_parse_mode() -> str:
     Whether the engine is *configured* (``COHERE_API_KEY``) is the caller's
     question — see ``pdf_report._effective_parse_mode``.
     """
-    raw = (os.environ.get(PARSE_MODE_ENV) or "").strip().lower() or PARSE_MODE_OCR_ONLY
+    explicit = (os.environ.get(PARSE_MODE_ENV) or "").strip().lower()
+    raw = explicit or PARSE_MODE_ALL
     if raw == PARSE_MODE_OCR_ONLY:
         return PARSE_MODE_OCR_ONLY
     if raw in PARSE_MODES:
         if selected_engine() != COHERE_PARSE:
             key = f"engine:{raw}"
-            if key not in _PARSE_MODE_WARNED:
+            # Only an operator who typed the mode gets told it was ignored;
+            # the built-in default degrading on a tesseract site is by design.
+            if explicit and key not in _PARSE_MODE_WARNED:
                 _PARSE_MODE_WARNED.add(key)
                 logger.warning(
                     "ocr_engine: %s=%r needs %s=%s (tesseract on born-digital "

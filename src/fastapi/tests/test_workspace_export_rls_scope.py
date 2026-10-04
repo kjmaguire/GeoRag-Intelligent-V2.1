@@ -21,6 +21,7 @@ import gzip
 import importlib
 import json
 import os
+import pathlib
 import secrets
 import sys
 import types
@@ -153,14 +154,16 @@ async def test_export_reads_fail_closed_tables_under_a_nobypassrls_role(
 
         uploaded: dict[str, bytes] = {}
 
-        async def _fake_put(bucket: str, key: str, body: bytes) -> None:
-            uploaded[key] = body
+        # The export streams to a temp file and hands it to _upload_file_s3
+        # (2026-10-04); read it before run_export removes the spool.
+        async def _fake_put(bucket: str, key: str, path: str) -> None:
+            uploaded[key] = pathlib.Path(path).read_bytes()
 
         async def _no_audit(*_a: Any, **_k: Any) -> None:
             return None
 
         monkeypatch.setattr(we, "_build_dsn", lambda: probe_dsn)
-        monkeypatch.setattr(we, "_put_s3", _fake_put)
+        monkeypatch.setattr(we, "_upload_file_s3", _fake_put)
         monkeypatch.setattr(we, "emit_audit", _no_audit)
         import app.services.laravel_bridge as bridge
 

@@ -3,6 +3,7 @@
 namespace Tests\Unit\Jobs;
 
 use App\Jobs\StreamQueryFromFastApi;
+use App\Models\QueryAuditLog;
 
 /**
  * Test double: overrides openHttpStream/responseHeaders so the job's
@@ -24,6 +25,50 @@ class TestableStreamQueryFromFastApi extends StreamQueryFromFastApi
      * @var array<string, mixed>|null
      */
     public ?array $sentPayload = null;
+
+    /** Read the audit row from the database instead of stubbing it. */
+    public bool $useRealAuditLookup = false;
+
+    /** Row returned by lookupAuditRow() when stubbing; a stub with a user_id when null. */
+    public ?QueryAuditLog $auditRow = null;
+
+    /** Simulate a query_id with no audit row. */
+    public bool $auditRowMissing = false;
+
+    /** Make the audit-row lookup throw, as it does when the DB is down. */
+    public bool $auditLookupThrows = false;
+
+    /** Workspace returned by lookupWorkspaceId(); null simulates a project with no workspace. */
+    public ?string $workspaceId = '99999999-0000-0000-0000-000000000001';
+
+    /** Make the workspace lookup throw. */
+    public bool $workspaceLookupThrows = false;
+
+    protected function lookupAuditRow(): ?QueryAuditLog
+    {
+        if ($this->auditLookupThrows) {
+            throw new \RuntimeException('SQLSTATE[08006] connection refused');
+        }
+
+        if ($this->auditRowMissing) {
+            return null;
+        }
+
+        if ($this->useRealAuditLookup) {
+            return parent::lookupAuditRow();
+        }
+
+        return $this->auditRow ?? (new QueryAuditLog)->forceFill(['user_id' => 1]);
+    }
+
+    protected function lookupWorkspaceId(): ?string
+    {
+        if ($this->workspaceLookupThrows) {
+            throw new \RuntimeException('SQLSTATE[08006] connection refused');
+        }
+
+        return $this->workspaceId;
+    }
 
     protected function openHttpStream(string $url, $context): array
     {

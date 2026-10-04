@@ -18,7 +18,11 @@ use Illuminate\Http\Request;
  * citation refers to, enabling QP-level verification of RAG answers.
  *
  * Routes:
- *   GET /api/v1/citations/resolve?source_chunk_id=...&citation_type=...
+ *   GET /api/v1/citations/resolve?source_chunk_id=...&citation_type=...[&project_id=...]
+ *
+ * `project_id` is optional. When present, resolution is limited to that
+ * project (the caller must be a member); when absent, to the projects the
+ * caller belongs to. Either way another project's records resolve as 404.
  *
  * Architecture
  * ------------
@@ -36,6 +40,8 @@ use Illuminate\Http\Request;
  * Supported source_chunk_id prefixes
  * ----------------------------------
  *   silver.collars:count=20:first=...
+ *   silver.collars:hole=PLS-20-01:collar=<uuid>:assays=12:litho=4
+ *   silver.collars:miss
  *   silver.lithology_logs:hole=PLS-20-01:collar=...:intervals=4
  *   silver.samples:element=U3O8_ppm:count=25
  *   georag_reports:44a67709-...:section=13:chunk=...
@@ -93,16 +99,22 @@ final class CitationController extends Controller
             );
         }
 
-        $workspaceIds = $this->accessibleWorkspaceIds($request);
+        // workspace_id => the project ids inside it that this request may read.
+        // Workspace scope alone let a member of project A resolve project B's
+        // chunks whenever both lived in one workspace; the project is the
+        // authorisation unit everywhere else in Api/V1 (hasProjectAccess).
+        $projectId = $request->query('project_id');
+        $scopes = $this->accessibleScopes($request, is_string($projectId) && $projectId !== '' ? $projectId : null);
 
         // Try each accessible workspace; a hit returns immediately. A user is
         // almost always in exactly one workspace, so this loop is one pass in
         // practice.
         $resolved = null;
-        foreach ($workspaceIds as $workspaceId) {
+        foreach ($scopes as $workspaceId => $projectIds) {
+            $workspaceId = (string) $workspaceId;
             $resolved = $this->withWorkspaceRls(
                 $workspaceId,
-                fn (): ?JsonResponse => $this->registry->resolve($sourceId, $workspaceId),
+                fn (): ?JsonResponse => $this->registry->resolve($sourceId, $workspaceId, $projectIds),
             );
 
             if ($resolved === null) {
@@ -132,24 +144,37 @@ final class CitationController extends Controller
     }
 
     /**
-     * Workspaces the authenticated user may read, derived from the same
-     * project_user membership pivot the other Api/V1 controllers gate on
-     * (User::hasProjectAccess). Falls back to a nil sentinel when the user
-     * has no memberships so tenant lookups match nothing (fail CLOSED).
+     * The (workspace, projects) pairs the request may read, derived from the
+     * same project_user membership pivot the other Api/V1 controllers gate on
+     * (User::hasProjectAccess).
      *
-     * @return list<string>
+     * With an explicit `project_id` the scope narrows to that one project, and
+     * a project the caller is not a member of yields a scope that matches
+     * nothing (so the answer is the same 404 as a missing record). Without
+     * one, every project the caller belongs to is in scope, which keeps the
+     * existing callers working while still excluding other projects'
+     * records. Falls back to a nil sentinel when there is nothing to scope to
+     * so tenant lookups match nothing (fail CLOSED).
+     *
+     * @return array<string, list<string>> workspace_id => project_ids
      */
-    private function accessibleWorkspaceIds(Request $request): array
+    private function accessibleScopes(Request $request, ?string $onlyProjectId): array
     {
-        $workspaceIds = $request->user()
+        $scopes = [];
+        $rows = $request->user()
             ->projects()
-            ->pluck('silver.projects.workspace_id')
-            ->filter()
-            ->map(fn ($id): string => (string) $id)
-            ->unique()
-            ->values()
-            ->all();
+            ->get(['silver.projects.project_id', 'silver.projects.workspace_id']);
 
-        return $workspaceIds === [] ? [self::NIL_WORKSPACE_ID] : $workspaceIds;
+        foreach ($rows as $project) {
+            if ($project->workspace_id === null) {
+                continue;
+            }
+            if ($onlyProjectId !== null && strcasecmp((string) $project->project_id, $onlyProjectId) !== 0) {
+                continue;
+            }
+            $scopes[(string) $project->workspace_id][] = (string) $project->project_id;
+        }
+
+        return $scopes === [] ? [self::NIL_WORKSPACE_ID => []] : $scopes;
     }
 }

@@ -114,6 +114,11 @@ def _is_layer3_warning(warning: str) -> bool:
     The prefixes come from the module that emits them so this and the
     severity classifier in orchestrator_validators cannot drift apart
     again — they already had, in exactly this way.
+
+    The per-sentence advisory ("Layer 3 advisory: number N cited to [X]
+    appears only in [Y]") is deliberately NOT matched: the number IS in the
+    retrieved evidence, so it is not an unverified claim and takes no x0.7
+    demotion. ``nodes._banner_reason`` still maps it to the numbers reason.
     """
     return warning.startswith(LAYER3_WARNING_PREFIXES)
 
@@ -219,9 +224,9 @@ def apply_guard_demotion(
     and is unset on fastapi-cc. One of the eight graph nodes therefore did
     nothing in production and ``demotion_reasons`` was ``[]`` on every row
     of silver.answer_runs. That mattered most in the case Stage 2 was built
-    for: one or two ungrounded numbers is below NUMERIC_RETRY_THRESHOLD, so
-    nothing retries and nothing floors, and demotion was the only remaining
-    signal.
+    for: one or two ungrounded numbers used to fall below the (since removed)
+    Layer 3 count threshold, so nothing retried and nothing floored, and
+    demotion was the only remaining signal.
 
     Returns the (possibly new) response and the reasons applied — the
     caller persists these into the lineage artifact (Step 1.5).

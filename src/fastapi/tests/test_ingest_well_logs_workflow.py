@@ -469,3 +469,85 @@ class TestFailingFixture:
                 workspace_id="not-a-uuid", project_id=PROJECT,
                 minio_key="uploads/x.las",
             )
+
+
+# ---------------------------------------------------------------------------
+# Skipped curves are reported, not just counted
+# ---------------------------------------------------------------------------
+
+class TestSkippedCurvesAreReported:
+    """las_parser records {curve, reason} for every curve it drops (length
+    mismatch, lasio read error). The workflow kept only the count and the
+    run ended 'completed', so a missing gamma curve was invisible."""
+
+    DETAILS = [
+        {"curve": "GR", "reason": "length mismatch: curve has 90 samples, depth has 100 samples"},
+        {"curve": "RHOB", "reason": "lasio read error: boom"},
+    ]
+
+    def _harness(self) -> Harness:
+        return Harness(parse=las_result(
+            curves=[curve("NPHI")], skipped_curves=2, total_curves_in_file=3,
+            skipped_details=list(self.DETAILS),
+        ))
+
+    async def test_a_curves_skipped_warning_names_each_curve_and_reason(self) -> None:
+        out = await run(self._harness())
+
+        (w,) = [w for w in out.warnings if w["code"] == "curves_skipped"]
+        for name in ("GR", "RHOB"):
+            assert name in w["detail"]
+        assert "length mismatch" in w["detail"]
+        assert "lasio read error" in w["detail"]
+        assert "2 of 3" in w["detail"]
+        assert w["curves"] == ["GR", "RHOB"]
+        assert out.curves_skipped == 2
+        assert out.curves_written == 1
+
+    async def test_the_warning_is_persisted_and_the_run_is_partial(self) -> None:
+        harness = self._harness()
+        broadcast = AsyncMock()
+        with patch.object(_progress, "broadcast_terminal", broadcast):
+            await run(harness)
+
+        persisted = harness.completed.await_args.kwargs
+        assert persisted["rows_written"] == 1
+        assert [w["code"] for w in persisted["warnings"]] == ["curves_skipped"]
+        # What mark_completed_by_run computes from these exact arguments.
+        assert _progress.terminal_status(
+            rows_written=persisted["rows_written"], warnings=persisted["warnings"],
+        ) == "partial"
+        assert broadcast.await_args.kwargs["status"] == "partial"
+
+    async def test_no_skips_stays_completed(self) -> None:
+        harness = Harness(parse=las_result())
+        broadcast = AsyncMock()
+        with patch.object(_progress, "broadcast_terminal", broadcast):
+            out = await run(harness)
+
+        assert out.warnings == []
+        assert harness.completed.await_args.kwargs["warnings"] == []
+        assert broadcast.await_args.kwargs["status"] == "completed"
+
+    async def test_a_long_skip_list_is_counted_not_dumped(self) -> None:
+        details = [{"curve": f"C{i}", "reason": "lasio read error: x"} for i in range(30)]
+        harness = Harness(parse=las_result(
+            curves=[], skipped_curves=30, total_curves_in_file=30,
+            skipped_details=details,
+        ))
+
+        out = await run(harness)
+
+        w = next(w for w in out.warnings if w["code"] == "curves_skipped")
+        assert "C0" in w["detail"] and "C29" not in w["detail"]
+        assert "+22 more" in w["detail"]
+        assert len(w["curves"]) == 30  # structured list stays complete
+
+    async def test_a_count_without_details_still_warns(self) -> None:
+        harness = Harness(parse=las_result(
+            skipped_curves=1, total_curves_in_file=2,
+        ))
+
+        out = await run(harness)
+
+        assert [w["code"] for w in out.warnings] == ["curves_skipped"]

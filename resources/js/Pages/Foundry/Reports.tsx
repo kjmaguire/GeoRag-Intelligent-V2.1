@@ -2,19 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import { importWizardHref } from '@/lib/importWizardLink';
 import DocumentBody from '@/Components/Foundry/DocumentBody';
-import {
-    PageHeader,
-    Card,
-    Pill,
-    Stat,
-    ProgressBar,
-    EmptyState,
-} from '@/Components/Foundry/primitives';
+import { PageHeader, Card, Pill, Stat, ProgressBar, EmptyState } from '@/Components/Foundry/primitives';
 import ReportsViewBar from '@/Components/Foundry/ReportsViewBar';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
-import DataQualityFlagsBadge, {
-    type DataQualityFlagsBadgeData,
-} from '@/Components/DataQualityFlagsBadge';
+import DataQualityFlagsBadge, { type DataQualityFlagsBadgeData } from '@/Components/DataQualityFlagsBadge';
 import { formatWhen } from '@/lib/time';
 
 /**
@@ -136,14 +127,23 @@ export interface QualityRollup {
 export interface ProjectOverview {
     entity_links: number;
     entity_summary: Array<{ kind: string; count: number }>;
-    recent_passages: Array<
-        Passage & { report_id: string; report_title: string }
-    >;
+    recent_passages: Array<Passage & { report_id: string; report_title: string }>;
+}
+
+interface ReportsPagination {
+    total: number;
+    page: number;
+    per_page: number;
+    last_page: number;
 }
 
 interface ReportsProps {
     project: { project_id: string; project_name: string; slug: string };
     reports: ReportListRow[];
+    // The list is one page (2026-10): `reports_pagination` carries the
+    // project-wide total and the page position; `quality.documents` is also
+    // the project total, not the page size.
+    reports_pagination?: ReportsPagination | null;
     quality: QualityRollup;
     empty: boolean;
 
@@ -186,6 +186,7 @@ const DETAIL_PROPS = [
 export default function FoundryReports({
     project,
     reports,
+    reports_pagination = null,
     quality,
     empty,
     selected_id,
@@ -203,7 +204,7 @@ export default function FoundryReports({
     // only moves the rollup.
     useWorkspaceDataUpdated(project.project_id, (event) => {
         if (event.affected_types.includes('reports')) {
-            router.reload({ only: ['reports', 'quality', 'empty', ...DETAIL_PROPS] });
+            router.reload({ only: ['reports', 'reports_pagination', 'quality', 'empty', ...DETAIL_PROPS] });
         } else if (event.affected_types.includes('quality')) {
             router.reload({ only: ['quality'] });
         }
@@ -226,13 +227,7 @@ export default function FoundryReports({
 
     return (
         <>
-            <Head
-                title={
-                    report
-                        ? `${report.title} · ${project.project_name}`
-                        : `Reports · ${project.project_name}`
-                }
-            />
+            <Head title={report ? `${report.title} · ${project.project_name}` : `Reports · ${project.project_name}`} />
 
             <div
                 className="flex-1 flex flex-col overflow-hidden"
@@ -254,7 +249,11 @@ export default function FoundryReports({
                             <Link
                                 href={importWizardHref(project.slug)}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                                style={{
+                                    color: 'var(--accent)',
+                                    background: 'var(--accent-bg)',
+                                    borderColor: 'var(--accent-dim)',
+                                }}
                                 title="Upload more documents into this project"
                             >
                                 + Add Documents
@@ -270,10 +269,7 @@ export default function FoundryReports({
                     className="flex items-center gap-3 px-8 py-2 border-b shrink-0"
                     style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
                 >
-                    <span
-                        className="text-[10px] font-mono uppercase tracking-widest"
-                        style={{ color: 'var(--fg-3)' }}
-                    >
+                    <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
                         View
                     </span>
                     <ReportsViewBar slug={project.slug} active="documents" />
@@ -283,12 +279,16 @@ export default function FoundryReports({
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No documents linked to this project yet."
-                            detail="Drop a PDF or XLSX filing into the Import Wizard — once ingested it lands in silver.reports, gets chunked into silver.document_passages, and shows up here with its ingest status."
+                            detail="Upload a PDF or XLSX report through the Import Wizard. Once it has been processed it will appear here with its import status."
                             action={
                                 <Link
                                     href={importWizardHref(project.slug)}
                                     className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                    style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                                    style={{
+                                        color: 'var(--accent)',
+                                        background: 'var(--accent-bg)',
+                                        borderColor: 'var(--accent-dim)',
+                                    }}
                                 >
                                     + Add Documents
                                 </Link>
@@ -304,6 +304,7 @@ export default function FoundryReports({
                                 reports={reports}
                                 slug={project.slug}
                                 selectedId={selected_id}
+                                pagination={reports_pagination}
                             />
 
                             <section className="flex-1 min-w-0 overflow-y-auto">
@@ -320,10 +321,7 @@ export default function FoundryReports({
                                         highlightSection={highlightSection}
                                     />
                                 ) : (
-                                    <ProjectOverviewPane
-                                        overview={overview}
-                                        slug={project.slug}
-                                    />
+                                    <ProjectOverviewPane overview={overview} slug={project.slug} />
                                 )}
                             </section>
                         </div>
@@ -338,13 +336,7 @@ export default function FoundryReports({
 /* Right pane when nothing is selected (was the /corpus "Reader" page)  */
 /* ------------------------------------------------------------------ */
 
-function ProjectOverviewPane({
-    overview,
-    slug,
-}: {
-    overview: ProjectOverview | null;
-    slug: string;
-}) {
+function ProjectOverviewPane({ overview, slug }: { overview: ProjectOverview | null; slug: string }) {
     if (!overview) {
         return (
             <div className="px-8 py-12">
@@ -358,13 +350,10 @@ function ProjectOverviewPane({
 
     return (
         <div className="px-8 py-6 space-y-3">
-            <Card
-                eyebrow="CORPUS"
-                title="What chat can see in this project"
-            >
+            <Card eyebrow="CORPUS" title="What chat can see in this project">
                 <p className="text-[12px] mb-3" style={{ color: 'var(--fg-2)' }}>
-                    Pick a document on the left to read it. Below is a sample of the
-                    passages retrieval actually draws from, newest documents first.
+                    Pick a document on the left to read it. Below is a sample of the passages retrieval actually draws
+                    from, newest documents first.
                 </p>
                 {overview.entity_summary.length > 0 && (
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -386,13 +375,10 @@ function ProjectOverviewPane({
             {overview.recent_passages.length === 0 ? (
                 <EmptyState
                     title="No indexed passages in this project yet."
-                    detail="Documents are listed on the left, but none of them has produced passages. Open one and check its Quality tab to see where ingest stopped."
+                    detail="Documents are listed on the left, but none of them has produced passages. Open one and check its Quality tab to see where processing stopped."
                 />
             ) : (
-                <Card
-                    eyebrow="SILVER · DOCUMENT_PASSAGES"
-                    title={`${overview.recent_passages.length} recent passages across documents`}
-                >
+                <Card eyebrow="PASSAGES" title={`${overview.recent_passages.length} recent passages across documents`}>
                     <div className="space-y-2">
                         {overview.recent_passages.map((p) => (
                             <Link
@@ -413,9 +399,7 @@ function ProjectOverviewPane({
                                 >
                                     <Pill tone="info">{p.report_title}</Pill>
                                     <Pill tone="neutral">ord {p.ordinal}</Pill>
-                                    {p.page_first !== null && (
-                                        <Pill tone="neutral">p.{p.page_first}</Pill>
-                                    )}
+                                    {p.page_first !== null && <Pill tone="neutral">p.{p.page_first}</Pill>}
                                 </div>
                                 <div
                                     className="text-[12px] whitespace-pre-wrap leading-relaxed line-clamp-3"
@@ -466,26 +450,25 @@ function QualityStrip({ quality }: { quality: QualityRollup }) {
                     value={String(totals.flagged)}
                     sub={totals.flagged > 0 ? 'held back' : 'clean'}
                     title={
-                        'Pages held back from indexing because OCR confidence '
-                        + 'was too low to trust. There is no triage queue yet — '
-                        + 'a cleaner scan of the same document is the way to '
-                        + 'recover them.'
+                        'Pages held back from indexing because OCR confidence ' +
+                        'was too low to trust. There is no triage queue yet — ' +
+                        'a cleaner scan of the same document is the way to ' +
+                        'recover them.'
                     }
                 />
                 <Stat
                     label="REJECTED"
                     value={String(totals.rejected)}
-                    title="Pages the ingest pipeline refused outright — unreadable, or no extractable text at all."
+                    title="Pages that could not be used at all — unreadable, or no extractable text."
                 />
                 <Stat
                     label="AWAITING OCR"
                     value={String(totals.awaiting_ocr)}
                     sub={totals.awaiting_ocr > 0 ? 'no triage queue yet' : 'none'}
                     title={
-                        'Pages routed to review rather than indexed. Nothing '
-                        + 'currently drains this queue, so the count only '
-                        + 'grows — it measures how much of the corpus chat '
-                        + 'cannot see, not work in progress.'
+                        'Scanned pages that have not been indexed. Nothing processes them ' +
+                        'automatically yet, so this count shows how much of your ' +
+                        'reports chat cannot see.'
                     }
                 />
             </section>
@@ -498,11 +481,7 @@ function QualityStrip({ quality }: { quality: QualityRollup }) {
                             {acceptPct}%
                         </span>
                     </div>
-                    <ProgressBar
-                        value={acceptPct}
-                        tone={quality.pass_gate ? 'accent' : 'warn'}
-                        height={8}
-                    />
+                    <ProgressBar value={acceptPct} tone={quality.pass_gate ? 'accent' : 'warn'} height={8} />
                 </div>
                 {quality.documents_not_retrievable > 0 && (
                     <Pill tone="danger" dot>
@@ -511,11 +490,11 @@ function QualityStrip({ quality }: { quality: QualityRollup }) {
                 )}
                 {quality.pass_gate ? (
                     <Pill tone="accent" dot>
-                        Bronze → Silver gate: PASS
+                        Ready for search
                     </Pill>
                 ) : (
                     <Pill tone="warn" dot>
-                        Gate blocked
+                        Not ready for search
                     </Pill>
                 )}
             </section>
@@ -531,11 +510,38 @@ function DocumentList({
     reports,
     slug,
     selectedId,
+    pagination,
 }: {
     reports: ReportListRow[];
     slug: string;
     selectedId: string | null;
+    pagination: ReportsPagination | null;
 }) {
+    const paged = pagination !== null && pagination.last_page > 1;
+    // A stale `?page=` past the end (documents were deleted since the link was
+    // made) shows the last page rather than an empty list: the pager reads the
+    // clamped number, and the effect below asks for that page.
+    const page = pagination ? Math.min(Math.max(pagination.page, 1), Math.max(pagination.last_page, 1)) : 1;
+    // The open document is part of the URL; paging must not close it.
+    const listUrl = `/projects/${slug}/reports${selectedId ? `/${selectedId}` : ''}`;
+    const goToPage = (target: number, replace = false) => {
+        router.get(
+            listUrl,
+            { page: target, per_page: pagination?.per_page },
+            { preserveState: true, preserveScroll: true, replace, only: ['reports', 'reports_pagination'] },
+        );
+    };
+    const beyondLastPage = pagination !== null && pagination.page > Math.max(pagination.last_page, 1);
+    useEffect(() => {
+        if (beyondLastPage) goToPage(page, true);
+        // goToPage closes over props that only matter when this fires.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [beyondLastPage, page]);
+    // Document links carry the page the list is on, so opening one does not
+    // send the reader back to page 1.
+    const pageQuery = pagination ? { page, per_page: pagination.per_page } : undefined;
+    const first = paged ? (page - 1) * pagination.per_page + 1 : 1;
+    const last = paged ? Math.min(page * pagination.per_page, pagination.total) : reports.length;
     return (
         <nav
             className="w-[320px] shrink-0 overflow-y-auto border-r"
@@ -550,8 +556,39 @@ function DocumentList({
                     background: 'var(--bg-0)',
                 }}
             >
-                {reports.length} document{reports.length === 1 ? '' : 's'}
+                {paged
+                    ? `${first}–${last} of ${pagination.total} documents`
+                    : `${reports.length} document${reports.length === 1 ? '' : 's'}`}
             </div>
+            {paged && (
+                <div
+                    className="flex items-center justify-between px-4 py-1.5 text-[11px] border-b"
+                    style={{ borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
+                    data-testid="reports-pager"
+                >
+                    <button
+                        type="button"
+                        className="font-mono uppercase tracking-wider disabled:opacity-40"
+                        disabled={page <= 1}
+                        onClick={() => goToPage(page - 1)}
+                        aria-label="Previous page of documents"
+                    >
+                        ← Prev
+                    </button>
+                    <span>
+                        Page {page} of {pagination.last_page}
+                    </span>
+                    <button
+                        type="button"
+                        className="font-mono uppercase tracking-wider disabled:opacity-40"
+                        disabled={page >= pagination.last_page}
+                        onClick={() => goToPage(page + 1)}
+                        aria-label="Next page of documents"
+                    >
+                        Next →
+                    </button>
+                </div>
+            )}
 
             {reports.map((r) => {
                 const active = r.report_id === selectedId;
@@ -559,6 +596,7 @@ function DocumentList({
                     <Link
                         key={r.report_id}
                         href={`/projects/${slug}/reports/${r.report_id}`}
+                        data={pageQuery}
                         // Only the detail pane changes, so ask for just those
                         // props and keep the list + rollup we already have.
                         // preserveScroll stops the long list jumping to top on
@@ -604,20 +642,14 @@ function DocumentList({
                                         : 'no passages'}
                             </Pill>
                             {r.passages > 0 && (
-                                <span
-                                    className="text-[10px] font-mono"
-                                    style={{ color: 'var(--fg-3)' }}
-                                >
+                                <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
                                     {r.embedded.toLocaleString()}/{r.passages.toLocaleString()}
                                 </span>
                             )}
                             {r.is_scanned && <Pill tone="warn">scanned</Pill>}
                         </div>
                         {(r.company || r.filing_date) && (
-                            <div
-                                className="mt-1.5 text-[10px] font-mono truncate"
-                                style={{ color: 'var(--fg-3)' }}
-                            >
+                            <div className="mt-1.5 text-[10px] font-mono truncate" style={{ color: 'var(--fg-3)' }}>
                                 {[r.company, r.filing_date ? r.filing_date.slice(0, 10) : null]
                                     .filter(Boolean)
                                     .join(' · ')}
@@ -705,10 +737,7 @@ function DetailPane({
             </div>
 
             <div className="px-8">
-                <div
-                    className="flex items-center gap-1 border-b"
-                    style={{ borderColor: 'var(--line-1)' }}
-                >
+                <div className="flex items-center gap-1 border-b" style={{ borderColor: 'var(--line-1)' }}>
                     {TABS.map((t) => {
                         const count =
                             t.id === 'sections'
@@ -728,16 +757,12 @@ function DetailPane({
                                 className="px-3 py-2 text-[11px] font-mono uppercase tracking-wider transition-colors"
                                 style={{
                                     color: tab === t.id ? 'var(--accent)' : 'var(--fg-2)',
-                                    borderBottom:
-                                        '2px solid ' +
-                                        (tab === t.id ? 'var(--accent)' : 'transparent'),
+                                    borderBottom: '2px solid ' + (tab === t.id ? 'var(--accent)' : 'transparent'),
                                 }}
                             >
                                 {t.label}
                                 {count !== null && count > 0 && (
-                                    <span style={{ color: 'var(--fg-3)', marginLeft: 6 }}>
-                                        {count}
-                                    </span>
+                                    <span style={{ color: 'var(--fg-3)', marginLeft: 6 }}>{count}</span>
                                 )}
                             </button>
                         );
@@ -747,11 +772,7 @@ function DetailPane({
 
             <div className="px-8 py-6 space-y-3">
                 {tab === 'sections' && (
-                    <SectionsTab
-                        sections={sections}
-                        metadataOnly={metadataOnly}
-                        highlightHeading={highlightSection}
-                    />
+                    <SectionsTab sections={sections} metadataOnly={metadataOnly} highlightHeading={highlightSection} />
                 )}
                 {tab === 'passages' && (
                     <PassagesTab
@@ -804,7 +825,7 @@ function QualityTab({
                         {status === 'ok'
                             ? 'Every passage is embedded — chat can retrieve from this document.'
                             : status === 'warn'
-                              ? 'Some passages are not embedded yet. The embed sweep runs every 10 minutes; if this does not clear, check the ingest run.'
+                              ? 'Some passages are not embedded yet. Search indexing runs every 10 minutes; if this does not clear, check the ingest run.'
                               : status === 'error'
                                 ? 'Passages exist but none are embedded, so chat cannot retrieve this document at all.'
                                 : 'No passages were written for this document — the parse produced nothing to index.'}
@@ -816,22 +837,20 @@ function QualityTab({
                     <MetaRow
                         label="Embedded"
                         value={`${embedded.toLocaleString()}${
-                            passages > 0
-                                ? ` (${Math.round((embedded / passages) * 100)}%)`
-                                : ''
+                            passages > 0 ? ` (${Math.round((embedded / passages) * 100)}%)` : ''
                         }`}
                     />
                     <MetaRow label="Pages" value={report.page_count?.toLocaleString() ?? '—'} />
                     <MetaRow label="Scanned" value={report.is_scanned ? 'yes' : 'no'} />
                     {/*
-                      * parse_quality_pct is a FRACTION of the 17-section NI 43-101
-                      * baseline (pdf_report.py NI43_BASELINE_SECTIONS), not a
-                      * percentage, and may exceed 1.0. It measures STRUCTURAL
-                      * coverage, not extraction quality — a document that isn't
-                      * shaped like an NI 43-101 scores low while having parsed
-                      * perfectly — so it is reported here as a neutral fact and
-                      * deliberately does not drive the status above.
-                      */}
+                     * parse_quality_pct is a FRACTION of the 17-section NI 43-101
+                     * baseline (pdf_report.py NI43_BASELINE_SECTIONS), not a
+                     * percentage, and may exceed 1.0. It measures STRUCTURAL
+                     * coverage, not extraction quality — a document that isn't
+                     * shaped like an NI 43-101 scores low while having parsed
+                     * perfectly — so it is reported here as a neutral fact and
+                     * deliberately does not drive the status above.
+                     */}
                     <MetaRow
                         label="NI 43-101 coverage"
                         value={
@@ -841,16 +860,16 @@ function QualityTab({
                         }
                     />
                     {/*
-                      * The extraction number, and the one the row above is
-                      * routinely mistaken for. A report whose table of
-                      * contents yielded 17 headings while 300 pages OCR'd
-                      * to nothing shows 100% above and near 0% here — which
-                      * is the combination worth catching, and was invisible
-                      * while only the first was stored.
-                      *
-                      * '—' means not measured (ingested before the column
-                      * existed), which is deliberately distinct from 0%.
-                      */}
+                     * The extraction number, and the one the row above is
+                     * routinely mistaken for. A report whose table of
+                     * contents yielded 17 headings while 300 pages OCR'd
+                     * to nothing shows 100% above and near 0% here — which
+                     * is the combination worth catching, and was invisible
+                     * while only the first was stored.
+                     *
+                     * '—' means not measured (ingested before the column
+                     * existed), which is deliberately distinct from 0%.
+                     */}
                     <MetaRow
                         label="Text extracted"
                         value={
@@ -860,44 +879,31 @@ function QualityTab({
                         }
                     />
                     {/*
-                      * parser_used is the BASE parser — the stored value
-                      * 'fitz' means the native text layer was read, by
-                      * pypdfium2 (PyMuPDF, once imported as fitz, was removed
-                      * for its AGPL licence). It is not the OCR engine: the
-                      * per-page engine lives in document_passages.ocr_method.
-                      * The display name comes from App\Support\ExtractionMethods.
-                      */}
+                     * parser_used is the BASE parser — the stored value
+                     * 'fitz' means the native text layer was read, by
+                     * pypdfium2 (PyMuPDF, once imported as fitz, was removed
+                     * for its AGPL licence). It is not the OCR engine: the
+                     * per-page engine lives in document_passages.ocr_method.
+                     * The display name comes from App\Support\ExtractionMethods.
+                     */}
                     <MetaRow label="Base parser" value={report.parser_label || report.parser_used || '—'} />
                 </div>
             </Card>
 
             {flags && flags.open_total > 0 && (
-                <Card
-                    eyebrow={`DATA QUALITY · ${flags.open_total} OPEN`}
-                    title="Flags on this document"
-                >
+                <Card eyebrow={`DATA QUALITY · ${flags.open_total} OPEN`} title="Flags on this document">
                     <div className="space-y-2">
                         {flags.flags.map((f) => (
-                            <div
-                                key={String(f.flag_id)}
-                                className="flex items-start gap-2 text-[12px]"
-                            >
+                            <div key={String(f.flag_id)} className="flex items-start gap-2 text-[12px]">
                                 <Pill
                                     tone={
-                                        f.severity === 'ERROR'
-                                            ? 'danger'
-                                            : f.severity === 'WARNING'
-                                              ? 'warn'
-                                              : 'info'
+                                        f.severity === 'ERROR' ? 'danger' : f.severity === 'WARNING' ? 'warn' : 'info'
                                     }
                                 >
                                     {f.severity}
                                 </Pill>
                                 <div>
-                                    <div
-                                        className="font-mono text-[11px]"
-                                        style={{ color: 'var(--fg-1)' }}
-                                    >
+                                    <div className="font-mono text-[11px]" style={{ color: 'var(--fg-1)' }}>
                                         {f.flag_type}
                                     </div>
                                     <div style={{ color: 'var(--fg-2)' }}>{f.description}</div>
@@ -914,10 +920,7 @@ function QualityTab({
 function MetaRow({ label, value }: { label: string; value: string }) {
     return (
         <div className="contents">
-            <div
-                className="font-mono text-[10px] uppercase tracking-wider pt-0.5"
-                style={{ color: 'var(--fg-3)' }}
-            >
+            <div className="font-mono text-[10px] uppercase tracking-wider pt-0.5" style={{ color: 'var(--fg-3)' }}>
                 {label}
             </div>
             <div className="font-mono" style={{ color: 'var(--fg-0)' }}>
@@ -948,10 +951,10 @@ function SectionsTab({
     if (sections.length === 0) {
         return (
             <EmptyState
-                title="No sections_text on this document yet."
+                title="No text sections for this document yet."
                 detail={
                     metadataOnly
-                        ? "This silver.reports row exists as metadata only — the source filing was either not parsed yet, scanned-image (Tier 2 OCR pending), or the §04p PDF stack hasn't run on it. Once it runs, structured sections + chunked passages will populate here."
+                        ? "Only the report's details are on file so far. The document may not have been processed yet, or it may be a scanned image still waiting for text recognition. Once processing finishes, its sections and searchable passages will appear here."
                         : 'Sections are empty but indexed passages exist — switch to the Passages tab.'
                 }
             />
@@ -965,14 +968,10 @@ function SectionsTab({
                     <div
                         key={s.index}
                         ref={isHighlighted ? highlightRef : undefined}
-                        style={
-                            isHighlighted
-                                ? { outline: '2px solid var(--accent)', borderRadius: 8 }
-                                : undefined
-                        }
+                        style={isHighlighted ? { outline: '2px solid var(--accent)', borderRadius: 8 } : undefined}
                     >
                         <Card
-                            eyebrow={`§ ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
+                            eyebrow={`SECTION ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
                             title={s.heading || 'Untitled section'}
                         >
                             {/* Not `whitespace-pre-wrap` on the raw string:
@@ -1096,7 +1095,7 @@ function OriginalTab({
                 title="No original stored for this document."
                 detail={
                     state.reason === 'presign_failed'
-                        ? 'The bronze object is recorded but a download URL could not be minted. Check the s3-bronze disk credentials.'
+                        ? 'The original file is on record, but a download link could not be created. Ask your administrator to check file storage access.'
                         : 'This document was ingested before the source object key was recorded, so there is no file to show beside the extracted text. Re-ingesting it will populate the link.'
                 }
             />
@@ -1109,7 +1108,7 @@ function OriginalTab({
 
     return (
         <Card
-            eyebrow="BRONZE · ORIGINAL"
+            eyebrow="ORIGINAL FILE"
             title={source.filename ?? report.title}
             className="flex flex-col min-h-0"
             contentClassName="flex flex-col min-h-0"
@@ -1134,9 +1133,7 @@ function OriginalTab({
                         }}
                     />
                 </label>
-                {pageCount !== null && (
-                    <span style={{ color: 'var(--fg-3)' }}>of {pageCount.toLocaleString()}</span>
-                )}
+                {pageCount !== null && <span style={{ color: 'var(--fg-3)' }}>of {pageCount.toLocaleString()}</span>}
                 <span className="ml-auto" style={{ color: 'var(--fg-3)' }}>
                     Open a passage&rsquo;s page pill to jump here
                 </span>
@@ -1171,16 +1168,16 @@ function PassagesTab({
         return (
             <EmptyState
                 title="No indexed passages for this document."
-                detail="silver.document_passages holds no rows whose document_id is this report. The §04p PDF stack chunks PDFs into passages — re-run ingest or check the Quality tab."
+                detail="This document has not been split into searchable passages yet. Re-import it, or check the Quality tab for processing problems."
             />
         );
     }
     const title =
         total > passages.length
-            ? `${total} chunked passages (first ${passages.length})`
-            : `${total} chunked passages`;
+            ? `${total} searchable passages (first ${passages.length})`
+            : `${total} searchable passages`;
     return (
-        <Card eyebrow="SILVER · DOCUMENT_PASSAGES" title={title}>
+        <Card eyebrow="PASSAGES" title={title}>
             <div className="space-y-2">
                 {passages.map((p) => (
                     <div
@@ -1203,18 +1200,14 @@ function PassagesTab({
                                     >
                                         <Pill tone="info">
                                             p.{p.page_first}
-                                            {p.page_last && p.page_last !== p.page_first
-                                                ? `-${p.page_last}`
-                                                : ''}
+                                            {p.page_last && p.page_last !== p.page_first ? `-${p.page_last}` : ''}
                                             {' ↗'}
                                         </Pill>
                                     </button>
                                 ) : (
                                     <Pill tone="info">
                                         p.{p.page_first}
-                                        {p.page_last && p.page_last !== p.page_first
-                                            ? `-${p.page_last}`
-                                            : ''}
+                                        {p.page_last && p.page_last !== p.page_first ? `-${p.page_last}` : ''}
                                     </Pill>
                                 ))}
                             {p.chunk_kind && <Pill tone="neutral">{p.chunk_kind}</Pill>}
@@ -1239,31 +1232,23 @@ function FiguresTab({ figures }: { figures: Figure[] }) {
             <EmptyState
                 title="No figures extracted from this document yet."
                 detail={
-                    'The current §04p ingest pipeline preserves text, tables, page ' +
-                    'coordinates, and OCR provenance. Automated figure-region ' +
-                    'extraction is not currently enabled.'
+                    'Text, tables, and page positions are extracted from reports, ' +
+                    'but figures and maps are not pulled out automatically yet. ' +
+                    'Open the original document to see them.'
                 }
             />
         );
     }
 
     return (
-        <div
-            className="grid gap-4"
-            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}
-        >
+        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
             {figures.map((f) => (
                 <figure
                     key={f.key}
                     className="rounded border overflow-hidden"
                     style={{ borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}
                 >
-                    <a
-                        href={f.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={`Open full size · ${f.key}`}
-                    >
+                    <a href={f.url} target="_blank" rel="noopener noreferrer" title={`Open full size · ${f.key}`}>
                         <img
                             src={f.url}
                             alt={f.caption || `Figure ${f.idx + 1}`}
@@ -1285,10 +1270,7 @@ function FiguresTab({ figures }: { figures: Figure[] }) {
                         <div style={{ color: 'var(--fg-1)' }}>
                             {f.caption || <em style={{ color: 'var(--fg-3)' }}>no caption</em>}
                         </div>
-                        <div
-                            className="mt-1 flex items-center justify-between"
-                            style={{ color: 'var(--fg-3)' }}
-                        >
+                        <div className="mt-1 flex items-center justify-between" style={{ color: 'var(--fg-3)' }}>
                             <span>FIG {String(f.idx + 1).padStart(3, '0')}</span>
                             <span>{f.page !== null ? `p. ${f.page}` : ''}</span>
                         </div>
@@ -1313,7 +1295,7 @@ function MetadataTab({ report }: { report: ReportDetail }) {
         ['Last updated', formatWhen(report.updated_at)],
     ];
     return (
-        <Card eyebrow="SILVER · REPORTS" title="Metadata">
+        <Card eyebrow="REPORT" title="Metadata">
             <div className="grid grid-cols-[180px_1fr] gap-y-2 text-[12px]">
                 {rows.map(([k, v]) => (
                     <MetaRow key={k} label={k} value={v} />

@@ -13,18 +13,22 @@ For every passage row in `silver.document_passages` where
 `embedding_id IS NULL`:
 
   1. Encode the text (dense, 1024-dim, normalized), branching inline on
-     EMBEDDING_BACKEND: "foundry" -> Cohere Embed v4
-     (input_type="search_document"), else the self-hosted
+     EMBEDDING_BACKEND: "cohere" -> Cohere Embed 5 on Cohere's own API
+     (input_type="search_document"; ADR-0025), "bedrock" -> Cohere Embed v4
+     on Bedrock (the rollback), else the self-hosted
      Qwen/Qwen3-Embedding-0.6B fallback. Documents are encoded RAW — the
      query-side "Instruct: ...\nQuery: ..." template (self-hosted path) /
-     input_type="search_query" (foundry path) is asymmetric and applied only
+     input_type="search_query" (hosted paths) is asymmetric and applied only
      on retrieval (see tools.search_documents). Documents must NOT carry the
      query-side treatment or the query/document vectors live in different
      subspaces.
   2. Encode via SPLADE++ (sparse, named "text")
   3. Upsert to Qdrant `georag_chunks` with payload:
        { report_id, project_id, workspace_id,
-         section_number, section_title, text }
+         section_number, section_title, text, embed_model, ... }
+     ``embed_model`` names the model that produced the dense vector, so a
+     collection holding two vector spaces can be detected from the data
+     (ADR-0025 migration step 6).
   4. Update `silver.document_passages.embedding_id` with the Qdrant point ID
 
 Collection schema (post 2026-06-03 Qwen3-Embedding swap):
@@ -48,6 +52,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 
 import asyncpg
 from qdrant_client import AsyncQdrantClient
@@ -96,6 +101,93 @@ _REQUIRED_WHEN_PARENTED = ("report_id",)
 _ORPHAN_TITLE_KEYS = ("document_title", "section_title", "project_name")
 
 
+#: Rows fetched per page of the pending backlog. The batches inside a page
+#: still run `concurrency` at a time; this only bounds how much passage text
+#: is resident at once.
+PENDING_PAGE_SIZE = 2000
+
+
+def pending_page_query(
+    base_query: str,
+    base_params: list,
+    *,
+    cursor: tuple[datetime | None, str] | None,
+    limit: int,
+) -> tuple:
+    """``(sql, *params)`` for one page of the pending-passage backlog.
+
+    ``base_query`` is the SELECT ... WHERE through the project filter (its
+    only placeholder, if any, is ``$1``). The page is ordered by
+    ``(created_at, passage_id)`` ascending and resumes strictly after
+    ``cursor`` -- the last row of the previous page -- which is the shape of
+    ``idx_document_passages_pending_created (workspace_id, created_at,
+    passage_id) WHERE embedding_id IS NULL``.
+
+    ``created_at`` is nullable in this table, and in a row-value comparison a
+    NULL makes the whole predicate NULL, which would silently drop those rows
+    from every page after the first. ORDER BY ascending sorts NULLs LAST, so
+    they form a tail group: while the cursor is in the non-NULL group the
+    predicate also admits ``created_at IS NULL``, and once the cursor is in
+    the NULL group it pages on ``passage_id`` alone.
+    """
+    params: list = list(base_params)
+    sql = base_query
+    if cursor is not None:
+        cursor_created_at, cursor_passage_id = cursor
+        n = len(params)
+        if cursor_created_at is None:
+            sql += f" AND dp.created_at IS NULL AND dp.passage_id > ${n + 1}::uuid "
+            params.append(cursor_passage_id)
+        else:
+            sql += (
+                f" AND ((dp.created_at, dp.passage_id) > (${n + 1}::timestamp, ${n + 2}::uuid) "
+                f"      OR dp.created_at IS NULL) "
+            )
+            params.extend([cursor_created_at, cursor_passage_id])
+    sql += f" ORDER BY dp.created_at ASC, dp.passage_id ASC LIMIT {int(limit)}"
+    return (sql, *params)
+
+
+#: Passages whose sparse encode already failed in this process, kept ONLY to
+#: log each one once. Not a retry counter and never consulted for behaviour.
+_SPARSE_FAILURE_LOGGED: set[str] = set()
+_SPARSE_FAILURE_LOG_CAP = 10_000
+
+
+def _log_sparse_failure_once(passage_id: str) -> None:
+    """One ERROR per passage per process for a sparse-encode failure.
+
+    A passage whose sparse encode fails is left unembedded (RAG-11: never
+    written dense-only) and its dense vector is thrown away, so the next sweep
+    -- every ten minutes -- encodes it again, forever, if the failure is about
+    that passage rather than about the sidecar. A transient sidecar outage and
+    a passage the encoder cannot handle look identical from here.
+
+    TODO(embed_attempts): the right fix is a per-row attempt counter that
+    stops retrying after N tries and raises a DQ flag. silver.document_passages
+    has no column for it and no JSONB/metadata column to hold one (checked
+    2026-10-04: the table carries only embedding_id, ocr_*, page_*, modality,
+    image_object_key, contextualized_content, parent_chunk_id, verbalized_at,
+    project_id), and an in-memory or Redis tally is not acceptable because the
+    count must survive restarts and be shared by workers. Needed:
+    ``silver.document_passages.embed_attempts smallint NOT NULL DEFAULT 0`` (a
+    Laravel migration), incremented here and excluded from the pending query
+    once it passes the cap. Until it exists this only makes the loop visible.
+    """
+    if passage_id in _SPARSE_FAILURE_LOGGED:
+        return
+    if len(_SPARSE_FAILURE_LOGGED) >= _SPARSE_FAILURE_LOG_CAP:
+        _SPARSE_FAILURE_LOGGED.clear()
+    _SPARSE_FAILURE_LOGGED.add(passage_id)
+    log.error(
+        "embed_pending.sparse_encode_retry_loop passage=%s: sparse encode "
+        "failed; the passage stays unembedded and is retried every sweep with "
+        "no attempt limit (needs silver.document_passages.embed_attempts -- "
+        "see _log_sparse_failure_once). Logged once per passage per process.",
+        passage_id,
+    )
+
+
 @dataclass
 class EmbeddingSyncResult:
     workspace_id: str
@@ -125,11 +217,17 @@ def _is_request_rejection(exc: BaseException) -> bool:
     """True when the embedding host refused the REQUEST as invalid.
 
     Bedrock answers a body it will not take (an over-long or otherwise
-    unacceptable text) with ``ValidationException``; the self-hosted sidecar
-    answers 400/422. Everything else -- throttling, 5xx, auth, a network
+    unacceptable text) with ``ValidationException``; Cohere's own API and the
+    self-hosted sidecar answer 400/422. Everything else -- throttling, 5xx, auth, a network
     error -- is about the call, not the texts, and bisecting would only
     multiply it.
     """
+    from app.services.embedding import CohereEmbeddingHttpError
+
+    if isinstance(exc, CohereEmbeddingHttpError):
+        # Cohere's own API: _CohereEmbedding raises this for any non-retryable
+        # non-2xx, so the status is all there is to classify on.
+        return exc.status_code in (400, 422)
     response = getattr(exc, "response", None)
     if isinstance(response, dict):
         error = response.get("Error")
@@ -171,6 +269,21 @@ def encode_isolating_rejections(encode, texts: list[str]) -> list[list[float] | 
 _dsn = build_dsn
 
 
+def embed_model_tag(model) -> str:
+    """The ``embed_model`` payload value for points ``model`` writes.
+
+    The hosted adapters expose ``model_name`` (``embed-v5.0-pro``,
+    ``cohere.embed-v4:0``). The local SentenceTransformer and the sidecar proxy
+    do not, and they only ever serve ``settings.EMBEDDING_MODEL_NAME``.
+    """
+    name = getattr(model, "model_name", None)
+    if isinstance(name, str) and name:
+        return name
+    from app.config import settings
+
+    return settings.EMBEDDING_MODEL_NAME
+
+
 def load_embedding_model():
     """Construct the backend-aware embedding model (F28, 2026-08-11).
 
@@ -190,6 +303,13 @@ def load_embedding_model():
 
     reject_retired_backend(EMBEDDING_BACKEND, setting="EMBEDDING_BACKEND")
 
+    if EMBEDDING_BACKEND == "cohere":
+        # The SAME object get_embedding_model() builds on the query path: both
+        # go through build_cohere_embedding(), so model, dimension and key
+        # cannot drift between the two (ADR-0025 gotcha 1).
+        from app.services.embedding import build_cohere_embedding
+
+        return build_cohere_embedding()
     if EMBEDDING_BACKEND == "bedrock":
         # No local model load at all — Cohere Embed v4 on Amazon Bedrock.
         # .encode(texts, normalize_embeddings=True, show_progress_bar=False)
@@ -331,7 +451,7 @@ async def embed_pending_passages(
             # no engine confidence exists — text layer, or Cohere Parse,
             # which reports none (ADR-0019); ocr_method discriminates.
             "       dp.ocr_confidence, dp.ocr_method, dp.ocr_status, "
-            "       dp.chunk_kind, "
+            "       dp.chunk_kind, dp.created_at AS created_at, "
             # Multimodal (2026-08-18) — modality selects the encoder below:
             # 'text' takes the batched Cohere text path, 'image' fetches the
             # stored page render and takes the single-image path. Both land
@@ -367,20 +487,41 @@ async def embed_pending_passages(
             "   AND (dp.ocr_status IS NULL "
             "        OR dp.ocr_status NOT IN ('rejected', 'pending_reocr')) "
         )
-        params: list = []
+        base_query = query
+        base_params: list = []
         if project_id:
             # When a specific project is requested, we keep the original
             # INNER-JOIN semantics: only passages with a parent report
             # in that project. Public-geo passages have no project so
             # they fall outside this scope (intentionally).
-            query += " AND COALESCE(r.project_id, dp.project_id) = $1::uuid "
-            params.append(project_id)
-        query += " ORDER BY dp.created_at ASC"
-        if max_passages:
-            query += f" LIMIT {int(max_passages)}"
+            base_query += " AND COALESCE(r.project_id, dp.project_id) = $1::uuid "
+            base_params.append(project_id)
 
-        rows = await pg_conn.fetch(query, *params)
-        result.passages_seen = len(rows)
+        # Paged, not loaded whole. This used to fetch the ENTIRE pending
+        # backlog (`max_passages` defaults to None) into memory in one
+        # round-trip: after a bulk import or a re-embed that is every
+        # passage's full text plus contextualized_content, held at once on
+        # the worker. Pages of PENDING_PAGE_SIZE rows are keyset-paged on
+        # (created_at, passage_id), the shape of
+        # idx_document_passages_pending_created. A keyset cursor (rather than
+        # re-running "WHERE embedding_id IS NULL LIMIT n") is what keeps a
+        # passage that was SKIPPED this run (rejected text, failed sparse
+        # encode, failed image) from being fetched again on the next page and
+        # looping forever.
+        async def _fetch_page(
+            cursor: tuple[datetime | None, str] | None, limit: int,
+        ) -> list:
+            return await pg_conn.fetch(
+                *pending_page_query(
+                    base_query, base_params, cursor=cursor, limit=limit,
+                )
+            )
+
+        page_limit = (
+            min(PENDING_PAGE_SIZE, int(max_passages))
+            if max_passages else PENDING_PAGE_SIZE
+        )
+        rows = await _fetch_page(None, page_limit)
 
         if not rows:
             log.info("embed_pending.no_pending_passages workspace=%s project=%s",
@@ -403,13 +544,15 @@ async def embed_pending_passages(
 
         from app.services.sparse_encoder import encode_sparse
 
+        _embed_model_tag = embed_model_tag(embedding_model)
+
         def _encode_dense_sync(texts: list[str]):
             return embedding_model.encode(
                 texts, normalize_embeddings=True, show_progress_bar=False,
             ).tolist()
 
         def _encode_image_sync(rows: list) -> list[list[float] | None]:
-            """Dense-encode page-image passages, one Embed v4 call per page.
+            """Dense-encode page-image passages, one embed call per page.
 
             Returns None in a slot whose image could not be embedded (missing
             object, unreadable render, model rejection). The caller SKIPS
@@ -437,13 +580,14 @@ async def embed_pending_passages(
                     png = storage.get_bytes(Bucket.BRONZE_RASTER, key)
                     out.append(embedding_model.embed_image(png).tolist())
                 except AttributeError:
-                    # The active embedding backend is not Embed v4 (local
-                    # SentenceTransformer or the sidecar proxy — neither has
-                    # embed_image). This is a configuration error, not a data
+                    # The active embedding backend is not a hosted Cohere one
+                    # (local SentenceTransformer or the sidecar proxy — neither
+                    # has embed_image). This is a configuration error, not a data
                     # error, and it would otherwise repeat per row per sweep.
                     log.error(
                         "embed_pending.image_backend_unsupported — image passages "
-                        "require EMBEDDING_BACKEND=foundry (Cohere Embed v4); "
+                        "require EMBEDDING_BACKEND=cohere (Cohere Embed 5) or "
+                        "bedrock (Cohere Embed v4); "
                         "skipping %d image passage(s) in this batch", len(rows),
                     )
                     out.extend([None] * (len(rows) - len(out)))
@@ -479,8 +623,8 @@ async def embed_pending_passages(
         loop = asyncio.get_running_loop()
         executor = ThreadPoolExecutor(max_workers=concurrency)
         pg_lock = asyncio.Lock()
-        batches = [rows[i:i + batch_size] for i in range(0, len(rows), batch_size)]
-        total_batches = len(batches)
+        batches: list = []
+        total_batches = 0  # re-bound per page below; read by _process_batch's log line
 
         async def _process_batch(batch_no: int, batch, *, first: bool) -> None:
             # Multimodal split (2026-08-18). Text and image passages take
@@ -535,6 +679,7 @@ async def embed_pending_passages(
                         # the same rule the image path follows below, and
                         # the ingest-side mirror of GI-11.
                         sparse_failed += 1
+                        _log_sparse_failure_once(batch[i]["passage_id"])
                         continue
                     dense_by_idx[i] = dense_vectors[pos]
                     if sv:
@@ -609,6 +754,13 @@ async def embed_pending_passages(
                     "modality": row["modality"] or "text",
                     "page_number": row["page_number"],
                     "image_object_key": row["image_object_key"],
+                    # The model that produced THIS point's dense vector — text
+                    # and image points alike (ADR-0025). A collection holding
+                    # two vector spaces still returns results, ranked by
+                    # meaningless cosines; this tag is what makes "zero points
+                    # lack embed_model = <new model>" a count rather than an
+                    # inference.
+                    "embed_model": _embed_model_tag,
                 }
                 # Pre-upsert payload contract assertion. Failing here is a
                 # programmer error (the writer dropped a key it shouldn't have);
@@ -757,23 +909,51 @@ async def embed_pending_passages(
                 result.passages_embedded,
             )
 
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _guarded(i: int, b) -> None:
+            async with sem:
+                await _process_batch(i, b, first=False)
+
         try:
-            # First batch runs alone: wait=True upsert + payload-contract
-            # verify establish the collection is healthy before fanning out.
-            await _process_batch(0, batches[0], first=True)
-            if len(batches) > 1:
-                sem = asyncio.Semaphore(concurrency)
+            fetched_total = 0
+            first_page = True
+            while rows:
+                result.passages_seen += len(rows)
+                fetched_total += len(rows)
+                batches = [rows[i:i + batch_size] for i in range(0, len(rows), batch_size)]
+                total_batches = len(batches)
+                rest = batches
+                if first_page:
+                    # First batch of the RUN runs alone: wait=True upsert +
+                    # payload-contract verify establish the collection is
+                    # healthy before fanning out.
+                    await _process_batch(0, batches[0], first=True)
+                    rest = batches[1:]
+                if rest:
+                    offset = 1 if first_page else 0
+                    # gather without return_exceptions: a payload-contract
+                    # RuntimeError must abort the run loudly (matching the old
+                    # serial behaviour); per-batch encode/upsert failures are
+                    # already caught inside _process_batch.
+                    await asyncio.gather(
+                        *(_guarded(i, b) for i, b in enumerate(rest, start=offset))
+                    )
+                first_page = False
 
-                async def _guarded(i: int, b) -> None:
-                    async with sem:
-                        await _process_batch(i, b, first=False)
-
-                # gather without return_exceptions: a payload-contract
-                # RuntimeError must abort the run loudly (matching the old
-                # serial behaviour); per-batch encode/upsert failures are
-                # already caught inside _process_batch.
-                await asyncio.gather(
-                    *(_guarded(i, b) for i, b in enumerate(batches[1:], start=1))
+                # Exhausted: a short page, or the caller's max_passages cap.
+                if len(rows) < page_limit:
+                    break
+                remaining = (
+                    int(max_passages) - fetched_total if max_passages else None
+                )
+                if remaining is not None and remaining <= 0:
+                    break
+                last = rows[-1]
+                rows = await _fetch_page(
+                    (last["created_at"], last["passage_id"]),
+                    min(PENDING_PAGE_SIZE, remaining)
+                    if remaining is not None else PENDING_PAGE_SIZE,
                 )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)

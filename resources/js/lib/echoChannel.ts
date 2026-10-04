@@ -43,11 +43,7 @@ const refCounts = new Map<string, number>();
  *          Reverb), which is the same graceful degradation every caller
  *          already implemented for itself.
  */
-export function listenPrivate(
-    channelName: string,
-    eventName: string,
-    handler: (payload: unknown) => void,
-): () => void {
+export function listenPrivate(channelName: string, eventName: string, handler: (payload: unknown) => void): () => void {
     const echo = typeof window === 'undefined' ? undefined : window.Echo;
     if (!echo) return () => {};
 

@@ -225,4 +225,81 @@ final class SourcesControllerTest extends TestCase
                     ->where('empty', true),
             );
     }
+
+    public function test_low_confidence_pages_are_counted_from_document_passages(): void
+    {
+        $reportId = $this->insertReportViaLivePipelineShape('Scanned NI 43-101', passages: 0);
+        // Pages 1-3; page 2 is flagged by the OCR quality router, and carries
+        // two passages (still one page). An image-modality row is not a page read.
+        foreach ([[1, 'accepted'], [2, 'low_confidence'], [2, 'low_confidence'], [3, 'accepted']] as $i => [$page, $status]) {
+            DB::table('silver.document_passages')->insert([
+                'passage_id' => (string) Str::uuid(),
+                'document_id' => $reportId,
+                'workspace_id' => $this->workspaceId,
+                'revision_number' => 1,
+                'text' => "page {$page} passage {$i}",
+                'text_hash' => str_pad((string) $i, 64, 'a', STR_PAD_LEFT),
+                'ordinal' => $i,
+                'page_first' => $page,
+                'page_last' => $page,
+                'ocr_status' => $status,
+                'modality' => 'text',
+            ]);
+        }
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/sources")
+            ->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $page
+                ->where('stats.total_pages_reviewed', 3)
+                ->where('stats.low_confidence_pages', 1));
+    }
+
+    public function test_plss_sections_come_only_from_this_projects_provenance(): void
+    {
+        $mine = $this->insertReportViaLivePipelineShape('Archive report', passages: 0);
+
+        $otherProject = Project::factory()->create();
+        DB::statement(
+            'UPDATE silver.projects SET workspace_id = ?::uuid WHERE project_id = ?::uuid',
+            [$this->workspaceId, $otherProject->project_id],
+        );
+        $otherReport = (string) Str::uuid();
+        DB::table('silver.reports')->insert([
+            'report_id' => $otherReport,
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $otherProject->project_id,
+            'title' => 'Someone else',
+            'version' => 1,
+            'qp_name' => '{}',
+        ]);
+
+        foreach ([[$mine, '/archive/extract/028N079W36/a.pdf'], [$otherReport, '/archive/extract/033N089W28/b.pdf']] as [$targetId, $path]) {
+            DB::table('bronze.provenance')->insert([
+                'target_schema' => 'silver',
+                'target_table' => 'reports',
+                'target_id' => $targetId,
+                'source_file' => $path,
+                'source_file_sha256' => str_repeat('a', 64),
+                'parser_name' => 'archive',
+                'parser_version' => '1',
+                'workspace_id' => $this->workspaceId,
+            ]);
+        }
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/sources")
+            ->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $page->where('stats.sections', ['028N079W36']));
+    }
+
+    public function test_a_project_with_no_provenance_gets_an_empty_section_list(): void
+    {
+        $this->insertReportViaLivePipelineShape('Plain PDF', passages: 1);
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/sources")
+            ->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $page->where('stats.sections', []));
+    }
 }

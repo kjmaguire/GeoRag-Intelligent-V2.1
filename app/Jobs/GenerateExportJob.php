@@ -51,6 +51,9 @@ class GenerateExportJob implements ShouldQueue
      */
     public int $tries = 1;
 
+    /** User-facing reason stored when generation throws; never the raw exception text. */
+    public const GENERIC_FAILURE_MESSAGE = 'Export failed unexpectedly. Please request it again.';
+
     public function __construct(
         private readonly string $exportId,
     ) {}
@@ -118,9 +121,13 @@ class GenerateExportJob implements ShouldQueue
                 'trace' => $e->getTraceAsString(),
             ]);
 
+            // error_message is API-visible (ExportController returns the
+            // model), and a raw exception message can carry SQL, file system
+            // paths or an internal URL. The detail is in the log line above;
+            // the row gets a neutral reason. failed() will not overwrite it.
             $export->update([
                 'status' => 'failed',
-                'error_message' => $e->getMessage(),
+                'error_message' => self::GENERIC_FAILURE_MESSAGE,
             ]);
 
             throw $e;
@@ -151,7 +158,7 @@ class GenerateExportJob implements ShouldQueue
                 $this->timeout,
             ),
             $exception instanceof MaxAttemptsExceededException => 'Export was interrupted before it finished. Please request it again.',
-            default => 'Export failed unexpectedly. Please request it again.',
+            default => self::GENERIC_FAILURE_MESSAGE,
         };
 
         $updated = Export::query()

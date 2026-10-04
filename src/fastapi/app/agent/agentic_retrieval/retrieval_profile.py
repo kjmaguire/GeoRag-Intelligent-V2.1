@@ -6,8 +6,6 @@ Each of the six intents maps to a :class:`RetrievalProfile` that controls
   - ``primary_tools`` — which tools to invoke unconditionally
   - ``secondary_tools`` — extra tools to invoke when the intent demands
     broader coverage (e.g. hypothesis-generation's adversarial pass)
-  - ``bm25_weight`` — fraction of the hybrid retrieval mix that should go
-    to sparse / keyword search. 0.0 = dense-only, 1.0 = sparse-only
   - ``conflict_detection_enabled`` — when true, the assemble step inspects
     the tool_results for conflicting numeric values on the same entity
     and populates ``GeoRAGResponse.conflicting_evidence`` (Phase 1.3
@@ -25,8 +23,6 @@ Each of the six intents maps to a :class:`RetrievalProfile` that controls
     in ``GeoAnswer.decision_support.regulatory_constraints``
   - ``answer_emphasis`` — which OIUR sections the prompt should bias
     toward (e.g. ``observations_table`` for anomaly detection)
-  - ``max_chunks`` — soft cap on the retrieved-chunk count passed to the
-    LLM context
 
 These profiles are **declarative**. The execute node interprets them
 into actual tool invocations; the profile itself contains no I/O.
@@ -72,23 +68,26 @@ class RetrievalProfile(BaseModel):
     surface_qa_qc_fields: bool = False       # nodes.assemble_node:903
     answer_emphasis: AnswerEmphasis = "synthesis_with_conflicts"  # :883
 
-    # ── NOT YET WIRED (audit 2026-06-28) ──────────────────────────────────
-    # These fields are declared + set per-intent but the execute path does not
-    # consume them yet. They are kept (not deleted) because applying each one
-    # changes retrieval breadth / ranking / output and therefore needs a
-    # golden-eval pass before flipping — blind-wiring would shift answer quality
-    # untested (same gating as the Qwen3 query-prefix item). Documented here so
-    # the profile does not misrepresent itself as tuning the pipeline.
-    bm25_weight: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Intended sparse-vs-dense mix for document search. NOT YET WIRED — "
-            "search_documents currently reads a global sparse_boost setting, "
-            "not this per-intent value. Wiring is eval-gated."
-        ),
-    )
+    # ── Deleted 2026-10-04 (audit item 23): ``bm25_weight`` and ``max_chunks``
+    # were declared and set for every intent but NEVER read -- retrieval fuses
+    # with a bare Fusion.RRF and keeps RERANKER_TOP_K chunks for every intent --
+    # so profiles read as if they tuned retrieval and did not. Wiring either one
+    # (per-branch RRF weights, a per-intent top-k) changes which chunks reach the
+    # answer and needs a golden-eval pass first; if that is ever done, add the
+    # field back WITH its reader in search_documents / qdrant_service.hybrid_query
+    # in the same change. (The field-mode ``max_chunks`` on RetrievalFilters in
+    # preprocessor.py is a separate, equally unread, value.)
+    #
+    # ── Declared, set per intent, and only LOGGED (re-audited 2026-10-04) ──
+    # The two fields below -- ``conflict_detection_enabled`` and
+    # ``require_regulatory_constraints`` -- are read by exactly one thing: the
+    # route node's log line (nodes.route_node). Neither changes tool dispatch,
+    # prompts or validation. They are kept (not deleted) because wiring either
+    # changes what the answer says and needs a golden-eval pass first; deleting
+    # them is equally legitimate. Documented here so the profile does not
+    # misrepresent itself as tuning the pipeline. (``bm25_weight`` and
+    # ``max_chunks``, which this header used to cover as well, are gone --
+    # see the "Deleted" note above.)
     conflict_detection_enabled: bool = Field(
         default=False,
         description=(
@@ -112,14 +111,6 @@ class RetrievalProfile(BaseModel):
             "decision_support. NOT YET WIRED — currently only logged."
         ),
     )
-    max_chunks: int = Field(
-        default=12, ge=1, le=50,
-        description=(
-            "Intended soft cap on chunks passed to the assembler. NOT YET "
-            "WIRED — the secondary-tool coverage heuristic uses a hardcoded "
-            "threshold, not this value. Wiring is eval-gated."
-        ),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +130,7 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
         # check the government record" case. Keeping it off the primary list
         # means a well-covered factual lookup never pays its latency.
         secondary_tools=["search_public_geoscience"],
-        # BM25-weighted because standards documents (NI 43-101, CRIRSCO,
-        # ICS) carry precise clause language the sparse encoder matches well.
-        bm25_weight=0.75,
         answer_emphasis="exact_citation",
-        max_chunks=6,
     ),
     # NOTE (audit 2026-08-14, finding 7): "traverse_knowledge_graph" was
     # removed from every profile below. Neo4j was removed from the stack
@@ -162,10 +149,8 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
             "query_assay_data",
         ],
         secondary_tools=["query_project_overview", "search_public_geoscience"],
-        bm25_weight=0.5,
         conflict_detection_enabled=True,
         answer_emphasis="synthesis_with_conflicts",
-        max_chunks=16,
     ),
     "hypothesis_generation": RetrievalProfile(
         intent="hypothesis_generation",
@@ -177,10 +162,8 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
             "query_assay_data",
         ],
         secondary_tools=["query_spatial_collars"],
-        bm25_weight=0.4,
         adversarial_pass_enabled=True,
         answer_emphasis="competing_hypotheses",
-        max_chunks=16,
     ),
     "anomaly_detection": RetrievalProfile(
         intent="anomaly_detection",
@@ -188,10 +171,8 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
         # Phase 4 QA/QC fields are not yet present.
         primary_tools=["query_assay_data", "query_downhole_logs"],
         secondary_tools=["search_documents"],
-        bm25_weight=0.3,
         surface_qa_qc_fields=True,
         answer_emphasis="anomaly_table",
-        max_chunks=20,
     ),
     "uncertainty_quantification": RetrievalProfile(
         intent="uncertainty_quantification",
@@ -202,10 +183,8 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
             "query_spatial_collars",
         ],
         secondary_tools=["query_downhole_logs"],
-        bm25_weight=0.5,
         conflict_detection_enabled=True,
         answer_emphasis="uncertainty_drivers",
-        max_chunks=14,
     ),
     "decision_support": RetrievalProfile(
         intent="decision_support",
@@ -217,11 +196,9 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
             "query_assay_data",
         ],
         secondary_tools=["query_downhole_logs", "query_project_overview"],
-        bm25_weight=0.5,
         # require_regulatory_constraints is set dynamically from the
         # classifier's regulatory_touch flag (see profile_for_intent).
         answer_emphasis="ranked_options",
-        max_chunks=18,
     ),
     # ADR-0007 PR-1 — structured-aggregation profiles. SQL aggregate is the
     # primary tool; search_documents is secondary so the LLM can pull
@@ -232,17 +209,13 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
         intent="project_summary",
         primary_tools=["query_project_summary"],
         secondary_tools=["search_documents", "query_project_overview"],
-        bm25_weight=0.5,
         answer_emphasis="breakdown_table",
-        max_chunks=8,
     ),
     "coverage_gap": RetrievalProfile(
         intent="coverage_gap",
         primary_tools=["query_coverage_gap"],
         secondary_tools=["search_documents", "query_project_overview"],
-        bm25_weight=0.5,
         answer_emphasis="coverage_table",
-        max_chunks=8,
     ),
 }
 

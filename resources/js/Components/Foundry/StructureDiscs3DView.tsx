@@ -168,13 +168,17 @@ export default function StructureDiscs3DView({
                     yAll.push(y0 + ub[1] * cT + vb[1] * sT);
                     zAll.push(z0 + ub[2] * cT + vb[2] * sT);
                 }
-                xAll.push(null); yAll.push(null); zAll.push(null);
+                xAll.push(null);
+                yAll.push(null);
+                zAll.push(null);
 
                 poleXs.push(x0);
                 poleYs.push(y0);
                 poleZs.push(z0);
                 const holeId = collar.hole_id_canonical || collar.hole_id;
-                poleText.push(`${holeId} · ${kind} · strike ${s.strike_deg.toFixed(0)}° · dip ${s.dip_deg.toFixed(0)}° @ ${s.depth_m.toFixed(1)} m${s.confidence ? ` · ${s.confidence}` : ''}`);
+                poleText.push(
+                    `${holeId} · ${kind} · strike ${s.strike_deg.toFixed(0)}° · dip ${s.dip_deg.toFixed(0)}° @ ${s.depth_m.toFixed(1)} m${s.confidence ? ` · ${s.confidence}` : ''}`,
+                );
             }
 
             traces.push({
@@ -247,7 +251,7 @@ export default function StructureDiscs3DView({
     if (kindOptions.length === 0) {
         return (
             <div className="text-[11px] font-mono p-6 text-center" style={{ color: 'var(--fg-3)' }}>
-                0 rows in gold.structure_measurements_visual for this project — no enriched stereonet-ready measurements yet.
+                No structural measurements ready to display in 3D yet.
             </div>
         );
     }
@@ -255,7 +259,9 @@ export default function StructureDiscs3DView({
     return (
         <div className="flex flex-col h-full min-h-0">
             <div className="flex items-center gap-3 mb-2 shrink-0 flex-wrap">
-                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Kinds</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                    Kinds
+                </span>
                 {kindOptions.map(({ kind, count }) => (
                     <label key={kind} className="flex items-center gap-1.5 text-[11px] font-mono cursor-pointer">
                         <input
@@ -268,7 +274,13 @@ export default function StructureDiscs3DView({
                     </label>
                 ))}
                 {caption && (
-                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
+                    <span
+                        className="text-[10px] font-mono"
+                        style={{ color: 'var(--fg-3)' }}
+                        data-testid="desurvey-caption"
+                    >
+                        {caption}
+                    </span>
                 )}
             </div>
             <div className="flex-1 min-h-0" style={{ height }}>

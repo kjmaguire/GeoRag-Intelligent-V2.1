@@ -89,15 +89,11 @@ describe('structurePoles', () => {
     });
 
     it('converts logged plane attitudes', () => {
-        expect(structurePoles([plane()], [])).toEqual([
-            { trend_deg: 270, plunge_deg: 60 },
-        ]);
+        expect(structurePoles([plane()], [])).toEqual([{ trend_deg: 270, plunge_deg: 60 }]);
     });
 
     it('passes an already-derived pole through untouched', () => {
-        expect(structurePoles([], [derived()])).toEqual([
-            { trend_deg: 315, plunge_deg: 20 },
-        ]);
+        expect(structurePoles([], [derived()])).toEqual([{ trend_deg: 315, plunge_deg: 20 }]);
     });
 
     it('uses both sources — a project can have either or both', () => {
@@ -130,9 +126,7 @@ describe('structureStrikes', () => {
     });
 
     it('takes the stored strike from the gold source', () => {
-        expect(structureStrikes([], [
-            { strike_deg: 45, pole_trend_deg: 315, pole_plunge_deg: 20 },
-        ])).toEqual([45]);
+        expect(structureStrikes([], [{ strike_deg: 45, pole_trend_deg: 315, pole_plunge_deg: 20 }])).toEqual([45]);
     });
 
     it('needs only a dip direction, not a dip', () => {
@@ -146,9 +140,7 @@ describe('structureStrikes', () => {
     });
 
     it('normalises a stored strike that is out of range', () => {
-        expect(structureStrikes([], [
-            { strike_deg: 400, pole_trend_deg: 0, pole_plunge_deg: 0 },
-        ])).toEqual([40]);
+        expect(structureStrikes([], [{ strike_deg: 400, pole_trend_deg: 0, pole_plunge_deg: 0 }])).toEqual([40]);
     });
 
     it('every strike lands in a rose bin', () => {

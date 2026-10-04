@@ -367,13 +367,40 @@ final class WorkflowTriggerController extends Controller
             ], 429);
         }
 
+        // The cooldown claim above exists to stop a double click dispatching
+        // twice. It must therefore be released on EVERY path where nothing was
+        // dispatched, not only on HatchetWorkflowTriggerException: any other
+        // throwable (a JWT-mint failure, a serialisation error, a cache or
+        // driver exception inside trigger()) used to leave the key set, so the
+        // user's retry was answered 429 "sent less than 60 seconds ago" for a
+        // request that never went anywhere.
+        $dispatched = false;
         try {
             $result = $trigger->trigger($workflow, $workspaceId, $input, $user, $jwtProject);
+            $dispatched = true;
         } catch (HatchetWorkflowTriggerException $exc) {
-            // Nothing was dispatched, so release the cooldown and let a retry work.
-            Cache::forget($cooldownKey);
+            // 5xx means FastAPI was unreachable or answered with an error, and
+            // the message carries the upstream URL, driver text or response
+            // body. That detail is for the log; the caller gets a neutral
+            // line. 404/422 are FastAPI's own, user-actionable answers.
+            if ($exc->status >= 500) {
+                Log::warning('workflow_trigger.failed', [
+                    'workflow' => $workflow,
+                    'status' => $exc->status,
+                    'detail' => $exc->getMessage(),
+                ]);
+
+                return response()->json([
+                    'error' => 'trigger_failed',
+                    'message' => 'The '.$workflow.' workflow could not be started right now. Please try again shortly.',
+                ], $exc->status);
+            }
 
             return response()->json(['error' => 'trigger_failed', 'message' => $exc->getMessage()], $exc->status);
+        } finally {
+            if (! $dispatched) {
+                Cache::forget($cooldownKey);
+            }
         }
 
         Cache::put($cooldownKey, [...$claim, 'workflow_run_id' => $result['workflow_run_id']], self::COOLDOWN_SECONDS);

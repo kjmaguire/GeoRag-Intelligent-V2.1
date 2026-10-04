@@ -26,7 +26,10 @@ beforeEach(() => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url === '/api/v1/projects') {
-            return new Response(JSON.stringify({ data: [{ project_id: 'p-1', slug: 'red-star', project_name: 'Red Star' }] }), { status: 200 });
+            return new Response(
+                JSON.stringify({ data: [{ project_id: 'p-1', slug: 'red-star', project_name: 'Red Star' }] }),
+                { status: 200 },
+            );
         }
         uploads.push(((init?.body as FormData).get('file') as File).name);
         return uploadStatus === 200

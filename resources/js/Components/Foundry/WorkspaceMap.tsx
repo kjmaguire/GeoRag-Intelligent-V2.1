@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import type { Map as MaplibreMap } from 'maplibre-gl';
 import { Link, router } from '@inertiajs/react';
-import { BASEMAP_OPTIONS, demSourceSpec, useBasemapStyleSpec, useTerrainDemUrl, type BasemapId } from '@/lib/basemap';
+import {
+    BASEMAP_OPTIONS,
+    demSourceSpec,
+    useBasemapGlyphsUrl,
+    useBasemapStyleSpec,
+    useTerrainDemUrl,
+    type BasemapId,
+} from '@/lib/basemap';
 import { formatU3O8Pct } from '@/lib/grade';
 import { addMvtLayers, setMvtTileVersion, setMvtVisibility, type MvtCapableMap } from '@/lib/mvtSources';
 import { UNCERTAINTY_RINGS_FILTER, UNCERTAINTY_RINGS_PAINT } from '@/lib/uncertaintyRings';
@@ -64,6 +72,49 @@ type GeoJsonGeometry = any;
 export type { BasemapId };
 export type MapTool = 'pan' | 'draw' | 'measure' | 'select';
 
+/** How long a basemap swap may report an `error` before `style.load` and still be given up on. */
+const STYLE_RECOVERY_MS = 3_000;
+
+/**
+ * GeoJSON point features for the `collars` source — one per positioned collar.
+ * Shared by the initial build, the layer re-add after a basemap switch and the
+ * in-place `setData` when the `collars` prop changes.
+ */
+function collarFeatures(collars: MapCollar[]) {
+    return collars
+        .filter((c) => c.lat !== null && c.lng !== null)
+        .map((c) => {
+            // CC-01 Item 2 — only attach uncertainty props when present.
+            // The uncertainty-rings layer filter is `['has',
+            // 'spatial_uncertainty_m']`; omitting the key (rather than
+            // emitting null) is what skips features whose source row
+            // didn't carry the value.
+            const properties: Record<string, unknown> = {
+                collar_id: c.collar_id,
+                hole_id: c.hole_id_canonical,
+                total_depth: c.total_depth,
+                ore_bands: c.ore_bands,
+                ore_thickness_m: c.ore_thickness_m,
+            };
+            if (c.spatial_uncertainty_m != null) {
+                properties.spatial_uncertainty_m = c.spatial_uncertainty_m;
+                // _lat is consumed by the cosine-of-latitude correction in
+                // the circle-radius expression — must come along for the ride.
+                properties._lat = c.lat;
+            }
+            if (c.crs_confidence != null) {
+                properties.crs_confidence = c.crs_confidence;
+            }
+            if (c.georef_method != null) {
+                properties.georef_method = c.georef_method;
+            }
+            return {
+                type: 'Feature' as const,
+                geometry: { type: 'Point' as const, coordinates: [c.lng as number, c.lat as number] },
+                properties,
+            };
+        });
+}
 
 export function WorkspaceMap({
     collars,
@@ -148,6 +199,9 @@ export function WorkspaceMap({
     // Terrain DEM from the same registry (BASEMAP_DEM_TILES). It was a
     // hard-coded AWS bucket, so on-prem the Terrain toggle did nothing (FE-19).
     const demUrl = useTerrainDemUrl();
+    const glyphsUrl = useBasemapGlyphsUrl();
+    const glyphsUrlRef = useRef(glyphsUrl);
+    glyphsUrlRef.current = glyphsUrl;
     // The live map, once its style has loaded. Held in STATE (mapRef is only
     // for cleanup) so every effect that styles the map re-runs against a new
     // instance: a basemap switch rebuilds the map, and the layer toggles,
@@ -189,43 +243,41 @@ export function WorkspaceMap({
         compareSetRef.current = compareSet;
     }, [compareSet]);
 
+    // Latest values for the style-owned layers. The map is built once per
+    // project and its sources/layers are re-added on every `style.load` (a
+    // basemap switch replaces the style), so that code must read what is
+    // current rather than what the build-time closure captured.
+    const collarsRef = useRef(collars);
+    collarsRef.current = collars;
+    const projectAoiRef = useRef(projectAoi);
+    projectAoiRef.current = projectAoi;
+    const visibleLayersRef = useRef(visibleLayers);
+    visibleLayersRef.current = visibleLayers;
+    const styleSpecRef = useRef(styleSpec);
+    styleSpecRef.current = styleSpec;
+    const demUrlRef = useRef(demUrl);
+    demUrlRef.current = demUrl;
+    // Style + DEM the live map is currently showing (or loading).
+    const appliedStyleRef = useRef({ styleSpec, demUrl });
+    // The `collars` array last written into the `collars` GeoJSON source.
+    const renderedCollarsRef = useRef<MapCollar[] | null>(null);
+    // Re-adds every source + layer; set by the build effect, called again from
+    // the style-switch effect once the new style has loaded.
+    const addMapLayersRef = useRef<((m: MaplibreMap) => void) | null>(null);
+    // Pending basemap-swap recovery timer (see the style-switch effect);
+    // cleared when the map is torn down.
+    const styleRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // The tool the tool effect last ran for, and the Select tool's current
+    // selection: a re-publish of the map after a basemap swap re-runs the
+    // tool effect without a tool change and must keep the selection.
+    const lastToolRef = useRef<MapTool | null>(null);
+    const selectedHolesRef = useRef<string[]>([]);
+
     useEffect(() => {
         if (!containerRef.current) return;
         let cancelled = false;
 
-        const points = collars
-            .filter((c) => c.lat !== null && c.lng !== null)
-            .map((c) => {
-                // CC-01 Item 2 — only attach uncertainty props when present.
-                // The uncertainty-rings layer filter is `['has',
-                // 'spatial_uncertainty_m']`; omitting the key (rather than
-                // emitting null) is what skips features whose source row
-                // didn't carry the value.
-                const properties: Record<string, unknown> = {
-                    collar_id: c.collar_id,
-                    hole_id: c.hole_id_canonical,
-                    total_depth: c.total_depth,
-                    ore_bands: c.ore_bands,
-                    ore_thickness_m: c.ore_thickness_m,
-                };
-                if (c.spatial_uncertainty_m != null) {
-                    properties.spatial_uncertainty_m = c.spatial_uncertainty_m;
-                    // _lat is consumed by the cosine-of-latitude correction in
-                    // the circle-radius expression — must come along for the ride.
-                    properties._lat = c.lat;
-                }
-                if (c.crs_confidence != null) {
-                    properties.crs_confidence = c.crs_confidence;
-                }
-                if (c.georef_method != null) {
-                    properties.georef_method = c.georef_method;
-                }
-                return {
-                    type: 'Feature' as const,
-                    geometry: { type: 'Point' as const, coordinates: [c.lng as number, c.lat as number] },
-                    properties,
-                };
-            });
+        const points = collarFeatures(collars);
 
         // The map is ALWAYS built. It used to return here when no collar had
         // a position, which left imported shapefiles, geochem and claims —
@@ -235,602 +287,735 @@ export function WorkspaceMap({
             projectExtent,
         );
 
-        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(([maplibregl, { configureMaplibreWorker }]) => {
-            if (cancelled || !containerRef.current) return;
-            configureMaplibreWorker(maplibregl);
+        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(
+            ([maplibregl, { configureMaplibreWorker }]) => {
+                if (cancelled || !containerRef.current) return;
+                configureMaplibreWorker(maplibregl);
 
-            if (mapRef.current?.remove) {
-                mapRef.current.remove();
-            }
+                if (mapRef.current?.remove) {
+                    mapRef.current.remove();
+                }
 
-            const map = new maplibregl.Map({
-                container: containerRef.current,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                style: styleSpec as any,
-                ...(view.bounds
-                    ? { bounds: view.bounds, fitBoundsOptions: { padding: 60, maxZoom: 15 } }
-                    : { center: view.center, zoom: view.zoom }),
-                attributionControl: false,
-                // Allow zooming much closer than the default 22 maxZoom; the
-                // halo + label interpolation stops at 22 so going past that
-                // just keeps geometry crisp.
-                maxZoom: 22,
-            });
+                // The style and DEM this map starts with; the style-switch effect
+                // compares against it to spot a later basemap change.
+                appliedStyleRef.current = { styleSpec: styleSpecRef.current, demUrl: demUrlRef.current };
+                const map = new maplibregl.Map({
+                    container: containerRef.current,
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    style: styleSpecRef.current as any,
+                    ...(view.bounds
+                        ? { bounds: view.bounds, fitBoundsOptions: { padding: 60, maxZoom: 15 } }
+                        : { center: view.center, zoom: view.zoom }),
+                    attributionControl: false,
+                    // Allow zooming much closer than the default 22 maxZoom; the
+                    // halo + label interpolation stops at 22 so going past that
+                    // just keeps geometry crisp.
+                    maxZoom: 22,
+                });
 
-            map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-            map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
+                map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+                map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
 
-            map.on('load', () => {
-                if (cancelled) return;
-
-                // Silver MVT layers — imported spatial features, drill traces,
-                // geochem, historic workings and the rest, served by Martin
-                // through the Laravel tile proxy.
-                //
-                // Added FIRST so every GeoJSON layer below draws on top: the
-                // collar markers are the thing a geologist clicks, and an
-                // imported polygon fill must never sit over them.
-                //
-                // Guarded on projectId because the tile URL is meaningless
-                // without it; the map then renders exactly as it did before.
-                if (projectId) {
-                    try {
-                        addMvtLayers(map as unknown as MvtCapableMap, {
-                            projectId,
-                            // Client cache key; the proxy's max-age means a
-                            // constant here served day-old tiles (FE-5).
-                            dataVersion: tileVersionRef.current,
-                            visibleLayers,
-                        });
-                    } catch (err) {
-                        // A tile source that fails to attach must not take the
-                        // basemap and collars down with it.
-                        console.warn('WorkspaceMap: MVT layers unavailable', err);
+                // Every source + layer the style owns. A basemap switch replaces
+                // the style (`setStyle` drops all runtime sources and layers), so
+                // this runs once on 'load' and again on each 'style.load' after a
+                // switch. Event handlers are NOT in here: layer-bound handlers
+                // are keyed by layer id and survive a style swap.
+                const addMapLayers = (map: MaplibreMap) => {
+                    // Silver MVT layers — imported spatial features, drill traces,
+                    // geochem, historic workings and the rest, served by Martin
+                    // through the Laravel tile proxy.
+                    //
+                    // Added FIRST so every GeoJSON layer below draws on top: the
+                    // collar markers are the thing a geologist clicks, and an
+                    // imported polygon fill must never sit over them.
+                    //
+                    // Guarded on projectId because the tile URL is meaningless
+                    // without it; the map then renders exactly as it did before.
+                    if (projectId) {
+                        try {
+                            addMvtLayers(map as unknown as MvtCapableMap, {
+                                projectId,
+                                // Client cache key; the proxy's max-age means a
+                                // constant here served day-old tiles (FE-5).
+                                dataVersion: tileVersionRef.current,
+                                visibleLayers: visibleLayersRef.current,
+                            });
+                        } catch (err) {
+                            // A tile source that fails to attach must not take the
+                            // basemap and collars down with it.
+                            console.warn('WorkspaceMap: MVT layers unavailable', err);
+                        }
                     }
-                }
 
-                // Terrain DEM source from the basemap registry. Always added;
-                // setTerrain is toggled by the effect below so users can flip
-                // 3D shading on/off without re-styling.
-                try {
-                    map.addSource('terrain-dem', demSourceSpec(demUrl));
-                } catch (e) {
-                    // eslint-disable-next-line no-console
-                    console.warn('[workspace-map] terrain source add failed', e);
-                }
+                    // Terrain DEM source from the basemap registry. Always added;
+                    // setTerrain is toggled by the effect below so users can flip
+                    // 3D shading on/off without re-styling.
+                    try {
+                        map.addSource('terrain-dem', demSourceSpec(demUrlRef.current));
+                    } catch (e) {
+                        console.warn('[workspace-map] terrain source add failed', e);
+                    }
 
-                map.addSource('collars', {
-                    type: 'geojson',
-                    data: { type: 'FeatureCollection', features: points },
-                    // Cluster nearby collars so densely-drilled sections don't
-                    // render as a 100-dot pile-up at low zoom. Clusters break
-                    // apart automatically as you zoom in. Removed
-                    // clusterProperties — it was a silent failure point and
-                    // the brighter accent for ore-bearing clusters isn't
-                    // worth the risk of disabling clustering entirely.
-                    cluster: true,
-                    // clusterMaxZoom must be strictly less than the source's
-                    // implicit maxzoom (default 18 for clustered GeoJSON
-                    // sources). Setting it to 18 triggers a console warning
-                    // and the source falls back to defaults, leaving
-                    // getClusterLeaves in a half-initialised state.
-                    clusterMaxZoom: 17,
-                    clusterRadius: 50,
-                });
-
-                // There is deliberately NO GeoJSON trace layer here. One used to
-                // draw a tick due SOUTH from every collar, its length scaled
-                // from TD, sharing the `traces` toggle with the real
-                // desurveyed MVT traces (pg_drill_traces_by_project) — so a
-                // hole drilled north showed two contradictory traces
-                // (FE-7 / GIS-10). `traces` now toggles only `mvt-traces`.
-
-                // Project AOI polygon (convex hull of collars).
-                if (projectAoi) {
-                    map.addSource('project-aoi', {
+                    map.addSource('collars', {
                         type: 'geojson',
-                        data: { type: 'Feature', geometry: projectAoi, properties: {} },
+                        data: { type: 'FeatureCollection', features: collarFeatures(collarsRef.current) },
+                        // Cluster nearby collars so densely-drilled sections don't
+                        // render as a 100-dot pile-up at low zoom. Clusters break
+                        // apart automatically as you zoom in. Removed
+                        // clusterProperties — it was a silent failure point and
+                        // the brighter accent for ore-bearing clusters isn't
+                        // worth the risk of disabling clustering entirely.
+                        cluster: true,
+                        // clusterMaxZoom must be strictly less than the source's
+                        // implicit maxzoom (default 18 for clustered GeoJSON
+                        // sources). Setting it to 18 triggers a console warning
+                        // and the source falls back to defaults, leaving
+                        // getClusterLeaves in a half-initialised state.
+                        clusterMaxZoom: 17,
+                        clusterRadius: 50,
                     });
+
+                    // There is deliberately NO GeoJSON trace layer here. One used to
+                    // draw a tick due SOUTH from every collar, its length scaled
+                    // from TD, sharing the `traces` toggle with the real
+                    // desurveyed MVT traces (pg_drill_traces_by_project) — so a
+                    // hole drilled north showed two contradictory traces
+                    // (FE-7 / GIS-10). `traces` now toggles only `mvt-traces`.
+
+                    // Project AOI polygon (convex hull of collars).
+                    const projectAoiNow = projectAoiRef.current;
+                    if (projectAoiNow) {
+                        map.addSource('project-aoi', {
+                            type: 'geojson',
+                            data: { type: 'Feature', geometry: projectAoiNow, properties: {} },
+                        });
+                        map.addLayer({
+                            id: 'project-aoi-fill',
+                            type: 'fill',
+                            source: 'project-aoi',
+                            paint: {
+                                'fill-color': '#e8a36b',
+                                'fill-opacity': 0.08,
+                            },
+                            layout: { visibility: 'none' },
+                        });
+                        map.addLayer({
+                            id: 'project-aoi-line',
+                            type: 'line',
+                            source: 'project-aoi',
+                            paint: {
+                                'line-color': '#e8a36b',
+                                'line-width': 2,
+                                'line-dasharray': [3, 2],
+                                'line-opacity': 0.9,
+                            },
+                            layout: { visibility: 'none' },
+                        });
+                    }
+
+                    // Heatmap weighted by ore_thickness_m. No maxzoom cap — the
+                    // user wants it to stay visible when zooming in close.
                     map.addLayer({
-                        id: 'project-aoi-fill',
-                        type: 'fill',
-                        source: 'project-aoi',
+                        id: 'collars-heatmap',
+                        type: 'heatmap',
+                        source: 'collars',
                         paint: {
-                            'fill-color': '#e8a36b',
-                            'fill-opacity': 0.08,
+                            'heatmap-weight': [
+                                'interpolate',
+                                ['linear'],
+                                ['get', 'ore_thickness_m'],
+                                0,
+                                0,
+                                5,
+                                0.5,
+                                20,
+                                0.85,
+                                60,
+                                1,
+                            ],
+                            'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 8, 0.9, 14, 1.8, 18, 2.4, 22, 3],
+                            'heatmap-color': [
+                                'interpolate',
+                                ['linear'],
+                                ['heatmap-density'],
+                                0,
+                                'rgba(0,0,0,0)',
+                                0.2,
+                                'rgba(50, 130, 70, 0.45)',
+                                0.5,
+                                'rgba(140, 200, 90, 0.7)',
+                                0.8,
+                                'rgba(230, 210, 70, 0.85)',
+                                1,
+                                'rgba(255, 240, 120, 0.95)',
+                            ],
+                            'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 8, 14, 14, 40, 18, 80, 22, 140],
+                            // Fade the heatmap out as the user zooms past the
+                            // collars so the dots/halos can take over.
+                            'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 8, 1, 16, 0.85, 18, 0.55, 22, 0.3],
                         },
                         layout: { visibility: 'none' },
                     });
+
                     map.addLayer({
-                        id: 'project-aoi-line',
+                        id: 'collars-halo',
+                        type: 'circle',
+                        source: 'collars',
+                        filter: ['all', ['!', ['has', 'point_count']], ['>', ['get', 'ore_bands'], 0]],
+                        paint: {
+                            'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 9, 14, 18, 18, 28, 22, 40],
+                            'circle-color': '#7dd97c',
+                            'circle-opacity': 0.28,
+                            'circle-stroke-color': '#7dd97c',
+                            'circle-stroke-width': 1.5,
+                            'circle-stroke-opacity': 0.9,
+                        },
+                    });
+
+                    map.addLayer({
+                        id: 'collars-dot',
+                        type: 'circle',
+                        source: 'collars',
+                        filter: ['!', ['has', 'point_count']],
+                        paint: {
+                            'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 5, 14, 9, 18, 14, 22, 20],
+                            'circle-color': ['case', ['>', ['get', 'ore_bands'], 0], '#8fe28b', '#7accee'],
+                            'circle-stroke-color': '#0a0e14',
+                            'circle-stroke-width': 1.5,
+                            'circle-opacity': 1,
+                        },
+                    });
+
+                    // Cluster bubble — surfaces total count.
+                    map.addLayer({
+                        id: 'cluster-circles',
+                        type: 'circle',
+                        source: 'collars',
+                        filter: ['has', 'point_count'],
+                        paint: {
+                            'circle-color': '#a8e6a3',
+                            'circle-stroke-color': '#5fc25a',
+                            'circle-stroke-width': 2.5,
+                            'circle-radius': [
+                                'step',
+                                ['get', 'point_count'],
+                                18, // 0..4 → 18
+                                5,
+                                22,
+                                10,
+                                26,
+                                25,
+                                32,
+                                50,
+                                38,
+                            ],
+                            'circle-opacity': 0.92,
+                        },
+                    });
+                    map.addLayer({
+                        id: 'cluster-count',
+                        type: 'symbol',
+                        source: 'collars',
+                        filter: ['has', 'point_count'],
+                        layout: {
+                            'text-field': ['concat', ['get', 'point_count_abbreviated'], ''],
+                            'text-size': 13,
+                            'text-font': ['Open Sans Bold', 'Arial Unicode MS Regular'],
+                            'text-allow-overlap': true,
+                        },
+                        paint: {
+                            'text-color': '#0a0e14',
+                        },
+                    });
+
+                    // Compare-queue ring — drawn on top of the regular dot so
+                    // queued holes have a distinct amber outline. Filter is
+                    // updated by the toggle effect when compareSet changes.
+                    map.addLayer({
+                        id: 'collars-compare-ring',
+                        type: 'circle',
+                        source: 'collars',
+                        filter: ['all', ['!', ['has', 'point_count']], ['in', ['get', 'hole_id'], ['literal', []]]],
+                        paint: {
+                            'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 9, 14, 14, 18, 20, 22, 28],
+                            'circle-color': 'rgba(0,0,0,0)',
+                            'circle-stroke-color': '#e8a36b',
+                            'circle-stroke-width': 2.5,
+                            'circle-stroke-opacity': 1,
+                        },
+                    });
+
+                    // Permanent labels — only appear once the user zooms in
+                    // enough that they don't crowd each other.
+                    map.addLayer({
+                        id: 'collars-label',
+                        type: 'symbol',
+                        source: 'collars',
+                        filter: ['!', ['has', 'point_count']],
+                        minzoom: 13,
+                        layout: {
+                            'text-field': ['get', 'hole_id'],
+                            'text-size': ['interpolate', ['linear'], ['zoom'], 13, 10, 18, 13, 22, 16],
+                            'text-offset': [0, 1.2],
+                            'text-anchor': 'top',
+                            'text-allow-overlap': false,
+                            'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
+                        },
+                        paint: {
+                            'text-color': '#e8edf3',
+                            'text-halo-color': '#0a0e14',
+                            'text-halo-width': 1.5,
+                            'text-halo-blur': 0.3,
+                        },
+                    });
+
+                    // CC-01 Item 2 — uncertainty-rings layer ported from
+                    // MapView.tsx so the default Foundry/Workspace view also
+                    // surfaces spatial confidence. Same filter + paint shape
+                    // (kept in lockstep manually — there's no shared registry
+                    // because the two map components carry independent layer
+                    // stacks). Features without spatial_uncertainty_m are
+                    // skipped server-side by the GeoJSON builder above.
+                    //
+                    // Paint + filter shared with MapView via @/lib/uncertaintyRings.
+                    // The old inline radius expression was invalid (["zoom"]
+                    // nested inside "*"), so addLayer rejected it and no ring ever
+                    // rendered here (GIS-5).
+                    map.addLayer({
+                        id: 'uncertainty-rings',
+                        type: 'circle',
+                        source: 'collars',
+                        filter: ['all', ['!', ['has', 'point_count']], UNCERTAINTY_RINGS_FILTER],
+                        paint: UNCERTAINTY_RINGS_PAINT,
+                        // The shared readonly tuples do not narrow to MapLibre's
+                        // mutable spec unions; lib/__tests__/uncertaintyRings
+                        // validates them against the real style spec instead.
+                    } as unknown as Parameters<typeof map.addLayer>[0]);
+
+                    // ── Spiderfy ─────────────────────────────────────────────
+                    // Empty sources for the spider lines + spider points. When a
+                    // cluster is clicked and can't be zoomed further apart, we
+                    // populate these synthetic sources with displaced points
+                    // arranged in a circle around the cluster center.
+                    map.addSource('spider-lines', {
+                        type: 'geojson',
+                        data: { type: 'FeatureCollection', features: [] },
+                    });
+                    map.addSource('spider-points', {
+                        type: 'geojson',
+                        data: { type: 'FeatureCollection', features: [] },
+                    });
+                    map.addLayer({
+                        id: 'spider-lines',
                         type: 'line',
-                        source: 'project-aoi',
+                        source: 'spider-lines',
                         paint: {
-                            'line-color': '#e8a36b',
-                            'line-width': 2,
-                            'line-dasharray': [3, 2],
-                            'line-opacity': 0.9,
+                            'line-color': 'rgba(255,255,255,0.5)',
+                            'line-width': 1.2,
+                            'line-dasharray': [2, 2],
                         },
-                        layout: { visibility: 'none' },
                     });
-                }
+                    map.addLayer({
+                        id: 'spider-halo',
+                        type: 'circle',
+                        source: 'spider-points',
+                        filter: ['>', ['get', 'ore_bands'], 0],
+                        paint: {
+                            'circle-radius': 18,
+                            'circle-color': '#7dd97c',
+                            'circle-opacity': 0.35,
+                            'circle-stroke-color': '#7dd97c',
+                            'circle-stroke-width': 2,
+                        },
+                    });
+                    map.addLayer({
+                        id: 'spider-dot',
+                        type: 'circle',
+                        source: 'spider-points',
+                        paint: {
+                            'circle-radius': 11,
+                            'circle-color': ['case', ['>', ['get', 'ore_bands'], 0], '#8fe28b', '#7accee'],
+                            'circle-stroke-color': '#0a0e14',
+                            'circle-stroke-width': 2,
+                        },
+                    });
+                    map.addLayer({
+                        id: 'spider-label',
+                        type: 'symbol',
+                        source: 'spider-points',
+                        layout: {
+                            'text-field': ['get', 'hole_id'],
+                            'text-size': 11,
+                            'text-offset': [0, 1.2],
+                            'text-anchor': 'top',
+                            'text-allow-overlap': true,
+                            'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
+                        },
+                        paint: {
+                            'text-color': '#e8edf3',
+                            'text-halo-color': '#0a0e14',
+                            'text-halo-width': 1.5,
+                        },
+                    });
 
-                // Heatmap weighted by ore_thickness_m. No maxzoom cap — the
-                // user wants it to stay visible when zooming in close.
-                map.addLayer({
-                    id: 'collars-heatmap',
-                    type: 'heatmap',
-                    source: 'collars',
-                    paint: {
-                        'heatmap-weight': [
-                            'interpolate', ['linear'], ['get', 'ore_thickness_m'],
-                            0, 0,
-                            5, 0.5,
-                            20, 0.85,
-                            60, 1,
-                        ],
-                        'heatmap-intensity': [
-                            'interpolate', ['linear'], ['zoom'],
-                            8, 0.9,
-                            14, 1.8,
-                            18, 2.4,
-                            22, 3,
-                        ],
-                        'heatmap-color': [
-                            'interpolate', ['linear'], ['heatmap-density'],
-                            0, 'rgba(0,0,0,0)',
-                            0.2, 'rgba(50, 130, 70, 0.45)',
-                            0.5, 'rgba(140, 200, 90, 0.7)',
-                            0.8, 'rgba(230, 210, 70, 0.85)',
-                            1, 'rgba(255, 240, 120, 0.95)',
-                        ],
-                        'heatmap-radius': [
-                            'interpolate', ['linear'], ['zoom'],
-                            8, 14,
-                            14, 40,
-                            18, 80,
-                            22, 140,
-                        ],
-                        // Fade the heatmap out as the user zooms past the
-                        // collars so the dots/halos can take over.
-                        'heatmap-opacity': [
-                            'interpolate', ['linear'], ['zoom'],
-                            8, 1,
-                            16, 0.85,
-                            18, 0.55,
-                            22, 0.3,
-                        ],
-                    },
-                    layout: { visibility: 'none' },
-                });
+                    renderedCollarsRef.current = collarsRef.current;
+                };
+                addMapLayersRef.current = addMapLayers;
 
-                map.addLayer({
-                    id: 'collars-halo',
-                    type: 'circle',
-                    source: 'collars',
-                    filter: ['all', ['!', ['has', 'point_count']], ['>', ['get', 'ore_bands'], 0]],
-                    paint: {
-                        'circle-radius': [
-                            'interpolate', ['linear'], ['zoom'],
-                            8, 9,
-                            14, 18,
-                            18, 28,
-                            22, 40,
-                        ],
-                        'circle-color': '#7dd97c',
-                        'circle-opacity': 0.28,
-                        'circle-stroke-color': '#7dd97c',
-                        'circle-stroke-width': 1.5,
-                        'circle-stroke-opacity': 0.9,
-                    },
-                });
+                map.on('load', () => {
+                    if (cancelled) return;
 
-                map.addLayer({
-                    id: 'collars-dot',
-                    type: 'circle',
-                    source: 'collars',
-                    filter: ['!', ['has', 'point_count']],
-                    paint: {
-                        'circle-radius': [
-                            'interpolate', ['linear'], ['zoom'],
-                            8, 5,
-                            14, 9,
-                            18, 14,
-                            22, 20,
-                        ],
-                        'circle-color': [
-                            'case',
-                            ['>', ['get', 'ore_bands'], 0], '#8fe28b',
-                            '#7accee',
-                        ],
-                        'circle-stroke-color': '#0a0e14',
-                        'circle-stroke-width': 1.5,
-                        'circle-opacity': 1,
-                    },
-                });
+                    addMapLayers(map);
 
-                // Cluster bubble — surfaces total count.
-                map.addLayer({
-                    id: 'cluster-circles',
-                    type: 'circle',
-                    source: 'collars',
-                    filter: ['has', 'point_count'],
-                    paint: {
-                        'circle-color': '#a8e6a3',
-                        'circle-stroke-color': '#5fc25a',
-                        'circle-stroke-width': 2.5,
-                        'circle-radius': [
-                            'step',
-                            ['get', 'point_count'],
-                            18,  // 0..4 → 18
-                            5, 22,
-                            10, 26,
-                            25, 32,
-                            50, 38,
-                        ],
-                        'circle-opacity': 0.92,
-                    },
-                });
-                map.addLayer({
-                    id: 'cluster-count',
-                    type: 'symbol',
-                    source: 'collars',
-                    filter: ['has', 'point_count'],
-                    layout: {
-                        'text-field': ['concat', ['get', 'point_count_abbreviated'], ''],
-                        'text-size': 13,
-                        'text-font': ['Open Sans Bold', 'Arial Unicode MS Regular'],
-                        'text-allow-overlap': true,
-                    },
-                    paint: {
-                        'text-color': '#0a0e14',
-                    },
-                });
+                    map.on('mouseenter', 'collars-dot', () => {
+                        map.getCanvas().style.cursor = 'pointer';
+                    });
+                    map.on('mouseleave', 'collars-dot', () => {
+                        map.getCanvas().style.cursor = '';
+                        setHoverHole(null);
+                    });
+                    map.on(
+                        'mousemove',
+                        'collars-dot',
+                        (e: {
+                            features?: { properties: Record<string, unknown> }[];
+                            point: { x: number; y: number };
+                        }) => {
+                            const f = e.features?.[0];
+                            if (!f) return;
+                            const p = f.properties;
+                            setHoverHole({
+                                hole: {
+                                    collar_id: String(p.collar_id),
+                                    hole_id: String(p.hole_id),
+                                    hole_id_canonical: String(p.hole_id),
+                                    total_depth:
+                                        p.total_depth === null || p.total_depth === undefined
+                                            ? null
+                                            : Number(p.total_depth),
+                                    lat: null,
+                                    lng: null,
+                                    ore_bands: Number(p.ore_bands ?? 0),
+                                    ore_thickness_m: Number(p.ore_thickness_m ?? 0),
+                                },
+                                x: e.point.x,
+                                y: e.point.y,
+                            });
+                        },
+                    );
+                    map.on('click', 'collars-dot', (e: { features?: { properties: Record<string, unknown> }[] }) => {
+                        const f = e.features?.[0];
+                        if (!f) return;
+                        const p = f.properties;
+                        const clickedHoleId = String(p.hole_id);
 
-                // Compare-queue ring — drawn on top of the regular dot so
-                // queued holes have a distinct amber outline. Filter is
-                // updated by the toggle effect when compareSet changes.
-                map.addLayer({
-                    id: 'collars-compare-ring',
-                    type: 'circle',
-                    source: 'collars',
-                    filter: ['all', ['!', ['has', 'point_count']], ['in', ['get', 'hole_id'], ['literal', []]]],
-                    paint: {
-                        'circle-radius': [
-                            'interpolate', ['linear'], ['zoom'],
-                            8, 9,
-                            14, 14,
-                            18, 20,
-                            22, 28,
-                        ],
-                        'circle-color': 'rgba(0,0,0,0)',
-                        'circle-stroke-color': '#e8a36b',
-                        'circle-stroke-width': 2.5,
-                        'circle-stroke-opacity': 1,
-                    },
-                });
-
-                // Permanent labels — only appear once the user zooms in
-                // enough that they don't crowd each other.
-                map.addLayer({
-                    id: 'collars-label',
-                    type: 'symbol',
-                    source: 'collars',
-                    filter: ['!', ['has', 'point_count']],
-                    minzoom: 13,
-                    layout: {
-                        'text-field': ['get', 'hole_id'],
-                        'text-size': [
-                            'interpolate', ['linear'], ['zoom'],
-                            13, 10,
-                            18, 13,
-                            22, 16,
-                        ],
-                        'text-offset': [0, 1.2],
-                        'text-anchor': 'top',
-                        'text-allow-overlap': false,
-                        'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
-                    },
-                    paint: {
-                        'text-color': '#e8edf3',
-                        'text-halo-color': '#0a0e14',
-                        'text-halo-width': 1.5,
-                        'text-halo-blur': 0.3,
-                    },
-                });
-
-                // CC-01 Item 2 — uncertainty-rings layer ported from
-                // MapView.tsx so the default Foundry/Workspace view also
-                // surfaces spatial confidence. Same filter + paint shape
-                // (kept in lockstep manually — there's no shared registry
-                // because the two map components carry independent layer
-                // stacks). Features without spatial_uncertainty_m are
-                // skipped server-side by the GeoJSON builder above.
-                //
-                // Paint + filter shared with MapView via @/lib/uncertaintyRings.
-                // The old inline radius expression was invalid (["zoom"]
-                // nested inside "*"), so addLayer rejected it and no ring ever
-                // rendered here (GIS-5).
-                map.addLayer({
-                    id: 'uncertainty-rings',
-                    type: 'circle',
-                    source: 'collars',
-                    filter: ['all', ['!', ['has', 'point_count']], UNCERTAINTY_RINGS_FILTER],
-                    paint: UNCERTAINTY_RINGS_PAINT,
-                    // The shared readonly tuples do not narrow to MapLibre's
-                    // mutable spec unions; lib/__tests__/uncertaintyRings
-                    // validates them against the real style spec instead.
-                } as unknown as Parameters<typeof map.addLayer>[0]);
-
-                map.on('mouseenter', 'collars-dot', () => {
-                    map.getCanvas().style.cursor = 'pointer';
-                });
-                map.on('mouseleave', 'collars-dot', () => {
-                    map.getCanvas().style.cursor = '';
-                    setHoverHole(null);
-                });
-                map.on('mousemove', 'collars-dot', (e: {
-                    features?: { properties: Record<string, unknown> }[];
-                    point: { x: number; y: number };
-                }) => {
-                    const f = e.features?.[0];
-                    if (!f) return;
-                    const p = f.properties;
-                    setHoverHole({
-                        hole: {
+                        // If exactly one hole is already queued AND the user
+                        // clicked a DIFFERENT hole, auto-add the new one and
+                        // open the comparison — no need to check the checkbox
+                        // a second time. Close any open popup so the modal can
+                        // take the stage.
+                        const queued = compareSetRef.current;
+                        if (queued.length === 1 && queued[0] !== clickedHoleId) {
+                            onToggleCompare(clickedHoleId);
+                            setActiveHoleRef.current(null);
+                            return;
+                        }
+                        setActiveHoleRef.current({
                             collar_id: String(p.collar_id),
-                            hole_id: String(p.hole_id),
-                            hole_id_canonical: String(p.hole_id),
-                            total_depth: p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
+                            hole_id: clickedHoleId,
+                            hole_id_canonical: clickedHoleId,
+                            total_depth:
+                                p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
                             lat: null,
                             lng: null,
                             ore_bands: Number(p.ore_bands ?? 0),
                             ore_thickness_m: Number(p.ore_thickness_m ?? 0),
+                        });
+                    });
+
+                    function collapseSpider() {
+                        if (!map.getSource) return;
+                        (map.getSource('spider-lines') as { setData: (d: unknown) => void } | undefined)?.setData({
+                            type: 'FeatureCollection',
+                            features: [],
+                        });
+                        (map.getSource('spider-points') as { setData: (d: unknown) => void } | undefined)?.setData({
+                            type: 'FeatureCollection',
+                            features: [],
+                        });
+                    }
+
+                    function spiderfy(
+                        centerLngLat: [number, number],
+                        leaves: Array<{ properties: Record<string, unknown> }>,
+                    ) {
+                        const centerPx = map.project(centerLngLat);
+                        const n = leaves.length;
+                        // Radius scales by sqrt(n) so big clusters spread to a
+                        // wider ring (instead of all 60 leaves piling into a
+                        // 95px circle and overlapping).
+                        //   8 leaves  → ~70 px
+                        //   18 leaves → ~106 px
+                        //   60 leaves → ~194 px
+                        const radius = Math.max(50, Math.sqrt(n) * 25);
+                        const lineFeatures: unknown[] = [];
+                        const pointFeatures: unknown[] = [];
+                        for (let i = 0; i < n; i++) {
+                            const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+                            const px = centerPx.x + Math.cos(angle) * radius;
+                            const py = centerPx.y + Math.sin(angle) * radius;
+                            const ll = map.unproject([px, py]);
+                            lineFeatures.push({
+                                type: 'Feature',
+                                geometry: { type: 'LineString', coordinates: [centerLngLat, [ll.lng, ll.lat]] },
+                                properties: {},
+                            });
+                            pointFeatures.push({
+                                type: 'Feature',
+                                geometry: { type: 'Point', coordinates: [ll.lng, ll.lat] },
+                                properties: leaves[i].properties,
+                            });
+                        }
+                        (map.getSource('spider-lines') as unknown as { setData: (d: unknown) => void }).setData({
+                            type: 'FeatureCollection',
+                            features: lineFeatures,
+                        });
+                        (map.getSource('spider-points') as unknown as { setData: (d: unknown) => void }).setData({
+                            type: 'FeatureCollection',
+                            features: pointFeatures,
+                        });
+
+                        console.log('[workspace-map] spiderfy populated', n, 'points at radius', radius);
+                    }
+
+                    map.on(
+                        'click',
+                        'cluster-circles',
+                        (e: {
+                            features?: Array<{
+                                geometry: { type: string; coordinates?: unknown };
+                                properties: Record<string, unknown>;
+                            }>;
+                        }) => {
+                            console.log('[workspace-map] cluster-circles click', e.features?.length ?? 0, 'features');
+                            const f = e.features?.[0];
+                            if (!f) return;
+                            const clusterId = Number(f.properties.cluster_id);
+                            const center = f.geometry.coordinates as [number, number];
+
+                            console.log(
+                                '[workspace-map] cluster_id',
+                                clusterId,
+                                'point_count',
+                                f.properties.point_count,
+                                'center',
+                                center,
+                            );
+                            const src = map.getSource('collars') as unknown as {
+                                getClusterLeaves: (id: number, limit: number, offset: number) => Promise<unknown[]>;
+                            };
+                            if (typeof src.getClusterLeaves !== 'function') {
+                                console.warn(
+                                    '[workspace-map] source has no getClusterLeaves — source is not clustered',
+                                );
+                                return;
+                            }
+                            // MapLibre (v5+) returns a Promise here (Mapbox GL JS used a
+                            // callback). Using the callback signature silently
+                            // produced no result.
+                            src.getClusterLeaves(clusterId, 500, 0)
+                                .then((leaves) => {
+                                    console.log('[workspace-map] leaves count', leaves?.length ?? 0);
+                                    spiderfy(center, leaves as Array<{ properties: Record<string, unknown> }>);
+                                })
+                                .catch((err) => {
+                                    console.warn('[workspace-map] getClusterLeaves err', err);
+                                });
                         },
-                        x: e.point.x,
-                        y: e.point.y,
+                    );
+
+                    map.on('mouseenter', 'cluster-circles', () => {
+                        map.getCanvas().style.cursor = 'pointer';
                     });
-                });
-                map.on('click', 'collars-dot', (e: { features?: { properties: Record<string, unknown> }[] }) => {
-                    const f = e.features?.[0];
-                    if (!f) return;
-                    const p = f.properties;
-                    const clickedHoleId = String(p.hole_id);
-
-                    // If exactly one hole is already queued AND the user
-                    // clicked a DIFFERENT hole, auto-add the new one and
-                    // open the comparison — no need to check the checkbox
-                    // a second time. Close any open popup so the modal can
-                    // take the stage.
-                    const queued = compareSetRef.current;
-                    if (queued.length === 1 && queued[0] !== clickedHoleId) {
-                        onToggleCompare(clickedHoleId);
-                        setActiveHoleRef.current(null);
-                        return;
-                    }
-                    setActiveHoleRef.current({
-                        collar_id: String(p.collar_id),
-                        hole_id: clickedHoleId,
-                        hole_id_canonical: clickedHoleId,
-                        total_depth: p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
-                        lat: null,
-                        lng: null,
-                        ore_bands: Number(p.ore_bands ?? 0),
-                        ore_thickness_m: Number(p.ore_thickness_m ?? 0),
+                    map.on('mouseleave', 'cluster-circles', () => {
+                        map.getCanvas().style.cursor = '';
                     });
-                });
 
-                // ── Spiderfy ─────────────────────────────────────────────
-                // Empty sources for the spider lines + spider points. When a
-                // cluster is clicked and can't be zoomed further apart, we
-                // populate these synthetic sources with displaced points
-                // arranged in a circle around the cluster center.
-                map.addSource('spider-lines', {
-                    type: 'geojson',
-                    data: { type: 'FeatureCollection', features: [] },
-                });
-                map.addSource('spider-points', {
-                    type: 'geojson',
-                    data: { type: 'FeatureCollection', features: [] },
-                });
-                map.addLayer({
-                    id: 'spider-lines',
-                    type: 'line',
-                    source: 'spider-lines',
-                    paint: {
-                        'line-color': 'rgba(255,255,255,0.5)',
-                        'line-width': 1.2,
-                        'line-dasharray': [2, 2],
-                    },
-                });
-                map.addLayer({
-                    id: 'spider-halo',
-                    type: 'circle',
-                    source: 'spider-points',
-                    filter: ['>', ['get', 'ore_bands'], 0],
-                    paint: {
-                        'circle-radius': 18,
-                        'circle-color': '#7dd97c',
-                        'circle-opacity': 0.35,
-                        'circle-stroke-color': '#7dd97c',
-                        'circle-stroke-width': 2,
-                    },
-                });
-                map.addLayer({
-                    id: 'spider-dot',
-                    type: 'circle',
-                    source: 'spider-points',
-                    paint: {
-                        'circle-radius': 11,
-                        'circle-color': [
-                            'case',
-                            ['>', ['get', 'ore_bands'], 0], '#8fe28b',
-                            '#7accee',
-                        ],
-                        'circle-stroke-color': '#0a0e14',
-                        'circle-stroke-width': 2,
-                    },
-                });
-                map.addLayer({
-                    id: 'spider-label',
-                    type: 'symbol',
-                    source: 'spider-points',
-                    layout: {
-                        'text-field': ['get', 'hole_id'],
-                        'text-size': 11,
-                        'text-offset': [0, 1.2],
-                        'text-anchor': 'top',
-                        'text-allow-overlap': true,
-                        'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
-                    },
-                    paint: {
-                        'text-color': '#e8edf3',
-                        'text-halo-color': '#0a0e14',
-                        'text-halo-width': 1.5,
-                    },
-                });
+                    // Spider dot click — same payload shape as a regular collar
+                    // click. Auto-collapses the spider after handing the user the
+                    // popup so the layout doesn't stay cluttered.
+                    map.on(
+                        'click',
+                        'spider-dot',
+                        (e: { features?: Array<{ properties: Record<string, unknown> }> }) => {
+                            const f = e.features?.[0];
+                            if (!f) return;
+                            const p = f.properties;
+                            const clickedHoleId = String(p.hole_id);
+                            const queued = compareSetRef.current;
+                            if (queued.length === 1 && queued[0] !== clickedHoleId) {
+                                onToggleCompare(clickedHoleId);
+                                setActiveHoleRef.current(null);
+                                collapseSpider();
+                                return;
+                            }
+                            setActiveHoleRef.current({
+                                collar_id: String(p.collar_id),
+                                hole_id: clickedHoleId,
+                                hole_id_canonical: clickedHoleId,
+                                total_depth:
+                                    p.total_depth === null || p.total_depth === undefined
+                                        ? null
+                                        : Number(p.total_depth),
+                                lat: null,
+                                lng: null,
+                                ore_bands: Number(p.ore_bands ?? 0),
+                                ore_thickness_m: Number(p.ore_thickness_m ?? 0),
+                            });
+                            collapseSpider();
+                        },
+                    );
+                    map.on('mouseenter', 'spider-dot', () => {
+                        map.getCanvas().style.cursor = 'pointer';
+                    });
+                    map.on('mouseleave', 'spider-dot', () => {
+                        map.getCanvas().style.cursor = '';
+                    });
 
-                function collapseSpider() {
-                    if (!map.getSource) return;
-                    (map.getSource('spider-lines') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
-                    (map.getSource('spider-points') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
-                }
-
-                function spiderfy(centerLngLat: [number, number], leaves: Array<{ properties: Record<string, unknown> }>) {
-                    const centerPx = map.project(centerLngLat);
-                    const n = leaves.length;
-                    // Radius scales by sqrt(n) so big clusters spread to a
-                    // wider ring (instead of all 60 leaves piling into a
-                    // 95px circle and overlapping).
-                    //   8 leaves  → ~70 px
-                    //   18 leaves → ~106 px
-                    //   60 leaves → ~194 px
-                    const radius = Math.max(50, Math.sqrt(n) * 25);
-                    const lineFeatures: unknown[] = [];
-                    const pointFeatures: unknown[] = [];
-                    for (let i = 0; i < n; i++) {
-                        const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
-                        const px = centerPx.x + Math.cos(angle) * radius;
-                        const py = centerPx.y + Math.sin(angle) * radius;
-                        const ll = map.unproject([px, py]);
-                        lineFeatures.push({
-                            type: 'Feature',
-                            geometry: { type: 'LineString', coordinates: [centerLngLat, [ll.lng, ll.lat]] },
-                            properties: {},
+                    // Spider stays visible while the user zooms/pans — collapsing
+                    // on every zoomstart was too aggressive and made the spider
+                    // feel like it never worked. Spider only collapses on:
+                    //   - spider-dot click (handler does it explicitly)
+                    //   - explicit empty-map click below
+                    //   - opening another cluster (its handler tears the old one
+                    //     down by overwriting the source data)
+                    map.on('click', (e: { point: { x: number; y: number } }) => {
+                        const hits = map.queryRenderedFeatures([e.point.x, e.point.y], {
+                            layers: ['cluster-circles', 'collars-dot', 'spider-dot'],
                         });
-                        pointFeatures.push({
-                            type: 'Feature',
-                            geometry: { type: 'Point', coordinates: [ll.lng, ll.lat] },
-                            properties: leaves[i].properties,
-                        });
-                    }
-                    (map.getSource('spider-lines') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: lineFeatures });
-                    (map.getSource('spider-points') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: pointFeatures });
-                    // eslint-disable-next-line no-console
-                    console.log('[workspace-map] spiderfy populated', n, 'points at radius', radius);
-                }
-
-                map.on('click', 'cluster-circles', (e: {
-                    features?: Array<{ geometry: { type: string; coordinates?: unknown }; properties: Record<string, unknown> }>;
-                }) => {
-                    // eslint-disable-next-line no-console
-                    console.log('[workspace-map] cluster-circles click', e.features?.length ?? 0, 'features');
-                    const f = e.features?.[0];
-                    if (!f) return;
-                    const clusterId = Number(f.properties.cluster_id);
-                    const center = f.geometry.coordinates as [number, number];
-                    // eslint-disable-next-line no-console
-                    console.log('[workspace-map] cluster_id', clusterId, 'point_count', f.properties.point_count, 'center', center);
-                    const src = map.getSource('collars') as unknown as {
-                        getClusterLeaves: (id: number, limit: number, offset: number) => Promise<unknown[]>;
-                    };
-                    if (typeof src.getClusterLeaves !== 'function') {
-                        // eslint-disable-next-line no-console
-                        console.warn('[workspace-map] source has no getClusterLeaves — source is not clustered');
-                        return;
-                    }
-                    // MapLibre (v5+) returns a Promise here (Mapbox GL JS used a
-                    // callback). Using the callback signature silently
-                    // produced no result.
-                    src.getClusterLeaves(clusterId, 500, 0)
-                        .then((leaves) => {
-                            // eslint-disable-next-line no-console
-                            console.log('[workspace-map] leaves count', leaves?.length ?? 0);
-                            spiderfy(center, leaves as Array<{ properties: Record<string, unknown> }>);
-                        })
-                        .catch((err) => {
-                            // eslint-disable-next-line no-console
-                            console.warn('[workspace-map] getClusterLeaves err', err);
-                        });
-                });
-
-                map.on('mouseenter', 'cluster-circles', () => { map.getCanvas().style.cursor = 'pointer'; });
-                map.on('mouseleave', 'cluster-circles', () => { map.getCanvas().style.cursor = ''; });
-
-                // Spider dot click — same payload shape as a regular collar
-                // click. Auto-collapses the spider after handing the user the
-                // popup so the layout doesn't stay cluttered.
-                map.on('click', 'spider-dot', (e: { features?: Array<{ properties: Record<string, unknown> }> }) => {
-                    const f = e.features?.[0];
-                    if (!f) return;
-                    const p = f.properties;
-                    const clickedHoleId = String(p.hole_id);
-                    const queued = compareSetRef.current;
-                    if (queued.length === 1 && queued[0] !== clickedHoleId) {
-                        onToggleCompare(clickedHoleId);
-                        setActiveHoleRef.current(null);
-                        collapseSpider();
-                        return;
-                    }
-                    setActiveHoleRef.current({
-                        collar_id: String(p.collar_id),
-                        hole_id: clickedHoleId,
-                        hole_id_canonical: clickedHoleId,
-                        total_depth: p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
-                        lat: null,
-                        lng: null,
-                        ore_bands: Number(p.ore_bands ?? 0),
-                        ore_thickness_m: Number(p.ore_thickness_m ?? 0),
+                        if (!hits || hits.length === 0) {
+                            collapseSpider();
+                        }
                     });
-                    collapseSpider();
-                });
-                map.on('mouseenter', 'spider-dot', () => { map.getCanvas().style.cursor = 'pointer'; });
-                map.on('mouseleave', 'spider-dot', () => { map.getCanvas().style.cursor = ''; });
 
-                // Spider stays visible while the user zooms/pans — collapsing
-                // on every zoomstart was too aggressive and made the spider
-                // feel like it never worked. Spider only collapses on:
-                //   - spider-dot click (handler does it explicitly)
-                //   - explicit empty-map click below
-                //   - opening another cluster (its handler tears the old one
-                //     down by overwriting the source data)
-                map.on('click', (e: { point: { x: number; y: number } }) => {
-                    const hits = map.queryRenderedFeatures([e.point.x, e.point.y], {
-                        layers: ['cluster-circles', 'collars-dot', 'spider-dot'],
-                    });
-                    if (!hits || hits.length === 0) {
-                        collapseSpider();
-                    }
+                    // Publish the loaded map LAST: every state effect below keys
+                    // on it and re-applies itself to this instance.
+                    setMap(map);
                 });
 
-                // Publish the loaded map LAST: every state effect below keys
-                // on it and re-applies itself to this instance.
-                setMap(map);
-            });
-
-            mapRef.current = map;
-        });
+                mapRef.current = map;
+            },
+        );
 
         return () => {
             cancelled = true;
             setMap(null);
+            if (styleRecoveryTimerRef.current !== null) {
+                clearTimeout(styleRecoveryTimerRef.current);
+                styleRecoveryTimerRef.current = null;
+            }
+            addMapLayersRef.current = null;
+            renderedCollarsRef.current = null;
             if (mapRef.current?.remove) {
                 mapRef.current.remove();
             }
             mapRef.current = null;
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [collars.length, projectSlug, basemap, styleSpec, demUrl]);
+        // Built ONCE per project. Everything else the map reacts to — basemap,
+        // DEM, collars — is applied to the live instance by the effects below, so
+        // the camera (pan / zoom / pitch) survives. Those values are read from
+        // refs here on purpose.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [projectSlug]);
+
+    // Basemap (or terrain DEM) change: swap the style on the live map. A
+    // style swap discards every runtime source and layer, so the map is
+    // withdrawn from state while it loads — which detaches the tool, layer and
+    // terrain effects below — and re-published once the sources and layers are
+    // back, which re-applies all of them (FE-6). `diff: false` forces a full
+    // rebuild and guarantees `style.load` fires. The camera is untouched.
+    useEffect(() => {
+        if (!map) return;
+        const applied = appliedStyleRef.current;
+        if (applied.styleSpec === styleSpec && applied.demUrl === demUrl) return;
+        appliedStyleRef.current = { styleSpec, demUrl };
+
+        const swapped = map as MaplibreMap;
+        setMap(null);
+
+        // A style that never loads (404, offline, a bad style.json URL) never
+        // fires `style.load`, which used to leave `map` null for good: no
+        // tools, no layer toggles, no hole picker. So the swap is also
+        // watched for `error`; if `style.load` has not arrived by `idle` or
+        // after STYLE_RECOVERY_MS, the map is re-published anyway.
+        let pending = true;
+        const clearRecovery = () => {
+            if (styleRecoveryTimerRef.current !== null) {
+                clearTimeout(styleRecoveryTimerRef.current);
+                styleRecoveryTimerRef.current = null;
+            }
+        };
+        // Re-add the layers if the swap dropped them, then publish the map.
+        // Returns false when the style is not in a state that accepts them.
+        const publish = (): boolean => {
+            // Unmounted or rebuilt for another project in the meantime.
+            if (mapRef.current !== swapped) return true;
+            if (!swapped.getSource('collars')) {
+                try {
+                    addMapLayersRef.current?.(swapped);
+                } catch (err) {
+                    console.warn('WorkspaceMap: layers could not be re-added after a basemap swap', err);
+                    return false;
+                }
+            }
+            setMap(swapped);
+            return true;
+        };
+        const onStyleLoad = () => {
+            pending = false;
+            clearRecovery();
+            swapped.off('error', onError);
+            publish();
+        };
+        const recover = () => {
+            if (!pending || mapRef.current !== swapped) return;
+            clearRecovery();
+            if (publish()) {
+                pending = false;
+                swapped.off('error', onError);
+                return;
+            }
+            // The style is not loaded, so the layers cannot go on it: put a
+            // blank style (same glyphs) underneath. Its `style.load` publishes.
+            console.warn('WorkspaceMap: basemap style did not load; falling back to a blank basemap');
+            swapped.setStyle(
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                { version: 8, glyphs: glyphsUrlRef.current, sources: {}, layers: [] } as any,
+                { diff: false },
+            );
+        };
+        function onError() {
+            if (!pending || styleRecoveryTimerRef.current !== null) return;
+            swapped.once('idle', recover);
+            styleRecoveryTimerRef.current = setTimeout(recover, STYLE_RECOVERY_MS);
+        }
+        swapped.once('style.load', onStyleLoad);
+        swapped.on('error', onError);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        swapped.setStyle(styleSpec as any, { diff: false });
+    }, [map, styleSpec, demUrl]);
+
+    // New `collars` prop → update the GeoJSON source in place; rebuilding the
+    // map would reset the camera. A no-op when the source already holds this
+    // array (the initial load, and the re-add after a basemap switch).
+    useEffect(() => {
+        if (!map || renderedCollarsRef.current === collars) return;
+        const source = map.getSource('collars') as { setData: (d: unknown) => void } | undefined;
+        if (!source) return;
+        source.setData({ type: 'FeatureCollection', features: collarFeatures(collars) });
+        renderedCollarsRef.current = collars;
+    }, [map, collars]);
 
     // New data_version → new tile URLs on the live sources, without rebuilding
     // the map (FE-5).
@@ -888,11 +1073,8 @@ export function WorkspaceMap({
         if (minThickness > 0) {
             conditions.push(['>=', ['get', 'ore_thickness_m'], minThickness]);
         }
-        const filter = conditions.length === 0
-            ? null
-            : conditions.length === 1
-                ? conditions[0]
-                : ['all', ...conditions];
+        const filter =
+            conditions.length === 0 ? null : conditions.length === 1 ? conditions[0] : ['all', ...conditions];
 
         if (map.getLayer('collars-dot')) {
             map.setFilter('collars-dot', filter);
@@ -902,11 +1084,7 @@ export function WorkspaceMap({
     // Sync the compare-queue ring filter whenever the compareSet changes.
     useEffect(() => {
         if (!map || !map.getLayer || !map.getLayer('collars-compare-ring')) return;
-        map.setFilter('collars-compare-ring', [
-            'in',
-            ['get', 'hole_id'],
-            ['literal', compareSet],
-        ]);
+        map.setFilter('collars-compare-ring', ['in', ['get', 'hole_id'], ['literal', compareSet]]);
     }, [map, compareSet]);
 
     // Terrain on/off — toggle map.setTerrain. The raster-dem source was
@@ -920,7 +1098,6 @@ export function WorkspaceMap({
                 map.setTerrain(null);
             }
         } catch (e) {
-            // eslint-disable-next-line no-console
             console.warn('[workspace-map] setTerrain failed', e);
         }
     }, [map, terrainOn]);
@@ -932,7 +1109,11 @@ export function WorkspaceMap({
         if (!map) return;
 
         // Default: ensure drag-pan is enabled so the user can move around.
-        try { map.dragPan.enable(); } catch { /* noop */ }
+        try {
+            map.dragPan.enable();
+        } catch {
+            /* noop */
+        }
         // Clear any leftover measure state when switching tools.
         const clearMeasure = () => {
             const src = map.getSource('measure-points') as { setData: (d: unknown) => void } | undefined;
@@ -1004,20 +1185,36 @@ export function WorkspaceMap({
             let cumulative = 0;
             const pointFeatures = points.map((p, i) => {
                 if (i > 0) cumulative += haversine(points[i - 1], p);
-                const label = i === 0 ? '0 m' : cumulative >= 1000 ? `${(cumulative / 1000).toFixed(2)} km` : `${Math.round(cumulative)} m`;
+                const label =
+                    i === 0
+                        ? '0 m'
+                        : cumulative >= 1000
+                          ? `${(cumulative / 1000).toFixed(2)} km`
+                          : `${Math.round(cumulative)} m`;
                 return {
                     type: 'Feature' as const,
                     geometry: { type: 'Point' as const, coordinates: p },
                     properties: { label },
                 };
             });
-            const lineFeature = points.length >= 2 ? [{
-                type: 'Feature' as const,
-                geometry: { type: 'LineString' as const, coordinates: points.slice() },
-                properties: {},
-            }] : [];
-            (map.getSource('measure-points') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: pointFeatures });
-            (map.getSource('measure-line') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: lineFeature });
+            const lineFeature =
+                points.length >= 2
+                    ? [
+                          {
+                              type: 'Feature' as const,
+                              geometry: { type: 'LineString' as const, coordinates: points.slice() },
+                              properties: {},
+                          },
+                      ]
+                    : [];
+            (map.getSource('measure-points') as { setData: (d: unknown) => void }).setData({
+                type: 'FeatureCollection',
+                features: pointFeatures,
+            });
+            (map.getSource('measure-line') as { setData: (d: unknown) => void }).setData({
+                type: 'FeatureCollection',
+                features: lineFeature,
+            });
         }
 
         function onClick(e: { lngLat: { lng: number; lat: number } }) {
@@ -1049,26 +1246,43 @@ export function WorkspaceMap({
     useEffect(() => {
         if (!map) return;
 
+        // This effect also re-runs when the map is re-published after a basemap
+        // swap. That is not a tool change: the Select tool's selection must
+        // survive it (its highlight ring was dropped with the old style and is
+        // redrawn below), so only a real tool change clears it.
+        const toolChanged = lastToolRef.current !== activeTool;
+        lastToolRef.current = activeTool;
+
         // Clean prior tool layers' data so nothing stale lingers.
         const clearDraw = () => {
-            (map.getSource('draw-polygon') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
-            (map.getSource('draw-vertices') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
+            (map.getSource('draw-polygon') as { setData: (d: unknown) => void } | undefined)?.setData({
+                type: 'FeatureCollection',
+                features: [],
+            });
+            (map.getSource('draw-vertices') as { setData: (d: unknown) => void } | undefined)?.setData({
+                type: 'FeatureCollection',
+                features: [],
+            });
         };
         const clearSelect = () => {
-            (map.getSource('select-highlight') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
+            (map.getSource('select-highlight') as { setData: (d: unknown) => void } | undefined)?.setData({
+                type: 'FeatureCollection',
+                features: [],
+            });
             setSelectRect(null);
             setSelectedHoles([]);
+            selectedHolesRef.current = [];
         };
 
         if (activeTool !== 'draw' && activeTool !== 'select') {
             clearDraw();
-            clearSelect();
+            if (toolChanged) clearSelect();
             return;
         }
 
         // ── Draw polygon ──────────────────────────────────────────
         if (activeTool === 'draw') {
-            clearSelect();
+            if (toolChanged) clearSelect();
             if (!map.getSource('draw-polygon')) {
                 map.addSource('draw-polygon', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
                 map.addSource('draw-vertices', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -1130,19 +1344,27 @@ export function WorkspaceMap({
                     geometry: { type: 'Point' as const, coordinates: p },
                     properties: {},
                 }));
-                (map.getSource('draw-vertices') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: vtxFeatures });
+                (map.getSource('draw-vertices') as { setData: (d: unknown) => void }).setData({
+                    type: 'FeatureCollection',
+                    features: vtxFeatures,
+                });
                 if (ring.length >= 3) {
                     const closed = [...ring, ring[0]];
                     (map.getSource('draw-polygon') as { setData: (d: unknown) => void }).setData({
                         type: 'FeatureCollection',
-                        features: [{
-                            type: 'Feature',
-                            geometry: { type: 'Polygon', coordinates: [closed] },
-                            properties: {},
-                        }],
+                        features: [
+                            {
+                                type: 'Feature',
+                                geometry: { type: 'Polygon', coordinates: [closed] },
+                                properties: {},
+                            },
+                        ],
                     });
                 } else {
-                    (map.getSource('draw-polygon') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: [] });
+                    (map.getSource('draw-polygon') as { setData: (d: unknown) => void }).setData({
+                        type: 'FeatureCollection',
+                        features: [],
+                    });
                 }
             }
 
@@ -1158,9 +1380,12 @@ export function WorkspaceMap({
                     for (let i = 0; i < ring.length; i++) {
                         perimM += haversine(ring[i], ring[(i + 1) % ring.length]);
                     }
-                    const areaLabel = areaM2 >= 1_000_000 ? `${(areaM2 / 1_000_000).toFixed(3)} km²` : `${Math.round(areaM2).toLocaleString()} m² (${(areaM2 / 10_000).toFixed(2)} ha)`;
+                    const areaLabel =
+                        areaM2 >= 1_000_000
+                            ? `${(areaM2 / 1_000_000).toFixed(3)} km²`
+                            : `${Math.round(areaM2).toLocaleString()} m² (${(areaM2 / 10_000).toFixed(2)} ha)`;
                     const perimLabel = perimM >= 1000 ? `${(perimM / 1000).toFixed(2)} km` : `${Math.round(perimM)} m`;
-                    // eslint-disable-next-line no-alert
+
                     alert(`Polygon\nArea: ${areaLabel}\nPerimeter: ${perimLabel}\n${ring.length} vertices`);
                 }
                 ring.length = 0;
@@ -1180,7 +1405,10 @@ export function WorkspaceMap({
         if (activeTool === 'select') {
             clearDraw();
             if (!map.getSource('select-highlight')) {
-                map.addSource('select-highlight', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addSource('select-highlight', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] },
+                });
                 map.addLayer({
                     id: 'select-highlight-ring',
                     type: 'circle',
@@ -1192,11 +1420,30 @@ export function WorkspaceMap({
                         'circle-stroke-width': 2.5,
                     },
                 });
+                // A re-created source (basemap swap) starts empty: put the
+                // ring back on whatever is still selected.
+                const kept = selectedHolesRef.current;
+                if (kept.length > 0) {
+                    (map.getSource('select-highlight') as { setData: (d: unknown) => void }).setData({
+                        type: 'FeatureCollection',
+                        features: collarsRef.current
+                            .filter((c) => kept.includes(c.hole_id_canonical) && c.lat !== null && c.lng !== null)
+                            .map((c) => ({
+                                type: 'Feature' as const,
+                                geometry: { type: 'Point' as const, coordinates: [c.lng, c.lat] },
+                                properties: { hole_id: c.hole_id_canonical },
+                            })),
+                    });
+                }
             }
 
             // Disable drag-pan so the box drag captures cleanly. Re-enabled
             // in cleanup.
-            try { map.dragPan.disable(); } catch { /* noop */ }
+            try {
+                map.dragPan.disable();
+            } catch {
+                /* noop */
+            }
             map.getCanvas().style.cursor = 'crosshair';
 
             let down: { x: number; y: number } | null = null;
@@ -1231,13 +1478,26 @@ export function WorkspaceMap({
                 // queryRenderedFeatures by screen box on the collars-dot
                 // layer. Spider-dots intentionally excluded — the spider
                 // is a transient cluster expansion, not a selection target.
-                const feats = map.queryRenderedFeatures([[b.minX, b.minY], [b.maxX, b.maxY]], {
-                    layers: ['collars-dot'],
-                });
-                const ids = Array.from(new Set((feats as Array<{ properties: { hole_id: string } }>).map((f) => String(f.properties.hole_id))));
+                const feats = map.queryRenderedFeatures(
+                    [
+                        [b.minX, b.minY],
+                        [b.maxX, b.maxY],
+                    ],
+                    {
+                        layers: ['collars-dot'],
+                    },
+                );
+                const ids = Array.from(
+                    new Set(
+                        (feats as Array<{ properties: { hole_id: string } }>).map((f) => String(f.properties.hole_id)),
+                    ),
+                );
                 setSelectedHoles(ids);
+                selectedHolesRef.current = ids;
                 // Drop the highlight ring at each selected collar.
-                const matchingPoints = collars.filter((c) => ids.includes(c.hole_id_canonical) && c.lat !== null && c.lng !== null);
+                const matchingPoints = collars.filter(
+                    (c) => ids.includes(c.hole_id_canonical) && c.lat !== null && c.lng !== null,
+                );
                 (map.getSource('select-highlight') as { setData: (d: unknown) => void }).setData({
                     type: 'FeatureCollection',
                     features: matchingPoints.map((c) => ({
@@ -1256,11 +1516,15 @@ export function WorkspaceMap({
                 map.off('mousedown', onDown);
                 map.off('mousemove', onMove);
                 map.off('mouseup', onUp);
-                try { map.dragPan.enable(); } catch { /* noop */ }
+                try {
+                    map.dragPan.enable();
+                } catch {
+                    /* noop */
+                }
                 map.getCanvas().style.cursor = '';
             };
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [map, activeTool]);
 
     function jumpToLogs() {
@@ -1294,7 +1558,16 @@ export function WorkspaceMap({
     const oreCount = collars.filter((c) => c.ore_bands > 0).length;
 
     return (
-        <div style={{ position: 'relative', width: '100%', height, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line-1)' }}>
+        <div
+            style={{
+                position: 'relative',
+                width: '100%',
+                height,
+                borderRadius: 6,
+                overflow: 'hidden',
+                border: '1px solid var(--line-1)',
+            }}
+        >
             <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
             {/* Live drag-box overlay for Select tool. Pixel-positioned in
@@ -1329,8 +1602,12 @@ export function WorkspaceMap({
                             type="button"
                             onClick={() => {
                                 setSelectedHoles([]);
+                                selectedHolesRef.current = [];
                                 const map = mapRef.current;
-                                (map?.getSource?.('select-highlight') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
+                                (
+                                    map?.getSource?.('select-highlight') as
+                                        { setData: (d: unknown) => void } | undefined
+                                )?.setData({ type: 'FeatureCollection', features: [] });
                             }}
                             className="text-[10px] font-mono"
                             style={{ color: 'var(--fg-3)' }}
@@ -1338,7 +1615,10 @@ export function WorkspaceMap({
                             ✕
                         </button>
                     </div>
-                    <div className="mt-1 text-[11px] font-mono leading-snug" style={{ color: 'var(--fg-1)', maxHeight: 80, overflowY: 'auto' }}>
+                    <div
+                        className="mt-1 text-[11px] font-mono leading-snug"
+                        style={{ color: 'var(--fg-1)', maxHeight: 80, overflowY: 'auto' }}
+                    >
                         {selectedHoles.slice(0, 12).join(', ')}
                         {selectedHoles.length > 12 && ` … +${selectedHoles.length - 12} more`}
                     </div>
@@ -1364,9 +1644,7 @@ export function WorkspaceMap({
 
             {/* Tools segmented — top-right of the map, left of the
                 MapLibre NavigationControl. Pan / Measure / Draw / Select. */}
-            <div
-                className="absolute top-2 right-12 z-10 flex flex-col items-end gap-1"
-            >
+            <div className="absolute top-2 right-12 z-10 flex flex-col items-end gap-1">
                 <div
                     className="inline-flex p-0.5 rounded border"
                     style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)', backdropFilter: 'blur(4px)' }}
@@ -1385,10 +1663,13 @@ export function WorkspaceMap({
                                     fontWeight: active ? 600 : 400,
                                 }}
                                 title={
-                                    t === 'pan' ? 'Pan — drag to move the map'
-                                    : t === 'measure' ? 'Measure — click points; dblclick to reset'
-                                    : t === 'draw' ? 'Draw — click vertices; dblclick to close polygon'
-                                    : 'Select — drag a rectangle to highlight collars'
+                                    t === 'pan'
+                                        ? 'Pan — drag to move the map'
+                                        : t === 'measure'
+                                          ? 'Measure — click points; dblclick to reset'
+                                          : t === 'draw'
+                                            ? 'Draw — click vertices; dblclick to close polygon'
+                                            : 'Select — drag a rectangle to highlight collars'
                                 }
                             >
                                 {t}
@@ -1405,7 +1686,9 @@ export function WorkspaceMap({
                 className="absolute bottom-2 right-2 z-10 flex items-center gap-2 text-[10px] font-mono px-2 py-1.5 rounded border"
                 style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
             >
-                <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Map</span>
+                <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                    Map
+                </span>
                 <select
                     aria-label="Basemap"
                     value={basemap}
@@ -1414,7 +1697,9 @@ export function WorkspaceMap({
                     style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
                 >
                     {BASEMAP_OPTIONS.map((o) => (
-                        <option key={o.id} value={o.id}>{o.label}</option>
+                        <option key={o.id} value={o.id}>
+                            {o.label}
+                        </option>
                     ))}
                 </select>
                 <label className="flex items-center gap-1 cursor-pointer">
@@ -1430,12 +1715,17 @@ export function WorkspaceMap({
                 className="absolute bottom-2 left-2 z-10 text-[10px] font-mono px-2 py-1.5 rounded border flex items-center gap-2"
                 style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
             >
-                <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Tool</span>
+                <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                    Tool
+                </span>
                 <span style={{ color: activeTool === 'pan' ? 'var(--fg-2)' : '#e8a36b' }}>
                     {activeTool === 'pan' && 'Pan (default · drag to move)'}
                     {activeTool === 'measure' && 'Measure (click points · dblclick to reset)'}
                     {activeTool === 'draw' && 'Draw (click vertices · dblclick to finish)'}
-                    {activeTool === 'select' && (selectedHoles.length > 0 ? `Select · ${selectedHoles.length} hole${selectedHoles.length === 1 ? '' : 's'} highlighted` : 'Select (drag box on map)')}
+                    {activeTool === 'select' &&
+                        (selectedHoles.length > 0
+                            ? `Select · ${selectedHoles.length} hole${selectedHoles.length === 1 ? '' : 's'} highlighted`
+                            : 'Select (drag box on map)')}
                 </span>
                 {activeTool !== 'pan' && (
                     <button
@@ -1453,7 +1743,13 @@ export function WorkspaceMap({
                 control so the two don't overlap on the right edge. */}
             <div
                 className="absolute right-12 z-10 px-3 py-2 rounded border max-w-[260px]"
-                style={{ top: 44, background: 'var(--bg-1)', borderColor: 'var(--line-1)', color: 'var(--fg-1)', backdropFilter: 'blur(6px)' }}
+                style={{
+                    top: 44,
+                    background: 'var(--bg-1)',
+                    borderColor: 'var(--line-1)',
+                    color: 'var(--fg-1)',
+                    backdropFilter: 'blur(6px)',
+                }}
             >
                 <div className="text-[10px] font-mono uppercase tracking-wider mb-0.5" style={{ color: 'var(--fg-3)' }}>
                     Project
@@ -1474,10 +1770,17 @@ export function WorkspaceMap({
                 basemap dropdown on the right. */}
             <div
                 className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[10px] font-mono px-3 py-1.5 rounded border z-10 flex flex-wrap gap-x-3 gap-y-0.5 justify-center"
-                style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)', color: 'var(--fg-2)', maxWidth: 'calc(100% - 32rem)' }}
+                style={{
+                    background: 'var(--bg-1)',
+                    borderColor: 'var(--line-1)',
+                    color: 'var(--fg-2)',
+                    maxWidth: 'calc(100% - 32rem)',
+                }}
             >
                 <span>{visibleCount} collars</span>
-                <span style={{ color: oreCount > 0 ? 'oklch(0.82 0.18 145)' : 'var(--fg-3)' }}>· {oreCount} with U-host</span>
+                <span style={{ color: oreCount > 0 ? 'oklch(0.82 0.18 145)' : 'var(--fg-3)' }}>
+                    · {oreCount} with U-host
+                </span>
                 <span>· {projectSummary.total_drilled_m.toLocaleString()} m drilled</span>
                 <span>· {projectSummary.total_ore_thickness_m.toFixed(1)} m derived ore</span>
                 {projectSummary.mean_u3o8_pct !== null && (
@@ -1523,9 +1826,14 @@ export function WorkspaceMap({
                         Compare queue · {compareSet.length}/2
                     </div>
                     <div className="text-[11px] font-mono mb-2" style={{ color: 'var(--fg-1)' }}>
-                        {compareSet.length === 1
-                            ? <>{compareSet[0]} · <span style={{ color: 'var(--fg-3)' }}>click another collar to compare</span></>
-                            : compareSet.join(' · ')}
+                        {compareSet.length === 1 ? (
+                            <>
+                                {compareSet[0]} ·{' '}
+                                <span style={{ color: 'var(--fg-3)' }}>click another collar to compare</span>
+                            </>
+                        ) : (
+                            compareSet.join(' · ')
+                        )}
                     </div>
                     <div className="flex gap-1">
                         <button
@@ -1558,7 +1866,10 @@ export function WorkspaceMap({
                     style={{ background: 'var(--bg-1)', borderColor: 'var(--line-2)', color: 'var(--fg-1)' }}
                 >
                     <div className="flex items-start justify-between gap-2">
-                        <div className="text-[11px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                        <div
+                            className="text-[11px] font-mono uppercase tracking-wider"
+                            style={{ color: 'var(--fg-3)' }}
+                        >
                             Hole
                         </div>
                         <button
@@ -1579,7 +1890,10 @@ export function WorkspaceMap({
                             {activeHole.total_depth !== null ? `${activeHole.total_depth.toFixed(1)} m` : '—'}
                         </div>
                         <div style={{ color: 'var(--fg-3)' }}>Derived ore bands</div>
-                        <div className="font-mono text-right" style={{ color: activeHole.ore_bands > 0 ? '#8fe28b' : 'var(--fg-3)' }}>
+                        <div
+                            className="font-mono text-right"
+                            style={{ color: activeHole.ore_bands > 0 ? '#8fe28b' : 'var(--fg-3)' }}
+                        >
                             {activeHole.ore_bands}
                         </div>
                         <div style={{ color: 'var(--fg-3)' }}>U-host thickness</div>
@@ -1592,10 +1906,10 @@ export function WorkspaceMap({
                         const hint = inSet
                             ? 'queued · click any other collar to compare'
                             : compareSet.length === 0
-                                ? 'check, then click another collar to compare'
-                                : compareSet.length >= 2
-                                    ? 'queue full — clear to add another'
-                                    : 'add to queue';
+                              ? 'check, then click another collar to compare'
+                              : compareSet.length >= 2
+                                ? 'queue full — clear to add another'
+                                : 'add to queue';
                         return (
                             <label
                                 className="mt-2 flex items-center gap-2 text-[11px] font-mono cursor-pointer px-2 py-1.5 rounded border"
@@ -1611,7 +1925,9 @@ export function WorkspaceMap({
                                     disabled={!inSet && compareSet.length >= 2}
                                     onChange={() => onToggleCompare(activeHole.hole_id)}
                                 />
-                                <span>Compare · <span style={{ color: inSet ? '#e8a36b' : 'var(--fg-3)' }}>{hint}</span></span>
+                                <span>
+                                    Compare · <span style={{ color: inSet ? '#e8a36b' : 'var(--fg-3)' }}>{hint}</span>
+                                </span>
                             </label>
                         );
                     })()}
@@ -1619,7 +1935,11 @@ export function WorkspaceMap({
                         type="button"
                         onClick={jumpToLogs}
                         className="mt-2 w-full text-[10px] font-mono uppercase tracking-wider px-2 py-1.5 rounded border"
-                        style={{ color: 'var(--accent)', borderColor: 'var(--accent-dim)', background: 'var(--accent-bg)' }}
+                        style={{
+                            color: 'var(--accent)',
+                            borderColor: 'var(--accent-dim)',
+                            background: 'var(--accent-bg)',
+                        }}
                     >
                         View in LOGS →
                     </button>

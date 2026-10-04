@@ -16,8 +16,8 @@ use Tests\TestCase;
  * on the X-Workspace-Id header. Without the header every workspace's refresh
  * lands in the one bucket keyed on the Horizon worker's IP.
  *
- * The fake answers with a `failed` result so the job skips the post-refresh
- * data_version read and needs no database.
+ * The post-refresh data_version read fails without a database and the job
+ * treats that as "no version info", so no fixtures are needed.
  */
 class DebounceWorkspaceMvRefreshRateLimitKeyTest extends TestCase
 {
@@ -31,9 +31,10 @@ class DebounceWorkspaceMvRefreshRateLimitKeyTest extends TestCase
         Event::fake();
         Http::fake([
             'fastapi.test/internal/v1/mv-refresh/run' => Http::response(
-                ['results' => [['status' => 'failed']]],
+                ['results' => [['status' => 'completed']]],
                 200,
             ),
+            'fastapi.test/internal/v1/metrics/*' => Http::response([], 200),
         ]);
 
         $workspaceId = 'a0000000-0000-0000-0000-000000000001';

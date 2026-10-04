@@ -882,7 +882,11 @@ class TestSearchDocuments:
         # Patch encode_sparse to avoid a real call to the SPLADE sidecar (which
         # now requires X-Service-Key; the test env uses a dummy key). Matches
         # the 4 sibling search_documents tests — this one was missed.
+        # An explicitly local backend: a hosted one (the default, "bedrock")
+        # fails closed with reranker_unavailable instead (audit item B,
+        # covered in test_rerank_failure_is_hard.py).
         with patch("app.agent.tools.settings") as mock_settings, \
+                patch("app.agent.tools.RERANKER_BACKEND", "cross_encoder"), \
                 patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.RETRIEVAL_TOP_N = 20

@@ -20,8 +20,8 @@ const StereonetCard = lazy(() => import('./StereonetCard'));
 
 function LoadingPanel({ label }: { label: string }) {
     return (
-        <div className="flex items-center justify-center h-full bg-gray-950/60 text-xs text-gray-500">
-            <div className="w-4 h-4 rounded-full border-2 border-gray-700 border-t-amber-400 animate-spin mr-2" />
+        <div className="flex items-center justify-center h-full bg-[var(--bg-0)] text-xs text-[var(--fg-3)]">
+            <div className="w-4 h-4 rounded-full border-2 border-[color:var(--line-2)] border-t-[color:var(--accent)] animate-spin mr-2" />
             {label}
         </div>
     );
@@ -37,28 +37,38 @@ interface VizCardProps {
 
 function VizCard({ title, badge, onClose, children, heightClass = 'h-72' }: VizCardProps) {
     return (
-        <div className="mt-3 border border-gray-700/80 rounded-xl overflow-hidden bg-gray-900/90 shadow-lg">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 bg-gray-900">
+        <div className="mt-3 border border-[color:var(--line-2)] rounded-xl overflow-hidden bg-[var(--bg-1)] shadow-lg">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-[color:var(--line-1)] bg-[var(--bg-1)]">
                 <div className="flex items-center gap-2 min-w-0">
                     {badge && (
-                        <span className="text-[10px] uppercase tracking-wider font-semibold text-amber-400 bg-amber-950/60 border border-amber-800/60 px-1.5 py-0.5 rounded">
+                        <span className="text-[10px] uppercase tracking-wider font-semibold text-[var(--accent)] bg-[var(--accent-bg)] border border-[color:var(--accent-dim)] px-1.5 py-0.5 rounded">
                             {badge}
                         </span>
                     )}
-                    <span className="text-xs text-gray-300 font-medium truncate">{title}</span>
+                    <span className="text-xs text-[var(--fg-1)] font-medium truncate">{title}</span>
                 </div>
                 <button
                     type="button"
                     onClick={onClose}
-                    className="text-gray-500 hover:text-gray-200 focus:outline-none focus:text-gray-200 p-1 rounded"
+                    className="text-[var(--fg-3)] hover:text-[var(--fg-0)] focus:outline-none focus:text-[var(--fg-0)] p-1 rounded"
                     aria-label="Hide visualization"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5" aria-hidden="true">
-                        <path fillRule="evenodd" d="M5.47 5.47a.75.75 0 0 1 1.06 0L12 10.94l5.47-5.47a.75.75 0 1 1 1.06 1.06L13.06 12l5.47 5.47a.75.75 0 1 1-1.06 1.06L12 13.06l-5.47 5.47a.75.75 0 0 1-1.06-1.06L10.94 12 5.47 6.53a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                    <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        className="w-3.5 h-3.5"
+                        aria-hidden="true"
+                    >
+                        <path
+                            fillRule="evenodd"
+                            d="M5.47 5.47a.75.75 0 0 1 1.06 0L12 10.94l5.47-5.47a.75.75 0 1 1 1.06 1.06L13.06 12l5.47 5.47a.75.75 0 1 1-1.06 1.06L12 13.06l-5.47 5.47a.75.75 0 0 1-1.06-1.06L10.94 12 5.47 6.53a.75.75 0 0 1 0-1.06Z"
+                            clipRule="evenodd"
+                        />
                     </svg>
                 </button>
             </div>
-            <div className={`relative ${heightClass} bg-gray-950`}>{children}</div>
+            <div className={`relative ${heightClass} bg-[var(--bg-0)]`}>{children}</div>
         </div>
     );
 }
@@ -83,9 +93,8 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
 
     const hasStripLog = !vizHidden && vizType === 'downhole_strip' && !!meta.hole_id;
     const plotlyData = vizPayload?.plotly_data;
-    const hasPlotly = !vizHidden
-        && (vizType === 'assay_histogram' || vizType === 'cross_section')
-        && (plotlyData?.length ?? 0) > 0;
+    const hasPlotly =
+        !vizHidden && (vizType === 'assay_histogram' || vizType === 'cross_section') && (plotlyData?.length ?? 0) > 0;
     const traceCollars = meta.collars ?? [];
     const traceIntervals = meta.intervals ?? [];
     const traceStructures = meta.structures ?? [];
@@ -95,10 +104,8 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
     const coverageRows = meta.rows ?? [];
     const hasCoverage = !vizHidden && vizType === 'coverage_table' && coverageRows.length > 0;
     const stereonetImage = meta.image_base64;
-    const hasStereonet = !vizHidden
-        && vizType === 'stereonet'
-        && typeof stereonetImage === 'string'
-        && stereonetImage.length > 0;
+    const hasStereonet =
+        !vizHidden && vizType === 'stereonet' && typeof stereonetImage === 'string' && stereonetImage.length > 0;
     const hasViz = hasStripLog || hasPlotly || has3DTrace || hasTimeline || hasCoverage || hasStereonet;
 
     if (!hasMap && !hasViz) return null;
@@ -118,7 +125,9 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
                             until we harmonise the two type definitions in
                             a follow-up. */}
                         <MapView
-                            inlineGeoJson={mapPayload!.geojson as unknown as Parameters<typeof MapView>[0]['inlineGeoJson']}
+                            inlineGeoJson={
+                                mapPayload!.geojson as unknown as Parameters<typeof MapView>[0]['inlineGeoJson']
+                            }
                             inlineBbox={mapPayload!.bbox}
                             compact
                         />
@@ -127,7 +136,12 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
             )}
 
             {hasStripLog && (
-                <VizCard title={vizPayload?.title || `Strip log — ${meta.hole_id}`} badge="Strip Log" onClose={() => setVizHidden(true)} heightClass="h-96">
+                <VizCard
+                    title={vizPayload?.title || `Strip log — ${meta.hole_id}`}
+                    badge="Strip Log"
+                    onClose={() => setVizHidden(true)}
+                    heightClass="h-96"
+                >
                     <Suspense fallback={<LoadingPanel label="Loading strip log…" />}>
                         {/* hole_id is guaranteed truthy by hasStripLog above. */}
                         <StripLogViewer holeId={meta.hole_id!} projectId={projectId ?? undefined} />
@@ -136,7 +150,12 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
             )}
 
             {hasPlotly && (
-                <VizCard title={vizPayload?.title || 'Assay Data'} badge="Chart" onClose={() => setVizHidden(true)} heightClass="h-80">
+                <VizCard
+                    title={vizPayload?.title || 'Assay Data'}
+                    badge="Chart"
+                    onClose={() => setVizHidden(true)}
+                    heightClass="h-80"
+                >
                     <Suspense fallback={<LoadingPanel label="Loading chart…" />}>
                         <GeoPlot data={plotlyData!} layout={vizPayload!.plotly_layout!} />
                     </Suspense>
@@ -144,7 +163,12 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
             )}
 
             {has3DTrace && (
-                <VizCard title={vizPayload?.title || '3D Drill Traces'} badge="3D" onClose={() => setVizHidden(true)} heightClass="h-96">
+                <VizCard
+                    title={vizPayload?.title || '3D Drill Traces'}
+                    badge="3D"
+                    onClose={() => setVizHidden(true)}
+                    heightClass="h-96"
+                >
                     <Suspense fallback={<LoadingPanel label="Loading 3D view…" />}>
                         <DrillTrace3D
                             collars={traceCollars as CollarPoint[]}
@@ -156,7 +180,12 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
             )}
 
             {hasTimeline && (
-                <VizCard title={vizPayload?.title || 'Technique Timeline'} badge="Timeline" onClose={() => setVizHidden(true)} heightClass="h-80">
+                <VizCard
+                    title={vizPayload?.title || 'Technique Timeline'}
+                    badge="Timeline"
+                    onClose={() => setVizHidden(true)}
+                    heightClass="h-80"
+                >
                     <Suspense fallback={<LoadingPanel label="Loading timeline…" />}>
                         <TimelineCard swimlanes={swimlanes as TimelineSwimlane[]} title={vizPayload?.title} />
                     </Suspense>
@@ -164,7 +193,12 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
             )}
 
             {hasCoverage && (
-                <VizCard title={vizPayload?.title || 'Coverage'} badge="Coverage" onClose={() => setVizHidden(true)} heightClass="h-96">
+                <VizCard
+                    title={vizPayload?.title || 'Coverage'}
+                    badge="Coverage"
+                    onClose={() => setVizHidden(true)}
+                    heightClass="h-96"
+                >
                     <Suspense fallback={<LoadingPanel label="Loading coverage…" />}>
                         <CoverageTableCard
                             rows={coverageRows as CoverageRow[]}
@@ -176,7 +210,12 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
             )}
 
             {hasStereonet && (
-                <VizCard title={vizPayload?.title || 'Stereonet'} badge="Stereonet" onClose={() => setVizHidden(true)} heightClass="h-96">
+                <VizCard
+                    title={vizPayload?.title || 'Stereonet'}
+                    badge="Stereonet"
+                    onClose={() => setVizHidden(true)}
+                    heightClass="h-96"
+                >
                     <Suspense fallback={<LoadingPanel label="Loading stereonet…" />}>
                         <StereonetCard meta={meta as StereonetMeta} />
                     </Suspense>

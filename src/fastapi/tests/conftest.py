@@ -254,3 +254,17 @@ def assert_no_fabricated_numbers(text: str) -> None:
     assert not numbers, (
         f"Hallucination refusal response contains fabricated numbers {numbers!r}: {text!r}"
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_query_path_caches():
+    """The per-process query caches (query embeddings, assayed-element
+    metadata) would otherwise leak one test's mocked data into the next."""
+    try:
+        from app.agent.tools import clear_query_caches
+    except Exception:  # pragma: no cover - modules that cannot import skip it
+        yield
+        return
+    clear_query_caches()
+    yield
+    clear_query_caches()

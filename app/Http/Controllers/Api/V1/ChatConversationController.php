@@ -9,10 +9,13 @@ use App\Http\Controllers\Controller;
 use App\Models\ChatConversation;
 use App\Models\ChatMessage;
 use App\Support\SafeErrorMessage;
+use Illuminate\Database\QueryException;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Server-side chat-history API.
@@ -40,6 +43,12 @@ class ChatConversationController extends Controller
 
     /** Upper bound on one message's text, in characters (LAR-18). */
     private const MAX_CONTENT_CHARS = 100_000;
+
+    /** Upper bound on one message's JSON-encoded `metadata`, in bytes. */
+    private const MAX_METADATA_BYTES = 32_768;
+
+    /** SQLSTATEs that mean "another request got there first": unique violation, serialization failure, deadlock. */
+    private const CONTENTION_SQLSTATES = ['23505', '40001', '40P01'];
 
     public function index(Request $request): JsonResponse
     {
@@ -131,7 +140,19 @@ class ChatConversationController extends Controller
             // `required` rule then 422'd EVERY later sync of the thread --
             // nothing after the first empty failure was ever persisted.
             'messages.*.content' => ['present', 'nullable', 'string', 'max:'.self::MAX_CONTENT_CHARS],
-            'messages.*.metadata' => ['sometimes', 'nullable', 'array'],
+            // Capped (32 KB JSON per message): metadata carries citations and
+            // viz payloads, and with 500 messages per sync an uncapped field
+            // is an uncapped JSONB write inside one transaction.
+            'messages.*.metadata' => [
+                'sometimes',
+                'nullable',
+                'array',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if (is_array($value) && strlen((string) json_encode($value)) > self::MAX_METADATA_BYTES) {
+                        $fail('The '.$attribute.' field may not exceed '.(self::MAX_METADATA_BYTES / 1024).' KB when encoded.');
+                    }
+                },
+            ],
         ]);
 
         // Tenancy gate — a client-supplied project_id was previously
@@ -147,71 +168,118 @@ class ChatConversationController extends Controller
         $incomingMessages = $validated['messages'] ?? [];
 
         $resolvedProjectId = null;
-        $wasNewThread = false;
         $refusedToEmpty = false;
-        DB::transaction(function () use ($conversationId, $user, $validated, $incomingMessages, &$resolvedProjectId, &$wasNewThread, &$refusedToEmpty) {
-            // Look the id up WITHOUT the user filter (LAR-18). The previous
-            // firstOrNew(['conversation_id' => X, 'user_id' => me]) could
-            // never return another user's row, so the 403 below was
-            // unreachable and a colliding id fell through to an INSERT that
-            // hit the primary key and 500'd.
-            $thread = ChatConversation::query()
-                ->where('conversation_id', $conversationId)
-                ->lockForUpdate()
-                ->first();
+        try {
+            // 3 attempts: Laravel re-runs the closure on a detected deadlock.
+            // The by-ref outputs are reset at the top of the closure.
+            DB::transaction(function () use ($conversationId, $user, $validated, $incomingMessages, &$resolvedProjectId, &$refusedToEmpty): void {
+                $resolvedProjectId = null;
+                $refusedToEmpty = false;
 
-            // If the row exists under a different user, reject — don't
-            // leak / clobber another user's conversation by id collision.
-            if ($thread !== null && (int) $thread->user_id !== (int) $user->id) {
-                abort(403, 'Conversation belongs to another user.');
-            }
-
-            // CHAT-3. A sync that would empty a thread that has messages is
-            // never a legitimate chat-page write (deleting a thread is
-            // DELETE). It is what the page sent when "+ New" was clicked
-            // mid-answer: the late `completed` handler persisted the NEW
-            // (empty) transcript under the OLD thread id, and this
-            // full-replace erased the whole previous conversation.
-            if ($thread !== null && $incomingMessages === []
-                && ChatMessage::where('conversation_id', $thread->conversation_id)->exists()) {
-                $refusedToEmpty = true;
-
-                return;
-            }
-
-            if ($thread === null) {
-                $thread = new ChatConversation;
-                $thread->conversation_id = $conversationId;
-            }
-
-            $wasNewThread = ! $thread->exists;
-            $thread->user_id = $user->id;
-            $thread->title = $validated['title'] ?? ($thread->title ?? 'New conversation');
-            $thread->project_id = $validated['project_id'] ?? $thread->project_id;
-            $thread->save();
-            $resolvedProjectId = $thread->project_id;
-
-            // Full-replace message sync. Safe because messages have no
-            // foreign keys pointing at them and the UUID primary keys are
-            // regenerated on each sync (the client doesn't need stable
-            // server-side ids — localStorage keeps its own).
-            ChatMessage::where('conversation_id', $thread->conversation_id)->delete();
-
-            foreach (array_values($incomingMessages) as $i => $m) {
-                ChatMessage::create([
-                    'conversation_id' => $thread->conversation_id,
-                    'role' => $m['role'],
-                    // content is NOT NULL in the table; an empty failed
-                    // assistant turn is stored as '' (CHAT-4).
-                    'content' => (string) ($m['content'] ?? ''),
-                    'metadata' => $m['metadata'] ?? [],
-                    // The client's order, explicitly (CHAT-2 / LAR-5). Every
-                    // row of this sync gets the same created_at second, and
-                    // Postgres does not return ties in insertion order.
-                    'position' => $i,
+                // Create-if-absent FIRST, then lock. A bare "SELECT ... FOR
+                // UPDATE, then INSERT if missing" locks nothing when the row
+                // does not exist, so two concurrent first syncs of the same
+                // thread both inserted and one PK-violated into a 500.
+                // INSERT ... ON CONFLICT DO NOTHING makes the loser wait for
+                // the winner's commit and carry on to the locked read below.
+                // A colliding id owned by someone else is also ignored here
+                // and rejected by the ownership check after the lock.
+                DB::table('chat_conversations')->insertOrIgnore([
+                    'conversation_id' => $conversationId,
+                    'user_id' => $user->id,
+                    'title' => $validated['title'] ?? 'New conversation',
+                    'project_id' => $validated['project_id'] ?? null,
+                    'created_at' => now(),
+                    'updated_at' => now(),
                 ]);
+
+                // Look the id up WITHOUT the user filter (LAR-18) so another
+                // user's row is seen and refused rather than skipped.
+                $thread = ChatConversation::query()
+                    ->where('conversation_id', $conversationId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                // If the row exists under a different user, reject — don't
+                // leak / clobber another user's conversation by id collision.
+                if ((int) $thread->user_id !== (int) $user->id) {
+                    abort(403, 'Conversation belongs to another user.');
+                }
+
+                // CHAT-3. A sync that would empty a thread that has messages is
+                // never a legitimate chat-page write (deleting a thread is
+                // DELETE). It is what the page sent when "+ New" was clicked
+                // mid-answer: the late `completed` handler persisted the NEW
+                // (empty) transcript under the OLD thread id, and this
+                // full-replace erased the whole previous conversation.
+                if ($incomingMessages === []
+                    && ChatMessage::where('conversation_id', $thread->conversation_id)->exists()) {
+                    $refusedToEmpty = true;
+
+                    return;
+                }
+
+                // Ownership was verified above, so this is idempotent; it stays
+                // explicit because the row may have been created by the
+                // insertOrIgnore() above rather than loaded.
+                $thread->user_id = $user->id;
+                $thread->title = $validated['title'] ?? ($thread->title ?? 'New conversation');
+                $thread->project_id = $validated['project_id'] ?? $thread->project_id;
+                // Always bump: an unchanged title/project leaves the model
+                // clean, and the thread list orders by updated_at.
+                $thread->setAttribute('updated_at', now());
+                $thread->save();
+                $resolvedProjectId = $thread->project_id;
+
+                // Full-replace message sync. Safe because messages have no
+                // foreign keys pointing at them and the UUID primary keys are
+                // regenerated on each sync (the client doesn't need stable
+                // server-side ids — localStorage keeps its own). One bulk
+                // INSERT, not one per message: the conversation row is
+                // locked, so the delete + insert pair is atomic per thread.
+                ChatMessage::where('conversation_id', $thread->conversation_id)->delete();
+
+                $now = now();
+                $rows = [];
+                foreach (array_values($incomingMessages) as $i => $m) {
+                    $rows[] = [
+                        'message_id' => (string) Str::uuid(),
+                        'conversation_id' => $thread->conversation_id,
+                        'role' => $m['role'],
+                        // content is NOT NULL in the table; an empty failed
+                        // assistant turn is stored as '' (CHAT-4).
+                        'content' => (string) ($m['content'] ?? ''),
+                        'metadata' => json_encode($m['metadata'] ?? [], JSON_THROW_ON_ERROR),
+                        // The client's order, explicitly (CHAT-2 / LAR-5). Every
+                        // row of this sync gets the same created_at second, and
+                        // Postgres does not return ties in insertion order.
+                        'position' => $i,
+                        'created_at' => $now,
+                    ];
+                }
+                if ($rows !== []) {
+                    DB::table('chat_messages')->insert($rows);
+                }
+            }, 3);
+        } catch (QueryException $e) {
+            // Contention that survived the retries -- a concurrent writer of
+            // the same thread, not a server fault. Tell the client to resync.
+            if ($e instanceof UniqueConstraintViolationException
+                || in_array((string) $e->getCode(), self::CONTENTION_SQLSTATES, true)
+            ) {
+                Log::warning('ChatConversation: concurrent sync conflict', [
+                    'conversation_id' => $conversationId,
+                    'sqlstate' => $e->getCode(),
+                ]);
+
+                return response()->json([
+                    'error' => 'sync_conflict',
+                    'message' => 'This thread was being updated by another request. Retry the sync.',
+                ], 409);
             }
-        });
+
+            throw $e;
+        }
 
         if ($refusedToEmpty) {
             return response()->json([

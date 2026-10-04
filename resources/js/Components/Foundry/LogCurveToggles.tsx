@@ -44,7 +44,11 @@ export function LogCurveToggles({
                             type="button"
                             aria-pressed={on}
                             disabled={blocked}
-                            title={c.unit ? `${c.curve_name} (${c.unit}) · ${c.sample_count} samples` : `${c.curve_name} · ${c.sample_count} samples`}
+                            title={
+                                c.unit
+                                    ? `${c.curve_name} (${c.unit}) · ${c.sample_count} samples`
+                                    : `${c.curve_name} · ${c.sample_count} samples`
+                            }
                             onClick={() => {
                                 const next = toggleCurveSelection(selected, c.curve_name, max);
                                 if (next) onChange(next);

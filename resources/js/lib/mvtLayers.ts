@@ -87,7 +87,7 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         id: 'boundaries',
         label: 'Boundaries',
         functionName: 'pg_boundaries_by_project',
-        sourceLayer: 'boundaries',          // ST_AsMVT(tile, 'boundaries', 4096, 'geom')
+        sourceLayer: 'boundaries', // ST_AsMVT(tile, 'boundaries', 4096, 'geom')
         type: 'fill',
         minzoom: 0,
         maxzoom: 16,
@@ -105,7 +105,7 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         id: 'formations',
         label: 'Formations',
         functionName: 'pg_formations_by_project',
-        sourceLayer: 'formations',          // ST_AsMVT(tile, 'formations', 4096, 'geom')
+        sourceLayer: 'formations', // ST_AsMVT(tile, 'formations', 4096, 'geom')
         type: 'fill',
         minzoom: 0,
         maxzoom: 16,
@@ -126,12 +126,12 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         id: 'seismic',
         label: 'Seismic',
         functionName: 'pg_seismic_by_project',
-        sourceLayer: 'seismic',             // ST_AsMVT(tile, 'seismic', 4096, 'geom')
+        sourceLayer: 'seismic', // ST_AsMVT(tile, 'seismic', 4096, 'geom')
         type: 'fill',
         minzoom: 4,
         maxzoom: 16,
         paint: {
-            'fill-color': '#0ea5e9',         // sky-500 — distinct from boundaries (indigo) and formations (orange)
+            'fill-color': '#0ea5e9', // sky-500 — distinct from boundaries (indigo) and formations (orange)
             'fill-opacity': 0.18,
         },
         outline: {
@@ -176,7 +176,7 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         minzoom: 0,
         maxzoom: 16,
         paint: {
-            'fill-color': '#f43f5e',         // rose-500
+            'fill-color': '#f43f5e', // rose-500
             'fill-opacity': 0.14,
         },
         outline: {
@@ -188,7 +188,7 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         label: 'Imported lines',
         functionName: 'pg_spatial_features_by_project',
         sourceKey: 'spatial-features',
-        sourceLayer: 'imported_lines',      // ST_AsMVT(t, 'imported_lines', 4096, 'geom')
+        sourceLayer: 'imported_lines', // ST_AsMVT(t, 'imported_lines', 4096, 'geom')
         type: 'line',
         minzoom: 0,
         maxzoom: 16,
@@ -203,7 +203,7 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         label: 'Imported points',
         functionName: 'pg_spatial_features_by_project',
         sourceKey: 'spatial-features',
-        sourceLayer: 'imported_points',     // ST_AsMVT(t, 'imported_points', 4096, 'geom')
+        sourceLayer: 'imported_points', // ST_AsMVT(t, 'imported_points', 4096, 'geom')
         type: 'circle',
         minzoom: 0,
         maxzoom: 16,
@@ -221,7 +221,7 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         id: 'traces',
         label: 'Drill traces',
         functionName: 'pg_drill_traces_by_project',
-        sourceLayer: 'drill_traces',        // ST_AsMVT(tile, 'drill_traces', 4096, 'geom')
+        sourceLayer: 'drill_traces', // ST_AsMVT(tile, 'drill_traces', 4096, 'geom')
         type: 'line',
         minzoom: 4,
         maxzoom: 16,
@@ -237,7 +237,7 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         id: 'historic-workings',
         label: 'Historic workings',
         functionName: 'pg_historic_workings_by_project',
-        sourceLayer: 'historic_workings',   // ST_AsMVT(tile, 'historic_workings', 4096, 'geom')
+        sourceLayer: 'historic_workings', // ST_AsMVT(tile, 'historic_workings', 4096, 'geom')
         type: 'circle',
         minzoom: 6,
         maxzoom: 16,
@@ -259,13 +259,13 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         id: 'geochem',
         label: 'Geochem samples',
         functionName: 'pg_geochem_by_project',
-        sourceLayer: 'geochem',             // ST_AsMVT(tile, 'geochem', 4096, 'geom')
+        sourceLayer: 'geochem', // ST_AsMVT(tile, 'geochem', 4096, 'geom')
         type: 'circle',
-        minzoom: 8,                         // hide at low zoom — points are too dense
+        minzoom: 8, // hide at low zoom — points are too dense
         maxzoom: 16,
         paint: {
             'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 1.5, 12, 3, 16, 5],
-            'circle-color': '#84cc16',       // lime-500
+            'circle-color': '#84cc16', // lime-500
             'circle-stroke-width': 0.5,
             'circle-stroke-color': '#ffffff',
             'circle-opacity': 0.85,
@@ -277,17 +277,21 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         id: 'collars',
         label: 'Collars',
         functionName: 'pg_collars_by_project',
-        sourceLayer: 'collars',             // ST_AsMVT(tile, 'collars', 4096, 'geom')
+        sourceLayer: 'collars', // ST_AsMVT(tile, 'collars', 4096, 'geom')
         type: 'circle',
         minzoom: 0,
         maxzoom: 16,
         paint: {
             'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 1.5, 8, 3, 12, 6, 16, 10],
             'circle-color': [
-                'match', ['get', 'status'],
-                'Completed', '#22c55e',
-                'Active', '#eab308',
-                'Abandoned', '#ef4444',
+                'match',
+                ['get', 'status'],
+                'Completed',
+                '#22c55e',
+                'Active',
+                '#eab308',
+                'Abandoned',
+                '#ef4444',
                 '#6b7280',
             ],
             'circle-stroke-width': 1.5,

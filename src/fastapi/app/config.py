@@ -308,9 +308,11 @@ class Settings(BaseSettings):
     # FastAPI task that fails on the first query. aws-preflight.sh A-08 is
     # what actually catches it, and only from a shell with AWS access.
     #
-    # Bedrock has NOT left the system: embeddings (Cohere Embed v4) and
-    # reranking (Cohere Rerank 3.5) still go there under EMBEDDING_BACKEND
-    # and RERANKER_BACKEND, which are separate variables from this one.
+    # Bedrock has NOT left the system: reranking (Cohere Rerank 3.5) still
+    # goes there under RERANKER_BACKEND, a separate variable from this one.
+    # Embeddings left it on 2026-10-04 (ADR-0025): EMBEDDING_BACKEND defaults
+    # to "cohere" now (Cohere Embed 5 on Cohere's own API, same key as this
+    # backend); "bedrock" (Embed v4) stays selectable as the rollback.
     #
     # "azure" is no longer accepted: `_reject_retired_azure_config` below
     # turns it into a startup error naming the replacement, rather than
@@ -1087,15 +1089,21 @@ class Settings(BaseSettings):
 
         nested: dict[str, float] = {}
 
-        # The Bedrock budget bites only on the hosted path — which is
-        # production, and is where this was found.
+        # The hosted-embedder budget bites only on the hosted path — which is
+        # production, and is where this was found. Exactly one of the two is
+        # in the code path, chosen by EMBEDDING_BACKEND.
         # Read from the environment with the same default services/embedding.py
-        # uses -- it is not a Settings field, and an unset value selects the
-        # hosted backend rather than a model host that does not exist in
-        # production.
-        if (
-            _os.environ.get("EMBEDDING_BACKEND") or "bedrock"
-        ).strip().lower() == "bedrock":
+        # uses -- neither is a Settings field, and an unset value selects the
+        # hosted backend (Cohere since ADR-0025, Bedrock before it) rather than
+        # a model host that does not exist in production.
+        _embedding_backend = (
+            _os.environ.get("EMBEDDING_BACKEND") or "cohere"
+        ).strip().lower()
+        if _embedding_backend == "cohere":
+            nested["COHERE_EMBED_TIMEOUT_S"] = float(
+                _os.environ.get("COHERE_EMBED_TIMEOUT_S", "30") or "30"
+            )
+        elif _embedding_backend == "bedrock":
             nested["BEDROCK_EMBED_TIMEOUT_S"] = float(
                 _os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30") or "30"
             )
@@ -1124,6 +1132,40 @@ class Settings(BaseSettings):
                 f"loudly. Raise TIMEOUT_QDRANT_S or lower the inner budget."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cohere_embed_dimension(self) -> Settings:
+        """COHERE_EMBED_DIMENSION must equal EMBEDDING_DIMENSION (ADR-0025).
+
+        Same invariant the Bedrock path gets from main.py's startup check of
+        ``get_sentence_embedding_dimension()`` against EMBEDDING_DIMENSION,
+        enforced one step earlier here because a wrong value on the INGEST
+        side would not be caught by the query-path check at all: the worker
+        would write wrong-sized vectors into georag_chunks and every upsert
+        would 400. Read from the environment like the other adapter-owned
+        knobs (see _validate_timeout_ordering); checked only when the Cohere
+        backend is the one selected.
+        """
+        import os as _os  # noqa: PLC0415
+
+        if (_os.environ.get("EMBEDDING_BACKEND") or "cohere").strip().lower() != "cohere":
+            return self
+        raw = (_os.environ.get("COHERE_EMBED_DIMENSION") or "1024").strip()
+        try:
+            dimension = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"COHERE_EMBED_DIMENSION={raw!r} is not an integer") from exc
+        if dimension != self.EMBEDDING_DIMENSION:
+            raise ValueError(
+                f"COHERE_EMBED_DIMENSION={dimension} but EMBEDDING_DIMENSION="
+                f"{self.EMBEDDING_DIMENSION}. georag_chunks is sized from one "
+                "and written by the other, so a difference is a 400 on every "
+                "upsert (or, worse, a query vector that cannot match the "
+                "collection). Embed 5 Pro offers 256/512/768/1024/1536/2048; "
+                "changing the dimension needs the collection recreated and a "
+                "full re-embed, not just this variable."
+            )
         return self
 
     @property
@@ -1204,8 +1246,10 @@ class Settings(BaseSettings):
     # call and the sparse encode FIRST and queries Qdrant with their results,
     # and on AWS neither of those is local:
     #
-    #   BEDROCK_EMBED_TIMEOUT_S   30  (services/embedding.py) — a Bedrock
-    #                                 round trip to Cohere Embed v4
+    #   COHERE_EMBED_TIMEOUT_S    30  (services/embedding.py) — a round trip to
+    #                                 Cohere Embed 5 on Cohere's own API since
+    #                                 ADR-0025 (BEDROCK_EMBED_TIMEOUT_S, same
+    #                                 30, when EMBEDDING_BACKEND=bedrock)
     #   SPARSE_SERVICE_TIMEOUT_S  30  (services/sparse_encoder.py) — an HTTP
     #                                 call to the sparse sidecar, which runs
     #                                 SPLADE++ on 0.5 vCPU with no GPU
@@ -1354,7 +1398,9 @@ class Settings(BaseSettings):
     #     Qwen3-Reranker-0.6B: typical [-15, +15]
     #
     # The RERANKER_SCORE_THRESHOLD default (0.0 — sign-only filter)
-    # carries over unchanged because the sign convention is preserved.
+    # carries over unchanged for the cross_encoder (logit) backend because the
+    # sign convention is preserved. qwen3_causal is a probability and uses
+    # RERANKER_SCORE_THRESHOLD_PROBABILITY instead.
     # Operators using non-zero thresholds must re-tune against the
     # golden_queries set (see scripts/run_eval_120.py) after the swap.
     # See app/services/reranker.py for the loader; this setting is the
@@ -1496,6 +1542,18 @@ class Settings(BaseSettings):
     # against golden_queries (scripts/run_eval_120.py) before changing.
     RERANKER_SCORE_THRESHOLD_HOSTED: float = 0.2
 
+    # Probability-scale counterpart for RERANKER_BACKEND=qwen3_causal (audit
+    # item G, 2026-10-04). _Qwen3CausalReranker.predict returns softmax
+    # P(yes) over the yes/no logits -- a [0, 1] probability, like Cohere's
+    # score and unlike the cross_encoder backend's unbounded logit. It was
+    # still gated by RERANKER_SCORE_THRESHOLD's 0.0 logit floor, a no-op on a
+    # probability (every candidate passes), so the self-hosted path had no
+    # relevance floor at all. 0.2 is the hosted backend's "clearly
+    # irrelevant" floor reused as a starting point: it is NOT measured against
+    # Qwen3-Reranker's probability distribution and must be re-tuned on the
+    # golden set.
+    RERANKER_SCORE_THRESHOLD_PROBABILITY: float = 0.2
+
     # -------------------------------------------------------------------------
     # Hallucination prevention layer configuration (Section 04i)
     # -------------------------------------------------------------------------
@@ -1547,17 +1605,10 @@ class Settings(BaseSettings):
     # When disabled the validator still logs but does not raise ModelRetry.
     NUMERICAL_VERIFICATION_ENABLED: bool = True
 
-    # Phase H — Layer 3 retry-escalation threshold. Historically Layer 3
-    # was log-only ("advisory") even when the model emitted many ungrounded
-    # numbers. The new policy:
-    #   - >= NUMERIC_RETRY_THRESHOLD ungrounded numbers in one answer
-    #     escalates Layer 3 from advisory to HIGH severity → triggers
-    #     an LLM retry with a correction hint.
-    #   - Any Layer 3 number co-located with a Layer 6 constraint
-    #     violation escalates to CRITICAL → also triggers retry.
-    # Default 3 — empirically separates "model rounded a citation"
-    # (1-2 ungrounded numbers) from "model is fabricating" (3+).
-    NUMERIC_RETRY_THRESHOLD: int = 3
+    # (NUMERIC_RETRY_THRESHOLD, the Phase H count threshold for escalating
+    # Layer 3 to a retry, was removed 2026-10-04: once ANY Layer 3 finding
+    # forces should_retry, the threshold and the "Layer 3 + Layer 6 co-located
+    # values" escalation it fed changed nothing.)
 
     # Layer 4: resolve drill-hole IDs and quoted entity names against PostGIS / Neo4j.
     # Left True after B1 (2026-07-28, Neo4j removal): this flag gates BOTH the

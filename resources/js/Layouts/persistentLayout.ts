@@ -19,10 +19,7 @@ import AppLayout from '@/Layouts/AppLayout';
  * Auth and error pages (Login, ForgotPassword, ResetPassword, Error) have no
  * shell at all.
  */
-export const SELF_WRAPPED_PAGES: ReadonlySet<string> = new Set([
-    'Foundry/Chat',
-    'Foundry/DrillholeDetail',
-]);
+export const SELF_WRAPPED_PAGES: ReadonlySet<string> = new Set(['Foundry/Chat', 'Foundry/DrillholeDetail']);
 
 export function resolvePageLayout(name: string): typeof AppLayout | null {
     if (!name.startsWith('Foundry/')) return null;

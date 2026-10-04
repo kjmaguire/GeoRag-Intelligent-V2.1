@@ -273,6 +273,38 @@ tokens simply expire.
 
 ---
 
+## COHERE_API_KEY rotation — interrupts chat, OCR AND embedding (ADR-0025)
+
+One key, three capabilities, since 2026-10-04: Command A+ chat
+(`LLM_BACKEND=cohere`), Parse 5 OCR (`OCR_ENGINE=cohere_parse`) and, with
+`EMBEDDING_BACKEND=cohere`, Embed 5 for **both** the query path (`fastapi`)
+and the ingest sweep (`hatchet-worker`). Rate limits are per key too, not per
+capability: a large ingest that 429s shares its ceiling with chat.
+
+What a rotation window costs, because it used to be "chat and scanned pages"
+and is now more:
+
+| While the key is wrong or the task is mid-rollout | Effect |
+|---|---|
+| chat | the query fails; the Anthropic fallback (if configured) answers |
+| **query embedding** | `search_documents` returns an empty result (`retrieval_failure='error'`), so any answer that needs documents **refuses**; structured-data questions can still answer. The Anthropic fallback does not help: it does not embed |
+| OCR | scanned pages fall back to `tesseract` (no tables), silently |
+| ingest embedding | `embed_pending_passages` records errors; passages keep `embedding_id IS NULL` and the next sweep retries them |
+
+There is no `COHERE_API_KEY_PREVIOUS`, so none of this is zero-downtime. The
+procedure is `ops/runbooks/secret-rotation.md` §8 (Secrets Manager
+`put-secret-value`, then `force-new-deployment` of **both** `fastapi` and
+`hatchet-worker` — a task that kept the old key keeps failing). Rotate off
+hours, revoke the old key in Cohere's dashboard only after both services are
+`stable`, and re-run `ops/validation/cohere_probe.sh`: its `embed` section is
+how you learn the new key is entitled to Embed, not just chat.
+
+Locally the key is `COHERE_API_KEY` in `.env`; recreate `fastapi` and
+`hatchet-worker` (`docker compose up -d --no-deps --force-recreate`) so both
+re-read it.
+
+---
+
 ## Golden-set flywheel (weekly)
 
 The RAG quality-improvement flywheel: every week, surface the top-N

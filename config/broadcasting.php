@@ -48,6 +48,16 @@ return [
             ],
             'client_options' => [
                 // Guzzle client options: https://docs.guzzlephp.org/en/stable/request-options.html
+                //
+                // Bounded on purpose. QueryStreamEvent is ShouldBroadcastNow,
+                // so each frame is an inline HTTP POST to Reverb. The
+                // framework default is connect 10 s / total 30 s
+                // (BroadcastManager::pusher), so a slow or half-dead Reverb
+                // pins an Octane worker or an llm Horizon slot for up to 30 s
+                // per frame.
+                // A healthy Reverb answers in single-digit milliseconds.
+                'timeout' => 2.0,
+                'connect_timeout' => 1.0,
             ],
         ],
 

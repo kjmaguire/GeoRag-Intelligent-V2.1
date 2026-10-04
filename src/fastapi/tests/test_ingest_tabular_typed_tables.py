@@ -314,10 +314,12 @@ class TestDbfReachesTheTypedTables:
         assert out.written["structure"]["written"] == 2
         rows = env.conn.rows_for("silver.structure")
         # (ws, collar, depth, type, alpha, beta, dip, dip_dir, rough, infill, notes)
-        assert rows[0] == (
+        # ... then source_file / source_file_sha256 (the run's lineage).
+        assert rows[0][:11] == (
             WS, collar_id, 10.5, "fault", 45.0, 120.0, 60.0, 210.0,
             None, None, "gouge",
         )
+        assert rows[0][11] == "Structure.dbf"
         assert rows[1][3] == "vein"
         assert "structure" in {s["type"] for s in out.sheets}
         assert promotion_dispatch_spy

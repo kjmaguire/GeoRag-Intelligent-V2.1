@@ -24,7 +24,11 @@ Pool storage on app.state
   app.state.embedding_model  — embedding model (EMBEDDING_MODEL_NAME); a shared-
                                sidecar proxy when EMBEDDING_SERVICE_URL is set
                                (default), else a local SentenceTransformer (CPU)
-  app.state.reranker         — CrossEncoder (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
+  app.state.reranker         — the active reranker for RERANKER_BACKEND: Cohere
+                               Rerank 3.5 on Bedrock (default), a sidecar proxy,
+                               or a local cross-encoder / Qwen3 causal model;
+                               None when none could be built (then hosted-backend
+                               document search fails closed)
 
 Timeout constants are imported from app.config.settings so every module
 reading them gets the same validated value.
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -72,6 +77,7 @@ from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 from app.routers import workflow_trigger as workflow_trigger_router  # HAT-13
+from app.services._bedrock import RetiredAzureConfiguration
 from app.services.qdrant_conn import qdrant_client_kwargs
 
 # V1.5-05 — switch to JSON logs at module import so every logger.info() in
@@ -80,6 +86,32 @@ from app.services.qdrant_conn import qdrant_client_kwargs
 configure_json_logging(level=settings.LOG_LEVEL.upper())
 
 logger = logging.getLogger(__name__)
+
+
+def _statement_cache_size_from_env() -> int:
+    """asyncpg ``statement_cache_size`` from ``ASYNCPG_STATEMENT_CACHE_SIZE``.
+
+    0 (the default, and the value for anything unset, blank, negative or not
+    an integer) is the PgBouncer-transaction-mode-safe setting. A positive
+    value is only valid where asyncpg talks to Postgres directly (the AWS
+    deployment has no pooler, so it can set 100).
+    """
+    raw = (os.environ.get("ASYNCPG_STATEMENT_CACHE_SIZE") or "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "ASYNCPG_STATEMENT_CACHE_SIZE=%r is not an integer — using 0", raw,
+        )
+        return 0
+    if value < 0:
+        logger.warning(
+            "ASYNCPG_STATEMENT_CACHE_SIZE=%d is negative — using 0", value,
+        )
+        return 0
+    return value
 
 
 def qdrant_dense_dim(vectors_config: Any) -> int | None:
@@ -106,6 +138,64 @@ def qdrant_dense_dim(vectors_config: Any) -> int | None:
 # ---------------------------------------------------------------------------
 
 
+def _init_reranker(app: FastAPI) -> None:
+    """Build the reranker and stamp it on ``app.state`` (lifespan step 6).
+
+    Split out of the lifespan so the failure policy is testable: a retired
+    backend value (``RetiredAzureConfiguration``) propagates and stops
+    startup; any other failure leaves ``app.state.reranker = None``, which a
+    hosted backend turns into a ``reranker_unavailable`` retrieval failure
+    per query (see the lifespan comment).
+    """
+    _t1 = time.perf_counter()
+    try:
+        from app.services.reranker import (  # noqa: PLC0415
+            RERANKER_BACKEND,
+            active_reranker_version,
+            get_reranker_or_none,
+        )
+
+        # get_reranker_or_none() implements the full backend precedence:
+        # RERANKER_BACKEND=bedrock (Cohere Rerank 3.5, no local model at all)
+        # > RERANKER_SERVICE_URL (shared sidecar HTTP proxy, avoids the
+        # per-worker OOM from 6 uvicorn workers each loading a ~1 GiB model)
+        # > in-process CrossEncoder singleton. Delegating here instead of
+        # duplicating the sidecar-vs-local branch keeps this single source
+        # of truth in services/reranker.py.
+        reranker = get_reranker_or_none()
+        _elapsed_r = time.perf_counter() - _t1
+        _version = active_reranker_version()
+        app.state.reranker = reranker
+        app.state.reranker_version = _version if reranker is not None else None
+        if reranker is None:
+            logger.error(
+                "Reranker unavailable (backend=%s) — document search will "
+                "%s",
+                RERANKER_BACKEND,
+                "FAIL CLOSED with RETRIEVAL_UNAVAILABLE (hosted backend)"
+                if RERANKER_BACKEND == "bedrock"
+                else "degrade to RRF order, flagged rerank_degraded (local backend)",
+            )
+        else:
+            logger.info(
+                "Reranker ready: backend=%s version=%s loaded in %.2fs",
+                RERANKER_BACKEND, _version, _elapsed_r,
+            )
+    except RetiredAzureConfiguration:
+        # A deployment that was never repointed off Foundry: stop, do not
+        # serve (ADR-0022 gotcha 3). This used to be swallowed by the generic
+        # handler below, so the service started with no reranker.
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to load reranker — app.state.reranker is None; a hosted "
+            "backend now fails document search closed (RETRIEVAL_UNAVAILABLE), "
+            "a local backend degrades to RRF order"
+        )
+        app.state.reranker = None
+        app.state.reranker_version = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialise all shared database pools and clients before first request.
@@ -117,10 +207,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Startup sequence:
       1. asyncpg connection pool → PostGIS via PgBouncer
       2. AsyncQdrantClient → Qdrant vector store
-      3. Neo4j AsyncDriver → knowledge graph
+      3. (removed 2026-07-28 — there is no graph store)
       4. redis.asyncio client → caching / session store
       5. Embedding model — shared sidecar proxy (EMBEDDING_SERVICE_URL) or local
-      6. CrossEncoder reranker (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
+      6. Reranker for RERANKER_BACKEND (Bedrock Cohere Rerank 3.5 by default)
 
     Teardown is the mirror: each client is closed in reverse order so
     in-flight requests can complete before their pools disappear.
@@ -222,6 +312,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # paragraph above about reporting a host you did not connect to.
     logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))
     _pg_pool_min, _pg_pool_max = 2, 12
+    # Audit item 30: the prepared-statement cache is only unsafe BEHIND
+    # PgBouncer in transaction mode (compose). It is a real cost everywhere
+    # else (every query re-parsed), so it is env-driven. Default 0 = the
+    # PgBouncer-safe value, which is what compose and any unset environment
+    # get. The AWS deployment has NO pooler and may set
+    # ASYNCPG_STATEMENT_CACHE_SIZE=100. Never set it above 0 behind
+    # transaction-mode PgBouncer: it fails under load with
+    # `prepared statement "__asyncpg_stmt_N__" does not exist`.
+    _stmt_cache_size = _statement_cache_size_from_env()
     pg_pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=pg_dsn,
         min_size=_pg_pool_min,
@@ -251,7 +350,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # makes asyncpg send queries via the simple protocol (one-shot parse),
         # which is fully compatible with transaction pooling. The per-query
         # parse cost is ~100 µs, dwarfed by network + PostGIS time.
-        statement_cache_size=0,
+        statement_cache_size=_stmt_cache_size,
         server_settings={
             # Visible in pg_stat_activity.application_name for triage.
             "application_name": "georag-fastapi",
@@ -279,10 +378,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.pg_pool = pg_pool
     logger.info(
-        "asyncpg pool ready (min=%d max=%d per worker, statement_cache_size=0, "
+        "asyncpg pool ready (min=%d max=%d per worker, statement_cache_size=%d, "
         "jit=off)",
         _pg_pool_min,
         _pg_pool_max,
+        _stmt_cache_size,
     )
 
     # -------------------------------------------------------------------------
@@ -508,10 +608,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # -------------------------------------------------------------------------
     # 5. Query-time embedding model
     # -------------------------------------------------------------------------
-    # get_embedding_model() branches on EMBEDDING_BACKEND: "foundry" returns a
-    # lightweight Cohere Embed v4 proxy (no local model, no download) — the
-    # live default (config.py's Qwen/Qwen3-Embedding-0.6B, 1024-dim, is the
-    # self-hosted fallback for operators without a Foundry backend). Batch
+    # get_embedding_model() branches on EMBEDDING_BACKEND: "cohere" (the
+    # default since ADR-0025) returns a lightweight Cohere Embed 5 client on
+    # Cohere's own API (no local model, no download); "bedrock" is the Embed v4
+    # rollback (config.py's Qwen/Qwen3-Embedding-0.6B, 1024-dim, is the
+    # self-hosted fallback for dev and on-prem, EMBEDDING_BACKEND=local). Batch
     # document indexing runs through the Hatchet ingest_pdf workflow's
     # passage_embedder, which reads the same EMBEDDING_BACKEND flag — Dagster
     # dropped from this deployment entirely in Phase B2.
@@ -673,63 +774,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
 
     # -------------------------------------------------------------------------
-    # 6. Cross-encoder reranker — BAAI/bge-reranker-base (Module 4 Chunk 3)
+    # 6. Reranker — the backend RERANKER_BACKEND selects
     # -------------------------------------------------------------------------
-    # bge-reranker-base (Apache 2.0, ~278 MB) replaces ms-marco-MiniLM-L-6-v2.
-    # It is pinned by HuggingFace revision SHA (see reranker.py) so weight
-    # drift is detected via the version string in answer_runs.reranker_version.
+    # Hosted default: Cohere Rerank 3.5 on Bedrock (no local model). Dev: the
+    # `reranker` sidecar proxy (RERANKER_SERVICE_URL) or an in-process
+    # cross-encoder / Qwen3 causal model. The version string is stamped on
+    # answer_runs.reranker_version so weight/model drift is detectable.
     #
-    # CORRECTED 2026-08-22. This used to claim: "The reranker now runs on
-    # the FUSED candidate set (post cross-store RRF), not just on
-    # Qdrant-only results. Per-class top-k is defined in
-    # app.services.reranker.RERANKER_TOP_K_BY_CLASS."
+    # Reranking runs INSIDE `search_documents`, over Qdrant candidates only —
+    # nothing fuses Qdrant results with the PostGIS/assay tool results. The
+    # single RERANKER_TOP_K value applies (`top_k_for_class` has no callers).
     #
-    # Neither half is true. Reranking runs INSIDE `search_documents`, over
-    # Qdrant candidates only — nothing ever fuses Qdrant results with the
-    # PostGIS/assay tool results, so there is no cross-store RRF pool for
-    # it to run on. And `top_k_for_class` has zero callers anywhere in the
-    # tree, so RERANKER_TOP_K_BY_CLASS is inert; the single
-    # RERANKER_TOP_K value is what applies.
-    #
-    # Fallback policy (spec B6): if the reranker fails to load or predict,
-    # log + continue with RRF order. Do not fail the query.
-    _t1 = time.perf_counter()
-    try:
-        from app.services.reranker import (  # noqa: PLC0415
-            RERANKER_BACKEND,
-            active_reranker_version,
-            get_reranker_or_none,
-        )
-
-        # get_reranker_or_none() implements the full backend precedence:
-        # RERANKER_BACKEND=foundry (Cohere Rerank v4, no local model at all)
-        # > RERANKER_SERVICE_URL (shared sidecar HTTP proxy, avoids the
-        # per-worker OOM from 6 uvicorn workers each loading a ~1 GiB model)
-        # > in-process CrossEncoder singleton. Delegating here instead of
-        # duplicating the sidecar-vs-local branch keeps this single source
-        # of truth in services/reranker.py.
-        reranker = get_reranker_or_none()
-        _elapsed_r = time.perf_counter() - _t1
-        _version = active_reranker_version()
-        app.state.reranker = reranker
-        app.state.reranker_version = _version if reranker is not None else None
-        if reranker is None:
-            logger.warning(
-                "Reranker unavailable (backend=%s) — rerank step will be "
-                "skipped (RRF order used)",
-                RERANKER_BACKEND,
-            )
-        else:
-            logger.info(
-                "Reranker ready: backend=%s version=%s loaded in %.2fs",
-                RERANKER_BACKEND, _version, _elapsed_r,
-            )
-    except Exception:
-        logger.exception(
-            "Failed to load reranker model — reranker step will be skipped (RRF order used)"
-        )
-        app.state.reranker = None
-        app.state.reranker_version = None
+    # Failure policy (changed 2026-10-04, audit items B/C): this is NOT a
+    # degrade-to-RRF path any more. app.state.reranker = None is allowed to
+    # start the service, but with a HOSTED backend (RERANKER_BACKEND=bedrock)
+    # `search_documents` then returns retrieval_failure="reranker_unavailable"
+    # and the query fails with RETRIEVAL_UNAVAILABLE -- an unfiltered RRF
+    # answer would bypass the Layer 1 relevance floor. Only the explicitly
+    # local/dev backends (cross_encoder, qwen3_causal) still degrade to RRF
+    # order, flagged rerank_degraded. A retired backend value
+    # (RetiredAzureConfiguration) is a deployment error and stops startup.
+    _init_reranker(app)
 
     # -------------------------------------------------------------------------
     # 7. SPLADE++ sparse encoder pre-warm (Module 4 Chunk 2)
@@ -900,6 +965,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _rewarm_task = getattr(app.state, "embedding_rewarm_task", None)
     if _rewarm_task is not None and not _rewarm_task.done():
         _rewarm_task.cancel()
+
+    # Audit item 17: child rows and usage metering are written by retained
+    # background tasks (agentic_retrieval.persist_node). Let them finish while
+    # the pg_pool is still open.
+    try:
+        from app.agent.agentic_retrieval.nodes import (  # noqa: PLC0415
+            drain_persist_background,
+        )
+
+        await drain_persist_background(timeout=10.0)
+    except Exception:
+        logger.exception("Persist background drain failed (non-fatal)")
 
     # Plan §0e — stop the trace flush loop FIRST so the final drain can
     # write any buffered traces while the pg_pool is still open.

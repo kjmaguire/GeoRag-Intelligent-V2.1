@@ -98,8 +98,9 @@ def test_empty_input_raises_clear_error():
 
 
 def test_oversized_input_raises_before_pil_call():
-    """The 2 GB cap matches the Laravel upload ceiling. Confirm the
-    cap fires *before* PIL tries to decode anything pathological."""
+    """The cap is the Laravel upload ceiling (GEORAG_MAX_UPLOAD_BYTES, 512 MB by
+    default). Confirm it fires *before* PIL tries to decode anything
+    pathological."""
     from app.services.ingest.tiff_to_pdf import (
         MAX_TIFF_BYTES,
         TiffNormalizeError,

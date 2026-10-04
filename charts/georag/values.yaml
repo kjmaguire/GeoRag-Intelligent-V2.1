@@ -49,6 +49,7 @@ secrets:
   fastapiServiceKey: ""          # 32+ char shared HMAC for /internal/*
   laravelAppKey: ""              # `php artisan key:generate --show`
   hatchetClientToken: ""         # output of `hatchet token create`
+  cohereApiKey: ""               # optional; chat + Cohere Parse OCR. Empty = no key (air-gapped / tesseract)
 
 # ─────────────────────────────────────────────────────────────────────
 # PostgreSQL 18.3 + PostGIS 3.6.3 — owned image (per ADR-0002).
@@ -153,6 +154,16 @@ seaweedfs:
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits:   { cpu: "1",    memory: "2Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# OCR engine for scanned PDF pages (OCR_ENGINE on fastapi + hatchet-worker).
+# cohere_parse is the hosted engine production runs and the code default; it
+# needs COHERE_API_KEY and egress. An AIR-GAPPED site sets `tesseract`
+# (values-airgap.yaml does). tesseract also makes PDF_PARSE_MODE degrade to
+# ocr_only, so native text layers keep flowing.
+# ─────────────────────────────────────────────────────────────────────
+ocr:
+  engine: cohere_parse   # cohere_parse | tesseract
 
 # ─────────────────────────────────────────────────────────────────────
 # FastAPI domain service — Pydantic AI + asyncpg + 6-layer §04i.

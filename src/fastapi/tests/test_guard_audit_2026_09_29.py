@@ -279,6 +279,30 @@ class TestLayer4CaseAndSeparators:
         assert warnings == [], warnings
 
 
+class TestLayer4SeparatorPositions:
+    """Audit 2026-10-04 item 24: the SQL candidate fetch merges "PLS-2-28"
+    with "PLS-22-8" (separator-free canonical form); the match is confirmed on
+    the position-aware key, so the fabricated one is no longer a real hole."""
+
+    @pytest.mark.asyncio
+    async def test_a_hole_that_only_exists_after_deleting_separators_is_critical(self) -> None:
+        collar = ("query_collar_details", dict(hole_id="PLS-22-8", total_depth=212.0))
+        warnings = await verify_entities(
+            "Hole PLS-2-28 reached 212 m [DATA-1].",
+            PROJECT_ID, _CollarPool(["PLS-22-8"]), None, [collar],
+        )
+        assert any(w.startswith("Layer 4: Drill-hole ID 'PLS-2-28'") for w in warnings), warnings
+
+    @pytest.mark.asyncio
+    async def test_the_real_hole_still_resolves(self) -> None:
+        collar = ("query_collar_details", dict(hole_id="PLS-22-8", total_depth=212.0))
+        warnings = await verify_entities(
+            "Hole PLS-22-8 reached 212 m [DATA-1].",
+            PROJECT_ID, _CollarPool(["PLS-22-8"]), None, [collar],
+        )
+        assert warnings == [], warnings
+
+
 class TestLayer4SwappedHole:
     """RAG-16: BH-21 exists, so the old existence check passed an answer
     that moved BH-12's intercept onto it."""
@@ -398,6 +422,7 @@ from app.agent.hallucination.layer2_typed_output import (  # noqa: E402
     enforce_claim_citations,
     validate_and_repair_with_findings,
 )
+from app.agent.hallucination.refusals import PROVENANCE_REFUSAL_TEXT  # noqa: E402
 
 
 class TestRule4Enforcement:
@@ -494,7 +519,7 @@ class TestRule4Enforcement:
             text="The deposit averages 0.62% U3O8 [DATA-1].",
             citations=[Citation(
                 citation_id="[DATA-1]", citation_type="DATA",
-                source_chunk_id="no-tool-call", document_title="No tool call executed",
+                source_chunk_id="no-tool-call", document_title="No source retrieved",
                 relevance_score=0.0,
             )],
             confidence=0.1,
@@ -681,7 +706,7 @@ class TestRenderedCitationHook:
         )
         assert len(warnings) == 1
         assert "never rendered" in warnings[0]
-        assert gated.text == build_refusal_text()
+        assert gated.text == PROVENANCE_REFUSAL_TEXT
 
     def test_without_the_hook_the_citation_passes(self) -> None:
         response = _response("Hole 36-1085 intersected 0.12% eU3O8 [NI43-1].")
@@ -733,6 +758,9 @@ class TestSentenceSplitting:
 
 
 class _ReportsPool:
+    """Stands in for the pool; ``row`` is returned for REPORT_ID (the one
+    query is a batched ``report_id = ANY($1::uuid[])``, so it is ``fetch``)."""
+
     def __init__(self, row: dict[str, Any] | None) -> None:
         self.row = row
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
@@ -741,9 +769,11 @@ class _ReportsPool:
         pool = self
 
         class _Conn:
-            async def fetchrow(self, sql: str, *args: Any):
+            async def fetch(self, sql: str, *args: Any):
                 pool.calls.append((sql, args))
-                return pool.row
+                if pool.row is None:
+                    return []
+                return [dict(report_id=REPORT_ID, **pool.row)]
 
         class _Acquire:
             async def __aenter__(self):
@@ -765,12 +795,55 @@ class TestProvenanceEnrichment:
         pool = _ReportsPool(dict(source_object_key=_OBJECT_KEY, source_file_sha256=_SHA))
         response = _response("Hole 36-1085 intersected 0.12% eU3O8 [NI43-1].")
         out = await enrich_provenance(response, pool)
-        section = out.citations[0].section or ""
-        assert _OBJECT_KEY in section
-        assert "sha256:9f2c4e6a8b0d" in section
+        provenance = out.citations[0].provenance or ""
+        assert _OBJECT_KEY in provenance
+        assert "sha256:9f2c4e6a8b0d" in provenance
+        # Not in the rendered section (audit 2026-10-04, item 22).
+        assert _OBJECT_KEY not in (out.citations[0].section or "")
         sql, args = pool.calls[0]
         assert "silver.reports" in sql and "bronze" not in sql
-        assert args == (REPORT_ID,)
+        assert args == ([REPORT_ID],)
+        assert "ANY($1::uuid[])" in sql
+
+    @pytest.mark.asyncio
+    async def test_many_chunks_of_one_report_cost_one_query(self) -> None:
+        """Audit item 16: one SELECT per citation became one per distinct report."""
+        pool = _ReportsPool(dict(source_object_key=_OBJECT_KEY, source_file_sha256=_SHA))
+        citations = [
+            Citation(
+                citation_id=f"[NI43-{n}]", citation_type="NI43",
+                source_chunk_id=f"georag_reports:{REPORT_ID}:section=14.2:chunk=chunk-{n}",
+                document_title="Report", relevance_score=0.8,
+            )
+            for n in range(1, 13)
+        ]
+        out = await enrich_provenance(_response("x [NI43-1].", citations), pool)
+        assert len(pool.calls) == 1
+        assert pool.calls[0][1] == ([REPORT_ID],)
+        assert all(_OBJECT_KEY in (c.provenance or "") for c in out.citations)
+
+    @pytest.mark.asyncio
+    async def test_distinct_reports_share_the_one_query(self) -> None:
+        pool = _ReportsPool(dict(source_object_key=_OBJECT_KEY, source_file_sha256=_SHA))
+        other = "11111111-2222-3333-4444-555555555555"
+        citations = [
+            Citation(
+                citation_id="[NI43-1]", citation_type="NI43",
+                source_chunk_id=f"georag_reports:{REPORT_ID}:section=1:chunk=a",
+                document_title="Report", relevance_score=0.8,
+            ),
+            Citation(
+                citation_id="[NI43-2]", citation_type="NI43",
+                source_chunk_id=f"georag_reports:{other}:section=1:chunk=b",
+                document_title="Other", relevance_score=0.8,
+            ),
+        ]
+        out = await enrich_provenance(_response("x [NI43-1].", citations), pool)
+        assert len(pool.calls) == 1
+        assert pool.calls[0][1] == ([REPORT_ID, other],)
+        # Only the report the pool knew about is enriched.
+        assert _OBJECT_KEY in (out.citations[0].provenance or "")
+        assert _OBJECT_KEY not in (out.citations[1].provenance or "")
 
     @pytest.mark.asyncio
     async def test_an_orphan_summary_is_not_looked_up(self) -> None:

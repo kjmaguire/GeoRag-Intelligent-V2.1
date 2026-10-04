@@ -55,15 +55,17 @@ export default function AssayComposites3DView({
     // controller). Falls back to '' which yields an empty render.
     const [selected, setSelected] = useState<string>(elements[0]?.element ?? '');
 
-    const filtered = useMemo(
-        () => composites.filter((c) => c.element === selected),
-        [composites, selected],
-    );
+    const filtered = useMemo(() => composites.filter((c) => c.element === selected), [composites, selected]);
 
     const { data, layout, gradeRange, caption } = useMemo(() => {
         const valid = collars.filter((c) => c.easting !== null && c.northing !== null);
         if (valid.length === 0 || filtered.length === 0) {
-            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, gradeRange: [0, 0] as [number, number], caption: '' };
+            return {
+                data: [] as Record<string, unknown>[],
+                layout: {} as Record<string, unknown>,
+                gradeRange: [0, 0] as [number, number],
+                caption: '',
+            };
         }
 
         const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(filtered));
@@ -182,13 +184,18 @@ export default function AssayComposites3DView({
             hovermode: 'closest',
         };
 
-        return { data: traces, layout: layoutObj, gradeRange: [gMin, gMax] as [number, number], caption: scene.caption };
+        return {
+            data: traces,
+            layout: layoutObj,
+            gradeRange: [gMin, gMax] as [number, number],
+            caption: scene.caption,
+        };
     }, [collars, surveys, filtered]);
 
     if (elements.length === 0) {
         return (
             <div className="text-[11px] font-mono p-6 text-center" style={{ color: 'var(--fg-3)' }}>
-                0 rows in gold.assay_composites for this project — composite pipeline hasn't run yet.
+                No assay composites yet — they are computed after assays are ingested.
             </div>
         );
     }
@@ -196,7 +203,9 @@ export default function AssayComposites3DView({
     return (
         <div className="flex flex-col h-full min-h-0">
             <div className="flex items-center gap-3 mb-2 shrink-0 flex-wrap">
-                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Element</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                    Element
+                </span>
                 <select
                     aria-label="Element to plot"
                     value={selected}
@@ -205,16 +214,25 @@ export default function AssayComposites3DView({
                     style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
                 >
                     {elements.map((el) => (
-                        <option key={el.element} value={el.element}>{el.element} ({el.count})</option>
+                        <option key={el.element} value={el.element}>
+                            {el.element} ({el.count})
+                        </option>
                     ))}
                 </select>
                 {filtered.length > 0 && (
                     <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
-                        {filtered.length} composites · grade range {gradeRange[0].toFixed(3)}–{gradeRange[1].toFixed(3)} {filtered[0]?.unit ?? ''}
+                        {filtered.length} composites · grade range {gradeRange[0].toFixed(3)}–{gradeRange[1].toFixed(3)}{' '}
+                        {filtered[0]?.unit ?? ''}
                     </span>
                 )}
                 {caption && (
-                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
+                    <span
+                        className="text-[10px] font-mono"
+                        style={{ color: 'var(--fg-3)' }}
+                        data-testid="desurvey-caption"
+                    >
+                        {caption}
+                    </span>
                 )}
             </div>
             {data.length === 0 ? (

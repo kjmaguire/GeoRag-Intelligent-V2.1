@@ -11,7 +11,9 @@ directly (the same thing a fresh process boot with the env var set would
 produce), matching the documented "monkeypatchable in tests" contract in
 reranker.get_reranker_or_none()'s own docstring.
 
-Rewritten 2026-09-08 for ADR-0022 (Azure AI Foundry → Amazon Bedrock). The
+Rewritten 2026-09-08 for ADR-0022 (Azure AI Foundry → Amazon Bedrock);
+the embedding default moved on to ``cohere`` on 2026-10-04 (ADR-0025) and the
+cohere branch itself is covered in test_embedding_cohere.py. The
 retired-value tests below are the point of the rewrite as much as the
 happy-path ones: the failure this whole file exists to prevent is a
 deployment whose backend selector still names a host that no longer exists,
@@ -171,15 +173,16 @@ def _reload_with_env_unset(monkeypatch, module, var: str):
         importlib.reload(module)
 
 
-def test_embedding_backend_defaults_to_bedrock_when_unset(monkeypatch) -> None:
+def test_embedding_backend_defaults_to_cohere_when_unset(monkeypatch) -> None:
     """Unset EMBEDDING_BACKEND must select the hosted backend, never a
     self-hosted model host. Production has no GPU host, so a "local" default
     would make an unset variable on an ECS task silently disable retrieval;
     the compose dev stack sets "local" explicitly instead. The default moved
-    local -> foundry on 2026-09-06 and foundry -> bedrock on 2026-09-08, for
-    the same reason both times."""
+    local -> foundry on 2026-09-06, foundry -> bedrock on 2026-09-08 and
+    bedrock -> cohere on 2026-10-04 (ADR-0025, Embed 5 on Cohere's own API,
+    which Bedrock does not serve), for the same reason every time."""
     reloaded = _reload_with_env_unset(monkeypatch, embedding, "EMBEDDING_BACKEND")
-    assert reloaded.EMBEDDING_BACKEND == "bedrock"
+    assert reloaded.EMBEDDING_BACKEND == "cohere"
 
 
 def test_reranker_backend_defaults_to_bedrock_when_unset(monkeypatch) -> None:

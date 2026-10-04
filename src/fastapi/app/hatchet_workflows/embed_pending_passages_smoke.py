@@ -147,7 +147,7 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
     # on the import path until first use.
     #
     # 2026-08-07 — must go through get_embedding_model(), NOT a direct
-    # SentenceTransformer load. With EMBEDDING_BACKEND=foundry the local
+    # SentenceTransformer load. With a hosted EMBEDDING_BACKEND (cohere / bedrock) the local
     # model isn't baked into the image (first live smoke tried to download
     # 1.2 GB of Qwen3 into a read-only HF cache and crashed with
     # "Permission denied (os error 13)") — and even a successful local

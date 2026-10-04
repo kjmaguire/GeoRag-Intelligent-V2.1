@@ -1038,8 +1038,28 @@ as a one-off task after every deploy (`cd.yml`), and its check 4 fails when
 Qdrant is up but the collections the query path needs are absent. If you skip
 this step the deploy gate tells you.
 
-The collection is sized from `BEDROCK_EMBED_DIMENSION`, the same variable the
-writer uses, so it cannot drift from what Cohere Embed v4 is asked to return.
+The collection is sized from the dimension variable of the backend that writes
+into it — `COHERE_EMBED_DIMENSION` under the default `EMBEDDING_BACKEND=cohere`
+(ADR-0025), `BEDROCK_EMBED_DIMENSION` under the `bedrock` rollback — so it
+cannot drift from what the embedder is asked to return.
+
+**A live `georag_chunks` whose `workspace_id` index predates `is_tenant`.** A
+normal run never touches an index that already exists (re-PUTting it would
+rebuild it on a serving collection), so such a collection keeps the plain
+index until you ask. When the bootstrap log says `lacks is_tenant`, run the same
+one-off task with the flag:
+
+```bash
+aws ecs run-task --cluster georag --task-definition georag-fastapi \
+  --launch-type FARGATE --network-configuration "$PRIVATE_SUBNET_CONFIG" \
+  --overrides '{"containerOverrides":[{"name":"fastapi",
+    "command":["python3","/app/scripts/init_qdrant.py","--adopt-tenant-index"]}]}'
+```
+
+Run it in a quiet period: it deletes the `workspace_id` index and re-creates it
+with `is_tenant`, and `workspace_id` filters keep working while the index
+rebuilds, only slower. If the log says `is_tenant UNKNOWN` instead, Qdrant did
+not report the index's parameters and the flag changes nothing.
 
 ## One posture decision left open: X-Forwarded-For
 

@@ -165,3 +165,85 @@ async def test_stage4_reissue_does_not_stream(monkeypatch):
 
     assert callbacks_seen and all(cb == (None, None) for cb in callbacks_seen)
     assert update["response"].text == "loosened answer [DATA-1]"
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 item 25: own budget, and no stale retrieval_failures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reissue_retrieval_replaces_the_stale_failure_list(monkeypatch):
+    """The first retrieval's failures described searches that no longer apply."""
+    from app.agent.agentic_retrieval import preprocessor as _pp_mod
+    from app.agent.agentic_retrieval import retrieval_profile as _rp_mod
+
+    async def fake_execute(s):
+        return {
+            "tool_results": [("query_project_overview", {"count": 2})],
+            "evidence_packet": None,
+            "retrieval_failures": [],  # the re-issue succeeded
+        }
+
+    seen_by_assemble: list[list[str]] = []
+
+    async def fake_assemble(s):
+        seen_by_assemble.append(list(s.retrieval_failures))
+        return {"response": _response("loosened answer [DATA-1]")}
+
+    monkeypatch.setattr(_nodes_mod, "execute_node", fake_execute)
+    monkeypatch.setattr(_nodes_mod, "assemble_node", fake_assemble)
+
+    state = _state(
+        retrieval_failures=["PostGIS silver.collars (timeout) via query_spatial_collars"],
+        retrieval_profile=_rp_mod.profile_for_intent("synthesis"),
+        retrieval_filters=_pp_mod.preprocess_envelope(None),
+    )
+    await _nodes_mod._reissue_retrieval(state, {})
+    assert state.retrieval_failures == []
+    # assemble_node saw the FRESH list too, not the stale one.
+    assert seen_by_assemble == [[]]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_reissue_is_rolled_back_at_the_loop_budget(monkeypatch):
+    _lowcost(monkeypatch)
+    monkeypatch.setattr(_nodes_mod, "_REPAIR_LOOP_BUDGET_S", 0.05)
+
+    async def never_returns(*args, **kwargs):
+        import asyncio
+
+        await asyncio.sleep(30)
+        return "too late [DATA-1]"
+
+    import app.agent.llm_calls as _llm_mod
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", never_returns)
+
+    state = _state()
+    started = __import__("time").monotonic()
+    update = await repair_shadow_node(state)
+
+    assert __import__("time").monotonic() - started < 5
+    assert "response" not in update
+    assert state.response.text == "original validated answer [DATA-1]"
+    assert state.validation_warnings == ["layer 3: ungrounded number 5.0"]
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_budget_skips_further_attempts(monkeypatch):
+    _lowcost(monkeypatch)
+    monkeypatch.setattr(_nodes_mod, "_REPAIR_LOOP_BUDGET_S", 0.0)
+    called = []
+
+    async def fake_call_llm(*args, **kwargs):  # pragma: no cover - must not run
+        called.append(1)
+        return "x [DATA-1]"
+
+    import app.agent.llm_calls as _llm_mod
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+    state = _state()
+    update = await repair_shadow_node(state)
+    assert called == []
+    assert "response" not in update

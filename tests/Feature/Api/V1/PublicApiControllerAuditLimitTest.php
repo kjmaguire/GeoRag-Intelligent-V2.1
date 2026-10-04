@@ -48,7 +48,7 @@ final class PublicApiControllerAuditLimitTest extends TestCase
         );
 
         $this->user = User::factory()->create();
-        $this->user->projects()->syncWithoutDetaching([$project->project_id => ['role' => 'viewer']]);
+        $this->user->projects()->syncWithoutDetaching([$project->project_id => ['role' => 'owner']]);
 
         for ($i = 0; $i < 3; $i++) {
             DB::table('audit.audit_ledger')->insert([

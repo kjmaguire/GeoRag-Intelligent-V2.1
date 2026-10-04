@@ -61,7 +61,7 @@ export function isHeartbeat(event: Record<string, unknown>): boolean {
  * arrival order after every sequenced token.
  */
 export interface DeltaBuffer {
-    /** Adds a token; returns the full text in order, or null for a duplicate. */
+    /** Adds a token; returns the full text in order, or null for a duplicate. O(token) when tokens arrive in order. */
     add(token: string, tokenSeq: unknown, eventId: unknown): string | null;
     text(): string;
 }
@@ -70,8 +70,10 @@ export function createDeltaBuffer(): DeltaBuffer {
     const seen = new Set<string>();
     const parts: Array<{ seq: number; arrival: number; token: string }> = [];
     let arrival = 0;
-
-    const text = () => parts.map((p) => p.token).join('');
+    // The assembled text, kept current. In-order arrival (the normal case)
+    // appends to it, so a token costs O(token), not a re-join of every part
+    // so far. Only an out-of-order token rebuilds it.
+    let assembled = '';
 
     return {
         add(token, tokenSeq, eventId) {
@@ -83,13 +85,19 @@ export function createDeltaBuffer(): DeltaBuffer {
             const entry = { seq, arrival: arrival++, token };
             // Insert after the last entry that sorts at or before this one
             // (stable for equal seqs; typical arrival is in order, so this
-            // walks one step from the end).
+            // walks zero steps from the end).
             let i = parts.length;
-            while (i > 0 && (parts[i - 1].seq > entry.seq)) i--;
-            parts.splice(i, 0, entry);
-            return text();
+            while (i > 0 && parts[i - 1].seq > entry.seq) i--;
+            if (i === parts.length) {
+                parts.push(entry);
+                assembled += token;
+            } else {
+                parts.splice(i, 0, entry);
+                assembled = parts.map((p) => p.token).join('');
+            }
+            return assembled;
         },
-        text,
+        text: () => assembled,
     };
 }
 
@@ -122,7 +130,11 @@ export interface PersistableMessage {
  * maps the same keys back — and keeps an assistant turn that failed before
  * any text as '' plus its error (CHAT-4), which the server now accepts.
  */
-export function toPersistedMessage(m: PersistableMessage): { role: string; content: string; metadata: Record<string, unknown> } {
+export function toPersistedMessage(m: PersistableMessage): {
+    role: string;
+    content: string;
+    metadata: Record<string, unknown>;
+} {
     return {
         role: m.role,
         content: m.content ?? '',

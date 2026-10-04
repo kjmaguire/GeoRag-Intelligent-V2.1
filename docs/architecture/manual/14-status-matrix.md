@@ -50,7 +50,7 @@ Sixteen compose services and ten ECS services. Profiles and images are in
 | `laravel-reverb` | Live | `laravel-reverb` | 60 s channel-drop bug fixed 2026-05-21. The **second** ALB-reachable service — a listener rule routes to it — with target-group stickiness on, because a WebSocket lives on one task for its whole life |
 | `fastapi` | Live | `fastapi` | internal only; reached over Cloud Map service discovery, never the ALB |
 | `reranker` | Live (dev-only) | not deployed | Qwen3-Reranker-0.6B on the one GPU; production uses Cohere Rerank **3.5** on Bedrock (v4 is not offered — see §"Known" below) |
-| `embedding` | Live (dev-only) | not deployed | Qwen3-Embedding-0.6B on CPU; production uses Cohere Embed v4 on Bedrock at 1024-dim |
+| `embedding` | Live (dev-only) | not deployed | Qwen3-Embedding-0.6B on CPU; production uses Cohere Embed 5 on Cohere's own API at 1024-dim (ADR-0025; Embed v4 on Bedrock is the rollback) |
 | `sparse` | Live (dev-only) | **`sparse` (task)** | SPLADE++; **no managed equivalent on any cloud**, so it is self-hosted on Fargate or the sparse leg of hybrid retrieval does not exist. ADR-0022 chose self-hosted |
 | `qdrant` | Live | `qdrant` (task, EFS) | auth off in dev by design (Ch 02 §2). Azure had an Azure Files share with a fixed quota and a key-based mount; EFS is elastic and IAM-authorised |
 | `minio` (SeaweedFS) | Live | not deployed | production uses S3 via `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset, so boto3 resolves the region endpoint and the task role |
@@ -243,7 +243,7 @@ Pydantic AI itself is vestigial: the guards live in
 |---|---|---|
 | `AGENTIC_RETRIEVAL_V2_ENABLED` | false (dev: true) | Use §04j LangGraph instead of legacy linear RAG |
 | `GEO_ANSWER_OIUR_ENABLED` | false (dev: true) | Wrap answers in OIUR envelope |
-| `OCR_ENGINE` | tesseract (compose: cohere_parse) | Selects Cohere Parse as primary scanned-page OCR (ADR-0019; on Cohere's own API since ADR-0023). Retired values fail loudly rather than downgrading silently |
+| `OCR_ENGINE` | cohere_parse (unset = hosted since 2026-10-04) | Selects Cohere Parse as primary scanned-page OCR (ADR-0019; on Cohere's own API since ADR-0023). Retired values fail loudly rather than downgrading silently |
 | `COHERE_API_KEY` | unset | The Cohere API key — one credential for both Parse and `LLM_BACKEND=cohere`. **Unset means every page runs Tesseract** after one CRITICAL log line — no table structure, no error. Replaces `BEDROCK_PARSE_MODEL_ID`, which replaced `AZURE_FOUNDRY_PARSE_DEPLOYMENT` |
 | `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Parse is unavailable or empty |
 | `OCR_ROUTING_THRESHOLDS_JSON` | unset | Calibrated multi-signal routing bands; unset fails closed to review |

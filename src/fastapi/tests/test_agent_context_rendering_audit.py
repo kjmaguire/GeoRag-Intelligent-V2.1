@@ -92,9 +92,23 @@ def test_generic_block_puts_scalars_before_rows():
     )
     text = _render_structured_result(result)
     first_line = text.splitlines()[0]
-    assert "count=100" in first_line
+    assert "total_holes_matching=100" in first_line
     assert "collars: showing 12 of 100" in text
     assert len(text) <= 4000
+
+
+def test_spatial_sample_is_labelled_with_the_true_total():
+    """A LIMIT-capped alphabetical sample must not read as the project total
+    (audit item 3): 50 collars retrieved from a 567-hole project."""
+    result = SpatialQueryResult(
+        collars=[_collar(i) for i in range(50)], count=50,
+        data_source="PostGIS silver.collars", total_count=567,
+    )
+    text = _render_structured_result(result)
+    assert "total_holes_matching=567" in text.splitlines()[0]
+    assert "collars: showing 12 of 567 (alphabetical sample)" in text
+    assert "showing 12 of 50" not in text
+    assert "count=50" not in text
 
 
 def test_long_scalar_fields_are_truncated_not_dumped():

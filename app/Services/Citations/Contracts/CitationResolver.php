@@ -48,11 +48,20 @@ interface CitationResolver
      * RLS fallback. Resolvers over workspace-global data (public
      * geoscience open-data tables) may ignore it.
      *
+     * $projectIds is the set of projects (inside $workspaceId) the request
+     * authorises: either every project the caller is a member of, or just
+     * the one named by an explicit `project_id` parameter. Workspace scope
+     * alone is not enough: a member of project A shares a workspace with
+     * project B and must not read B's chunks. Project-scoped resolvers MUST
+     * filter on it and MUST fail CLOSED (miss) when it is null or empty.
+     *
      * Returns 200 for a resolved record. Returns 404 (with a structured
      * body the citation viewer can still render) when the record is not
      * visible in the given workspace — deliberately identical for
      * "does not exist" and "exists in another tenant" so the endpoint is
      * not an existence oracle.
+     *
+     * @param list<string>|null $projectIds
      */
-    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse;
+    public function resolve(string $sourceId, ?string $workspaceId = null, ?array $projectIds = null): JsonResponse;
 }

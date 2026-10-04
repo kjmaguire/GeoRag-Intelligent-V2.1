@@ -73,8 +73,12 @@ class CsvSamplesExporter
                 $query->where('s.sample_type', $filters['sample_type']);
             }
 
+            // Offset chunk() is only stable over a TOTAL order. (hole_id, from_depth) is not unique,
+            // so rows sharing it could swap between pages and be dropped or
+            // duplicated in the file. The primary key is the final tiebreaker.
             $query->orderBy('c.hole_id')
                 ->orderBy('s.from_depth')
+                ->orderBy('s.sample_id')
                 ->chunk(2000, function ($rows) use ($handle) {
                     foreach ($rows as $row) {
                         fputcsv($handle, [

@@ -40,11 +40,11 @@ describe('uncertainty-rings stroke colour enum', () => {
     });
 
     it.each([
-        ['declared', '#22c55e'],   // green
-        ['detected', '#3b82f6'],   // blue
-        ['assumed',  '#f97316'],   // orange
-        ['manual',   '#a855f7'],   // purple
-        ['survey',   '#000000'],   // black
+        ['declared', '#22c55e'], // green
+        ['detected', '#3b82f6'], // blue
+        ['assumed', '#f97316'], // orange
+        ['manual', '#a855f7'], // purple
+        ['survey', '#000000'], // black
     ])('maps %s → %s', (method, color) => {
         const idx = expr.indexOf(method as never);
         expect(idx).toBeGreaterThan(-1);

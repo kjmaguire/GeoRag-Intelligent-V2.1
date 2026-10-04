@@ -42,7 +42,7 @@ final class CollarsResolverTotalDepthTest extends TestCase
         );
 
         $payload = (new CollarsResolver)
-            ->resolve("silver.collars:count=1:first={$collarId}", $workspaceId)
+            ->resolve("silver.collars:count=1:first={$collarId}", $workspaceId, [$projectId])
             ->getData(true);
 
         $this->assertStringContainsString('TD not recorded', $payload['text']);

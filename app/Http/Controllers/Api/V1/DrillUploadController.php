@@ -12,10 +12,13 @@ use App\Services\Ingestion\DrillFileRouter;
 use App\Services\Ingestion\HatchetDispatchThrottle;
 use App\Services\StorageService;
 use App\Support\SafeErrorMessage;
+use App\Support\SetsWorkspaceRlsContext;
 use App\Support\UploadContentGuard;
 use App\Support\Uploads;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -47,6 +50,8 @@ use Throwable;
  */
 class DrillUploadController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
     /**
      * EPSG code bounds for the `source_epsg` override.
      *
@@ -151,38 +156,108 @@ class DrillUploadController extends Controller
         $sha256 = hash_final($hashCtx);
         fclose($handle);
 
-        // Dedupe early — same workspace + same content = same row. This
-        // protects against accidental double-uploads from the UI without
-        // forcing the client to track upload ids.
+        $shortSha = substr($sha256, 0, 8);
+
+        // Serialise dedupe-through-dispatch per (workspace, project, bytes).
+        // Between the bronze insert and FastAPI writing the ingest_progress
+        // row there is a window in which a second identical upload finds a
+        // bronze row but no progress row, concludes the file was never
+        // processed, and dispatches the same key again. The lock closes that
+        // window; a caller that cannot take it is a concurrent duplicate of
+        // an upload that is already being handled. The TTL only bounds a
+        // crashed worker -- the happy path releases in `finally`.
+        $lock = Cache::lock("drill-upload:{$workspaceId}:{$project->project_id}:{$sha256}", 60);
+        if (! $lock->get()) {
+            $inFlight = DB::table('bronze.source_files')
+                ->where('workspace_id', $workspaceId)
+                ->where('file_sha256', $sha256)
+                ->first();
+
+            return response()->json([
+                'duplicate' => true,
+                'source_file_id' => $inFlight?->id,
+                'seaweedfs_key' => $inFlight?->seaweedfs_key,
+                'message' => 'An identical upload is already being processed for this project.',
+            ], 200);
+        }
+
+        try {
+            return $this->ingestUnderLock(
+                $storage, $user, $project, $workspaceId, $file, $ext,
+                $originalName, $sha256, $shortSha, $validated,
+            );
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * The dedupe -> bronze write -> dispatch sequence, run while holding the
+     * per-(workspace, project, sha256) lock taken by {@see self::store()}.
+     *
+     * @param array<string, mixed> $validated
+     */
+    private function ingestUnderLock(
+        StorageService $storage,
+        User $user,
+        Project $project,
+        string $workspaceId,
+        UploadedFile $file,
+        string $ext,
+        string $originalName,
+        string $sha256,
+        string $shortSha,
+        array $validated,
+    ): JsonResponse {
+        // Dedupe early, per (workspace, project, sha256). The bronze row is
+        // unique per (workspace, sha256) -- it has no project column -- so a
+        // row existing is NOT proof this PROJECT ever ingested the file:
+        //   - the same file may have been uploaded into a sibling project, and
+        //   - an earlier attempt may have stored the object and then failed to
+        //     dispatch (the 502 below), leaving a row and no ingest at all.
+        // Short-circuiting on the row alone made both unrecoverable: the
+        // second project silently got nothing and the retry got
+        // `duplicate: true` for a file that was never processed.
+        //
+        // So `duplicate` is only returned when this project has a live or
+        // landed ingest_progress row (or a report) for the file. Otherwise
+        // fall through and dispatch.
         $existing = DB::table('bronze.source_files')
             ->where('workspace_id', $workspaceId)
             ->where('file_sha256', $sha256)
             ->first();
+        $knownSourceFileId = null;
+        $reusedKey = null;
         if ($existing !== null) {
-            return response()->json([
-                'duplicate' => true,
-                'source_file_id' => $existing->id,
-                'seaweedfs_key' => $existing->seaweedfs_key,
-                'message' => 'File with this SHA256 already ingested for this workspace.',
-            ], 200);
+            $existingKey = (string) $existing->seaweedfs_key;
+            if ($this->alreadyIngestedInProject($workspaceId, $project->project_id, $existingKey, $shortSha)) {
+                return response()->json([
+                    'duplicate' => true,
+                    'source_file_id' => $existing->id,
+                    'seaweedfs_key' => $existing->seaweedfs_key,
+                    'message' => 'File with this SHA256 already ingested for this project.',
+                ], 200);
+            }
+
+            $knownSourceFileId = (string) $existing->id;
+            // ingest_progress is unique per (workspace, minio_key). The stored
+            // object can be reused only when no project has run on that key;
+            // otherwise this project needs its own copy under a new key.
+            if (! $this->keyHasProgress($workspaceId, $existingKey)) {
+                $reusedKey = $existingKey;
+            }
         }
 
         $safeFilename = $this->safeFilename($originalName, $ext);
-        $shortSha = substr($sha256, 0, 8);
-        $seaweedfsKey = sprintf(
-            '%s/%s/%s_%s_%s',
-            self::BRONZE_PREFIX,
-            $workspaceId,
-            now()->format('Ymd_His'),
-            $shortSha,
-            $safeFilename,
-        );
+        $seaweedfsKey = $reusedKey ?? $this->mintBronzeKey($workspaceId, $shortSha, $safeFilename, $existing?->seaweedfs_key);
 
         $vendorProfileId = $validated['vendor_profile_id'] ?? null;
         $sourceEpsg = $validated['source_epsg'] ?? null;
 
         try {
-            $this->streamToBronze($storage, $seaweedfsKey, $file->getRealPath(), $vendorProfileId);
+            if ($reusedKey === null) {
+                $this->streamToBronze($storage, $seaweedfsKey, $file->getRealPath(), $vendorProfileId);
+            }
         } catch (Throwable $e) {
             Log::error('DrillUploadController: bronze write failed', [
                 'project_id' => $project->project_id,
@@ -211,56 +286,70 @@ class DrillUploadController extends Controller
         }
         $mimeType = $mimeType ?: $file->getClientMimeType();
 
-        $sourceFileId = (string) Str::uuid();
-        try {
-            DB::table('bronze.source_files')->insert([
-                'id' => $sourceFileId,
-                'workspace_id' => $workspaceId,
-                'seaweedfs_key' => $seaweedfsKey,
-                'original_filename' => $originalName,
-                'file_sha256' => $sha256,
-                'file_size_bytes' => $file->getSize(),
-                'mime_type' => $mimeType,
-                'source_type' => 'drill_upload',
-                // The sheet-type hint, or null when the filename gave
-                // none and ingest_tabular will classify from the header
-                // row. 'unrouted' is reserved for an extension with no
-                // workflow at all — the two are not the same, and
-                // recording them alike hid which files were dispatched.
-                'data_type' => $selection['sheet_type'] ?? $selection['route'],
-                'campaign_id' => null,
-                'ingested_by' => (string) $user->id,
-                'ingested_at' => now(),
-            ]);
-        } catch (Throwable $e) {
-            // The object was written before the row — on any branch that
-            // exits without a row referencing $seaweedfsKey, delete it or
-            // it becomes invisible unbounded storage growth (the Tier-1
-            // sweep audits rows, not objects).
+        // A bronze row already exists for this content when the object is
+        // reused or a sibling project uploaded it first; (workspace, sha256)
+        // is unique, so that row stays the single provenance anchor and no
+        // second one is written.
+        $sourceFileId = $knownSourceFileId ?? (string) Str::uuid();
+        if ($knownSourceFileId === null) {
             try {
-                $storage->bronze()->delete($seaweedfsKey);
-            } catch (Throwable) {
-                // Best-effort; orphan is logged below either way.
-            }
-            // Race: another request inserted the same (workspace_id, sha256)
-            // between our SELECT and INSERT. Return the canonical row.
-            $canonical = DB::table('bronze.source_files')
-                ->where('workspace_id', $workspaceId)
-                ->where('file_sha256', $sha256)
-                ->first();
-            if ($canonical !== null) {
-                return response()->json([
-                    'duplicate' => true,
-                    'source_file_id' => $canonical->id,
-                    'seaweedfs_key' => $canonical->seaweedfs_key,
-                ], 200);
-            }
-            Log::error('DrillUploadController: source_files insert failed', [
-                'error' => SafeErrorMessage::forResponse($e),
-                'orphaned_key_deleted' => $seaweedfsKey,
-            ]);
+                DB::table('bronze.source_files')->insert([
+                    'id' => $sourceFileId,
+                    'workspace_id' => $workspaceId,
+                    'seaweedfs_key' => $seaweedfsKey,
+                    'original_filename' => $originalName,
+                    'file_sha256' => $sha256,
+                    'file_size_bytes' => $file->getSize(),
+                    'mime_type' => $mimeType,
+                    'source_type' => 'drill_upload',
+                    // The sheet-type hint, or null when the filename gave
+                    // none and ingest_tabular will classify from the header
+                    // row. 'unrouted' is reserved for an extension with no
+                    // workflow at all — the two are not the same, and
+                    // recording them alike hid which files were dispatched.
+                    'data_type' => $selection['sheet_type'] ?? $selection['route'],
+                    'campaign_id' => null,
+                    'ingested_by' => (string) $user->id,
+                    'ingested_at' => now(),
+                ]);
+            } catch (Throwable $e) {
+                // Race: another request inserted the same (workspace_id, sha256)
+                // between our SELECT and INSERT. Look the winner up BEFORE
+                // touching the object: two first-time uploads of the same
+                // bytes in the same second mint the same key, so the loser's
+                // object IS the winner's object and deleting it would orphan
+                // the winner's row.
+                $canonical = DB::table('bronze.source_files')
+                    ->where('workspace_id', $workspaceId)
+                    ->where('file_sha256', $sha256)
+                    ->first();
 
-            return response()->json(['error' => 'persist_failed'], 500);
+                // The object was written before the row — on any branch that
+                // exits without a row referencing $seaweedfsKey, delete it or
+                // it becomes invisible unbounded storage growth (the Tier-1
+                // sweep audits rows, not objects). Delete only the object this
+                // request created: never one a bronze row already points at.
+                if ($canonical === null || (string) $canonical->seaweedfs_key !== $seaweedfsKey) {
+                    try {
+                        $storage->bronze()->delete($seaweedfsKey);
+                    } catch (Throwable) {
+                        // Best-effort; orphan is logged below either way.
+                    }
+                }
+                if ($canonical !== null) {
+                    return response()->json([
+                        'duplicate' => true,
+                        'source_file_id' => $canonical->id,
+                        'seaweedfs_key' => $canonical->seaweedfs_key,
+                    ], 200);
+                }
+                Log::error('DrillUploadController: source_files insert failed', [
+                    'error' => SafeErrorMessage::forResponse($e),
+                    'orphaned_key_deleted' => $seaweedfsKey,
+                ]);
+
+                return response()->json(['error' => 'persist_failed'], 500);
+            }
         }
 
         $dispatch = $this->dispatch(
@@ -526,6 +615,93 @@ class DrillUploadController extends Controller
 
             return ['dispatched' => false, 'route' => 'fastapi_pdf', 'error' => 'exception'];
         }
+    }
+
+    /**
+     * Whether THIS project already has the file in play: a live or landed
+     * ingest_progress row, or a report, whose object key is the stored one or
+     * a sibling copy minted for this content.
+     *
+     * Failed / cancelled / timed-out runs do not count -- a re-upload must be
+     * able to retry them. Sibling copies (the same file uploaded into a
+     * second project gets its own key, because ingest_progress is unique per
+     * (workspace, minio_key)) are recognised by the 8-hex content digest the
+     * key embeds as `{timestamp}_{digest}_{name}`.
+     *
+     * Runs inside withWorkspaceRls(): ingest_progress and reports are
+     * fail-closed RLS tables.
+     */
+    private function alreadyIngestedInProject(string $workspaceId, string $projectId, string $existingKey, string $shortSha): bool
+    {
+        $siblingPattern = '%'.self::BRONZE_PREFIX.'/'.$workspaceId.'/%\\_'.$shortSha.'\\_%';
+
+        return $this->withWorkspaceRls($workspaceId, function () use ($workspaceId, $projectId, $existingKey, $siblingPattern): bool {
+            $matchesKey = function ($query, string $column) use ($existingKey, $siblingPattern): void {
+                $query->where(function ($q) use ($column, $existingKey, $siblingPattern): void {
+                    $q->where($column, $existingKey)
+                        ->orWhereRaw($column." LIKE ? ESCAPE '\\'", [$siblingPattern]);
+                });
+            };
+
+            $inProgress = DB::table('silver.ingest_progress')
+                ->where('workspace_id', $workspaceId)
+                ->where('project_id', $projectId)
+                ->whereIn('status', ['queued', 'started', 'completed', 'partial'])
+                ->where(fn ($q) => $matchesKey($q, 'minio_key'))
+                ->exists();
+            if ($inProgress) {
+                return true;
+            }
+
+            return DB::table('silver.reports')
+                ->where('project_id', $projectId)
+                ->where(fn ($q) => $matchesKey($q, 'source_object_key'))
+                ->exists();
+        });
+    }
+
+    /**
+     * Whether any project has an ingest_progress row on this exact key.
+     */
+    private function keyHasProgress(string $workspaceId, string $key): bool
+    {
+        return $this->withWorkspaceRls($workspaceId, fn (): bool => DB::table('silver.ingest_progress')
+            ->where('workspace_id', $workspaceId)
+            ->where('minio_key', $key)
+            ->exists());
+    }
+
+    /**
+     * A bronze object key no ingest run has used.
+     *
+     * `{prefix}/{workspace}/{Ymd_His}_{digest8}_{name}`. The same content
+     * under the same name in the same second yields the same string, which
+     * is exactly what happens when a sibling project uploads a file the
+     * first project just ingested -- and ingest_progress is unique per
+     * (workspace, minio_key). So a key that is already taken (by the stored
+     * object or by any run) moves its timestamp forward a second at a time.
+     * The shape stays the one {@see ReportController::filenameFromKey()}
+     * strips.
+     */
+    private function mintBronzeKey(string $workspaceId, string $shortSha, string $safeFilename, mixed $takenKey): string
+    {
+        $at = now();
+        for ($attempt = 0; $attempt < 30; $attempt++) {
+            $key = sprintf(
+                '%s/%s/%s_%s_%s',
+                self::BRONZE_PREFIX,
+                $workspaceId,
+                $at->format('Ymd_His'),
+                $shortSha,
+                $safeFilename,
+            );
+            if ($key !== $takenKey && ! $this->keyHasProgress($workspaceId, $key)) {
+                return $key;
+            }
+            $at = $at->copy()->addSecond();
+        }
+
+        return $key;
     }
 
     private function workspaceIdFor(string $projectId): ?string

@@ -29,7 +29,10 @@ final class ReportResolver extends AbstractCitationResolver
         return 'georag_reports:';
     }
 
-    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
+    /**
+     * @param list<string>|null $projectIds
+     */
+    public function resolve(string $sourceId, ?string $workspaceId = null, ?array $projectIds = null): JsonResponse
     {
         // Parse: georag_reports:{report_id}:section={num}:chunk={id}
         preg_match('/georag_reports:([^:]+)/', $sourceId, $matches);
@@ -48,13 +51,14 @@ final class ReportResolver extends AbstractCitationResolver
         // Belt and braces: the controller already binds the app.workspace_id
         // GUC for RLS, but silver RLS policies are fail-open when the GUC is
         // unset — so ALSO filter explicitly. A null scope fails CLOSED.
-        if ($workspaceId === null) {
+        if ($workspaceId === null || $projectIds === null || $projectIds === []) {
             return $this->notFound($sourceId);
         }
 
         $report = DB::table('silver.reports')
             ->where('report_id', $reportId)
             ->where('workspace_id', $workspaceId)
+            ->whereIn('project_id', $projectIds)
             ->first(['report_id', 'title', 'company', 'filing_date', 'commodity', 'sections_text']);
 
         if (! $report) {

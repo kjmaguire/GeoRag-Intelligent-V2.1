@@ -75,6 +75,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
+import hashlib
 import logging
 import os
 import re
@@ -82,6 +84,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+import zlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -152,7 +155,13 @@ _SPATIAL_EXTS = frozenset(
 #: source between the two languages — but a comment is not a mechanism, and
 #: the previous version of this note pointed at a PHP docblock that did not
 #: in fact name this file.
-_RASTER_EXTS = frozenset({"tif", "tiff", "rrd", "jpg", "jpeg"})
+#:
+#: 2026-10-04: ``png``/``bmp``/``gif``/``webp`` added (standalone scanned
+#: images, normalised by tiff_to_pdf). UploadController::RASTER_REPORT_EXTS
+#: must carry the same set or test_zip_raster_exts_match_php.py fails.
+_RASTER_EXTS = frozenset({
+    "tif", "tiff", "rrd", "jpg", "jpeg", "png", "bmp", "gif", "webp",
+})
 
 #: Standalone dBASE tables. NOT shapefile sidecars when no same-stem .shp is
 #: present in the archive — a bare .dbf or MapInfo .dat is a whole attribute
@@ -641,6 +650,16 @@ _MEMBER_WARNING_TEXT: dict[str, str] = {
         "in the header ({names}). Their curves are KEPT and will attach "
         "automatically when each hole's collar is uploaded."
     ),
+    "archive_member_failed": (
+        "{n} archive member(s) could not be extracted ({names}); they were "
+        "skipped and the rest of the archive was processed. The original "
+        "archive stays in bronze; re-export the damaged files and upload them "
+        "on their own."
+    ),
+    "archive_member_encrypted": (
+        "{n} archive member(s) are password-protected ({names}); they were "
+        "skipped. Remove the password and upload them again."
+    ),
     "archive_nested_zip_not_expanded": (
         "{n} zip file(s) inside the archive could not be unpacked ({names}); "
         "they were left as they are. Each stays in the original archive, which "
@@ -669,6 +688,10 @@ _MEMBER_WARNING_TEXT: dict[str, str] = {
 }
 
 
+#: Member-warning codes meaning a member never reached the disk.
+_MEMBER_EXTRACT_CODES = frozenset({"archive_member_failed", "archive_member_encrypted"})
+
+
 def _member_warning_summaries(
     member_warnings: list[dict[str, str]],
 ) -> list[dict[str, str]]:
@@ -678,7 +701,11 @@ def _member_warning_summaries(
         by_code.setdefault(str(w.get("code") or "member_warning"), []).append(w)
     out: list[dict[str, str]] = []
     for code, items in by_code.items():
-        names = [str(i.get("file") or "?") for i in items]
+        names = [
+            f"{i.get('file') or '?'} [{i['reason']}]" if i.get("reason")
+            else str(i.get("file") or "?")
+            for i in items
+        ]
         template = _MEMBER_WARNING_TEXT.get(code)
         if template is None:
             detail = str(items[0].get("detail") or code)
@@ -734,26 +761,101 @@ _MAX_TOTAL_UNCOMPRESSED = 5 * 1024 ** 3  # 5 GiB
 _MAX_NESTED_DEPTH = 3
 
 
+class _ArchiveBudgetExceeded(ValueError):
+    """The archive (outer plus nested) outgrew a zip-bomb cap.
+
+    A ValueError so the nested-archive handler, which already catches it,
+    leaves the inner zip in place; the OUTER extraction lets it propagate and
+    the run fails with this message rather than filling the worker's disk.
+    """
+
+
 class _ExtractBudget:
-    """Entry and byte totals shared by the outer zip and every nested one."""
+    """Entry and byte totals shared by the outer zip and every nested one.
+
+    ``bytes`` counts bytes ACTUALLY written, not the sizes the central
+    directory declares: those are attacker-controlled and a forged header
+    would otherwise defeat the cap.
+    """
 
     def __init__(self) -> None:
         self.entries = 0
         self.bytes = 0
 
 
-def _extract_zip_into(zip_path: Path, dest_dir: Path, budget: _ExtractBudget) -> None:
+#: Copy granularity. Small enough that a bomb is caught within one chunk of
+#: crossing the cap, large enough that a 5 GiB extract is not syscall-bound.
+_COPY_CHUNK = 1024 * 1024
+
+_ZIP_ENCRYPTED_FLAG = 0x1
+
+#: Longest member name echoed into a warning (names come from the archive).
+_MEMBER_NAME_MAX = 200
+
+
+def _member_warning(code: str, name: str, exc: BaseException) -> dict[str, str]:
+    """A per-member extraction warning: name plus exception CLASS, no free text.
+
+    The exception message is deliberately not carried: zipfile messages embed
+    archive-controlled strings and ``detail`` ends up in a toast.
+    """
+    shown = name[:_MEMBER_NAME_MAX]
+    reason = type(exc).__name__
+    if code == "archive_member_encrypted":
+        detail = f"{shown}: encrypted, password required"
+    else:
+        detail = f"{shown}: could not be extracted ({reason})"
+    return {"code": code, "file": shown, "reason": reason, "detail": detail}
+
+
+def _copy_member(
+    zf: zipfile.ZipFile, info: zipfile.ZipInfo, dest: Path, budget: _ExtractBudget,
+) -> None:
+    """Copy one member to ``dest``, counting every byte against the budget.
+
+    Raises ``_ArchiveBudgetExceeded`` the moment the running total passes
+    ``_MAX_TOTAL_UNCOMPRESSED`` whatever the header declared.
+    """
+    with zf.open(info) as src, open(dest, "wb") as out:
+        while True:
+            chunk = src.read(_COPY_CHUNK)
+            if not chunk:
+                return
+            budget.bytes += len(chunk)
+            if budget.bytes > _MAX_TOTAL_UNCOMPRESSED:
+                raise _ArchiveBudgetExceeded(
+                    f"ingest_zip_archive: extracted more than "
+                    f"{_MAX_TOTAL_UNCOMPRESSED} B while copying "
+                    f"{info.filename[:_MEMBER_NAME_MAX]!r} (zip-bomb guard); "
+                    "refusing. The central directory under-declared the size."
+                )
+            out.write(chunk)
+
+
+def _extract_zip_into(
+    zip_path: Path, dest_dir: Path, budget: _ExtractBudget,
+) -> list[dict[str, str]]:
     """Extract ``zip_path`` into ``dest_dir`` under the shared ``budget``.
 
     Audit 2026-06-28: safe extraction. A bare zf.extractall() is vulnerable to
     (a) zip-bombs (unbounded decompressed size / entry count exhausts disk) and
     (b) zip-slip path traversal (an entry named '../../etc/x' escapes the
-    destination). Guard both: cap entry count + total declared uncompressed
-    size, and verify every resolved destination stays inside ``dest_dir``
-    before writing. Raises ValueError on a breach.
+    destination). Guard both: cap entry count + total uncompressed size, and
+    verify every resolved destination stays inside ``dest_dir`` before
+    writing. Raises ValueError on a breach.
+
+    The size cap is checked twice: against the declared central-directory
+    sizes (cheap early refusal) and against the bytes actually copied, since
+    the declared sizes are forgeable.
+
+    One bad MEMBER does not abort the archive: a corrupt, CRC-failing,
+    unsupported-compression or encrypted member is skipped and returned as an
+    ``archive_member_failed`` / ``archive_member_encrypted`` warning, and the
+    rest are extracted. A 400-file delivery must not die on file 12.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     root = dest_dir.resolve()
+    warnings: list[dict[str, str]] = []
     with zipfile.ZipFile(zip_path, "r") as zf:
         infos = zf.infolist()
         if budget.entries + len(infos) > _MAX_ENTRIES:
@@ -763,7 +865,7 @@ def _extract_zip_into(zip_path: Path, dest_dir: Path, budget: _ExtractBudget) ->
             )
         declared = sum(i.file_size for i in infos)
         if budget.bytes + declared > _MAX_TOTAL_UNCOMPRESSED:
-            raise ValueError(
+            raise _ArchiveBudgetExceeded(
                 f"ingest_zip_archive: uncompressed size "
                 f"{budget.bytes + declared} B exceeds "
                 f"{_MAX_TOTAL_UNCOMPRESSED} B (zip-bomb guard); refusing."
@@ -782,11 +884,35 @@ def _extract_zip_into(zip_path: Path, dest_dir: Path, budget: _ExtractBudget) ->
                 )
             targets.append((info, dest))
         budget.entries += len(infos)
-        budget.bytes += declared
         for info, dest in targets:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, open(dest, "wb") as out:
-                shutil.copyfileobj(src, out)
+            try:
+                if info.flag_bits & _ZIP_ENCRYPTED_FLAG:
+                    raise RuntimeError("encrypted")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                _copy_member(zf, info, dest, budget)
+            except _ArchiveBudgetExceeded:
+                dest.unlink(missing_ok=True)
+                raise
+            except (
+                zipfile.BadZipFile, RuntimeError, EOFError, zlib.error,
+                NotImplementedError, OSError,
+            ) as exc:
+                if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+                    raise  # disk full is the worker's problem, not the member's
+                dest.unlink(missing_ok=True)
+                encrypted = isinstance(exc, RuntimeError) and (
+                    info.flag_bits & _ZIP_ENCRYPTED_FLAG
+                )
+                warnings.append(_member_warning(
+                    "archive_member_encrypted" if encrypted
+                    else "archive_member_failed",
+                    info.filename, exc,
+                ))
+                log.warning(
+                    "ingest_zip_archive: member %r not extracted (%s); continuing",
+                    info.filename[:_MEMBER_NAME_MAX], type(exc).__name__,
+                )
+    return warnings
 
 
 def _is_junk(path: Path, root: Path) -> bool:
@@ -820,9 +946,12 @@ def _expand_nested_archives(root: Path, budget: _ExtractBudget) -> list[dict[str
         for zpath in nested:
             target = zpath.parent / f"{zpath.stem}__unzipped"
             try:
-                _extract_zip_into(zpath, target, budget)
-            except (zipfile.BadZipFile, ValueError, OSError) as exc:
+                warnings.extend(_extract_zip_into(zpath, target, budget))
+            except (zipfile.BadZipFile, ValueError, OSError, RuntimeError) as exc:
                 failed.add(zpath)
+                # Whatever a refused nested archive wrote before the breach is
+                # not a member: drop it so the .zip is the one thing left.
+                shutil.rmtree(target, ignore_errors=True)
                 warnings.append({
                     "code": "archive_nested_zip_not_expanded",
                     "file": zpath.name,
@@ -986,9 +1115,20 @@ async def run_zip_ingest(
             # total-size cap, zip-slip) and shares ONE budget with every nested
             # archive, so a zip-of-zips cannot multiply past them.
             budget = _ExtractBudget()
-            await asyncio.to_thread(_extract_zip_into, zip_path, extract_dir, budget)
-            nested_warnings = await asyncio.to_thread(
-                _expand_nested_archives, extract_dir, budget,
+            extract_warnings = await asyncio.to_thread(
+                _extract_zip_into, zip_path, extract_dir, budget,
+            )
+            nested_warnings = [
+                *extract_warnings,
+                *await asyncio.to_thread(
+                    _expand_nested_archives, extract_dir, budget,
+                ),
+            ]
+            #: Members that never reached the disk. They are not in
+            #: ``total`` or ``counts`` — the archive can only be `partial`.
+            extract_failed = sum(
+                1 for w in nested_warnings
+                if w.get("code") in _MEMBER_EXTRACT_CODES
             )
 
             all_files = _collect_members(extract_dir)
@@ -1300,12 +1440,20 @@ async def run_zip_ingest(
         # would mark 'failed' if we raised; we don't (per-file errors are
         # caught + counted above so a single bad LAS doesn't kill the run).
         if archive_run_id:
-            terminal_status = "partial" if counts["errors"] > 0 else "completed"
-            terminal_error = (
-                f"{counts['errors']} of {total} files failed; see ingest_progress"
-                if counts["errors"] > 0
-                else None
+            terminal_status = (
+                "partial" if (counts["errors"] > 0 or extract_failed > 0)
+                else "completed"
             )
+            terminal_error = None
+            if counts["errors"] > 0:
+                terminal_error = (
+                    f"{counts['errors']} of {total} files failed; see ingest_progress"
+                )
+            if extract_failed > 0:
+                terminal_error = (
+                    f"{extract_failed} archive member(s) could not be extracted"
+                    + (f"; {terminal_error}" if terminal_error else "; see ingest_progress")
+                )
             await _archive_progress.mark_terminal(
                 archive_run_id=archive_run_id,
                 status=terminal_status,
@@ -1632,7 +1780,19 @@ async def _ingest_one(
         # and an explicit hint makes ingest_tabular skip classification
         # entirely.
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
-        safe_name = _safe_filename(file_path.name)
+        # ingest_tabular replaces earlier rows by LOGICAL file name
+        # (source_file, upload stamp stripped), per hole. Au/assays.csv and
+        # Cu/assays.csv share the name "assays.csv", so without a directory tag
+        # they shared one source_file and each upload deleted the other's rows,
+        # whichever ran last winning - the very thing the per-file scoping was
+        # added to stop. The same short, deterministic directory hash the
+        # spatial branch applies keeps them distinct (members at the archive
+        # root keep their plain name, so flat deliveries are unchanged and a
+        # re-upload of the same archive still replaces itself). The tag sits
+        # before the extension: ingest_tabular classifies by extension and the
+        # logical-name stripper only removes the leading upload stamp.
+        tag = _dir_tag(file_path, archive_root)
+        safe_name = _safe_filename(f"{file_path.stem}{tag}{file_path.suffix}")
         tabular_key = f"tabular/{input.project_id}/{ts}_{safe_name}"
         await _put_member(store, tabular_key, file_path)
         tabular_ref, tabular_run_id = await _dispatch_member(
@@ -1706,8 +1866,19 @@ async def _ingest_one(
         # same-stem companions first; ingest_spatial's archive path unpacks
         # that and pyogrio reads the .prj it needs to know the CRS.
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        # ingest_spatial replaces earlier features by LOGICAL file name, so
+        # 2019/faults.shp and 2021/faults.shp must not share one: whichever
+        # ran last would delete the other's features, in non-deterministic
+        # order. A short hash of the member's directory keeps them distinct
+        # (members at the archive root keep their plain name).
+        tag = _dir_tag(file_path, archive_root)
         if ext == "shp":
             members = _shapefile_members(file_path)
+            # Sidecars take the same tag as the .shp (GDAL finds them by the
+            # .shp's exact stem), so all four stay one shapefile.
+            members = [
+                (f"{file_path.stem}{tag}{Path(arc).suffix}", m) for arc, m in members
+            ]
             bundle_path = file_path.parent / f"__bundle_{file_path.stem}.zip"
             def _write_bundle() -> None:
                 with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1715,7 +1886,7 @@ async def _ingest_one(
                         zf.write(m, arcname=arcname)
             await asyncio.to_thread(_write_bundle)
             payload_path = bundle_path
-            safe_name = _safe_filename(f"{file_path.stem}.zip")
+            safe_name = _safe_filename(f"{file_path.stem}{tag}.zip")
         elif file_path.is_dir():
             # An Esri File Geodatabase is a folder. Zip it with its own name as
             # the top-level entry (ingest_spatial's archive path looks for a
@@ -1731,10 +1902,10 @@ async def _ingest_one(
 
             await asyncio.to_thread(_write_gdb_bundle)
             payload_path = gdb_bundle
-            safe_name = _safe_filename(f"{file_path.stem}.zip")
+            safe_name = _safe_filename(f"{file_path.stem}{tag}.zip")
         else:
             payload_path = file_path
-            safe_name = _safe_filename(file_path.name)
+            safe_name = _safe_filename(f"{file_path.stem}{tag}{file_path.suffix}")
 
         spatial_key = f"spatial/{input.project_id}/{ts}_{safe_name}"
         try:
@@ -1916,6 +2087,27 @@ def _shapefile_members(shp: Path) -> list[tuple[str, Path]]:
     )
 
 
+def _dir_tag(path: Path, root: Path | None) -> str:
+    """``"__<6 hex>"`` from the member's directory inside the archive, or ``""``.
+
+    Deterministic (a re-upload of the same archive still replaces itself) and
+    empty for a member at the archive root, so flat deliveries keep the names
+    they were ingested under before. POSIX-normalised, so the tag does not
+    depend on the OS the worker runs on.
+    """
+    if root is None:
+        return ""
+    try:
+        rel = path.parent.relative_to(root).as_posix()
+    except ValueError:
+        # Outside the archive root (a sidecar resolved elsewhere): no tag.
+        log.debug("zip: %s is not under %s; no directory tag", path, root, exc_info=True)
+        return ""
+    if rel in ("", "."):
+        return ""
+    return "__" + hashlib.blake2s(rel.encode("utf-8"), digest_size=3).hexdigest()
+
+
 def _has_sibling(path: Path, suffix: str) -> bool:
     """Whether a same-stem file with *suffix* sits beside *path*.
 
@@ -1933,9 +2125,35 @@ def _has_sibling(path: Path, suffix: str) -> bool:
     )
 
 
+_SAFE_NAME_MAX = 120
+_DIR_TAG_TAIL = re.compile(r"__[0-9a-f]{6}$")
+
+
 def _safe_filename(name: str) -> str:
-    """Collapse characters that are unsafe in S3 keys to underscores."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:120]
+    """Collapse characters that are unsafe in S3 keys to underscores, max 120.
+
+    A name over the limit is shortened in the MIDDLE of its stem: the
+    extension survives (ingest_tabular / ingest_spatial classify by it) and so
+    does the ``__<6 hex>`` directory tag from `_dir_tag` (it is what keeps
+    ``Au/<long name>.csv`` and ``Cu/<long name>.csv`` from sharing one logical
+    source name). Cutting the last characters off, as this used to, removed
+    both for any member with a long name.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    if len(cleaned) <= _SAFE_NAME_MAX:
+        return cleaned
+    stem, dot, ext = cleaned.rpartition(".")
+    if not dot or len(ext) > 12:
+        stem, ext = cleaned, ""
+    else:
+        ext = "." + ext
+    tag = ""
+    tag_match = _DIR_TAG_TAIL.search(stem)
+    if tag_match is not None:
+        tag = tag_match.group(0)
+        stem = stem[: tag_match.start()]
+    room = _SAFE_NAME_MAX - len(tag) - len(ext)
+    return f"{stem[: max(room, 1)]}{tag}{ext}"[:_SAFE_NAME_MAX]
 
 
 def _archive_display_name(input: IngestZipArchiveInput) -> str:

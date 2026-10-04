@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /**
  * FeedbackControls — §10p answer feedback (chat-adjacent slice, built
@@ -24,12 +24,7 @@ import { useEffect, useState } from 'react';
  */
 
 type FeedbackCategory =
-    | 'hallucinated'
-    | 'wrong_facts'
-    | 'missing_info'
-    | 'off_topic'
-    | 'citation_issue'
-    | 'length_issue';
+    'hallucinated' | 'wrong_facts' | 'missing_info' | 'off_topic' | 'citation_issue' | 'length_issue';
 
 const CATEGORY_LABELS: Record<FeedbackCategory, string> = {
     hallucinated: 'Unsupported claim',
@@ -59,7 +54,9 @@ interface Props {
     // feedback hook) to open the down-vote form pre-filled to
     // 'citation_issue'. Bumping this to a new object reference (even with
     // the same category) re-opens the form on repeat clicks.
-    presetCategory?: { category: FeedbackCategory } | null;
+    // `note`, when given, pre-fills the free-text note (e.g. with the label
+    // of the citation being reported).
+    presetCategory?: { category: FeedbackCategory; note?: string } | null;
 }
 
 export default function FeedbackControls({ answerRunId, presetCategory }: Props) {
@@ -68,17 +65,36 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
     const [note, setNote] = useState('');
     const [lastPolarity, setLastPolarity] = useState<'up' | 'down' | null>(null);
     const [status, setStatus] = useState<'idle' | 'submitting' | 'error'>('idle');
+    // Brief confirmation after a successful submit; cleared on the next
+    // interaction and by its own timer.
+    const [thanks, setThanks] = useState(false);
+    const thanksTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(
+        () => () => {
+            if (thanksTimerRef.current) clearTimeout(thanksTimerRef.current);
+        },
+        [],
+    );
+
+    function showThanks() {
+        setThanks(true);
+        if (thanksTimerRef.current) clearTimeout(thanksTimerRef.current);
+        thanksTimerRef.current = setTimeout(() => setThanks(false), 3000);
+    }
 
     useEffect(() => {
         if (!presetCategory) return;
         setExpanded(true);
         setCategory(presetCategory.category);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        if (presetCategory.note !== undefined) setNote(presetCategory.note);
+        setThanks(false);
     }, [presetCategory]);
 
     if (!answerRunId) return null;
 
     async function submit(polarity: 'up' | 'down', cat: FeedbackCategory | '') {
+        if (status === 'submitting') return;
         setStatus('submitting');
         try {
             const resp = await fetch(`/api/v1/answer-runs/${answerRunId}/feedback`, {
@@ -99,11 +115,13 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
             if (!resp.ok) throw new Error(`feedback failed (${resp.status})`);
             setLastPolarity(polarity);
             setStatus('idle');
-            if (polarity === 'up') {
-                setExpanded(false);
-                setCategory('');
-                setNote('');
-            }
+            // Both polarities settle the form: a submitted down-vote used to
+            // leave the form open with the note still in it, which read as
+            // "not sent".
+            setExpanded(false);
+            setCategory('');
+            setNote('');
+            showThanks();
         } catch {
             setStatus('error');
         }
@@ -114,6 +132,7 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
     }
 
     function handleDownClick() {
+        setThanks(false);
         setExpanded((v) => !v);
     }
 
@@ -133,7 +152,8 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
                     onClick={handleUp}
                     aria-label="Good answer"
                     aria-pressed={lastPolarity === 'up'}
-                    className={pillBase}
+                    disabled={status === 'submitting'}
+                    className={pillBase + ' disabled:opacity-40'}
                     style={{
                         color: lastPolarity === 'up' ? 'var(--accent)' : 'var(--fg-3)',
                         borderColor: lastPolarity === 'up' ? 'var(--accent)' : 'var(--line-2)',
@@ -147,8 +167,9 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
                     onClick={handleDownClick}
                     aria-label="Bad answer"
                     aria-pressed={lastPolarity === 'down'}
+                    disabled={status === 'submitting'}
                     aria-expanded={expanded}
-                    className={pillBase}
+                    className={pillBase + ' disabled:opacity-40'}
                     style={{
                         color: lastPolarity === 'down' ? 'var(--warn, #d97706)' : 'var(--fg-3)',
                         borderColor: lastPolarity === 'down' ? 'var(--warn, #d97706)' : 'var(--line-2)',
@@ -157,6 +178,16 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
                 >
                     👎
                 </button>
+                {thanks && (
+                    <span
+                        className="text-[10px] font-mono"
+                        style={{ color: 'var(--accent)' }}
+                        role="status"
+                        data-testid="feedback-thanks"
+                    >
+                        Thanks for the feedback.
+                    </span>
+                )}
                 {status === 'error' && (
                     <span className="text-[10px] font-mono" style={{ color: 'var(--danger, #ef4444)' }} role="alert">
                         Feedback failed to send.
@@ -200,7 +231,11 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
                         type="submit"
                         disabled={!category || status === 'submitting'}
                         className={pillBase + ' disabled:opacity-40'}
-                        style={{ color: 'var(--warn, #d97706)', borderColor: 'var(--warn, #d97706)', background: 'transparent' }}
+                        style={{
+                            color: 'var(--warn, #d97706)',
+                            borderColor: 'var(--warn, #d97706)',
+                            background: 'transparent',
+                        }}
                     >
                         {status === 'submitting' ? 'Sending…' : 'Submit feedback'}
                     </button>

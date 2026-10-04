@@ -31,7 +31,7 @@ export interface AuthUser {
 }
 
 export interface SharedAppInfo {
-    env: string;   // 'local' | 'staging' | 'production' | ...
+    env: string; // 'local' | 'staging' | 'production' | ...
     debug: boolean;
 }
 
@@ -278,35 +278,37 @@ export type LifecycleState = 'draft' | 'generated' | 'validated' | 'committed' |
  * from `failed` events for system-level failures.
  */
 export type RefusalReasonCode =
-  | 'insufficient_evidence'
-  | 'guard_numeric_fail'
-  | 'guard_entity_fail'
-  | 'guard_completeness_fail'
-  | 'llm_unavailable'
-  | 'budget_exhausted';
+    | 'insufficient_evidence'
+    | 'guard_numeric_fail'
+    | 'guard_entity_fail'
+    | 'guard_completeness_fail'
+    | 'llm_unavailable'
+    | 'budget_exhausted'
+    | 'model_no_output'
+    | 'unsupported_by_sources';
 
 export interface NearestCandidate {
-  marker: string;
-  source_store: string;
-  relevance_score: number;
-  preview: string;
-  evidence_id?: string | null;
+    marker: string;
+    source_store: string;
+    relevance_score: number;
+    preview: string;
+    evidence_id?: string | null;
 }
 
 export interface RefusalPayload {
-  type: 'refusal';
-  reason_code: RefusalReasonCode;
-  searched: {
-    stores_queried: string[];
-    candidates_considered: number;
-    query_class: string;
-  };
-  missing: {
-    what_was_needed: string;
-    nearest_candidates: NearestCandidate[];
-  };
-  message: string;
-  failed_guards?: string[];
+    type: 'refusal';
+    reason_code: RefusalReasonCode;
+    searched: {
+        stores_queried: string[];
+        candidates_considered: number;
+        query_class: string;
+    };
+    missing: {
+        what_was_needed: string;
+        nearest_candidates: NearestCandidate[];
+    };
+    message: string;
+    failed_guards?: string[];
 }
 
 // ── Conflict + Freshness types (Module 7 §B8) ─────────────────────────────
@@ -333,7 +335,7 @@ export interface ConflictEntry {
 export interface FreshnessData {
     workspace_data_version_at_query: number;
     project_data_version_at_query?: number | null;
-    answered_at: string;  // ISO 8601
+    answered_at: string; // ISO 8601
 }
 
 export interface ChatMessage {
@@ -358,7 +360,7 @@ export interface ChatMessage {
     answer_run_id?: string | null;
     /** Audit 2026-06-28: client-side message fields the Chat page accumulates
      *  from SSE events / optimistic updates (previously hidden by @ts-nocheck). */
-    phases?: any[];
+    phases?: unknown[];
     originalQuery?: string;
     status?: string | null;
     error?: string | null;

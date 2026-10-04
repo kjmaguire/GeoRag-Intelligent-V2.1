@@ -55,10 +55,14 @@ FAILOVERS = Counter(
 
 RERANK_DEGRADED_TOTAL = Counter(
     "georag_rerank_degraded_total",
-    "search_documents calls that returned RRF-ordered results because the "
-    "reranker timed out or raised. Answers on this path carry raw fusion "
-    "scores an order of magnitude below a Cohere score, which drags down "
-    "citation relevance and answer confidence for evidence that was fine.",
+    "search_documents calls on which the reranking precision stage did not "
+    "run. With a hosted backend (RERANKER_BACKEND=bedrock) every one of "
+    "these FAILED CLOSED -- the reranker errored/timed out twice or no "
+    "reranker was configured -- and the query surfaces RETRIEVAL_UNAVAILABLE "
+    "rather than an unfiltered answer. With an explicitly local/dev backend "
+    "(cross_encoder, qwen3_causal) a missing reranker still degrades to "
+    "RRF order (rerank_degraded=True), whose raw fusion scores sit an order "
+    "of magnitude below a Cohere score.",
 )
 
 # §04i Layer 1/5 restoration (2026-09-24). See

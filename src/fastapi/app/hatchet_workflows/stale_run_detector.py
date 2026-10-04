@@ -15,8 +15,10 @@ For each stale candidate we apply one of three resolutions:
      finished but nothing flipped ``status='completed'`` (the embed
      completion sweep races against the heartbeat clock). Mark completed
      instead of timing out so the UI reflects reality.
-  2. **Retry dispatch** — if the run died at ``preflight``/``parse``/
-     ``persist`` (the actual file-processing stages) AND we have not
+  2. **Retry dispatch** — if the run died at ANY stage except the embed
+     stages (``queued`` / ``preflight`` / ``parse`` / ``persist`` / an
+     unrecorded step: "never progressed" is not "will never progress", see
+     ``NO_REINGEST_STAGES``) AND we have not
      already retried it ``RECOVERY_MAX_ATTEMPTS`` times, mark this row
      ``timed_out`` and spawn a fresh run of the workflow that OWNS the
      file (routed from the bronze key prefix - see
@@ -96,17 +98,30 @@ def _recovery_max_attempts() -> int:
     return ingest_progress.recovery_max_attempts()
 
 
-# Stages where a stale heartbeat genuinely means the parse work was lost
-# and a re-dispatch will produce useful progress. Stages downstream of
-# persist already have rows in silver.reports; re-running the ingest
-# workflow for them would just duplicate work or hit the dedupe path. For
-# embed_verify/embedding the embed_pending_passages cron is the recovery
-# path, not a re-ingest.
+# Stages whose recovery belongs to somebody else, so a stale heartbeat there
+# must NOT re-dispatch the ingest workflow. By embed_verify/embedding the
+# parse is done and silver.reports + document_passages are committed;
+# re-running the ingest workflow would re-download, re-parse (re-OCR, i.e.
+# re-bill every scanned page) and hit the dedupe path for nothing. The
+# embed_pending_passages cron is the recovery path for those two stages.
 #
-# These stage names are shared by EVERY ingest workflow, which is why
-# _RECOVERY_WORKFLOW_BY_PREFIX below exists: knowing the run is stale at
-# 'parse' says nothing about what kind of file it is.
-RETRY_STAGES: frozenset[str] = frozenset({"preflight", "parse", "persist"})
+# EVERY OTHER step is retry-eligible, including ``queued`` and a NULL step.
+# This used to be an allow-list (preflight / parse / persist), which turned
+# "the worker was lost before it recorded any stage" into "give up": a scanned
+# drill-log PDF queued behind a per-workspace concurrency cap, or interrupted
+# by a nightly ECS stop / Spot reclaim while still at step 0 of 5, was marked
+# timed_out / stale_heartbeat and never re-dispatched (Red Star workspace,
+# 2026-09-30: three ingest_pdf runs, attempt 1, no stale_run_sweep child).
+# Re-dispatch is idempotent at every one of these stages - ingest_pdf derives
+# report_id from the file's sha256 (uuid5) and upserts, and passages are
+# ON CONFLICT (document_id, revision_number, text_hash) - so the only cost of
+# retrying is repeated work, and the attempt cap bounds that.
+NO_REINGEST_STAGES: frozenset[str] = frozenset({"embed_verify", "embedding"})
+
+#: Stages the ingest workflows record, plus the pre-start ``queued`` state.
+#: Informational (docs / tests); the decision uses NO_REINGEST_STAGES so a
+#: stage name added later is retried rather than silently abandoned.
+RETRY_STAGES: frozenset[str] = frozenset({"queued", "preflight", "parse", "persist"})
 
 
 # Which workflow owns a bronze key, keyed by its first path segment.
@@ -206,6 +221,28 @@ def recoverable_bronze_prefixes() -> frozenset[str]:
     return frozenset(_RECOVERY_WORKFLOW_BY_PREFIX)
 
 
+def retry_block_reason(row: dict, *, max_attempts: int) -> str | None:
+    """Why a stale row must NOT be re-dispatched, or None when it should be.
+
+    One place for the whole retry predicate so the sweep can say, in the log,
+    exactly which rule declined a run - the 2026-09-30 incident could not be
+    diagnosed from the database because the "no retry" outcome left no trace
+    of which rule produced it.
+    """
+    step = row.get("current_step") or "unknown"
+    if step in NO_REINGEST_STAGES:
+        return f"embed_stage:{step}"
+    attempt = row.get("attempt_number") or 1
+    if attempt >= max_attempts:
+        return f"attempts_exhausted:{attempt}/{max_attempts}"
+    for field in ("minio_key", "workspace_id", "project_id"):
+        if not row.get(field):
+            return f"missing_{field}"
+    if recovery_workflow_for_key(row["minio_key"]) is None:
+        return f"no_recovery_workflow:prefix={_key_prefix(row['minio_key'])!r}"
+    return None
+
+
 class StaleRunDetectorInput(BaseModel):
     # None, not 15: the cron fires with the model's default, and a literal
     # default here meant `input.stale_minutes or _stale_after_minutes()` was
@@ -277,7 +314,8 @@ async def _workflow_run_is_alive(workflow_run_id: str | None) -> bool:
     ingest workflows ran on Hatchet's 5-minute default) says that wait is
     legitimate. The sweep used to read those rows
     as dead: ``timed_out`` / ``stale_heartbeat`` at step 0 of 5, no retry
-    (``queued`` is outside RETRY_STAGES), and when the worker finally ran the
+    (``queued`` was outside the retry allow-list; it is retry-eligible now,
+    see NO_REINGEST_STAGES), and when the worker finally ran the
     workflow every terminal write no-op'd against the closed row, so a
     successful ingest stayed red on the Ingestion Runs page. Asking the
     engine first is the difference between "waiting" and "lost".
@@ -295,8 +333,14 @@ async def _workflow_run_is_alive(workflow_run_id: str | None) -> bool:
 # app/services/ingest/passage_embedder.py (embed_pending_passages SELECT):
 # passages with ocr_status 'rejected'/'pending_reocr' are never embedded,
 # so counting them as "unembedded" would keep runs un-completable forever.
+# Page-image passages (modality = 'image') are excluded as well: they are
+# best-effort coverage (the Embed 5 image request shape is unverified), and one
+# whose embed fails must not hold a run with good text open until the stale
+# sweep times it out. Their absence is reported as an INFO warning
+# (``image_passages_unembedded``), not hidden.
 _EMBEDDABLE_OCR_PREDICATE = (
-    "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+    "((p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr')) "
+    "AND p.modality IS DISTINCT FROM 'image')"
 )
 
 
@@ -371,6 +415,42 @@ async def _project_is_fully_embedded(
         return False
 
 
+async def _unembedded_image_count(
+    pool, report_id: str | None, *, workspace_id: str | None,
+) -> int:
+    """Page-image passages of one document that have no embedding.
+
+    They do not gate "fully embedded" (see _EMBEDDABLE_OCR_PREDICATE); the run
+    that closes without them says so with an ``image_passages_unembedded`` INFO
+    warning. 0 when the row has no report_id or the read fails: a diagnostics
+    read must never be the reason a recovered run cannot be closed.
+    """
+    if not report_id or not workspace_id:
+        return 0
+    try:
+        async with scoped_connection(
+            pool, workspace_id=workspace_id,
+            site="stale_run_detector.unembedded_images",
+        ) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT count(*) AS n
+                FROM silver.document_passages p
+                WHERE p.document_id = $1::uuid
+                  AND p.modality = 'image'
+                  AND p.embedding_id IS NULL
+                """,
+                report_id,
+            )
+        return int(row["n"] or 0) if row else 0
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        log.warning(
+            "stale_run_detector: unembedded-image count failed for report=%s: %s",
+            report_id, exc,
+        )
+        return 0
+
+
 def _build_recovery_payload(
     *,
     workflow_name: str,
@@ -383,12 +463,14 @@ def _build_recovery_payload(
     Two shapes of workflow live here, and the difference is how each one
     finds its progress row:
 
-    * ingest_pdf and tiff_normalize take no ``run_id``. They call
-      `lookup_active_run_id(workspace_id, minio_key)` and adopt whichever
-      non-terminal row they find - which is the one `start_run` created a
+    * tiff_normalize takes no ``run_id``. It calls
+      `lookup_active_run_id(workspace_id, minio_key)` and adopts whichever
+      non-terminal row it finds - which is the one `start_run` created a
       moment ago.
-    * the three geology workflows and ingest_zip_archive take ``run_id``
-      explicitly and upsert the row under it.
+    * ingest_pdf (since 2026-10-04), the three geology workflows and
+      ingest_zip_archive take ``run_id`` explicitly and upsert the row
+      under it, so their stages and heartbeats land on the recovery row
+      and never on a sibling non-terminal row for the same key.
 
     ``file_size`` is informational for the PDF/TIFF pair: preflight
     re-downloads and re-derives the real size against the 2 GB cap, so 0 is
@@ -407,6 +489,7 @@ def _build_recovery_payload(
             minio_key=minio_key,
             file_size=0,
             correlation_token=correlation_token,
+            run_id=recovery_run_id,
         )
 
     if workflow_name == "tiff_normalize":
@@ -669,18 +752,36 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                     pool, row["project_id"], report_id=row["report_id"],
                     workspace_id=row["workspace_id"],
                 ):
+            # Stored diagnostics (ingest_pdf persist) decide completed vs
+            # partial; see _progress.mark_completed_by_run.
+            _img_unembedded = await _unembedded_image_count(
+                pool, row["report_id"], workspace_id=row["workspace_id"],
+            )
+            if _img_unembedded:
+                await ingest_progress.append_run_warning(
+                    run_id=run_id,
+                    warning=ingest_progress.image_passages_unembedded_warning(
+                        _img_unembedded
+                    ),
+                )
             transitioned = await ingest_progress.mark_completed_by_run(run_id=run_id)
             if transitioned:
                 runs_marked_completed += 1
                 if row["project_id"]:
                     try:
+                        _status, _message = await ingest_progress.terminal_outcome(
+                            run_id=run_id,
+                            default_message=(
+                                "Recovered by stale sweep — embeddings already complete."
+                            ),
+                        )
                         await post_ingestion_progress(
                             workspace_id=row["workspace_id"],
                             project_id=row["project_id"],
                             run_id=run_id,
                             stage="embedding",
-                            status="completed",
-                            message="Recovered by stale sweep — embeddings already complete.",
+                            status=_status,
+                            message=_message,
                         )
                         broadcasts_emitted += 1
                     except Exception as exc:
@@ -699,14 +800,8 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
         # the dispatch: a key we cannot route is not retry-eligible at all,
         # and deciding that here keeps `start_run` from minting a recovery
         # row that nothing will ever pick up.
-        will_retry = bool(
-            current_step in RETRY_STAGES
-            and (row["attempt_number"] or 1) < max_attempts
-            and row["minio_key"]
-            and row["workspace_id"]
-            and row["project_id"]
-            and recovery_workflow_for_key(row["minio_key"])
-        )
+        block_reason = retry_block_reason(dict(row), max_attempts=max_attempts)
+        will_retry = block_reason is None
 
         # Resolution 3 (default) — mark timed_out. Always happens for
         # rows we decline to recover/retry, AND happens BEFORE the
@@ -720,6 +815,16 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
             # don't dispatch a recovery on a row someone else closed.
             continue
         runs_marked_timed_out += 1
+        if block_reason is not None:
+            # Say WHICH rule declined the retry. The outcome alone (a
+            # timed_out row with no child) cannot be told apart afterwards
+            # from "the sweep never considered it".
+            log.warning(
+                "stale_run_detector: run=%s step=%s attempt=%s key=%s timed "
+                "out WITHOUT a recovery dispatch: %s",
+                run_id, current_step, row["attempt_number"], row["minio_key"],
+                block_reason,
+            )
 
         try:
             await post_ingestion_progress(
@@ -738,6 +843,14 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
             recovery_run_id = await _dispatch_recovery_run(stale_row=dict(row))
             if recovery_run_id is not None:
                 recovery_runs_dispatched += 1
+            else:
+                log.error(
+                    "stale_run_detector: run=%s step=%s key=%s was retry-"
+                    "eligible but the recovery dispatch FAILED; the run stays "
+                    "timed_out with no child (see the preceding warning)",
+                    run_id, current_step, row["minio_key"],
+                    extra={"run_id": run_id, "alert": True},
+                )
 
     return StaleRunDetectorOutput(
         runs_scanned=len(rows),

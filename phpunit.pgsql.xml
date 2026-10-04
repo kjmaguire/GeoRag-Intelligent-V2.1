@@ -81,6 +81,7 @@
             <!-- §04e 2026-09-29: total_depth is nullable; the citation card
                  must not print a NULL as "0.0 m TD". -->
             <file>tests/Feature/Services/CollarsResolverTotalDepthTest.php</file>
+            <file>tests/Feature/Services/CollarsResolverIdFormsTest.php</file>
             <!-- Phase 3 / Step 3.2 — context envelope validation tests.
                  Uses RefreshDatabase + Project::factory(), so it runs
                  against PG (the silver.* migrations don't work on SQLite). -->
@@ -117,6 +118,15 @@
             <file>tests/Feature/Api/V1/PublicApiControllerWebhooksTest.php</file>
             <!-- 2026-09-29 (LAR-16): ?limit=-1 reached Postgres as LIMIT -1. -->
             <file>tests/Feature/Api/V1/PublicApiControllerAuditLimitTest.php</file>
+            <!-- 2026-10-04: /audit and /usage require a workspace admin or
+                 project owner, and `days` is bounded. -->
+            <file>tests/Feature/Api/V1/PublicApiControllerAdminGateTest.php</file>
+            <!-- 2026-10-04: trust-summary authorises against the answer run's
+                 own project, not ?project_id=; silver.answer_runs is raw SQL. -->
+            <file>tests/Feature/Api/V1/TrustControllerTest.php</file>
+            <!-- 2026-10-04: ?thread= is scoped to the user's own thread in the
+                 project (IDOR) and the page keeps the newest 200 messages. -->
+            <file>tests/Feature/Foundry/ChatControllerThreadAccessTest.php</file>
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>
@@ -184,6 +194,19 @@
                  mechanism as BrokenChrZeroRlsPoliciesRoleTest above — it
                  must run here, because under the SQLite suite it skips. -->
             <file>tests/Feature/Tenancy/FailClosedRlsPolicyTest.php</file>
+            <!-- 2026-10-04: IngestionSnapshot::build() caps reports and progress
+                 rows (SQL LIMIT over silver.reports / silver.ingest_progress). -->
+            <file>tests/Feature/Foundry/IngestionSnapshotCapTest.php</file>
+            <!-- 2026-10-04: silver tile membership + workspace + data_version is
+                 one cached query; the data_version bump advances its epoch. -->
+            <file>tests/Feature/TileProxySilverContextTest.php</file>
+            <!-- 2026-10-04: audit.compute_audit_hash() previous-hash lookup is two
+                 index probes; the chain it writes is unchanged. -->
+            <file>tests/Feature/Tenancy/AuditChainTriggerLookupTest.php</file>
+            <!-- 2026-10-04 database audit: MV refresh CONCURRENTLY, hot-path and
+                 FK indexes, SECURITY DEFINER ACL + search_path, role timeouts. -->
+            <file>tests/Feature/Tenancy/DatabaseAuditHardeningMigrationsTest.php</file>
+            <file>tests/Feature/Database/AuditIndexAndSecurityDefinerMigrationsTest.php</file>
             <!-- 2026-09-29 (SEC-8/SEC-10): a binding that would disarm RLS
                  (empty / non-UUID workspace) is refused; {slug} routes bind.
                  PooledRlsBindingTest (SEC-2) self-skips unless RLS_POOLER_PORT

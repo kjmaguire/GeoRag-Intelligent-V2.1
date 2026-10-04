@@ -79,8 +79,12 @@ class CsvLithologyExporter
                 $query->where('l.rock_code_confidence', '>=', $minConf);
             }
 
+            // Offset chunk() is only stable over a TOTAL order. (hole_id, from_depth) is not unique,
+            // so rows sharing it could swap between pages and be dropped or
+            // duplicated in the file. The primary key is the final tiebreaker.
             $query->orderBy('c.hole_id')
                 ->orderBy('l.from_depth')
+                ->orderBy('l.id')
                 ->chunk(2000, function ($rows) use ($handle) {
                     foreach ($rows as $row) {
                         fputcsv($handle, [

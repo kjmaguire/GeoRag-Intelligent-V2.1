@@ -38,9 +38,13 @@ with two independent findings:
 
 The cosine/RRF-fallback case
 -----------------------------
-``DocumentSearchResult.rerank_degraded=True`` means the reranker timed
-out, raised, or was never configured, and ``search_documents`` returned
-raw Qdrant RRF-fusion order instead (see that dataclass's docstring). RRF
+``DocumentSearchResult.rerank_degraded=True`` means the deployment uses an
+explicitly local/dev reranker backend (``cross_encoder`` / ``qwen3_causal``)
+and none was loaded, so ``search_documents`` returned raw Qdrant RRF-fusion
+order instead (see that dataclass's docstring). It is never set on a hosted
+deployment: with ``RERANKER_BACKEND=bedrock`` a reranker that is missing or
+fails twice is a typed ``reranker_unavailable`` retrieval failure and the
+query fails with RETRIEVAL_UNAVAILABLE before this gate runs. RRF
 scores (``float(point.score)``, roughly ``1/(k+rank)``) live on a
 completely different, uncalibrated scale from a cross-encoder or Cohere
 relevance score — an order of magnitude smaller. Comparing them against
@@ -165,16 +169,41 @@ _DOCUMENT_CENTRIC_INTENTS: frozenset[str] = frozenset((
     "uncertainty_quantification", "decision_support",
 ))
 
-#: A question "about the drill data": drilling, holes, collars, assays,
-#: grades, samples, intercepts, depths, logs, or a named commodity.
-_DRILL_DATA_QUESTION_RE = re.compile(
-    r"\b(?:drill\w*|holes?|boreholes?|ddh|collars?|assay\w*|grades?|samples?|"
-    r"sampling|intercepts?|intersect\w*|intervals?|depths?|deep\w*|deepest|"
-    r"lithology|logs?|logged|core|mineraliz\w*|mineralis\w*|cut-?off|"
-    r"u3o8|e?u3o8|uranium|gold|silver|copper|zinc|nickel|cobalt|lead|"
-    r"molybdenum|lithium|au|ag|cu|zn|ni|co|pb|mo|li|ppm|ppb)\b|g/t|\d\s*%",
+#: Unambiguous drill-data vocabulary: ONE hit makes a question "about the
+#: drill data". Commodity NAMES are here; "lead" is not (it is also a verb and
+#: a noun), nor are the bare metal symbols.
+_DRILL_DATA_STRONG_RE = re.compile(
+    r"\b(?:drill\w*|holes?|boreholes?|ddh|collars?|assay\w*|grades?|"
+    r"intercepts?|intersect\w*|lithology|mineraliz\w*|mineralis\w*|cut-?off|"
+    r"u3o8|e?u3o8|uranium|gold|silver|copper|zinc|nickel|cobalt|"
+    r"molybdenum|lithium|ppm|ppb)\b|g/t|\d\s*%",
     re.IGNORECASE,
 )
+
+#: Ordinary words that are only drill-data vocabulary in company ("what is the
+#: core business", "the lead investigator", "a log of the meeting", "deep
+#: learning", "Co. Ltd", "au revoir"). One of these is not a signal; TWO
+#: distinct ones are ("depths of the core samples").
+_DRILL_DATA_WEAK_RE = re.compile(
+    r"\b(?:samples?|sampling|intervals?|depths?|deep\w*|deepest|logs?|logged|"
+    r"core|lead|au|ag|cu|zn|ni|co|pb|mo|li)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_drill_data_question(query: str) -> bool:
+    """A question "about the drill data": drilling, holes, collars, assays,
+    grades, intercepts, lithology, or a named commodity -- or two of the
+    ordinary words (core, depth, samples, ...) that only mean that together.
+
+    The old single alternation matched core, lead, log, deep, co, au and li
+    on their own, so an unrelated collar dump satisfied the zero-evidence
+    gate for "what is the core business of the operator?" (audit item 15).
+    """
+    if _DRILL_DATA_STRONG_RE.search(query):
+        return True
+    weak = {m.group(0).lower() for m in _DRILL_DATA_WEAK_RE.finditer(query)}
+    return len(weak) >= 2
 
 
 def _is_viz_card(name: str, result: Any) -> bool:
@@ -200,7 +229,7 @@ def _counts_as_evidence(
         return True
     from app.agent.hole_id_patterns import HOLE_ID_RE  # noqa: PLC0415
 
-    return bool(_DRILL_DATA_QUESTION_RE.search(query) or HOLE_ID_RE.search(query))
+    return _is_drill_data_question(query) or bool(HOLE_ID_RE.search(query))
 
 
 def assess_retrieval_quality(
@@ -277,7 +306,7 @@ def assess_retrieval_quality(
         reason = (
             "Layer 1: retrieval quality gate failed — no document passages "
             "cleared the relevance floor and no structured data (PostGIS, "
-            "public geoscience, graph) was retrieved for this query"
+            "public geoscience) was retrieved for this query"
         )
         logger.warning(
             "layer1_retrieval: refusing — zero evidence across %d tool "

@@ -10,7 +10,10 @@ const LIMIT = { bytes: 512 * 1024 * 1024, human: '512 MB' };
 
 describe('upload limit (FE-2)', () => {
     it('reads the server-shared prop, falling back to the server default', () => {
-        expect(uploadLimitFromProps({ upload_limit: { bytes: 1024, human: '1 KB' } })).toEqual({ bytes: 1024, human: '1 KB' });
+        expect(uploadLimitFromProps({ upload_limit: { bytes: 1024, human: '1 KB' } })).toEqual({
+            bytes: 1024,
+            human: '1 KB',
+        });
         expect(uploadLimitFromProps({})).toEqual(DEFAULT_UPLOAD_LIMIT);
         expect(uploadLimitFromProps({ upload_limit: { bytes: 0 } })).toEqual(DEFAULT_UPLOAD_LIMIT);
     });
@@ -27,7 +30,9 @@ describe('upload limit (FE-2)', () => {
     });
 
     it('prefers the server message otherwise', () => {
-        expect(describeUploadFailure(422, 'The file must be a shapefile bundle.', 10, LIMIT)).toBe('The file must be a shapefile bundle.');
+        expect(describeUploadFailure(422, 'The file must be a shapefile bundle.', 10, LIMIT)).toBe(
+            'The file must be a shapefile bundle.',
+        );
         expect(describeUploadFailure(500, undefined, 10, LIMIT)).toBe('Upload failed (HTTP 500).');
     });
 });

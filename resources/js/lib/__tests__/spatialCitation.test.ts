@@ -61,20 +61,21 @@ describe('parseSpatialCitation', () => {
             'georag_reports:abc:section=Section 14:chunk=def',
             'no-tool-call',
         ]) {
-            expect(
-                parseSpatialCitation({ source_chunk_id: src }),
-                `expected null for ${src}`,
-            ).toBeNull();
+            expect(parseSpatialCitation({ source_chunk_id: src }), `expected null for ${src}`).toBeNull();
         }
     });
 
     it('isSpatialCitation returns true only when parseSpatialCitation does', () => {
-        expect(isSpatialCitation({
-            source_chunk_id: 'silver.lithology_logs:hole=PLS-22-08:intervals=12',
-        })).toBe(true);
-        expect(isSpatialCitation({
-            source_chunk_id: 'silver.samples:element=U3O8_ppm:count=0',
-        })).toBe(false);
+        expect(
+            isSpatialCitation({
+                source_chunk_id: 'silver.lithology_logs:hole=PLS-22-08:intervals=12',
+            }),
+        ).toBe(true);
+        expect(
+            isSpatialCitation({
+                source_chunk_id: 'silver.samples:element=U3O8_ppm:count=0',
+            }),
+        ).toBe(false);
     });
 });
 
@@ -88,7 +89,8 @@ describe('evidenceMapStore', () => {
     it('set + get round-trips', () => {
         evidenceMapStore.set({ kind: 'hole_id', hole_id: '36-1042' });
         expect(evidenceMapStore.get()).toEqual({
-            kind: 'hole_id', hole_id: '36-1042',
+            kind: 'hole_id',
+            hole_id: '36-1042',
         });
     });
 
@@ -100,27 +102,33 @@ describe('evidenceMapStore', () => {
 
     it('notifies subscribers on set', () => {
         let calls = 0;
-        const unsubscribe = evidenceMapStore.subscribe(() => { calls++; });
+        const unsubscribe = evidenceMapStore.subscribe(() => {
+            calls++;
+        });
         evidenceMapStore.set({ kind: 'hole_id', hole_id: 'a' });
         evidenceMapStore.set({ kind: 'hole_id', hole_id: 'b' });
         expect(calls).toBe(2);
         unsubscribe();
         evidenceMapStore.set({ kind: 'hole_id', hole_id: 'c' });
-        expect(calls).toBe(2);  // unsubscribed
+        expect(calls).toBe(2); // unsubscribed
     });
 
     it('skips notification when setting the same pin', () => {
         let calls = 0;
-        evidenceMapStore.subscribe(() => { calls++; });
+        evidenceMapStore.subscribe(() => {
+            calls++;
+        });
         const same = { kind: 'hole_id' as const, hole_id: 'a' };
         evidenceMapStore.set(same);
         evidenceMapStore.set({ kind: 'hole_id', hole_id: 'a' });
-        expect(calls).toBe(1);  // structural-equal pins coalesce
+        expect(calls).toBe(1); // structural-equal pins coalesce
     });
 
     it('clear() is a no-op when already clear', () => {
         let calls = 0;
-        evidenceMapStore.subscribe(() => { calls++; });
+        evidenceMapStore.subscribe(() => {
+            calls++;
+        });
         evidenceMapStore.clear();
         evidenceMapStore.clear();
         expect(calls).toBe(0);

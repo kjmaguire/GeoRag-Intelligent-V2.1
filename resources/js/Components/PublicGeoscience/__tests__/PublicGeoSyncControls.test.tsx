@@ -11,8 +11,18 @@ vi.mock('@/Components/Foundry/ToastHost', () => ({
 const STATUS = {
     layers: [
         { layer: 'mine', jurisdiction_code: 'CA-SK', rows: 140, last_seen_at: '2026-09-27T18:45:00+00:00' },
-        { layer: 'mineral_disposition', jurisdiction_code: 'CA-SK', rows: 30906, last_seen_at: '2026-09-27T19:10:00+00:00' },
-        { layer: 'mineral_occurrence', jurisdiction_code: 'CA-BC', rows: 15000, last_seen_at: '2026-09-27T20:00:00+00:00' },
+        {
+            layer: 'mineral_disposition',
+            jurisdiction_code: 'CA-SK',
+            rows: 30906,
+            last_seen_at: '2026-09-27T19:10:00+00:00',
+        },
+        {
+            layer: 'mineral_occurrence',
+            jurisdiction_code: 'CA-BC',
+            rows: 15000,
+            last_seen_at: '2026-09-27T20:00:00+00:00',
+        },
     ],
     last_seen_at: '2026-09-27T20:00:00+00:00',
 };
@@ -56,7 +66,8 @@ describe('<PublicGeoSyncControls />', () => {
         await waitFor(() => expect(pushToast).toHaveBeenCalled());
         const toast = pushToast.mock.calls[0][0];
         expect(toast.title).toBe('Public geo sync queued');
-        expect(toast.detail).toContain('run-42');
+        expect(toast.detail).toContain('Sync started · 36 feeds');
+        expect(toast.detail).not.toMatch(/run-42|Hatchet/);
         const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
         expect(post?.[0]).toBe('/api/v1/public-geoscience/sync');
     });
@@ -74,7 +85,10 @@ describe('<PublicGeoSyncControls />', () => {
         fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
 
         await waitFor(() => expect(pushToast).toHaveBeenCalled());
-        expect(pushToast.mock.calls[0][0]).toMatchObject({ tone: 'warn', detail: 'Run run-first is already queued.' });
+        expect(pushToast.mock.calls[0][0]).toMatchObject({
+            tone: 'warn',
+            detail: 'A sync is already queued — results will update when it finishes.',
+        });
     });
 
     it('surfaces a server refusal', async () => {
@@ -88,7 +102,10 @@ describe('<PublicGeoSyncControls />', () => {
         fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
 
         await waitFor(() => expect(pushToast).toHaveBeenCalled());
-        expect(pushToast.mock.calls[0][0]).toMatchObject({ title: 'Sync could not be started', detail: 'FastAPI unreachable' });
+        expect(pushToast.mock.calls[0][0]).toMatchObject({
+            title: 'Sync could not be started',
+            detail: 'FastAPI unreachable',
+        });
     });
 });
 
@@ -108,7 +125,11 @@ describe('<PolygonLayerToggles />', () => {
                 onChange={onChange}
                 meta={{
                     mineral_disposition: {
-                        mode: 'polygons', min_zoom: 6, total_in_view: 30906, returned: 1500, truncated: true,
+                        mode: 'polygons',
+                        min_zoom: 6,
+                        total_in_view: 30906,
+                        returned: 1500,
+                        truncated: true,
                     },
                 }}
             />,

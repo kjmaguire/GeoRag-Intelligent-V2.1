@@ -6,6 +6,7 @@ namespace Tests\Feature\Observability;
 
 use App\Http\Middleware\InjectTraceparent;
 use App\Jobs\StreamQueryFromFastApi;
+use App\Models\QueryAuditLog;
 use Tests\TestCase;
 
 /**
@@ -231,6 +232,16 @@ class HeaderCapturingStreamQuery extends StreamQueryFromFastApi
 {
     /** @var array<int, string> */
     public array $capturedHeaders = [];
+
+    protected function lookupAuditRow(): ?QueryAuditLog
+    {
+        return (new QueryAuditLog)->forceFill(['user_id' => 1]);
+    }
+
+    protected function lookupWorkspaceId(): ?string
+    {
+        return '99999999-0000-0000-0000-000000000001';
+    }
 
     protected function openHttpStream(string $url, $context): array
     {

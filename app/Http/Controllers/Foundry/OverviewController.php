@@ -68,6 +68,13 @@ class OverviewController extends Controller
         } catch (\Throwable $e) { /* */
         }
 
+        // Data that is neither a collar, a sample nor a report. A project that
+        // only holds spatial layers, geochemistry, rasters or attribute tables
+        // has data; it must not be told to "connect your first data source".
+        $otherData = $this->otherDataPresence($project);
+        $hasOtherData = array_sum($otherData) > 0;
+        $hasAnyData = $collarCount > 0 || $sampleCount > 0 || $reportsCount > 0 || $hasOtherData;
+
         // Ingest summary for the "X files ingesting" card, which links to the
         // Ingestion Runs page. Taken from the SAME snapshot that page and its
         // 5 s JSON poll serve — this used to be a second, cruder computation
@@ -108,7 +115,9 @@ class OverviewController extends Controller
             ->limit(12)
             ->get()
             ->map(fn ($r) => [
-                'id' => (string) $r->id,
+                // QueryAuditLog's key is audit_id; there is no `id` column, so
+                // this used to be '' for every row and React keys collided.
+                'id' => (string) $r->audit_id,
                 'when' => $r->created_at?->diffForHumans() ?? '—',
                 'kind' => $r->response_text ? 'query' : 'refusal',
                 'text' => substr((string) ($r->query_text ?? ''), 0, 120),
@@ -122,7 +131,7 @@ class OverviewController extends Controller
             // project (chat answers from reports), not a cold start. Keying
             // on collars alone told users with 7 ingested reports to
             // "connect your first data source".
-            $collarCount === 0 && $reportsCount === 0 => ['title' => 'Connect your first data source', 'detail' => 'Upload drill logs or ingest the Wyoming WSGS archive to start the corpus.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard?project='.rawurlencode($slug)],
+            ! $hasAnyData => ['title' => 'Connect your first data source', 'detail' => 'Upload drill logs or ingest the Wyoming WSGS archive to start the corpus.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard?project='.rawurlencode($slug)],
             $queries7d === 0 => ['title' => 'Ask your first hypothesis', 'detail' => 'The chat is the main interface — pin sources, rank candidates, save runs.', 'cta' => 'Open Chat', 'href' => "/projects/{$slug}/chat"],
             // Drill data, queries being asked, and nothing for an answer to
             // cite. The old copy here — "Draft a recommendation report /
@@ -131,7 +140,7 @@ class OverviewController extends Controller
             // to the ingested-filings reader instead. Wrong feature, wrong
             // destination, and not the highest-leverage move either: without
             // documents the chat has nothing to ground an answer in.
-            $reportsCount === 0 => ['title' => 'Add technical reports', 'detail' => 'This project has drill data but no documents. Chat can only cite what has been ingested.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard?project='.rawurlencode($slug)],
+            $reportsCount === 0 => ['title' => 'Add technical reports', 'detail' => ($collarCount > 0 ? 'This project has drill data' : 'This project has data').' but no documents. Chat can only cite what has been ingested.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard?project='.rawurlencode($slug)],
             // /corpus is a 302 to /reports (merged 2026-08-18). Linking the
             // redirect costs a round-trip and names a "Reader" page that no
             // longer exists.
@@ -176,8 +185,48 @@ class OverviewController extends Controller
             'recent_activity' => $recentActivity,
             'ingest_summary' => $ingestSummary,
             'ocr_coverage' => $ocrCoverage,
-            'empty' => $collarCount === 0 && $queries7d === 0,
+            'empty' => ! $hasAnyData && $queries7d === 0,
         ]);
+    }
+
+    /**
+     * Presence (1) or absence (0) of rows in the project-scoped tables the
+     * headline KPIs do not cover, used only to decide whether a project is
+     * genuinely empty. EXISTS, not count(*): only "any rows" matters, and a
+     * large spatial_features table would make a count a real cost on every
+     * Overview load.
+     *
+     * Each probe is its own savepoint inside one workspace-scoped transaction:
+     * the tables are RLS-protected, and a missing table (schema drift) must
+     * read as absent without aborting the transaction for the later probes.
+     *
+     * @return array{spatial_features: int, geochemistry: int, raster_layers: int, attribute_tables: int}
+     */
+    private function otherDataPresence(Project $project): array
+    {
+        $tables = [
+            'spatial_features' => 'silver.spatial_features',
+            'geochemistry' => 'silver.geochemistry',
+            'raster_layers' => 'silver.raster_layers',
+            'attribute_tables' => 'silver.attribute_tables',
+        ];
+        $zero = array_fill_keys(array_keys($tables), 0);
+
+        try {
+            return $this->withWorkspaceRls((string) $project->workspace_id, function () use ($tables, $project): array {
+                $counts = [];
+                foreach ($tables as $key => $table) {
+                    $counts[$key] = (int) $this->optionalQuery(
+                        fn (): bool => DB::table($table)->where('project_id', $project->project_id)->exists(),
+                        false,
+                    );
+                }
+
+                return $counts;
+            });
+        } catch (\Throwable $e) {
+            return $zero;
+        }
     }
 
     /**

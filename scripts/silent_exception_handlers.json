@@ -8,7 +8,7 @@
     "AttributeError+ImportError": 1,
     "AttributeError+TypeError+ValueError": 1,
     "CancelledError": 1,
-    "Exception": 96,
+    "Exception": 93,
     "FileNotFoundError": 1,
     "HTTPError+ValueError": 2,
     "ImportError": 31,
@@ -32,10 +32,9 @@
     "StatisticsError": 1,
     "TimeoutError": 1,
     "TypeError": 1,
-    "TypeError+ValueError": 35,
-    "UndefinedColumnError": 1,
+    "TypeError+ValueError": 33,
     "UniqueViolationError": 1,
-    "ValueError": 32
+    "ValueError": 33
   },
   "files": {
     "src/fastapi/app/agent/agentic_retrieval/nodes.py": 3,
@@ -51,7 +50,7 @@
     "src/fastapi/app/agent/log_safe.py": 1,
     "src/fastapi/app/agent/public_geoscience_tool.py": 1,
     "src/fastapi/app/agent/query_classification.py": 2,
-    "src/fastapi/app/agent/tools.py": 5,
+    "src/fastapi/app/agent/tools.py": 4,
     "src/fastapi/app/agent/tools_geospatial.py": 1,
     "src/fastapi/app/agent/workspace_context.py": 1,
     "src/fastapi/app/agents/phase0/index_health.py": 1,
@@ -61,10 +60,10 @@
     "src/fastapi/app/audit/cold_tier_archive.py": 1,
     "src/fastapi/app/db/dsn.py": 2,
     "src/fastapi/app/hatchet_workflows/_export_extras.py": 4,
-    "src/fastapi/app/hatchet_workflows/_progress.py": 5,
+    "src/fastapi/app/hatchet_workflows/_progress.py": 6,
     "src/fastapi/app/hatchet_workflows/_restore_extras.py": 4,
     "src/fastapi/app/hatchet_workflows/_workspace_input.py": 1,
-    "src/fastapi/app/hatchet_workflows/ingest_pdf.py": 13,
+    "src/fastapi/app/hatchet_workflows/ingest_pdf.py": 12,
     "src/fastapi/app/hatchet_workflows/ingest_spatial.py": 1,
     "src/fastapi/app/hatchet_workflows/ingest_tabular.py": 1,
     "src/fastapi/app/hatchet_workflows/nightly_ingestion_integrity.py": 1,
@@ -74,9 +73,7 @@
     "src/fastapi/app/hatchet_workflows/retention_sweep.py": 1,
     "src/fastapi/app/hatchet_workflows/stale_run_detector.py": 3,
     "src/fastapi/app/hatchet_workflows/support_replay.py": 1,
-    "src/fastapi/app/hatchet_workflows/tiff_normalize.py": 2,
     "src/fastapi/app/hatchet_workflows/train_target_model.py": 1,
-    "src/fastapi/app/hatchet_workflows/workspace_export.py": 1,
     "src/fastapi/app/main.py": 4,
     "src/fastapi/app/observability/otel.py": 1,
     "src/fastapi/app/routers/admin_tier1_misc.py": 1,
@@ -103,7 +100,6 @@
     "src/fastapi/app/services/ingest/passage_embedder.py": 1,
     "src/fastapi/app/services/ingest/pdf_ingester.py": 2,
     "src/fastapi/app/services/ingest/pdf_report.py": 31,
-    "src/fastapi/app/services/ingest/tiff_to_pdf.py": 1,
     "src/fastapi/app/services/ingest/xlsx_ingester.py": 2,
     "src/fastapi/app/services/laravel_bridge.py": 1,
     "src/fastapi/app/services/mv_refresh.py": 3,
@@ -135,5 +131,5 @@
     "src/georag_geoparsers/georag_geoparsers/xlsx_parser.py": 1,
     "src/georag_geoparsers/georag_geoparsers/xyz_parser.py": 1
   },
-  "total": 232
+  "total": 227
 }

@@ -36,6 +36,29 @@ describe('createDeltaBuffer (CHAT-15)', () => {
         expect(buf.add('C', 2, 'e3')).toBe('AC');
     });
 
+    it('stays correct over a long in-order stream and a late out-of-order token', () => {
+        const buf = createDeltaBuffer();
+        let expected = '';
+        for (let i = 0; i < 5000; i++) {
+            if (i === 2500) continue; // held back, arrives late below
+            const tok = `t${i} `;
+            expected += tok;
+            expect(buf.add(tok, i, `e${i}`)).not.toBeNull();
+        }
+        expect(buf.text()).toBe(expected);
+        buf.add('t2500 ', 2500, 'e2500');
+        const full = Array.from({ length: 5000 }, (_, i) => `t${i} `).join('');
+        expect(buf.text()).toBe(full);
+    });
+
+    it('puts un-sequenced tokens after sequenced ones whatever the arrival order', () => {
+        const buf = createDeltaBuffer();
+        buf.add('x', undefined, null);
+        buf.add('B', 1, 'e2');
+        buf.add('A', 0, 'e1');
+        expect(buf.text()).toBe('ABx');
+    });
+
     it('keeps arrival order for tokens without a seq', () => {
         const buf = createDeltaBuffer();
         buf.add('x', undefined, null);

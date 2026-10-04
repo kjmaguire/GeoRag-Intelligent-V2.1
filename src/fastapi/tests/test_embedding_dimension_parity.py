@@ -34,6 +34,7 @@ never executes is worse than no guard, because it reads as coverage.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 from app.config import settings
@@ -87,6 +88,51 @@ def test_embedding_sidecar_fallback_matches_config() -> None:
         "wrong width to a query path that believes otherwise."
     )
     assert fallback == EXPECTED_MODEL
+
+
+def test_the_cohere_adapter_default_dimension_matches_the_collection() -> None:
+    """ADR-0025: COHERE_EMBED_DIMENSION defaults to 1024, which is what
+    georag_chunks is built at. config.py fails startup when an operator sets
+    it to anything else without moving EMBEDDING_DIMENSION; this pins the
+    DEFAULT so the two cannot drift apart in the source."""
+    from app.services import embedding
+
+    assert embedding.COHERE_EMBED_DIMENSION == settings.EMBEDDING_DIMENSION == EXPECTED_DIMENSION
+    assert embedding.BEDROCK_EMBED_DIMENSION == settings.EMBEDDING_DIMENSION
+
+
+def test_the_qdrant_bootstrap_sizes_the_collection_from_the_live_writers_variable(monkeypatch) -> None:
+    """scripts/init_qdrant.py must read the dimension variable of the backend
+    that will WRITE into the collection, or the two agree only by coincidence."""
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "init_qdrant.py"
+
+    def _load(backend: str | None):
+        if backend is None:
+            monkeypatch.delenv("EMBEDDING_BACKEND", raising=False)
+        else:
+            monkeypatch.setenv("EMBEDDING_BACKEND", backend)
+        spec = importlib.util.spec_from_file_location("init_qdrant_under_test", script)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        # @dataclass resolves its own module through sys.modules.
+        monkeypatch.setitem(sys.modules, spec.name, module)
+        spec.loader.exec_module(module)
+        return module
+
+    monkeypatch.setenv("COHERE_EMBED_DIMENSION", "768")
+    monkeypatch.setenv("BEDROCK_EMBED_DIMENSION", "512")
+    monkeypatch.setenv("EMBEDDING_DIMENSION", "256")
+    for backend, source, size in (
+        (None, "COHERE_EMBED_DIMENSION", 768),  # the default is cohere
+        ("cohere", "COHERE_EMBED_DIMENSION", 768),
+        ("bedrock", "BEDROCK_EMBED_DIMENSION", 512),
+        ("local", "EMBEDDING_DIMENSION", 256),
+    ):
+        module = _load(backend)
+        assert source == module.DIMENSION_SOURCE, backend
+        assert size == module.CHUNKS_VECTOR_SIZE, backend
 
 
 # ---------------------------------------------------------------------------

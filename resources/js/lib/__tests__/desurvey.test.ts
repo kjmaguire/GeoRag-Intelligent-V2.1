@@ -28,10 +28,10 @@ describe('desurveyHole — minimum curvature', () => {
             { depth: 300, azimuth: 45, dip: -50 },
         ]);
         const p = positionAtDepth(h, 300);
-        const horiz = 300 * Math.cos(50 * Math.PI / 180);
+        const horiz = 300 * Math.cos((50 * Math.PI) / 180);
         close(p.x, horiz * Math.sin(Math.PI / 4), 1e-6);
         close(p.y, horiz * Math.cos(Math.PI / 4), 1e-6);
-        close(p.z, -300 * Math.sin(50 * Math.PI / 180), 1e-6);
+        close(p.z, -300 * Math.sin((50 * Math.PI) / 180), 1e-6);
         expect(h.surveyed).toBe(true);
         expect(h.orientation).toBe('surveys');
     });
@@ -52,13 +52,11 @@ describe('desurveyHole — minimum curvature', () => {
 
     it('matches the textbook min-curvature step for a curving segment', () => {
         // Build-up from vertical to 30° inclination over 100 m toward north.
-        const h = desurveyHole({ azimuth: 0, dip: -90, totalDepth: 100 }, [
-            { depth: 100, azimuth: 0, dip: -60 },
-        ]);
-        const beta = 30 * Math.PI / 180;
+        const h = desurveyHole({ azimuth: 0, dip: -90, totalDepth: 100 }, [{ depth: 100, azimuth: 0, dip: -60 }]);
+        const beta = (30 * Math.PI) / 180;
         const rf = (2 / beta) * Math.tan(beta / 2);
-        const expectedN = (100 / 2) * (0 + Math.cos(60 * Math.PI / 180)) * rf;
-        const expectedZ = -(100 / 2) * (1 + Math.sin(60 * Math.PI / 180)) * rf;
+        const expectedN = (100 / 2) * (0 + Math.cos((60 * Math.PI) / 180)) * rf;
+        const expectedZ = -(100 / 2) * (1 + Math.sin((60 * Math.PI) / 180)) * rf;
         const end = positionAtDepth(h, 100);
         close(end.y, expectedN, 1e-6);
         close(end.z, expectedZ, 1e-6);
@@ -88,9 +86,7 @@ describe('desurveyHole — minimum curvature', () => {
     });
 
     it('extends beyond the last survey to TD, flagged as extrapolated', () => {
-        const h = desurveyHole({ azimuth: 0, dip: -60, totalDepth: 300 }, [
-            { depth: 100, azimuth: 0, dip: -60 },
-        ]);
+        const h = desurveyHole({ azimuth: 0, dip: -60, totalDepth: 300 }, [{ depth: 100, azimuth: 0, dip: -60 }]);
         expect(h.maxDepth).toBe(300);
         const tail = h.path[h.path.length - 1];
         expect(tail.md).toBe(300);
@@ -111,7 +107,7 @@ describe('desurveyHole — minimum curvature', () => {
         close(up.x, down.x);
         close(up.y, down.y);
         close(up.z, -down.z);
-        close(up.z, 10 * Math.sin(60 * Math.PI / 180));
+        close(up.z, 10 * Math.sin((60 * Math.PI) / 180));
         expect(up.z).toBeGreaterThan(0);
     });
 
@@ -125,18 +121,16 @@ describe('desurveyHole — minimum curvature', () => {
             expect(h.path[i].z).toBeGreaterThan(h.path[i - 1].z);
             expect(h.path[i].dip).toBeGreaterThan(0);
         }
-        const beta = 20 * Math.PI / 180;
+        const beta = (20 * Math.PI) / 180;
         const rf = (2 / beta) * Math.tan(beta / 2);
-        const expectedZ = (100 / 2) * (Math.sin(30 * Math.PI / 180) + Math.sin(10 * Math.PI / 180)) * rf;
+        const expectedZ = (100 / 2) * (Math.sin((30 * Math.PI) / 180) + Math.sin((10 * Math.PI) / 180)) * rf;
         close(positionAtDepth(h, 100).z, expectedZ, 1e-6);
     });
 
     it('reaches the deepest survey station when TD is missing (§04e 2026-09-29)', () => {
-        const h = desurveyHole({ azimuth: 0, dip: -60, totalDepth: null }, [
-            { depth: 120, azimuth: 0, dip: -60 },
-        ]);
+        const h = desurveyHole({ azimuth: 0, dip: -60, totalDepth: null }, [{ depth: 120, azimuth: 0, dip: -60 }]);
         expect(h.maxDepth).toBe(120);
-        close(positionAtDepth(h, 120).z, -120 * Math.sin(60 * Math.PI / 180), 1e-6);
+        close(positionAtDepth(h, 120).z, -120 * Math.sin((60 * Math.PI) / 180), 1e-6);
     });
 });
 
@@ -151,10 +145,10 @@ describe('placed holes (FE-9)', () => {
         expect(holes.has('b')).toBe(false); // no position, no hole
         const a = holes.get('a')!;
         const p = worldAtDepth(a, 300);
-        const horiz = 300 * Math.cos(50 * Math.PI / 180);
+        const horiz = 300 * Math.cos((50 * Math.PI) / 180);
         close(p.x - 500000, horiz * Math.SQRT1_2, 1e-6);
         close(p.y - 6000000, horiz * Math.SQRT1_2, 1e-6);
-        close(p.z, 400 - 300 * Math.sin(50 * Math.PI / 180), 1e-6);
+        close(p.z, 400 - 300 * Math.sin((50 * Math.PI) / 180), 1e-6);
     });
 
     it('interval sub-paths start and end at the interval depths', () => {

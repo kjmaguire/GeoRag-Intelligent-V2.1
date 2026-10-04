@@ -241,4 +241,54 @@ final class AnswerRunFeedbackControllerTest extends TestCase
 
         $response->assertStatus(502);
     }
+
+    public function test_upstream_auth_statuses_become_a_neutral_502_not_a_logout(): void
+    {
+        foreach ([401, 403, 419] as $upstream) {
+            Http::fake([
+                '*/v1/answer_runs/*/feedback' => Http::response(['detail' => 'service key rejected'], $upstream),
+            ]);
+
+            $this->actingAs($this->user, 'sanctum')
+                ->postJson($this->feedbackUrl(), ['polarity' => 'up'])
+                ->assertStatus(502)
+                ->assertJsonPath('error', 'upstream_unavailable')
+                ->assertJsonMissingPath('body');
+        }
+    }
+
+    public function test_a_malformed_answer_run_id_is_a_404_not_a_500(): void
+    {
+        Http::fake();
+
+        $this->actingAs($this->user, 'sanctum')
+            ->postJson($this->feedbackUrl('not-a-uuid'), ['polarity' => 'up'])
+            ->assertStatus(404);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_a_sibling_project_run_in_the_same_workspace_is_404(): void
+    {
+        Http::fake();
+        $sibling = Project::factory()->create();
+        DB::statement(
+            'UPDATE silver.projects SET workspace_id = ?::uuid WHERE project_id = ?::uuid',
+            [$this->workspaceId, $sibling->project_id],
+        );
+        $siblingRun = (string) Str::uuid();
+        DB::statement(
+            'INSERT INTO silver.answer_runs
+                (answer_run_id, workspace_id, project_id, query_text, query_class,
+                 workspace_data_version_at_query)
+             VALUES (?::uuid, ?::uuid, ?::uuid, ?, ?, ?)',
+            [$siblingRun, $this->workspaceId, $sibling->project_id, 'q', 'factual', 1],
+        );
+
+        $this->actingAs($this->user, 'sanctum')
+            ->postJson($this->feedbackUrl($siblingRun), ['polarity' => 'up'])
+            ->assertStatus(404);
+
+        Http::assertNothingSent();
+    }
 }

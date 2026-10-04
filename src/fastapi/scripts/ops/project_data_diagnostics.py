@@ -23,6 +23,15 @@ that check and never stops the others)
 6. curves            silver.well_log_curves by curve_name
 7. derived           DERIVED-% lithology (derive_intervals.py) vs logged, silver and gold
 8. archive_runs      silver.archive_ingest_runs
+9. documents         silver.reports per project with its silver.document_passages rolled up:
+                     passages per report, text vs page-image, embedded vs not, which OCR
+                     engine produced them (ocr_method), low-confidence OCR, and the legacy
+                     silver.ingest_ocr_results count — i.e. "does every scanned file have
+                     rows, and are they all in the vector index?"
+
+``--all-projects`` runs the same checks for EVERY silver.projects row and prefixes the
+report with a one-table corpus overview; ``--only documents,row_counts`` limits the
+checks (keys above) so a corpus-wide run stays readable.
 
 Safety
 ------
@@ -87,6 +96,8 @@ ID_LIST_LIMIT = 50
 ATTRIBUTE_GROUP_LIMIT = 200
 CURVE_NAME_LIMIT = 200
 ARCHIVE_RUN_LIMIT = 50
+#: Reports shown per project in check 9 (the rollups cover every report regardless).
+DOCUMENT_LIMIT = 200
 DUPLICATE_LIMIT = 50
 
 #: Wyoming fallback box the collar writers fall back to when no CRS could be found
@@ -809,6 +820,119 @@ async def check_archive_runs(conn: Any, project: Project) -> dict[str, Any]:
     return {"runs": runs, "runs_limit": ARCHIVE_RUN_LIMIT, "by_status": dict(Counter(r["status"] for r in runs))}
 
 
+# One row per report with its passages rolled up. ``source_object_key`` is the bronze
+# object path (a file name — allowed by the Safety note above); the report TITLE is text
+# parsed out of the document and is deliberately not selected.
+_DOCUMENT_ROWS_SQL = f"""
+SELECT r.report_id::text AS report_id, r.source_object_key, r.page_count, r.is_scanned,
+       r.parser_used, r.parse_quality_pct, r.text_page_coverage_pct, r.created_at,
+       count(p.passage_id) AS passages,
+       count(p.passage_id) FILTER (WHERE p.modality = 'image') AS image_passages,
+       count(p.passage_id) FILTER (WHERE p.embedding_id IS NOT NULL) AS embedded,
+       count(p.passage_id) FILTER (WHERE p.embedding_id IS NULL) AS unembedded,
+       count(p.passage_id) FILTER (WHERE p.ocr_method = 'cohere_parse') AS cohere_parse_passages,
+       count(p.passage_id) FILTER (WHERE p.ocr_method = 'tesseract') AS tesseract_passages,
+       count(p.passage_id) FILTER (WHERE p.ocr_status = 'low_confidence') AS low_confidence,
+       count(*) OVER () AS total_reports
+  FROM silver.reports r
+  LEFT JOIN silver.document_passages p ON p.document_id = r.report_id
+ WHERE r.project_id = $1::uuid
+ GROUP BY r.report_id
+ ORDER BY r.created_at DESC NULLS LAST, r.report_id
+ LIMIT {DOCUMENT_LIMIT}
+"""
+
+# Whole-project rollup, not limited to the rows above.
+_PASSAGE_ROLLUP_SQL = """
+SELECT p.modality, COALESCE(p.chunk_kind, '(none)') AS chunk_kind,
+       COALESCE(p.ocr_method, '(none)') AS ocr_method,
+       count(*) AS n,
+       count(*) FILTER (WHERE p.embedding_id IS NOT NULL) AS embedded
+  FROM silver.document_passages p
+  JOIN silver.reports r ON r.report_id = p.document_id
+ WHERE r.project_id = $1::uuid
+ GROUP BY 1, 2, 3
+ ORDER BY n DESC, 1, 2, 3
+"""
+
+_OCR_RESULTS_SQL = """
+SELECT count(*) AS n, count(DISTINCT o.report_id) AS reports
+  FROM silver.ingest_ocr_results o
+  JOIN silver.reports r ON r.report_id = o.report_id
+ WHERE r.project_id = $1::uuid
+"""
+
+
+def _basename(key: Any) -> Any:
+    return key.rsplit("/", 1)[-1] if isinstance(key, str) else key
+
+
+async def check_documents(conn: Any, project: Project) -> dict[str, Any]:
+    reports: list[dict[str, Any]] = []
+    total_reports = 0
+    for r in await conn.fetch(_DOCUMENT_ROWS_SQL, project.project_id):
+        total_reports = int(r["total_reports"])
+        reports.append(
+            {
+                "report_id": r["report_id"],
+                "source_file": _basename(r["source_object_key"]),
+                "page_count": r["page_count"],
+                "is_scanned": r["is_scanned"],
+                "parser_used": r["parser_used"],
+                "parse_quality_pct": r["parse_quality_pct"],
+                "text_page_coverage_pct": r["text_page_coverage_pct"],
+                "created_at": _ts(r["created_at"]),
+                "passages": int(r["passages"]),
+                "image_passages": int(r["image_passages"]),
+                "embedded": int(r["embedded"]),
+                "unembedded": int(r["unembedded"]),
+                "cohere_parse_passages": int(r["cohere_parse_passages"]),
+                "tesseract_passages": int(r["tesseract_passages"]),
+                "low_confidence": int(r["low_confidence"]),
+            }
+        )
+    rollup = [
+        {
+            "modality": r["modality"],
+            "chunk_kind": r["chunk_kind"],
+            "ocr_method": r["ocr_method"],
+            "rows": int(r["n"]),
+            "embedded": int(r["embedded"]),
+        }
+        for r in await conn.fetch(_PASSAGE_ROLLUP_SQL, project.project_id)
+    ]
+    passages_total = sum(x["rows"] for x in rollup)
+    embedded_total = sum(x["embedded"] for x in rollup)
+    scanned = [x for x in reports if x["is_scanned"]]
+
+    async def _ocr_results() -> dict[str, Any]:
+        row = await conn.fetchrow(_OCR_RESULTS_SQL, project.project_id)
+        return {"rows": int(row["n"]), "reports": int(row["reports"])}
+
+    return {
+        "reports": reports,
+        "reports_total": total_reports,
+        "reports_limit": DOCUMENT_LIMIT,
+        "reports_without_passages": sorted(x["source_file"] or x["report_id"] for x in reports if x["passages"] == 0),
+        "scanned_reports": len(scanned),
+        "scanned_reports_without_cohere_parse": sorted(
+            x["source_file"] or x["report_id"] for x in scanned if x["cohere_parse_passages"] == 0
+        ),
+        "passages_total": passages_total,
+        "embedded_total": embedded_total,
+        "unembedded_total": passages_total - embedded_total,
+        "image_passages_total": sum(x["rows"] for x in rollup if x["modality"] == "image"),
+        "by_ocr_method": {
+            k: sum(x["rows"] for x in rollup if x["ocr_method"] == k)
+            for k in sorted({x["ocr_method"] for x in rollup})
+        },
+        "rollup": rollup,
+        "legacy_ocr_results": await guarded(
+            conn, ["silver.ingest_ocr_results"], _ocr_results, what="documents:ingest_ocr_results"
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class CheckSpec:
     key: str
@@ -832,12 +956,25 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec(
         "archive_runs", "Archive runs (silver.archive_ingest_runs)", ("silver.archive_ingest_runs",), check_archive_runs
     ),
+    CheckSpec(
+        "documents",
+        "Documents, passages and embeddings (silver.reports / silver.document_passages)",
+        ("silver.reports", "silver.document_passages"),
+        check_documents,
+    ),
 )
+CHECK_KEYS: tuple[str, ...] = tuple(c.key for c in CHECKS)
 
 
-async def run_checks(conn: Any, project: Project) -> dict[str, dict[str, Any]]:
+async def run_checks(
+    conn: Any, project: Project, only: Sequence[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Every check, or only the keys in ``only`` (unknown keys are ignored here — the
+    argument parser has already refused them)."""
     results: dict[str, dict[str, Any]] = {}
     for spec in CHECKS:
+        if only and spec.key not in only:
+            continue
 
         async def _go(spec: CheckSpec = spec) -> dict[str, Any]:
             return await spec.fn(conn, project)
@@ -908,6 +1045,28 @@ def headlines(checks: dict[str, dict[str, Any]]) -> list[str]:
         ):
             if _sub_ok(cov.get(key)) and cov[key]["count"]:
                 out.append(f"{cov[key]['count']} {label}.")
+    docs = checks.get("documents", {})
+    if docs.get("status") == "ok":
+        if docs["reports_total"] == 0:
+            out.append("No silver.reports rows for this project: nothing was ingested as a document.")
+        if docs["unembedded_total"]:
+            out.append(
+                f"{docs['unembedded_total']} of {docs['passages_total']} passage(s) have no embedding "
+                "(embedding_id IS NULL): they are not in the vector index and cannot be retrieved."
+            )
+        if docs["reports_without_passages"]:
+            out.append(
+                f"{len(docs['reports_without_passages'])} report(s) have ZERO passages: "
+                + ", ".join(f"`{f}`" for f in docs["reports_without_passages"][:10])
+                + (" …" if len(docs["reports_without_passages"]) > 10 else "")
+            )
+        if docs["scanned_reports_without_cohere_parse"]:
+            out.append(
+                f"{len(docs['scanned_reports_without_cohere_parse'])} scanned report(s) have no "
+                "cohere_parse passage (OCR ran on Tesseract or not at all): "
+                + ", ".join(f"`{f}`" for f in docs["scanned_reports_without_cohere_parse"][:10])
+                + (" …" if len(docs["scanned_reports_without_cohere_parse"]) > 10 else "")
+            )
     errored = errored_paths(checks)
     if errored:
         out.append("Checks that ERRORED (see below): " + ", ".join(f"`{k}`" for k in errored))
@@ -1110,6 +1269,69 @@ def _render_archive_runs(r: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_documents(r: dict[str, Any]) -> list[str]:
+    lines = [
+        f"{r['reports_total']} report(s) ({len(r['reports'])} shown, limit {r['reports_limit']}), "
+        f"{r['scanned_reports']} scanned. {r['passages_total']} passage(s): {r['embedded_total']} embedded, "
+        f"{r['unembedded_total']} NOT embedded, {r['image_passages_total']} page image(s). "
+        "By OCR method: "
+        + (", ".join(f"{m} x{n}" for m, n in sorted(r["by_ocr_method"].items())) or "none"),
+        "",
+    ]
+    legacy = r.get("legacy_ocr_results", {})
+    if legacy.get("status") == "ok":
+        lines.append(
+            f"- legacy silver.ingest_ocr_results: {legacy['rows']} row(s) across {legacy['reports']} report(s)"
+        )
+    elif (sub := _render_sub("legacy silver.ingest_ocr_results", legacy)) is not None:
+        lines += sub
+    lines.append("")
+    lines += md_table(
+        [
+            "file",
+            "pages",
+            "scanned",
+            "parser",
+            "quality %",
+            "text cov. %",
+            "passages",
+            "images",
+            "embedded",
+            "not embedded",
+            "cohere_parse",
+            "tesseract",
+            "low conf.",
+            "created",
+        ],
+        [
+            (
+                x["source_file"] or x["report_id"],
+                x["page_count"],
+                x["is_scanned"],
+                x["parser_used"],
+                x["parse_quality_pct"],
+                x["text_page_coverage_pct"],
+                x["passages"],
+                x["image_passages"],
+                x["embedded"],
+                x["unembedded"],
+                x["cohere_parse_passages"],
+                x["tesseract_passages"],
+                x["low_confidence"],
+                x["created_at"],
+            )
+            for x in r["reports"]
+        ],
+    )
+    if r["rollup"]:
+        lines += ["", "Passages by modality / chunk_kind / ocr_method (whole project):", ""]
+        lines += md_table(
+            ["modality", "chunk_kind", "ocr_method", "rows", "embedded"],
+            [(x["modality"], x["chunk_kind"], x["ocr_method"], x["rows"], x["embedded"]) for x in r["rollup"]],
+        )
+    return lines
+
+
 _RENDERERS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
     "ingest_progress": _render_ingest_progress,
     "row_counts": _render_row_counts,
@@ -1119,6 +1341,7 @@ _RENDERERS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
     "curves": _render_curves,
     "derived": _render_derived,
     "archive_runs": _render_archive_runs,
+    "documents": _render_documents,
 }
 
 
@@ -1159,7 +1382,9 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines += ["", f"_{meta_line}._"]
 
     for n, spec in enumerate(CHECKS, start=1):
-        res = result["checks"][spec.key]
+        res = result["checks"].get(spec.key)
+        if res is None:  # not selected by --only
+            continue
         lines += ["", f"## {n}. {res['title']}", ""]
         failure = _status_line(res)
         if failure:
@@ -1220,6 +1445,8 @@ async def run(args: argparse.Namespace, conn: Any | None = None) -> int:
     if conn is None:
         conn = await open_readonly_connection()
     try:
+        if getattr(args, "all_projects", False):
+            return await run_all(args, conn)
         project, tried, ambiguous = await find_project(conn, args.project_slug)
         if project is None:
             emit(build_result(args.project_slug, None, tried, {}, ambiguous))
@@ -1235,12 +1462,196 @@ async def run(args: argparse.Namespace, conn: Any | None = None) -> int:
                 )
             return 2
         details = await project_details(conn, project)
-        checks = await run_checks(conn, project)
+        checks = await run_checks(conn, project, getattr(args, "only", None))
         emit(build_result(args.project_slug, details, tried, checks))
         return 0
     finally:
         if own:
             await conn.close()
+
+
+# --------------------------------------------------------------------------
+# --all-projects: the same report for every project, behind a corpus overview
+# --------------------------------------------------------------------------
+
+_ALL_PROJECTS_SQL = """
+SELECT p.project_id::text AS project_id, p.workspace_id::text AS workspace_id, p.slug
+  FROM silver.projects p
+ ORDER BY p.slug
+"""
+
+
+async def list_projects(conn: Any) -> tuple[list[Project], list[str]]:
+    """Every silver.projects row. Unscoped first (bootstrap table); if RLS hides them,
+    walk silver.workspaces and union what each scope can see. Leaves the session
+    unscoped."""
+    from app.db import bind_workspace_scope  # noqa: PLC0415
+
+    tried = ["unscoped"]
+    await conn.execute("SELECT set_config('app.workspace_id', '', false)")
+    rows = list(await conn.fetch(_ALL_PROJECTS_SQL))
+    if not rows:
+        seen: dict[str, Any] = {}
+        for ws in await conn.fetch(
+            "SELECT workspace_id::text AS workspace_id FROM silver.workspaces ORDER BY workspace_id"
+        ):
+            await bind_workspace_scope(
+                conn, workspace_id=ws["workspace_id"], site="project_data_diagnostics", is_local=False
+            )
+            tried.append(f"workspace {ws['workspace_id']}")
+            for r in await conn.fetch(_ALL_PROJECTS_SQL):
+                seen.setdefault(r["project_id"], r)
+        rows = sorted(seen.values(), key=lambda r: r["slug"])
+        await conn.execute("SELECT set_config('app.workspace_id', '', false)")
+    return [Project(project_id=r["project_id"], workspace_id=r["workspace_id"], slug=r["slug"]) for r in rows], tried
+
+
+async def diagnose_project(conn: Any, project: Project, only: Sequence[str] | None) -> dict[str, Any]:
+    """Details plus checks for one already-found project, inside its workspace."""
+    from app.db import bind_workspace_scope  # noqa: PLC0415
+
+    if project.workspace_id:
+        await bind_workspace_scope(
+            conn, workspace_id=project.workspace_id, site="project_data_diagnostics", is_local=False
+        )
+    else:
+        await conn.execute("SELECT set_config('app.workspace_id', '', false)")
+    details = await project_details(conn, project)
+    checks = await run_checks(conn, project, only)
+    return build_result(project.slug, details, [], checks)
+
+
+def _overview_row(result: dict[str, Any]) -> tuple[Any, ...]:
+    checks = result["checks"]
+    docs = checks.get("documents", {})
+    prog = checks.get("ingest_progress", {})
+    counts = checks.get("row_counts", {}).get("tables", {})
+
+    def _n(res: dict[str, Any], key: str) -> Any:
+        return res.get(key, "") if res.get("status") == "ok" else "?"
+
+    bad = (
+        sum(n for s, n in prog["by_status"].items() if s in ("failed", "partial", "timed_out"))
+        if prog.get("status") == "ok"
+        else "?"
+    )
+    collars = counts.get("silver.collars", {})
+    return (
+        result["project"]["slug"],
+        _n(docs, "reports_total"),
+        _n(docs, "scanned_reports"),
+        _n(docs, "passages_total"),
+        _n(docs, "embedded_total"),
+        _n(docs, "unembedded_total"),
+        _n(docs, "image_passages_total"),
+        collars.get("rows", "?") if collars.get("status") == "ok" else "?",
+        _n(prog, "runs_total"),
+        bad,
+        len(result["headlines"]),
+    )
+
+
+def render_corpus_markdown(corpus: dict[str, Any]) -> str:
+    meta = corpus["meta"]
+    lines = ["# Corpus diagnostics (all projects)", ""]
+    lines.append(
+        f"- {meta['projects_total']} project(s)  |  read-only  |  generated {meta['generated_at']}"
+        f"  |  checks: {', '.join(meta['checks']) }"
+    )
+    if not corpus["projects"]:
+        lines += ["", f"**NO PROJECTS VISIBLE** (tried: {', '.join(meta['scopes_tried'])})."]
+        return "\n".join(lines)
+    lines += ["", "## Overview", ""]
+    lines += md_table(
+        [
+            "project",
+            "reports",
+            "scanned",
+            "passages",
+            "embedded",
+            "not embedded",
+            "page images",
+            "collars",
+            "ingest runs",
+            "runs failed/partial",
+            "headlines",
+        ],
+        [_overview_row(r) for r in corpus["projects"]],
+    )
+    totals = corpus["totals"]
+    lines += [
+        "",
+        f"Totals: {totals['reports']} report(s), {totals['passages']} passage(s), "
+        f"{totals['embedded']} embedded, **{totals['unembedded']} not embedded**, "
+        f"{totals['image_passages']} page image(s).",
+    ]
+    for r in corpus["projects"]:
+        lines += ["", "---", ""]
+        # Demote the per-project headings one level under the corpus report.
+        lines += [re.sub(r"^(#+)", r"\1#", line) for line in render_markdown(r).splitlines()]
+    return "\n".join(lines)
+
+
+def build_corpus_result(
+    projects: list[dict[str, Any]], scopes_tried: list[str], only: Sequence[str] | None, projects_total: int
+) -> dict[str, Any]:
+    def _sum(key: str) -> int:
+        return sum(
+            int(r["checks"]["documents"][key])
+            for r in projects
+            if r["checks"].get("documents", {}).get("status") == "ok"
+        )
+
+    return {
+        "meta": {
+            "mode": "all_projects",
+            "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "scopes_tried": scopes_tried,
+            "checks": list(only) if only else list(CHECK_KEYS),
+            "projects_total": projects_total,
+        },
+        "totals": {
+            "reports": _sum("reports_total"),
+            "passages": _sum("passages_total"),
+            "embedded": _sum("embedded_total"),
+            "unembedded": _sum("unembedded_total"),
+            "image_passages": _sum("image_passages_total"),
+        },
+        "projects": projects,
+    }
+
+
+def emit_corpus(corpus: dict[str, Any]) -> None:
+    print(BEGIN_SUMMARY)
+    print(render_corpus_markdown(corpus))
+    print(END_SUMMARY)
+    print(BEGIN_JSON)
+    print(json.dumps(corpus, indent=1, default=str))
+    print(END_JSON)
+    sys.stdout.flush()
+
+
+async def run_all(args: argparse.Namespace, conn: Any) -> int:
+    projects, tried = await list_projects(conn)
+    results: list[dict[str, Any]] = []
+    for project in projects:
+        try:
+            results.append(await diagnose_project(conn, project, args.only))
+        except Exception as exc:  # noqa: BLE001 — one broken project must not lose the others
+            logger.warning("project %s failed: %s", project.slug, _error_text(exc))
+            results.append(
+                build_result(
+                    project.slug,
+                    {"project_id": project.project_id, "workspace_id": project.workspace_id, "slug": project.slug},
+                    [],
+                    {"documents": {"status": "error", "error": _error_text(exc), "title": "Project failed"}},
+                )
+            )
+    emit_corpus(build_corpus_result(results, tried, args.only, len(projects)))
+    if not projects:
+        print(f"NO PROJECTS VISIBLE (tried: {', '.join(tried)}).", file=sys.stderr)
+        return 2
+    return 0
 
 
 def _slug(raw: str) -> str:
@@ -1249,9 +1660,27 @@ def _slug(raw: str) -> str:
     return raw
 
 
+def _only(raw: str) -> list[str]:
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    unknown = [k for k in keys if k not in CHECK_KEYS]
+    if unknown or not keys:
+        raise argparse.ArgumentTypeError(f"unknown check(s) {unknown}; choose from {', '.join(CHECK_KEYS)}")
+    return keys
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Read-only diagnostics for one project's drill data.")
-    p.add_argument("--project-slug", type=_slug, required=True, help="silver.projects.slug (^[a-z0-9-]{1,64}$)")
+    p = argparse.ArgumentParser(description="Read-only diagnostics for one project's drill data, or for every project.")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--project-slug", type=_slug, help="silver.projects.slug (^[a-z0-9-]{1,64}$)")
+    target.add_argument(
+        "--all-projects", action="store_true", help="every silver.projects row, behind a corpus overview"
+    )
+    p.add_argument(
+        "--only",
+        type=_only,
+        default=None,
+        help="comma-separated check keys to run (default: all): " + ", ".join(CHECK_KEYS),
+    )
     return p
 
 

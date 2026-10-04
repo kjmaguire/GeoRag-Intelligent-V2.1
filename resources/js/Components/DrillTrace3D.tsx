@@ -30,10 +30,10 @@ const PlotlyAPI: any = (Plotly as any).default ?? Plotly;
  */
 
 export interface TracePoint {
-    x: number;          // longitude / easting (matches collar.longitude)
-    y: number;          // latitude / northing (matches collar.latitude)
-    z: number;          // elevation (m, RL)
-    depth_m: number;    // downhole depth measured from collar (0 at top)
+    x: number; // longitude / easting (matches collar.longitude)
+    y: number; // latitude / northing (matches collar.latitude)
+    z: number; // elevation (m, RL)
+    depth_m: number; // downhole depth measured from collar (0 at top)
     /**
      * Metric east/north offsets computed server-side (GIS-9 fix in
      * query_drill_traces_3d). Used when EVERY point of a trace carries both;
@@ -81,8 +81,8 @@ export interface IntervalPoint {
     collar_id: string;
     depth_from: number;
     depth_to: number;
-    interval_kind: string;       // 'assay'|'lithology'|'alteration'|'structure'
-    color_hint: string;          // hex e.g. '#a83232' — from gold.drillhole_intervals_visual
+    interval_kind: string; // 'assay'|'lithology'|'alteration'|'structure'
+    color_hint: string; // hex e.g. '#a83232' — from gold.drillhole_intervals_visual
     label: string;
 }
 
@@ -109,14 +109,14 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STRUCTURE_COLORS: Record<string, string> = {
-    foliation: '#3b82f6',  // blue
-    joint: '#ef4444',      // red
-    fault: '#f97316',      // orange
-    vein: '#22c55e',       // green
-    bedding: '#a855f7',    // purple
-    shear: '#ec4899',      // pink
-    fracture: '#facc15',   // yellow
-    lineation: '#06b6d4',  // cyan
+    foliation: '#3b82f6', // blue
+    joint: '#ef4444', // red
+    fault: '#f97316', // orange
+    vein: '#22c55e', // green
+    bedding: '#a855f7', // purple
+    shear: '#ec4899', // pink
+    fracture: '#facc15', // yellow
+    lineation: '#06b6d4', // cyan
 };
 
 const STRUCTURE_DEFAULT_COLOR = '#9ca3af';
@@ -153,10 +153,15 @@ function sceneTrace(
 ): ScenePoint[] {
     const raw = effectiveTrace(c);
     const collar = toLocal(c.longitude, c.latitude);
-    const metric = raw.length >= 2 && raw.every(
-        (p) => typeof p.east_m === 'number' && Number.isFinite(p.east_m)
-            && typeof p.north_m === 'number' && Number.isFinite(p.north_m),
-    );
+    const metric =
+        raw.length >= 2 &&
+        raw.every(
+            (p) =>
+                typeof p.east_m === 'number' &&
+                Number.isFinite(p.east_m) &&
+                typeof p.north_m === 'number' &&
+                Number.isFinite(p.north_m),
+        );
     const e0 = metric ? (raw[0].east_m as number) : 0;
     const n0 = metric ? (raw[0].north_m as number) : 0;
     return raw.map((p) => {
@@ -200,16 +205,14 @@ function interpolateAtDepth(
     return { x: last.x, y: last.y, z: last.z };
 }
 
-export default function DrillTrace3D({
-    collars = [],
-    intervals = [],
-    structures = [],
-}: DrillTrace3DProps) {
+export default function DrillTrace3D({ collars = [], intervals = [], structures = [] }: DrillTrace3DProps) {
     const { traces, layout } = useMemo(() => {
         if (collars.length === 0) return { traces: [] as Record<string, unknown>[], layout: {} };
 
-        const origin = centroidOrigin(collars.map((c) => ({ lon: c.longitude, lat: c.latitude })))
-            ?? { lon: 0, lat: 0 };
+        const origin = centroidOrigin(collars.map((c) => ({ lon: c.longitude, lat: c.latitude }))) ?? {
+            lon: 0,
+            lat: 0,
+        };
         const toLocal = toLocalMetres(origin);
         const ex = (lon: number, lat: number) => toLocal(lon, lat).east;
         const ny = (lon: number, lat: number) => toLocal(lon, lat).north;
@@ -311,7 +314,11 @@ export default function DrillTrace3D({
             // Group: color_hint → segments[]
             const byColor: Record<
                 string,
-                Array<{ from: { x: number; y: number; z: number }; to: { x: number; y: number; z: number }; iv: IntervalPoint }>
+                Array<{
+                    from: { x: number; y: number; z: number };
+                    to: { x: number; y: number; z: number };
+                    iv: IntervalPoint;
+                }>
             > = {};
             intervals.forEach((iv) => {
                 const collar = collarLookup.get(iv.collar_id);
@@ -368,10 +375,7 @@ export default function DrillTrace3D({
             });
 
             // Group by structure_type so the legend explains the color key.
-            const byKind: Record<
-                string,
-                Array<{ pt: { x: number; y: number; z: number }; s: StructurePoint }>
-            > = {};
+            const byKind: Record<string, Array<{ pt: { x: number; y: number; z: number }; s: StructurePoint }>> = {};
             structures.forEach((s) => {
                 const collar = collarLookup.get(s.collar_id);
                 if (!collar) return;
@@ -412,9 +416,24 @@ export default function DrillTrace3D({
 
         const layout = {
             scene: {
-                xaxis: { title: { text: 'East of centroid (m)', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
-                yaxis: { title: { text: 'North of centroid (m)', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
-                zaxis: { title: { text: 'Elevation (m)', font: { color: '#9ca3af', size: 10 } }, color: '#6b7280', gridcolor: '#1f2937', zerolinecolor: '#374151' },
+                xaxis: {
+                    title: { text: 'East of centroid (m)', font: { color: '#9ca3af', size: 10 } },
+                    color: '#6b7280',
+                    gridcolor: '#1f2937',
+                    zerolinecolor: '#374151',
+                },
+                yaxis: {
+                    title: { text: 'North of centroid (m)', font: { color: '#9ca3af', size: 10 } },
+                    color: '#6b7280',
+                    gridcolor: '#1f2937',
+                    zerolinecolor: '#374151',
+                },
+                zaxis: {
+                    title: { text: 'Elevation (m)', font: { color: '#9ca3af', size: 10 } },
+                    color: '#6b7280',
+                    gridcolor: '#1f2937',
+                    zerolinecolor: '#374151',
+                },
                 // True scale on all three axes: apparent dip and azimuth are
                 // then readable off the plot (GIS-9).
                 aspectmode: 'data',
@@ -448,16 +467,12 @@ export default function DrillTrace3D({
     // factory-import warning at the top of this file for why.
     const divRef = useRef<HTMLDivElement | null>(null);
 
-    const mergedLayout = useMemo(
-        () => ({ ...(layout as Record<string, unknown>), autosize: true }),
-        [layout],
-    );
+    const mergedLayout = useMemo(() => ({ ...(layout as Record<string, unknown>), autosize: true }), [layout]);
 
     useEffect(() => {
         const el = divRef.current;
         if (!el) return;
         if (typeof PlotlyAPI?.react !== 'function') {
-            // eslint-disable-next-line no-console
             console.error('[DrillTrace3D] Plotly API missing .react method:', PlotlyAPI);
             return;
         }
@@ -478,18 +493,16 @@ export default function DrillTrace3D({
         if (!el || typeof ResizeObserver === 'undefined') return;
         const ro = new ResizeObserver(() => {
             if (typeof PlotlyAPI?.Plots?.resize === 'function') {
-                try { PlotlyAPI.Plots.resize(el); } catch { /* ignore */ }
+                try {
+                    PlotlyAPI.Plots.resize(el);
+                } catch {
+                    /* ignore */
+                }
             }
         });
         ro.observe(el);
         return () => ro.disconnect();
     }, []);
 
-    return (
-        <div
-            ref={divRef}
-            className="w-full h-full"
-            style={{ width: '100%', height: '100%' }}
-        />
-    );
+    return <div ref={divRef} className="w-full h-full" style={{ width: '100%', height: '100%' }} />;
 }

@@ -140,6 +140,29 @@ class SparseEncoderUnavailable(RuntimeError):
     """
 
 
+#: One pooled, keep-alive client for the sidecar hop. ``httpx.post`` builds a
+#: client, opens a connection and tears both down on EVERY call -- a TCP (and,
+#: on AWS, TLS) handshake in the middle of every query's retrieval stage
+#: (audit item 26). ``httpx.Client`` is thread-safe, which matters because
+#: encode_sparse runs in the default executor.
+_REMOTE_CLIENT: Any = None
+_REMOTE_CLIENT_LOCK = threading.Lock()
+
+
+def _get_remote_client() -> Any:
+    """The shared sidecar client, built on first use."""
+    global _REMOTE_CLIENT  # noqa: PLW0603
+    if _REMOTE_CLIENT is None:
+        import httpx  # noqa: PLC0415
+
+        with _REMOTE_CLIENT_LOCK:
+            if _REMOTE_CLIENT is None:
+                _REMOTE_CLIENT = httpx.Client(
+                    limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+                )
+    return _REMOTE_CLIENT
+
+
 def _remote_encode_sparse(texts: list[str]) -> list[dict[int, float]]:
     """Encode via the shared SPLADE sidecar. JSON object keys are strings, so
     the int token-ids round-trip as strings and are restored to int here."""
@@ -148,12 +171,19 @@ def _remote_encode_sparse(texts: list[str]) -> list[dict[int, float]]:
     from app.sidecar_auth import SERVICE_KEY_HEADERS  # noqa: PLC0415
 
     timeout_s = float(os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30")
-    resp = httpx.post(
-        f"{SPARSE_SERVICE_URL.rstrip('/')}/sparse",
-        json={"texts": texts},
-        timeout=timeout_s,
-        headers=SERVICE_KEY_HEADERS,
-    )
+    url = f"{SPARSE_SERVICE_URL.rstrip('/')}/sparse"
+    try:
+        resp = _get_remote_client().post(
+            url, json={"texts": texts}, timeout=timeout_s, headers=SERVICE_KEY_HEADERS,
+        )
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as exc:
+        logger.debug("sparse sidecar connection stale (%s); retrying once", exc)
+        # A kept-alive socket the sidecar closed (a Spot reclaim, a restart)
+        # surfaces here on first reuse. One retry on a fresh connection; a
+        # real outage fails again and is reported as such.
+        resp = _get_remote_client().post(
+            url, json={"texts": texts}, timeout=timeout_s, headers=SERVICE_KEY_HEADERS,
+        )
     resp.raise_for_status()
     return [{int(k): v for k, v in d.items()} for d in resp.json()["sparse"]]
 

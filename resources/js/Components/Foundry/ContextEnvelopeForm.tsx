@@ -19,21 +19,9 @@ export type QueryMode = 'field' | 'office';
 
 export type DepthReference = 'bgl' | 'asl' | 'rl' | 'tvd' | 'md';
 
-export type DataSource =
-    | 'drill_logs'
-    | 'assays'
-    | 'technical_reports'
-    | 'maps'
-    | 'geophysics'
-    | 'public_geoscience';
+export type DataSource = 'drill_logs' | 'assays' | 'technical_reports' | 'maps' | 'geophysics' | 'public_geoscience';
 
-export type ReportingCode =
-    | 'NI 43-101'
-    | 'CIM'
-    | 'CRIRSCO'
-    | 'JORC'
-    | 'SAMREC'
-    | 'PERC';
+export type ReportingCode = 'NI 43-101' | 'CIM' | 'CRIRSCO' | 'JORC' | 'SAMREC' | 'PERC';
 
 export interface ContextEnvelope {
     area_of_interest: string | null;
@@ -93,14 +81,7 @@ const DATA_SOURCES: { value: DataSource; label: string }[] = [
     { value: 'public_geoscience', label: 'Public geoscience' },
 ];
 
-const REPORTING_CODES: ReportingCode[] = [
-    'NI 43-101',
-    'CIM',
-    'CRIRSCO',
-    'JORC',
-    'SAMREC',
-    'PERC',
-];
+const REPORTING_CODES: ReportingCode[] = ['NI 43-101', 'CIM', 'CRIRSCO', 'JORC', 'SAMREC', 'PERC'];
 
 const DEPTH_REFS: { value: DepthReference; label: string }[] = [
     { value: 'bgl', label: 'BGL (below ground level)' },
@@ -139,22 +120,14 @@ function unspecifiedHint() {
  * field reads as a value the geologist can override, NOT as a silent
  * default.
  */
-export function applySmartDefaults(
-    envelope: ContextEnvelope,
-    project: ProjectContext,
-): ContextEnvelope {
+export function applySmartDefaults(envelope: ContextEnvelope, project: ProjectContext): ContextEnvelope {
     if (envelope.crs_epsg === null && project.crs_epsg != null) {
         return { ...envelope, crs_epsg: project.crs_epsg };
     }
     return envelope;
 }
 
-export function ContextEnvelopeForm({
-    project,
-    value,
-    onChange,
-    disabled = false,
-}: Props) {
+export function ContextEnvelopeForm({ project, value, onChange, disabled = false }: Props) {
     const [expanded, setExpanded] = useState(false);
 
     const populatedCount = useMemo(() => {
@@ -252,14 +225,8 @@ export function ContextEnvelopeForm({
                         disabled={disabled}
                         className="px-2 py-1"
                         style={{
-                            background:
-                                value.mode === 'office'
-                                    ? 'var(--accent-bg)'
-                                    : 'var(--bg-2)',
-                            color:
-                                value.mode === 'office'
-                                    ? 'var(--accent)'
-                                    : 'var(--fg-2)',
+                            background: value.mode === 'office' ? 'var(--accent-bg)' : 'var(--bg-2)',
+                            color: value.mode === 'office' ? 'var(--accent)' : 'var(--fg-2)',
                         }}
                     >
                         Office
@@ -272,14 +239,8 @@ export function ContextEnvelopeForm({
                         disabled={disabled}
                         className="px-2 py-1"
                         style={{
-                            background:
-                                value.mode === 'field'
-                                    ? 'var(--accent-bg)'
-                                    : 'var(--bg-2)',
-                            color:
-                                value.mode === 'field'
-                                    ? 'var(--accent)'
-                                    : 'var(--fg-2)',
+                            background: value.mode === 'field' ? 'var(--accent-bg)' : 'var(--bg-2)',
+                            color: value.mode === 'field' ? 'var(--accent)' : 'var(--fg-2)',
                         }}
                     >
                         Field
@@ -304,7 +265,10 @@ export function ContextEnvelopeForm({
                     style={{ borderColor: 'var(--line-1)' }}
                 >
                     {/* Section 1: Spatial */}
-                    <div className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-1" style={labelStyle()}>
+                    <div
+                        className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-1"
+                        style={labelStyle()}
+                    >
                         Spatial
                     </div>
 
@@ -312,18 +276,12 @@ export function ContextEnvelopeForm({
                         label="Area of interest"
                         placeholder='e.g. "Within 5 km of DDH-07"'
                         value={value.area_of_interest ?? ''}
-                        onChange={(v) =>
-                            update('area_of_interest', v.trim() === '' ? null : v)
-                        }
+                        onChange={(v) => update('area_of_interest', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
                     <NumberField
                         label="CRS / datum (EPSG)"
-                        placeholder={
-                            project.crs_epsg != null
-                                ? `pre-populated: ${project.crs_epsg}`
-                                : '1024–32767'
-                        }
+                        placeholder={project.crs_epsg != null ? `pre-populated: ${project.crs_epsg}` : '1024–32767'}
                         value={value.crs_epsg}
                         onChange={(v) => update('crs_epsg', v)}
                         disabled={disabled}
@@ -339,14 +297,15 @@ export function ContextEnvelopeForm({
                         label="Scale / resolution"
                         placeholder='e.g. "1:50,000 and finer"'
                         value={value.scale_resolution ?? ''}
-                        onChange={(v) =>
-                            update('scale_resolution', v.trim() === '' ? null : v)
-                        }
+                        onChange={(v) => update('scale_resolution', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
 
                     {/* Section 2: Domain */}
-                    <div className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-2" style={labelStyle()}>
+                    <div
+                        className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-2"
+                        style={labelStyle()}
+                    >
                         Domain
                     </div>
 
@@ -354,9 +313,7 @@ export function ContextEnvelopeForm({
                         label="Stratigraphic / time frame"
                         placeholder='e.g. "ICS 2024; Watrous Formation"'
                         value={value.stratigraphic_frame ?? ''}
-                        onChange={(v) =>
-                            update('stratigraphic_frame', v.trim() === '' ? null : v)
-                        }
+                        onChange={(v) => update('stratigraphic_frame', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
                     <TextField
@@ -385,9 +342,7 @@ export function ContextEnvelopeForm({
                                     <input
                                         type="checkbox"
                                         checked={value.data_sources.includes(opt.value)}
-                                        onChange={(e) =>
-                                            updateDataSources(opt.value, e.target.checked)
-                                        }
+                                        onChange={(e) => updateDataSources(opt.value, e.target.checked)}
                                         disabled={disabled}
                                     />
                                     {opt.label}
@@ -397,7 +352,10 @@ export function ContextEnvelopeForm({
                     </div>
 
                     {/* Section 3: QA/QC + units */}
-                    <div className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-2" style={labelStyle()}>
+                    <div
+                        className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-2"
+                        style={labelStyle()}
+                    >
                         QA/QC + units
                     </div>
 
@@ -405,23 +363,22 @@ export function ContextEnvelopeForm({
                         label="QA/QC constraints"
                         placeholder='e.g. "Exclude batches failing CRM tolerance"'
                         value={value.qaqc_constraints ?? ''}
-                        onChange={(v) =>
-                            update('qaqc_constraints', v.trim() === '' ? null : v)
-                        }
+                        onChange={(v) => update('qaqc_constraints', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
                     <TextField
                         label="Units and detection limits"
                         placeholder='e.g. "Cu in ppm; values <DL as half-DL"'
                         value={value.units_and_detection_limits ?? ''}
-                        onChange={(v) =>
-                            update('units_and_detection_limits', v.trim() === '' ? null : v)
-                        }
+                        onChange={(v) => update('units_and_detection_limits', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
 
                     {/* Section 4: Output */}
-                    <div className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-2" style={labelStyle()}>
+                    <div
+                        className="col-span-2 text-[9px] font-mono uppercase tracking-[0.12em] mt-2"
+                        style={labelStyle()}
+                    >
                         Output
                     </div>
 
@@ -437,18 +394,14 @@ export function ContextEnvelopeForm({
                         label="Decision to support"
                         placeholder='e.g. "Rank infill drill targets"'
                         value={value.decision_to_support ?? ''}
-                        onChange={(v) =>
-                            update('decision_to_support', v.trim() === '' ? null : v)
-                        }
+                        onChange={(v) => update('decision_to_support', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
                     <TextField
                         label="Desired output structure"
                         placeholder='e.g. "Interval table + confidence + citations"'
                         value={value.desired_output_structure ?? ''}
-                        onChange={(v) =>
-                            update('desired_output_structure', v.trim() === '' ? null : v)
-                        }
+                        onChange={(v) => update('desired_output_structure', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
                 </div>
@@ -474,10 +427,7 @@ function TextField({
 }) {
     return (
         <label className="flex flex-col gap-0.5">
-            <span
-                className="text-[10px] font-mono uppercase tracking-wider"
-                style={labelStyle()}
-            >
+            <span className="text-[10px] font-mono uppercase tracking-wider" style={labelStyle()}>
                 {label}
                 {value === '' && (
                     <span className="ml-1.5" style={unspecifiedHint()}>
@@ -513,10 +463,7 @@ function NumberField({
 }) {
     return (
         <label className="flex flex-col gap-0.5">
-            <span
-                className="text-[10px] font-mono uppercase tracking-wider"
-                style={labelStyle()}
-            >
+            <span className="text-[10px] font-mono uppercase tracking-wider" style={labelStyle()}>
                 {label}
                 {value === null && (
                     <span className="ml-1.5" style={unspecifiedHint()}>
@@ -562,10 +509,7 @@ function SelectField({
 }) {
     return (
         <label className="flex flex-col gap-0.5">
-            <span
-                className="text-[10px] font-mono uppercase tracking-wider"
-                style={labelStyle()}
-            >
+            <span className="text-[10px] font-mono uppercase tracking-wider" style={labelStyle()}>
                 {label}
                 {value === null && (
                     <span className="ml-1.5" style={unspecifiedHint()}>
@@ -575,9 +519,7 @@ function SelectField({
             </span>
             <select
                 value={value ?? ''}
-                onChange={(e) =>
-                    onChange(e.target.value === '' ? null : e.target.value)
-                }
+                onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}
                 disabled={disabled}
                 className="text-xs px-2 py-1 rounded border disabled:opacity-60"
                 style={fieldShellStyle()}

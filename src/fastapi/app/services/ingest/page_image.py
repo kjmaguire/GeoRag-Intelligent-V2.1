@@ -175,13 +175,31 @@ def render_page_png(
 # "all" roughly doubles the points in georag_chunks and adds a render + a
 # network embed call per page, which is real ingestion latency.
 #
-#   all      — every page (default; Kyle's choice)
+# 2026-10-04: docker-compose.yml and deploy/aws/terraform/config.tf now set
+# `figures`. The verbalizer (IMAGE_VERBALIZATION_ENABLED) has never been
+# switched on anywhere, so under `all` every page-image passage is the
+# "[Page N ... not yet described]" placeholder (see `placeholder_text`), one
+# per page, competing with real text for top-k slots. `all` stays selectable
+# and stays the CODE default; it is the right setting once pages are described.
+#
+#   all      — every page (code default; Kyle's choice)
 #   figures  — only pages the parser could not read as text, i.e. the maps and
-#              plates that are invisible today. ~2% of pages on the live
-#              corpus, and the highest value-per-call setting.
+#              plates whose meaning is in the picture. The share of pages this
+#              selects is corpus-dependent and has NOT been measured on the
+#              live corpus (an earlier comment here claimed "~2%"; nothing
+#              backs it). It is bounded rather than assumed: the per-document
+#              cap is FIGURES_SCOPE_MAX_PAGES, so a 300-page scan cannot become
+#              300 renders and 300 placeholder passages.
 #   off      — disable image embedding entirely
 _SCOPE_ENV = "IMAGE_EMBED_PAGE_SCOPE"
 _VALID_SCOPES = ("all", "figures", "off")
+
+#: Ceiling on page images per document under scope ``figures``, whatever
+#: IMAGE_EMBED_MAX_PAGES_PER_DOC says (the lower of the two applies). Scope
+#: ``all`` keeps IMAGE_EMBED_MAX_PAGES_PER_DOC alone. A ``figures`` run that
+#: selects more than this is not selecting figures any more, it is selecting a
+#: scan, and each page costs a render, an S3 object and a placeholder passage.
+FIGURES_SCOPE_MAX_PAGES = 50
 
 
 def image_embed_scope() -> str:
@@ -210,25 +228,55 @@ def should_embed_page(page_number: int, text_pages: set[int]) -> bool:
     return True
 
 
-def text_pages_from_sections(sections: list[dict]) -> set[int]:
-    """Page numbers the parser read from a real text layer.
+def text_pages_from_sections(
+    sections: list[dict],
+    engine_text_pages: set[int] | frozenset[int] | None = None,
+) -> set[int]:
+    """Page numbers the parser read as text.
 
-    Used only by scope="figures". A page counts as text if ANY section
-    spanning it came from a native extractor — `cohere_parse` and
-    `tesseract` deliberately do NOT count, because a page that needed OCR is
-    exactly the kind of page (map, plate, scanned insert) whose picture
-    carries meaning the text does not.
+    Used only by scope="figures". A page counts as text if
+
+      * ANY section spanning it came from a native extractor (`fitz_native`,
+        `pdfplumber_native`), or
+      * OCR (`cohere_parse`, `tesseract`) yielded at least PER_PAGE_MIN_CHARS
+        of text for it. A page the OCR engine READ is a text page: counting
+        every OCR'd page as a figure made a 300-page scan 300 renders (hundreds
+        of MB) and 300 placeholder passages. Only an OCR page that came back
+        (nearly) empty - the map, plate or cross-section whose meaning is the
+        picture - stays a figure page. A section's text is attributed to the
+        pages it spans evenly (a chunk window can span several pages and no
+        per-page offsets reach this function) and summed per page, so two
+        short chunks on one page add up; or
+      * PDF_PARSE_MODE=all (2026-10-04): Cohere Parse also re-reads pages that
+        HAVE a text layer and replaces their native sections with its own.
+        ``engine_text_pages`` is the set pdf_report records in its
+        `pdf_parse_mode_summary` warning: pages the engine read that already
+        had a usable text layer. A `cohere_parse` section counts for exactly
+        those pages whatever its length.
     """
+    from app.services.ingest.pdf_report import PER_PAGE_MIN_CHARS  # noqa: PLC0415
+
     native = {"fitz_native", "pdfplumber_native"}
+    engine_text = set(engine_text_pages or ())
     pages: set[int] = set()
+    ocr_chars: dict[int, float] = {}
     for section in sections or []:
-        if (section.get("ocr_method") or "fitz_native") not in native:
-            continue
+        method = section.get("ocr_method") or "fitz_native"
         first = section.get("page_first")
         last = section.get("page_last") or first
         if first is None:
             continue
-        pages.update(range(int(first), int(last) + 1))
+        span = range(int(first), int(last) + 1)
+        if method in native:
+            pages.update(span)
+            continue
+        if method == "cohere_parse" and engine_text:
+            pages.update(p for p in span if p in engine_text)
+        if method in {"cohere_parse", "tesseract"} and len(span) > 0:
+            share = len(str(section.get("text") or "").strip()) / len(span)
+            for p in span:
+                ocr_chars[p] = ocr_chars.get(p, 0.0) + share
+    pages.update(p for p, n in ocr_chars.items() if n >= PER_PAGE_MIN_CHARS)
     return pages
 
 
@@ -253,12 +301,28 @@ def final_key(report_id: str, page_number: int) -> str:
     return f"{FINAL_PREFIX}/{report_id}/page_{page_number:05d}.png"
 
 
+def _embedding_backend_can_embed_images() -> bool:
+    """True when the active EMBEDDING_BACKEND has an image encoder.
+
+    Only the hosted Cohere adapters (``cohere``, ``bedrock``) implement
+    ``embed_image``. Under the self-hosted ``local`` backend an image passage
+    can never be embedded: it would sit at ``embedding_id IS NULL`` forever,
+    log ``image_backend_unsupported`` on every sweep, and hold its ingest run
+    open, because embed_verify waits for every passage to carry an embedding.
+    """
+    from app.services.embedding import EMBEDDING_BACKEND  # noqa: PLC0415
+
+    return str(EMBEDDING_BACKEND).strip().lower() in {"cohere", "bedrock"}
+
+
 def stage_page_images(
     pdf_path: str,
     sha256: str,
     sections: list[dict],
     *,
     max_pages: int | None = None,
+    engine_text_pages: set[int] | frozenset[int] | None = None,
+    warnings_out: list[dict] | None = None,
 ) -> list[dict]:
     """Render in-scope pages and upload them under their pending keys.
 
@@ -270,9 +334,25 @@ def stage_page_images(
     omitted from the manifest. A missing page image degrades search coverage
     for that page; it must never fail the whole document's ingestion, which
     would trade a working text pipeline for a nice-to-have one.
+
+    "Logged" was the only trace, though, and a log line is not something a
+    geologist sees. When ``warnings_out`` is given, a truncation to
+    IMAGE_EMBED_MAX_PAGES_PER_DOC appends one ``page_images_capped`` entry and
+    per-page render/upload failures one ``page_image_staging_failed`` entry
+    (``{code, severity, detail, count, pages}``), which the ingest_pdf run
+    carries onto its silver.ingest_progress row.
+
+    ``engine_text_pages`` -- see :func:`text_pages_from_sections`.
     """
     scope = image_embed_scope()
     if scope == "off":
+        return []
+    if not _embedding_backend_can_embed_images():
+        logger.warning(
+            "page_image: IMAGE_EMBED_PAGE_SCOPE=%s but EMBEDDING_BACKEND has no "
+            "image encoder (only cohere / bedrock do) -- skipping page images",
+            scope,
+        )
         return []
 
     from georag_object_storage import Bucket, get_storage_client  # noqa: PLC0415
@@ -292,7 +372,10 @@ def stage_page_images(
     finally:
         pdf.close()
 
-    text_pages = text_pages_from_sections(sections) if scope == "figures" else set()
+    text_pages = (
+        text_pages_from_sections(sections, engine_text_pages)
+        if scope == "figures" else set()
+    )
     targets = [
         n for n in range(1, total_pages + 1) if should_embed_page(n, text_pages)
     ]
@@ -303,16 +386,36 @@ def stage_page_images(
     # like full coverage is how "we indexed everything" becomes false.
     if max_pages is None:
         max_pages = int(os.environ.get("IMAGE_EMBED_MAX_PAGES_PER_DOC", "1000"))
+        if scope == "figures":
+            max_pages = min(max_pages, FIGURES_SCOPE_MAX_PAGES)
     if len(targets) > max_pages:
         logger.warning(
             "page_image: %d pages in scope for %s but IMAGE_EMBED_MAX_PAGES_PER_DOC=%d "
             "— indexing the first %d, dropping %d",
             len(targets), pdf_path, max_pages, max_pages, len(targets) - max_pages,
         )
+        if warnings_out is not None:
+            cap_note = (
+                f" (scope=figures never exceeds {FIGURES_SCOPE_MAX_PAGES})"
+                if scope == "figures" else ""
+            )
+            warnings_out.append({
+                "code": "page_images_capped",
+                "severity": "warning",
+                "detail": (
+                    f"{len(targets)} pages were in scope for page images "
+                    f"(scope={scope}) but IMAGE_EMBED_MAX_PAGES_PER_DOC={max_pages}"
+                    f"{cap_note}: only the first {max_pages} were indexed, "
+                    f"{len(targets) - max_pages} were dropped."
+                ),
+                "cap": max_pages,
+                "count": len(targets) - max_pages,
+            })
         targets = targets[:max_pages]
 
     storage = get_storage_client()
     manifest: list[dict] = []
+    failed_pages: list[int] = []
     for page_number in targets:
         try:
             png, width, height, dpi = render_page_png(pdf_bytes, page_number)
@@ -325,6 +428,7 @@ def stage_page_images(
                 "page_image: staging failed for page %d of %s: %s",
                 page_number, pdf_path, exc,
             )
+            failed_pages.append(page_number)
             continue
         manifest.append({
             "page_number": page_number,
@@ -332,6 +436,22 @@ def stage_page_images(
             "width": width,
             "height": height,
             "dpi": round(dpi, 1),
+        })
+
+    if failed_pages and warnings_out is not None:
+        shown = ", ".join(str(p) for p in failed_pages[:25])
+        more = len(failed_pages) - 25
+        warnings_out.append({
+            "code": "page_image_staging_failed",
+            "severity": "warning",
+            "detail": (
+                f"Page images could not be rendered or uploaded for "
+                f"{len(failed_pages)} page(s) ({shown}"
+                f"{f', +{more} more' if more > 0 else ''}); those pages have "
+                f"no image vector."
+            ),
+            "count": len(failed_pages),
+            "pages": failed_pages[:25],
         })
 
     if manifest:

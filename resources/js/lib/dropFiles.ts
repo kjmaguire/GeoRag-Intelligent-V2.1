@@ -147,8 +147,7 @@ export async function filesFromDataTransfer(dt: DataTransfer | null | undefined)
     const canWalk =
         items &&
         items.length > 0 &&
-        typeof (items[0] as DataTransferItem & { webkitGetAsEntry?: unknown }).webkitGetAsEntry ===
-            'function';
+        typeof (items[0] as DataTransferItem & { webkitGetAsEntry?: unknown }).webkitGetAsEntry === 'function';
 
     if (canWalk) {
         // Collect the entries BEFORE awaiting anything: the DataTransferItemList

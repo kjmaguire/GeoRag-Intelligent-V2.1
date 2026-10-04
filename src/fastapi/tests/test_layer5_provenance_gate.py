@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.hallucination.layer1_retrieval import build_refusal_text
 from app.agent.hallucination.layer5_provenance import gate_citation_provenance
+from app.agent.hallucination.refusals import PROVENANCE_REFUSAL_TEXT
 from app.agent.tools import DocumentChunk, DocumentSearchResult
 from app.config import settings
 from app.models.rag import Citation, GeoRAGResponse
@@ -95,7 +95,7 @@ class TestNonDocumentChunkCitationsAreUntouched:
             citation_id="[DATA-1]",
             citation_type="DATA",
             source_chunk_id="no-tool-call",
-            document_title="No tool call executed",
+            document_title="No source retrieved",
             relevance_score=0.0,
         )
         response = _response([citation])
@@ -278,7 +278,7 @@ class TestAllCitationsRejected:
         # Hard rule 4 (rag-expert follow-up, 2026-09-24): the only citation
         # was rejected, so the whole response falls through to a refusal —
         # no unsupported prose ships, and sources_used matches.
-        assert gated.text == build_refusal_text()
+        assert gated.text == PROVENANCE_REFUSAL_TEXT
         assert gated.sources_used == ["provenance-rejected"]
 
 
@@ -307,7 +307,7 @@ class TestSentenceRemoval:
 
         assert len(warnings) == 1
         # Only citation was rejected -> nothing citeable survives -> refusal.
-        assert gated.text == build_refusal_text()
+        assert gated.text == PROVENANCE_REFUSAL_TEXT
         assert "1.85" not in gated.text
         assert "[NI43-1]" not in gated.text
 
@@ -394,7 +394,7 @@ class TestSentenceRemoval:
         )
 
         assert len(warnings) == 2
-        assert gated.text == build_refusal_text()
+        assert gated.text == PROVENANCE_REFUSAL_TEXT
         assert len(gated.citations) == 1
         assert gated.citations[0].source_chunk_id == "provenance-rejected"
         # The placeholder's own citation_id never appears inline in the

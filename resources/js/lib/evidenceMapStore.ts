@@ -33,12 +33,7 @@ export const evidenceMapStore = {
     set(pin: SpatialPin | null): void {
         if (currentPin === pin) return;
         // Equality check: structural for hole_id / collar_set / pg_feature.
-        if (
-            currentPin &&
-            pin &&
-            currentPin.kind === pin.kind &&
-            JSON.stringify(currentPin) === JSON.stringify(pin)
-        ) {
+        if (currentPin && pin && currentPin.kind === pin.kind && JSON.stringify(currentPin) === JSON.stringify(pin)) {
             return;
         }
         currentPin = pin;

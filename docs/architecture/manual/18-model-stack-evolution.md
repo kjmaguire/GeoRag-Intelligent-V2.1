@@ -14,8 +14,10 @@
 > [ADR-0023](../../adr/0023-cohere-chat-and-parse-move-to-coheres-own-api.md)
 > took chat and OCR back off Bedrock onto Cohere's own API one week later.
 > The split that leaves is the thing to carry away from this chapter: the
-> four Cohere models no longer share one host. Embed and Rerank are
-> serverless Bedrock; Command A+ and Parse are `api.cohere.com`.
+> four Cohere models no longer share one host. Rerank is serverless
+> Bedrock; Command A+ and Parse are `api.cohere.com`. (2026-10-04,
+> [ADR-0025](../../adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md):
+> Embed moved to `api.cohere.com` as Embed 5, which Bedrock does not serve.)
 > Everything in §3 (PaddleOCR, Docling) was already flagged as superseded.
 > [Ch 08](08-llm-and-ml.md) is the current model stack; where the two
 > disagree, Ch 08 wins.
@@ -48,7 +50,7 @@ defaults.** Always read the model stack in two columns.
 
 | Slot | Production (live, env-driven) | Code/compose default (stale) |
 |---|---|---|
-| Dense embedder | `Qwen/Qwen3-Embedding-0.6B`, 1024-dim | **Superseded.** Production default is Cohere Embed v4 on Bedrock at 1024-dim (Foundry 2026-07-30 → 2026-09-08); the Qwen model runs only in the dev `embedding` sidecar |
+| Dense embedder | `Qwen/Qwen3-Embedding-0.6B`, 1024-dim | **Superseded.** Production default is Cohere Embed 5 Pro on Cohere's own API at 1024-dim (ADR-0025, 2026-10-04; before that Embed v4 on Bedrock 2026-09-08, and on Foundry 2026-07-30 → 2026-09-08); the Qwen model runs only in the dev `embedding` sidecar |
 | Reranker | `Qwen/Qwen3-Reranker-0.6B` on GPU — validated +13.9 % NDCG@10 over bge (0.7048 vs 0.6188) | **Superseded.** Production default is Cohere Rerank on Bedrock; Qwen3-Reranker runs in the dev `reranker` sidecar. Note the version went BACKWARDS at the cloud move — Foundry served v4, Bedrock serves 3.5 — and `RERANKER_SCORE_THRESHOLD_HOSTED` was measured against v4 |
 | VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` on vLLM | **Gone.** The vLLM service was deleted 2026-07-30. Page description runs through a Bedrock vision model, off the ingest critical path and inert unless `IMAGE_VERBALIZATION_ENABLED` — and now also unless `BEDROCK_VISION_MODEL_ID` is set, which has no default because Bedrock has no equivalent of the retired `gpt-5-mini` |
 | Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` | **Superseded.** Cohere Command A+ on Cohere's own API (`LLM_BACKEND=cohere`, the default since ADR-0023; `azure` is a startup error). It was `bedrock` for one week — Command A+ turned out to be an AWS *Marketplace* SageMaker package, not a Bedrock model, so it billed A100/H100 hours whether or not anything called it. `bedrock` stays selectable for an operator who deploys such an endpoint anyway. The Qwen name survives as `LLM_PRIMARY_MODEL`'s default, which applies only to `LLM_BACKEND=vllm` |

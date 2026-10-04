@@ -99,9 +99,9 @@ def test_dispatcher_has_a_call_branch_for_the_tool() -> None:
         "nodes.py has no dispatch branch for search_public_geoscience — it "
         "would fall through to a positional call shape and raise TypeError."
     )
-    assert "text_query=query" in src, (
-        "The dispatch branch must pass the query as the keyword-only "
-        "text_query argument."
+    assert "text_query=text_token" in src, (
+        "The dispatch branch must pass an entity token as the keyword-only "
+        "text_query argument (never the whole question — audit item 14)."
     )
 
 

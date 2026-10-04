@@ -64,6 +64,7 @@ expected to be added to v3.1-supplemental-alerts.yml in a follow-up.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 from uuid import UUID
@@ -71,6 +72,9 @@ from uuid import UUID
 import httpx
 
 logger = logging.getLogger(__name__)
+
+#: Floor for the pg_trgm lexical fallback; see `_pg_trgm_search`.
+_STRICT_WORD_SIMILARITY_FLOOR = 0.3
 
 
 # Sentinel base class catch — qdrant_client's exception hierarchy. We
@@ -155,6 +159,21 @@ async def safe_hybrid_query(
     ), True
 
 
+def _payload_dict(raw: Any) -> dict[str, Any]:
+    """The jsonb_build_object payload as a dict.
+
+    No jsonb codec is registered on any pool in this service, so asyncpg hands
+    a jsonb column back as TEXT. `dict()` over that raised ValueError, which
+    the blanket handler below turned into an empty result -- the fallback
+    could not return a row even once its query matched.
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, (str, bytes, bytearray)):
+        raw = json.loads(raw)
+    return dict(raw)
+
+
 async def _pg_trgm_search(
     *,
     pg_pool: Any,
@@ -194,7 +213,8 @@ async def _pg_trgm_search(
     #
     #   0.3 rather than pg_trgm's 0.5 default: this runs only when
     #   semantic search is already gone, so a loose lexical hit ranked
-    #   below a good one beats an empty page.
+    #   below a good one beats an empty page. (_STRICT_WORD_SIMILARITY_FLOOR;
+    #   the `<<%` operator below compares against the GUC it is set into.)
     sql = """
         SELECT
             passage_id::text AS id,
@@ -208,7 +228,7 @@ async def _pg_trgm_search(
             ) AS payload
           FROM silver.document_passages
          WHERE workspace_id = $2::uuid
-           AND strict_word_similarity($1, text) > 0.3
+           AND $1 <<% text
          ORDER BY score DESC
          LIMIT $3
     """
@@ -226,12 +246,31 @@ async def _pg_trgm_search(
                 await bind_workspace_scope(
                     conn, workspace_id=ws, site="qdrant_fallback",
                 )
+                # `$1 <<% text` is the operator spelling of
+                # strict_word_similarity($1, text) >= threshold. It is NOT
+                # index-served: the GIN trigram index this once named
+                # (idx_document_passages_text_trgm) was dropped from migration
+                # 2026_10_04_200200 because pg_trgm.so is broken in the CI
+                # image, and no other index on silver.document_passages covers
+                # `text`. What serves the query is idx_document_passages_
+                # workspace_id (the `workspace_id = $2` predicate), after which
+                # `<<%` is evaluated per row -- a scan of every passage in the
+                # workspace. Acceptable for an outage-only degraded path; a GIN
+                # gin_trgm_ops index on text is the fix if that stops being true.
+                # The operator reads its floor from this GUC, so the 0.3 above
+                # is set here for the transaction (set_config(..., true) is SET
+                # LOCAL; the transaction this block already needs scopes it).
+                await conn.execute(
+                    "SELECT set_config("
+                    "'pg_trgm.strict_word_similarity_threshold', $1, true)",
+                    str(_STRICT_WORD_SIMILARITY_FLOOR),
+                )
                 rows = await conn.fetch(sql, query_text, ws, limit)
         return [
             {
                 "id": r["id"],
                 "score": float(r["score"]),
-                "payload": dict(r["payload"]) if r["payload"] else {},
+                "payload": _payload_dict(r["payload"]),
             }
             for r in rows
         ]

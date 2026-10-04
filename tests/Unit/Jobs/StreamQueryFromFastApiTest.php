@@ -96,10 +96,13 @@ class StreamQueryFromFastApiTest extends TestCase
         // a name FastAPI never produces and no docblock lists; the frontend
         // tolerated it, which is what kept the path alive rather than what
         // made it correct.
-        // and code=statusCode.
+        // and code=statusCode. A 503 is the exception: it is FastAPI's
+        // retryable project-lifecycle-check failure and carries
+        // SERVICE_UNAVAILABLE plus a retry-in-a-few-seconds message (see
+        // StreamQueryFailClosedTest for the message assertion).
         Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e) {
             return ($e->eventType ?? null) === 'failed'
-                && (($e->payload['code'] ?? null) === 503);
+                && (($e->payload['code'] ?? null) === 'SERVICE_UNAVAILABLE');
         });
     }
 

@@ -83,6 +83,35 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: HATCHET_CLIENT_TOKEN
+            # COHERE_API_KEY: chat (LLM_BACKEND=cohere, the default) and Cohere
+            # Parse OCR both read it, and the API process runs the production-
+            # posture check that logs CRITICAL when it is empty. The worker gets
+            # the whole Secret through envFrom; this Deployment lists its keys,
+            # so the key must be named here or an on-prem install that set it
+            # reaches only the worker. optional: true - an air-gapped install
+            # (`ocr.engine: tesseract`, no egress) has no such key, and a
+            # required reference would hold the pod in CreateContainerConfigError.
+            - name: COHERE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: COHERE_API_KEY
+                  optional: true
+            # ADR-0025 follow-up: set explicitly. The code default is now
+            # "cohere", which an on-prem / air-gapped install cannot reach (no
+            # COHERE_API_KEY here, and no egress), so an unset value would take
+            # the hosted default instead of the self-hosted model. MUST be
+            # identical on the fastapi (query) and hatchet-worker (ingest)
+            # Deployments or one vector space is written and another queried.
+            - name: EMBEDDING_BACKEND
+              value: "local"
+            # Cohere Parse is the default OCR engine (2026-10-04, same rule as
+            # EMBEDDING_BACKEND: unset means the hosted engine). It needs
+            # COHERE_API_KEY and egress to api.cohere.com; without the key the
+            # worker logs one CRITICAL per process and runs Tesseract. An
+            # air-gapped site sets `ocr.engine: tesseract` in values.
+            - name: OCR_ENGINE
+              value: {{ .Values.ocr.engine | quote }}
           resources: {{- toYaml .Values.fastapi.resources | nindent 12 }}
           readinessProbe:
             httpGet:

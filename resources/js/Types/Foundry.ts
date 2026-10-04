@@ -215,7 +215,14 @@ export interface TargetsProps {
 }
 
 export interface DecisionCaptureContext {
-    kind: 'drill_target' | 'report_approved' | 'threshold_change' | 'source_promoted' | 'hypothesis_accept' | 'query_pin' | 'manual';
+    kind:
+        | 'drill_target'
+        | 'report_approved'
+        | 'threshold_change'
+        | 'source_promoted'
+        | 'hypothesis_accept'
+        | 'query_pin'
+        | 'manual';
     subject: string | null;
     project_id: string | null;
 }
@@ -224,7 +231,15 @@ export interface WhatChangedEvent {
     id: string;
     timestamp_seconds_ago: number;
     group: 'today' | 'yesterday' | 'this week' | 'older';
-    kind: 'evidence_new' | 'ingestion' | 'hypothesis_flip' | 'retrieval_drift' | 'threshold_breach' | 'source_promoted' | 'ontology' | 'decision_logged';
+    kind:
+        | 'evidence_new'
+        | 'ingestion'
+        | 'hypothesis_flip'
+        | 'retrieval_drift'
+        | 'threshold_breach'
+        | 'source_promoted'
+        | 'ontology'
+        | 'decision_logged';
     priority: 'high' | 'med' | 'low';
     title: string;
     detail: string;

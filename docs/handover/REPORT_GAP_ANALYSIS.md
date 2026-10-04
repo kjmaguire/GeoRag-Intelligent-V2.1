@@ -27,10 +27,10 @@ Total gaps found: **19** (Critical: 3, Moderate: 9, Minor: 7, Confirmed accurate
 
 ### C3 — Fusion algorithm (RRF) not documented anywhere
 - **Category:** 7. Retrieval pipeline
-- **Location:** `src/fastapi/app/services/fusion.py`
-- **What it is:** `RRF_K = 60`, formula `score(d) = Σ 1/(k + rank(d))`, with per-list weighting via `RetrievalProfile.bm25_weight` (0.0 = dense-only … 1.0 = sparse-only).
+- **Location:** `src/fastapi/app/services/qdrant_service.py` (`hybrid_query`)
+- **What it is:** Qdrant server-side `Fusion.RRF` over the dense and SPLADE++ sparse prefetch branches, formula `score(d) = Σ 1/(k + rank(d))`. There is no per-list weighting: `RetrievalProfile.bm25_weight` was deleted 2026-10-04 (it was never read), and `services/fusion.py` no longer exists.
 - **Why missed:** SAD §2.1 names dense/sparse/graph technologies and DFS §2.3 says "hybrid search (dense + sparse)" but the actual cross-store score-combination math appears in **none** of the 5 handover files.
-- **Why it matters:** This is the core of how RAG ranking works — without it nobody can reason about ranking changes, tune the bm25_weight knob per intent, or debug "why did this chunk rank here".
+- **Why it matters:** This is the core of how RAG ranking works — without it nobody can reason about ranking changes, or debug "why did this chunk rank here".
 
 ---
 
@@ -51,7 +51,7 @@ Total gaps found: **19** (Critical: 3, Moderate: 9, Minor: 7, Confirmed accurate
 ### M3 — Per-intent retrieval profile shape not documented
 - **Category:** 7. Retrieval pipeline
 - **Location:** `src/fastapi/app/agent/agentic_retrieval/retrieval_profile.py`
-- **What it is:** 8 fields per intent: `primary_tools`, `secondary_tools`, `bm25_weight`, `conflict_detection_enabled`, `adversarial_pass_enabled`, `surface_qa_qc_fields`, `require_regulatory_constraints`, `answer_emphasis` (6-value Literal), `max_chunks`.
+- **What it is:** 8 fields per intent: `primary_tools`, `secondary_tools`, `conflict_detection_enabled`, `adversarial_pass_enabled`, `surface_qa_qc_fields`, `require_regulatory_constraints`, `answer_emphasis` (6-value Literal). (`bm25_weight` and `max_chunks` were deleted 2026-10-04: declared, never read.)
 - **What's missing:** SAD §3.3.2 only says "per-intent retrieval profile (k, fusion weights, rerank toggle, parent expansion, MMR)". The actual 8 intents × 8 fields table is the canonical retrieval contract.
 
 ### M4 — Reranker per-class top-K + batch policy undocumented

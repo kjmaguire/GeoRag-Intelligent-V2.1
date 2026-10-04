@@ -10,14 +10,20 @@ const channel = vi.hoisted(() => ({ handler: null as null | ((e: unknown) => voi
 vi.mock('@/lib/echoChannel', () => ({
     listenPrivate: (_name: string, _event: string, cb: (e: unknown) => void) => {
         channel.handler = cb;
-        return () => { channel.handler = null; };
+        return () => {
+            channel.handler = null;
+        };
     },
 }));
 
 import { mergeDataUpdatedEvents, useWorkspaceDataUpdated } from '../useWorkspaceDataUpdated';
 
 const evt = (types: string[], run = 'r') => ({
-    workspace_id: 'w', project_id: 'p-1', pipeline_run_id: run, affected_types: types, updated_at: 'now',
+    workspace_id: 'w',
+    project_id: 'p-1',
+    pipeline_run_id: run,
+    affected_types: types,
+    updated_at: 'now',
 });
 
 beforeEach(() => {

@@ -119,7 +119,7 @@ export function circularMeanDeg(bearings: readonly number[]): number {
         s += Math.sin(b * DEG);
         c += Math.cos(b * DEG);
     }
-    return ((Math.atan2(s, c) / DEG) + 360) % 360;
+    return (Math.atan2(s, c) / DEG + 360) % 360;
 }
 
 function dot(a: Vec, b: Vec): number {
@@ -147,7 +147,10 @@ function minCurvatureStep(a: Vec, b: Vec, dmd: number): Vec {
     return [k * (a[0] + b[0]), k * (a[1] + b[1]), k * (a[2] + b[2])];
 }
 
-function stationsFor(collar: DesurveyCollar, surveys: readonly SurveyStationInput[]): {
+function stationsFor(
+    collar: DesurveyCollar,
+    surveys: readonly SurveyStationInput[],
+): {
     stations: Station[];
     surveyed: boolean;
     orientation: OrientationSource;
@@ -176,9 +179,8 @@ function stationsFor(collar: DesurveyCollar, surveys: readonly SurveyStationInpu
         stations.push({ md: 0, azimuth: 0, dip: -90 });
     }
 
-    const orientation: OrientationSource = dedup.length > 0
-        ? 'surveys'
-        : hasCollarAttitude ? 'collar' : 'assumed_vertical';
+    const orientation: OrientationSource =
+        dedup.length > 0 ? 'surveys' : hasCollarAttitude ? 'collar' : 'assumed_vertical';
 
     return { stations, surveyed: dedup.length > 0, orientation };
 }
@@ -201,11 +203,17 @@ export function desurveyHole(
     const lastStationMd = stations[stations.length - 1].md;
     const maxDepth = Math.max(collar.totalDepth ?? 0, extendTo, lastStationMd);
 
-    const path: PathPoint[] = [{
-        md: 0, x: 0, y: 0, z: 0,
-        azimuth: stations[0].azimuth, dip: stations[0].dip,
-        extrapolated: false,
-    }];
+    const path: PathPoint[] = [
+        {
+            md: 0,
+            x: 0,
+            y: 0,
+            z: 0,
+            azimuth: stations[0].azimuth,
+            dip: stations[0].dip,
+            extrapolated: false,
+        },
+    ];
     let pos: Vec = [0, 0, 0];
 
     for (let i = 1; i < stations.length; i++) {
@@ -224,8 +232,11 @@ export function desurveyHole(
             const att = k === n ? { azimuth: b.azimuth, dip: b.dip } : vecToAttitude(vf);
             path.push({
                 md: a.md + dmd * f,
-                x: start[0] + d[0], y: start[1] + d[1], z: start[2] + d[2],
-                azimuth: att.azimuth, dip: att.dip,
+                x: start[0] + d[0],
+                y: start[1] + d[1],
+                z: start[2] + d[2],
+                azimuth: att.azimuth,
+                dip: att.dip,
                 extrapolated: false,
             });
         }
@@ -239,8 +250,11 @@ export function desurveyHole(
         const len = maxDepth - lastStationMd;
         path.push({
             md: maxDepth,
-            x: pos[0] + v[0] * len, y: pos[1] + v[1] * len, z: pos[2] + v[2] * len,
-            azimuth: s.azimuth, dip: s.dip,
+            x: pos[0] + v[0] * len,
+            y: pos[1] + v[1] * len,
+            z: pos[2] + v[2] * len,
+            azimuth: s.azimuth,
+            dip: s.dip,
             extrapolated: true,
         });
     }
@@ -269,7 +283,11 @@ export function positionAtDepth(hole: DesurveyedHole, md: number): { x: number; 
  * The sub-path between two measured depths (inclusive), for drawing an
  * interval as a segment of the real hole rather than a vertical stick.
  */
-export function pathBetween(hole: DesurveyedHole, fromMd: number, toMd: number): { x: number[]; y: number[]; z: number[] } {
+export function pathBetween(
+    hole: DesurveyedHole,
+    fromMd: number,
+    toMd: number,
+): { x: number[]; y: number[]; z: number[] } {
     const lo = Math.min(fromMd, toMd);
     const hi = Math.max(fromMd, toMd);
     const out = { x: [] as number[], y: [] as number[], z: [] as number[] };
@@ -343,7 +361,11 @@ export function worldAtDepth(hole: PlacedHole, md: number): { x: number; y: numb
 }
 
 /** Absolute sub-path between two MDs on a placed hole. */
-export function worldPathBetween(hole: PlacedHole, fromMd: number, toMd: number): { x: number[]; y: number[]; z: number[] } {
+export function worldPathBetween(
+    hole: PlacedHole,
+    fromMd: number,
+    toMd: number,
+): { x: number[]; y: number[]; z: number[] } {
     const p = pathBetween(hole, fromMd, toMd);
     return {
         x: p.x.map((v) => v + hole.origin.x),
@@ -365,8 +387,16 @@ export function deepestIntervalByCollar(
     return out;
 }
 
-export interface XYZ { x: number; y: number; z: number }
-export interface XYZArrays { x: number[]; y: number[]; z: number[] }
+export interface XYZ {
+    x: number;
+    y: number;
+    z: number;
+}
+export interface XYZArrays {
+    x: number[];
+    y: number[];
+    z: number[];
+}
 
 /**
  * A desurveyed set of holes in one Plotly scene: easting/northing re-centred
@@ -401,7 +431,11 @@ export function buildScene3D(
     const n = Math.max(1, holes.size);
     const cE = sumE / n;
     const cN = sumN / n;
-    const shift = (p: XYZ, h: PlacedHole): XYZ => ({ x: h.origin.x - cE + p.x, y: h.origin.y - cN + p.y, z: h.origin.z + p.z });
+    const shift = (p: XYZ, h: PlacedHole): XYZ => ({
+        x: h.origin.x - cE + p.x,
+        y: h.origin.y - cN + p.y,
+        z: h.origin.z + p.z,
+    });
     const shiftArrays = (a: { x: number[]; y: number[]; z: number[] }, h: PlacedHole): XYZArrays => ({
         x: a.x.map((v) => v + h.origin.x - cE),
         y: a.y.map((v) => v + h.origin.y - cN),
@@ -421,11 +455,14 @@ export function buildScene3D(
         fullPath(collarId) {
             const h = holes.get(collarId);
             if (!h) return null;
-            return shiftArrays({
-                x: h.path.map((p) => p.x),
-                y: h.path.map((p) => p.y),
-                z: h.path.map((p) => p.z),
-            }, h);
+            return shiftArrays(
+                {
+                    x: h.path.map((p) => p.x),
+                    y: h.path.map((p) => p.y),
+                    z: h.path.map((p) => p.z),
+                },
+                h,
+            );
         },
         caption: describeDesurvey(holes.values()),
         elevationKnownForAll: Array.from(holes.values()).every((h) => h.elevationKnown),

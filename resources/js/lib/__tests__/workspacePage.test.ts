@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-    LOG_PROPS,
-    VIZ3D_PROPS,
-    copilotQuickPrompts,
-    crsLabel,
-    initialView3D,
-    reloadPlan,
-} from '@/lib/workspacePage';
+import { LOG_PROPS, VIZ3D_PROPS, copilotQuickPrompts, crsLabel, initialView3D, reloadPlan } from '@/lib/workspacePage';
 
 describe('reloadPlan (FE-11)', () => {
     it('reloads everything for collar or assay changes', () => {

@@ -143,7 +143,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: ci_root_password
@@ -277,7 +277,7 @@ jobs:
         # Digest pinned (Chunk 10.2): sha256 captured 2026-04-26 from
         # docker pull postgis/postgis:18-3.6 on the Debian (non-alpine) variant.
         # Re-pin when upgrading PostGIS minor version.
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           # 2026-08-17 CI-gap audit: matches phpunit.pgsql.xml's hardcoded
@@ -863,7 +863,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1014,12 +1014,12 @@ jobs:
         env:
           QDRANT_HOST: localhost
           QDRANT_PORT: "6333"
-          # Mirror production, which runs EMBEDDING_BACKEND=bedrock. The
-          # script picks the dimension variable by backend, so an
-          # EMBEDDING_DIMENSION set without a backend — which is what this
-          # job used to do — is read by nobody.
-          EMBEDDING_BACKEND: bedrock
-          BEDROCK_EMBED_DIMENSION: "1024"
+          # Mirror production, which runs EMBEDDING_BACKEND=cohere (ADR-0025;
+          # bedrock before it). The script picks the dimension variable by
+          # backend, so an EMBEDDING_DIMENSION set without a backend — which
+          # is what this job used to do — is read by nobody.
+          EMBEDDING_BACKEND: cohere
+          COHERE_EMBED_DIMENSION: "1024"
 
   # ─── E2E money-path smoke (BLOCKING since 2026-08-21) ─────────────────
   # 2026-08-15 testing audit: the money path (upload -> parse -> OCR/native
@@ -1076,7 +1076,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1139,6 +1139,15 @@ jobs:
       EMBEDDING_SERVICE_URL: http://localhost:8899
       LLM_BACKEND: vllm
       VLLM_URL: http://localhost:8899/v1
+      # 2026-10-04: the reranker is the stub too (its /rerank route), through
+      # the sidecar-proxy branch. RERANKER_BACKEND was never set here, so the
+      # job ran the Bedrock reranker (the code default since ADR-0022) with no
+      # credentials; every predict() failed and search_documents silently
+      # fell back to RRF order, which is how the smoke stayed green. A
+      # reranker outage now fails the query (the score floor is the
+      # retrieval-quality gate), so the smoke needs a reranker that answers.
+      RERANKER_BACKEND: cross_encoder
+      RERANKER_SERVICE_URL: http://localhost:8899
       # 2026-08-15: the query leg was hitting TIMEOUT_GATHER_S (default 8.0s,
       # app/config.py) before the reranker call finished. Two compounding CI-
       # only causes, neither present in prod's tuning assumptions:
@@ -1397,7 +1406,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1507,7 +1516,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1580,12 +1589,10 @@ jobs:
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:
-    # Renamed 2026-08-21. The title said ESLint; the steps are tsc, vitest
-    # and vite build. There is no eslint config, no eslint dependency and no
-    # lint script in package.json, so a reviewer trusting the check name
-    # assumed lint coverage over 27+ React source files that have none.
-    # Adding ESLint is worth doing and is a separate change with its own
-    # findings to burn down — what could not stay is the name claiming it.
+    # Renamed 2026-08-21, when the title said ESLint but no lint existed.
+    # ESLint (flat config, eslint.config.js) and Prettier were added
+    # 2026-10-04 as the `npm run lint` and `npm run format:check` steps below.
+    # The name is unchanged on purpose: it is a required-check name.
     name: Frontend (types + tests + build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1604,6 +1611,12 @@ jobs:
 
       - name: TypeScript type check
         run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier format check
+        run: npm run format:check
 
       # Instrumentation, not a gate. `noImplicitAny` is false in
       # tsconfig.json, which cancels most of `strict: true`: untyped
@@ -1862,7 +1875,7 @@ jobs:
         # Both variants carry PostgreSQL 18 + PostGIS 3.6 — the major version
         # match is what closes H-A4-03.
         # Digest pinned (Chunk 10.2): sha256 captured 2026-04-26.
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password

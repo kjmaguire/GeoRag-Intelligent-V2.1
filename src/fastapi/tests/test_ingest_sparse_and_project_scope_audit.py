@@ -268,6 +268,88 @@ async def test_failed_sparse_encode_leaves_the_passage_for_retry(monkeypatch):
     assert "COALESCE(r.project_id, dp.project_id)" in conn.queries[0]
 
 
+class _HostedDense(_Dense):
+    """The surface of the hosted adapters (_CohereEmbedding / _BedrockEmbedding)."""
+
+    model_name = "embed-v5.0-pro"
+
+    def __init__(self) -> None:
+        self.images_embedded: list[bytes] = []
+
+    def embed_image(self, png_bytes, *, mime="image/png"):
+        import numpy as np
+
+        self.images_embedded.append(png_bytes)
+        return np.full(4, 2.0)
+
+
+async def _run_sweep(monkeypatch, rows, model):
+    import app.services.ingest.passage_embedder as pe
+    import app.services.sparse_encoder as se
+
+    conn = _PgConn(rows)
+
+    async def _connect(*a, **k):
+        return conn
+
+    async def _bind(*a, **k):
+        return None
+
+    monkeypatch.setattr(pe.asyncpg, "connect", _connect)
+    monkeypatch.setattr(pe, "bind_workspace_scope", _bind)
+    monkeypatch.setattr(pe, "_dsn", lambda: "postgresql://x")
+    monkeypatch.setattr(se, "encode_sparse", lambda text: {5: 1.0})
+
+    qdrant = _Qdrant()
+    await pe.embed_pending_passages(
+        workspace_id="ws", embedding_model=model, qdrant_client=qdrant, concurrency=1,
+    )
+    return qdrant
+
+
+@pytest.mark.asyncio
+async def test_every_point_records_the_model_that_embedded_it(monkeypatch):
+    """ADR-0025: ``embed_model`` on text AND image points, so a collection
+    holding two vector spaces is detectable from the data (migration step 6:
+    "zero points lack embed_model = embed-v5.0-pro")."""
+    import georag_object_storage as gos
+
+    class _Storage:
+        def get_bytes(self, bucket, key):
+            return b"\x89PNG page render"
+
+    monkeypatch.setattr(gos, "get_storage_client", lambda: _Storage())
+
+    text = _passage("collar PLS-22-08")
+    image = _passage(
+        "page image", modality="image", image_object_key="bronze-raster/doc/p3.png",
+        page_number=3, chunk_kind="page_image",
+    )
+    model = _HostedDense()
+    qdrant = await _run_sweep(monkeypatch, [text, image], model)
+
+    by_modality = {p.payload["modality"]: p.payload for p in qdrant.points}
+    assert set(by_modality) == {"text", "image"}, "both kinds of point must be written"
+    assert by_modality["text"]["embed_model"] == "embed-v5.0-pro"
+    assert by_modality["image"]["embed_model"] == "embed-v5.0-pro"
+    assert model.images_embedded == [b"\x89PNG page render"]
+
+
+@pytest.mark.asyncio
+async def test_the_local_model_is_tagged_with_the_configured_name(monkeypatch):
+    from app.config import settings
+
+    qdrant = await _run_sweep(monkeypatch, [_passage("collar PLS-22-08")], _Dense())
+    assert [p.payload["embed_model"] for p in qdrant.points] == [settings.EMBEDDING_MODEL_NAME]
+
+
+def test_the_tag_helper_prefers_the_adapters_model_name():
+    from app.services.ingest.passage_embedder import embed_model_tag
+
+    assert embed_model_tag(_HostedDense()) == "embed-v5.0-pro"
+    assert embed_model_tag(_Dense())  # falls back to a non-empty configured name
+
+
 # ---------------------------------------------------------------------------
 # RAG-9 — the retrieval filter, evaluated by a real (in-memory) Qdrant
 # ---------------------------------------------------------------------------

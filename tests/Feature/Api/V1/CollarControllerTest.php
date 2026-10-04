@@ -113,6 +113,96 @@ class CollarControllerTest extends TestCase
         $this->assertCount(1, $response->json('data'));
     }
 
+    public function test_index_filters_by_exact_hole_id(): void
+    {
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_id' => 'LEB-23-001',
+            'hole_id_canonical' => 'LEB23001',
+        ]);
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_id' => 'LEB-23-002',
+            'hole_id_canonical' => 'LEB23002',
+        ]);
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/collars?hole_id=LEB-23-001&per_page=1",
+        );
+
+        $response->assertOk();
+        $this->assertCount(1, $response->json('data'));
+        $this->assertSame('LEB-23-001', $response->json('data.0.hole_id'));
+    }
+
+    public function test_index_hole_id_filter_matches_a_spelling_variant_via_canonical_form(): void
+    {
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_id' => 'LEB-23-001',
+            'hole_id_canonical' => 'LEB23001',
+        ]);
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_id' => 'LEB-23-002',
+            'hole_id_canonical' => 'LEB23002',
+        ]);
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/collars?hole_id=".urlencode('leb 23/001'),
+        );
+
+        $response->assertOk();
+        $this->assertCount(1, $response->json('data'));
+        $this->assertSame('LEB-23-001', $response->json('data.0.hole_id'));
+    }
+
+    public function test_index_hole_id_filter_does_not_cross_projects(): void
+    {
+        $other = Project::factory()->create();
+        Collar::factory()->create([
+            'project_id' => $other->project_id,
+            'hole_id' => 'LEB-23-001',
+            'hole_id_canonical' => 'LEB23001',
+        ]);
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/collars?hole_id=LEB-23-001",
+        );
+
+        $response->assertOk();
+        $this->assertCount(0, $response->json('data'));
+    }
+
+    public function test_index_hole_id_filter_returns_nothing_for_an_unknown_hole(): void
+    {
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_id' => 'LEB-23-001',
+            'hole_id_canonical' => 'LEB23001',
+        ]);
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/collars?hole_id=NOPE-1",
+        );
+
+        $response->assertOk();
+        $this->assertCount(0, $response->json('data'));
+    }
+
+    public function test_index_rejects_a_non_scalar_or_oversized_hole_id_with_422(): void
+    {
+        $this->getJson("/api/v1/projects/{$this->project->project_id}/collars?hole_id[]=x")
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('hole_id');
+
+        $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/collars?hole_id=".str_repeat('A', 51),
+        )
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('hole_id');
+    }
+
     public function test_index_returns_404_for_nonexistent_project(): void
     {
         $response = $this->getJson('/api/v1/projects/00000000-0000-0000-0000-000000000000/collars');

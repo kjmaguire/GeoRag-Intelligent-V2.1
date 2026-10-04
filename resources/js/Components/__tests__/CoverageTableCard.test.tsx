@@ -12,10 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import CoverageTableCard, {
-    type CoverageRow,
-    type IngestGap,
-} from '../CoverageTableCard';
+import CoverageTableCard, { type CoverageRow, type IngestGap } from '../CoverageTableCard';
 
 const ROWS: CoverageRow[] = [
     { attribute: 'Assays', collars_with_data: 320, collars_total: 567, coverage_pct: 56.4 },
@@ -71,9 +68,7 @@ describe('CoverageTableCard — attribute rows', () => {
         render(<CoverageTableCard rows={ROWS} ingestGap={INGEST_GAP} />);
         const bars = document.querySelectorAll('[role="progressbar"]');
         expect(bars.length).toBe(ROWS.length);
-        const assayBar = screen
-            .getByTestId('coverage-row-Assays')
-            .querySelector('[role="progressbar"]');
+        const assayBar = screen.getByTestId('coverage-row-Assays').querySelector('[role="progressbar"]');
         expect(assayBar?.getAttribute('aria-valuenow')).toBe('56.4');
     });
 

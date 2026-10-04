@@ -33,13 +33,13 @@ interface StereosphereProps {
  */
 
 const TYPE_COLORS: Record<string, string> = {
-    bedding:   '#3b82f6',
+    bedding: '#3b82f6',
     foliation: '#a855f7',
-    fault:     '#ef4444',
-    shear:     '#f97316',
-    joint:     '#14b8a6',
-    fracture:  '#eab308',
-    vein:      '#22c55e',
+    fault: '#ef4444',
+    shear: '#f97316',
+    joint: '#14b8a6',
+    fracture: '#eab308',
+    vein: '#22c55e',
     lineation: '#ec4899',
 };
 
@@ -70,15 +70,15 @@ function planeArc3D(dipDirection: number, dip: number, nSamples = 120): { x: num
     const zs: number[] = [];
 
     for (let i = 0; i <= nSamples; i++) {
-        const t = (i / nSamples) * Math.PI;  // walk one half of the plane
+        const t = (i / nSamples) * Math.PI; // walk one half of the plane
         const lx = Math.cos(t);
         const ly = Math.sin(t) * Math.cos(dipRad);
-        const lz = -Math.sin(t) * Math.sin(dipRad);  // down is negative
+        const lz = -Math.sin(t) * Math.sin(dipRad); // down is negative
 
         // Rotate local → geographic (East, North, Up).
         const E = lx * ex + ly * dx;
         const N = lx * ny + ly * dy;
-        const U = lz;  // up is negative for the lower hemisphere
+        const U = lz; // up is negative for the lower hemisphere
 
         // Lower hemisphere only (down in Up frame → U ≤ 0). Skip pts above.
         if (U > 0) continue;
@@ -95,8 +95,13 @@ function planeArc3D(dipDirection: number, dip: number, nSamples = 120): { x: num
  * used to be `!s.true_dip`, which treats a dip of 0 — flat bedding, the most
  * common planar reading there is — as missing (FE-17).
  */
-export function isPlottableStructure(s: { true_dip: number | null | undefined; dip_direction: number | null | undefined }): boolean {
-    return s.true_dip != null && Number.isFinite(s.true_dip) && s.dip_direction != null && Number.isFinite(s.dip_direction);
+export function isPlottableStructure(s: {
+    true_dip: number | null | undefined;
+    dip_direction: number | null | undefined;
+}): boolean {
+    return (
+        s.true_dip != null && Number.isFinite(s.true_dip) && s.dip_direction != null && Number.isFinite(s.dip_direction)
+    );
 }
 
 /** Pole-to-plane as an XYZ unit vector on the lower hemisphere. */
@@ -105,15 +110,15 @@ function pole3D(dipDirection: number, dip: number): { x: number; y: number; z: n
     // of (90 − dip) from horizontal. For a dip of 0° (horizontal plane)
     // the pole is straight down (0, 0, -1). For a vertical plane (90°)
     // the pole lies on the horizon opposite the dip direction.
-    const poleTrend = (dipDirection + 180) % 360;    // opposite bearing
-    const polePlunge = 90 - dip;                     // how far below horizon
+    const poleTrend = (dipDirection + 180) % 360; // opposite bearing
+    const polePlunge = 90 - dip; // how far below horizon
     const plungeRad = (polePlunge * Math.PI) / 180;
     const trendRad = (poleTrend * Math.PI) / 180;
     const horiz = Math.cos(plungeRad);
     return {
-        x: horiz * Math.sin(trendRad),   // East
-        y: horiz * Math.cos(trendRad),   // North
-        z: -Math.sin(plungeRad),         // Down (negative Z)
+        x: horiz * Math.sin(trendRad), // East
+        y: horiz * Math.cos(trendRad), // North
+        z: -Math.sin(plungeRad), // Down (negative Z)
     };
 }
 
@@ -239,7 +244,10 @@ export default function Stereosphere({ structures, holeId, visibleTypes }: Stere
                     z: pts.map((p) => p.z),
                     marker: { size: 5, color, line: { color: 'rgba(0,0,0,0.4)', width: 1 } },
                     name: `${type} (${rows.length})`,
-                    text: rows.map((r) => `${type} ${r.true_dip?.toFixed(0)}°/${r.dip_direction?.toFixed(0)}° @ ${r.depth.toFixed(1)}m`),
+                    text: rows.map(
+                        (r) =>
+                            `${type} ${r.true_dip?.toFixed(0)}°/${r.dip_direction?.toFixed(0)}° @ ${r.depth.toFixed(1)}m`,
+                    ),
                     hoverinfo: 'text',
                 });
             } else {
@@ -310,9 +318,27 @@ export default function Stereosphere({ structures, holeId, visibleTypes }: Stere
             },
             scene: {
                 bgcolor: 'rgba(0,0,0,0)',
-                xaxis: { title: { text: 'E', font: { color: '#94a3b8' } }, visible: true, showgrid: false, zeroline: false, showticklabels: false },
-                yaxis: { title: { text: 'N', font: { color: '#94a3b8' } }, visible: true, showgrid: false, zeroline: false, showticklabels: false },
-                zaxis: { title: { text: 'Depth', font: { color: '#94a3b8' } }, visible: true, showgrid: false, zeroline: false, showticklabels: false },
+                xaxis: {
+                    title: { text: 'E', font: { color: '#94a3b8' } },
+                    visible: true,
+                    showgrid: false,
+                    zeroline: false,
+                    showticklabels: false,
+                },
+                yaxis: {
+                    title: { text: 'N', font: { color: '#94a3b8' } },
+                    visible: true,
+                    showgrid: false,
+                    zeroline: false,
+                    showticklabels: false,
+                },
+                zaxis: {
+                    title: { text: 'Depth', font: { color: '#94a3b8' } },
+                    visible: true,
+                    showgrid: false,
+                    zeroline: false,
+                    showticklabels: false,
+                },
                 aspectmode: 'cube' as const,
                 camera: { eye: { x: 1.3, y: 1.3, z: 0.9 } },
                 annotations: cardinalAnnotations,

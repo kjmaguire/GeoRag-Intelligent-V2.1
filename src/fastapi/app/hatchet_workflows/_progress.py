@@ -42,6 +42,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import asyncpg
@@ -233,6 +234,21 @@ def _record_terminal_metrics(
         pass
 
 
+def _blocking_warnings(warnings: list[dict] | None) -> list[dict]:
+    """The warnings that count against a run: everything not ``severity: info``.
+
+    An informational entry (ingest_pdf stores a one-line "N pages recovered by
+    OCR", the parse-mode summary, the detected languages) is kept on the row so
+    a person can read it, but it is not a complaint, so it must not turn a
+    clean run amber. Every other workflow writes warnings with no ``severity``
+    key at all, which stay blocking exactly as before.
+    """
+    return [
+        w for w in (warnings or [])
+        if not (isinstance(w, dict) and w.get("severity") == "info")
+    ]
+
+
 def terminal_status(
     *, rows_written: int | None, warnings: list[dict] | None,
 ) -> str:
@@ -243,11 +259,14 @@ def terminal_status(
     ``rows_written`` is None for callers that do not report it, and None is
     deliberately not 0 — "did not say" is not "said zero".
 
+    Warnings with ``severity == "info"`` do not count (see
+    :func:`_blocking_warnings`).
+
     Shared rather than inlined because callers need to know which of the two
     the run was BEFORE they can name it in a broadcast, and re-deriving the
     rule at each call site is how the two answers drift apart.
     """
-    return "partial" if (warnings or rows_written == 0) else "completed"
+    return "partial" if (_blocking_warnings(warnings) or rows_written == 0) else "completed"
 
 
 def terminal_message(
@@ -269,7 +288,7 @@ def terminal_message(
     validation limit on `message`; a longer string is a 422, which is a
     dropped notification.
     """
-    warnings = warnings or []
+    warnings = _blocking_warnings(warnings)
     if rows_written is None:
         head = "Finished"
     elif rows_written == 0:
@@ -719,7 +738,7 @@ async def heartbeat_loop(
     minio_key: str | None = None,
     run_id: str | None = None,
     interval_seconds: float = 30.0,
-):
+) -> AsyncIterator[str | None]:
     """Async context manager that runs a background heartbeat ticker.
 
     Resolves the active run_id from (workspace_id, minio_key) once at
@@ -736,25 +755,62 @@ async def heartbeat_loop(
         ):
             await do_long_work()
 
-    Best-effort: if the run_id can't be resolved, the loop becomes a
-    no-op. The surrounding task keeps running.
+    Best-effort: if the run_id can't be resolved at entry the ticker keeps
+    trying to resolve it (from workspace_id + minio_key) on every tick; with
+    neither a run_id nor a key it logs a warning and does nothing. The
+    surrounding task keeps running.
     """
     if run_id is None and workspace_id and minio_key:
         run_id = await lookup_active_run_id(
             workspace_id=workspace_id, minio_key=minio_key,
         )
+    resolve_key: tuple[str, str] | None = (
+        (workspace_id, minio_key) if workspace_id and minio_key else None
+    )
+    if run_id is None and resolve_key is None:
+        log.warning(
+            "progress.heartbeat_loop: needs run_id, or BOTH workspace_id and "
+            "minio_key to resolve one - this task will NOT heartbeat",
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
+
+    async def _ticker() -> None:
+        # A lookup that failed at entry (a DB blip returns None) used to make
+        # the whole loop a silent no-op for a 1-4 h scanned-PDF parse, which
+        # the stale sweep then read as a dead worker. Re-resolve on every
+        # tick until it sticks.
+        current = run_id
+        try:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                if current is None and resolve_key is not None:
+                    current = await lookup_active_run_id(
+                        workspace_id=resolve_key[0], minio_key=resolve_key[1],
+                    )
+                if current is not None:
+                    await mark_heartbeat(run_id=current)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # The with-block swallows the task's result on exit, so without
+            # this line a ticker that died on its first tick would leave a
+            # 1-4 h parse unheartbeated and the stale sweep would read it as
+            # a dead worker, with nothing in the log to say why.
+            log.exception(
+                "progress.heartbeat_loop: ticker died - this task will NOT "
+                "heartbeat from here on",
+                extra={
+                    "run_id": current,
+                    "workspace_id": workspace_id,
+                    "minio_key": minio_key,
+                },
+            )
+
     task: asyncio.Task | None = None
-    if run_id is not None:
-
-        async def _ticker() -> None:
-            try:
-                while True:
-                    await asyncio.sleep(interval_seconds)
-                    await mark_heartbeat(run_id=run_id)
-            except asyncio.CancelledError:
-                pass
-
-        task = asyncio.create_task(_ticker(), name=f"hb-{run_id[:8]}")
+    if run_id is not None or resolve_key is not None:
+        task = asyncio.create_task(
+            _ticker(), name=f"hb-{(run_id or minio_key or 'unresolved')[:8]}",
+        )
     try:
         yield run_id
     finally:
@@ -769,7 +825,8 @@ async def mark_report_id(
     workspace_id: str,
     minio_key: str,
     report_id: str,
-) -> None:
+    conn: asyncpg.Connection | None = None,
+) -> bool:
     """Record the persisted report_id on the active (non-terminal) run row.
 
     Written at the end of ingest_pdf's persist step (F2, 2026-08-11) so the
@@ -778,6 +835,11 @@ async def mark_report_id(
     whole project — bulk imports serialize embeds per workspace, so a
     project-wide predicate timed out rows whose own document had already
     finished. Best-effort like every other helper here.
+
+    ``conn``: when the caller passes its OPEN connection (persist does, from
+    inside its transaction) the UPDATE rides that transaction, in a savepoint,
+    so the report_id is committed WITH the report and its passages and a sweep
+    cannot see the passages without it. Returns True iff the write ran.
     """
     sql = f"""
         UPDATE silver.ingest_progress
@@ -787,14 +849,186 @@ async def mark_report_id(
           AND status NOT IN ({TERMINAL_STATUS_SQL})
     """
     try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(sql, workspace_id, minio_key, report_id)
+        if conn is not None:
+            async with conn.transaction():
+                await conn.execute(sql, workspace_id, minio_key, report_id)
+        else:
+            pool = await get_pool()
+            async with pool.acquire() as pooled:
+                await pooled.execute(sql, workspace_id, minio_key, report_id)
+        return True
     except Exception as e:
         log.warning(
             "progress.mark_report_id failed (key=%s): %s", minio_key, e,
             extra={"workspace_id": workspace_id, "minio_key": minio_key},
         )
+        return False
+
+
+def _decode_warnings(raw: object) -> list[dict]:
+    """``silver.ingest_progress.warnings`` as a list of dicts.
+
+    asyncpg hands a ``jsonb`` column back as ``str`` unless a codec is
+    registered on the connection, and this module's pool registers none.
+    Tolerates NULL, a malformed value and a non-list: a diagnostics read must
+    never be the reason a run cannot be closed.
+    """
+    import json as _json  # noqa: PLC0415
+
+    value = raw
+    if isinstance(value, (str, bytes)):
+        try:
+            value = _json.loads(value)
+        except ValueError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [w for w in value if isinstance(w, dict)]
+
+
+async def mark_run_diagnostics(
+    *,
+    workspace_id: str,
+    minio_key: str,
+    rows_written: int,
+    warnings: list[dict],
+    conn: asyncpg.Connection | None = None,
+) -> bool:
+    """Store what a run has produced so far on its NON-terminal row.
+
+    ingest_pdf finishes in two places that are not the persist step: the
+    ``embed_verify`` task, and — when embedding is still pending — the
+    ``embed_pending_passages`` completion sweep or ``stale_run_detector``'s
+    race recovery. The last two see nothing but the row, so persist leaves
+    its verdict here and :func:`mark_completed_by_run` reads it back when the
+    caller passes neither ``rows_written`` nor ``warnings``. Without this the
+    sweeps wrote a bare ``completed`` over a document whose OCR had failed.
+
+    Idempotent overwrite (a retried persist writes the same values). Returns
+    True iff a row was updated; best-effort like every helper here.
+
+    ``conn``: pass the caller's OPEN connection to write inside ITS
+    transaction (in a savepoint, so a failed UPDATE cannot abort it). persist
+    does, so the verdict commits with the passages: written after the commit
+    there was a window in which a sweep that saw every passage embedded could
+    close the run with no stored diagnostics, i.e. a bare ``completed`` over a
+    document whose OCR had failed.
+    """
+    import json as _json  # noqa: PLC0415
+
+    sql = f"""
+        UPDATE silver.ingest_progress
+        SET rows_written = $3,
+            warnings     = $4::jsonb,
+            updated_at   = now()
+        WHERE workspace_id = $1::uuid AND minio_key = $2
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
+    """
+    try:
+        if conn is not None:
+            async with conn.transaction():
+                result = await conn.execute(
+                    sql, workspace_id, minio_key, int(rows_written),
+                    _json.dumps(warnings),
+                )
+        else:
+            pool = await get_pool()
+            async with pool.acquire() as pooled:
+                result = await pooled.execute(
+                    sql, workspace_id, minio_key, int(rows_written),
+                    _json.dumps(warnings),
+                )
+        return not str(result).endswith(" 0")
+    except Exception as e:
+        log.warning(
+            "progress.mark_run_diagnostics failed (key=%s): %s", minio_key, e,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
+        return False
+
+
+def image_passages_unembedded_warning(count: int) -> dict:
+    """The INFO warning a run carries when page-image passages were not embedded.
+
+    Image passages are best-effort: the Embed 5 image request shape is
+    unverified, and a failing image embed must not hold the run open (the
+    "fully embedded?" predicates exclude ``modality = 'image'``) nor turn it
+    amber. It is still said, on the row, so a missing page image is not a
+    silent coverage hole.
+    """
+    return {
+        "code": "image_passages_unembedded",
+        "severity": "info",
+        "detail": (
+            f"{count} page-image passage(s) have no embedding yet (image "
+            f"embedding is best-effort and does not block the run); those "
+            f"pages are searchable by their text only."
+        ),
+        "count": int(count),
+    }
+
+
+async def append_run_warning(*, run_id: str, warning: dict) -> bool:
+    """Append one warning to a NON-terminal run's stored diagnostics.
+
+    Idempotent per ``warning["code"]``: a second call with the same code (a
+    sweep ticking again before the run closes) is a no-op rather than a
+    duplicate entry. Call it BEFORE :func:`mark_completed_by_run`, which reads
+    the stored warnings back. Returns True iff a row was updated; best-effort.
+    """
+    import json as _json  # noqa: PLC0415
+
+    sql = f"""
+        UPDATE silver.ingest_progress
+        SET warnings   = COALESCE(warnings, '[]'::jsonb) || $2::jsonb,
+            updated_at = now()
+        WHERE run_id = $1::uuid
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
+          AND NOT EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(COALESCE(warnings, '[]'::jsonb)) AS w
+                WHERE w ->> 'code' = $3
+          )
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                sql, run_id, _json.dumps([warning]), str(warning.get("code")),
+            )
+        return not str(result).endswith(" 0")
+    except Exception as e:
+        log.warning(
+            "progress.append_run_warning failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
+        )
+        return False
+
+
+async def terminal_outcome(
+    *, run_id: str, default_message: str, noun: str = "passage",
+) -> tuple[str, str]:
+    """``(status, message)`` for the broadcast that follows a completion.
+
+    Reads the row :func:`mark_completed_by_run` just closed, so a sweep that
+    never held the warnings in memory still tells the UI the truth: the
+    status the row actually earned, and for ``partial`` a line a person can
+    act on instead of "Ingestion complete; all chunks embedded.". A clean
+    run keeps ``default_message``. If the row cannot be read the answer is
+    ``completed`` — the row is already terminal either way and the UI
+    reconciles on its next poll.
+    """
+    row = await get_run(run_id=run_id)
+    if not row:
+        return "completed", default_message
+    status = str(row.get("status") or "completed")
+    if status != "partial":
+        return status, default_message
+    return status, terminal_message(
+        rows_written=row.get("rows_written"),
+        warnings=_decode_warnings(row.get("warnings")),
+        noun=noun,
+    )
 
 
 async def mark_completed_by_run(
@@ -814,8 +1048,12 @@ async def mark_completed_by_run(
     first, or pass hole_id explicitly") lived only inside the Hatchet run
     object, which the product UI never reads.
 
-    Omit both and the behaviour is exactly as before, which is what the PDF
-    path wants: it has its own richer accounting.
+    Omit BOTH and the run's own stored diagnostics are used (see
+    :func:`mark_run_diagnostics`): ingest_pdf's persist step records its
+    passage count and OCR/parse warnings on the row, and the three places
+    that close a PDF run (``embed_verify``, the embed completion sweep,
+    ``stale_run_detector`` race recovery) all pass nothing. A row with no
+    stored diagnostics behaves exactly as it did before: ``completed``.
 
     Returns a TRI-STATE:
 
@@ -838,9 +1076,6 @@ async def mark_completed_by_run(
     """
     import json as _json  # noqa: PLC0415
 
-    warnings = warnings or []
-    status = terminal_status(rows_written=rows_written, warnings=warnings)
-
     sql = f"""
         UPDATE silver.ingest_progress
         SET status        = $4,
@@ -862,6 +1097,17 @@ async def mark_completed_by_run(
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
+            if warnings is None and rows_written is None:
+                stored = await conn.fetchrow(
+                    "SELECT rows_written, warnings FROM silver.ingest_progress "
+                    "WHERE run_id = $1::uuid",
+                    run_id,
+                )
+                if stored is not None:
+                    rows_written = stored["rows_written"]
+                    warnings = _decode_warnings(stored["warnings"])
+            warnings = warnings or []
+            status = terminal_status(rows_written=rows_written, warnings=warnings)
             row = await conn.fetchrow(
                 sql, run_id, report_id, rows_written, status, _json.dumps(warnings),
             )
@@ -877,7 +1123,10 @@ async def mark_completed_by_run(
                 "progress.mark_completed: run=%s finished PARTIAL "
                 "(rows_written=%s, %d warning(s)): %s",
                 run_id, rows_written, len(warnings),
-                "; ".join(str(w.get("detail") or w.get("code") or w) for w in warnings[:3]),
+                "; ".join(
+                    str(w.get("detail") or w.get("code") or w)
+                    for w in _blocking_warnings(warnings)[:3]
+                ),
                 extra={"run_id": run_id, "outcome": "partial"},
             )
         _record_terminal_metrics(
@@ -1119,23 +1368,44 @@ async def mark_started(
     minio_key: str,
     step: str,
     workflow_run_id: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     """LEGACY shim — resolves to the active run_id and calls mark_stage_started.
 
     If no active run exists (first call for this file), creates one with
     triggered_by='upload'. This preserves the original "one helper, one
     side effect" contract while threading through the per-run schema.
+
+    Pass ``run_id`` when the workflow input carries the id its row was
+    claimed under (``IngestPdfInput.run_id`` since 2026-10-04). The stage
+    is then marked on THAT row, with no (workspace, key) lookup that could
+    land on a sibling non-terminal row for the same file; ``start_run`` is
+    an upsert, so a row that already exists is left as it is.
     """
-    run_id = await lookup_active_run_id(workspace_id=workspace_id, minio_key=minio_key)
     if run_id is None:
+        run_id = await lookup_active_run_id(
+            workspace_id=workspace_id, minio_key=minio_key,
+        )
+        if run_id is None:
+            run_id = await start_run(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                minio_key=minio_key,
+                workflow_run_id=workflow_run_id,
+            )
+    else:
+        # Upsert under the caller's id: a no-op when the trigger endpoint
+        # (or the ZIP fan-out, or the sweep) already claimed the row, and
+        # the row's birth when a workflow was run directly with an id.
         run_id = await start_run(
             workspace_id=workspace_id,
             project_id=project_id,
             minio_key=minio_key,
             workflow_run_id=workflow_run_id,
+            run_id=run_id,
         )
-        if run_id is None:
-            return  # DB failure — best-effort
+    if run_id is None:
+        return  # DB failure — best-effort
     await mark_stage_started(run_id=run_id, stage=step)
 
 

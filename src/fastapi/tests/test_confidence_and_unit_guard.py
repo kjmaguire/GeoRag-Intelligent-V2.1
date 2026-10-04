@@ -220,7 +220,7 @@ class TestTupleWarningsReachTheSeverityBucket:
 
         from app.agent.hallucination import orchestrator_validators as ov
 
-        source = inspect.getsource(ov.run_post_assembly_validation)
+        source = inspect.getsource(ov._severity_buckets)
         assert "LAYER3_WARNING_PREFIXES" in source
 
         # Narrow, not loose: `startswith("Layer 3")` also matches a

@@ -60,11 +60,18 @@ class ProjectController extends Controller
         }
 
         try {
-            $project = new Project($request->validated());
-            $project->workspace_id = $workspaceId;
-            $project->save();
-            // Automatically add the creator as owner.
-            $request->user()->projects()->attach($project->project_id, ['role' => 'owner']);
+            // One transaction: a project saved without its owner row is
+            // invisible to everyone (membership is the access rule), so it
+            // is either both rows or neither. The broadcast stays outside it.
+            $project = DB::transaction(function () use ($request, $workspaceId): Project {
+                $project = new Project($request->validated());
+                $project->workspace_id = $workspaceId;
+                $project->save();
+                // Automatically add the creator as owner.
+                $request->user()->projects()->attach($project->project_id, ['role' => 'owner']);
+
+                return $project;
+            });
             $project->loadCount('collars');
 
             // Phase 3 — broadcast workspace activity so Foundry/Portfolio

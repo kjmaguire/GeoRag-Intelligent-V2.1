@@ -37,7 +37,10 @@ final class AssayResolver extends AbstractCitationResolver
         return 'silver.assays_v2:';
     }
 
-    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
+    /**
+     * @param list<string>|null $projectIds
+     */
+    public function resolve(string $sourceId, ?string $workspaceId = null, ?array $projectIds = null): JsonResponse
     {
         // Two id shapes are supported:
         //   silver.assays_v2:assay_id=<uuid>
@@ -59,14 +62,17 @@ final class AssayResolver extends AbstractCitationResolver
 
         // Belt and braces (security fix 2026-08-14): explicit tenant filter
         // on top of the controller-bound RLS GUC; null scope fails CLOSED.
-        if ($workspaceId === null) {
+        if ($workspaceId === null || $projectIds === null || $projectIds === []) {
             return $this->notFound($sourceId);
         }
 
         $row = DB::table('silver.assays_v2 as a')
-            ->leftJoin('silver.collars as c', 'c.collar_id', '=', 'a.collar_id')
+            // Inner join: the project lives on the collar, and an assay whose
+            // collar cannot be placed in an authorised project is not visible.
+            ->join('silver.collars as c', 'c.collar_id', '=', 'a.collar_id')
             ->where('a.id', $assayId)
             ->where('a.workspace_id', $workspaceId)
+            ->whereIn('c.project_id', $projectIds)
             ->select([
                 'a.id',
                 'a.sample_id',

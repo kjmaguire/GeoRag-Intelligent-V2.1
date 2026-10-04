@@ -222,12 +222,7 @@ function FootprintMap({
         return placed.reduce<[number, number, number, number]>(
             (acc, r) => {
                 const b = r.bounds;
-                return [
-                    Math.min(acc[0], b[0]),
-                    Math.min(acc[1], b[1]),
-                    Math.max(acc[2], b[2]),
-                    Math.max(acc[3], b[3]),
-                ];
+                return [Math.min(acc[0], b[0]), Math.min(acc[1], b[1]), Math.max(acc[2], b[2]), Math.max(acc[3], b[3])];
             },
             [180, 90, -180, -90],
         );
@@ -237,69 +232,75 @@ function FootprintMap({
         if (!containerRef.current || overall === null) return;
         let cancelled = false;
 
-        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(([maplibregl, { configureMaplibreWorker }]) => {
-            if (cancelled || !containerRef.current) return;
-            configureMaplibreWorker(maplibregl);
+        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(
+            ([maplibregl, { configureMaplibreWorker }]) => {
+                if (cancelled || !containerRef.current) return;
+                configureMaplibreWorker(maplibregl);
 
-            if (mapRef.current?.remove) {
-                mapRef.current.remove();
-            }
+                if (mapRef.current?.remove) {
+                    mapRef.current.remove();
+                }
 
-            // A single-raster footprint is a degenerate bbox at high zoom;
-            // padding it stops fitBounds from landing at maxZoom on a corner.
-            const pad = 0.02;
-            const map = new maplibregl.Map({
-                container: containerRef.current,
-                style: styleUrl,
-                bounds: [
-                    overall[0] - pad,
-                    overall[1] - pad,
-                    overall[2] + pad,
-                    overall[3] + pad,
-                ] as [number, number, number, number],
-                fitBoundsOptions: { padding: 40, maxZoom: 12 },
-                attributionControl: false,
-            });
-            mapRef.current = map;
+                // A single-raster footprint is a degenerate bbox at high zoom;
+                // padding it stops fitBounds from landing at maxZoom on a corner.
+                const pad = 0.02;
+                const map = new maplibregl.Map({
+                    container: containerRef.current,
+                    style: styleUrl,
+                    bounds: [overall[0] - pad, overall[1] - pad, overall[2] + pad, overall[3] + pad] as [
+                        number,
+                        number,
+                        number,
+                        number,
+                    ],
+                    fitBoundsOptions: { padding: 40, maxZoom: 12 },
+                    attributionControl: false,
+                });
+                mapRef.current = map;
 
-            map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-            map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
+                map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+                map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
 
-            map.on('load', () => {
-                if (cancelled) return;
-                map.addSource('raster-footprints', { type: 'geojson', data: featureCollection });
-                map.addLayer({
-                    id: 'raster-footprints-fill',
-                    type: 'fill',
-                    source: 'raster-footprints',
-                    paint: { 'fill-color': '#38bdf8', 'fill-opacity': 0.08 },
-                });
-                map.addLayer({
-                    id: 'raster-footprints-line',
-                    type: 'line',
-                    source: 'raster-footprints',
-                    paint: { 'line-color': '#38bdf8', 'line-width': 1.5 },
-                });
-                map.addLayer({
-                    id: 'raster-footprints-selected',
-                    type: 'line',
-                    source: 'raster-footprints',
-                    filter: ['==', ['get', 'raster_id'], selectedRef.current ?? '__none__'],
-                    paint: { 'line-color': '#f59e0b', 'line-width': 3 },
-                });
+                map.on('load', () => {
+                    if (cancelled) return;
+                    map.addSource('raster-footprints', { type: 'geojson', data: featureCollection });
+                    map.addLayer({
+                        id: 'raster-footprints-fill',
+                        type: 'fill',
+                        source: 'raster-footprints',
+                        paint: { 'fill-color': '#38bdf8', 'fill-opacity': 0.08 },
+                    });
+                    map.addLayer({
+                        id: 'raster-footprints-line',
+                        type: 'line',
+                        source: 'raster-footprints',
+                        paint: { 'line-color': '#38bdf8', 'line-width': 1.5 },
+                    });
+                    map.addLayer({
+                        id: 'raster-footprints-selected',
+                        type: 'line',
+                        source: 'raster-footprints',
+                        filter: ['==', ['get', 'raster_id'], selectedRef.current ?? '__none__'],
+                        paint: { 'line-color': '#f59e0b', 'line-width': 3 },
+                    });
 
-                map.on('click', 'raster-footprints-fill', (e: { features?: Array<{ properties?: Record<string, unknown> }> }) => {
-                    const id = e.features?.[0]?.properties?.raster_id;
-                    if (typeof id === 'string') onSelect(id);
+                    map.on(
+                        'click',
+                        'raster-footprints-fill',
+                        (e: { features?: Array<{ properties?: Record<string, unknown> }> }) => {
+                            const id = e.features?.[0]?.properties?.raster_id;
+                            if (typeof id === 'string') onSelect(id);
+                        },
+                    );
+                    map.on('mouseenter', 'raster-footprints-fill', () => {
+                        map.getCanvas().style.cursor = 'pointer';
+                    });
+                    map.on('mouseleave', 'raster-footprints-fill', () => {
+                        map.getCanvas().style.cursor = '';
+                    });
                 });
-                map.on('mouseenter', 'raster-footprints-fill', () => {
-                    map.getCanvas().style.cursor = 'pointer';
-                });
-                map.on('mouseleave', 'raster-footprints-fill', () => {
-                    map.getCanvas().style.cursor = '';
-                });
-            });
-        });
+            },
+        );
 
         return () => {
             cancelled = true;
@@ -327,9 +328,8 @@ function FootprintMap({
                 className="flex items-center justify-center text-xs px-6 py-10 text-center"
                 style={{ color: 'var(--fg-3)' }}
             >
-                No raster in this project has a footprint in WGS84, so there is nothing to
-                place on a map. Either the file carried no CRS, or its bounds could not be
-                reprojected — the warnings on each row below say which.
+                No raster in this project has a footprint in WGS84, so there is nothing to place on a map. Either the
+                file carried no CRS, or its bounds could not be reprojected — the warnings on each row below say which.
             </div>
         );
     }
@@ -349,7 +349,10 @@ function RasterDetail({ raster }: { raster: RasterLayerRow }) {
             <div className="grid gap-x-8 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
                 <Fact label="Source file" value={raster.source_file} mono />
                 <Fact label="SHA-256" value={raster.source_file_sha256.slice(0, 16) + '…'} mono />
-                <Fact label="Format / driver" value={[raster.format, raster.driver].filter(Boolean).join(' · ') || '—'} />
+                <Fact
+                    label="Format / driver"
+                    value={[raster.format, raster.driver].filter(Boolean).join(' · ') || '—'}
+                />
                 <Fact label="Pixel size (CRS units)" value={pixelSize(raster.pixel_size_x, raster.pixel_size_y)} mono />
                 <Fact label="Ground footprint" value={extentLabel(raster.extent_km2)} mono />
                 <Fact label="Compression" value={raster.compression ?? 'none recorded'} />
@@ -367,7 +370,10 @@ function RasterDetail({ raster }: { raster: RasterLayerRow }) {
 
             {raster.band_stats.length > 0 && (
                 <div className="mt-3">
-                    <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>
+                    <div
+                        className="text-[10px] font-mono uppercase tracking-wider mb-1"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
                         Bands
                     </div>
                     <div className="overflow-x-auto">
@@ -403,7 +409,10 @@ function RasterDetail({ raster }: { raster: RasterLayerRow }) {
 
             {raster.warnings.length > 0 && (
                 <div className="mt-3">
-                    <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--warn)' }}>
+                    <div
+                        className="text-[10px] font-mono uppercase tracking-wider mb-1"
+                        style={{ color: 'var(--warn)' }}
+                    >
                         Ingest warnings
                     </div>
                     {raster.warnings.map((w, i) => (
@@ -426,19 +435,18 @@ function Fact({ label, value, mono = false }: { label: string; value: string; mo
             <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
                 {label}
             </div>
-            <div className={['truncate', mono ? 'font-mono text-[10px]' : ''].join(' ').trim()} style={{ color: 'var(--fg-1)' }} title={value}>
+            <div
+                className={['truncate', mono ? 'font-mono text-[10px]' : ''].join(' ').trim()}
+                style={{ color: 'var(--fg-1)' }}
+                title={value}
+            >
                 {value}
             </div>
         </div>
     );
 }
 
-export default function FoundryRasterLayers({
-    project,
-    rasters,
-    summary,
-    ungeoreferenced,
-}: RasterLayersProps) {
+export default function FoundryRasterLayers({ project, rasters, summary, ungeoreferenced }: RasterLayersProps) {
     const [selectedId, setSelectedId] = useState<string | null>(null);
 
     const empty = rasters.length === 0 && ungeoreferenced.length === 0;
@@ -478,10 +486,7 @@ export default function FoundryRasterLayers({
                     className="flex items-center gap-3 px-8 py-2 border-b"
                     style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
                 >
-                    <span
-                        className="text-[10px] font-mono uppercase tracking-widest"
-                        style={{ color: 'var(--fg-3)' }}
-                    >
+                    <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
                         Mode
                     </span>
                     <WorkspaceModeBar slug={project.slug} active="rasters" />
@@ -495,12 +500,11 @@ export default function FoundryRasterLayers({
                         className="rounded-md border px-4 py-3 text-xs"
                         style={{ borderColor: 'var(--line-2)', background: 'var(--bg-1)', color: 'var(--fg-2)' }}
                     >
-                        <strong style={{ color: 'var(--fg-0)' }}>Indexed, not yet viewable.</strong>{' '}
-                        These rasters are catalogued — extent, resolution, bands, CRS — but their
-                        pixels are not served to the browser. There is no tiled or cloud-optimized
-                        copy, and the original file sits in object storage where a web page cannot
-                        reach it. The map below draws each raster&rsquo;s <em>footprint</em>: the
-                        ground it covers, not the image.
+                        <strong style={{ color: 'var(--fg-0)' }}>Indexed, not yet viewable.</strong> These rasters are
+                        catalogued — extent, resolution, bands, CRS — but their pixels are not served to the browser.
+                        There is no tiled or cloud-optimized copy, and the original file sits in object storage where a
+                        web page cannot reach it. The map below draws each raster&rsquo;s <em>footprint</em>: the ground
+                        it covers, not the image.
                     </div>
                 </div>
 
@@ -510,10 +514,10 @@ export default function FoundryRasterLayers({
                             title="No rasters indexed for this project"
                             detail={
                                 <>
-                                    A raster is recorded when a georeferenced file (GeoTIFF, NetCDF,
-                                    ASCII grid, JPEG2000) is ingested and its header carries a CRS.
-                                    Nothing here means either nothing like that has been uploaded, or
-                                    what was uploaded arrived with no coordinate system at all.
+                                    A raster is recorded when a georeferenced file (GeoTIFF, NetCDF, ASCII grid,
+                                    JPEG2000) is ingested and its header carries a CRS. Nothing here means either
+                                    nothing like that has been uploaded, or what was uploaded arrived with no coordinate
+                                    system at all.
                                 </>
                             }
                             action={
@@ -536,7 +540,11 @@ export default function FoundryRasterLayers({
                                 className="grid grid-cols-2 md:grid-cols-5 gap-px rounded-md overflow-hidden border"
                                 style={{ background: 'var(--line-1)', borderColor: 'var(--line-1)' }}
                             >
-                                <Stat label="Indexed" value={summary.total} title="Rasters with a row in silver.raster_layers for this project." />
+                                <Stat
+                                    label="Indexed"
+                                    value={summary.total}
+                                    title="Rasters recorded for this project."
+                                />
                                 <Stat
                                     label="Georeferenced"
                                     value={summary.georeferenced}
@@ -552,7 +560,7 @@ export default function FoundryRasterLayers({
                                 <Stat
                                     label="Not OCR'd"
                                     value={summary.ocr_skipped}
-                                    title="Measurement grids (DEM, magnetics). Ingest skipped OCR deliberately, so these files have no document and cannot be found in chat."
+                                    title="Measurement grids (DEM, magnetics). Text recognition was skipped for these files on purpose, so they have no document and cannot be found in chat."
                                 />
                                 <Stat
                                     label="With warnings"
@@ -593,7 +601,9 @@ export default function FoundryRasterLayers({
                                                 <button
                                                     type="button"
                                                     onClick={() =>
-                                                        setSelectedId((cur) => (cur === r.raster_id ? null : r.raster_id))
+                                                        setSelectedId((cur) =>
+                                                            cur === r.raster_id ? null : r.raster_id,
+                                                        )
                                                     }
                                                     className="w-full text-left grid grid-cols-[1.6fr_140px_1fr_120px_120px] text-xs px-4 py-3 border-b items-center gap-4"
                                                     style={{
@@ -603,7 +613,11 @@ export default function FoundryRasterLayers({
                                                     }}
                                                 >
                                                     <div className="min-w-0">
-                                                        <div className="truncate" style={{ color: 'var(--fg-0)' }} title={r.layer_name}>
+                                                        <div
+                                                            className="truncate"
+                                                            style={{ color: 'var(--fg-0)' }}
+                                                            title={r.layer_name}
+                                                        >
                                                             {r.layer_name}
                                                         </div>
                                                         <div
@@ -614,11 +628,19 @@ export default function FoundryRasterLayers({
                                                             {r.source_filename ?? r.source_file}
                                                         </div>
                                                     </div>
-                                                    <div className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
+                                                    <div
+                                                        className="font-mono text-[10px] tabular-nums"
+                                                        style={{ color: 'var(--fg-2)' }}
+                                                    >
                                                         {r.width.toLocaleString()} x {r.height.toLocaleString()}
-                                                        <div style={{ color: 'var(--fg-3)' }}>{megapixels(r.width, r.height)}</div>
+                                                        <div style={{ color: 'var(--fg-3)' }}>
+                                                            {megapixels(r.width, r.height)}
+                                                        </div>
                                                     </div>
-                                                    <div className="min-w-0 font-mono text-[10px]" style={{ color: 'var(--fg-2)' }}>
+                                                    <div
+                                                        className="min-w-0 font-mono text-[10px]"
+                                                        style={{ color: 'var(--fg-2)' }}
+                                                    >
                                                         {r.crs ? (
                                                             <span className="truncate block" title={r.crs}>
                                                                 {r.crs}
@@ -627,15 +649,22 @@ export default function FoundryRasterLayers({
                                                             <span style={{ color: 'var(--warn)' }}>none</span>
                                                         )}
                                                     </div>
-                                                    <div className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
+                                                    <div
+                                                        className="font-mono text-[10px] tabular-nums"
+                                                        style={{ color: 'var(--fg-2)' }}
+                                                    >
                                                         {r.band_count}
                                                     </div>
                                                     <div className="flex flex-wrap gap-1">
                                                         {!r.georeferenced && <Pill tone="warn">needs georef</Pill>}
-                                                        {r.georeferenced && !r.bounds && <Pill tone="warn">no footprint</Pill>}
+                                                        {r.georeferenced && !r.bounds && (
+                                                            <Pill tone="warn">no footprint</Pill>
+                                                        )}
                                                         {r.ocr_skipped && <Pill tone="info">no text</Pill>}
                                                         {r.is_cog && <Pill tone="accent">cog</Pill>}
-                                                        {r.warning_count > 0 && <Pill tone="warn">{r.warning_count}⚠</Pill>}
+                                                        {r.warning_count > 0 && (
+                                                            <Pill tone="warn">{r.warning_count}⚠</Pill>
+                                                        )}
                                                     </div>
                                                 </button>
                                                 {selectedId === r.raster_id && <RasterDetail raster={r} />}
@@ -647,8 +676,8 @@ export default function FoundryRasterLayers({
 
                             {summary.truncated && (
                                 <div className="text-[10px] font-mono mt-2" style={{ color: 'var(--fg-3)' }}>
-                                    Showing the {summary.list_limit} most recent rasters. The counts above
-                                    describe this page, not the whole project.
+                                    Showing the {summary.list_limit} most recent rasters. The counts above describe this
+                                    page, not the whole project.
                                 </div>
                             )}
                         </section>
@@ -662,12 +691,14 @@ export default function FoundryRasterLayers({
                             title="Images that arrived with no coordinate system"
                             padded={false}
                         >
-                            <div className="px-4 py-3 text-[11px] border-b" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}>
-                                These were ingested as pictures: the file carried no GeoTIFF keys (or a
-                                header we could not read), so nothing was written to the raster
-                                catalogue and there is no extent to put on the map. Their text was still
-                                extracted and is searchable — but until somebody georeferences them, they
-                                cannot be clipped to a claim, overlaid on a survey, or answered
+                            <div
+                                className="px-4 py-3 text-[11px] border-b"
+                                style={{ borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
+                            >
+                                These were ingested as pictures: the file carried no GeoTIFF keys (or a header we could
+                                not read), so nothing was written to the raster catalogue and there is no extent to put
+                                on the map. Their text was still extracted and is searchable — but until somebody
+                                georeferences them, they cannot be clipped to a claim, overlaid on a survey, or answered
                                 spatially. On one real delivery this was 5 of 10 TIFFs.
                             </div>
                             {ungeoreferenced.map((t) => (
@@ -677,10 +708,18 @@ export default function FoundryRasterLayers({
                                     style={{ borderColor: 'var(--line-1)' }}
                                 >
                                     <div className="min-w-0">
-                                        <div className="truncate font-mono text-[11px]" style={{ color: 'var(--fg-1)' }} title={t.source_filename ?? ''}>
+                                        <div
+                                            className="truncate font-mono text-[11px]"
+                                            style={{ color: 'var(--fg-1)' }}
+                                            title={t.source_filename ?? ''}
+                                        >
                                             {t.source_filename ?? '(name not recoverable)'}
                                         </div>
-                                        <div className="truncate text-[10px]" style={{ color: 'var(--fg-3)' }} title={t.title}>
+                                        <div
+                                            className="truncate text-[10px]"
+                                            style={{ color: 'var(--fg-3)' }}
+                                            title={t.title}
+                                        >
                                             {t.title}
                                         </div>
                                     </div>

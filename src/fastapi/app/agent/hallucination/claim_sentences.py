@@ -258,6 +258,21 @@ _NUMERAL_RE = re.compile(r"\d")
 _EMPHASIS_WRAPPED_RE = re.compile(r"^(\*\*|__|\*|_)(?P<body>.+?)\1:?$")
 
 
+def _has_measurement(body: str) -> bool:
+    """Whether ``body`` carries a numeral outside hole names and designations."""
+    from app.agent.hole_id_patterns import (  # noqa: PLC0415
+        DESIGNATION_RE,
+        HOLE_ID_RE,
+        find_numeric_hole_ids,
+    )
+
+    masked = DESIGNATION_RE.sub(" ", body)
+    for cand in sorted(find_numeric_hole_ids(masked), key=lambda c: c.start, reverse=True):
+        masked = masked[: cand.start] + " " + masked[cand.end:]
+    masked = HOLE_ID_RE.sub(" ", masked)
+    return bool(_NUMERAL_RE.search(masked))
+
+
 def is_non_claim(unit_text: str) -> bool:
     """True when this unit makes no factual claim that needs a citation.
 
@@ -281,7 +296,14 @@ def is_non_claim(unit_text: str) -> bool:
     lowered = body.lower().lstrip("*_ ")
     if len(lowered.split()) <= 2 and not has_number:
         return True
-    if any(p in lowered for p in _NON_CLAIM_PHRASES):
+    # Audit item 6 (2026-10-04): the refusal / evidence-gap phrases used to
+    # exempt a sentence wherever they appeared in it, so "The grade was 5.2
+    # g/t Au over 3 m; passages do not cover the upper zone." shipped
+    # uncited -- a claim with a hedge bolted on. The exemption now needs the
+    # sentence to carry no measurement. Digits that are only part of a hole
+    # name or a standard designation do not count ("I don't have data for
+    # hole PLS-22-11" is still a refusal).
+    if not _has_measurement(body) and any(p in lowered for p in _NON_CLAIM_PHRASES):
         return True
     if lowered.startswith(_POINTER_STARTERS):
         return True

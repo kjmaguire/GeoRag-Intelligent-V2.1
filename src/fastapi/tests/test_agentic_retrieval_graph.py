@@ -49,47 +49,24 @@ def test_every_intent_has_a_profile(intent: Intent) -> None:
 
 
 def test_factual_profile_declares_standards_first_intent() -> None:
-    """Renamed 2026-08-21 from ...is_bm25_weighted_standards_first.
-
-    The old name asserted something untrue. ``bm25_weight`` is inert: the
-    field's own description says "NOT YET WIRED", fusion is a bare
-    ``FusionQuery(fusion=Fusion.RRF)`` with no branch weighting
-    (qdrant_service.py), and factual_lookup's 0.75 therefore behaves
-    identically to anomaly_detection's 0.3. A test named for weighting
-    reads as proof that weighting happens, which is how the number came to
-    be cited in the ADR narrative as if it tuned the pipeline.
-
-    The assertion is kept -- the DECLARED intent is still worth locking, so
-    a future wiring change has a stated target to hit -- but the name now
-    says what it checks: a number in a config object.
-    """
     p = profile_for_intent("factual_lookup")
     assert p.primary_tools == ["search_documents"]
-    assert p.bm25_weight >= 0.7, "declared intent only; nothing reads this yet"
     assert p.answer_emphasis == "exact_citation"
     assert not p.adversarial_pass_enabled
     assert not p.conflict_detection_enabled
 
 
-def test_bm25_weight_is_still_unread_by_the_retrieval_path() -> None:
-    """If this fails, somebody wired it -- and the test above needs its
-    docstring rewritten, plus a benchmark, because per-intent weighting is
-    a real change to what reaches the answer."""
-    import pathlib as _pathlib
-
-    app_dir = _pathlib.Path(__file__).resolve().parent.parent / "app"
-    readers = [
-        str(path.relative_to(app_dir))
-        for path in app_dir.rglob("*.py")
-        if path.name != "retrieval_profile.py"
-        and "bm25_weight" in path.read_text(encoding="utf-8", errors="replace")
-    ]
-    assert readers == [], (
-        "bm25_weight now has readers under app/: "
-        + ", ".join(readers)
-        + " -- update test_factual_profile_declares_standards_first_intent, "
-        "which documents it as inert."
-    )
+def test_inert_bm25_weight_and_max_chunks_fields_are_gone() -> None:
+    """Audit 2026-10-04 item 23: both were set for every intent and read by
+    nothing, so a profile read as if it tuned retrieval. Deleted rather than
+    wired (wiring changes which chunks reach the answer and needs a
+    golden-eval pass). If you are re-adding either, add its reader to
+    search_documents / hybrid_query in the same change and delete this test."""
+    assert "bm25_weight" not in RetrievalProfile.model_fields
+    assert "max_chunks" not in RetrievalProfile.model_fields
+    for intent in INTENT_LABELS:
+        dumped = profile_for_intent(intent).model_dump()
+        assert "bm25_weight" not in dumped and "max_chunks" not in dumped
 
 
 def test_synthesis_profile_enables_conflict_detection() -> None:
@@ -1004,7 +981,13 @@ async def test_validate_node_prepends_warning_banner_on_should_retry(monkeypatch
     updated = result["response"]
     assert updated.confidence <= 0.2
     assert "automated fact-checking flagged" in updated.text.lower()
-    assert "fabricated hole id" in updated.text.lower()
+    # The banner says what went wrong in plain terms; the operator wording of
+    # the validator warning (layer numbers, rule references) stays out of the
+    # answer and in validation_warnings only.
+    assert "could not be found in the project's records" in updated.text
+    assert "Layer 4" not in updated.text
+    assert "fabricated hole ID" not in updated.text
+    assert any("Layer 4" in w for w in result["validation_warnings"])
     # The original answer text is still present (appended, not discarded) —
     # this is a caveat banner, not a full refusal/rewrite.
     assert original_text in updated.text
@@ -1169,7 +1152,7 @@ async def test_validate_node_layer5_gate_rejects_unretrieved_chunk_citation(
     run_post_assembly_validation itself found nothing wrong."""
     import app.agent.hallucination.layer5_provenance as _layer5_mod
     import app.agent.hallucination.orchestrator_validators as _validators
-    from app.agent.hallucination.layer1_retrieval import build_refusal_text
+    from app.agent.hallucination.refusals import PROVENANCE_REFUSAL_TEXT
     from app.agent.tools import DocumentChunk, DocumentSearchResult
     from app.models.rag import Citation, GeoRAGResponse
 
@@ -1234,13 +1217,20 @@ async def test_validate_node_layer5_gate_rejects_unretrieved_chunk_citation(
     original_answer_portion = updated.text.split("\n\n")[-1]
     # The whole CLAIM is gone, not just the marker -- this was the only
     # citation, so nothing citeable survives and the answer portion is the
-    # typed refusal text, not "The grade is 1.85 g/t Au."
+    # provenance refusal text, not "The grade is 1.85 g/t Au."
     assert "1.85" not in original_answer_portion
     assert "[NI43-1]" not in original_answer_portion
-    assert original_answer_portion == build_refusal_text()
-    # should_retry forced True by the Layer 5 rejection alone -> banner + floor.
-    assert updated.confidence <= 0.2
-    assert "automated fact-checking flagged" in updated.text.lower()
+    assert original_answer_portion == PROVENANCE_REFUSAL_TEXT
+    # should_retry forced True by the Layer 5 rejection alone -> confidence
+    # floor. A withheld answer is the system's own refusal, so it gets NO
+    # "automated fact-checking flagged" banner in front of it (audit item 8)
+    # and carries a machine-readable refusal for the RefusalPanel.
+    assert updated.confidence <= 0.1
+    assert updated.text == PROVENANCE_REFUSAL_TEXT
+    assert "fact-checking" not in updated.text.lower()
+    assert updated.refusal_payload is not None
+    assert updated.refusal_payload["reason_code"] == "unsupported_by_sources"
+    assert "Layer" not in updated.refusal_payload["message"]
     assert any("Layer 5" in w for w in result["validation_warnings"])
 
 

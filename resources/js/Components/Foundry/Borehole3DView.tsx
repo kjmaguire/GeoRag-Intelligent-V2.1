@@ -208,7 +208,13 @@ export function Borehole3DView({
 
     return (
         <div style={{ width: '100%', height }} className="flex flex-col">
-            <div className="text-[10px] font-mono mb-1 shrink-0" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</div>
+            <div
+                className="text-[10px] font-mono mb-1 shrink-0"
+                style={{ color: 'var(--fg-3)' }}
+                data-testid="desurvey-caption"
+            >
+                {caption}
+            </div>
             <div className="flex-1 min-h-0">
                 <GeoPlot data={data} layout={layout} />
             </div>

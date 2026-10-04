@@ -168,6 +168,7 @@ def find_numeric_hole_ids(text: str) -> list[NumericHoleIdCandidate]:
 
 
 _CANONICAL_SEPARATORS_RE = re.compile(r"[\s\-_./]+")
+_RUN_RE = re.compile(r"[A-Z]+|[0-9]+")
 
 
 def canonical_hole_id(hole_id: str) -> str:
@@ -178,5 +179,45 @@ def canonical_hole_id(hole_id: str) -> str:
     csv_collar_ingester.canonicalize), so "BH-12", "bh12" and "BH 12" are one
     hole. Leading zeros are deliberately NOT stripped: "BH-1" and "BH-01"
     may be different holes, and a guard must not merge two real holes.
+
+    It also merges "PLS-2-28" with "PLS-22-8" (every separator is deleted).
+    That is the price of agreeing with the ingest-written column, so use
+    :func:`hole_id_key` wherever two ids are compared for IDENTITY in Python.
     """
     return _CANONICAL_SEPARATORS_RE.sub("", (hole_id or "").strip()).upper()
+
+
+def hole_id_key(hole_id: str) -> str:
+    """Separator-position-aware comparison key for a hole ID (audit item 24).
+
+    :func:`canonical_hole_id` deletes every separator, so "PLS-2-28" and
+    "PLS-22-8" are the SAME hole to it -- a fabricated id merged with a real
+    one. This key keeps the one separator that carries information, the
+    boundary between two digit groups, as a single "-", and drops the
+    boundary between letters and digits (which writers vary freely):
+
+        "PLS-22-08", "pls 22 08", "PLS22-08"  -> "PLS22-08"
+        "PLS-2-28"                            -> "PLS2-28"   (a different hole)
+        "BH-12", "BH12", "bh 12"              -> "BH12"
+        "36-1085", "36 1085"                  -> "36-1085"
+        "GH08-212"                            -> "GH08-212"
+
+    Leading zeros are kept, as in :func:`canonical_hole_id` ("BH-1" and
+    "BH-01" may be different holes). It is NOT what ``silver.collars.
+    hole_id_canonical`` holds -- that column is written by ingestion with the
+    separator-free rule, so SQL candidates are still fetched by
+    :func:`canonical_hole_id` and then confirmed with this key in Python.
+    (``tools.normalize_hole_id`` is the lookup-side twin that also drops
+    leading zeros; that is a convenience match over a unique candidate, not
+    an identity, which is why the two are deliberately not merged.)
+    """
+    runs = _RUN_RE.findall((hole_id or "").upper())
+    out: list[str] = []
+    prev_was_digits = False
+    for run in runs:
+        is_digits = run.isdigit()
+        if out and is_digits and prev_was_digits:
+            out.append("-")
+        out.append(run)
+        prev_was_digits = is_digits
+    return "".join(out)

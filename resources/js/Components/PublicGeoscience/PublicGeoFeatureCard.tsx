@@ -45,7 +45,10 @@ export interface PgeoResolved {
     source: { source_id: string | null; name: string | null; service_url: string | null };
     license: { summary: string | null; url: string | null };
     refresh: { last_refreshed_at: string | null };
-    references_summary: { count: number; documents: Array<{ document_id: string; title: string | null; filename: string | null }> };
+    references_summary: {
+        count: number;
+        documents: Array<{ document_id: string; title: string | null; filename: string | null }>;
+    };
     entity: Record<string, unknown> | null;
 }
 
@@ -277,7 +280,12 @@ export default function PublicGeoFeatureCard({
             role="dialog"
             aria-label={`${eyebrow}: ${title}`}
             className="absolute top-2 left-2 z-10 px-3 py-2 rounded border min-w-[240px] max-w-[280px] overflow-y-auto"
-            style={{ background: 'var(--bg-1)', borderColor: 'var(--line-2)', color: 'var(--fg-1)', maxHeight: 'calc(100% - 1rem)' }}
+            style={{
+                background: 'var(--bg-1)',
+                borderColor: 'var(--line-2)',
+                color: 'var(--fg-1)',
+                maxHeight: 'calc(100% - 1rem)',
+            }}
         >
             <div className="flex items-start justify-between gap-2">
                 <div className="text-[11px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
@@ -339,12 +347,21 @@ export default function PublicGeoFeatureCard({
                 </div>
             )}
 
-            <div className="mt-2 pt-2 border-t text-[10px] font-mono space-y-0.5" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>
+            <div
+                className="mt-2 pt-2 border-t text-[10px] font-mono space-y-0.5"
+                style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}
+            >
                 <div>Source: {sourceName}</div>
                 <div>
                     {licence.summary ? (
                         licenceHref ? (
-                            <a href={licenceHref} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--fg-2)' }}>
+                            <a
+                                href={licenceHref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="underline"
+                                style={{ color: 'var(--fg-2)' }}
+                            >
                                 {licence.summary}
                             </a>
                         ) : (

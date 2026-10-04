@@ -3,8 +3,10 @@
 --
 -- BEFORE-INSERT trigger that:
 --   1. Looks up the previous row's hash (scoped per workspace; global chain
---      for system-wide events with workspace_id IS NULL).
---   2. Locks that row FOR UPDATE so concurrent inserts can't collide.
+--      for system-wide events with workspace_id IS NULL) -- two indexable
+--      branches, not IS NOT DISTINCT FROM (2026_10_04_200000).
+--   2. Locks that row FOR UPDATE (after a per-workspace advisory lock) so
+--      concurrent inserts can't collide.
 --   3. Computes this row's hash from previous_hash + canonical content.
 --
 -- The verification job (Step 4 — audit_ledger_verify Hatchet workflow) walks
@@ -35,14 +37,55 @@ DECLARE
     v_prev_hash bytea;
     v_message   text;
 BEGIN
-    -- Lock the latest row in this workspace's chain to serialise inserts.
-    -- IS NOT DISTINCT FROM lets NULL = NULL match for the system-wide chain.
-    SELECT hash INTO v_prev_hash
-    FROM audit.audit_ledger
-    WHERE (workspace_id IS NOT DISTINCT FROM NEW.workspace_id)
-    ORDER BY created_at DESC, id DESC
-    LIMIT 1
-    FOR UPDATE;
+    -- Serialise concurrent inserts to the same workspace's chain.
+    -- The 2026-05-16 report-build burst proved that row-level
+    -- FOR UPDATE alone does not fence concurrent writers under
+    -- partition-parent contention. The advisory lock is keyed on
+    -- workspace_id so cross-workspace traffic stays parallel.
+    -- (Mirrors migrations 2026_05_19_180300 and 2026_10_04_200000 so a raw
+    -- apply cannot revert either.)
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended(
+            'audit_chain_'
+            || COALESCE(NEW.workspace_id::text, 'system'),
+            0
+        )
+    );
+
+    -- Now safe to read the latest row: any concurrent writer
+    -- in this workspace is blocked behind us on the lock above.
+    -- The FOR UPDATE here is belt-and-braces; the advisory lock
+    -- is the load-bearing serialiser.
+    --
+    -- Two branches rather than `workspace_id IS NOT DISTINCT FROM
+    -- NEW.workspace_id`: that operator cannot use an index, and
+    -- this ran as a sequential scan + sort on every insert.
+    -- Each branch is an index probe on
+    -- audit_ledger_workspace_id_idx (workspace_id, created_at DESC).
+    IF NEW.workspace_id IS NULL THEN
+        -- `workspace_id` leads the ORDER BY on purpose. For an
+        -- `= value` qual the planner knows the column is constant
+        -- and drops it from the sort; for `IS NULL` it does not,
+        -- so without it the index (workspace_id, created_at DESC)
+        -- is not seen as presorted and the planner falls back to
+        -- the very scan + sort this migration removes (measured:
+        -- 56 ms vs 0.25 ms at 300k rows). Every row here has a
+        -- NULL workspace_id, so the extra key orders nothing and
+        -- the row chosen is the same one.
+        SELECT hash INTO v_prev_hash
+        FROM audit.audit_ledger
+        WHERE workspace_id IS NULL
+        ORDER BY workspace_id, created_at DESC, id DESC
+        LIMIT 1
+        FOR UPDATE;
+    ELSE
+        SELECT hash INTO v_prev_hash
+        FROM audit.audit_ledger
+        WHERE workspace_id = NEW.workspace_id
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        FOR UPDATE;
+    END IF;
 
     NEW.previous_hash := v_prev_hash;
 

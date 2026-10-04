@@ -15,17 +15,12 @@ import { render, screen } from '@testing-library/react';
 // down the WebGL path. The mock renders a probe div with serialized
 // hovertemplates so assertions can introspect tooltip content.
 vi.mock('../GeoPlot', () => ({
-    default: ({ data, layout }: { data: any[]; layout: any }) => (
+    default: ({ data, layout }: { data: Record<string, unknown>[]; layout: Record<string, unknown> }) => (
         <div data-testid="geoplot-mock">
             <div data-testid="trace-count">{data.length}</div>
-            <div data-testid="layout-bar-mode">{(layout as any)?.barmode ?? ''}</div>
+            <div data-testid="layout-bar-mode">{String(layout?.barmode ?? '')}</div>
             {data.map((trace, idx) => (
-                <div
-                    key={idx}
-                    data-testid={`trace-${idx}`}
-                    data-name={trace.name}
-                    data-hover={trace.hovertemplate}
-                />
+                <div key={idx} data-testid={`trace-${idx}`} data-name={trace.name} data-hover={trace.hovertemplate} />
             ))}
         </div>
     ),

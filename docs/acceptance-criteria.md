@@ -21,7 +21,7 @@ Updated: **2026-04-27** (V1.5 wrap + D2 sign-off).
 | Golden corpus (≥30 cases) tagged + ≥3 cases per non-refusal class | ✅ | `src/fastapi/tests/test_golden_queries.py` + `test_golden_query_class_coverage`; 30 fixtures, 7 classes |
 | Hallucination corpus (≥20 adversarial cases) | ✅ | `src/fastapi/tests/test_hallucination_failures.py` + `test_hallucination_layers.py` (92 layer-unit tests) |
 | Integration markers run in release-rehearsal workflow | ✅ | `.github/workflows/release-rehearsal.yml` (workflow_dispatch + tag-push) |
-| CI uses PostgreSQL 18.3 (matches production) | ✅ | `.github/workflows/ci.yml` pinned `postgis/postgis:18-3.6@sha256:f81dd52d...` |
+| CI uses PostgreSQL 18.3 (matches production) | ✅ | `.github/workflows/ci.yml` pinned `postgis/postgis:18-3.6@sha256:60f6ad1d...` |
 | pgTAP assertions including migrations 01-07 | ✅ | 199/199 across 7 files in `database/tests/pgtap/` |
 | CI tags Docker images with commit-SHA, pushes to GHCR | ✅ | `.github/workflows/ci.yml` `docker-build` job + GHCR auth |
 | Trivy + hadolint pass on every PR (warn-only OK) | ✅ | `ci.yml` Trivy CRITICAL-fail + hadolint warn-only |

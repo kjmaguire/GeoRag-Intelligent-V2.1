@@ -67,9 +67,23 @@ from app.agent.hallucination.claim_sentences import (
     is_table_header,
     split_units,
 )
+from app.agent.hallucination.refusals import (
+    MODEL_NO_OUTPUT_TEXT,
+    PROVENANCE_REFUSAL_TEXT,
+    UNSUPPORTED_BY_SOURCES_MESSAGE,
+    make_refusal_payload,
+)
 from app.models.rag import Citation, GeoRAGResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _unsupported_refusal_payload() -> dict[str, object]:
+    """Refusal payload for an answer withheld because its claims cited nothing
+    real. Plain message: it renders verbatim in the RefusalPanel."""
+    return make_refusal_payload(
+        "unsupported_by_sources", UNSUPPORTED_BY_SOURCES_MESSAGE
+    )
 
 
 def validate_and_repair(response: GeoRAGResponse) -> GeoRAGResponse:
@@ -153,9 +167,12 @@ def validate_and_repair_with_findings(
         replacement = (
             CITATION_REFUSAL_TEXT if findings else "I was unable to generate a response."
         )
-        response = response.model_copy(
-            update=dict(text=replacement, proactive_insights_offset=None)
+        _update: dict[str, object] = dict(
+            text=replacement, proactive_insights_offset=None
         )
+        if findings:
+            _update["refusal_payload"] = _unsupported_refusal_payload()
+        response = response.model_copy(update=_update)
 
     # ── Check 4: confidence clamped ───────────────────────────────────────
     if response.confidence < 0.0 or response.confidence > 1.0:
@@ -231,6 +248,8 @@ def _is_system_text(text: str) -> bool:
         build_refusal_text(),
         CITATION_REFUSAL_TEXT,
         BUDGET_EXHAUSTED_FALLBACK,
+        MODEL_NO_OUTPUT_TEXT,
+        PROVENANCE_REFUSAL_TEXT,
         "I was unable to generate a response.",
     )
 
@@ -359,12 +378,15 @@ def enforce_claim_citations(
         update = dict(
             text=CITATION_REFUSAL_TEXT,
             proactive_insights_offset=None,
+            # Machine-readable refusal so the chat renders RefusalPanel
+            # instead of an ordinary-looking answer bubble (audit item 8).
+            refusal_payload=_unsupported_refusal_payload(),
             citations=[
                 Citation(
                     citation_id="[DATA-1]",
                     citation_type="DATA",
                     source_chunk_id=CITATION_REJECTED_SOURCE_ID,
-                    document_title="No claim in the answer carried a citation",
+                    document_title="No supporting source",
                     section=None,
                     page=None,
                     relevance_score=0.0,

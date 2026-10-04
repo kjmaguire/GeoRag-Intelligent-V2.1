@@ -269,8 +269,11 @@ their **measured** values rather than reinvented: Foundry blocked 1,421 of
 rule its existence. Bedrock publishes the direct equivalents, so the
 numbers port.
 
-> **⚠️ What these three alarms still cover, as of 2026-09-15.** Embed v4
-> and Rerank 3.5 — and nothing else.
+> **⚠️ What these three alarms still cover, as of 2026-10-04.** Rerank 3.5
+> (and Embed v4 only while it is the rollback backend) — nothing else.
+> [ADR-0025](../../adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md)
+> moved dense embedding to `api.cohere.com` too, so Embed 5 is not covered
+> here either.
 > [ADR-0023](../../adr/0023-cohere-chat-and-parse-move-to-coheres-own-api.md)
 > moved chat and Parse onto `api.cohere.com`, and CloudWatch cannot see a
 > request that never went to AWS. When this table was written a week

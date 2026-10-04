@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { router } from '@inertiajs/react';
 
 /**
@@ -25,18 +25,45 @@ interface PaletteItem {
 const ORG_ITEMS: PaletteItem[] = [
     { kind: 'nav', title: 'Projects', sub: 'Project picker', href: '/projects', group: 'Navigate' },
     { kind: 'nav', title: 'New project', sub: '4-step wizard', href: '/foundry/projects/new', group: 'Navigate' },
-    { kind: 'nav', title: 'Upload files', sub: 'Import wizard — PDF / TIFF / ZIP', href: '/foundry/imports/wizard', group: 'Navigate' },
+    {
+        kind: 'nav',
+        title: 'Upload files',
+        sub: 'Import wizard — PDF / TIFF / ZIP',
+        href: '/foundry/imports/wizard',
+        group: 'Navigate',
+    },
 ];
 
 export default function CommandPalette({ projectSlug = null }: { projectSlug?: string | null }) {
     const [open, setOpen] = useState(false);
     const [q, setQ] = useState('');
     const [cursor, setCursor] = useState(0);
+    const baseId = useId();
+    const listboxId = `${baseId}-listbox`;
+    const optionId = (idx: number) => `${baseId}-option-${idx}`;
+    const dialogRef = useRef<HTMLDivElement | null>(null);
+    // What had focus when the palette opened, so closing hands it back.
+    const openerRef = useRef<HTMLElement | null>(null);
+    const openRef = useRef(false);
+    useEffect(() => {
+        openRef.current = open;
+        if (open) return;
+        // Closed (any route): the next open starts on the first row, and
+        // focus returns to where the user was.
+        setCursor(0);
+        const opener = openerRef.current;
+        openerRef.current = null;
+        if (opener?.isConnected) opener.focus();
+    }, [open]);
 
     useEffect(() => {
         function onKey(e: KeyboardEvent) {
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
                 e.preventDefault();
+                if (!openRef.current) {
+                    const active = document.activeElement;
+                    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+                }
                 setOpen((v) => !v);
             }
             if (e.key === 'Escape') setOpen(false);
@@ -51,29 +78,71 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
         return [
             ...ORG_ITEMS,
             { kind: 'nav', title: 'Overview', sub: 'Project overview', href: base, group: 'This project' },
-            { kind: 'nav', title: 'Chat', sub: 'Ask the project corpus', href: `${base}/chat`, group: 'This project' },
+            {
+                kind: 'nav',
+                title: 'Chat',
+                sub: 'Ask questions about this project',
+                href: `${base}/chat`,
+                group: 'This project',
+            },
             { kind: 'nav', title: 'Data', sub: 'Sources + lineage', href: `${base}/sources`, group: 'This project' },
-            { kind: 'nav', title: 'Ingestion runs', sub: 'Live pipeline activity', href: `${base}/ingestion-runs`, group: 'This project' },
+            {
+                kind: 'nav',
+                title: 'Ingestion runs',
+                sub: 'Live import activity',
+                href: `${base}/ingestion-runs`,
+                group: 'This project',
+            },
             // Reader (/corpus) and Quality (/imports/quality) merged into
             // Reports 2026-08-18; both paths still redirect there.
-            { kind: 'nav', title: 'Reports', sub: 'Documents & ingest quality', href: `${base}/reports`, group: 'This project' },
+            {
+                kind: 'nav',
+                title: 'Reports',
+                sub: 'Documents & processing quality',
+                href: `${base}/reports`,
+                group: 'This project',
+            },
             // Restored 2026-08-17 (reader-core trim reversal) — a real
             // page route (/projects/{slug}/workspace), unrelated to the
             // dead chat slash-commands described above.
-            { kind: 'nav', title: 'Workspace', sub: 'Map, sections, 3D, logs', href: `${base}/workspace`, group: 'This project' },
+            {
+                kind: 'nav',
+                title: 'Workspace',
+                sub: 'Map, sections, 3D, logs',
+                href: `${base}/workspace`,
+                group: 'This project',
+            },
             // Merged 2026-08-19 — Compare is a mode inside Workspace now, so
             // this deep-links straight to it rather than to the deleted
             // /compare page. Kept as its own palette entry because "compare"
             // is what a user types when they want it; it is not discoverable
             // by searching for "workspace".
-            { kind: 'nav', title: 'Compare holes', sub: 'Side-by-side hole comparison', href: `${base}/workspace?mode=compare`, group: 'This project' },
+            {
+                kind: 'nav',
+                title: 'Compare holes',
+                sub: 'Side-by-side hole comparison',
+                href: `${base}/workspace?mode=compare`,
+                group: 'This project',
+            },
             // Folded out of the project nav 2026-08-25 — Rasters is a
             // Workspace mode and Tables a Reports view. Both keep a palette
             // entry for the same reason Compare does: "rasters" is what a
             // user types when they want the raster catalogue, and it is not
             // discoverable by searching for "workspace".
-            { kind: 'nav', title: 'Rasters', sub: 'Raster catalogue (Workspace mode)', href: `${base}/rasters`, group: 'This project' },
-            { kind: 'nav', title: 'Tables', sub: 'Attribute tables (Reports view)', href: `${base}/attribute-tables`, group: 'This project' },
+            {
+                kind: 'nav',
+                title: 'Rasters',
+                sub: 'Raster catalogue (Workspace mode)',
+                href: `${base}/rasters`,
+                group: 'This project',
+            },
+            {
+                kind: 'nav',
+                title: 'Tables',
+                sub: 'Attribute tables (Reports view)',
+                href: `${base}/attribute-tables`,
+                group: 'This project',
+            },
         ];
     }, [projectSlug]);
 
@@ -83,16 +152,52 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
         return items.filter((i) => `${i.title} ${i.sub}`.toLowerCase().includes(qq));
     }, [q, items]);
 
+    // Keep the keyboard-active row visible when the list scrolls.
+    useEffect(() => {
+        if (!open) return;
+        document.getElementById(`${baseId}-option-${cursor}`)?.scrollIntoView?.({ block: 'nearest' });
+    }, [open, cursor, baseId]);
+
     function pick(item: PaletteItem) {
         setOpen(false);
         setQ('');
+        setCursor(0);
         router.visit(item.href);
+    }
+
+    // Modal: Tab must not walk out into the page behind the backdrop.
+    function trapTab(e: React.KeyboardEvent<HTMLDivElement>) {
+        if (e.key !== 'Tab') return;
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusable = Array.from(
+            dialog.querySelectorAll<HTMLElement>(
+                'input, button, select, textarea, a[href], [tabindex]:not([tabindex="-1"])',
+            ),
+        ).filter((el) => !el.hasAttribute('disabled'));
+        if (focusable.length === 0) {
+            e.preventDefault();
+            return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        if (!(active instanceof HTMLElement) || !dialog.contains(active)) {
+            e.preventDefault();
+            first.focus();
+        } else if (e.shiftKey && active === first) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && active === last) {
+            e.preventDefault();
+            first.focus();
+        }
     }
 
     function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
         if (e.key === 'ArrowDown') {
             e.preventDefault();
-            setCursor((c) => Math.min(filtered.length - 1, c + 1));
+            setCursor((c) => Math.max(0, Math.min(filtered.length - 1, c + 1)));
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             setCursor((c) => Math.max(0, c - 1));
@@ -104,63 +209,116 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
 
     if (!open) return null;
 
-    const grouped = filtered.reduce((acc, i) => {
-        (acc[i.group] = acc[i.group] || []).push(i);
-        return acc;
-    }, {} as Record<string, PaletteItem[]>);
+    const grouped = filtered.reduce(
+        (acc, i) => {
+            (acc[i.group] = acc[i.group] || []).push(i);
+            return acc;
+        },
+        {} as Record<string, PaletteItem[]>,
+    );
 
     let runningIdx = 0;
 
     return (
-        <div className="fixed inset-0 z-[200] flex items-start justify-center pt-24 foundry" style={{ background: 'rgba(8,10,14,0.78)', backdropFilter: 'blur(4px)' }} onClick={() => setOpen(false)}>
-            <div className="w-[560px] max-w-[94vw] rounded-md border overflow-hidden flex flex-col" style={{ background: 'var(--bg-0)', borderColor: 'var(--line-2)', boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }} onClick={(e) => e.stopPropagation()}>
+        <div
+            className="fixed inset-0 z-[200] flex items-start justify-center pt-24 foundry"
+            role="presentation"
+            style={{ background: 'rgba(8,10,14,0.78)', backdropFilter: 'blur(4px)' }}
+            onClick={() => setOpen(false)}
+        >
+            <div
+                ref={dialogRef}
+                onKeyDown={trapTab}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Command palette"
+                className="w-[560px] max-w-[94vw] rounded-md border overflow-hidden flex flex-col"
+                style={{
+                    background: 'var(--bg-0)',
+                    borderColor: 'var(--line-2)',
+                    boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+            >
                 <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--line-1)' }}>
-                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>⌘K</span>
+                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                        ⌘K
+                    </span>
                     <input
                         aria-label="Search navigation"
+                        role="combobox"
+                        aria-expanded="true"
+                        aria-controls={listboxId}
+                        aria-autocomplete="list"
+                        aria-activedescendant={filtered.length > 0 ? optionId(cursor) : undefined}
                         type="text"
                         autoFocus
                         value={q}
-                        onChange={(e) => { setQ(e.target.value); setCursor(0); }}
+                        onChange={(e) => {
+                            setQ(e.target.value);
+                            setCursor(0);
+                        }}
                         onKeyDown={onKey}
                         placeholder="Search navigation…"
                         className="flex-1 text-sm bg-transparent outline-none"
                         style={{ color: 'var(--fg-0)' }}
                     />
                 </div>
-                <div className="max-h-96 overflow-y-auto">
+                <div id={listboxId} role="listbox" aria-label="Navigation results" className="max-h-96 overflow-y-auto">
                     {Object.entries(grouped).map(([group, groupItems]) => (
-                        <div key={group}>
-                            <div className="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>{group}</div>
+                        <div key={group} role="group" aria-labelledby={`${baseId}-group-${group.replace(/\s+/g, '-')}`}>
+                            <div
+                                id={`${baseId}-group-${group.replace(/\s+/g, '-')}`}
+                                className="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-[0.12em]"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
+                                {group}
+                            </div>
                             {groupItems.map((i) => {
-                                const isActive = runningIdx === cursor;
+                                const idx = runningIdx;
+                                const isActive = idx === cursor;
                                 runningIdx++;
                                 return (
-                                    <button
+                                    <div
                                         key={`${group}-${i.title}`}
-                                        type="button"
+                                        id={optionId(idx)}
+                                        role="option"
+                                        aria-selected={isActive}
                                         onClick={() => pick(i)}
-                                        className="w-full text-left px-3 py-2 flex items-center gap-3"
+                                        className="w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer"
                                         style={{
                                             background: isActive ? 'var(--accent-bg)' : 'transparent',
                                             color: isActive ? 'var(--fg-0)' : 'var(--fg-1)',
                                         }}
                                     >
-                                        <span className="font-mono text-[10px] uppercase tracking-wider w-12" style={{ color: 'var(--fg-3)' }}>{i.kind}</span>
+                                        <span
+                                            aria-hidden="true"
+                                            className="font-mono text-[10px] uppercase tracking-wider w-12"
+                                            style={{ color: 'var(--fg-3)' }}
+                                        >
+                                            {i.kind}
+                                        </span>
                                         <div className="flex-1">
                                             <div className="text-xs font-medium">{i.title}</div>
-                                            <div className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>{i.sub}</div>
+                                            <div className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
+                                                {i.sub}
+                                            </div>
                                         </div>
-                                    </button>
+                                    </div>
                                 );
                             })}
                         </div>
                     ))}
                     {filtered.length === 0 && (
-                        <div className="px-3 py-6 text-center text-xs" style={{ color: 'var(--fg-3)' }}>No matches.</div>
+                        <div className="px-3 py-6 text-center text-xs" style={{ color: 'var(--fg-3)' }}>
+                            No matches.
+                        </div>
                     )}
                 </div>
-                <div className="px-3 py-1.5 border-t text-[10px] font-mono uppercase tracking-wider flex justify-between" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>
+                <div
+                    className="px-3 py-1.5 border-t text-[10px] font-mono uppercase tracking-wider flex justify-between"
+                    style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}
+                >
                     <span>↑↓ navigate · ⏎ select</span>
                     <span>esc to close</span>
                 </div>

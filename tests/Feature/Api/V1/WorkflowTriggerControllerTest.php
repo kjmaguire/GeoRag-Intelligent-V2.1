@@ -219,6 +219,41 @@ final class WorkflowTriggerControllerTest extends TestCase
             ->assertJsonPath('error', 'trigger_failed');
     }
 
+    public function test_a_non_hatchet_exception_releases_the_cooldown(): void
+    {
+        // The JWT minter throws a plain RuntimeException for a signing key
+        // shorter than 32 bytes. trigger() does not translate it, so before
+        // the fix only HatchetWorkflowTriggerException released the 60 s claim
+        // and the user's immediate retry was answered 429 for a run that never
+        // went anywhere.
+        $this->fakeAccepted('run-after-crash');
+        [$user, $project] = $this->member();
+        $url = "/api/v1/projects/{$project->project_id}/workflows/generate_report";
+
+        config(['services.fastapi.service_key' => 'too-short']);
+        $this->actingAs($user)->postJson($url, ['report_type' => 'ingestion_quality'])->assertStatus(500);
+
+        config(['services.fastapi.service_key' => 'test-service-key-must-be-at-least-32-bytes-long']);
+        $this->actingAs($user)->postJson($url, ['report_type' => 'ingestion_quality'])
+            ->assertStatus(202)
+            ->assertJsonPath('workflow_run_id', 'run-after-crash');
+    }
+
+    public function test_an_unreachable_fastapi_does_not_disclose_the_upstream_detail(): void
+    {
+        Http::fake(fn () => throw new ConnectionException('cURL error 7: Failed to connect to fastapi.georag.internal port 8000'));
+        [$user, $project] = $this->member();
+
+        $response = $this->actingAs($user)
+            ->postJson("/api/v1/projects/{$project->project_id}/workflows/generate_report", [
+                'report_type' => 'ingestion_quality',
+            ])
+            ->assertStatus(502)
+            ->assertJsonPath('error', 'trigger_failed');
+
+        $this->assertStringNotContainsString('georag.internal', (string) $response->getContent());
+    }
+
     // ── Workspace-scoped admin workflows ────────────────────────────────
 
     public function test_workspace_trigger_requires_admin(): void

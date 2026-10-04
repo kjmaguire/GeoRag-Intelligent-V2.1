@@ -6,7 +6,8 @@ On a bulk upload (2026-09-02: ~50 files in three minutes) runs wait in that
 queue past the sweep's 15-minute window while their ``schedule_timeout``
 (30 minutes to 2 hours) says the wait is legitimate. The sweep read every
 one of them as dead — ``timed_out`` / ``stale_heartbeat`` at step 0 of 5,
-never retried because ``queued`` is outside RETRY_STAGES — and when the
+never retried (``queued`` was outside the retry allow-list; it is
+retry-eligible now) — and when the
 worker eventually ran the workflow, every terminal write no-op'd against
 the closed row, leaving a successful ingest red on the Ingestion Runs page.
 
@@ -138,6 +139,7 @@ def sweep(monkeypatch):
     rows: list[dict] = []
     timed_out = AsyncMock(return_value=True)
     broadcast = AsyncMock()
+    dispatch = AsyncMock(return_value="child-run")
     statuses: dict[str, str | None] = {}
 
     async def _status(workflow_run_id: str) -> str | None:
@@ -159,7 +161,9 @@ def sweep(monkeypatch):
     monkeypatch.setattr(srd, "fetch_per_workspace", _per_workspace)
     monkeypatch.setattr(srd, "post_ingestion_progress", broadcast)
     monkeypatch.setattr(srd, "_hatchet_run_status", _status)
+    monkeypatch.setattr(srd, "_dispatch_recovery_run", dispatch)
     return SimpleNamespace(
+        dispatch=dispatch,
         rows=rows,
         statuses=statuses,
         timed_out=timed_out,
@@ -199,9 +203,12 @@ async def test_live_queued_rows_are_skipped_and_dead_ones_swept(sweep) -> None:
         "a CANCELLED run and a pre-workflow_run_id row are carcasses; a "
         "QUEUED or RUNNING one is not"
     )
-    assert (
-        out.recovery_runs_dispatched == 0
-    ), "'queued' stays outside RETRY_STAGES — nothing to re-drive"
+    # A run lost before it recorded any stage is re-driven, not abandoned:
+    # "never progressed" is not "will never progress". Both carcasses get a
+    # recovery dispatch; the skipped-alive rows do not.
+    assert out.recovery_runs_dispatched == 2
+    redriven = {c.kwargs["stale_row"]["run_id"] for c in sweep.dispatch.await_args_list}
+    assert redriven == {"lost", "legacy"}
 
 
 async def test_nothing_is_swept_when_every_candidate_is_alive(sweep) -> None:

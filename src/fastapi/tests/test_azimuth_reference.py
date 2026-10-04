@@ -95,6 +95,8 @@ class _TraceConn:
         self.declination = declination
         self.wkts: list[str] = []
         self.survey_sql: list[str] = []
+        self.survey_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.upsert_batches: list[list[tuple[object, ...]]] = []
 
     async def fetchrow(self, sql: str, *args: object) -> dict | None:
         return {"orientation_reference": self.reference,
@@ -106,12 +108,15 @@ class _TraceConn:
                      "azimuth": 0.0, "dip": -45.0, "lon": -102.1, "lat": 58.0,
                      "existing_hash": None}]
         self.survey_sql.append(sql)
-        # [] = no surveys: straight-line fallback from the collar.
-        return list(self.surveys)
+        self.survey_calls.append((sql, args))
+        # [] = no surveys: straight-line fallback from the collar. The batched
+        # read returns every station of every requested hole, keyed by hole.
+        return [{"collar_id": "c1", **row} for row in self.surveys]
 
-    async def execute(self, sql: str, *args: object) -> str:
-        self.wkts.append(str(args[3]))
-        return "OK"
+    async def executemany(self, sql: str, args_list: list[tuple[object, ...]]) -> None:
+        self.upsert_batches.append(list(args_list))
+        for args in args_list:
+            self.wkts.append(str(args[3]))
 
 
 async def _promote(conn: _TraceConn):  # type: ignore[no-untyped-def]

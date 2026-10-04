@@ -77,7 +77,7 @@ COMPOSE_HOSTS = {
 
 #: Left unset on purpose. Each entry is a decision, not an oversight.
 ALLOWED = {
-    "EMBEDDING_SERVICE_URL": "sidecar proxy; production sets EMBEDDING_BACKEND=bedrock, "
+    "EMBEDDING_SERVICE_URL": "sidecar proxy; production sets EMBEDDING_BACKEND=cohere, "
                              "which never reaches this path",
     "RERANKER_SERVICE_URL": "sidecar proxy; production sets RERANKER_BACKEND=bedrock",
     "SPARSE_SERVICE_URL": "explicitly emptied on hatchet-worker so it loads SPLADE++ "

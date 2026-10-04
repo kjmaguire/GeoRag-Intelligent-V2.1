@@ -119,7 +119,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                                 style={{ background: toneColor(t.tone) }}
                             />
                             <div className="flex-1 min-w-0">
-                                <div className="text-xs font-medium truncate" style={{ color: 'var(--fg-0)' }} title={t.title}>
+                                <div
+                                    className="text-xs font-medium truncate"
+                                    style={{ color: 'var(--fg-0)' }}
+                                    title={t.title}
+                                >
                                     {t.title}
                                 </div>
                                 {t.detail && (

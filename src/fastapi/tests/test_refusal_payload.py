@@ -35,7 +35,7 @@ import pytest
 
 
 def test_refusal_reason_code_enum_values():
-    """RefusalReasonCode Literal contains all six stable values for Module 7 branching."""
+    """RefusalReasonCode Literal contains all eight stable values for Module 7 branching."""
     import typing
 
     from app.models.answer_run import RefusalReasonCode
@@ -49,6 +49,8 @@ def test_refusal_reason_code_enum_values():
         "guard_completeness_fail",
         "llm_unavailable",
         "budget_exhausted",
+        "model_no_output",
+        "unsupported_by_sources",
     }
     assert set(args) == expected, f"RefusalReasonCode values changed: {args}"
 

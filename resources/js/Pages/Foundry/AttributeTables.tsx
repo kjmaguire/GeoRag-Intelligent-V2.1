@@ -94,12 +94,7 @@ function tableLabel(t: { source_file: string | null; source_layer: string }): st
     return t.source_file ?? t.source_layer;
 }
 
-export default function FoundryAttributeTables({
-    project,
-    tables,
-    selected,
-    table,
-}: AttributeTablesProps) {
+export default function FoundryAttributeTables({ project, tables, selected, table }: AttributeTablesProps) {
     const empty = tables.length === 0;
     const totalRows = tables.reduce((sum, t) => sum + t.rows, 0);
 
@@ -139,10 +134,7 @@ export default function FoundryAttributeTables({
                     className="flex items-center gap-3 px-8 py-2 border-b shrink-0"
                     style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
                 >
-                    <span
-                        className="text-[10px] font-mono uppercase tracking-widest"
-                        style={{ color: 'var(--fg-3)' }}
-                    >
+                    <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
                         View
                     </span>
                     <ReportsViewBar slug={project.slug} active="tables" />
@@ -152,7 +144,7 @@ export default function FoundryAttributeTables({
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No attribute tables in this project."
-                            detail="Standalone .dbf / .dat tables and sheets that match no drill schema land in silver.attribute_tables — rows kept whole, with the file they came from. Upload one through the Import Wizard and it will appear here."
+                            detail="Standalone .dbf / .dat tables and sheets that match no drill data layout are kept as-is, row by row, with the file they came from. Upload one through the Import Wizard and it will appear here."
                             action={
                                 <Link
                                     href={importWizardHref(project.slug)}
@@ -170,11 +162,7 @@ export default function FoundryAttributeTables({
                     </div>
                 ) : (
                     <div className="flex-1 flex min-h-0">
-                        <TableList
-                            tables={tables}
-                            slug={project.slug}
-                            selected={selected}
-                        />
+                        <TableList tables={tables} slug={project.slug} selected={selected} />
 
                         <section className="flex-1 min-w-0 flex flex-col">
                             {table ? (
@@ -272,10 +260,7 @@ function TableList({
                             <Pill tone="neutral">
                                 {t.rows.toLocaleString()} row{t.rows === 1 ? '' : 's'}
                             </Pill>
-                            <span
-                                className="text-[10px] font-mono"
-                                style={{ color: 'var(--fg-3)' }}
-                            >
+                            <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
                                 {formatWhen(t.updated_at)}
                             </span>
                         </div>
@@ -303,12 +288,8 @@ function TablePane({ slug, table }: { slug: string; table: AttributeTableDetail 
                 eyebrow={`LAYER · ${table.source_layer.toUpperCase()}`}
                 title={tableLabel(table)}
                 actions={
-                    <span
-                        className="text-[10px] font-mono tabular-nums"
-                        style={{ color: 'var(--fg-3)' }}
-                    >
-                        {table.total_rows.toLocaleString()} rows ·{' '}
-                        {table.columns.length} columns
+                    <span className="text-[10px] font-mono tabular-nums" style={{ color: 'var(--fg-3)' }}>
+                        {table.total_rows.toLocaleString()} rows · {table.columns.length} columns
                     </span>
                 }
             >
@@ -360,16 +341,14 @@ function ColumnProvenance({ table }: { table: AttributeTableDetail }) {
         >
             {sampled && (
                 <span>
-                    Columns derived from the first {table.sampled_rows} of{' '}
-                    {table.total_rows.toLocaleString()} rows.
+                    Columns derived from the first {table.sampled_rows} of {table.total_rows.toLocaleString()} rows.
                 </span>
             )}
             {extra.length > 0 && (
                 <span>
                     {' '}
                     This page also carries {extra.length} column
-                    {extra.length === 1 ? '' : 's'} the sample missed:{' '}
-                    {extra.join(', ')}.
+                    {extra.length === 1 ? '' : 's'} the sample missed: {extra.join(', ')}.
                 </span>
             )}
         </div>
@@ -432,11 +411,7 @@ function RowGrid({ table }: { table: AttributeTableDetail }) {
                             {row.row_index}
                         </td>
                         {row.cells.map((cell, i) => (
-                            <DataCell
-                                key={table.columns[i].name}
-                                value={cell}
-                                numeric={table.columns[i].numeric}
-                            />
+                            <DataCell key={table.columns[i].name} value={cell} numeric={table.columns[i].numeric} />
                         ))}
                     </tr>
                 ))}
@@ -489,35 +464,16 @@ function Pager({
             className="flex items-center justify-between px-4 py-2 border-t shrink-0"
             style={{ borderColor: 'var(--line-1)' }}
         >
-            <span
-                className="text-[10px] font-mono tabular-nums"
-                style={{ color: 'var(--fg-3)' }}
-            >
-                Rows {firstRow.toLocaleString()}–{lastRow.toLocaleString()} of{' '}
-                {table.total_rows.toLocaleString()}
+            <span className="text-[10px] font-mono tabular-nums" style={{ color: 'var(--fg-3)' }}>
+                Rows {firstRow.toLocaleString()}–{lastRow.toLocaleString()} of {table.total_rows.toLocaleString()}
             </span>
 
             <div className="flex items-center gap-2">
-                <PagerLink
-                    slug={slug}
-                    table={table}
-                    page={table.page - 1}
-                    enabled={hasPrev}
-                    label="← Prev"
-                />
-                <span
-                    className="text-[10px] font-mono tabular-nums"
-                    style={{ color: 'var(--fg-2)' }}
-                >
+                <PagerLink slug={slug} table={table} page={table.page - 1} enabled={hasPrev} label="← Prev" />
+                <span className="text-[10px] font-mono tabular-nums" style={{ color: 'var(--fg-2)' }}>
                     {table.page} / {table.last_page}
                 </span>
-                <PagerLink
-                    slug={slug}
-                    table={table}
-                    page={table.page + 1}
-                    enabled={hasNext}
-                    label="Next →"
-                />
+                <PagerLink slug={slug} table={table} page={table.page + 1} enabled={hasNext} label="Next →" />
             </div>
         </div>
     );
@@ -536,8 +492,7 @@ function PagerLink({
     enabled: boolean;
     label: string;
 }) {
-    const className =
-        'text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded border';
+    const className = 'text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded border';
 
     // A disabled <Link> is still a link: it navigates on click and reads as
     // actionable to a screen reader. At the ends of the range this has to be

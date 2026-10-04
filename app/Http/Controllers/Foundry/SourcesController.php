@@ -10,6 +10,7 @@ use App\Support\ExtractionMethods;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -63,7 +64,7 @@ class SourcesController extends Controller
         $workspaceId = $project->workspace_id;
 
         // ── 0. PLSS sections, for legacy bulk-archive projects only. ──
-        $sections = $this->resolveProjectSections($project->project_id);
+        $sections = $this->resolveProjectSections((string) $project->project_id, (int) ($project->data_version ?? 0));
 
         // ── 1. File inventory — from silver.ingest_progress (the live
         //     per-file Hatchet run history) grouped by file extension,
@@ -129,13 +130,32 @@ class SourcesController extends Controller
         // docblock): document_passages has no provenance row on the live
         // ingest path, so this always undercounted to 0. Direct join
         // through silver.reports, same fix as CorpusController.
-        $passagesInProject = (int) $this->withWorkspaceRls(
+        //
+        // The same scan also yields the page-level low-confidence figures the
+        // headline tile reads (low_confidence_pages / total_pages_reviewed).
+        // Those were hard-coded 0 on the premise that no per-page breakdown
+        // exists outside the disabled §04p quality stack; the ingest-side
+        // quality router DOES write silver.document_passages.ocr_status
+        // (='low_confidence' for a flagged page), which is what the Overview
+        // OCR card already reads. A "page" is a distinct (document, page_first)
+        // among text passages; image-modality rows are a vision model's
+        // description of a page, not a page read, and are excluded.
+        $passageStats = $this->withWorkspaceRls(
             $workspaceId,
-            fn () => DB::table('silver.document_passages AS dp')
-                ->join('silver.reports AS r', 'r.report_id', '=', 'dp.document_id')
-                ->where('r.project_id', $project->project_id)
-                ->count(),
+            fn () => DB::selectOne(
+                "SELECT COUNT(*)::int AS passages,
+                        COUNT(DISTINCT (dp.document_id, dp.page_first))
+                            FILTER (WHERE dp.modality = 'text' AND dp.page_first IS NOT NULL)::int AS pages_reviewed,
+                        COUNT(DISTINCT (dp.document_id, dp.page_first))
+                            FILTER (WHERE dp.modality = 'text' AND dp.page_first IS NOT NULL
+                                      AND dp.ocr_status = 'low_confidence')::int AS low_confidence_pages
+                   FROM silver.document_passages dp
+                   JOIN silver.reports r ON r.report_id = dp.document_id
+                  WHERE r.project_id = ?",
+                [$project->project_id],
+            ),
         );
+        $passagesInProject = (int) ($passageStats->passages ?? 0);
 
         // 2026-08-17 — silver.document_ingestion_quality is written only
         // by the §04p dual-write OCR quality stack, which is disabled in
@@ -145,6 +165,8 @@ class SourcesController extends Controller
         // ingest; use it as the quality signal instead. No per-page
         // low-confidence breakdown exists at this granularity, so that
         // half of the rollup drops to 0 rather than being fabricated.
+        // (Superseded above: the page-level figures now come from
+        // document_passages.ocr_status.)
         $qualityRollup = DB::table('silver.reports')
             ->where('project_id', $project->project_id)
             ->whereNotNull('parse_quality_pct')
@@ -173,12 +195,11 @@ class SourcesController extends Controller
             'ingest_runs_in_project' => $totalRunsTouchingProject,
             'avg_quality_score' => $qualityRollup && $qualityRollup->avg_score !== null
                 ? round((float) $qualityRollup->avg_score, 3) : null,
-            // No per-page low-confidence breakdown exists outside the
-            // disabled §04p quality stack (see qualityRollup above) —
-            // left at 0 rather than fabricated (renders as "not assessed
-            // yet" in the UI instead of a misleading page count).
-            'low_confidence_pages' => 0,
-            'total_pages_reviewed' => 0,
+            // From silver.document_passages (see $passageStats). 0 when no
+            // passage carries a page number, which the UI renders as "not
+            // assessed yet" rather than as a page count.
+            'low_confidence_pages' => (int) ($passageStats->low_confidence_pages ?? 0),
+            'total_pages_reviewed' => (int) ($passageStats->pages_reviewed ?? 0),
         ];
 
         return Inertia::render('Foundry/Sources', [
@@ -315,33 +336,53 @@ class SourcesController extends Controller
     }
 
     /**
-     * Walk silver.collars + silver.reports for this project, pull the
-     * source_file paths from bronze.provenance, and extract the PLSS
-     * section token (`028N079W36`, `033N089W28`, …) from each path.
+     * PLSS section tokens for this project, from bronze.provenance — which
+     * only the historical bulk Wyoming archive import ever wrote (the PDF
+     * path never does), so for most projects the answer is empty.
      *
-     * Returns a deduped list. Empty when the project has no silver rows.
+     * This used to SELECT DISTINCT over ALL of bronze.provenance, LEFT JOINed
+     * to both silver.collars and silver.reports and filtered afterwards, on
+     * every page load: a scan proportional to the whole archive to return
+     * nothing for a PDF project. It is now driven from this project's own
+     * collars and reports (each side probes idx_provenance_target on
+     * (target_schema, target_table, target_id)) and the result is cached per
+     * project and data_version, so an ingest — which bumps data_version —
+     * refreshes it and a plain reload does not recompute it.
+     *
+     * Octane: nothing is held in the process; the cache is the only state.
      *
      * @return list<string>
      */
-    private function resolveProjectSections(string $projectId): array
+    private function resolveProjectSections(string $projectId, int $dataVersion): array
     {
-        $rows = DB::select(
-            "SELECT DISTINCT
-                substring(bp.source_file FROM '(?:extract|data)/([0-9]{3}N[0-9]{3}W[0-9A-Z]+)/') AS section
-              FROM bronze.provenance bp
-              LEFT JOIN silver.collars c ON c.collar_id = bp.target_id AND bp.target_table = 'collars'
-              LEFT JOIN silver.reports r ON r.report_id = bp.target_id AND bp.target_table = 'reports'
-              WHERE c.project_id = ?::uuid OR r.project_id = ?::uuid",
-            [$projectId, $projectId],
+        return Cache::remember(
+            "sources:plss-sections:{$projectId}:{$dataVersion}",
+            now()->addMinutes(10),
+            function () use ($projectId): array {
+                $rows = DB::select(
+                    "SELECT substring(bp.source_file FROM '(?:extract|data)/([0-9]{3}N[0-9]{3}W[0-9A-Z]+)/') AS section
+                       FROM bronze.provenance bp
+                      WHERE bp.target_schema = 'silver'
+                        AND bp.target_table = 'collars'
+                        AND bp.target_id IN (SELECT c.collar_id FROM silver.collars c WHERE c.project_id = ?::uuid)
+                      UNION
+                     SELECT substring(bp.source_file FROM '(?:extract|data)/([0-9]{3}N[0-9]{3}W[0-9A-Z]+)/') AS section
+                       FROM bronze.provenance bp
+                      WHERE bp.target_schema = 'silver'
+                        AND bp.target_table = 'reports'
+                        AND bp.target_id IN (SELECT r.report_id FROM silver.reports r WHERE r.project_id = ?::uuid)",
+                    [$projectId, $projectId],
+                );
+
+                $sections = [];
+                foreach ($rows as $row) {
+                    if (! empty($row->section)) {
+                        $sections[] = (string) $row->section;
+                    }
+                }
+
+                return array_values(array_unique($sections));
+            },
         );
-
-        $sections = [];
-        foreach ($rows as $row) {
-            if (! empty($row->section)) {
-                $sections[] = (string) $row->section;
-            }
-        }
-
-        return array_values(array_unique($sections));
     }
 }

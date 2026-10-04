@@ -24,8 +24,7 @@ const MD_TABLE = [
     '| 56033 | WR | 615 |',
 ].join('\n');
 
-const tables = (body: string) =>
-    parseDocumentBlocks(body).filter((b): b is TableBlock => b.kind === 'table');
+const tables = (body: string) => parseDocumentBlocks(body).filter((b): b is TableBlock => b.kind === 'table');
 
 describe('parseDocumentBlocks — HTML tables', () => {
     it('recovers a table instead of leaving markup in the prose', () => {
@@ -44,7 +43,9 @@ describe('parseDocumentBlocks — HTML tables', () => {
 
     it('reads cells as text, never as markup', () => {
         // The boundary that keeps content from an uploaded PDF out of the DOM.
-        const [t] = tables('<table><tr><td><img src=x onerror=alert(1)>56032</td><td>WR</td></tr><tr><td>a</td><td>b</td></tr></table>');
+        const [t] = tables(
+            '<table><tr><td><img src=x onerror=alert(1)>56032</td><td>WR</td></tr><tr><td>a</td><td>b</td></tr></table>',
+        );
         expect(t.body[0][0].text).toBe('56032');
         expect(t.body[0][0].text).not.toContain('<');
     });
@@ -65,9 +66,7 @@ describe('parseDocumentBlocks — HTML tables', () => {
 describe('parseDocumentBlocks — markdown tables', () => {
     it('recovers a pipe table', () => {
         const [t] = tables(MD_TABLE);
-        expect(t.head[0].map((c) => c.text)).toEqual([
-            'WHOLE ROCK', 'AND AGE', 'DATE SAMPLE NUMBERS',
-        ]);
+        expect(t.head[0].map((c) => c.text)).toEqual(['WHOLE ROCK', 'AND AGE', 'DATE SAMPLE NUMBERS']);
         expect(t.body).toHaveLength(2);
         expect(t.body[0].map((c) => c.text)).toEqual(['56032', 'WR', '614']);
     });
@@ -95,8 +94,7 @@ describe('empty-column handling', () => {
 
     it('does not drop a column that is populated in even one row', () => {
         const [t] = tables(
-            '<table><tr><td>a</td><td></td><td>c</td></tr>' +
-                '<tr><td>d</td><td>X</td><td>f</td></tr></table>',
+            '<table><tr><td>a</td><td></td><td>c</td></tr>' + '<tr><td>d</td><td>X</td><td>f</td></tr></table>',
         );
         expect(emptyColumns(t).has(1)).toBe(false);
     });

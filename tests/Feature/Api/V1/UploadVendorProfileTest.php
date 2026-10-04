@@ -6,6 +6,7 @@ use App\Models\Project;
 use App\Models\User;
 use App\Models\VendorProfile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -124,6 +125,33 @@ class UploadVendorProfileTest extends TestCase
         // A file must have been stored.
         $files = Storage::disk('s3')->allFiles();
         $this->assertNotEmpty($files, 'Expected a file to be written to the S3 disk');
+    }
+
+    /**
+     * The trigger endpoint claims the silver.ingest_progress row under the
+     * caller's run_id, and ingest_pdf's parse and persist heartbeat THAT row
+     * by id (2026-10-04). Before this the PDF path sent no run_id, so the
+     * row was born under an id the workflow never saw and a long parse
+     * re-resolved it from (workspace, key) on every tick.
+     */
+    public function test_pdf_dispatch_mints_a_run_id_and_returns_it(): void
+    {
+        Storage::fake('s3');
+
+        $response = $this->actingAs($this->user)
+            ->postJson($this->uploadUrl(), [
+                'file' => $this->makePdfFile(),
+                'category' => 'reports',
+            ]);
+
+        $response->assertCreated();
+        $runId = $response->json('ingest.run_id');
+        $this->assertTrue(Str::isUuid($runId), 'ingest.run_id must be a UUID');
+
+        Http::assertSent(function (Request $request) use ($runId): bool {
+            return str_ends_with($request->url(), '/internal/v1/shadow/ingest_pdf/trigger')
+                && $request['run_id'] === $runId;
+        });
     }
 
     public function test_upload_with_valid_vendor_profile_id_succeeds_and_echoes_id(): void

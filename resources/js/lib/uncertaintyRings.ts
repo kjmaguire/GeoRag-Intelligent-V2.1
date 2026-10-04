@@ -41,11 +41,7 @@ export const UNCERTAINTY_RINGS_MAX_ZOOM = 24;
 const DEG_TO_RAD = Math.PI / 180;
 
 /** `78271.517 · cos(_lat)` — the per-feature zoom-0 ground resolution. */
-const metresPerPixelAtZ0 = [
-    '*',
-    WEB_MERCATOR_M_PER_PX_Z0_512,
-    ['cos', ['*', ['get', '_lat'], DEG_TO_RAD]],
-] as const;
+const metresPerPixelAtZ0 = ['*', WEB_MERCATOR_M_PER_PX_Z0_512, ['cos', ['*', ['get', '_lat'], DEG_TO_RAD]]] as const;
 
 export const UNCERTAINTY_RINGS_FILTER = ['has', 'spatial_uncertainty_m'] as const;
 
@@ -56,21 +52,22 @@ export const UNCERTAINTY_RINGS_RADIUS_EXPR = [
     0,
     ['/', ['get', 'spatial_uncertainty_m'], metresPerPixelAtZ0],
     UNCERTAINTY_RINGS_MAX_ZOOM,
-    [
-        '/',
-        ['*', ['get', 'spatial_uncertainty_m'], 2 ** UNCERTAINTY_RINGS_MAX_ZOOM],
-        metresPerPixelAtZ0,
-    ],
+    ['/', ['*', ['get', 'spatial_uncertainty_m'], 2 ** UNCERTAINTY_RINGS_MAX_ZOOM], metresPerPixelAtZ0],
 ] as const;
 
 export const UNCERTAINTY_RINGS_STROKE_COLOR_EXPR = [
     'match',
     ['get', 'georef_method'],
-    'declared', '#22c55e',
-    'detected', '#3b82f6',
-    'assumed',  '#f97316',
-    'manual',   '#a855f7',
-    'survey',   '#000000',
+    'declared',
+    '#22c55e',
+    'detected',
+    '#3b82f6',
+    'assumed',
+    '#f97316',
+    'manual',
+    '#a855f7',
+    'survey',
+    '#000000',
     '#9ca3af',
 ] as const;
 

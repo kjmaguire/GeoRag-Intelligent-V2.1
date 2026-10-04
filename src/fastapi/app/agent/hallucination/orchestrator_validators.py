@@ -54,6 +54,7 @@ from app.agent.hole_id_patterns import (
     NUMERIC_HOLE_ID_RE,
     canonical_hole_id,
     find_numeric_hole_ids,
+    hole_id_key,
 )
 from app.config import settings
 from app.models.rag import GeoRAGResponse
@@ -553,8 +554,22 @@ def _numbers_in(text: str) -> list[float]:
     return out
 
 
-def _walk_evidence(obj: Any, ev: _Evidence, *, structured: bool, key: str = "") -> None:
-    """Collect content numbers from ``obj``, skipping non-content keys."""
+def _walk_evidence(
+    obj: Any,
+    ev: _Evidence,
+    *,
+    structured: bool,
+    key: str = "",
+    sample_sizes: bool = True,
+) -> None:
+    """Collect content numbers from ``obj``, skipping non-content keys.
+
+    ``sample_sizes=False`` stops the length of a list -- and a ``count``
+    field -- from counting as a number the answer may state. It is set for a
+    result that reports its own ``total_count`` (a LIMIT-capped sample): the
+    sample size is not a fact about the project, and offering it as one is
+    how "50 holes" got grounded on a 567-hole project (audit item 3).
+    """
     lowered = key.lower()
     if lowered and _IDENTIFIER_KEY_RE.search(lowered):
         for value in _collect_value_strings(obj):
@@ -564,20 +579,33 @@ def _walk_evidence(obj: Any, ev: _Evidence, *, structured: bool, key: str = "") 
     if lowered and (lowered in _NON_CONTENT_KEYS or _NON_CONTENT_KEY_RE.search(lowered)):
         return
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        reports_total = getattr(obj, "total_count", None) is not None
         for f in dataclasses.fields(obj):
-            _walk_evidence(getattr(obj, f.name), ev, structured=structured, key=f.name)
+            if reports_total and f.name == "count":
+                continue  # rows returned, not rows matched
+            _walk_evidence(
+                getattr(obj, f.name), ev, structured=structured, key=f.name,
+                sample_sizes=sample_sizes and not reports_total,
+            )
     elif isinstance(obj, BaseModel):
         for name in type(obj).model_fields:
-            _walk_evidence(getattr(obj, name), ev, structured=structured, key=name)
+            _walk_evidence(
+                getattr(obj, name), ev, structured=structured, key=name,
+                sample_sizes=sample_sizes,
+            )
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            _walk_evidence(v, ev, structured=structured, key=str(k))
+            _walk_evidence(
+                v, ev, structured=structured, key=str(k), sample_sizes=sample_sizes
+            )
     elif isinstance(obj, (list, tuple, set, frozenset)):
-        if structured:
+        if structured and sample_sizes:
             # A row count is a number the answer may state ("12 samples").
             ev.literal.add(float(len(obj)))
         for v in obj:
-            _walk_evidence(v, ev, structured=structured, key=key)
+            _walk_evidence(
+                v, ev, structured=structured, key=key, sample_sizes=sample_sizes
+            )
     elif isinstance(obj, bool) or obj is None:
         return
     elif isinstance(obj, (int, float)):
@@ -805,6 +833,142 @@ def verify_numbers(
     # uniformly.
     if _l3_tuple_warnings:
         warnings.extend(_l3_tuple_warnings)
+    return warnings
+
+
+#: Prefix of the per-sentence, advisory Layer 3 finding: a number that IS in
+#: the retrieved evidence, but not in the evidence of the id the sentence
+#: cites. Deliberately NOT one of ``LAYER3_WARNING_PREFIXES``: it opens with
+#: "Layer 3 advisory:", so neither the severity classifier (retry / floor /
+#: banner) nor ``confidence_computer._is_layer3_warning`` (the x0.7 demotion)
+#: counts it, while ``nodes._banner_reason`` -- which reads only the layer
+#: digit -- still maps it to the Layer 3 "numbers" reason, and it stays in
+#: ``validation_warnings`` for the logs and the lineage row.
+LAYER3_CITED_ELSEWHERE_PREFIX = "Layer 3 advisory: number "
+
+
+def _evidence_by_citation_id(
+    tool_results: list[tuple[str, Any]],
+) -> dict[str, _Evidence]:
+    """Content numbers per citation id, in the ids ``assemble_response`` emits.
+
+    A document search yields one id per CHUNK, a public-geoscience search one
+    per RECORD, every other tool one for the whole result
+    (``response_assembler.assign_citation_ids``) -- the same ids the answer's
+    markers carry, so a sentence's own citations can be looked up directly.
+    """
+    from app.agent.public_geoscience_tool import (  # noqa: PLC0415
+        PublicGeoscienceSearchResult,
+    )
+    from app.agent.response_assembler import assign_citation_ids  # noqa: PLC0415
+    from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
+
+    out: dict[str, _Evidence] = {}
+    bundles = assign_citation_ids(tool_results)
+    for (tool_name, result), bundle in zip(tool_results, bundles, strict=False):
+        units: list[tuple[str, Any, bool]] = []
+        if isinstance(result, PublicGeoscienceSearchResult):
+            units = [(cid, rec, False) for cid, rec in zip(bundle, result.records, strict=False)]
+        elif isinstance(result, DocumentSearchResult) and result.chunks:
+            units = [(cid, ch, False) for cid, ch in zip(bundle, result.chunks, strict=False)]
+        elif bundle:
+            units = [(bundle[0], result, not _is_document_result(tool_name, result))]
+        for citation_id, obj, structured in units:
+            ev = _Evidence()
+            try:
+                _walk_evidence(obj, ev, structured=structured)
+            except Exception:
+                logger.debug("Layer 3: per-id evidence walk failed for %s", citation_id, exc_info=True)
+                continue
+            out[citation_id] = ev
+    return out
+
+
+def _number_in_evidence(
+    num: float, exact: float, rounded: float, ev: _Evidence
+) -> bool:
+    """The grounding test of :func:`verify_numbers`, against one evidence set."""
+    literal = [g for g in ev.literal if abs(g) < 1e9]
+    if _matches_grounded(num, rounded, literal):
+        return True
+    expanded = [g for g in _expand_grounded_with_conversions(ev.literal) if abs(g) < 1e9]
+    if _matches_grounded(num, exact, expanded):
+        return True
+    return _is_same_order_as_any(num, sorted(g for g in ev.derivable if abs(g) < 1e6))
+
+
+def verify_cited_number_support(
+    text: str,
+    tool_results: list[tuple[str, Any]],
+    *,
+    proactive_insights_offset: int | None = None,
+) -> list[str]:
+    """Layer 3, per sentence: a number must be in the evidence it CITES.
+
+    :func:`verify_numbers` grounds every number against ALL retrieved
+    evidence, so a figure lifted from chunk [NI43-7] and cited to [NI43-2]
+    passes. Here, for each sentence carrying citation markers, the sentence's
+    numbers are checked against the evidence of the ids it cites; one that is
+    absent there but present in OTHER retrieved evidence yields
+
+        ``Layer 3: number N cited to [X] appears only in [Y]``
+
+    Advisory by construction (it never sets ``should_retry`` -- see
+    ``LAYER3_CITED_ELSEWHERE_PREFIX``): a number found in no evidence at all
+    is :func:`verify_numbers`' finding, not this one, and a sentence may
+    legitimately cite one chunk for context and its neighbour for a figure.
+    """
+    if not settings.NUMERICAL_VERIFICATION_ENABLED:
+        return []
+
+    from app.agent.anomaly_detector import strip_proactive_insights  # noqa: PLC0415
+    from app.agent.hallucination.citation_markers import (  # noqa: PLC0415
+        CITATION_MARKER_CAPTURE_RE,
+        canonical_marker,
+    )
+    from app.agent.hallucination.claim_sentences import split_units  # noqa: PLC0415
+
+    text = strip_proactive_insights(text, proactive_insights_offset)
+    per_id = _evidence_by_citation_id(tool_results)
+    if len(per_id) < 2:
+        return []
+    identifiers: set[str] = set()
+    for ev in per_id.values():
+        identifiers |= ev.identifiers
+
+    warnings: list[str] = []
+    seen: set[tuple[float, tuple[str, ...]]] = set()
+    for unit in split_units(text):
+        cited = list(dict.fromkeys(
+            canonical_marker(m.group(1), m.group(3))
+            for m in CITATION_MARKER_CAPTURE_RE.finditer(unit.text)
+        ))
+        cited = [c for c in cited if c in per_id]
+        if not cited:
+            continue
+        for num, exact, rounded in _extract_number_tokens(unit.text, identifiers):
+            if any(_number_in_evidence(num, exact, rounded, per_id[c]) for c in cited):
+                continue
+            elsewhere = [
+                cid for cid, ev in per_id.items()
+                if cid not in cited and _number_in_evidence(num, exact, rounded, ev)
+            ]
+            if not elsewhere:
+                continue  # in nothing at all: verify_numbers' finding
+            key = (num, tuple(cited))
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings.append(
+                f"{LAYER3_CITED_ELSEWHERE_PREFIX}{num:g} cited to "
+                f"{', '.join(cited)} appears only in {', '.join(elsewhere[:3])}"
+            )
+    if warnings:
+        logger.warning(
+            "orchestrator_validators: %d number(s) cited to evidence that does "
+            "not contain them (found only in other retrieved chunks): %s",
+            len(warnings), warnings,
+        )
     return warnings
 
 
@@ -1099,7 +1263,7 @@ _ID_LIKE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _./-]{0,23}$")
 
 
 def _evidence_hole_ids(tool_results: list[tuple[str, Any]]) -> set[str]:
-    """Canonical forms (see `canonical_hole_id`) of every hole the evidence names.
+    """Position-aware keys (see `hole_id_key`) of every hole the evidence names.
 
     Reads tool-result VALUES only: lettered IDs and bare numeric IDs found
     in any text (chunk prose, titles), their spaced variants, and short
@@ -1119,20 +1283,25 @@ def _evidence_hole_ids(tool_results: list[tuple[str, Any]]) -> set[str]:
                 if not any(ch.isdigit() for ch in value):
                     continue
                 for m in HOLE_ID_RE.finditer(value):
-                    out.add(canonical_hole_id(m.group(1)))
+                    out.add(hole_id_key(m.group(1)))
                 for m in NUMERIC_HOLE_ID_RE.finditer(value):
-                    out.add(canonical_hole_id(m.group(1)))
+                    out.add(hole_id_key(m.group(1)))
                 for m in _SPACED_HOLE_ID_RE.finditer(value.upper()):
-                    out.add(canonical_hole_id(m.group(0)))
+                    out.add(hole_id_key(m.group(0)))
                 if _ID_LIKE_VALUE_RE.match(value.strip()):
-                    out.add(canonical_hole_id(value))
+                    out.add(hole_id_key(value))
         except Exception:
             continue
     return out
 
 
 def _measured_holes(answer: str, hole_ids: list[str]) -> set[str]:
-    """Canonical ids of the holes the answer attributes a measured value to.
+    """`hole_id_key` keys of the holes the answer attributes a measured value to.
+
+    Keyed with `hole_id_key`, the same identity `verify_entities` uses, NOT
+    the separator-free `canonical_hole_id`: that merges "PLS-2-28" with
+    "PLS-22-8", so a measured value attributed to one would be charged to the
+    other (audit item H).
 
     A measured value is a number with a unit (`_NUMBER_WITH_UNIT_RE`). Each
     is attributed to the nearest hole mention BEFORE it in the same
@@ -1147,7 +1316,7 @@ def _measured_holes(answer: str, hole_ids: list[str]) -> set[str]:
         mentions: list[tuple[int, int, str]] = []
         for hid in hole_ids:
             for m in re.finditer(r"(?<![\w-])" + re.escape(hid) + r"(?![\w-])", sentence, re.IGNORECASE):
-                mentions.append((m.start(), m.end(), canonical_hole_id(hid)))
+                mentions.append((m.start(), m.end(), hole_id_key(hid)))
         if not mentions:
             continue
         masked = [(a, b) for a, b, _ in mentions] + [
@@ -1171,7 +1340,7 @@ def _not_in_evidence_warning(hole_id: str, answer: str, hole_ids: list[str]) -> 
     exists and the number exists. Otherwise advisory: a hole named in
     passing ("unlike BH-21, ...") is not a claim about it.
     """
-    if canonical_hole_id(hole_id) in _measured_holes(answer, hole_ids):
+    if hole_id_key(hole_id) in _measured_holes(answer, hole_ids):
         return (
             f"Layer 4: Drill-hole ID '{hole_id}' exists in silver.collars but "
             f"appears in none of the evidence retrieved for this answer, and the "
@@ -1300,16 +1469,17 @@ async def verify_entities(
                     ),
                     timeout=settings.TIMEOUT_POSTGIS_S,
                 )
-            found: set[str] = set()
-            for r in rows:
-                found.add(canonical_hole_id(r["hole_id"]))
-                canonical = r.get("hole_id_canonical") if hasattr(r, "get") else None
-                if canonical:
-                    found.add(str(canonical).upper())
+            # The SQL above fetches CANDIDATES by the separator-free canonical
+            # form (that is what silver.collars.hole_id_canonical holds), which
+            # merges "PLS-2-28" with "PLS-22-8". The match itself is confirmed
+            # on hole_id_key, which keeps the separator between digit groups,
+            # so a fabricated hole no longer passes as a real neighbour
+            # (audit item 24).
+            found: set[str] = {hole_id_key(r["hole_id"]) for r in rows}
             for hid in hole_ids:
-                canon = canonical_hole_id(hid)
-                in_evidence = canon in evidence_holes or hid.lower() in grounded_tokens
-                if canon in found:
+                key = hole_id_key(hid)
+                in_evidence = key in evidence_holes or hid.lower() in grounded_tokens
+                if key in found:
                     # Exists in the project — but is it the hole the
                     # EVIDENCE is about? An answer that moves BH-12's
                     # intercept onto real hole BH-21 used to pass silently
@@ -1807,8 +1977,61 @@ def guard_tolerances(query_class: str | None = None) -> dict[str, int]:
 #:
 #: A tuple rather than `startswith("Layer 3")`: the loose form also matches
 #: a "Layer 30:" that nobody has written yet, and a guard against
-#: fabricated numbers should not itself be approximately right.
+#: fabricated numbers should not itself be approximately right. It also
+#: matches the advisory "Layer 3 advisory: number ..." finding, which must
+#: NOT trigger a retry or the demotion (LAYER3_CITED_ELSEWHERE_PREFIX).
 LAYER3_WARNING_PREFIXES: tuple[str, ...] = ("Layer 3:", "Layer 3 tuple:")
+
+
+def _severity_buckets(
+    all_warnings: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    """``(critical, high, advisory)`` for a run's warnings.
+
+    Shared by :func:`run_post_assembly_validation` (which sets
+    ``should_retry`` from them) and :func:`retry_trigger_warnings` (which
+    tells the caller WHICH warning did, so the answer's banner names the real
+    reason rather than whichever advisory happened to come first).
+    """
+    _layer4 = [w for w in all_warnings if w.startswith("Layer 4:")]
+    critical = [w for w in _layer4 if w.startswith("Layer 4: Drill-hole ID")]
+    _layer4_advisory = [
+        w for w in _layer4 if not w.startswith("Layer 4: Drill-hole ID")
+    ]
+    _LAYER4_ADVISORY_CRITICAL_THRESHOLD = 3
+    if len(_layer4_advisory) >= _LAYER4_ADVISORY_CRITICAL_THRESHOLD:
+        critical = critical + _layer4_advisory
+        logger.warning(
+            "post_assembly_validation: %d advisory Layer 4 warning(s) "
+            "(threshold=%d) — the density signals fabrication, escalating "
+            "to critical.",
+            len(_layer4_advisory), _LAYER4_ADVISORY_CRITICAL_THRESHOLD,
+        )
+    high = [w for w in all_warnings if w.startswith("Layer 6:")]
+    # Both Layer 3 prefixes, from the shared tuple. The numeric guard emits
+    # "Layer 3: ..." and the unit-pair guard emits "Layer 3 tuple: ..." —
+    # a space, not a colon. Matching on "Layer 3:" excluded every tuple
+    # warning from this bucket, so the 2026-08-14 shadow->warn promotion
+    # had no effect at all: unit-pair mismatches never counted toward
+    # the count threshold that then gated retries, never set should_retry, and
+    # were not even included in the advisory=%d figure logged below.
+    # The per-sentence "cited elsewhere" finding is not in this bucket by
+    # construction: its prefix ("Layer 3 advisory:") is not in
+    # LAYER3_WARNING_PREFIXES.
+    advisory = [w for w in all_warnings if w.startswith(LAYER3_WARNING_PREFIXES)]
+
+    return critical, high, advisory
+
+
+def retry_trigger_warnings(all_warnings: list[str]) -> list[str]:
+    """The warnings that, on their own, force ``should_retry``.
+
+    Critical (fabricated hole id, or Layer 4 density), high (Layer 6) and any
+    Layer 3 finding except the per-sentence advisory. Excludes Layer 1's weak
+    retrieval and the completeness guard, which are advisory by design.
+    """
+    critical, high, advisory = _severity_buckets(all_warnings)
+    return [*critical, *high, *advisory]
 
 
 async def run_post_assembly_validation(
@@ -1859,6 +2082,21 @@ async def run_post_assembly_validation(
             proactive_insights_offset=_insights_offset,
         )
     )
+
+    # Layer 3, per-sentence advisory half (audit item 5b): a number must be
+    # in the evidence of the id its sentence cites, not merely in SOME
+    # retrieved chunk. Never raises -- a failure here must not hide the
+    # whole-answer check above.
+    try:
+        all_warnings.extend(
+            verify_cited_number_support(
+                response.text,
+                tool_results,
+                proactive_insights_offset=_insights_offset,
+            )
+        )
+    except Exception:
+        logger.warning("Layer 3 per-sentence number check failed", exc_info=True)
 
     # Layer 4 — entity resolution (async — needs database)
     # Pass tool_results so commodity-code grounding can verify against cited evidence.
@@ -1914,125 +2152,44 @@ async def run_post_assembly_validation(
     # above and deliberately NOT applied to the severity classification
     # below. They come from GUARD_TOLERANCE_NUMERIC_UNGROUNDED /
     # GUARD_TOLERANCE_ENTITY_UNRESOLVED, which default to 2, and applying
-    # them here would loosen fabrication detection rather than preserve
-    # existing behaviour: the Layer 3 escalation already fires at
-    # NUMERIC_RETRY_THRESHOLD (3) ungrounded numbers, so damping the count
-    # by 2 first would push the effective bar to 5. That is a live
-    # safety-posture change and needs its own calibration run against the
-    # golden set — it is not a side effect of deleting dead code. The
-    # tolerances are surfaced here (and covered by tests) so the model is
-    # available to whoever makes that call.
+    # them here would loosen fabrication detection: ANY Layer 3 finding now
+    # forces a retry (see should_retry below), so damping the count by 2
+    # first would let one or two fabricated numbers ship unflagged. That is a
+    # live safety-posture change and needs its own calibration run against
+    # the golden set. The tolerances are surfaced here (and covered by
+    # tests) so the model is available to whoever makes that call.
 
     # Classify warnings by severity — fabricated drill-hole IDs are
-    # critical, constraints are high, numerical grounding is advisory
-    # UNLESS it crosses a threshold or co-locates with a constraint
-    # violation. The other Layer 4 warnings (commodity / formation /
-    # entity grounding) come from heuristic token-bag checks with a real
-    # false-positive rate, so they escalate to critical only in bulk —
-    # mirroring the Layer 3 NUMERIC_RETRY_THRESHOLD policy below. They
+    # critical, constraints are high, and every Layer 3 numerical-grounding
+    # finding is a retry trigger on its own (below). The other Layer 4
+    # warnings (commodity / formation / entity grounding) come from heuristic
+    # token-bag checks with a real false-positive rate, so they escalate to
+    # critical only in bulk (_LAYER4_ADVISORY_CRITICAL_THRESHOLD). They
     # remain in all_warnings either way.
-    _layer4 = [w for w in all_warnings if w.startswith("Layer 4:")]
-    critical = [w for w in _layer4 if w.startswith("Layer 4: Drill-hole ID")]
-    _layer4_advisory = [
-        w for w in _layer4 if not w.startswith("Layer 4: Drill-hole ID")
-    ]
-    _LAYER4_ADVISORY_CRITICAL_THRESHOLD = 3
-    if len(_layer4_advisory) >= _LAYER4_ADVISORY_CRITICAL_THRESHOLD:
-        critical = critical + _layer4_advisory
-        logger.warning(
-            "post_assembly_validation: %d advisory Layer 4 warning(s) "
-            "(threshold=%d) — the density signals fabrication, escalating "
-            "to critical.",
-            len(_layer4_advisory), _LAYER4_ADVISORY_CRITICAL_THRESHOLD,
-        )
-    high = [w for w in all_warnings if w.startswith("Layer 6:")]
-    # Both Layer 3 prefixes, from the shared tuple. The numeric guard emits
-    # "Layer 3: ..." and the unit-pair guard emits "Layer 3 tuple: ..." —
-    # a space, not a colon. Matching on "Layer 3:" excluded every tuple
-    # warning from this bucket, so the 2026-08-14 shadow->warn promotion
-    # had no effect at all: unit-pair mismatches never counted toward
-    # NUMERIC_RETRY_THRESHOLD, never set should_retry, and were not even
-    # included in the advisory=%d figure logged below.
-    advisory = [
-        w for w in all_warnings if w.startswith(LAYER3_WARNING_PREFIXES)
-    ]
-
-    # Phase H — Layer 3 escalation policy. Per the overnight app review,
-    # Layer 3 (numeric_claims) was historically log-only — even when the
-    # model emitted 8+ ungrounded numbers in one answer, the run still
-    # shipped. The new policy:
-    #
-    # (a) ≥ NUMERIC_RETRY_THRESHOLD (default 3) ungrounded numbers in
-    #     one answer escalates Layer 3 from "advisory" to "high" — the
-    #     density signals the model is fabricating, not just rounding.
-    # (b) Any Layer 3 number whose value ALSO appears in a Layer 6
-    #     constraint violation is critical — the number is BOTH
-    #     ungrounded AND violates a physical constraint, which is the
-    #     "fabricated impossible value" failure mode that the §04i
-    #     contract exists to prevent.
-    #
-    # Both rules are tunable via settings; safe defaults preserve the
-    # current pass rates while raising the retry-on-fabrication bar.
-    _numeric_threshold = int(getattr(settings, "NUMERIC_RETRY_THRESHOLD", 3))
-    _layer3_escalated_high = False
-    if len(advisory) >= _numeric_threshold:
-        _layer3_escalated_high = True
-        logger.warning(
-            "post_assembly_validation: Layer 3 escalated to HIGH — "
-            "%d ungrounded number(s) in one answer (threshold=%d). "
-            "Triggering retry.",
-            len(advisory), _numeric_threshold,
-        )
-
-    # Rule (b): co-location with a Layer 6 constraint violation.
-    # Both layers carry numeric values in their warning strings; we
-    # extract them and check for intersection. Any match elevates the
-    # Layer 3 warning to critical (matches "fabricated impossible value"
-    # severity).
-    _layer3_escalated_critical = False
-    if advisory and high:
-        import re as _re  # noqa: PLC0415
-        _num_re = _re.compile(r"-?\d+(?:\.\d+)?")
-        _layer3_nums = set()
-        for w in advisory:
-            for m in _num_re.findall(w):
-                with contextlib.suppress(ValueError):
-                    _layer3_nums.add(float(m))
-        _layer6_nums = set()
-        for w in high:
-            for m in _num_re.findall(w):
-                with contextlib.suppress(ValueError):
-                    _layer6_nums.add(float(m))
-        if _layer3_nums & _layer6_nums:
-            _layer3_escalated_critical = True
-            logger.error(
-                "post_assembly_validation: Layer 3 + Layer 6 colocate "
-                "on values %s — fabricated impossible value detected. "
-                "Triggering retry with critical severity.",
-                sorted(_layer3_nums & _layer6_nums),
-            )
+    critical, high, advisory = _severity_buckets(all_warnings)
 
     if all_warnings:
         logger.warning(
             "post_assembly_validation: %d warning(s) "
-            "(critical=%d, high=%d, advisory=%d, "
-            "L3_escalated_high=%s, L3_escalated_critical=%s):\n  %s",
+            "(critical=%d, high=%d, advisory=%d):\n  %s",
             len(all_warnings),
             len(critical),
             len(high),
             len(advisory),
-            _layer3_escalated_high,
-            _layer3_escalated_critical,
             "\n  ".join(all_warnings),
         )
 
     # Mark whether a retry is recommended — the orchestrator checks this
     # flag to decide whether to re-call the LLM.
-    should_retry = (
-        len(critical) > 0
-        or len(high) > 0
-        or _layer3_escalated_high
-        or _layer3_escalated_critical
-    )
+    #
+    # Audit item 5a (2026-10-04): ANY Layer 3 finding sets it. An ungrounded
+    # number used to cost only the x0.7 demotion unless several piled up (a
+    # count threshold, removed 2026-10-04 as inert once this rule landed) --
+    # no floor, no banner, the text untouched -- so one or two fabricated
+    # grades shipped looking like a normal cited answer. Same treatment as a
+    # Layer 4 / Layer 6 finding. The per-sentence advisory
+    # (LAYER3_CITED_ELSEWHERE_PREFIX) stays out of this: it is not in
+    # `advisory`.
+    should_retry = len(critical) > 0 or len(high) > 0 or len(advisory) > 0
 
     return response, all_warnings, should_retry

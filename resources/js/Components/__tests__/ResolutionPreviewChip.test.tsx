@@ -16,7 +16,7 @@ describe('ResolutionPreviewChip', () => {
                     rewritten_query: 'what is the deepest hole?',
                     overall_confidence: 1.0,
                 }}
-            />
+            />,
         );
         expect(container.firstChild).toBeNull();
     });
@@ -29,7 +29,7 @@ describe('ResolutionPreviewChip', () => {
                     rewritten_query: "what are PLS-22-08's top assays?",
                     overall_confidence: 0.85,
                 }}
-            />
+            />,
         );
         expect(screen.getByText('Interpreted as')).toBeInTheDocument();
         expect(screen.getByText("what are PLS-22-08's top assays?")).toBeInTheDocument();
@@ -44,7 +44,7 @@ describe('ResolutionPreviewChip', () => {
                     rewritten_query: 'b',
                     overall_confidence: 0.9,
                 }}
-            />
+            />,
         );
         expect(screen.getByText('high')).toBeInTheDocument();
     });
@@ -57,7 +57,7 @@ describe('ResolutionPreviewChip', () => {
                     rewritten_query: 'b',
                     overall_confidence: 0.7,
                 }}
-            />
+            />,
         );
         expect(screen.getByText('medium')).toBeInTheDocument();
     });
@@ -70,7 +70,7 @@ describe('ResolutionPreviewChip', () => {
                     rewritten_query: 'b',
                     overall_confidence: 0.3,
                 }}
-            />
+            />,
         );
         expect(screen.getByText('low')).toBeInTheDocument();
     });
@@ -82,7 +82,7 @@ describe('ResolutionPreviewChip', () => {
                     original_query: 'a',
                     rewritten_query: 'b',
                 }}
-            />
+            />,
         );
         expect(screen.queryByText('high')).not.toBeInTheDocument();
         expect(screen.queryByText('medium')).not.toBeInTheDocument();

@@ -74,8 +74,8 @@ def _load_model():  # type: ignore[return]
     Routes through app.services.embedding.get_embedding_model() — same
     EMBEDDING_BACKEND precedence app/main.py and passage_embedder.py already
     use. This script used to hardcode a local Qwen3-Embedding-0.6B load
-    regardless of backend, so EMBEDDING_BACKEND=foundry deployments (this
-    Azure cutover included) would re-embed the corpus with the WRONG model —
+    regardless of backend, so EMBEDDING_BACKEND=cohere / bedrock deployments
+    (the Azure cutover included) would re-embed the corpus with the WRONG model —
     the exact "surface-level success, retrieval refused every question"
     failure mode this file's own module docstring warns about, just moved
     one step earlier in the pipeline.
@@ -132,6 +132,10 @@ def _reembed_collection(
     canonical / explicitly-requested collections.
     """
     from qdrant_client.models import PointVectors  # noqa: PLC0415
+
+    from app.services.ingest.passage_embedder import embed_model_tag  # noqa: PLC0415
+
+    embed_model = embed_model_tag(model)
 
     # Verify the collection exists before attempting to scroll.
     try:
@@ -316,6 +320,17 @@ def _reembed_collection(
             client.update_vectors(
                 collection_name=collection_name,
                 points=update_points,
+                wait=True,
+            )
+            # update_vectors leaves the payload alone, so without this the
+            # point would keep the PREVIOUS model's embed_model tag (or none)
+            # while carrying the new model's vector -- exactly the mixed state
+            # the tag exists to detect (ADR-0025 migration step 6). Same value
+            # passage_embedder writes on a fresh embed.
+            client.set_payload(
+                collection_name=collection_name,
+                payload={"embed_model": embed_model},
+                points=sub_ids,
                 wait=True,
             )
             upserted += len(update_points)

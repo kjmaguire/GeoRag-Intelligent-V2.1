@@ -91,7 +91,7 @@ async def test_timeout_is_recorded_not_dropped(monkeypatch):
     _patch_tools(monkeypatch, timed_out, [])
     update = await execute_node(_state())
     assert update["retrieval_failures"] == [
-        "Qdrant georag_chunks (timeout) via search_documents",
+        "Documents (temporarily unavailable)",
     ]
     assert update["tool_results"] == []
 
@@ -107,6 +107,7 @@ async def test_layer1_refusal_becomes_a_failure_when_search_did_not_run(monkeypa
     state = _state(
         tool_results=[],
         retrieval_failures=["Qdrant georag_chunks (timeout) via search_documents"],
+        document_search_failed=True,
     )
     with pytest.raises(RetrievalBackendUnavailable):
         await assemble_node(state)

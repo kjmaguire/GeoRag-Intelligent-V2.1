@@ -17,23 +17,16 @@ import {
     CATEGORY_EXTS,
     CATEGORY_LABEL,
     RETIRED_CATEGORIES,
-    UNSUPPORTED_EXTS,
     categoryForExtension,
     extensionOf,
     parseEpsg,
     supportsCrsOverride,
     type Category,
 } from '@/lib/uploadCategories';
-import {
-    bundleKey,
-    dedupeFiles,
-    fileKey,
-    groupShapefiles,
-    type CrsProvenance,
-} from '@/lib/shapefileBundle';
+import { bundleKey, dedupeFiles, fileKey, groupShapefiles, type CrsProvenance } from '@/lib/shapefileBundle';
 
 const STEPS = ['Identity', 'Jurisdiction', 'Corpus', 'Review'] as const;
-type Step = typeof STEPS[number];
+type Step = (typeof STEPS)[number];
 
 const COUNTRIES = [
     { code: 'US', name: 'United States' },
@@ -84,7 +77,6 @@ const STATES_BY_COUNTRY: Record<string, Array<{ code: string; name: string }>> =
 // `upload_limit` shared prop). This was a hard-coded 6 GB "matching
 // UploadController + Octane", which had been 512 MB for weeks (FE-2).
 
-
 function humanSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -133,8 +125,7 @@ async function withoutDonatedPrj(bundle: File, memberName: string): Promise<File
     // a message instead of a silent success.
     if (!zip.file(memberName)) {
         throw new Error(
-            `${memberName} is not in this archive, so the copied coordinate system ` +
-                'cannot be removed from it',
+            `${memberName} is not in this archive, so the copied coordinate system ` + 'cannot be removed from it',
         );
     }
     zip.remove(memberName);
@@ -304,13 +295,11 @@ export default function FoundryNewProject() {
         orientationReference: 'BOH' as OrientationReference,
         magneticDeclination: '',
     });
-    const setField = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
-        setForm((f) => ({ ...f, [k]: v }));
+    const setField = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
     // Reset state when country changes so a stale selection (e.g. WY while CA
     // is now selected) can't be submitted.
-    const setCountry = (code: string) =>
-        setForm((f) => ({ ...f, country: code, state: '' }));
+    const setCountry = (code: string) => setForm((f) => ({ ...f, country: code, state: '' }));
 
     // Same parser the per-file CRS override uses, so "what is a valid EPSG
     // code" has one answer on this screen rather than two.
@@ -336,8 +325,8 @@ export default function FoundryNewProject() {
     // DOM in all browser/version combinations.
     const folderInputRef = useCallback((node: HTMLInputElement | null) => {
         if (node) {
-            (node as any).webkitdirectory = true;
-            (node as any).directory = true; // Edge/IE fallback
+            node.webkitdirectory = true;
+            (node as HTMLInputElement & { directory?: boolean }).directory = true; // Edge/IE fallback
         }
     }, []);
     const [dragging, setDragging] = useState(false);
@@ -393,9 +382,7 @@ export default function FoundryNewProject() {
         // them as imported.
         const all = dedupeFiles([...selectedFilesRef.current, ...Array.from(files)]);
         selectedFilesRef.current = all;
-        const { bundles, passthrough, unusable, wktRecipients } = await groupShapefiles(
-            all,
-        ).catch(() => ({
+        const { bundles, passthrough, unusable, wktRecipients } = await groupShapefiles(all).catch(() => ({
             bundles: [],
             passthrough: all,
             unusable: [],
@@ -472,9 +459,7 @@ export default function FoundryNewProject() {
         // here — it is an attribute table and comes back in `passthrough`.
         for (const u of unusable) notes.push(`${u.file.name}: ${u.reason}`);
 
-        const wktCrsByFile = new Map<File, DonatedCrs>(
-            wktRecipients.map((r): [File, DonatedCrs] => [r.file, r.crs]),
-        );
+        const wktCrsByFile = new Map<File, DonatedCrs>(wktRecipients.map((r): [File, DonatedCrs] => [r.file, r.crs]));
         for (const f of passthrough) {
             const ext = extensionOf(f.name);
             if (settled.has(fileKey(f))) continue;
@@ -557,9 +542,7 @@ export default function FoundryNewProject() {
         const target = queueRef.current.find((x) => x.id === id);
         if (target) {
             const gone = new Set((target.sources ?? [target.file]).map(fileKey));
-            selectedFilesRef.current = selectedFilesRef.current.filter(
-                (f) => !gone.has(fileKey(f)),
-            );
+            selectedFilesRef.current = selectedFilesRef.current.filter((f) => !gone.has(fileKey(f)));
         }
         setQueue((q) => q.filter((x) => x.id !== id));
     };
@@ -594,9 +577,7 @@ export default function FoundryNewProject() {
         // being dropped on the way out. Silently discarding a value the user
         // typed is the failure mode this whole change set is about.
         const badEpsg = queue.filter(
-            (q) =>
-                supportsCrsOverride(q.category) &&
-                parseEpsg(q.sourceEpsgText ?? '').error !== undefined,
+            (q) => supportsCrsOverride(q.category) && parseEpsg(q.sourceEpsgText ?? '').error !== undefined,
         );
         return { ok, unsupported, oversize, bytes, badEpsg };
     }, [queue, MAX_FILE_BYTES]);
@@ -609,10 +590,7 @@ export default function FoundryNewProject() {
      * `source_epsg` server-side — so this is also the test for stripping it.
      */
     function hasExplicitEpsg(q: QueuedFile): boolean {
-        return (
-            supportsCrsOverride(q.category) &&
-            parseEpsg(q.sourceEpsgText ?? '').epsg !== undefined
-        );
+        return supportsCrsOverride(q.category) && parseEpsg(q.sourceEpsgText ?? '').epsg !== undefined;
     }
 
     /** True when the copied coordinate system is what this row will upload with. */
@@ -653,8 +631,7 @@ export default function FoundryNewProject() {
         setSubmitting(true);
         setSubmitError(null);
         try {
-            const csrf =
-                document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
+            const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
             const headers: Record<string, string> = {
                 Accept: 'application/json',
             };
@@ -685,9 +662,7 @@ export default function FoundryNewProject() {
                         // the column stays NULL either way, and a body that
                         // carries the key only when it has a value is what the
                         // validator's `nullable` rule reads most predictably.
-                        ...(projectEpsg.epsg !== undefined
-                            ? { crs_epsg: projectEpsg.epsg }
-                            : {}),
+                        ...(projectEpsg.epsg !== undefined ? { crs_epsg: projectEpsg.epsg } : {}),
                     }),
                 });
                 const createJson = await createRes.json().catch(() => ({}));
@@ -712,22 +687,23 @@ export default function FoundryNewProject() {
                           q.size <= MAX_FILE_BYTES &&
                           (q.uploadFailed === true || q.status === 'queued'),
                   )
-                : queue.filter(
-                      (q) => q.category !== null && q.size <= MAX_FILE_BYTES && q.status !== 'error',
-                  );
+                : queue.filter((q) => q.category !== null && q.size <= MAX_FILE_BYTES && q.status !== 'error');
             setSubmitProgress({ done: 0, total: uploadable.length });
 
             let done = 0;
             let failed = 0;
             for (const qf of uploadable) {
-                setQueue((q) => q.map((x) => (x.id === qf.id ? { ...x, status: 'uploading', error: undefined, uploadFailed: false } : x)));
+                setQueue((q) =>
+                    q.map((x) =>
+                        x.id === qf.id ? { ...x, status: 'uploading', error: undefined, uploadFailed: false } : x,
+                    ),
+                );
                 // `source_epsg`, an integer, and only for a category whose
                 // trigger carries it. Same field name and same type as the
                 // one the tabular ingest already takes: one concept, one
                 // spelling, across the two paths this screen feeds.
                 const epsg = parseEpsg(qf.sourceEpsgText ?? '');
-                const explicitEpsg =
-                    supportsCrsOverride(qf.category) && epsg.epsg !== undefined;
+                const explicitEpsg = supportsCrsOverride(qf.category) && epsg.epsg !== undefined;
 
                 // The donated `.prj` is taken back out of the archive when the
                 // user turned the donation off, or when they typed a code for
@@ -795,16 +771,12 @@ export default function FoundryNewProject() {
                     failure = describeUploadFailure(null, undefined, qf.size, uploadLimit);
                 }
                 if (failure === null) {
-                    setQueue((q) =>
-                        q.map((x) => (x.id === qf.id ? { ...x, status: 'done', uploadFailed: false } : x)),
-                    );
+                    setQueue((q) => q.map((x) => (x.id === qf.id ? { ...x, status: 'done', uploadFailed: false } : x)));
                 } else {
                     failed += 1;
                     const msg = failure;
                     setQueue((q) =>
-                        q.map((x) =>
-                            x.id === qf.id ? { ...x, status: 'error', error: msg, uploadFailed: true } : x,
-                        ),
+                        q.map((x) => (x.id === qf.id ? { ...x, status: 'error', error: msg, uploadFailed: true } : x)),
                     );
                 }
                 done += 1;
@@ -848,7 +820,11 @@ export default function FoundryNewProject() {
             <Head title="New project — GeoRAG" />
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
-                <PageHeader eyebrow="NEW PROJECT" title="Create a project" sub={`Step ${stepIdx + 1} of ${STEPS.length}: ${step}`} />
+                <PageHeader
+                    eyebrow="NEW PROJECT"
+                    title="Create a project"
+                    sub={`Step ${stepIdx + 1} of ${STEPS.length}: ${step}`}
+                />
 
                 <div className="max-w-2xl mx-auto px-8 py-6">
                     {/* Stepper */}
@@ -865,7 +841,12 @@ export default function FoundryNewProject() {
                                 >
                                     {i + 1}
                                 </span>
-                                <span className="text-[11px] font-mono uppercase tracking-wider" style={{ color: i === stepIdx ? 'var(--fg-0)' : 'var(--fg-3)' }}>{s}</span>
+                                <span
+                                    className="text-[11px] font-mono uppercase tracking-wider"
+                                    style={{ color: i === stepIdx ? 'var(--fg-0)' : 'var(--fg-3)' }}
+                                >
+                                    {s}
+                                </span>
                                 {i < STEPS.length - 1 && <span style={{ color: 'var(--fg-3)' }}>›</span>}
                             </li>
                         ))}
@@ -875,18 +856,45 @@ export default function FoundryNewProject() {
                         {step === 'Identity' && (
                             <div className="space-y-3">
                                 <Field label="Project name" required>
-                                    <input type="text" value={form.name} onChange={(e) => setField('name', e.target.value)} className="w-full text-sm px-3 py-2 rounded border" style={inputStyle} />
+                                    <input
+                                        type="text"
+                                        value={form.name}
+                                        onChange={(e) => setField('name', e.target.value)}
+                                        className="w-full text-sm px-3 py-2 rounded border"
+                                        style={inputStyle}
+                                    />
                                 </Field>
                                 <Field label="Project code">
-                                    <input type="text" value={form.code} onChange={(e) => setField('code', e.target.value)} className="w-full text-sm px-3 py-2 rounded border" style={inputStyle} />
+                                    <input
+                                        type="text"
+                                        value={form.code}
+                                        onChange={(e) => setField('code', e.target.value)}
+                                        className="w-full text-sm px-3 py-2 rounded border"
+                                        style={inputStyle}
+                                    />
                                 </Field>
                                 <Field label="Operator">
-                                    <input type="text" value={form.operator} onChange={(e) => setField('operator', e.target.value)} className="w-full text-sm px-3 py-2 rounded border" style={inputStyle} />
+                                    <input
+                                        type="text"
+                                        value={form.operator}
+                                        onChange={(e) => setField('operator', e.target.value)}
+                                        className="w-full text-sm px-3 py-2 rounded border"
+                                        style={inputStyle}
+                                    />
                                 </Field>
                                 <Field label="Commodity">
-                                    <select value={form.commodity} onChange={(e) => setField('commodity', e.target.value)} className="text-sm px-3 py-2 rounded border" style={inputStyle}>
+                                    <select
+                                        value={form.commodity}
+                                        onChange={(e) => setField('commodity', e.target.value)}
+                                        className="text-sm px-3 py-2 rounded border"
+                                        style={inputStyle}
+                                    >
                                         <option value="">— select —</option>
-                                        {COMMODITIES.map((c) => <option key={c} value={c.toLowerCase()}>{c}</option>)}
+                                        {COMMODITIES.map((c) => (
+                                            <option key={c} value={c.toLowerCase()}>
+                                                {c}
+                                            </option>
+                                        ))}
                                     </select>
                                 </Field>
                             </div>
@@ -894,9 +902,18 @@ export default function FoundryNewProject() {
                         {step === 'Jurisdiction' && (
                             <div className="space-y-3">
                                 <Field label="Country">
-                                    <select value={form.country} onChange={(e) => setCountry(e.target.value)} className="text-sm px-3 py-2 rounded border" style={inputStyle}>
+                                    <select
+                                        value={form.country}
+                                        onChange={(e) => setCountry(e.target.value)}
+                                        className="text-sm px-3 py-2 rounded border"
+                                        style={inputStyle}
+                                    >
                                         <option value="">— select —</option>
-                                        {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                                        {COUNTRIES.map((c) => (
+                                            <option key={c.code} value={c.code}>
+                                                {c.name}
+                                            </option>
+                                        ))}
                                     </select>
                                 </Field>
                                 <Field label={form.country === 'CA' ? 'Province / Territory' : 'State'}>
@@ -907,9 +924,13 @@ export default function FoundryNewProject() {
                                         className="text-sm px-3 py-2 rounded border disabled:opacity-50"
                                         style={inputStyle}
                                     >
-                                        <option value="">{form.country ? '— select —' : '— select country first —'}</option>
+                                        <option value="">
+                                            {form.country ? '— select —' : '— select country first —'}
+                                        </option>
                                         {(STATES_BY_COUNTRY[form.country] ?? []).map((s) => (
-                                            <option key={s.code} value={s.code}>{s.name}</option>
+                                            <option key={s.code} value={s.code}>
+                                                {s.name}
+                                            </option>
                                         ))}
                                     </select>
                                 </Field>
@@ -927,12 +948,11 @@ export default function FoundryNewProject() {
                                         style={inputStyle}
                                     />
                                     <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--fg-3)' }}>
-                                        The projection this project&rsquo;s eastings and northings are
-                                        surveyed in. Nothing inside a CSV or spreadsheet declares one,
-                                        so without this every drill table uploaded here is read as{' '}
-                                        <strong>EPSG:32613</strong> (UTM zone 13N) and holes surveyed
-                                        in another zone land in the wrong place. Number only — a
-                                        per-file override on the import screen still wins over it.
+                                        The projection this project&rsquo;s eastings and northings are surveyed in.
+                                        Nothing inside a CSV or spreadsheet declares one, so without this every drill
+                                        table uploaded here is read as <strong>EPSG:32613</strong> (UTM zone 13N) and
+                                        holes surveyed in another zone land in the wrong place. Number only — a per-file
+                                        override on the import screen still wins over it.
                                     </p>
                                     {projectEpsg.error !== undefined && (
                                         <p className="mt-1 text-[11px]" style={{ color: 'var(--warn, #d97706)' }}>
@@ -950,21 +970,29 @@ export default function FoundryNewProject() {
                         )}
                         {step === 'Corpus' && (
                             <div className="space-y-4">
-                                <p className="text-xs" style={{ color: 'var(--fg-2)' }}>
-                                    Queue any files you already have. Once the project is created they're streamed to the bronze
-                                    bucket and picked up by the Dagster ingestion sensor within ~5&nbsp;minutes.
-                                    Per-file cap: 6&nbsp;GB.
+                                <p
+                                    className="text-xs"
+                                    style={{ color: 'var(--fg-2)' }}
+                                    data-testid="corpus-upload-note"
+                                >
+                                    Queue any files you already have. Files upload when the project is created and
+                                    ingest automatically. Per-file limit: {uploadLimit.human}.
                                 </p>
 
                                 {/* Drop zone — click opens individual file picker */}
                                 <div
-                                    onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                                    onDragOver={(e) => {
+                                        e.preventDefault();
+                                        setDragging(true);
+                                    }}
                                     onDragLeave={() => setDragging(false)}
                                     onDrop={onDrop}
                                     onClick={() => fileInputRef.current?.click()}
                                     role="button"
                                     tabIndex={0}
-                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+                                    }}
                                     className="rounded-md border-2 border-dashed text-center cursor-pointer transition-colors px-4 py-6"
                                     style={{
                                         borderColor: dragging ? 'var(--accent)' : 'var(--line-2)',
@@ -974,14 +1002,18 @@ export default function FoundryNewProject() {
                                     <div className="text-sm font-medium mb-1" style={{ color: 'var(--fg-0)' }}>
                                         {dragging ? 'Release to add files' : 'Drag files here, or click to browse'}
                                     </div>
-                                    <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                    <div
+                                        className="text-[10px] font-mono uppercase tracking-wider"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
                                         {/* KMZ, SEG-Y and XYZ were listed here and none of
                                             them is accepted; the label promised uploads that
                                             came back 422. Shapefile and MapInfo sidecars are
                                             named because dropping the whole set is what gets
                                             the .prj — and therefore the coordinate system —
                                             to the server. */}
-                                        CSV · PDF · TIFF · LAS · XLSX · GeoJSON · SHP + .shx/.dbf/.prj · MapInfo TAB/MIF · DBF · GPKG · ZIP
+                                        CSV · PDF · TIFF · LAS · XLSX · GeoJSON · SHP + .shx/.dbf/.prj · MapInfo TAB/MIF
+                                        · DBF · GPKG · ZIP
                                     </div>
                                     <input
                                         ref={fileInputRef}
@@ -996,11 +1028,17 @@ export default function FoundryNewProject() {
                                 </div>
 
                                 {/* Folder picker — completely separate from the drop zone to avoid nested click conflicts */}
-                                <label className="flex items-center justify-center gap-2 rounded-md border cursor-pointer transition-colors px-4 py-3"
+                                <label
+                                    className="flex items-center justify-center gap-2 rounded-md border cursor-pointer transition-colors px-4 py-3"
                                     style={{ borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
                                 >
-                                    <span className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>📁 Select Folder</span>
-                                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                    <span className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>
+                                        📁 Select Folder
+                                    </span>
+                                    <span
+                                        className="text-[10px] font-mono uppercase tracking-wider"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
                                         — pick a directory, all files load automatically
                                     </span>
                                     <input
@@ -1021,7 +1059,12 @@ export default function FoundryNewProject() {
                                     style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)', opacity: 0.6 }}
                                     title="Cloud URL fetch isn't wired yet. Upload local files through the import wizard."
                                 >
-                                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Cloud URL</span>
+                                    <span
+                                        className="text-[10px] font-mono uppercase tracking-wider"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
+                                        Cloud URL
+                                    </span>
                                     <input
                                         type="text"
                                         disabled
@@ -1029,25 +1072,41 @@ export default function FoundryNewProject() {
                                         className="flex-1 text-xs bg-transparent outline-none font-mono"
                                         style={{ color: 'var(--fg-3)' }}
                                     />
-                                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>soon</span>
+                                    <span
+                                        className="text-[10px] font-mono uppercase tracking-wider"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
+                                        soon
+                                    </span>
                                 </div>
 
                                 {/* Skipped-file notice (unrecognised extension / 0-byte folder shells) */}
                                 {skipped && skipped.names.length > 0 && (
                                     <div
                                         className="flex items-start gap-2 rounded border px-3 py-2 text-[11px]"
-                                        style={{ borderColor: 'var(--warn, oklch(0.78 0.18 75))', color: 'var(--warn, oklch(0.78 0.18 75))', background: 'var(--bg-1)' }}
+                                        style={{
+                                            borderColor: 'var(--warn, oklch(0.78 0.18 75))',
+                                            color: 'var(--warn, oklch(0.78 0.18 75))',
+                                            background: 'var(--bg-1)',
+                                        }}
                                     >
                                         <div className="flex-1 min-w-0">
                                             <div className="font-mono uppercase tracking-wider text-[10px]">
-                                                Skipped {skipped.names.length} file{skipped.names.length === 1 ? '' : 's'} · unrecognised format or empty folder
+                                                Skipped {skipped.names.length} file
+                                                {skipped.names.length === 1 ? '' : 's'} · unrecognised format or empty
+                                                folder
                                             </div>
-                                            <div className="truncate" title={skipped.names.join(', ')} style={{ color: 'var(--fg-2)' }}>
+                                            <div
+                                                className="truncate"
+                                                title={skipped.names.join(', ')}
+                                                style={{ color: 'var(--fg-2)' }}
+                                            >
                                                 {skipped.names.slice(0, 3).join(', ')}
                                                 {skipped.names.length > 3 && ` … +${skipped.names.length - 3} more`}
                                             </div>
                                             <div className="text-[10px]" style={{ color: 'var(--fg-3)' }}>
-                                                Tip: if you dragged a folder, use 📁 Select Folder instead so its contents are enumerated.
+                                                Tip: if you dragged a folder, use 📁 Select Folder instead so its
+                                                contents are enumerated.
                                             </div>
                                         </div>
                                         <button
@@ -1082,9 +1141,7 @@ export default function FoundryNewProject() {
                                         <div
                                             className="font-mono uppercase tracking-wider text-[10px]"
                                             style={{
-                                                color: donateCrs
-                                                    ? 'var(--accent)'
-                                                    : 'var(--warn, oklch(0.78 0.18 75))',
+                                                color: donateCrs ? 'var(--accent)' : 'var(--warn, oklch(0.78 0.18 75))',
                                             }}
                                         >
                                             {donation.headline}
@@ -1121,14 +1178,22 @@ export default function FoundryNewProject() {
                                 {bundleNotes.length > 0 && (
                                     <div
                                         className="flex items-start gap-2 rounded border px-3 py-2 text-[11px]"
-                                        style={{ borderColor: 'var(--warn, oklch(0.78 0.18 75))', background: 'var(--bg-1)' }}
+                                        style={{
+                                            borderColor: 'var(--warn, oklch(0.78 0.18 75))',
+                                            background: 'var(--bg-1)',
+                                        }}
                                     >
                                         <div className="flex-1 min-w-0 space-y-0.5">
-                                            <div className="font-mono uppercase tracking-wider text-[10px]" style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}>
+                                            <div
+                                                className="font-mono uppercase tracking-wider text-[10px]"
+                                                style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}
+                                            >
                                                 Files needing attention · {bundleNotes.length}
                                             </div>
                                             {bundleNotes.map((n, i) => (
-                                                <div key={`${i}-${n}`} style={{ color: 'var(--fg-2)' }}>{n}</div>
+                                                <div key={`${i}-${n}`} style={{ color: 'var(--fg-2)' }}>
+                                                    {n}
+                                                </div>
                                             ))}
                                         </div>
                                         <button
@@ -1145,15 +1210,33 @@ export default function FoundryNewProject() {
 
                                 {/* Queued files */}
                                 {queue.length > 0 && (
-                                    <div className="rounded border overflow-hidden" style={{ borderColor: 'var(--line-1)' }}>
-                                        <div className="flex items-center px-3 py-1.5" style={{ background: 'var(--bg-2)', borderBottom: '1px solid var(--line-1)' }}>
-                                            <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                    <div
+                                        className="rounded border overflow-hidden"
+                                        style={{ borderColor: 'var(--line-1)' }}
+                                    >
+                                        <div
+                                            className="flex items-center px-3 py-1.5"
+                                            style={{
+                                                background: 'var(--bg-2)',
+                                                borderBottom: '1px solid var(--line-1)',
+                                            }}
+                                        >
+                                            <div
+                                                className="text-[10px] font-mono uppercase tracking-wider"
+                                                style={{ color: 'var(--fg-3)' }}
+                                            >
                                                 Queued · {queue.length} · {humanSize(queueSummary.bytes)}
                                                 {queueSummary.unsupported.length > 0 && (
-                                                    <span style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}> · {queueSummary.unsupported.length} unsupported</span>
+                                                    <span style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}>
+                                                        {' '}
+                                                        · {queueSummary.unsupported.length} unsupported
+                                                    </span>
                                                 )}
                                                 {queueSummary.oversize.length > 0 && (
-                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> · {queueSummary.oversize.length} over {uploadLimit.human}</span>
+                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                                                        {' '}
+                                                        · {queueSummary.oversize.length} over {uploadLimit.human}
+                                                    </span>
                                                 )}
                                             </div>
                                             <div className="flex-1" />
@@ -1166,7 +1249,10 @@ export default function FoundryNewProject() {
                                                 Clear
                                             </button>
                                         </div>
-                                        <ul className="max-h-72 overflow-y-auto divide-y" style={{ borderColor: 'var(--line-1)' }}>
+                                        <ul
+                                            className="max-h-72 overflow-y-auto divide-y"
+                                            style={{ borderColor: 'var(--line-1)' }}
+                                        >
                                             {queue.map((q) => {
                                                 const oversize = q.size > MAX_FILE_BYTES;
                                                 const unsupported = q.category === null;
@@ -1185,20 +1271,85 @@ export default function FoundryNewProject() {
                                                         ? `Using ${donated.label}, copied from ${donated.sourceName}. Type an EPSG code to use that instead — the copy is removed from this upload.`
                                                         : 'Coordinate system to assume when the file declares none — a shapefile with no .prj, or a table of bare eastings and northings. EPSG number only, e.g. 26904. A CRS the file declares always wins.';
                                                 return (
-                                                    <li key={q.id} className="grid grid-cols-[1fr_140px_84px_70px_auto] items-center gap-2 px-3 py-1.5" style={{ background: 'var(--bg-1)' }}>
+                                                    <li
+                                                        key={q.id}
+                                                        className="grid grid-cols-[1fr_140px_84px_70px_auto] items-center gap-2 px-3 py-1.5"
+                                                        style={{ background: 'var(--bg-1)' }}
+                                                    >
                                                         <div className="min-w-0">
-                                                            <div className="text-xs truncate" style={{ color: 'var(--fg-0)' }}>{q.name}</div>
-                                                            <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                                            <div
+                                                                className="text-xs truncate"
+                                                                style={{ color: 'var(--fg-0)' }}
+                                                            >
+                                                                {q.name}
+                                                            </div>
+                                                            <div
+                                                                className="text-[10px] font-mono uppercase tracking-wider"
+                                                                style={{ color: 'var(--fg-3)' }}
+                                                            >
                                                                 .{q.ext} · {humanSize(q.size)}
-                                                                {q.parentZip && <> · <span title={`Extracted from ${q.parentZip}`} style={{ color: 'var(--fg-2)' }}>from {q.parentZip}</span></>}
-                                                                {q.status !== 'queued' && <> · <span style={{ color: q.status === 'done' ? 'var(--accent)' : q.status === 'error' ? 'var(--danger, oklch(0.65 0.2 30))' : 'var(--fg-2)' }}>{q.status}</span></>}
-                                                                {q.error && <> · <span title={q.error} style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>{q.error.slice(0, 40)}</span></>}
+                                                                {q.parentZip && (
+                                                                    <>
+                                                                        {' '}
+                                                                        ·{' '}
+                                                                        <span
+                                                                            title={`Extracted from ${q.parentZip}`}
+                                                                            style={{ color: 'var(--fg-2)' }}
+                                                                        >
+                                                                            from {q.parentZip}
+                                                                        </span>
+                                                                    </>
+                                                                )}
+                                                                {q.status !== 'queued' && (
+                                                                    <>
+                                                                        {' '}
+                                                                        ·{' '}
+                                                                        <span
+                                                                            style={{
+                                                                                color:
+                                                                                    q.status === 'done'
+                                                                                        ? 'var(--accent)'
+                                                                                        : q.status === 'error'
+                                                                                          ? 'var(--danger, oklch(0.65 0.2 30))'
+                                                                                          : 'var(--fg-2)',
+                                                                            }}
+                                                                        >
+                                                                            {q.status}
+                                                                        </span>
+                                                                    </>
+                                                                )}
+                                                                {q.error && (
+                                                                    <>
+                                                                        {' '}
+                                                                        ·{' '}
+                                                                        <span
+                                                                            title={q.error}
+                                                                            style={{
+                                                                                color: 'var(--danger, oklch(0.65 0.2 30))',
+                                                                            }}
+                                                                        >
+                                                                            {q.error.slice(0, 40)}
+                                                                        </span>
+                                                                    </>
+                                                                )}
                                                                 {/* A donated row's hint is the
                                                                     bundler's CRS verdict, which is
                                                                     a sentence — it gets its own
                                                                     full-width line below instead of
                                                                     being cut off at 40 characters. */}
-                                                                {!q.error && q.hint && !donated && <> · <span title={q.hint} style={{ color: 'var(--muted-foreground, oklch(0.55 0 0))' }}>{q.hint.slice(0, 40)}{q.hint.length > 40 ? '…' : ''}</span></>}
+                                                                {!q.error && q.hint && !donated && (
+                                                                    <>
+                                                                        {' '}
+                                                                        ·{' '}
+                                                                        <span
+                                                                            title={q.hint}
+                                                                            style={{ color: 'var(--fg-3)' }}
+                                                                        >
+                                                                            {q.hint.slice(0, 40)}
+                                                                            {q.hint.length > 40 ? '…' : ''}
+                                                                        </span>
+                                                                    </>
+                                                                )}
                                                             </div>
                                                             {/* A row that was given a coordinate
                                                                 system reads as resolved and says
@@ -1256,21 +1407,36 @@ export default function FoundryNewProject() {
                                                                 </>
                                                             )}
                                                             {epsg.error && (
-                                                                <div className="text-[10px]" style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                                                                <div
+                                                                    className="text-[10px]"
+                                                                    style={{
+                                                                        color: 'var(--danger, oklch(0.65 0.2 30))',
+                                                                    }}
+                                                                >
                                                                     {epsg.error}
                                                                 </div>
                                                             )}
                                                         </div>
                                                         {unsupported ? (
-                                                            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded border text-center" style={{ color: 'var(--warn, oklch(0.78 0.18 75))', borderColor: 'var(--warn, oklch(0.78 0.18 75))' }}>
-                                                                raster · not supported
+                                                            <span
+                                                                className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded border text-center"
+                                                                style={{
+                                                                    color: 'var(--warn, oklch(0.78 0.18 75))',
+                                                                    borderColor: 'var(--warn, oklch(0.78 0.18 75))',
+                                                                }}
+                                                            >
+                                                                not supported
                                                             </span>
                                                         ) : (
                                                             <select
                                                                 aria-label={`Ingestion category for ${q.file.name}`}
                                                                 value={q.category as string}
-                                                                onChange={(e) => setCategory(q.id, e.target.value as Category)}
-                                                                disabled={q.status === 'uploading' || q.status === 'done'}
+                                                                onChange={(e) =>
+                                                                    setCategory(q.id, e.target.value as Category)
+                                                                }
+                                                                disabled={
+                                                                    q.status === 'uploading' || q.status === 'done'
+                                                                }
                                                                 className="text-[11px] px-2 py-1 rounded border"
                                                                 style={inputStyle}
                                                             >
@@ -1278,17 +1444,22 @@ export default function FoundryNewProject() {
                                                                     .filter((cat) => !RETIRED_CATEGORIES.has(cat))
                                                                     .filter((cat) => CATEGORY_EXTS[cat].includes(q.ext))
                                                                     .map((cat) => (
-                                                                        <option key={cat} value={cat}>{CATEGORY_LABEL[cat]}</option>
+                                                                        <option key={cat} value={cat}>
+                                                                            {CATEGORY_LABEL[cat]}
+                                                                        </option>
                                                                     ))}
                                                                 {/* If no category exactly matches the ext, still allow forcing one --
                                                                     but never a retired one, which the backend would 422. */}
-                                                                {(Object.keys(CATEGORY_LABEL) as Category[]).every((cat) => !CATEGORY_EXTS[cat].includes(q.ext)) &&
+                                                                {(Object.keys(CATEGORY_LABEL) as Category[]).every(
+                                                                    (cat) => !CATEGORY_EXTS[cat].includes(q.ext),
+                                                                ) &&
                                                                     (Object.keys(CATEGORY_LABEL) as Category[])
                                                                         .filter((cat) => !RETIRED_CATEGORIES.has(cat))
                                                                         .map((cat) => (
-                                                                            <option key={cat} value={cat}>{CATEGORY_LABEL[cat]}</option>
-                                                                        ))
-                                                                }
+                                                                            <option key={cat} value={cat}>
+                                                                                {CATEGORY_LABEL[cat]}
+                                                                            </option>
+                                                                        ))}
                                                             </select>
                                                         )}
                                                         {/* Per-file CRS override. Only where the
@@ -1302,7 +1473,9 @@ export default function FoundryNewProject() {
                                                                 inputMode="numeric"
                                                                 value={q.sourceEpsgText ?? ''}
                                                                 onChange={(e) => setSourceEpsg(q.id, e.target.value)}
-                                                                disabled={q.status === 'uploading' || q.status === 'done'}
+                                                                disabled={
+                                                                    q.status === 'uploading' || q.status === 'done'
+                                                                }
                                                                 placeholder={epsgPlaceholder}
                                                                 title={epsgTitle}
                                                                 aria-label={`Source EPSG for ${q.name}`}
@@ -1317,7 +1490,14 @@ export default function FoundryNewProject() {
                                                         ) : (
                                                             <span />
                                                         )}
-                                                        <span className="text-[10px] font-mono uppercase tracking-wider text-center" style={{ color: oversize ? 'var(--danger, oklch(0.65 0.2 30))' : 'var(--fg-3)' }}>
+                                                        <span
+                                                            className="text-[10px] font-mono uppercase tracking-wider text-center"
+                                                            style={{
+                                                                color: oversize
+                                                                    ? 'var(--danger, oklch(0.65 0.2 30))'
+                                                                    : 'var(--fg-3)',
+                                                            }}
+                                                        >
                                                             {oversize ? `>${uploadLimit.human}` : ''}
                                                         </span>
                                                         <button
@@ -1341,53 +1521,83 @@ export default function FoundryNewProject() {
                         {step === 'Review' && (
                             <div className="space-y-3 text-xs">
                                 {Object.entries(form).map(([k, v]) => (
-                                    <div key={k} className="grid grid-cols-[160px_1fr] py-1 border-b" style={{ borderColor: 'var(--line-1)' }}>
-                                        <span className="font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>{k}</span>
+                                    <div
+                                        key={k}
+                                        className="grid grid-cols-[160px_1fr] py-1 border-b"
+                                        style={{ borderColor: 'var(--line-1)' }}
+                                    >
+                                        <span
+                                            className="font-mono uppercase tracking-wider"
+                                            style={{ color: 'var(--fg-3)' }}
+                                        >
+                                            {k}
+                                        </span>
                                         <span style={{ color: 'var(--fg-0)' }}>{String(v) || '—'}</span>
                                     </div>
                                 ))}
-                                <div className="grid grid-cols-[160px_1fr] py-1 border-b" style={{ borderColor: 'var(--line-1)' }}>
-                                    <span className="font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>initial upload</span>
+                                <div
+                                    className="grid grid-cols-[160px_1fr] py-1 border-b"
+                                    style={{ borderColor: 'var(--line-1)' }}
+                                >
+                                    <span
+                                        className="font-mono uppercase tracking-wider"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
+                                        initial upload
+                                    </span>
                                     <span style={{ color: 'var(--fg-0)' }}>
                                         {queueSummary.ok.length === 0
                                             ? 'No files queued — you can add sources later from Corpus → Sources.'
                                             : `${queueSummary.ok.length} file${queueSummary.ok.length === 1 ? '' : 's'} (${humanSize(queueSummary.bytes)}) ready to upload`}
                                         {queueSummary.unsupported.length > 0 && (
                                             <span style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}>
-                                                {' · '}{queueSummary.unsupported.length} unsupported will be skipped
+                                                {' · '}
+                                                {queueSummary.unsupported.length} unsupported will be skipped
                                             </span>
                                         )}
                                         {queueSummary.oversize.length > 0 && (
                                             <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
-                                                {' · '}{queueSummary.oversize.length} over the {uploadLimit.human} limit will be skipped
+                                                {' · '}
+                                                {queueSummary.oversize.length} over the {uploadLimit.human} limit will
+                                                be skipped
                                             </span>
                                         )}
                                         {queueSummary.badEpsg.length > 0 && (
                                             <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
-                                                {' · '}{queueSummary.badEpsg.length} invalid EPSG code
-                                                {queueSummary.badEpsg.length === 1 ? '' : 's'} — fix in Corpus before creating
+                                                {' · '}
+                                                {queueSummary.badEpsg.length} invalid EPSG code
+                                                {queueSummary.badEpsg.length === 1 ? '' : 's'} — fix in Corpus before
+                                                creating
                                             </span>
                                         )}
                                         {projectEpsg.error !== undefined && (
                                             <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
-                                                {' · '}project EPSG code is not valid — fix in Jurisdiction before creating
+                                                {' · '}project EPSG code is not valid — fix in Jurisdiction before
+                                                creating
                                             </span>
                                         )}
                                         {azimuthReferenceError !== undefined && (
                                             <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
-                                                {' · '}{azimuthReferenceError} — fix in Jurisdiction before creating
+                                                {' · '}
+                                                {azimuthReferenceError} — fix in Jurisdiction before creating
                                             </span>
                                         )}
                                     </span>
                                 </div>
                                 {submitProgress && (
-                                    <div className="mt-2 text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-2)' }}>
+                                    <div
+                                        className="mt-2 text-[10px] font-mono uppercase tracking-wider"
+                                        style={{ color: 'var(--fg-2)' }}
+                                    >
                                         Uploading {submitProgress.done} / {submitProgress.total}
                                         <div className="h-1 mt-1 rounded" style={{ background: 'var(--bg-2)' }}>
                                             <div
                                                 className="h-full rounded"
                                                 style={{
-                                                    width: submitProgress.total === 0 ? '100%' : `${(submitProgress.done / submitProgress.total) * 100}%`,
+                                                    width:
+                                                        submitProgress.total === 0
+                                                            ? '100%'
+                                                            : `${(submitProgress.done / submitProgress.total) * 100}%`,
                                                     background: 'var(--accent)',
                                                     transition: 'width 120ms linear',
                                                 }}
@@ -1400,11 +1610,26 @@ export default function FoundryNewProject() {
                     </Card>
 
                     <footer className="flex justify-between mt-4">
-                        <button type="button" onClick={back} disabled={stepIdx === 0 || submitting} className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-30" style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)' }}>
+                        <button
+                            type="button"
+                            onClick={back}
+                            disabled={stepIdx === 0 || submitting}
+                            className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-30"
+                            style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)' }}
+                        >
                             ← Back
                         </button>
                         {step !== 'Review' ? (
-                            <button type="button" onClick={next} className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border" style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}>
+                            <button
+                                type="button"
+                                onClick={next}
+                                className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                style={{
+                                    color: 'var(--accent)',
+                                    background: 'var(--accent-bg)',
+                                    borderColor: 'var(--accent-dim)',
+                                }}
+                            >
                                 Next →
                             </button>
                         ) : (
@@ -1412,39 +1637,55 @@ export default function FoundryNewProject() {
                                 type="button"
                                 onClick={submit}
                                 disabled={
-                                    submitting
-                                    || !form.name
-                                    || queueSummary.badEpsg.length > 0
+                                    submitting ||
+                                    !form.name ||
+                                    queueSummary.badEpsg.length > 0 ||
                                     // A project EPSG the API would refuse blocks
                                     // the button rather than being dropped in
                                     // transit — the same rule the per-file
                                     // override already follows.
-                                    || projectEpsg.error !== undefined
+                                    projectEpsg.error !== undefined ||
                                     // Magnetic north with no (or an unreadable)
                                     // declination would be refused by the API.
-                                    || azimuthReferenceError !== undefined
+                                    azimuthReferenceError !== undefined
                                 }
                                 className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-40"
-                                style={{ color: 'var(--bg-0)', background: 'var(--accent)', borderColor: 'var(--accent-dim)' }}
+                                style={{
+                                    color: 'var(--bg-0)',
+                                    background: 'var(--accent)',
+                                    borderColor: 'var(--accent-dim)',
+                                }}
                             >
                                 {submitting
-                                    ? (submitProgress ? `Uploading ${submitProgress.done}/${submitProgress.total}…` : 'Creating…')
+                                    ? submitProgress
+                                        ? `Uploading ${submitProgress.done}/${submitProgress.total}…`
+                                        : 'Creating…'
                                     : failedUploads.length > 0
-                                        ? `Retry ${failedUploads.length} failed upload${failedUploads.length === 1 ? '' : 's'} →`
-                                        : queueSummary.ok.length > 0
+                                      ? `Retry ${failedUploads.length} failed upload${failedUploads.length === 1 ? '' : 's'} →`
+                                      : queueSummary.ok.length > 0
                                         ? `Create project + upload ${queueSummary.ok.length} file${queueSummary.ok.length === 1 ? '' : 's'} →`
                                         : 'Create project →'}
                             </button>
                         )}
                     </footer>
                     {submitError && (
-                        <div role="alert" className="mt-3 text-[11px]" style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                        <div
+                            role="alert"
+                            className="mt-3 text-[11px]"
+                            style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}
+                        >
                             {submitError}
                         </div>
                     )}
                     {failedUploads.length > 0 && createdProject && !submitting && (
-                        <div className="mt-3 rounded border px-3 py-2" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}>
-                            <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>
+                        <div
+                            className="mt-3 rounded border px-3 py-2"
+                            style={{ borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}
+                        >
+                            <div
+                                className="text-[10px] font-mono uppercase tracking-wider mb-1"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
                                 Failed uploads
                             </div>
                             <ul className="space-y-0.5" data-testid="failed-uploads">

@@ -124,7 +124,10 @@ def _install_fake_pypdfium2(monkeypatch, page_texts):
 def _env(monkeypatch):
     monkeypatch.setenv("OCR_ENGINE", "cohere_parse")
     monkeypatch.setenv("COHERE_API_KEY", "test-only-not-a-real-cohere-key")
-    monkeypatch.delenv("PDF_PARSE_MODE", raising=False)
+    # The code default is `all` since 2026-10-04; most tests here exercise the
+    # ocr_only baseline and opt into tables/all themselves, so pin it. The
+    # selection tests below delete the variable to test the default.
+    monkeypatch.setenv("PDF_PARSE_MODE", "ocr_only")
     monkeypatch.delenv("OCR_PAGES_PER_BATCH", raising=False)
     monkeypatch.delenv("BEDROCK_PARSE_MODEL_ID", raising=False)
     monkeypatch.setenv("OCR_MAX_PAGES_PER_DOC", "300")
@@ -188,14 +191,39 @@ def _summary(warnings):
 
 
 class TestSelectedParseMode:
-    def test_unset_and_blank_are_ocr_only_and_silent(self, monkeypatch, caplog) -> None:
+    def test_unset_and_blank_are_all_and_silent(self, monkeypatch, caplog) -> None:
+        # 2026-10-04: the code default matches production (config.tf: all).
+        monkeypatch.delenv("PDF_PARSE_MODE")
+        with caplog.at_level(logging.DEBUG, logger="georag.ingest.ocr_engine"):
+            assert ocr_engine.selected_parse_mode() == "all"
+            monkeypatch.setenv("PDF_PARSE_MODE", "  ")
+            assert ocr_engine.selected_parse_mode() == "all"
+        assert caplog.records == []
+
+    def test_ocr_only_stays_selectable_and_silent(self, monkeypatch, caplog) -> None:
+        monkeypatch.setenv("PDF_PARSE_MODE", "OCR_ONLY")
         with caplog.at_level(logging.DEBUG, logger="georag.ingest.ocr_engine"):
             assert ocr_engine.selected_parse_mode() == "ocr_only"
-            monkeypatch.setenv("PDF_PARSE_MODE", "  ")
-            assert ocr_engine.selected_parse_mode() == "ocr_only"
-            monkeypatch.setenv("PDF_PARSE_MODE", "OCR_ONLY")
+        assert caplog.records == []
+
+    def test_default_degrades_silently_on_a_tesseract_site(self, monkeypatch, caplog) -> None:
+        """A built-in default that a tesseract site cannot honour is not an
+        operator error — no warning; an EXPLICIT value still warns (below)."""
+        monkeypatch.delenv("PDF_PARSE_MODE")
+        monkeypatch.setenv("OCR_ENGINE", "tesseract")
+        with caplog.at_level(logging.DEBUG, logger="georag.ingest.ocr_engine"):
             assert ocr_engine.selected_parse_mode() == "ocr_only"
         assert caplog.records == []
+
+    def test_default_without_a_key_is_ocr_only_with_one_critical(
+        self, monkeypatch, caplog
+    ) -> None:
+        monkeypatch.delenv("PDF_PARSE_MODE")
+        monkeypatch.delenv("COHERE_API_KEY")
+        with caplog.at_level(logging.CRITICAL, logger="app.services.ingest.pdf_report"):
+            assert pdf_report._effective_parse_mode() == "ocr_only"
+            assert pdf_report._effective_parse_mode() == "ocr_only"
+        assert len([r for r in caplog.records if r.levelno == logging.CRITICAL]) == 1
 
     @pytest.mark.parametrize("raw", ["tables", "TABLES", " all "])
     def test_tables_and_all_are_selected_with_the_remote_engine(self, monkeypatch, raw) -> None:
@@ -620,7 +648,7 @@ class TestTablesMode:
 
 
 class TestDefaultModeThroughTheEntryPoint:
-    def test_unset_means_no_engine_call_no_summary_no_provenance_key(
+    def test_ocr_only_means_no_engine_call_no_summary_no_provenance_key(
         self, monkeypatch, tmp_path
     ) -> None:
         engine = _install_engine(

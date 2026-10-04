@@ -214,6 +214,21 @@ class PublicGeoscienceSearchResult:
     error: str | None = None
 
 
+def _escape_like(text: str | None) -> str | None:
+    """``text`` as a literal for ``ILIKE '%' || $n || '%'``, or None if blank.
+
+    ``%`` and ``_`` are LIKE wildcards ("Cu_Zn", "50%" matched far more than
+    they said), and ``\\`` is the default escape character, so all three are
+    backslash-escaped (audit item 14).
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    return (
+        stripped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+
+
 def _build_query(types: list[str]) -> str:
     """UNION ALL one independently-limited SELECT per requested type.
 
@@ -332,7 +347,7 @@ async def search_public_geoscience(
     sql = _build_query(types_to_query)
     args = (
         juris_list or None,
-        (text_query or "").strip() or None,
+        _escape_like(text_query),
         commodity_tokens or None,
         bbox_tuple[0] if bbox_tuple else None,
         bbox_tuple[1] if bbox_tuple else None,

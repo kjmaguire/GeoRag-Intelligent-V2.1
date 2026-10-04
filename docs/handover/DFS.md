@@ -144,16 +144,14 @@ sequenceDiagram
 
 #### 2.3.1 Hybrid retrieval scoring (Reciprocal Rank Fusion)
 
-Cross-store ranking is implemented in `src/fastapi/app/services/fusion.py` using standard Reciprocal Rank Fusion (RRF) per Cormack et al. 2009.
+Hybrid ranking is Qdrant's server-side `Fusion.RRF` (`src/fastapi/app/services/qdrant_service.py`, `hybrid_query`) over a dense and a SPLADE++ sparse prefetch branch, per Cormack et al. 2009. There is no cross-store fusion and no graph branch (Neo4j was removed 2026-07-28); `services/fusion.py` no longer exists.
 
 **Formula:** `score(d) = Σ over input lists of  1 / (k + rank_in_list(d))`
-**Constant:** `RRF_K = 60` (the literature standard; smoothing constant — large `k` flattens the contribution of head positions).
-**Input lists:** dense (bge-small-en-v1.5 on Qdrant `georag_chunks`), sparse (SPLADE++ on Qdrant), graph (Neo4j entity-expansion candidates), and (when present) structured-PG hits. Lists are ranked independently then fused.
-**Per-list weighting:** controlled by `RetrievalProfile.bm25_weight` (`0.0` = dense-only … `1.0` = sparse-only) — per intent. The weight scales each list's RRF contribution; not a separate score modality.
-**Tie-break:** when two candidates have identical RRF scores, they are ordered by `(source_priority, original_dense_score)` for diagnostic stability — see `fusion.py` docstring lines 1–50.
-**Output:** RRF-ranked list passed to the reranker (`BAAI/bge-reranker-base`), which re-orders the top `RERANKER_TOP_K_BY_CLASS[query_class]` candidates by cross-encoder logit. If the reranker times out (>2s per batch), the RRF order is preserved as fallback (no hard failure — Spec B6).
+**Input lists:** dense (Qwen3-Embedding-0.6B in dev / Cohere Embed v4 in production, on Qdrant `georag_chunks`) and sparse (SPLADE++). Lists are ranked independently then fused.
+**Per-list weighting:** none. `RetrievalProfile.bm25_weight` was declared but never read and was deleted 2026-10-04.
+**Output:** the RRF-ranked candidates go to the reranker (`RERANKER_BACKEND`: Cohere Rerank 3.5 on Bedrock by default), which scores each (query, chunk) pair; chunks below the backend's score floor are dropped and the top `RERANKER_TOP_K` survive. If the reranker fails or times out twice, or a hosted backend has no reranker at all, `search_documents` returns `retrieval_failure="reranker_unavailable"` and the query fails with `RETRIEVAL_UNAVAILABLE` — RRF order is NOT used as a fallback, because it would bypass the relevance floor. Only an explicitly local/dev backend with no reranker loaded still degrades to RRF order (`rerank_degraded=True`).
 
-Per-intent retrieval-profile contract (`src/fastapi/app/agent/agentic_retrieval/retrieval_profile.py`): 8 fields per intent — `primary_tools`, `secondary_tools`, `bm25_weight`, `conflict_detection_enabled`, `adversarial_pass_enabled`, `surface_qa_qc_fields`, `require_regulatory_constraints`, `answer_emphasis` (6-value Literal), `max_chunks`. The 8 intents × 8 fields matrix is the canonical retrieval contract — see SAD §3.3.2.
+Per-intent retrieval-profile contract (`src/fastapi/app/agent/agentic_retrieval/retrieval_profile.py`): 7 fields per intent — `primary_tools`, `secondary_tools`, `conflict_detection_enabled`, `adversarial_pass_enabled`, `surface_qa_qc_fields`, `require_regulatory_constraints`, `answer_emphasis` (6-value Literal). (`bm25_weight` and `max_chunks` were deleted 2026-10-04; `conflict_detection_enabled` and `require_regulatory_constraints` are only logged.) See SAD §3.3.2.
 
 ### 2.4 Map / visualization flow
 

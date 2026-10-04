@@ -216,3 +216,102 @@ class TestParseCsvSamples:
             "DH-1,S1,0,1,Au,1.5,g/t\nDH-1,S1,0,1,Cu,0.2,%\n"
         )
         assert result.records[0]["commodity_assays"] == {"Au_ppm": 1.5, "Cu_pct": 0.2}
+
+
+class TestLongFormatUnitAssumption:
+    """A long-format file with no unit column was read as ppm in silence.
+
+    Cu in % read as ppm is a 10,000x error; the wide format already warned
+    (``assay_unit_assumed``), the long format did not.
+    """
+
+    def test_no_unit_column_warns_with_the_element_list(self) -> None:
+        result = _parse(
+            "Hole_ID,Sample_ID,From,To,Element,Value\n"
+            "DH-1,S1,0,1,Au,1.5\nDH-1,S1,0,1,Cu,0.2\n"
+        )
+        # Still stored as ppm - the point is that it is said, not hidden.
+        assert result.records[0]["commodity_assays"] == {"Au_ppm": 1.5, "Cu_ppm": 0.2}
+        (warning,) = [w for w in result.warnings if w["code"] == "assay_unit_assumed"]
+        assert warning["context"]["elements"] == ["Au", "Cu"]
+        assert "'Cu'" in warning["detail"] and "ppm" in warning["detail"]
+        assert warning["row"] is None
+
+    def test_a_unit_column_that_names_every_unit_does_not_warn(self) -> None:
+        result = _parse(
+            "Hole_ID,Sample_ID,From,To,Element,Value,Unit\n"
+            "DH-1,S1,0,1,Au,1.5,g/t\nDH-1,S1,0,1,Cu,0.2,%\n"
+        )
+        assert not [w for w in result.warnings if w["code"] == "assay_unit_assumed"]
+
+    def test_a_blank_unit_cell_names_that_element_only(self) -> None:
+        result = _parse(
+            "Hole_ID,Sample_ID,From,To,Element,Value,Unit\n"
+            "DH-1,S1,0,1,Au,1.5,g/t\nDH-1,S1,0,1,Cu,0.2,\n"
+        )
+        (warning,) = [w for w in result.warnings if w["code"] == "assay_unit_assumed"]
+        assert warning["context"]["elements"] == ["Cu"]
+
+
+class TestSummarizeUnitAmbiguity:
+    """``outlier_flags["unit_ambiguity"]`` collapses to one entry per column.
+
+    These run the REAL detectors, so a reworded detector string breaks the
+    summary here instead of silently dropping out of the run's warning.
+    """
+
+    def test_wide_bare_noble_and_bare_base_metal_columns(self) -> None:
+        from georag_geoparsers._unit_ambiguity import summarize_unit_ambiguity
+
+        result = _parse(
+            "Hole_ID,Sample_ID,From,To,Au,Cu\n"
+            "DH-1,S1,0,1,1.5,5000\nDH-1,S2,1,2,0.2,4000\n"
+        )
+        by_column = {e["column"]: e for e in summarize_unit_ambiguity(result.outlier_flags)}
+        assert by_column["Au"]["kind"] == "bare_noble_metal"
+        assert (by_column["Au"]["inferred_unit"], by_column["Au"]["alternative_unit"]) == ("ppm", "g/t")
+        assert by_column["Au"]["records"] == 2
+        assert by_column["Cu"]["kind"] == "bare_base_metal"
+        assert (by_column["Cu"]["inferred_unit"], by_column["Cu"]["alternative_unit"]) == ("ppm", "pct")
+
+    def test_long_format_noble_row_with_no_unit(self) -> None:
+        from georag_geoparsers._unit_ambiguity import summarize_unit_ambiguity
+
+        result = _parse(
+            "Hole_ID,Sample_ID,From,To,Element,Value,Unit\n"
+            "DH-1,S1,0,1,Au,1.5,\n"
+        )
+        (entry,) = summarize_unit_ambiguity(result.outlier_flags)
+        assert entry["column"] == "Au" and entry["kind"] == "missing_unit_noble_metal"
+        assert (entry["inferred_unit"], entry["alternative_unit"]) == ("ppm", "g/t")
+
+    def test_long_format_cross_mixing_reports_the_minority_unit(self) -> None:
+        from georag_geoparsers._unit_ambiguity import summarize_unit_ambiguity
+
+        result = _parse(
+            "Hole_ID,Sample_ID,From,To,Element,Value,Unit\n"
+            "DH-1,S1,0,1,Au,1.5,g/t\nDH-1,S2,1,2,Au,2.5,g/t\n"
+            "DH-1,S3,2,3,Au,0.1,oz/t\n"
+        )
+        entries = summarize_unit_ambiguity(result.outlier_flags)
+        mixed = [e for e in entries if e["kind"] == "unit_cross_mixing"]
+        assert len(mixed) == 1
+        assert mixed[0]["column"] == "Au"
+        assert mixed[0]["inferred_unit"] == "oz/t"
+        assert mixed[0]["alternative_unit"] == "g/t"
+
+    def test_clean_file_summarizes_to_nothing(self) -> None:
+        from georag_geoparsers._unit_ambiguity import summarize_unit_ambiguity
+
+        result = _parse("Hole_ID,Sample_ID,From,To,Au_ppm,Cu_pct\nDH-1,S1,0,1,0.5,0.1\n")
+        assert summarize_unit_ambiguity(result.outlier_flags) == []
+        assert summarize_unit_ambiguity(None) == []
+
+    def test_an_unrecognised_flag_string_is_kept_not_dropped(self) -> None:
+        from georag_geoparsers._unit_ambiguity import summarize_unit_ambiguity
+
+        (entry,) = summarize_unit_ambiguity(
+            [{"unit_ambiguity": ["Zn: something new the detector says"]}],
+        )
+        assert entry["column"] == "Zn" and entry["kind"] == "other"
+        assert entry["inferred_unit"] is None

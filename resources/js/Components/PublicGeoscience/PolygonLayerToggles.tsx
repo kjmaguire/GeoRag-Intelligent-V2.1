@@ -53,7 +53,9 @@ export default function PolygonLayerToggles({ enabled, onChange, meta }: Props) 
                         {POLYGON_LAYER_LABELS[key]}
                         {status && (
                             <span
-                                className={meta?.[key]?.truncated || meta?.[key]?.mode === 'min_zoom' ? 'text-amber-400' : ''}
+                                className={
+                                    meta?.[key]?.truncated || meta?.[key]?.mode === 'min_zoom' ? 'text-amber-400' : ''
+                                }
                             >
                                 ({status})
                             </span>

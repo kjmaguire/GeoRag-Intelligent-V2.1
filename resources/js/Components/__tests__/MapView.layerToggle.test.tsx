@@ -37,19 +37,19 @@ const {
     mockGetCanvas,
 } = vi.hoisted(() => ({
     mockSetLayoutProperty: vi.fn(),
-    mockGetLayer:          vi.fn().mockReturnValue(true),
-    mockGetSource:         vi.fn().mockReturnValue(null),
-    mockAddSource:         vi.fn(),
-    mockAddLayer:          vi.fn(),
-    mockAddControl:        vi.fn(),
-    mockOn:                vi.fn(),
-    mockOff:               vi.fn(),
-    mockRemove:            vi.fn(),
-    mockSetFilter:         vi.fn(),
-    mockSetTerrain:        vi.fn(),
-    mockGetZoom:           vi.fn().mockReturnValue(5),
-    mockGetStyle:          vi.fn().mockReturnValue({ layers: [] }),
-    mockGetCanvas:         vi.fn().mockReturnValue({ style: {} }),
+    mockGetLayer: vi.fn().mockReturnValue(true),
+    mockGetSource: vi.fn().mockReturnValue(null),
+    mockAddSource: vi.fn(),
+    mockAddLayer: vi.fn(),
+    mockAddControl: vi.fn(),
+    mockOn: vi.fn(),
+    mockOff: vi.fn(),
+    mockRemove: vi.fn(),
+    mockSetFilter: vi.fn(),
+    mockSetTerrain: vi.fn(),
+    mockGetZoom: vi.fn().mockReturnValue(5),
+    mockGetStyle: vi.fn().mockReturnValue({ layers: [] }),
+    mockGetCanvas: vi.fn().mockReturnValue({ style: {} }),
 }));
 
 vi.mock('maplibre-gl', () => {
@@ -58,62 +58,68 @@ vi.mock('maplibre-gl', () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function MapMock(this: any) {
-        this.addControl        = mockAddControl;
-        this.on                = mockOn;
-        this.off               = mockOff;
-        this.remove            = mockRemove;
-        this.getSource         = mockGetSource;
-        this.addSource         = mockAddSource;
-        this.getLayer          = mockGetLayer;
-        this.addLayer          = mockAddLayer;
+        this.addControl = mockAddControl;
+        this.on = mockOn;
+        this.off = mockOff;
+        this.remove = mockRemove;
+        this.getSource = mockGetSource;
+        this.addSource = mockAddSource;
+        this.getLayer = mockGetLayer;
+        this.addLayer = mockAddLayer;
         this.setLayoutProperty = mockSetLayoutProperty;
-        this.setFilter         = mockSetFilter;
-        this.setTerrain        = mockSetTerrain;
-        this.getZoom           = mockGetZoom;
-        this.getStyle          = mockGetStyle;
-        this.getCanvas         = mockGetCanvas;
-        this.fitBounds         = vi.fn();
-        this.panTo             = vi.fn();
-        this.easeTo            = vi.fn();
-        this.flyTo             = vi.fn();
+        this.setFilter = mockSetFilter;
+        this.setTerrain = mockSetTerrain;
+        this.getZoom = mockGetZoom;
+        this.getStyle = mockGetStyle;
+        this.getCanvas = mockGetCanvas;
+        this.fitBounds = vi.fn();
+        this.panTo = vi.fn();
+        this.easeTo = vi.fn();
+        this.flyTo = vi.fn();
         // Added 2026-06-29: the coverage-density layer (CC-03 Item 5) tears down
         // via removeLayer/removeSource and restyles via setPaintProperty; other
         // map features query features. The mock must provide them or the
         // component's effect teardown throws and the panel never mounts.
-        this.removeLayer           = vi.fn();
-        this.removeSource          = vi.fn();
-        this.setPaintProperty      = vi.fn();
+        this.removeLayer = vi.fn();
+        this.removeSource = vi.fn();
+        this.setPaintProperty = vi.fn();
         this.queryRenderedFeatures = vi.fn().mockReturnValue([]);
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    function NavCtrl(this: any) { void this; }
+    function NavCtrl(this: any) {
+        void this;
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    function FullscreenCtrl(this: any) { void this; }
+    function FullscreenCtrl(this: any) {
+        void this;
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    function ScaleCtrl(this: any) { void this; }
+    function ScaleCtrl(this: any) {
+        void this;
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function MarkerMock(this: any) {
         this.setLngLat = vi.fn().mockReturnThis();
-        this.addTo     = vi.fn().mockReturnThis();
-        this.remove    = vi.fn();
+        this.addTo = vi.fn().mockReturnThis();
+        this.remove = vi.fn();
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function PopupMock(this: any) {
         this.setLngLat = vi.fn().mockReturnThis();
-        this.setHTML   = vi.fn().mockReturnThis();
-        this.addTo     = vi.fn().mockReturnThis();
-        this.remove    = vi.fn();
-        this.options   = {};
+        this.setHTML = vi.fn().mockReturnThis();
+        this.addTo = vi.fn().mockReturnThis();
+        this.remove = vi.fn();
+        this.options = {};
     }
 
     // maplibre-gl 6 is ESM-only: named exports, no default export.
     return {
-        Map:               MapMock,
+        Map: MapMock,
         NavigationControl: NavCtrl,
         FullscreenControl: FullscreenCtrl,
-        ScaleControl:      ScaleCtrl,
-        Marker:            MarkerMock,
-        Popup:             PopupMock,
+        ScaleControl: ScaleCtrl,
+        Marker: MarkerMock,
+        Popup: PopupMock,
     };
 });
 
@@ -156,9 +162,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
 
     // ── Test 1: Panel has role="region" and aria-label ────────────────────────
     it('layer panel has role="region" and aria-label="Map layer toggles"', async () => {
-        const { findByRole } = render(
-            <MapView projectId="proj-1" useMartinTiles={true} />,
-        );
+        const { findByRole } = render(<MapView projectId="proj-1" useMartinTiles={true} />);
         triggerMapLoad();
 
         const region = await findByRole('region', { name: 'Map layer toggles' });
@@ -176,9 +180,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         const checkboxes = await screen.findAllByRole('checkbox');
         // The panel also renders the coverage-density toggle (CC-03 Item 5),
         // so filter to the per-layer checkboxes (id="layer-toggle-{layer.id}").
-        const layerCheckboxes = checkboxes.filter((cb) =>
-            MVT_LAYERS.some((l) => cb.id === `layer-toggle-${l.id}`),
-        );
+        const layerCheckboxes = checkboxes.filter((cb) => MVT_LAYERS.some((l) => cb.id === `layer-toggle-${l.id}`));
         expect(layerCheckboxes).toHaveLength(MVT_LAYERS.length);
         expect(MVT_LAYERS.length).toBe(10);
     });
@@ -227,7 +229,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         // Find the collars checkbox by accessible name and toggle it (label
         // text is split by the color-swatch span, so findByText no longer matches).
         const collarsLayer = MVT_LAYERS.find((l) => l.id === 'collars')!;
-        const checkbox = await screen.findByRole('checkbox', { name: collarsLayer.label }) as HTMLInputElement;
+        const checkbox = (await screen.findByRole('checkbox', { name: collarsLayer.label })) as HTMLInputElement;
         expect(checkbox).toBeTruthy();
 
         // Uncheck it — should call setLayoutProperty with 'none'
@@ -235,8 +237,8 @@ describe('MapView layer toggle panel — Deliverable C', () => {
 
         // setLayoutProperty should have been called for mvt-collars with 'none'
         const calls = mockSetLayoutProperty.mock.calls;
-        const collarCall = calls.find(([id, prop, val]) =>
-            id === 'mvt-collars' && prop === 'visibility' && val === 'none',
+        const collarCall = calls.find(
+            ([id, prop, val]) => id === 'mvt-collars' && prop === 'visibility' && val === 'none',
         );
         expect(collarCall).toBeDefined();
     });
@@ -251,7 +253,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         mockGetLayer.mockReturnValue(true);
 
         const boundariesLayer = MVT_LAYERS.find((l) => l.id === 'boundaries')!;
-        const checkbox = await screen.findByRole('checkbox', { name: boundariesLayer.label }) as HTMLInputElement;
+        const checkbox = (await screen.findByRole('checkbox', { name: boundariesLayer.label })) as HTMLInputElement;
 
         fireEvent.click(checkbox); // toggle to hidden
 
@@ -273,7 +275,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         mockGetLayer.mockReturnValue(true);
 
         const formationsLayer = MVT_LAYERS.find((l) => l.id === 'formations')!;
-        const checkbox = await screen.findByRole('checkbox', { name: formationsLayer.label }) as HTMLInputElement;
+        const checkbox = (await screen.findByRole('checkbox', { name: formationsLayer.label })) as HTMLInputElement;
 
         fireEvent.click(checkbox);
 
@@ -295,7 +297,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         mockGetLayer.mockReturnValue(true);
 
         const seismicLayer = MVT_LAYERS.find((l) => l.id === 'seismic')!;
-        const checkbox = await screen.findByRole('checkbox', { name: seismicLayer.label }) as HTMLInputElement;
+        const checkbox = (await screen.findByRole('checkbox', { name: seismicLayer.label })) as HTMLInputElement;
 
         fireEvent.click(checkbox);
 
@@ -319,15 +321,15 @@ describe('MapView layer toggle panel — Deliverable C', () => {
     // ── Test 10: Layer.label values match expected human-readable strings ──────
     it('layer labels match expected human-readable values from MvtLayerDef', () => {
         const labelMap: Record<string, string> = {
-            boundaries:          'Boundaries',
-            formations:          'Formations',
-            seismic:             'Seismic',
-            traces:              'Drill traces',
+            boundaries: 'Boundaries',
+            formations: 'Formations',
+            seismic: 'Seismic',
+            traces: 'Drill traces',
             'historic-workings': 'Historic workings',
-            geochem:             'Geochem samples',
-            collars:             'Collars',
-            'imported-points':   'Imported points',
-            'imported-lines':    'Imported lines',
+            geochem: 'Geochem samples',
+            collars: 'Collars',
+            'imported-points': 'Imported points',
+            'imported-lines': 'Imported lines',
             'imported-polygons': 'Imported areas',
         };
 

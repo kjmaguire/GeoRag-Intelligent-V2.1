@@ -1,12 +1,5 @@
 import { useMemo } from 'react';
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from '@/Components/ui/table';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/Components/ui/table';
 
 /**
  * CoverageTableCard — renders the `coverage_gap` intent payload (ADR-0007
@@ -54,17 +47,11 @@ function fmtCount(n: number | null | undefined): string {
 }
 
 export default function CoverageTableCard({ rows, ingestGap, title }: CoverageTableCardProps) {
-    const sortedRows = useMemo(
-        () => (rows ? [...rows].sort((a, b) => a.coverage_pct - b.coverage_pct) : []),
-        [rows],
-    );
+    const sortedRows = useMemo(() => (rows ? [...rows].sort((a, b) => a.coverage_pct - b.coverage_pct) : []), [rows]);
 
     if (!rows || rows.length === 0) {
         return (
-            <div
-                className="flex items-center justify-center p-6 text-xs text-gray-500"
-                data-testid="coverage-empty"
-            >
+            <div className="flex items-center justify-center p-6 text-xs text-gray-500" data-testid="coverage-empty">
                 No coverage data to display.
             </div>
         );
@@ -77,21 +64,14 @@ export default function CoverageTableCard({ rows, ingestGap, title }: CoverageTa
             aria-label={title || 'Coverage table'}
         >
             {ingestGap && (
-                <div
-                    className="px-4 py-3 border-b border-gray-800 bg-gray-900/60"
-                    data-testid="coverage-ingest-gap"
-                >
+                <div className="px-4 py-3 border-b border-gray-800 bg-gray-900/60" data-testid="coverage-ingest-gap">
                     <div className="text-[11px] uppercase tracking-wider text-amber-400 font-semibold mb-1">
                         Ingest-stage gap
                     </div>
                     <div className="text-sm text-gray-200">
-                        <span className="font-semibold">{fmtCount(ingestGap.processed)}</span>{' '}
-                        of{' '}
-                        <span className="font-semibold">{fmtCount(ingestGap.indexed)}</span>{' '}
-                        indexed files processed —{' '}
-                        <span className="text-red-400 font-semibold">
-                            {fmtPct(ingestGap.gap_pct)} gap
-                        </span>
+                        <span className="font-semibold">{fmtCount(ingestGap.processed)}</span> of{' '}
+                        <span className="font-semibold">{fmtCount(ingestGap.indexed)}</span> indexed files processed —{' '}
+                        <span className="text-red-400 font-semibold">{fmtPct(ingestGap.gap_pct)} gap</span>
                     </div>
                 </div>
             )}
@@ -101,15 +81,9 @@ export default function CoverageTableCard({ rows, ingestGap, title }: CoverageTa
                     <TableRow className="border-gray-800 hover:bg-transparent">
                         <TableHead className="text-gray-400">Attribute</TableHead>
                         <TableHead className="text-gray-400">Coverage</TableHead>
-                        <TableHead className="text-gray-400 text-right whitespace-nowrap">
-                            With data
-                        </TableHead>
-                        <TableHead className="text-gray-400 text-right whitespace-nowrap">
-                            Total
-                        </TableHead>
-                        <TableHead className="text-gray-400 text-right whitespace-nowrap">
-                            %
-                        </TableHead>
+                        <TableHead className="text-gray-400 text-right whitespace-nowrap">With data</TableHead>
+                        <TableHead className="text-gray-400 text-right whitespace-nowrap">Total</TableHead>
+                        <TableHead className="text-gray-400 text-right whitespace-nowrap">%</TableHead>
                     </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -123,11 +97,7 @@ export default function CoverageTableCard({ rows, ingestGap, title }: CoverageTa
                             >
                                 <TableCell className="text-gray-100 font-medium">
                                     {row.attribute}
-                                    {row.notes && (
-                                        <div className="text-[11px] text-gray-500 mt-0.5">
-                                            {row.notes}
-                                        </div>
-                                    )}
+                                    {row.notes && <div className="text-[11px] text-gray-500 mt-0.5">{row.notes}</div>}
                                 </TableCell>
                                 <TableCell className="w-full min-w-[180px]">
                                     <div

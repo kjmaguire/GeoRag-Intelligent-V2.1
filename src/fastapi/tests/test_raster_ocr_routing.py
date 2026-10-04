@@ -82,15 +82,48 @@ class TestWhatCountsAsMeasurementData:
             ("bilevel scan", "EPSG:26913", ["bool"]),
             # No CRS at all — an ordinary scanned page.
             ("plain scan", None, ["uint8", "uint8", "uint8"]),
-            # A float raster with no CRS is not a map; it could be
-            # anything, so OCR stays the safe default.
-            ("uncrs'd float raster", None, ["float32"]),
+            # Multi-band with no CRS is an RGB image far more often than a
+            # grid, so OCR stays the default there.
+            ("uncrs'd float RGB-ish stack", None, ["float32", "float32", "float32"]),
+            # uint16 single band is a plausible 16-bit greyscale page scan.
+            ("uncrs'd 16-bit grey", None, ["uint16"]),
         ],
     )
     def test_scans_still_go_through_ocr(
         self, label: str, crs: str | None, dtypes: list[str],
     ) -> None:
         assert _is_measurement_raster(_Raster(crs, dtypes)) is False, label
+
+    @pytest.mark.parametrize(
+        ("dtype", "lo", "hi"),
+        [
+            ("float32", -12.5, 840.25),
+            ("float64", 0.0, 1.0),
+            ("int16", -400.0, 3200.0),     # DEM, metres
+            ("int32", -90.0, 120000.0),
+            ("int16", None, None),         # too large to summarise: dtype decides
+        ],
+    )
+    def test_a_dem_with_no_crs_is_still_measurement_data(
+        self, dtype: str, lo: float | None, hi: float | None,
+    ) -> None:
+        """A DEM that lost its projection used to be called 'a plain scan'
+        (the first line returned False on `not crs`) and OCR'd into noise."""
+        r = _Raster(None, [dtype])
+        r.bands[0].min, r.bands[0].max = lo, hi
+        assert _is_measurement_raster(r) is True
+
+    def test_an_int16_band_inside_0_255_is_an_eight_bit_image_stored_wide(
+        self,
+    ) -> None:
+        r = _Raster(None, ["int16"])
+        r.bands[0].min, r.bands[0].max = 0.0, 255.0
+        assert _is_measurement_raster(r) is False
+
+    def test_an_alpha_band_keeps_ocr(self) -> None:
+        r = _Raster(None, ["float32"])
+        r.has_alpha = True
+        assert _is_measurement_raster(r) is False
 
     def test_an_unreadable_band_list_keeps_ocr(self) -> None:
         """Conservative in the ambiguous direction: a false skip loses a

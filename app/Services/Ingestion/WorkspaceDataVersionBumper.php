@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Ingestion;
 
+use App\Support\Tiles\SilverTileContextEpoch;
 use Illuminate\Contracts\Redis\Factory as RedisFactory;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -139,6 +140,10 @@ class WorkspaceDataVersionBumper
 
                 return $wsRow?->data_version;
             });
+
+            // The silver tile proxy caches data_version (for its ETag) per user
+            // and project for 60 s; tell it this one just moved.
+            SilverTileContextEpoch::advance($projectId);
 
             Log::info('data_version.bump.success', [
                 'workspace_id' => $workspaceId,

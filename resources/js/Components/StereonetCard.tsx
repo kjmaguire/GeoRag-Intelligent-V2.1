@@ -93,10 +93,7 @@ export default function StereonetCard({ meta, onPointClick }: StereonetCardProps
     const isEmpty = points.length === 0;
 
     return (
-        <div
-            className="w-full h-full flex flex-col bg-gray-950 text-gray-100"
-            data-testid="stereonet-card"
-        >
+        <div className="w-full h-full flex flex-col bg-gray-950 text-gray-100" data-testid="stereonet-card">
             <div
                 className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 bg-gray-900/60"
                 data-testid="stereonet-chips"
@@ -107,18 +104,12 @@ export default function StereonetCard({ meta, onPointClick }: StereonetCardProps
 
             <div className="flex-1 flex items-center justify-center p-3 min-h-0">
                 {isEmpty ? (
-                    <div
-                        className="text-xs text-gray-500 text-center max-w-xs"
-                        data-testid="stereonet-empty"
-                    >
-                        No structural measurements extracted for this project yet — see
-                        ADR-0007 PR-2.
+                    <div className="text-xs text-gray-500 text-center max-w-xs" data-testid="stereonet-empty">
+                        No structural measurements have been recorded for this project yet. Import structure data to see
+                        them plotted here.
                     </div>
                 ) : (
-                    <div
-                        className="relative aspect-square max-h-full max-w-full"
-                        data-testid="stereonet-stage"
-                    >
+                    <div className="relative aspect-square max-h-full max-w-full" data-testid="stereonet-stage">
                         {pngSrc ? (
                             <img
                                 src={pngSrc}
@@ -135,15 +126,11 @@ export default function StereonetCard({ meta, onPointClick }: StereonetCardProps
                             />
                         )}
 
-                        <div
-                            className="absolute inset-0 pointer-events-none"
-                            data-testid="stereonet-overlay"
-                        >
+                        <div className="absolute inset-0 pointer-events-none" data-testid="stereonet-overlay">
                             {points.map((p, idx) => {
                                 const leftPct = (0.5 + p.stereonet_x / 2) * 100;
                                 const topPct = (0.5 - p.stereonet_y / 2) * 100;
-                                const inBounds =
-                                    leftPct >= 0 && leftPct <= 100 && topPct >= 0 && topPct <= 100;
+                                const inBounds = leftPct >= 0 && leftPct <= 100 && topPct >= 0 && topPct <= 100;
                                 if (!inBounds) return null;
 
                                 const isHovered = hoverIdx === idx;
@@ -156,13 +143,9 @@ export default function StereonetCard({ meta, onPointClick }: StereonetCardProps
                                         aria-label={tooltipFor(p)}
                                         title={tooltipFor(p)}
                                         onMouseEnter={() => setHoverIdx(idx)}
-                                        onMouseLeave={() =>
-                                            setHoverIdx((cur) => (cur === idx ? null : cur))
-                                        }
+                                        onMouseLeave={() => setHoverIdx((cur) => (cur === idx ? null : cur))}
                                         onFocus={() => setHoverIdx(idx)}
-                                        onBlur={() =>
-                                            setHoverIdx((cur) => (cur === idx ? null : cur))
-                                        }
+                                        onBlur={() => setHoverIdx((cur) => (cur === idx ? null : cur))}
                                         onClick={() => onPointClick?.(p.source_row_id)}
                                         className={[
                                             'absolute -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-auto',

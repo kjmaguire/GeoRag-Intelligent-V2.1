@@ -8,7 +8,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createTileFailureWatchdog, FAILURE_THRESHOLD, WINDOW_MS } from '../tileFailureWatchdog';
 
 describe('createTileFailureWatchdog', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let onThreshold: (sourceId: string, count: number, urlPrefix: string) => void;
     let mockNow: () => number;
     let currentTime: number;

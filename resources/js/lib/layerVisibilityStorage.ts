@@ -46,11 +46,7 @@ export function readLayerVisibility(): LayerVisibility | null {
         const raw = window.localStorage.getItem(STORAGE_KEY);
         if (raw === null) return null;
         const parsed: unknown = JSON.parse(raw);
-        if (
-            parsed === null
-            || typeof parsed !== 'object'
-            || Array.isArray(parsed)
-        ) {
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
             return null;
         }
         // Filter to boolean values only — guards against tampered storage.
@@ -85,10 +81,7 @@ export function writeLayerVisibility(visibility: LayerVisibility): void {
  * are dropped; missing keys take the default value. Caller passes the
  * default and the persisted value (which may be null on miss).
  */
-export function mergeLayerVisibility(
-    defaults: LayerVisibility,
-    persisted: LayerVisibility | null,
-): LayerVisibility {
+export function mergeLayerVisibility(defaults: LayerVisibility, persisted: LayerVisibility | null): LayerVisibility {
     if (persisted === null) return { ...defaults };
     const merged: LayerVisibility = { ...defaults };
     for (const key of Object.keys(merged)) {

@@ -4,7 +4,7 @@
  *
  *   FE-3  the map is built with no positioned collars (extent / default view)
  *   FE-5  a new data_version re-keys the MVT tile URLs
- *   FE-6  a basemap switch re-applies layer visibility, filters and terrain
+ *   FE-6  a basemap switch re-applies layer visibility, filters and terrain (see WorkspaceMap.styleSwitch.test.tsx)
  *         to the NEW map instance
  *   FE-7  no synthetic due-south trace source
  *   FE-15 the collar popup links to the per-hole page
@@ -90,7 +90,9 @@ vi.mock('@inertiajs/react', () => ({
     usePage: () => ({ props: { basemap_dem: 'https://dem.example.test/tilejson.json' } }),
     router: { get: vi.fn(), visit: vi.fn() },
     Link: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
-        <a href={href} {...rest}>{children}</a>
+        <a href={href} {...rest}>
+            {children}
+        </a>
     ),
 }));
 
@@ -115,7 +117,13 @@ function baseProps(over: Partial<ComponentProps<typeof WorkspaceMap>> = {}): Com
         projectSlug: 'red-star',
         projectId: 'p-uuid',
         projectInfo: { project_name: 'Red Star', company: null, commodity: null, region: null, crs_epsg: 26913 },
-        projectSummary: { total_drilled_m: 300, mean_td_m: 300, ore_hole_count: 1, total_ore_thickness_m: 12, mean_u3o8_pct: null },
+        projectSummary: {
+            total_drilled_m: 300,
+            mean_td_m: 300,
+            ore_hole_count: 1,
+            total_ore_thickness_m: 12,
+            mean_u3o8_pct: null,
+        },
         visibleLayers: { collars: true, ore_heatmap: true, tier_10: true, traces: true },
         projectAoi: null,
         activeHole: null,
@@ -152,23 +160,9 @@ afterEach(() => {
 });
 
 describe('WorkspaceMap', () => {
-    it('re-applies layer state to the new map after a basemap switch (FE-6)', async () => {
-        const { rerender } = render(<WorkspaceMap {...baseProps()} />);
-        const first = await loadedMap(0);
-        expect(first.layout['collars-heatmap.visibility']).toBe('visible');
-        expect(first.filters['collars-dot']).toEqual(['>=', ['get', 'ore_thickness_m'], 10]);
-        expect(first.terrain).toMatchObject({ source: 'terrain-dem' });
-
-        rerender(<WorkspaceMap {...baseProps({ basemap: 'positron' })} />);
-        const second = await loadedMap(1);
-
-        expect(first.removed).toBe(true);
-        expect(second.layout['collars-heatmap.visibility']).toBe('visible');
-        expect(second.filters['collars-dot']).toEqual(['>=', ['get', 'ore_thickness_m'], 10]);
-        expect(second.terrain).toMatchObject({ source: 'terrain-dem' });
-        // The real MVT traces follow the same toggle.
-        expect(second.layout['mvt-traces.visibility']).toBe('visible');
-    });
+    // FE-6 (basemap switch re-applies layer state) now lives in
+    // WorkspaceMap.styleSwitch.test.tsx: the map is no longer rebuilt on a
+    // basemap change, it is restyled in place with the camera kept.
 
     it('builds the map with no positioned collars, from the project extent (FE-3)', async () => {
         render(<WorkspaceMap {...baseProps({ collars: [], projectExtent: [-106.2, 57.1, -105.8, 57.4] })} />);

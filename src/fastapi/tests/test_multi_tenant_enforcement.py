@@ -41,10 +41,47 @@ def _flag(monkeypatch):
 
 
 def _fake_request():
-    """Minimal Request stand-in — the enforcement check never touches it."""
+    """Minimal Request stand-in.
+
+    The enforcement checks run before the pool is touched, but the lifecycle
+    guard that follows now FAILS CLOSED (audit 2026-10-04, item 19), so a
+    request that gets past enforcement needs a pool that reports an active
+    project.
+    """
+
+    class _Txn:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Conn:
+        def transaction(self):
+            return _Txn()
+
+        async def execute(self, *a, **k):
+            return None
+
+        async def fetchrow(self, *a, **k):
+            return {"lifecycle_state": "active", "workspace_id": None}
+
+    class _Acquire:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Acquire()
+
+    class _State:
+        pg_pool = _Pool()
 
     class _App:
-        state = type("S", (), {})()
+        state = _State()
 
     class _Req:
         app = _App()

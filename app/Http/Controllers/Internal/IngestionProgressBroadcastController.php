@@ -26,8 +26,9 @@ use Throwable;
  *     LAS files finished into silence — the run went terminal in Postgres
  *     and no product surface heard about it.
  *
- * Phase 1 — always dispatch IngestionProgressBroadcast so IngestionRuns
- * UI flips immediately.
+ * Phase 1 — dispatch IngestionProgressBroadcast so IngestionRuns UI flips
+ * immediately. Runs AFTER the Phase 2 side effects and is best-effort: a
+ * Reverb outage is logged, never a 500 to FastAPI.
  *
  * Phase 2 — on a terminal status that WROTE something (`completed` or
  * `partial`), additionally:
@@ -69,16 +70,6 @@ class IngestionProgressBroadcastController extends Controller
             'message' => ['nullable', 'string', 'max:500'],
             'pct' => ['nullable', 'integer', 'min:0', 'max:100'],
         ]);
-
-        IngestionProgressBroadcast::dispatch(
-            $payload['workspace_id'],
-            $payload['project_id'],
-            $payload['pipeline_run_id'],
-            $payload['stage'],
-            $payload['status'],
-            $payload['message'] ?? null,
-            $payload['pct'] ?? null,
-        );
 
         $sideEffects = ['data_version_bumped' => false, 'mv_refresh_dispatched' => false];
 
@@ -134,6 +125,32 @@ class IngestionProgressBroadcastController extends Controller
                     'error' => $e->getMessage(),
                 ]);
             }
+        }
+
+        // Broadcast LAST, and never fatally. IngestionProgressBroadcast is
+        // ShouldBroadcastNow, so dispatch() talks to Reverb inline; a Reverb
+        // outage used to throw out of here, return 500 to FastAPI and skip
+        // the data_version bump and the MV refresh above -- the worst outcome
+        // for a run whose rows already landed. The UI poll catches up.
+        try {
+            IngestionProgressBroadcast::dispatch(
+                $payload['workspace_id'],
+                $payload['project_id'],
+                $payload['pipeline_run_id'],
+                $payload['stage'],
+                $payload['status'],
+                $payload['message'] ?? null,
+                $payload['pct'] ?? null,
+            );
+        } catch (Throwable $e) {
+            $sideEffects['broadcast_dispatched'] = false;
+            Log::warning('ingestion.progress.broadcast_failed', [
+                'workspace_id' => $payload['workspace_id'],
+                'project_id' => $payload['project_id'],
+                'pipeline_run_id' => $payload['pipeline_run_id'],
+                'status' => $payload['status'],
+                'error' => $e->getMessage(),
+            ]);
         }
 
         Log::info('ingestion.progress.broadcast', [

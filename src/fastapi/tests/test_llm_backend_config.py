@@ -156,3 +156,46 @@ def test_no_default_points_at_the_deleted_vllm_service():
             f"service deleted on 2026-07-30. Leave it empty: an operator using "
             f"LLM_BACKEND=vllm supplies their own endpoint."
         )
+
+
+class TestCohereEmbedDimensionValidator:
+    """ADR-0025: COHERE_EMBED_DIMENSION must equal EMBEDDING_DIMENSION.
+
+    The Bedrock path gets this from main.py's startup check of the loaded
+    model's dimension. On the Cohere path it is also enforced here, because a
+    wrong value on the INGEST side is not seen by that query-path check at
+    all: the worker would write wrong-width vectors and every upsert would 400.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        monkeypatch.delenv("EMBEDDING_BACKEND", raising=False)
+        monkeypatch.delenv("COHERE_EMBED_DIMENSION", raising=False)
+
+    def test_the_default_backend_is_cohere_and_the_default_dimension_agrees(self):
+        s = _settings(COHERE_API_KEY="test-only-not-a-real-key")
+        assert s.EMBEDDING_DIMENSION == 1024  # and COHERE_EMBED_DIMENSION defaults to 1024
+
+    def test_a_mismatch_is_a_startup_error_naming_both(self, monkeypatch):
+        monkeypatch.setenv("COHERE_EMBED_DIMENSION", "768")
+        with pytest.raises(pydantic.ValidationError) as exc:
+            _settings()
+        message = str(exc.value)
+        assert "COHERE_EMBED_DIMENSION=768" in message
+        assert "EMBEDDING_DIMENSION=1024" in message
+
+    def test_a_matching_non_default_dimension_is_accepted(self, monkeypatch):
+        monkeypatch.setenv("COHERE_EMBED_DIMENSION", "768")
+        assert _settings(EMBEDDING_DIMENSION=768).EMBEDDING_DIMENSION == 768
+
+    def test_a_non_integer_is_a_startup_error(self, monkeypatch):
+        monkeypatch.setenv("COHERE_EMBED_DIMENSION", "lots")
+        with pytest.raises(pydantic.ValidationError, match="not an integer"):
+            _settings()
+
+    @pytest.mark.parametrize("backend", ["bedrock", "local"])
+    def test_other_backends_are_not_held_to_the_cohere_dimension(self, monkeypatch, backend):
+        """A stale COHERE_EMBED_DIMENSION must not stop a rollback to Bedrock."""
+        monkeypatch.setenv("EMBEDDING_BACKEND", backend)
+        monkeypatch.setenv("COHERE_EMBED_DIMENSION", "768")
+        _settings()

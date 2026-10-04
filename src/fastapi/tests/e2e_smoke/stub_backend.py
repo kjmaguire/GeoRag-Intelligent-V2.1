@@ -120,6 +120,17 @@ _SSE_ANSWER = (
 )
 
 
+
+def _rerank_logit(query: str, passage: str) -> float:
+    """A deterministic cross-encoder stand-in: token overlap as a logit in [-3, 3]."""
+    q = {t for t in re.findall(r"[a-z0-9]+", str(query).lower()) if len(t) > 2}
+    if not q:
+        return -3.0
+    p = set(re.findall(r"[a-z0-9]+", str(passage).lower()))
+    overlap = len(q & p) / len(q)
+    return -3.0 + 6.0 * overlap
+
+
 class StubHandler(BaseHTTPRequestHandler):
     server_version = "GeoRAGStubBackend/2.0"
 
@@ -164,6 +175,23 @@ class StubHandler(BaseHTTPRequestHandler):
             sentences = body.get("sentences") or []
             vectors = [_embed_one(t) for t in sentences]
             self._send_json({"vectors": vectors})
+            return
+
+        # The reranker sidecar's contract (app.services.reranker
+        # ._RemoteReranker): {"pairs": [[query, passage], ...]} -> {"scores":
+        # [logit, ...]}. Added 2026-10-04: the job never set RERANKER_BACKEND,
+        # so it ran the Bedrock reranker with no credentials, and the smoke
+        # only passed because that failure used to degrade silently to RRF
+        # order. search_documents now fails closed on a reranker outage (the
+        # score floor is the retrieval-quality gate), so the smoke needs a
+        # reranker that answers. Lexical overlap as a logit: the marker
+        # passages the assertions depend on share their query's words, so
+        # they clear RERANKER_SCORE_THRESHOLD after the sigmoid; unrelated
+        # text scores below it.
+        if self.path == "/rerank":
+            body = self._body_json()
+            pairs = body.get("pairs") or []
+            self._send_json({"scores": [_rerank_logit(q, p) for q, p in pairs]})
             return
 
         if self.path.startswith("/v1/chat/completions"):

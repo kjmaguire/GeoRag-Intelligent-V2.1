@@ -32,7 +32,7 @@ interface Trajectory {
     nOffset: number[];
     zDrop: number[];
     zElev: number[];
-    alongHoleHoriz: number[];  // cumulative horizontal distance from collar
+    alongHoleHoriz: number[]; // cumulative horizontal distance from collar
     elev: number;
     hasData: boolean;
     surveyed: boolean;
@@ -106,9 +106,12 @@ export default function OrientationSpiral({
         );
     }
 
-    const body = view === '2d'
-        ? <TwoDViews traj={traj} totalDepth={totalDepth} collarElevation={collarElevation} />
-        : <ThreeDView traj={traj} totalDepth={totalDepth} collarElevation={collarElevation} />;
+    const body =
+        view === '2d' ? (
+            <TwoDViews traj={traj} totalDepth={totalDepth} collarElevation={collarElevation} />
+        ) : (
+            <ThreeDView traj={traj} totalDepth={totalDepth} collarElevation={collarElevation} />
+        );
 
     if (traj.surveyed) return body;
     return (
@@ -138,8 +141,9 @@ function ThreeDView({ traj, totalDepth, collarElevation }: SubProps) {
     const { traces, layout } = useMemo(() => {
         const { pts, eOffset, nOffset, zElev, zDrop } = traj;
 
-        const hoverText = nOffset.map((_, i) =>
-            `Depth: ${(-zDrop[i]).toFixed(1)} m<br>Elev: ${zElev[i].toFixed(1)} m<br>Az: ${pts[Math.min(i, pts.length - 1)].azimuth.toFixed(1)}°<br>Dip: ${pts[Math.min(i, pts.length - 1)].dip.toFixed(1)}°`
+        const hoverText = nOffset.map(
+            (_, i) =>
+                `Depth: ${(-zDrop[i]).toFixed(1)} m<br>Elev: ${zElev[i].toFixed(1)} m<br>Az: ${pts[Math.min(i, pts.length - 1)].azimuth.toFixed(1)}°<br>Dip: ${pts[Math.min(i, pts.length - 1)].dip.toFixed(1)}°`,
         );
 
         const trajectory = {
@@ -158,7 +162,9 @@ function ThreeDView({ traj, totalDepth, collarElevation }: SubProps) {
         const collarMarker = {
             type: 'scatter3d',
             mode: 'markers',
-            x: [0], y: [0], z: [traj.elev],
+            x: [0],
+            y: [0],
+            z: [traj.elev],
             marker: { size: 8, color: '#22c55e', symbol: 'diamond' },
             name: 'Collar',
             hovertext: 'Collar (0, 0)',
@@ -197,7 +203,10 @@ function ThreeDView({ traj, totalDepth, collarElevation }: SubProps) {
                     zerolinecolor: 'rgba(148,163,184,0.3)',
                 },
                 zaxis: {
-                    title: { text: collarElevation != null ? 'Elevation (m)' : 'Depth (m)', font: { color: '#94a3b8' } },
+                    title: {
+                        text: collarElevation != null ? 'Elevation (m)' : 'Depth (m)',
+                        font: { color: '#94a3b8' },
+                    },
                     color: '#94a3b8',
                     gridcolor: 'rgba(148,163,184,0.15)',
                     zerolinecolor: 'rgba(148,163,184,0.3)',
@@ -213,9 +222,7 @@ function ThreeDView({ traj, totalDepth, collarElevation }: SubProps) {
         };
     }, [traj, totalDepth, collarElevation]);
 
-    return (
-        <GeoPlot data={traces} layout={layout as Record<string, unknown>} />
-    );
+    return <GeoPlot data={traces} layout={layout as Record<string, unknown>} />;
 }
 
 // ── 2-D Plan + Section (side-by-side, NI 43-101 standard layout) ─────
@@ -246,8 +253,9 @@ function TwoDViews({ traj, totalDepth, collarElevation }: SubProps) {
 
 function buildPlan(traj: Trajectory, totalDepth: number | null) {
     const { eOffset, nOffset, pts, zDrop } = traj;
-    const hoverText = eOffset.map((_, i) =>
-        `Depth: ${(-zDrop[i]).toFixed(1)} m<br>E: ${eOffset[i].toFixed(1)} m · N: ${nOffset[i].toFixed(1)} m<br>Az: ${pts[Math.min(i, pts.length - 1)].azimuth.toFixed(1)}°`
+    const hoverText = eOffset.map(
+        (_, i) =>
+            `Depth: ${(-zDrop[i]).toFixed(1)} m<br>E: ${eOffset[i].toFixed(1)} m · N: ${nOffset[i].toFixed(1)} m<br>Az: ${pts[Math.min(i, pts.length - 1)].azimuth.toFixed(1)}°`,
     );
 
     const trajectoryTrace = {
@@ -258,8 +266,8 @@ function buildPlan(traj: Trajectory, totalDepth: number | null) {
         line: { color: '#22d3ee', width: 2 },
         marker: {
             size: 5,
-            color: zDrop,           // colour the station markers by depth so
-            colorscale: 'Viridis',  // the reader sees direction-of-travel
+            color: zDrop, // colour the station markers by depth so
+            colorscale: 'Viridis', // the reader sees direction-of-travel
             showscale: false,
             reversescale: true,
         },
@@ -271,7 +279,8 @@ function buildPlan(traj: Trajectory, totalDepth: number | null) {
     const collarTrace = {
         type: 'scatter',
         mode: 'markers',
-        x: [0], y: [0],
+        x: [0],
+        y: [0],
         marker: { size: 11, color: '#22c55e', symbol: 'diamond', line: { color: '#14532d', width: 1 } },
         name: 'Collar',
         hovertext: 'Collar (0, 0)',
@@ -305,12 +314,20 @@ function buildPlan(traj: Trajectory, totalDepth: number | null) {
             gridcolor: 'rgba(148,163,184,0.18)',
             zerolinecolor: 'rgba(148,163,184,0.4)',
             color: '#94a3b8',
-            scaleanchor: 'x' as const,    // equal aspect ratio — 1 m east = 1 m north on screen
+            scaleanchor: 'x' as const, // equal aspect ratio — 1 m east = 1 m north on screen
             scaleratio: 1,
         },
         showlegend: false,
         annotations: [
-            { showarrow: false, text: 'N', x: 0, y: 1.02, xref: 'paper', yref: 'paper', font: { color: '#cbd5e1', size: 14 } },
+            {
+                showarrow: false,
+                text: 'N',
+                x: 0,
+                y: 1.02,
+                xref: 'paper',
+                yref: 'paper',
+                font: { color: '#cbd5e1', size: 14 },
+            },
         ],
     };
 
@@ -322,12 +339,13 @@ function buildPlan(traj: Trajectory, totalDepth: number | null) {
 
 function buildSection(traj: Trajectory, totalDepth: number | null, collarElevation: number | null) {
     const { alongHoleHoriz, zDrop, zElev, pts } = traj;
-    const hoverText = alongHoleHoriz.map((_, i) =>
-        `MD: ~${pts[Math.min(i, pts.length - 1)].depth.toFixed(1)} m<br>Horiz: ${alongHoleHoriz[i].toFixed(1)} m<br>Depth: ${(-zDrop[i]).toFixed(1)} m<br>Dip: ${pts[Math.min(i, pts.length - 1)].dip.toFixed(1)}°`
+    const hoverText = alongHoleHoriz.map(
+        (_, i) =>
+            `MD: ~${pts[Math.min(i, pts.length - 1)].depth.toFixed(1)} m<br>Horiz: ${alongHoleHoriz[i].toFixed(1)} m<br>Depth: ${(-zDrop[i]).toFixed(1)} m<br>Dip: ${pts[Math.min(i, pts.length - 1)].dip.toFixed(1)}°`,
     );
 
     const showElev = collarElevation != null;
-    const yValues = showElev ? zElev : zDrop.map((z) => -z);  // depth positive downward
+    const yValues = showElev ? zElev : zDrop.map((z) => -z); // depth positive downward
 
     const trajectoryTrace = {
         type: 'scatter',
@@ -350,7 +368,8 @@ function buildSection(traj: Trajectory, totalDepth: number | null, collarElevati
     const collarTrace = {
         type: 'scatter',
         mode: 'markers',
-        x: [0], y: [showElev ? traj.elev : 0],
+        x: [0],
+        y: [showElev ? traj.elev : 0],
         marker: { size: 11, color: '#22c55e', symbol: 'diamond', line: { color: '#14532d', width: 1 } },
         name: 'Collar',
         hovertext: 'Collar',

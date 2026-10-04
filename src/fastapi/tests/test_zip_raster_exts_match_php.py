@@ -50,6 +50,12 @@ CONTROLLER = (
 )
 
 
+#: The agreed union of raster/scan extensions (ZIP fan-out == API).
+EXPECTED_RASTER_EXTS = frozenset(
+    {"tif", "tiff", "rrd", "jpg", "jpeg", "png", "bmp", "gif", "webp"},
+)
+
+
 def _php_raster_exts() -> set[str]:
     source = CONTROLLER.read_text(encoding="utf-8")
     match = re.search(
@@ -71,6 +77,13 @@ def _php_raster_exts() -> set[str]:
 def test_zip_fan_out_recognises_exactly_the_rasters_the_api_accepts() -> None:
     php = _php_raster_exts()
     python = set(_RASTER_EXTS)
+    # 2026-10-04: standalone scanned images (png/bmp/gif/webp) joined the
+    # raster set. The Laravel side (UploadController::RASTER_REPORT_EXTS) must
+    # carry the same union; this fails, naming the side that lags, until it does.
+    assert python == EXPECTED_RASTER_EXTS, (
+        "_RASTER_EXTS drifted from the agreed union; update EXPECTED_RASTER_EXTS "
+        "here AND UploadController::RASTER_REPORT_EXTS together."
+    )
 
     missing_here = sorted(php - python)
     extra_here = sorted(python - php)
@@ -100,6 +113,6 @@ def test_the_formats_that_have_actually_drifted_are_present() -> None:
     # .rrd held the only copy of two images, and .jpg was RedStar's map
     # legend. A set-equality test alone would pass on two empty sets if the
     # parse ever silently returned nothing.
-    for ext in ("tif", "tiff", "rrd", "jpg", "jpeg"):
+    for ext in sorted(EXPECTED_RASTER_EXTS):
         assert ext in _RASTER_EXTS, f"'{ext}' missing from _RASTER_EXTS"
         assert ext in _php_raster_exts(), f"'{ext}' missing from RASTER_REPORT_EXTS"

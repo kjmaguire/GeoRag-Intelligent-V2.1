@@ -4,9 +4,12 @@ namespace Tests\Feature\Api\V1;
 
 use App\Jobs\StreamQueryFromFastApi;
 use App\Models\Project;
+use App\Models\QueryAuditLog;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -122,5 +125,50 @@ class QueryControllerTest extends TestCase
         $channel = $response->json('channel');
 
         $this->assertSame("query.{$queryId}", $channel);
+    }
+
+    public function test_store_populates_the_audit_rows_workspace_id(): void
+    {
+        Queue::fake();
+        $project = Project::factory()->create();
+        $workspaceId = (string) Str::uuid();
+        DB::table('silver.projects')
+            ->where('project_id', $project->project_id)
+            ->update(['workspace_id' => $workspaceId]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $queryId = $this->postJson('/api/v1/queries', [
+            'query' => 'Which holes intersect the PLS zone?',
+            'project_id' => $project->project_id,
+        ])->assertAccepted()->json('query_id');
+
+        $row = QueryAuditLog::where('query_id', $queryId)->firstOrFail();
+        $this->assertSame($workspaceId, $row->workspace_id);
+        $this->assertSame($project->project_id, $row->project_id);
+    }
+
+    public function test_start_is_refused_once_project_access_has_been_revoked(): void
+    {
+        Queue::fake();
+        $project = Project::factory()->create();
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $queryId = $this->postJson('/api/v1/queries', [
+            'query' => 'Summarise the 2023 campaign.',
+            'project_id' => $project->project_id,
+        ])->assertAccepted()->json('query_id');
+
+        // The user still owns the audit row but is no longer a member.
+        $this->user->projects()->detach($project->project_id);
+
+        $this->postJson("/api/v1/queries/{$queryId}/start")
+            ->assertNotFound()
+            ->assertJsonPath('error', 'query_not_found');
+
+        Queue::assertNotPushed(StreamQueryFromFastApi::class);
+        $this->assertNull(
+            QueryAuditLog::where('query_id', $queryId)->firstOrFail()->dispatched_at,
+            'a refused start must not stamp dispatched_at',
+        );
     }
 }
