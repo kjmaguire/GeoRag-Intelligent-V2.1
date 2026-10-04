@@ -119,6 +119,19 @@ describe('NewProject', () => {
         expect(uploads().map((c) => ((c.body as FormData).get('file') as File).name)).toEqual(['report.pdf']);
     });
 
+    it('describes the upload flow with the server limit, not the retired Dagster/bronze wording', () => {
+        render(<NewProject />);
+        fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'Red Star' } });
+        fireEvent.click(screen.getByRole('button', { name: /next/i }));
+        fireEvent.click(screen.getByRole('button', { name: /next/i }));
+
+        const note = screen.getByTestId('corpus-upload-note');
+        expect(note).toHaveTextContent(
+            'Files upload when the project is created and ingest automatically. Per-file limit: 10 KB.',
+        );
+        expect(note.textContent).not.toMatch(/dagster|bronze|6\s*GB/i);
+    });
+
     it('explains a 413 as the upload limit', async () => {
         uploadResponses = [() => new Response('<html>413</html>', { status: 413 })];
         await queueFilesAndReview([new File(['%PDF-1.4'], 'report.pdf', { type: 'application/pdf' })]);

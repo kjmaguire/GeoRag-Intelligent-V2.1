@@ -62,6 +62,58 @@
     --color-gray-800: oklch(0.205 0.016 240);
     --color-gray-900: oklch(0.17 0.014 240);
     --color-gray-950: oklch(0.14 0.012 240);
+
+    /* Sheet / overlay motion. Hand-rolled because tw-animate-css is not a
+       dependency; Radix Presence keeps the node mounted until the closing
+       animation ends, so each `data-[state=closed]` animation uses `forwards`. */
+    --animate-sheet-in-right: sheet-in-right 300ms ease-out;
+    --animate-sheet-out-right: sheet-out-right 200ms ease-in forwards;
+    --animate-sheet-in-left: sheet-in-left 300ms ease-out;
+    --animate-sheet-out-left: sheet-out-left 200ms ease-in forwards;
+    --animate-sheet-in-top: sheet-in-top 300ms ease-out;
+    --animate-sheet-out-top: sheet-out-top 200ms ease-in forwards;
+    --animate-sheet-in-bottom: sheet-in-bottom 300ms ease-out;
+    --animate-sheet-out-bottom: sheet-out-bottom 200ms ease-in forwards;
+    --animate-overlay-in: overlay-in 200ms ease-out;
+    --animate-overlay-out: overlay-out 150ms ease-in forwards;
+
+    @keyframes sheet-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
+    @keyframes sheet-out-right { from { transform: translateX(0); } to { transform: translateX(100%); } }
+    @keyframes sheet-in-left { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+    @keyframes sheet-out-left { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+    @keyframes sheet-in-top { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+    @keyframes sheet-out-top { from { transform: translateY(0); } to { transform: translateY(-100%); } }
+    @keyframes sheet-in-bottom { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    @keyframes sheet-out-bottom { from { transform: translateY(0); } to { transform: translateY(100%); } }
+    @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes overlay-out { from { opacity: 1; } to { opacity: 0; } }
+}
+
+/* shadcn/ui colour utilities (`bg-background`, `text-muted-foreground`,
+   `border-border`, ...) resolved against the Foundry tokens so the ui/*
+   components follow the same palette. `inline` makes the utilities emit
+   `var(--bg-1)` etc. directly, so they track whichever theme class is
+   active on the nearest ancestor, including the portal root on <body>. */
+@theme inline {
+    --color-background: var(--bg-1);
+    --color-foreground: var(--fg-0);
+    --color-card: var(--bg-2);
+    --color-card-foreground: var(--fg-0);
+    --color-popover: var(--bg-2);
+    --color-popover-foreground: var(--fg-0);
+    --color-primary: var(--accent);
+    --color-primary-foreground: var(--bg-0);
+    --color-secondary: var(--bg-3);
+    --color-secondary-foreground: var(--fg-0);
+    --color-muted: var(--bg-2);
+    --color-muted-foreground: var(--fg-2);
+    --color-accent: var(--bg-hover);
+    --color-accent-foreground: var(--fg-0);
+    --color-destructive: var(--ui-destructive);
+    --color-destructive-foreground: var(--bg-0);
+    --color-border: var(--line-1);
+    --color-input: var(--line-2);
+    --color-ring: var(--accent);
 }
 
 /* shadcn/ui CSS design tokens — dark theme (zinc base) */
@@ -169,6 +221,7 @@
     --warn: oklch(0.82 0.15 75);
     --danger: oklch(0.72 0.18 25);
     --info: oklch(0.78 0.14 230);
+    --ui-destructive: var(--danger);
 
     --font-sans: 'Inter Tight', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
@@ -180,7 +233,12 @@
     letter-spacing: -0.005em;
 }
 
-.foundry.light {
+/* The light class lives on the FoundryShell root, but Radix portals (Sheet,
+   dialogs) mount on <body>, outside it. `body.foundry:has(.foundry.light)`
+   hands the same light tokens to the body so portalled content follows the
+   active theme. */
+.foundry.light,
+body.foundry:has(.foundry.light) {
     --bg-0: oklch(0.985 0.003 240);
     --bg-1: oklch(0.965 0.004 240);
     --bg-2: oklch(0.945 0.005 240);
@@ -201,9 +259,12 @@
     --accent: oklch(0.48 0.15 160);
     --accent-dim: oklch(0.62 0.12 160);
     --accent-bg: oklch(0.82 0.1 160 / 0.3);
+    /* --danger (0.72) is too pale for text on near-white; darker for light. */
+    --ui-destructive: oklch(0.52 0.2 25);
 }
 
 .foundry ::-webkit-scrollbar { width: 8px; height: 8px; }
 .foundry ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 4px; }
 .foundry ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.14); }
-.foundry.light ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); }
+.foundry.light ::-webkit-scrollbar-thumb,
+body.foundry:has(.foundry.light) ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); }

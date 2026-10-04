@@ -950,10 +950,9 @@ export default function FoundryNewProject() {
                         )}
                         {step === 'Corpus' && (
                             <div className="space-y-4">
-                                <p className="text-xs" style={{ color: 'var(--fg-2)' }}>
-                                    Queue any files you already have. Once the project is created they're streamed to the bronze
-                                    bucket and picked up by the Dagster ingestion sensor within ~5&nbsp;minutes.
-                                    Per-file cap: 6&nbsp;GB.
+                                <p className="text-xs" style={{ color: 'var(--fg-2)' }} data-testid="corpus-upload-note">
+                                    Queue any files you already have. Files upload when the project is created and ingest
+                                    automatically. Per-file limit: {uploadLimit.human}.
                                 </p>
 
                                 {/* Drop zone — click opens individual file picker */}

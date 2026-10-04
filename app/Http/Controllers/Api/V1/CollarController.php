@@ -22,7 +22,9 @@ use Throwable;
 class CollarController extends Controller
 {
     /**
-     * List collars for a project, paginated. Filterable by hole_type and status.
+     * List collars for a project, paginated. Filterable by hole_type, status
+     * and hole_id (exact match on the display id or its canonical form, so
+     * `LEB-23-001` and `leb 23 001` both find the same collar).
      *
      * GET /api/v1/projects/{project}/collars
      *
@@ -44,6 +46,12 @@ class CollarController extends Controller
             return response()->json(['message' => 'Project not found.'], 404);
         }
 
+        // Validated outside the try block below, which would turn the
+        // ValidationException into a 500.
+        $request->validate([
+            'hole_id' => ['sometimes', 'nullable', 'string', 'max:50'],
+        ]);
+
         try {
             // Verify the parent project exists first so we return 404, not an empty list.
             $project = Project::findOrFail($projectId);
@@ -58,6 +66,19 @@ class CollarController extends Controller
 
             if ($request->filled('status')) {
                 $query->where('status', $request->string('status'));
+            }
+
+            if ($request->filled('hole_id')) {
+                $holeId = (string) $request->input('hole_id');
+                $canonical = HoleId::canonicalize($holeId);
+
+                $query->where(function ($match) use ($holeId, $canonical): void {
+                    $match->where('hole_id', $holeId);
+
+                    if ($canonical !== null) {
+                        $match->orWhere('hole_id_canonical', $canonical);
+                    }
+                });
             }
 
             $collars = $query

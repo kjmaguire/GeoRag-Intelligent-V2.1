@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { Map as MaplibreMap } from 'maplibre-gl';
 import { Link, router } from '@inertiajs/react';
 import { BASEMAP_OPTIONS, demSourceSpec, useBasemapStyleSpec, useTerrainDemUrl, type BasemapId } from '@/lib/basemap';
 import { formatU3O8Pct } from '@/lib/grade';
@@ -64,6 +65,47 @@ type GeoJsonGeometry = any;
 export type { BasemapId };
 export type MapTool = 'pan' | 'draw' | 'measure' | 'select';
 
+
+/**
+ * GeoJSON point features for the `collars` source — one per positioned collar.
+ * Shared by the initial build, the layer re-add after a basemap switch and the
+ * in-place `setData` when the `collars` prop changes.
+ */
+function collarFeatures(collars: MapCollar[]) {
+    return collars
+        .filter((c) => c.lat !== null && c.lng !== null)
+        .map((c) => {
+            // CC-01 Item 2 — only attach uncertainty props when present.
+            // The uncertainty-rings layer filter is `['has',
+            // 'spatial_uncertainty_m']`; omitting the key (rather than
+            // emitting null) is what skips features whose source row
+            // didn't carry the value.
+            const properties: Record<string, unknown> = {
+                collar_id: c.collar_id,
+                hole_id: c.hole_id_canonical,
+                total_depth: c.total_depth,
+                ore_bands: c.ore_bands,
+                ore_thickness_m: c.ore_thickness_m,
+            };
+            if (c.spatial_uncertainty_m != null) {
+                properties.spatial_uncertainty_m = c.spatial_uncertainty_m;
+                // _lat is consumed by the cosine-of-latitude correction in
+                // the circle-radius expression — must come along for the ride.
+                properties._lat = c.lat;
+            }
+            if (c.crs_confidence != null) {
+                properties.crs_confidence = c.crs_confidence;
+            }
+            if (c.georef_method != null) {
+                properties.georef_method = c.georef_method;
+            }
+            return {
+                type: 'Feature' as const,
+                geometry: { type: 'Point' as const, coordinates: [c.lng as number, c.lat as number] },
+                properties,
+            };
+        });
+}
 
 export function WorkspaceMap({
     collars,
@@ -189,43 +231,33 @@ export function WorkspaceMap({
         compareSetRef.current = compareSet;
     }, [compareSet]);
 
+    // Latest values for the style-owned layers. The map is built once per
+    // project and its sources/layers are re-added on every `style.load` (a
+    // basemap switch replaces the style), so that code must read what is
+    // current rather than what the build-time closure captured.
+    const collarsRef = useRef(collars);
+    collarsRef.current = collars;
+    const projectAoiRef = useRef(projectAoi);
+    projectAoiRef.current = projectAoi;
+    const visibleLayersRef = useRef(visibleLayers);
+    visibleLayersRef.current = visibleLayers;
+    const styleSpecRef = useRef(styleSpec);
+    styleSpecRef.current = styleSpec;
+    const demUrlRef = useRef(demUrl);
+    demUrlRef.current = demUrl;
+    // Style + DEM the live map is currently showing (or loading).
+    const appliedStyleRef = useRef({ styleSpec, demUrl });
+    // The `collars` array last written into the `collars` GeoJSON source.
+    const renderedCollarsRef = useRef<MapCollar[] | null>(null);
+    // Re-adds every source + layer; set by the build effect, called again from
+    // the style-switch effect once the new style has loaded.
+    const addMapLayersRef = useRef<((m: MaplibreMap) => void) | null>(null);
+
     useEffect(() => {
         if (!containerRef.current) return;
         let cancelled = false;
 
-        const points = collars
-            .filter((c) => c.lat !== null && c.lng !== null)
-            .map((c) => {
-                // CC-01 Item 2 — only attach uncertainty props when present.
-                // The uncertainty-rings layer filter is `['has',
-                // 'spatial_uncertainty_m']`; omitting the key (rather than
-                // emitting null) is what skips features whose source row
-                // didn't carry the value.
-                const properties: Record<string, unknown> = {
-                    collar_id: c.collar_id,
-                    hole_id: c.hole_id_canonical,
-                    total_depth: c.total_depth,
-                    ore_bands: c.ore_bands,
-                    ore_thickness_m: c.ore_thickness_m,
-                };
-                if (c.spatial_uncertainty_m != null) {
-                    properties.spatial_uncertainty_m = c.spatial_uncertainty_m;
-                    // _lat is consumed by the cosine-of-latitude correction in
-                    // the circle-radius expression — must come along for the ride.
-                    properties._lat = c.lat;
-                }
-                if (c.crs_confidence != null) {
-                    properties.crs_confidence = c.crs_confidence;
-                }
-                if (c.georef_method != null) {
-                    properties.georef_method = c.georef_method;
-                }
-                return {
-                    type: 'Feature' as const,
-                    geometry: { type: 'Point' as const, coordinates: [c.lng as number, c.lat as number] },
-                    properties,
-                };
-            });
+        const points = collarFeatures(collars);
 
         // The map is ALWAYS built. It used to return here when no collar had
         // a position, which left imported shapefiles, geochem and claims —
@@ -243,10 +275,13 @@ export function WorkspaceMap({
                 mapRef.current.remove();
             }
 
+            // The style and DEM this map starts with; the style-switch effect
+            // compares against it to spot a later basemap change.
+            appliedStyleRef.current = { styleSpec: styleSpecRef.current, demUrl: demUrlRef.current };
             const map = new maplibregl.Map({
                 container: containerRef.current,
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                style: styleSpec as any,
+                style: styleSpecRef.current as any,
                 ...(view.bounds
                     ? { bounds: view.bounds, fitBoundsOptions: { padding: 60, maxZoom: 15 } }
                     : { center: view.center, zoom: view.zoom }),
@@ -260,8 +295,12 @@ export function WorkspaceMap({
             map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
 
-            map.on('load', () => {
-                if (cancelled) return;
+            // Every source + layer the style owns. A basemap switch replaces
+            // the style (`setStyle` drops all runtime sources and layers), so
+            // this runs once on 'load' and again on each 'style.load' after a
+            // switch. Event handlers are NOT in here: layer-bound handlers
+            // are keyed by layer id and survive a style swap.
+            const addMapLayers = (map: MaplibreMap) => {
 
                 // Silver MVT layers — imported spatial features, drill traces,
                 // geochem, historic workings and the rest, served by Martin
@@ -280,7 +319,7 @@ export function WorkspaceMap({
                             // Client cache key; the proxy's max-age means a
                             // constant here served day-old tiles (FE-5).
                             dataVersion: tileVersionRef.current,
-                            visibleLayers,
+                            visibleLayers: visibleLayersRef.current,
                         });
                     } catch (err) {
                         // A tile source that fails to attach must not take the
@@ -293,7 +332,7 @@ export function WorkspaceMap({
                 // setTerrain is toggled by the effect below so users can flip
                 // 3D shading on/off without re-styling.
                 try {
-                    map.addSource('terrain-dem', demSourceSpec(demUrl));
+                    map.addSource('terrain-dem', demSourceSpec(demUrlRef.current));
                 } catch (e) {
                     // eslint-disable-next-line no-console
                     console.warn('[workspace-map] terrain source add failed', e);
@@ -301,7 +340,7 @@ export function WorkspaceMap({
 
                 map.addSource('collars', {
                     type: 'geojson',
-                    data: { type: 'FeatureCollection', features: points },
+                    data: { type: 'FeatureCollection', features: collarFeatures(collarsRef.current) },
                     // Cluster nearby collars so densely-drilled sections don't
                     // render as a 100-dot pile-up at low zoom. Clusters break
                     // apart automatically as you zoom in. Removed
@@ -326,10 +365,11 @@ export function WorkspaceMap({
                 // (FE-7 / GIS-10). `traces` now toggles only `mvt-traces`.
 
                 // Project AOI polygon (convex hull of collars).
-                if (projectAoi) {
+                const projectAoiNow = projectAoiRef.current;
+                if (projectAoiNow) {
                     map.addSource('project-aoi', {
                         type: 'geojson',
-                        data: { type: 'Feature', geometry: projectAoi, properties: {} },
+                        data: { type: 'Feature', geometry: projectAoiNow, properties: {} },
                     });
                     map.addLayer({
                         id: 'project-aoi-fill',
@@ -562,64 +602,6 @@ export function WorkspaceMap({
                     // validates them against the real style spec instead.
                 } as unknown as Parameters<typeof map.addLayer>[0]);
 
-                map.on('mouseenter', 'collars-dot', () => {
-                    map.getCanvas().style.cursor = 'pointer';
-                });
-                map.on('mouseleave', 'collars-dot', () => {
-                    map.getCanvas().style.cursor = '';
-                    setHoverHole(null);
-                });
-                map.on('mousemove', 'collars-dot', (e: {
-                    features?: { properties: Record<string, unknown> }[];
-                    point: { x: number; y: number };
-                }) => {
-                    const f = e.features?.[0];
-                    if (!f) return;
-                    const p = f.properties;
-                    setHoverHole({
-                        hole: {
-                            collar_id: String(p.collar_id),
-                            hole_id: String(p.hole_id),
-                            hole_id_canonical: String(p.hole_id),
-                            total_depth: p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
-                            lat: null,
-                            lng: null,
-                            ore_bands: Number(p.ore_bands ?? 0),
-                            ore_thickness_m: Number(p.ore_thickness_m ?? 0),
-                        },
-                        x: e.point.x,
-                        y: e.point.y,
-                    });
-                });
-                map.on('click', 'collars-dot', (e: { features?: { properties: Record<string, unknown> }[] }) => {
-                    const f = e.features?.[0];
-                    if (!f) return;
-                    const p = f.properties;
-                    const clickedHoleId = String(p.hole_id);
-
-                    // If exactly one hole is already queued AND the user
-                    // clicked a DIFFERENT hole, auto-add the new one and
-                    // open the comparison — no need to check the checkbox
-                    // a second time. Close any open popup so the modal can
-                    // take the stage.
-                    const queued = compareSetRef.current;
-                    if (queued.length === 1 && queued[0] !== clickedHoleId) {
-                        onToggleCompare(clickedHoleId);
-                        setActiveHoleRef.current(null);
-                        return;
-                    }
-                    setActiveHoleRef.current({
-                        collar_id: String(p.collar_id),
-                        hole_id: clickedHoleId,
-                        hole_id_canonical: clickedHoleId,
-                        total_depth: p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
-                        lat: null,
-                        lng: null,
-                        ore_bands: Number(p.ore_bands ?? 0),
-                        ore_thickness_m: Number(p.ore_thickness_m ?? 0),
-                    });
-                });
-
                 // ── Spiderfy ─────────────────────────────────────────────
                 // Empty sources for the spider lines + spider points. When a
                 // cluster is clicked and can't be zoomed further apart, we
@@ -688,6 +670,73 @@ export function WorkspaceMap({
                         'text-halo-color': '#0a0e14',
                         'text-halo-width': 1.5,
                     },
+                });
+
+                renderedCollarsRef.current = collarsRef.current;
+            };
+            addMapLayersRef.current = addMapLayers;
+
+            map.on('load', () => {
+                if (cancelled) return;
+
+                addMapLayers(map);
+
+                map.on('mouseenter', 'collars-dot', () => {
+                    map.getCanvas().style.cursor = 'pointer';
+                });
+                map.on('mouseleave', 'collars-dot', () => {
+                    map.getCanvas().style.cursor = '';
+                    setHoverHole(null);
+                });
+                map.on('mousemove', 'collars-dot', (e: {
+                    features?: { properties: Record<string, unknown> }[];
+                    point: { x: number; y: number };
+                }) => {
+                    const f = e.features?.[0];
+                    if (!f) return;
+                    const p = f.properties;
+                    setHoverHole({
+                        hole: {
+                            collar_id: String(p.collar_id),
+                            hole_id: String(p.hole_id),
+                            hole_id_canonical: String(p.hole_id),
+                            total_depth: p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
+                            lat: null,
+                            lng: null,
+                            ore_bands: Number(p.ore_bands ?? 0),
+                            ore_thickness_m: Number(p.ore_thickness_m ?? 0),
+                        },
+                        x: e.point.x,
+                        y: e.point.y,
+                    });
+                });
+                map.on('click', 'collars-dot', (e: { features?: { properties: Record<string, unknown> }[] }) => {
+                    const f = e.features?.[0];
+                    if (!f) return;
+                    const p = f.properties;
+                    const clickedHoleId = String(p.hole_id);
+
+                    // If exactly one hole is already queued AND the user
+                    // clicked a DIFFERENT hole, auto-add the new one and
+                    // open the comparison — no need to check the checkbox
+                    // a second time. Close any open popup so the modal can
+                    // take the stage.
+                    const queued = compareSetRef.current;
+                    if (queued.length === 1 && queued[0] !== clickedHoleId) {
+                        onToggleCompare(clickedHoleId);
+                        setActiveHoleRef.current(null);
+                        return;
+                    }
+                    setActiveHoleRef.current({
+                        collar_id: String(p.collar_id),
+                        hole_id: clickedHoleId,
+                        hole_id_canonical: clickedHoleId,
+                        total_depth: p.total_depth === null || p.total_depth === undefined ? null : Number(p.total_depth),
+                        lat: null,
+                        lng: null,
+                        ore_bands: Number(p.ore_bands ?? 0),
+                        ore_thickness_m: Number(p.ore_thickness_m ?? 0),
+                    });
                 });
 
                 function collapseSpider() {
@@ -824,13 +873,54 @@ export function WorkspaceMap({
         return () => {
             cancelled = true;
             setMap(null);
+            addMapLayersRef.current = null;
+            renderedCollarsRef.current = null;
             if (mapRef.current?.remove) {
                 mapRef.current.remove();
             }
             mapRef.current = null;
         };
+    // Built ONCE per project. Everything else the map reacts to — basemap,
+    // DEM, collars — is applied to the live instance by the effects below, so
+    // the camera (pan / zoom / pitch) survives. Those values are read from
+    // refs here on purpose.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [collars.length, projectSlug, basemap, styleSpec, demUrl]);
+    }, [projectSlug]);
+
+    // Basemap (or terrain DEM) change: swap the style on the live map. A
+    // style swap discards every runtime source and layer, so the map is
+    // withdrawn from state while it loads — which detaches the tool, layer and
+    // terrain effects below — and re-published once the sources and layers are
+    // back, which re-applies all of them (FE-6). `diff: false` forces a full
+    // rebuild and guarantees `style.load` fires. The camera is untouched.
+    useEffect(() => {
+        if (!map) return;
+        const applied = appliedStyleRef.current;
+        if (applied.styleSpec === styleSpec && applied.demUrl === demUrl) return;
+        appliedStyleRef.current = { styleSpec, demUrl };
+
+        const swapped = map as MaplibreMap;
+        setMap(null);
+        swapped.once('style.load', () => {
+            // Unmounted or rebuilt for another project while the style loaded.
+            if (mapRef.current !== swapped) return;
+            addMapLayersRef.current?.(swapped);
+            setMap(swapped);
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        swapped.setStyle(styleSpec as any, { diff: false });
+    }, [map, styleSpec, demUrl]);
+
+    // New `collars` prop → update the GeoJSON source in place; rebuilding the
+    // map would reset the camera. A no-op when the source already holds this
+    // array (the initial load, and the re-add after a basemap switch).
+    useEffect(() => {
+        if (!map || renderedCollarsRef.current === collars) return;
+        const source = map.getSource('collars') as { setData: (d: unknown) => void } | undefined;
+        if (!source) return;
+        source.setData({ type: 'FeatureCollection', features: collarFeatures(collars) });
+        renderedCollarsRef.current = collars;
+    }, [map, collars]);
 
     // New data_version → new tile URLs on the live sources, without rebuilding
     // the map (FE-5).

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
 import { formatWhen } from '../lib/time';
 import {
@@ -659,55 +659,72 @@ export default function StripLogViewer({
 
     const containerRef = useRef<HTMLDivElement | null>(null);
 
-    const fetchCollar = useCallback(async () => {
+    useEffect(() => {
         if (!projectId || !holeId) {
             setCollar(null);
+            setLoading(false);
             return;
         }
 
-        setLoading(true);
-        setError(null);
+        // One AbortController per effect run: a hole/project change (or
+        // unmount) aborts the in-flight requests, and `controller.signal.aborted`
+        // lets the handlers below drop a stale response and skip its state writes.
+        const controller = new AbortController();
+        const { signal } = controller;
+        const requestedHole: string = holeId;
 
-        try {
-            // Auth via Sanctum session cookie (same-origin). No bearer token from
-            // localStorage — localStorage is an XSS-exfiltration target (types.ts:11-12).
-            // The show() endpoint returns collar + lithology_logs eager-loaded.
-            // We look up by hole_id so we first need the collar_id from the index.
-            // Simpler: hit index with a search, then show. Actually the API uses
-            // collar_id in the path, so search by hole_id first.
-            const authHeaders = {
-                Accept: 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-            };
-            const indexRes = await fetch(
-                `/api/v1/projects/${projectId}/collars?per_page=200`,
-                { credentials: 'same-origin', headers: authHeaders },
-            );
-            if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
-            const indexBody = await indexRes.json();
-            const collarList = indexBody.data ?? indexBody;
-            const match = collarList.find((c) => c.hole_id === holeId);
-            if (!match) throw new Error(`Collar ${holeId} not found in project.`);
+        async function loadCollar(): Promise<void> {
+            setLoading(true);
+            setError(null);
 
-            // Now fetch the full record with lithology
-            const showRes = await fetch(
-                `/api/v1/projects/${projectId}/collars/${match.collar_id}`,
-                { credentials: 'same-origin', headers: authHeaders },
-            );
-            if (!showRes.ok) throw new Error(`HTTP ${showRes.status}`);
-            const showBody = await showRes.json();
-            setCollar(showBody.data ?? showBody);
-        } catch (err) {
-            // V1.5-10 — narrow `unknown` so .message is type-safe.
-            setError(err instanceof Error ? err.message : String(err));
-        } finally {
-            setLoading(false);
+            try {
+                // Auth via Sanctum session cookie (same-origin). No bearer token from
+                // localStorage — localStorage is an XSS-exfiltration target (types.ts:11-12).
+                // The API addresses a collar by collar_id, so resolve hole_id to
+                // collar_id first with the server-side hole_id filter (exact match on
+                // the display id or its canonical spelling), then fetch the full
+                // record with lithology via show().
+                const requestInit: RequestInit = {
+                    credentials: 'same-origin',
+                    signal,
+                    headers: {
+                        Accept: 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                };
+                const indexRes = await fetch(
+                    `/api/v1/projects/${projectId}/collars?hole_id=${encodeURIComponent(requestedHole)}&per_page=1`,
+                    requestInit,
+                );
+                if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
+                const indexBody = await indexRes.json();
+                if (signal.aborted) return;
+                const collarList = indexBody.data ?? indexBody;
+                const match = Array.isArray(collarList) ? collarList[0] : undefined;
+                if (!match) throw new Error(`Collar ${requestedHole} not found in project.`);
+
+                const showRes = await fetch(
+                    `/api/v1/projects/${projectId}/collars/${match.collar_id}`,
+                    requestInit,
+                );
+                if (!showRes.ok) throw new Error(`HTTP ${showRes.status}`);
+                const showBody = await showRes.json();
+                if (signal.aborted) return;
+                setCollar(showBody.data ?? showBody);
+            } catch (err) {
+                if (signal.aborted) return;
+                // V1.5-10 — narrow `unknown` so .message is type-safe.
+                setError(err instanceof Error ? err.message : String(err));
+            } finally {
+                // A stale run must not clear the spinner of the run that replaced it.
+                if (!signal.aborted) setLoading(false);
+            }
         }
-    }, [projectId, holeId]);
 
-    useEffect(() => {
-        fetchCollar();
-    }, [fetchCollar]);
+        void loadCollar();
+
+        return () => controller.abort();
+    }, [projectId, holeId]);
 
     function handleIntervalHover(interval, svgEvent) {
         const rect = containerRef.current?.getBoundingClientRect();

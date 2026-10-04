@@ -311,24 +311,16 @@ export const UNCERTAINTY_RINGS_MVT_SOURCE_LAYER = 'collars';
 export const UNCERTAINTY_RINGS_GEOJSON_LAYER_ID = 'uncertainty-rings';
 
 
-// ── Tile request cancellation on rapid panning ───────────────────────────
-// When the user pans quickly (common in Rockies exploration), MapLibre
-// queues dozens of tile requests for intermediate viewports that are
-// immediately superseded. An AbortController per source lets us cancel
-// stale requests instead of saturating the browser's connection pool.
-// This is wired into the MVT source's transformRequest option.
-const tileAbortControllers = new Map<string, AbortController>();
-function cancelStaleTileRequests(sourceName: string): AbortSignal {
-    const prev = tileAbortControllers.get(sourceName);
-    if (prev) prev.abort();
-    const ac = new AbortController();
-    tileAbortControllers.set(sourceName, ac);
-    return ac.signal;
+/**
+ * Human-readable layer name for a MapLibre vector source id, for the
+ * tile-failure toast. Several registry entries may share one source (the
+ * collars source also backs the uncertainty rings); the first entry's label
+ * is used. Returns null for a source the registry does not own (basemap,
+ * DEM), so the toast never prints an internal id or tile path.
+ */
+export function tileSourceLabel(sourceId: string): string | null {
+    return MVT_LAYERS.find((layer) => mvtSourceId(layer) === sourceId)?.label ?? null;
 }
-
-// Suppress unused-variable warning — cancelStaleTileRequests is declared
-// for the tile-abort pattern; used in the transformRequest scope.
-void cancelStaleTileRequests;
 
 // MAP_STYLE / MAP_STYLES are now read inside the component via useMapStyles()
 // so URLs are config-driven (Inertia shared props → config/services.php).
@@ -520,7 +512,7 @@ export default function MapView({
     interface TileToast {
         sourceId: string;
         count: number;
-        urlPrefix: string;
+        label: string | null;
     }
     const [tileToast, setTileToast] = useState<TileToast | null>(null);
     const tileToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -528,8 +520,8 @@ export default function MapView({
     // Watchdog instance — one per MapView mount.
     // Stored in a ref so the effect callbacks close over a stable reference.
     const watchdogRef = useRef(createTileFailureWatchdog({
-        onThreshold: (sourceId, count, urlPrefix) => {
-            setTileToast({ sourceId, count, urlPrefix });
+        onThreshold: (sourceId, count) => {
+            setTileToast({ sourceId, count, label: tileSourceLabel(sourceId) });
             // Auto-dismiss after 8 s
             if (tileToastTimerRef.current) clearTimeout(tileToastTimerRef.current);
             tileToastTimerRef.current = setTimeout(() => setTileToast(null), 8_000);
@@ -656,20 +648,10 @@ export default function MapView({
             // ── Request tuning ──────────────────────────────────────────
             // /tiles/* routes sit under auth:sanctum in web.php. MapLibre
             // sends same-origin requests with cookies by default (no explicit
-            // credentials option needed in transformRequest). The Sanctum
-            // session cookie is the canonical credential — no bearer token
-            // from localStorage (XSS-exfiltration target; types.ts:11-12).
-            transformRequest: (url) => {
-                if (url.startsWith('/tiles/')) {
-                    return {
-                        url,
-                        headers: {
-                            'Accept-Encoding': 'gzip, br',
-                        },
-                    };
-                }
-                return { url };
-            },
+            // credentials option needed). The Sanctum session cookie is the
+            // canonical credential — no bearer token from localStorage
+            // (XSS-exfiltration target; types.ts:11-12). Accept-Encoding is a
+            // forbidden request header the browser sets itself, so none is set here.
         });
 
         // Navigation with pitch visualization for 3D terrain
@@ -687,16 +669,6 @@ export default function MapView({
         map.on('load', () => {
             // Sources loaded LAZILY on first style switch (see style effect)
             setMapReady(true);
-        });
-
-        // ── Cancel stale tile fetches during rapid panning ──────────────
-        // When the user drags quickly through the Rockies, MapLibre queues
-        // tiles for intermediate viewports. These saturate the browser's
-        // 6-connection-per-origin limit, delaying the tiles the user
-        // actually needs. Cancelling on movestart keeps the pipe clear.
-        map.on('movestart', () => {
-            tileAbortControllers.forEach((ac) => ac.abort());
-            tileAbortControllers.clear();
         });
 
         mapRef.current = map;
@@ -1109,7 +1081,18 @@ export default function MapView({
             });
             map.getCanvas().style.cursor = features.length ? 'pointer' : '';
 
-            if (!features.length) return;
+            if (!features.length) {
+                // The pointer left every interactive feature: drop the hover
+                // popup. mouseleave is registered per layer and does not fire
+                // when the pointer moves between layers or off the last one
+                // quickly, so without this the popup sticks. Click popups
+                // (closeButton) stay until dismissed.
+                if (popupRef.current && !popupRef.current.options?.closeButton) {
+                    popupRef.current.remove();
+                    popupRef.current = null;
+                }
+                return;
+            }
 
             // Debounce — don't recreate popup on every pixel move
             const feat = features[0];
@@ -1145,6 +1128,7 @@ export default function MapView({
             // Only remove hover popups (no close button), not click popups
             if (popupRef.current && !popupRef.current.options?.closeButton) {
                 popupRef.current.remove();
+                popupRef.current = null;
             }
         };
 
@@ -1365,16 +1349,27 @@ export default function MapView({
     // ██  PUBLIC GEOSCIENCE LAYER (2026-08-17 rebuild — see controller docblock)
     // ══════════════════════════════════════════════════════════════════════════
 
-    // Fetch once when enabled — not project-scoped, so no projectId gate and
-    // no re-fetch on project change.
+    // Fetch when enabled, then again (debounced) after every pan / zoom so the
+    // overlay tracks the viewport — the request is bbox-scoped, so a single
+    // fetch goes stale the moment the camera moves. Not project-scoped, so no
+    // projectId gate and no re-fetch on project change.
     useEffect(() => {
         if (!publicGeoEnabled) {
             setPublicGeoData(null);
             return;
         }
-        let cancelled = false;
+        const map = mapRef.current;
+        let inflight: AbortController | null = null;
+        let moveTimer: ReturnType<typeof setTimeout> | undefined;
+        let disposed = false;
 
         const fetchPublicGeo = async () => {
+            // A newer request supersedes the one still in flight.
+            inflight?.abort();
+            const controller = new AbortController();
+            inflight = controller;
+            const { signal } = controller;
+
             setPublicGeoLoading(true);
             setPublicGeoError(null);
             try {
@@ -1384,33 +1379,46 @@ export default function MapView({
                 // layer comes back aggregated no matter how far you zoom in
                 // — the overlay could never resolve to individual records.
                 const params = new URLSearchParams();
-                const m = mapRef.current;
-                if (m) {
-                    const b = m.getBounds();
+                if (map) {
+                    const b = map.getBounds();
                     params.set('bbox', [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
                         .map((n) => n.toFixed(5)).join(','));
-                    params.set('zoom', String(Math.round(m.getZoom() * 10) / 10));
+                    params.set('zoom', String(Math.round(map.getZoom() * 10) / 10));
                 }
                 const res = await fetch(`/api/v1/public-geoscience/map?${params.toString()}`, {
                     credentials: 'same-origin',
+                    signal,
                     headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const body = await res.json() as PublicGeoFeatureCollection;
-                if (!cancelled) setPublicGeoData(body);
+                if (!signal.aborted) setPublicGeoData(body);
             } catch (err) {
-                if (!cancelled) {
+                if (!signal.aborted) {
                     setPublicGeoError(err instanceof Error ? err.message : String(err));
                     setPublicGeoData(null);
                 }
             } finally {
-                if (!cancelled) setPublicGeoLoading(false);
+                // A superseded request must not clear the newer one's spinner.
+                if (!signal.aborted && !disposed) setPublicGeoLoading(false);
             }
         };
 
+        // Same 300 ms debounce as Pages/Foundry/PublicGeoscience.tsx.
+        const onMoveEnd = () => {
+            clearTimeout(moveTimer);
+            moveTimer = setTimeout(() => { void fetchPublicGeo(); }, 300);
+        };
+
         void fetchPublicGeo();
-        return () => { cancelled = true; };
-    }, [publicGeoEnabled]);
+        map?.on('moveend', onMoveEnd);
+        return () => {
+            disposed = true;
+            clearTimeout(moveTimer);
+            inflight?.abort();
+            map?.off('moveend', onMoveEnd);
+        };
+    }, [publicGeoEnabled, mapReady]);
 
     // Add / update the public-geoscience source + circle layer, colour-coded
     // by entity layer (mine / mineral_occurrence / drillhole_collar / rock_sample).
@@ -1534,10 +1542,10 @@ export default function MapView({
             // through the tile boundary, so `cluster` arrives as the
             // string "true" in some paths; compare loosely on purpose.
             const body = props.cluster
-                ? `<div style="font-weight: 700; color: #f9fafb;">${props.point_count.toLocaleString()} records</div>
-                       <div style="color: #9ca3af;">${layerLabel} · zoom in to resolve</div>`
-                : `<div style="font-weight: 700; color: #f9fafb;">${props.label ?? '(unnamed)'}</div>
-                       <div style="color: #9ca3af;">${layerLabel} · ${props.jurisdiction_code}</div>`;
+                ? `<div style="font-weight: 700; color: #f9fafb;">${escapeHtml(Number(props.point_count).toLocaleString())} records</div>
+                       <div style="color: #9ca3af;">${escapeHtml(layerLabel)} · zoom in to resolve</div>`
+                : `<div style="font-weight: 700; color: #f9fafb;">${escapeHtml(props.label ?? '(unnamed)')}</div>
+                       <div style="color: #9ca3af;">${escapeHtml(layerLabel)} · ${escapeHtml(props.jurisdiction_code)}</div>`;
             const html = `<div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 8px;">
                        ${body}
                    </div>`;
@@ -1598,9 +1606,8 @@ export default function MapView({
             // Martin returns 204 for valid but empty tiles; that is NOT an error.
             if (status === 204) return;
 
-            // Build the URL prefix for the toast display
-            const urlPrefix = `/tiles/silver/ [source: ${evt.sourceId}]`;
-            watchdog.recordFailure(evt.sourceId, urlPrefix);
+            // The toast names the layer, not the tile path (see tileSourceLabel).
+            watchdog.recordFailure(evt.sourceId);
             console.warn(`Tile error [${evt.sourceId}] status=${status ?? 'unknown'}:`, e.error);
         };
 
@@ -1890,10 +1897,10 @@ export default function MapView({
                     aria-live="assertive"
                 >
                     <div className="flex-1 min-w-0">
-                        <span className="font-semibold">Tile layer failing: </span>
-                        <span className="font-mono">{tileToast.sourceId}</span>
+                        <span className="font-semibold">
+                            {tileToast.label ? `Map tiles for ${tileToast.label} failed to load` : 'Map tiles failed to load'}
+                        </span>
                         <span> — {tileToast.count} errors in the last 30s. Showing partial data.</span>
-                        <div className="mt-0.5 font-mono text-amber-500 truncate">{tileToast.urlPrefix}</div>
                     </div>
                     <button
                         type="button"

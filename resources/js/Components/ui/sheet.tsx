@@ -31,7 +31,7 @@ function SheetOverlay({
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"
       className={cn(
-        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/60",
+        "data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out motion-reduce:animate-none fixed inset-0 z-50 bg-black/60",
         className
       )}
       {...props}
@@ -40,17 +40,17 @@ function SheetOverlay({
 }
 
 const sheetVariants = cva(
-  "bg-background fixed z-50 flex flex-col gap-4 border-border shadow-lg transition ease-in-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+  "bg-background text-foreground fixed z-50 flex flex-col gap-4 border-border shadow-lg motion-reduce:animate-none",
   {
     variants: {
       side: {
         right:
-          "data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-md",
+          "data-[state=closed]:animate-sheet-out-right data-[state=open]:animate-sheet-in-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-md",
         left:
-          "data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left inset-y-0 left-0 h-full w-3/4 border-r sm:max-w-md",
-        top: "data-[state=closed]:slide-out-to-top data-[state=open]:slide-in-from-top inset-x-0 top-0 h-auto border-b",
+          "data-[state=closed]:animate-sheet-out-left data-[state=open]:animate-sheet-in-left inset-y-0 left-0 h-full w-3/4 border-r sm:max-w-md",
+        top: "data-[state=closed]:animate-sheet-out-top data-[state=open]:animate-sheet-in-top inset-x-0 top-0 h-auto border-b",
         bottom:
-          "data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom inset-x-0 bottom-0 h-auto border-t",
+          "data-[state=closed]:animate-sheet-out-bottom data-[state=open]:animate-sheet-in-bottom inset-x-0 bottom-0 h-auto border-t",
       },
     },
     defaultVariants: {
