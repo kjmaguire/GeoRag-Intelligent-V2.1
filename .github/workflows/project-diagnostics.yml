@@ -49,9 +49,19 @@ on:
   workflow_dispatch:
     inputs:
       project_slug:
-        description: "Project slug from the Projects page URL (e.g. red-star-k3j9x0qa), or just its name part (red-star)"
-        required: true
+        description: "Project slug from the Projects page URL (e.g. red-star-k3j9x0qa), or just its name part (red-star). Leave empty with all_projects."
+        required: false
         type: string
+      all_projects:
+        description: "Run for EVERY project (corpus overview first). project_slug is ignored."
+        required: false
+        type: boolean
+        default: false
+      only:
+        description: "Comma-separated check keys to run (empty = all): ingest_progress,row_counts,attribute_tables,collars,coverage,curves,derived,archive_runs,documents"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: project-diagnostics
@@ -87,15 +97,30 @@ jobs:
         id: inputs
         env:
           INPUT_SLUG: ${{ inputs.project_slug }}
+          INPUT_ALL: ${{ inputs.all_projects }}
+          INPUT_ONLY: ${{ inputs.only }}
         run: |
           set -euo pipefail
 
-          if ! [[ "$INPUT_SLUG" =~ ^[a-z0-9-]{1,64}$ ]]; then
-            echo "::error::project_slug is required and must match ^[a-z0-9-]{1,64}\$ (lowercase letters, digits, hyphen)"
-            exit 1
+          if [ "$INPUT_ALL" = "true" ]; then
+            echo "target=--all-projects" >> "$GITHUB_OUTPUT"
+            echo "slug=all-projects" >> "$GITHUB_OUTPUT"
+          else
+            if ! [[ "$INPUT_SLUG" =~ ^[a-z0-9-]{1,64}$ ]]; then
+              echo "::error::project_slug is required (or set all_projects) and must match ^[a-z0-9-]{1,64}\$ (lowercase letters, digits, hyphen)"
+              exit 1
+            fi
+            echo "target=--project-slug=$INPUT_SLUG" >> "$GITHUB_OUTPUT"
+            echo "slug=$INPUT_SLUG" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "slug=$INPUT_SLUG" >> "$GITHUB_OUTPUT"
+          # Check keys only: the script refuses anything outside its own list, but
+          # the shape is pinned here so nothing odd reaches the argv.
+          if [ -n "$INPUT_ONLY" ] && ! [[ "$INPUT_ONLY" =~ ^[a-z_]+(,[a-z_]+)*$ ]]; then
+            echo "::error::only must be comma-separated check keys (lowercase letters and underscores)"
+            exit 1
+          fi
+          echo "only=$INPUT_ONLY" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -159,20 +184,23 @@ jobs:
       - name: Run the diagnostics as a one-off ECS task
         id: run
         env:
-          SLUG: ${{ steps.inputs.outputs.slug }}
+          TARGET: ${{ steps.inputs.outputs.target }}
+          ONLY: ${{ steps.inputs.outputs.only }}
           TASK_DEF_ARN: ${{ steps.taskdef.outputs.arn }}
         run: |
           set -euo pipefail
 
           # The command is an argv array: nothing here passes through a shell in
-          # the container, and the slug came out of the validation step.
+          # the container, and both arguments came out of the validation step.
           OVERRIDES=$(jq -nc \
             --arg c "$CONTAINER_NAME" \
-            --arg slug "$SLUG" '
+            --arg target "$TARGET" \
+            --arg only "$ONLY" '
             {
               containerOverrides: [{
                 name: $c,
-                command: ["python3", "/app/scripts/ops/project_data_diagnostics.py", ("--project-slug=" + $slug)]
+                command: (["python3", "/app/scripts/ops/project_data_diagnostics.py", $target]
+                          + (if $only == "" then [] else ["--only=" + $only] end))
               }]
             }')
           echo "override: $OVERRIDES"
@@ -358,6 +386,6 @@ jobs:
         run: |
           case "${EXIT_CODE:-}" in
             0) echo "diagnostics completed" ;;
-            2) echo "::error::project not found or not visible (no silver.projects row with that slug, unscoped or under any workspace). Check the slug against the Projects page URL."; exit 1 ;;
+            2) echo "::error::project not found or not visible (no silver.projects row with that slug — or, with all_projects, none at all — unscoped or under any workspace). Check the slug against the Projects page URL."; exit 1 ;;
             *) echo "::error::diagnostics task failed (exit ${EXIT_CODE:-none}: ${REASON:-unknown}). Container output is in the CloudWatch log group."; exit 1 ;;
           esac

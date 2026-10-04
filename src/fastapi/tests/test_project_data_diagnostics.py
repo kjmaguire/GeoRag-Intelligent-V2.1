@@ -46,6 +46,9 @@ ALL_TABLES = {
     "silver.attribute_tables",
     "silver.spatial_features",
     "silver.archive_ingest_runs",
+    "silver.reports",
+    "silver.document_passages",
+    "silver.ingest_ocr_results",
 }
 
 
@@ -806,6 +809,123 @@ class TestArchiveRuns:
         assert res["status"] == "table_absent" and res["missing_tables"] == ["silver.archive_ingest_runs"]
 
 
+def _document_row(**kw) -> dict:
+    row = {
+        "report_id": "d1",
+        "source_object_key": "bronze/ws/proj/NI43-101_Red_Star.pdf",
+        "page_count": 120,
+        "is_scanned": True,
+        "parser_used": "pdf_report",
+        "parse_quality_pct": 91.5,
+        "text_page_coverage_pct": 12.0,
+        "created_at": "2026-09-01 10:00:00+00",
+        "passages": 340,
+        "image_passages": 120,
+        "embedded": 340,
+        "unembedded": 0,
+        "cohere_parse_passages": 200,
+        "tesseract_passages": 0,
+        "low_confidence": 3,
+        "total_reports": 1,
+    }
+    row.update(kw)
+    return row
+
+
+def _document_rules(rows: list[dict] | None = None, rollup: list[dict] | None = None) -> list[tuple[Any, Any]]:
+    rows = [_document_row()] if rows is None else rows
+    for r in rows:
+        r["total_reports"] = len(rows)
+    if rollup is None:
+        rollup = [
+            {"modality": "text", "chunk_kind": "narrative", "ocr_method": "cohere_parse", "n": 200, "embedded": 200},
+            {"modality": "image", "chunk_kind": "page_image", "ocr_method": "(none)", "n": 120, "embedded": 120},
+            {"modality": "text", "chunk_kind": "narrative", "ocr_method": "fitz_native", "n": 20, "embedded": 20},
+        ]
+    return [
+        ("FROM silver.reports r LEFT JOIN silver.document_passages p", rows),
+        ("FROM silver.document_passages p JOIN silver.reports r", rollup),
+        ("FROM silver.ingest_ocr_results o", {"n": 0, "reports": 0}),
+    ]
+
+
+class TestDocuments:
+    def test_rollups_file_names_and_no_titles(self) -> None:
+        out = _run(pdd.check_documents(FakeConn(rules=_document_rules()), _project()))
+        assert out["reports_total"] == 1 and out["scanned_reports"] == 1
+        assert out["reports"][0]["source_file"] == "NI43-101_Red_Star.pdf"  # basename, never the parsed title
+        assert out["passages_total"] == 340 and out["embedded_total"] == 340 and out["unembedded_total"] == 0
+        assert out["image_passages_total"] == 120
+        assert out["by_ocr_method"] == {"(none)": 120, "cohere_parse": 200, "fitz_native": 20}
+        assert out["reports_without_passages"] == [] and out["scanned_reports_without_cohere_parse"] == []
+        assert out["legacy_ocr_results"] == {"status": "ok", "rows": 0, "reports": 0}
+
+    def test_gaps_are_named_in_the_headlines(self) -> None:
+        rows = [
+            _document_row(report_id="d1", source_object_key="a/scan.pdf", cohere_parse_passages=0, tesseract_passages=9),
+            _document_row(
+                report_id="d2", source_object_key="a/empty.pdf", is_scanned=False, passages=0, image_passages=0,
+                embedded=0, unembedded=0, cohere_parse_passages=0,
+            ),
+        ]
+        rollup = [{"modality": "text", "chunk_kind": "narrative", "ocr_method": "tesseract", "n": 9, "embedded": 4}]
+        conn = FakeConn(rules=_document_rules(rows, rollup))
+        checks = _run(pdd.run_checks(conn, _project(), ["documents"]))
+        docs = checks["documents"]
+        assert docs["reports_without_passages"] == ["empty.pdf"]
+        assert docs["scanned_reports_without_cohere_parse"] == ["scan.pdf"]
+        assert docs["unembedded_total"] == 5
+        heads = "\n".join(pdd.headlines(checks))
+        assert "5 of 9 passage(s) have no embedding" in heads
+        assert "1 report(s) have ZERO passages: `empty.pdf`" in heads
+        assert "1 scanned report(s) have no cohere_parse passage" in heads and "`scan.pdf`" in heads
+
+    def test_no_reports_is_a_headline(self) -> None:
+        conn = FakeConn(rules=_document_rules([], []))
+        checks = _run(pdd.run_checks(conn, _project(), ["documents"]))
+        assert set(checks) == {"documents"}
+        assert "nothing was ingested as a document" in "\n".join(pdd.headlines(checks))
+
+    def test_legacy_ocr_table_absent_does_not_sink_the_check(self) -> None:
+        conn = FakeConn(tables=ALL_TABLES - {"silver.ingest_ocr_results"}, rules=_document_rules())
+        out = _run(pdd.check_documents(conn, _project()))
+        assert out["legacy_ocr_results"]["status"] == "table_absent" and out["passages_total"] == 340
+
+    def test_passages_table_absent_is_reported(self) -> None:
+        conn = FakeConn(tables=ALL_TABLES - {"silver.document_passages"})
+        res = _run(pdd.run_checks(conn, _project()))["documents"]
+        assert res["status"] == "table_absent" and res["missing_tables"] == ["silver.document_passages"]
+
+    def test_render(self) -> None:
+        out = _run(pdd.check_documents(FakeConn(rules=_document_rules()), _project()))
+        md = "\n".join(pdd._render_documents({"status": "ok", **out}))
+        assert "1 report(s) (1 shown, limit 200), 1 scanned. 340 passage(s): 340 embedded, 0 NOT embedded" in md
+        assert "| NI43-101_Red_Star.pdf | 120 | True |" in md
+        assert "| image | page_image | (none) | 120 | 120 |" in md
+
+
+class TestOnly:
+    def test_only_accepts_known_keys(self) -> None:
+        assert pdd._only("documents,row_counts") == ["documents", "row_counts"]
+
+    @pytest.mark.parametrize("bad", ["", "nope", "documents,nope"])
+    def test_only_refuses_unknown_keys(self, bad) -> None:
+        with pytest.raises(argparse.ArgumentTypeError):
+            pdd._only(bad)
+
+    def test_run_checks_subset(self) -> None:
+        checks = _run(pdd.run_checks(_full_conn(), _project(), ["row_counts", "archive_runs"]))
+        assert list(checks) == ["row_counts", "archive_runs"]
+
+    def test_parser_needs_exactly_one_target(self, capsys) -> None:
+        with pytest.raises(SystemExit):
+            pdd.build_parser().parse_args([])
+        with pytest.raises(SystemExit):
+            pdd.build_parser().parse_args(["--project-slug=a", "--all-projects"])
+        args = pdd.build_parser().parse_args(["--all-projects", "--only=documents"])
+        assert args.all_projects is True and args.only == ["documents"] and args.project_slug is None
+
+
 # ---------------------------------------------------------------------------
 # End to end: markers, JSON, exit codes, read-only
 # ---------------------------------------------------------------------------
@@ -826,6 +946,7 @@ def _full_conn(**kw) -> FakeConn:
         *_coverage_rules(),
         ("count(DISTINCT w.collar_id)", [{"curve_name": "GAMMA", "curves": 2, "holes": 2, "total_names": 1}]),
         ("total_groups", []),
+        *_document_rules(),
         ("SELECT count(*) FROM", lambda sql, args: 0 if "silver.surveys t" in sql else 4),
     ]
     return FakeConn(projects_by_scope={None: _project_row()}, rules=rules, **kw)
@@ -861,6 +982,7 @@ class TestRun:
             "curves",
             "derived",
             "archive_runs",
+            "documents",
         }
         assert js["meta"]["checks_errored"] == 0
         for heading in (
@@ -873,6 +995,7 @@ class TestRun:
             "## 6. Well-log curves",
             "## 7. Derived",
             "## 8. Archive runs",
+            "## 9. Documents, passages and embeddings",
         ):
             assert heading in md
         assert "Empty for this project" in md and "`silver.surveys`" in md  # surveys count was scripted as 0
@@ -986,3 +1109,62 @@ class TestReadOnly:
                 continue
             assert "$1" in norm, norm
             assert args and args[0] == _PID, norm
+
+
+class TestAllProjects:
+    ARGS = argparse.Namespace(all_projects=True, project_slug=None, only=None)
+
+    @staticmethod
+    def _conn(projects: list[dict]) -> FakeConn:
+        conn = _full_conn()
+        conn.rules.insert(0, ("FROM silver.projects p ORDER BY p.slug", projects))
+        return conn
+
+    def test_every_project_is_reported_behind_an_overview(self, capsys) -> None:
+        conn = self._conn([_project_row(slug="alpha-aaaaaaaa"), _project_row(ws=_WS_A, slug="red-star-k3j9x0qa")])
+        rc = _run(pdd.run(self.ARGS, conn))
+        out = capsys.readouterr().out
+        assert rc == 0
+        md, js = _parse(out)
+        assert js["meta"]["mode"] == "all_projects" and js["meta"]["projects_total"] == 2
+        assert [p["project"]["slug"] for p in js["projects"]] == ["alpha-aaaaaaaa", "red-star-k3j9x0qa"]
+        assert js["totals"] == {"reports": 2, "passages": 680, "embedded": 680, "unembedded": 0, "image_passages": 240}
+        assert "# Corpus diagnostics (all projects)" in md and "## Overview" in md
+        assert "| alpha-aaaaaaaa | 1 | 1 | 340 | 340 | 0 | 120 |" in md
+        assert "### 9. Documents, passages and embeddings" in md  # per-project sections demoted one level
+        # Each project's checks ran inside ITS workspace, and the session is left there
+        # only until the next project is bound.
+        bound = [a[0] for sql, a in zip(conn.sql, conn.args, strict=True) if "set_config('app.workspace_id'" in sql and a]
+        assert _WS_B in bound and _WS_A in bound
+
+    def test_only_limits_the_corpus_run(self, capsys) -> None:
+        conn = self._conn([_project_row(slug="alpha-aaaaaaaa")])
+        rc = _run(pdd.run(argparse.Namespace(all_projects=True, project_slug=None, only=["documents"]), conn))
+        _, js = _parse(capsys.readouterr().out)
+        assert rc == 0 and js["meta"]["checks"] == ["documents"]
+        assert set(js["projects"][0]["checks"]) == {"documents"}
+
+    def test_no_projects_is_exit_2_with_a_report(self, capsys) -> None:
+        conn = self._conn([])
+        rc = _run(pdd.run(self.ARGS, conn))
+        captured = capsys.readouterr()
+        md, js = _parse(captured.out)
+        assert rc == 2 and js["projects"] == [] and "NO PROJECTS VISIBLE" in md
+        assert "NO PROJECTS VISIBLE" in captured.err
+
+    def test_one_broken_project_does_not_lose_the_others(self, capsys) -> None:
+        conn = self._conn([_project_row(slug="alpha-aaaaaaaa"), _project_row(slug="beta-bbbbbbbb")])
+        calls = {"n": 0}
+
+        def _explode(sql, args):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return [{"column_name": "project_name"}]
+
+        conn.rules.insert(0, ("information_schema.columns", _explode))
+        rc = _run(pdd.run(self.ARGS, conn))
+        _, js = _parse(capsys.readouterr().out)
+        assert rc == 0 and len(js["projects"]) == 2
+        assert js["projects"][0]["checks"]["documents"]["status"] == "error"
+        assert js["projects"][1]["checks"]["documents"]["status"] == "ok"
