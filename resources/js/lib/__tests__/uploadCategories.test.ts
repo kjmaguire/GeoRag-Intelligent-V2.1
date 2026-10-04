@@ -185,11 +185,11 @@ describe('categoryForExtension', () => {
     expect(categoryForExtension('zip')).toBe('archive');
   });
 
-  it('refuses images no category accepts', () => {
-    // These three genuinely have nowhere to go, and saying so at the picker
-    // beats a 422 after the upload.
-    for (const ext of ['png', 'gif', 'bmp']) {
-      expect(categoryForExtension(ext), `'${ext}'`).toBeNull();
+  it('routes standalone scanned images to reports', () => {
+    // png/bmp/gif/webp wrap to PDF through the same Pillow path as TIFF/JPEG
+    // (RASTER_REPORT_EXTS), so the picker must not refuse them.
+    for (const ext of ['png', 'gif', 'bmp', 'webp']) {
+      expect(categoryForExtension(ext), `'${ext}'`).toBe('reports');
     }
   });
 

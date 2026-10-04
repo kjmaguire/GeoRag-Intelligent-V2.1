@@ -206,3 +206,82 @@ class TestLayerName:
 def test_result_repr_is_readable():
     r = RasterCaptureResult(written=True, reason="recorded", crs="EPSG:4326")
     assert "recorded" in repr(r)
+
+
+class _Band:
+    def __init__(self, dtype, lo=None, hi=None):
+        self.band_index = 1
+        self.dtype = dtype
+        self.min, self.max, self.mean = lo, hi, None
+        self.nodata = None
+        self.description = None
+
+
+class TestADemWithNoCrs:
+    """`if not result.crs: return False` used to send a DEM that lost its
+    projection through OCR as 'a plain scan'."""
+
+    @pytest.mark.asyncio
+    async def test_a_float_dem_without_a_crs_is_measurement_data_and_warns(
+        self, monkeypatch, args,
+    ):
+        r = _FakeResult(crs=None)
+        r.band_count = 1
+        r.bands = [_Band("float32", -12.0, 840.0)]
+        _patch_extract(monkeypatch, value=r)
+        db = _patch_db(monkeypatch)
+
+        out = await persist_raster_metadata(**args)
+
+        assert out.is_measurement_raster is True
+        assert out.written is False
+        assert out.reason == "no_crs_measurement_grid"
+        assert [w["code"] for w in out.warnings] == ["raster_crs_missing"]
+        assert "no coordinate reference system" in out.warnings[0]["detail"]
+        assert "float32" in out.warnings[0]["detail"]
+        assert "params" not in db, "a row without a CRS must not be written"
+
+    @pytest.mark.asyncio
+    async def test_an_int16_dem_is_measurement_data(self, monkeypatch, args):
+        r = _FakeResult(crs=None)
+        r.band_count = 1
+        r.bands = [_Band("int16", -50.0, 2900.0)]
+        _patch_extract(monkeypatch, value=r)
+        out = await persist_raster_metadata(**args)
+        assert out.is_measurement_raster is True
+        assert out.warnings[0]["code"] == "raster_crs_missing"
+
+    @pytest.mark.asyncio
+    async def test_an_eight_bit_scan_with_no_crs_still_goes_to_ocr(self, monkeypatch, args):
+        r = _FakeResult(crs=None)
+        r.band_count = 1
+        r.bands = [_Band("uint8", 0.0, 255.0)]
+        _patch_extract(monkeypatch, value=r)
+        out = await persist_raster_metadata(**args)
+        assert out.is_measurement_raster is False
+        assert out.reason == "no_crs"
+        assert out.warnings == []
+
+    @pytest.mark.asyncio
+    async def test_a_three_band_float_raster_with_no_crs_stays_with_ocr(
+        self, monkeypatch, args,
+    ):
+        r = _FakeResult(crs=None)
+        r.bands = [_Band("float32") for _ in range(3)]
+        _patch_extract(monkeypatch, value=r)
+        out = await persist_raster_metadata(**args)
+        assert out.is_measurement_raster is False
+
+    @pytest.mark.asyncio
+    async def test_a_georeferenced_raster_is_unchanged(self, monkeypatch, args):
+        r = _FakeResult()
+        r.bands = [_Band("float32", 0.0, 1.0)]
+        _patch_extract(monkeypatch, value=r)
+        _patch_db(monkeypatch)
+        out = await persist_raster_metadata(**args)
+        assert out.written is True
+        assert out.warnings == []
+
+    def test_the_result_carries_warnings_in_slots(self):
+        assert "warnings" in RasterCaptureResult.__slots__
+        assert RasterCaptureResult(written=False, reason="x").warnings == []

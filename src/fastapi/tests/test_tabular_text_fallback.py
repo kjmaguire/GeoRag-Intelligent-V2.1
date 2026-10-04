@@ -32,22 +32,24 @@ from app.services.ingest.xlsx_ingester import (
 class _FakeConn:
     """Records what would have been written."""
 
-    def __init__(self, *, existing_report: str | None = None) -> None:
-        self.existing_report = existing_report
+    def __init__(self) -> None:
         self.report_args: tuple | None = None
+        self.report_sql: str = ""
+        self.report_inserts = 0
         self.passages: list[str] = []
+        self.passage_args: list[tuple] = []
 
     async def fetchrow(self, sql: str, *args):
         flat = " ".join(sql.split())
-        if flat.startswith("SELECT report_id"):
-            if self.existing_report:
-                return {"report_id": self.existing_report}
-            return None
         if "INSERT INTO silver.reports" in flat:
             self.report_args = args
-            return {"report_id": "11111111-1111-1111-1111-111111111111"}
+            self.report_sql = flat
+            self.report_inserts += 1
+            # The upsert returns the id it was given (new row or conflict).
+            return {"report_id": args[0]}
         if "INSERT INTO silver.document_passages" in flat:
             self.passages.append(args[2])
+            self.passage_args.append(args)
             return {"passage_id": "p"}
         raise AssertionError(f"unexpected statement: {flat[:120]}")
 
@@ -239,19 +241,52 @@ class TestTheReportRowIsHonest:
         assert conn.report_args[-1] == "csv-text"
 
     @pytest.mark.asyncio
-    async def test_an_existing_report_is_reused_not_duplicated(
+    async def test_the_report_id_is_stable_and_upserted(
+        self, tmp_path,
+    ) -> None:
+        """No SELECT-then-INSERT: a retry or a concurrent ingest of the same
+        workbook computes the same id and lands on ON CONFLICT (report_id)."""
+        path = tmp_path / "drill.xlsx"
+        _workbook(path)
+        first, second = _FakeConn(), _FakeConn()
+
+        r1 = await ingest_xlsx_file(
+            first, str(path), workspace_id=_WS, project_id=_PJ,
+        )
+        r2 = await ingest_xlsx_file(
+            second, str(path), workspace_id=_WS, project_id=_PJ,
+        )
+
+        assert r1.document_id == r2.document_id
+        assert "ON CONFLICT (report_id) DO UPDATE" in first.report_sql
+        assert "SELECT report_id" not in first.report_sql
+        # Same file, same id as ingest_pdf would derive for that identity.
+        import hashlib
+        import uuid
+
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert r1.document_id == str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL, f"georag:report:{_WS}:{_PJ}:{sha}",
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_same_workbook_in_another_project_gets_its_own_report(
         self, tmp_path,
     ) -> None:
         path = tmp_path / "drill.xlsx"
         _workbook(path)
-        conn = _FakeConn(existing_report="99999999-9999-9999-9999-999999999999")
 
-        result = await ingest_xlsx_file(
-            conn, str(path), workspace_id=_WS, project_id=_PJ,
+        a = await ingest_xlsx_file(
+            _FakeConn(), str(path), workspace_id=_WS, project_id=_PJ,
+        )
+        b = await ingest_xlsx_file(
+            _FakeConn(), str(path), workspace_id=_WS,
+            project_id="b1000000-0000-0000-0000-0000000000a1",
         )
 
-        assert conn.report_args is None, "a second report row was inserted"
-        assert result.document_id == "99999999-9999-9999-9999-999999999999"
+        assert a.document_id != b.document_id
 
 
 @pytest.fixture

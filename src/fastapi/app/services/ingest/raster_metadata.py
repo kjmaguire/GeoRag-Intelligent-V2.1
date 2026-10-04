@@ -32,6 +32,13 @@ Only rasters that actually carry a CRS. A scanned report page is a TIFF
 too, and cataloguing every one of them as a "raster layer" would bury the
 handful of real map sheets in thousands of document pages. No CRS means
 nothing to preserve, so nothing is written.
+
+A DEM that lost its CRS is the exception to "no CRS means a scanned page":
+it is still measurement data, and wrapping it to PDF would bill an OCR engine
+for a continuous-tone surface and index the noise. It is not catalogued (no
+CRS, so no location to record) but it IS kept out of OCR, with a
+``raster_crs_missing`` warning so the run is not a green "Completed" on a
+file the geologist cannot use.
 """
 from __future__ import annotations
 
@@ -58,6 +65,7 @@ class RasterCaptureResult:
 
     __slots__ = (
         "written", "reason", "crs", "raster_id", "is_measurement_raster",
+        "warnings",
     )
 
     def __init__(
@@ -68,6 +76,7 @@ class RasterCaptureResult:
         crs: str | None = None,
         raster_id: str | None = None,
         is_measurement_raster: bool = False,
+        warnings: list[dict[str, Any]] | None = None,
     ) -> None:
         self.written = written
         self.reason = reason
@@ -79,6 +88,9 @@ class RasterCaptureResult:
         #: magnetics grid through OCR that the first attempt correctly
         #: skipped.
         self.is_measurement_raster = is_measurement_raster
+        #: Run-level warnings the capture itself raised (``raster_crs_missing``),
+        #: for the caller to attach to the run. Not the parser's own warnings.
+        self.warnings: list[dict[str, Any]] = list(warnings or [])
 
     def __repr__(self) -> str:  # pragma: no cover — debugging aid
         return (
@@ -93,6 +105,13 @@ class RasterCaptureResult:
 #: emits Float32. Anything wider is a measurement grid.
 _SCANNABLE_DTYPES = frozenset({"uint8", "int8", "bool", "uint1"})
 
+#: Single-band dtypes that identify a DEM / grid even with NO CRS. Deliberately
+#: narrower than "not scannable": uint16 is left out because a 16-bit greyscale
+#: page scan is a real, if uncommon, scanner output, and a false skip loses a
+#: document where a false OCR only costs a call.
+_FLOAT_GRID_DTYPES = frozenset({"float32", "float64"})
+_SIGNED_WIDE_INT_DTYPES = frozenset({"int16", "int32"})
+
 
 def _is_measurement_raster(result: Any) -> bool:
     """True when this raster is data to be read by a machine, not by eye.
@@ -106,7 +125,9 @@ def _is_measurement_raster(result: Any) -> bool:
     passages that then compete in the recall set of every future query.
 
     Deliberately conservative in the ambiguous direction. It takes BOTH a
-    CRS and a non-scanner bit depth to skip OCR, so:
+    CRS and a non-scanner bit depth to skip OCR -- except a single-band
+    float / signed-int raster with no CRS, which is a DEM that lost its
+    projection (``_looks_like_unreferenced_grid``) -- so:
 
     * a scanned sheet that was later georeferenced (CRS, 8-bit) still goes
       through OCR {D} it is exactly ADR-0005's target;
@@ -121,7 +142,7 @@ def _is_measurement_raster(result: Any) -> bool:
     separately for all structured geological data.
     """
     if not result.crs:
-        return False
+        return _looks_like_unreferenced_grid(result)
     dtypes = {
         (getattr(b, "dtype", None) or "").lower()
         for b in (result.bands or [])
@@ -129,6 +150,55 @@ def _is_measurement_raster(result: Any) -> bool:
     if not dtypes:
         return False
     return not (dtypes & _SCANNABLE_DTYPES)
+
+
+def _looks_like_unreferenced_grid(result: Any) -> bool:
+    """A raster with NO CRS that is nevertheless a DEM or a data grid.
+
+    Without a CRS the header-only rule above cannot apply, and the old answer
+    was "a plain scan", so a DEM exported without its projection was wrapped
+    to PDF and OCR'd into noise. What a scanner cannot produce, even with no
+    georeferencing:
+
+    * exactly one band, no alpha;
+    * ``float32`` / ``float64`` -- no scanner emits floating point; or
+    * ``int16`` / ``int32`` -- signed wide integers (elevation in metres,
+      gravity in mGal) -- unless the band statistics show every value inside
+      0..255, which is an 8-bit image stored wide and stays with OCR.
+
+    Palette rasters are not a case: a palette is always 8-bit, so they are
+    ``uint8`` and fall through to OCR. Multi-band rasters with no CRS stay
+    with OCR too (an RGB image is the common shape); so does anything whose
+    bands could not be read.
+    """
+    bands = list(result.bands or [])
+    if len(bands) != 1:
+        return False
+    if getattr(result, "band_count", 1) not in (1, None):
+        return False
+    if getattr(result, "has_alpha", False):
+        return False
+
+    band = bands[0]
+    dtype = (getattr(band, "dtype", None) or "").lower()
+    if dtype in _FLOAT_GRID_DTYPES:
+        return True
+    if dtype in _SIGNED_WIDE_INT_DTYPES:
+        lo, hi = getattr(band, "min", None), getattr(band, "max", None)
+        if lo is not None and hi is not None and lo >= 0 and hi <= 255:
+            return False
+        return True
+    return False
+
+
+#: Shown on a measurement raster that carries no CRS.
+_CRS_MISSING_DETAIL = (
+    "This raster has no coordinate reference system, so it was not "
+    "catalogued as a raster layer and cannot be placed on the map. Its "
+    "{dtype} single-band data looks like a DEM or measurement grid, so it "
+    "was not sent to OCR either. The file is kept in bronze; re-export it "
+    "with its CRS (or tell us the EPSG) and upload it again."
+)
 
 
 _INSERT = """
@@ -230,6 +300,24 @@ async def persist_raster_metadata(
         return RasterCaptureResult(written=False, reason="not_a_readable_raster")
 
     if not result.crs:
+        if _is_measurement_raster(result):
+            # A DEM / grid that lost its CRS: not a scanned page. Nothing to
+            # locate it by, so no row -- but it must not be OCR'd, and the
+            # run must say why it ends partial.
+            band_dtype = (getattr(result.bands[0], "dtype", None) or "grid")
+            log.warning(
+                "raster_metadata: %s looks like a measurement grid (%s) but "
+                "carries no CRS — not catalogued, not OCR'd",
+                source_key, band_dtype,
+            )
+            return RasterCaptureResult(
+                written=False, reason="no_crs_measurement_grid",
+                is_measurement_raster=True,
+                warnings=[{
+                    "code": "raster_crs_missing",
+                    "detail": _CRS_MISSING_DETAIL.format(dtype=band_dtype),
+                }],
+            )
         # A scanned page, not a map. Nothing to preserve.
         log.info("raster_metadata: %s carries no CRS — no row written", source_key)
         return RasterCaptureResult(written=False, reason="no_crs")

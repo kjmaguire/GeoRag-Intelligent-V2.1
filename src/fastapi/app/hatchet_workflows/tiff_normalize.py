@@ -1,8 +1,9 @@
 """Hatchet workflow: TIFF → PDF normalise + trigger ingest_pdf (ADR-0005).
 
-Stream a multi-page TIFF from MinIO, wrap losslessly to PDF via
-``tiff_to_pdf``, land the derived PDF under ``bronze/reports/...`` with
-provenance metadata, and trigger the existing ``ingest_pdf`` workflow.
+Stream a multi-page TIFF (or a standalone scanned image: JPEG, PNG, BMP, GIF,
+WebP) from MinIO, wrap losslessly to PDF via ``tiff_to_pdf``, land the derived
+PDF under ``bronze/reports/...`` with provenance metadata, and trigger the
+existing ``ingest_pdf`` workflow.
 
 The standard PDF parser, OCR provenance capture, figure linking, and
 inline embedding dispatch run unchanged on the derived PDF.
@@ -26,6 +27,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from georag_object_storage import Bucket, ObjectStorage, get_storage_client
@@ -47,6 +49,15 @@ log = logging.getLogger("georag.hatchet.tiff_normalize")
 
 
 _REPORTS_PREFIX = "reports"
+
+#: Source extensions this workflow wraps. Must equal
+#: ``UploadController::RASTER_REPORT_EXTS`` (and the ZIP fan-out's
+#: ``_RASTER_EXTS``, which has no dot): an extension the API accepts that is
+#: missing here fails opaquely inside Pillow, and one missing from the API
+#: never arrives. Pinned by tests/test_tiff_normalize_image_formats.py.
+SUPPORTED_EXTENSIONS = frozenset({
+    ".tif", ".tiff", ".rrd", ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp",
+})
 # Must be a valid C# identifier to survive Azure Blob (Set Blob Metadata,
 # REST 2009-09-19+). See georag_object_storage.metadata.
 _TIFF_DERIVED_TAG = "derived_from_tiff_sha256"
@@ -101,6 +112,13 @@ class TiffNormalizeOutput(BaseModel):
     truncated_at_cap: bool
     normalize_skipped: bool
     ingest_pdf_workflow_run_id: str | None = None
+    #: Frames the source holds (None when an earlier run's derived PDF
+    #: predates the tag). With ``truncated_at_cap`` says how many were lost.
+    total_frames: int | None = None
+    #: Animation frames of a GIF / WebP / APNG that were not made pages.
+    frames_ignored: int = 0
+    #: Warnings attached to the run; any of them makes the run ``partial``.
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
     #: Set when the raster was recorded and deliberately NOT sent through
     #: the OCR stack. Distinct from ``normalize_skipped``, which means the
     #: derived PDF was already present from an earlier run. When this is
@@ -147,6 +165,69 @@ def _derived_already_present(
     return meta.get(_TIFF_DERIVED_TAG) == source_sha256
 
 
+def _frame_warnings(
+    *,
+    page_count: int,
+    total_frames: int | None,
+    truncated: bool,
+    frames_ignored: int,
+) -> list[dict[str, Any]]:
+    """Warnings for pages that did not make it into the derived PDF.
+
+    The cap and the first-frame-only rule used to be visible only in the
+    workflow output and the PDF's metadata, so the run ended ``completed``
+    with the tail of the document missing from the index. Any warning here
+    turns the run ``partial`` (``_progress.terminal_status``).
+    """
+    out: list[dict[str, Any]] = []
+    if truncated:
+        of_total = f" of {total_frames}" if total_frames else ""
+        lost = (
+            f" Frames {page_count + 1}-{total_frames} are NOT in the index."
+            if total_frames else " The remaining frames are NOT in the index."
+        )
+        out.append({
+            "code": "raster_frames_truncated",
+            "detail": (
+                f"This multi-page image was read up to its frame limit: "
+                f"{page_count}{of_total} frames were converted to pages."
+                f"{lost} Split the file and upload the remainder."
+            ),
+            "pages_read": page_count,
+            "total_frames": total_frames,
+        })
+    if frames_ignored:
+        out.append({
+            "code": "image_frames_ignored",
+            "detail": (
+                f"This image has {frames_ignored + 1} frames (an animation); only "
+                f"the first was read. {frames_ignored} further frame(s) are not "
+                f"in the index. Upload them as separate images if they matter."
+            ),
+            "frames_ignored": frames_ignored,
+        })
+    return out
+
+
+def _measurement_outcome(capture: Any) -> str:
+    """First sentence of the raster-skipped message: what really happened to
+    the catalogue row. It used to say "Recorded as a raster layer" whatever
+    ``capture.written`` was, including when the row was never written."""
+    reason = capture.reason or ""
+    if capture.written:
+        return f"Recorded as a raster layer ({capture.crs})."
+    if reason == "already_recorded":
+        return f"Already recorded as a raster layer ({capture.crs}) by an earlier attempt."
+    if reason.startswith("persist_failed"):
+        return (
+            "NOT recorded as a raster layer: the database write failed, so its "
+            "coordinates, extent and band statistics were not saved."
+        )
+    if not capture.crs:
+        return "NOT recorded as a raster layer: the file carries no CRS."
+    return f"NOT recorded as a raster layer ({reason or 'unknown reason'})."
+
+
 tiff_normalize = hatchet.workflow(
     name="tiff_normalize",
     input_validator=TiffNormalizeInput,
@@ -182,6 +263,13 @@ async def normalize(
         step="preflight",
         workflow_run_id=getattr(ctx, "workflow_run_id", None),
     )
+
+    suffix = Path(input.minio_key).suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise TiffNormalizeError(
+            f"tiff_normalize cannot wrap {suffix or 'a file with no extension'!r} "
+            f"({input.minio_key}); supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+        )
 
     store = get_storage_client()
 
@@ -246,6 +334,8 @@ async def _normalize_downloaded(
     )
     page_count = 0
     truncated = False
+    total_frames: int | None = None
+    frames_ignored = 0
 
     # 2b. Capture georeferencing before the wrap throws it away. The PDF
     # container preserves every pixel and no coordinates, so a scanned map
@@ -277,11 +367,20 @@ async def _normalize_downloaded(
     # needed to tell the two apart — the CRS and the per-band bit
     # depth. The return value was simply discarded.
     if capture.is_measurement_raster:
+        # The first sentence is the ACTUAL outcome of the catalogue write:
+        # this used to claim "Recorded as a raster layer" even when
+        # capture.written was False (no CRS, database failure, retry).
+        recorded = capture.written or capture.reason == "already_recorded"
         reason = (
-            f"Recorded as a raster layer ({capture.crs}). Not sent to OCR: "
+            f"{_measurement_outcome(capture)} Not sent to OCR: "
             "this is a continuous-tone measurement grid, not a scanned sheet, "
-            "so it carries no text to extract. Its coordinates, extent and "
-            "band statistics are queryable; its pixels are not searchable in chat."
+            "so it carries no text to extract. "
+            + (
+                "Its coordinates, extent and band statistics are queryable; "
+                "its pixels are not searchable in chat."
+                if recorded else
+                "Its pixels are not searchable in chat."
+            )
         )
         log.info(
             "tiff_normalize.ocr_skipped key=%s crs=%s reason=%s",
@@ -299,7 +398,12 @@ async def _normalize_downloaded(
             minio_key=input.minio_key,
         )
         if run_id:
-            raster_warnings = [{"code": "raster_not_ocred", "detail": reason}]
+            # capture.warnings (raster_crs_missing for a DEM with no CRS) come
+            # first: they are the actionable ones.
+            raster_warnings = [
+                *capture.warnings,
+                {"code": "raster_not_ocred", "detail": reason},
+            ]
             rows_written = 1 if capture.written else 0
             transitioned = await ingest_progress.mark_completed_by_run(
                 run_id=run_id,
@@ -335,6 +439,7 @@ async def _normalize_downloaded(
             normalize_skipped=False,
             ingest_pdf_workflow_run_id=None,
             ocr_skipped_reason=reason,
+            warnings=[*capture.warnings, {"code": "raster_not_ocred", "detail": reason}],
         )
 
     if not normalize_skipped:
@@ -348,7 +453,9 @@ async def _normalize_downloaded(
                 )
             source_bytes = await asyncio.to_thread(Path(source_path).read_bytes)
         try:
-            result = tiff_to_pdf(source_bytes)
+            # Off the event loop: decoding and re-encoding every frame is
+            # seconds-to-minutes of CPU on a worker's heartbeat thread.
+            result = await asyncio.to_thread(tiff_to_pdf, source_bytes)
         except TiffNormalizeError as exc:
             log.warning(
                 "tiff_normalize.wrap_failed key=%s err=%s — surfacing for triage",
@@ -358,6 +465,8 @@ async def _normalize_downloaded(
 
         page_count = result.page_count
         truncated = result.truncated_at_cap
+        total_frames = getattr(result, "total_frames", None)
+        frames_ignored = getattr(result, "frames_ignored", 0)
 
         # 4. Upload derived PDF with provenance metadata.
         await asyncio.to_thread(
@@ -371,6 +480,8 @@ async def _normalize_downloaded(
                 "tiff_source_key": input.minio_key,
                 "tiff_frames": str(result.page_count),
                 "tiff_truncated": "true" if truncated else "false",
+                "tiff_total_frames": str(total_frames or page_count),
+                "tiff_frames_ignored": str(frames_ignored),
             },
         )
 
@@ -391,6 +502,16 @@ async def _normalize_downloaded(
         except (TypeError, ValueError):
             page_count = 0
         truncated = (meta.get("tiff_truncated") == "true")
+        # Tags written by this version; a derived PDF from an older run lacks
+        # them and then the warning simply omits the counts.
+        try:
+            total_frames = int(meta["tiff_total_frames"])
+        except (KeyError, TypeError, ValueError):
+            total_frames = None
+        try:
+            frames_ignored = int(meta.get("tiff_frames_ignored", "0"))
+        except (TypeError, ValueError):
+            frames_ignored = 0
 
     # 5. Trigger ingest_pdf against the derived key. We pass through
     # workspace_id / project_id / vendor_profile_id / actor_id /
@@ -419,10 +540,46 @@ async def _normalize_downloaded(
     # PDF is tracked by its own row (created by ingest_pdf's preflight).
     # Without this terminal write the row would sit non-terminal until the
     # stale sweep timed it out as a false alarm.
-    await ingest_progress.mark_completed(
-        workspace_id=str(input.workspace_id),
-        minio_key=input.minio_key,
+    #
+    # Pages that did not make it into the derived PDF (frame cap, animation
+    # frames) end this row 'partial' with the reason attached, not a green
+    # 'Completed' on a document whose tail is missing from the index.
+    frame_warnings = _frame_warnings(
+        page_count=page_count,
+        total_frames=total_frames,
+        truncated=truncated,
+        frames_ignored=frames_ignored,
     )
+    closed_with_warnings = False
+    if frame_warnings:
+        run_id = await ingest_progress.lookup_active_run_id(
+            workspace_id=str(input.workspace_id),
+            minio_key=input.minio_key,
+        )
+        if run_id:
+            closed_with_warnings = True
+            transitioned = await ingest_progress.mark_completed_by_run(
+                run_id=run_id,
+                warnings=frame_warnings,
+            )
+            if transitioned:
+                await ingest_progress.broadcast_terminal(
+                    workspace_id=str(input.workspace_id),
+                    project_id=str(input.project_id),
+                    run_id=run_id,
+                    stage="parse",
+                    status=ingest_progress.terminal_status(
+                        rows_written=None, warnings=frame_warnings,
+                    ),
+                    message=ingest_progress.terminal_message(
+                        rows_written=None, warnings=frame_warnings, noun="page",
+                    ),
+                )
+    if not closed_with_warnings:
+        await ingest_progress.mark_completed(
+            workspace_id=str(input.workspace_id),
+            minio_key=input.minio_key,
+        )
 
     return TiffNormalizeOutput(
         source_sha256=source_sha256,
@@ -431,6 +588,9 @@ async def _normalize_downloaded(
         truncated_at_cap=truncated,
         normalize_skipped=normalize_skipped,
         ingest_pdf_workflow_run_id=ref.workflow_run_id,
+        total_frames=total_frames,
+        frames_ignored=frames_ignored,
+        warnings=frame_warnings,
     )
 
 
@@ -492,6 +652,7 @@ async def on_failure(input: TiffNormalizeInput, ctx: Context) -> dict:
 
 
 __all__ = [
+    "SUPPORTED_EXTENSIONS",
     "tiff_normalize",
     "TiffNormalizeInput",
     "TiffNormalizeOutput",

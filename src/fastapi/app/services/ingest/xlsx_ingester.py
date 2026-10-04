@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,9 +93,27 @@ def _format_sheet_as_text(sheet) -> str:
 _SHEET_PASSAGE_CHARS = 5000
 
 
+@dataclass(frozen=True)
+class SheetPassage:
+    """One stored passage of a sheet, with where in the workbook it came from.
+
+    ``page`` is the 1-based index of the sheet in the workbook (a workbook has
+    no pages; the sheet is the nearest unit a citation can point at, and
+    ``silver.document_passages.page_first`` / ``page_last`` must be >= 1).
+    ``row_first`` / ``row_last`` count NON-EMPTY rows of the sheet, header row
+    = 1, because blank rows are dropped when the sheet is rendered to text.
+    """
+
+    ordinal: int
+    text: str
+    page: int
+    row_first: int
+    row_last: int
+
+
 def _sheet_passages(
     sheet_texts: list[tuple[str, str]],
-) -> list[tuple[int, str]]:
+) -> list[SheetPassage]:
     """Split each sheet into as many passages as it needs.
 
     A sheet used to be rendered to one blob and hard-cut at 8,000 characters
@@ -108,37 +127,93 @@ def _sheet_passages(
     Splitting on line boundaries keeps rows whole; a row cut in half is a
     row that answers nothing. Every passage repeats the sheet header so a
     chunk retrieved on its own still says which sheet it came from and,
-    when there is more than one, which part.
+    when there is more than one, which part and which rows.
+
+    "Sheet header" used to mean only the ``[Sheet: name]`` line. Parts 2..N
+    of a 12,000-row assay sheet were then bare numbers: a retriever and an
+    LLM could see ``0.42  1.13  0.07`` and not know which column was Au and
+    which was Cu. The sheet's first row (the column headings, as the
+    docstring of ``_format_sheet_as_text`` says) is therefore repeated at the
+    top of every part after the first. A first row longer than half the
+    window is not a column row and is not repeated.
     """
-    passages: list[tuple[int, str]] = []
+    passages: list[SheetPassage] = []
     ordinal = 0
 
-    for sheet_name, text in sheet_texts:
+    for sheet_index, (sheet_name, text) in enumerate(sheet_texts, start=1):
         header = f"[Sheet: {sheet_name}]"
-        body = text or ""
+        lines = (text or "").split("\n")
+        column_row = lines[0] if lines else ""
+        repeat_row = (
+            column_row
+            if column_row and len(column_row) <= _SHEET_PASSAGE_CHARS // 2
+            else ""
+        )
 
-        chunks: list[str] = []
+        # (first_row, last_row, lines) with 1-based row numbers, header = 1.
+        chunks: list[tuple[int, int, list[str]]] = []
         current: list[str] = []
+        first_row = 1
         size = 0
-        for line in body.split("\n"):
+        has_data = False  # a part holding only the repeated column row is empty
+        for row_no, line in enumerate(lines, start=1):
             # +1 for the newline this line will be rejoined with.
-            if current and size + len(line) + 1 > _SHEET_PASSAGE_CHARS:
-                chunks.append("\n".join(current))
-                current, size = [], 0
+            if has_data and size + len(line) + 1 > _SHEET_PASSAGE_CHARS:
+                chunks.append((first_row, row_no - 1, current))
+                first_row = row_no
+                # Parts 2..N open with the column row; its size counts
+                # against the window so a part stays within it.
+                current = [repeat_row] if repeat_row else []
+                size = (len(repeat_row) + 1) if repeat_row else 0
+                has_data = False
             current.append(line)
             size += len(line) + 1
+            has_data = True
         if current:
-            chunks.append("\n".join(current))
+            chunks.append((first_row, len(lines), current))
         if not chunks:
-            chunks = [""]
+            chunks = [(1, 1, [""])]
 
         total = len(chunks)
-        for index, chunk in enumerate(chunks, start=1):
-            label = header if total == 1 else f"{header} (part {index} of {total})"
-            passages.append((ordinal, f"{label}\n{chunk}"))
+        for index, (row_first, row_last, chunk_lines) in enumerate(chunks, start=1):
+            if total == 1:
+                label = header
+            else:
+                label = (
+                    f"{header} (part {index} of {total}, "
+                    f"rows {row_first}-{row_last} of {len(lines)})"
+                )
+            passages.append(
+                SheetPassage(
+                    ordinal=ordinal,
+                    text=f"{label}\n" + "\n".join(chunk_lines),
+                    page=sheet_index,
+                    row_first=row_first,
+                    row_last=row_last,
+                )
+            )
             ordinal += 1
 
     return passages
+
+
+def _stable_report_id(
+    *,
+    workspace_id: str,
+    project_id: str | None,
+    source_identity: str,
+) -> str:
+    """Retry-stable report UUID for one project-scoped source.
+
+    Same derivation as ``ingest_pdf._stable_report_id`` (not imported: this
+    module is a service and ingest_pdf is a workflow that imports services).
+    """
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"georag:report:{workspace_id}:{project_id}:{source_identity}",
+        )
+    )
 
 
 async def ingest_xlsx_file(
@@ -283,57 +358,67 @@ async def land_sheets_as_text(
     in how their rows are read, and the second caller was going to copy
     seventy lines of report-dedupe and passage-insert to avoid saying so.
     """
-    # SHA + dedupe
     p = path
     # Off the event loop, streamed (ING-18).
     sha = await asyncio.to_thread(sha256_file, p)
-    # Scoped to the project. The lookup had no project or workspace
-    # predicate, so the same workbook uploaded into a SECOND project found
-    # the FIRST project's report and wrote its passages under it — invisible
-    # in the project the user actually uploaded to, and attached to one they
-    # may not even be a member of. Two teams sharing a standard assay
-    # template is not an exotic way for a workbook sha to collide.
-    row = await conn.fetchrow(
-        "SELECT report_id::text AS report_id FROM silver.reports "
-        "WHERE source_file_sha256 = $1 AND project_id = $2::uuid LIMIT 1",
-        sha, project_id,
+    # The report row is keyed by a DETERMINISTIC id derived from
+    # workspace / project / file sha, and written with ON CONFLICT. It used
+    # to be SELECT-then-INSERT with gen_random_uuid() and no unique key, so
+    # two concurrent ingests of one workbook (or a Hatchet retry racing its
+    # own first attempt) both found nothing and inserted two report rows,
+    # each with a full set of passages.
+    #
+    # Project scope is part of the key, as it was part of the old lookup:
+    # the same workbook uploaded into a SECOND project must not find the
+    # FIRST project's report (two teams sharing a standard assay template
+    # is not an exotic way for a sha to collide).
+    #
+    # Rows written before this change carry random ids and are not matched;
+    # re-ingesting such a file creates one new report under the stable id.
+    report_id = _stable_report_id(
+        workspace_id=workspace_id, project_id=project_id, source_identity=sha,
     )
-    if row:
-        document_id = row["report_id"]
-    else:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO silver.reports
-                (report_id, project_id, workspace_id, title, commodity,
-                 source_file_sha256, is_scanned, parser_used,
-                 created_at, updated_at)
-            VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, NULL,
-                    $4, false, $5,
-                    NOW(), NOW())
-            RETURNING report_id::text AS report_id
-            """,
-            project_id, workspace_id, p.stem[:500], sha, parser_used,
-        )
-        document_id = row["report_id"]
+    row = await conn.fetchrow(
+        """
+        INSERT INTO silver.reports
+            (report_id, project_id, workspace_id, title, commodity,
+             source_file_sha256, is_scanned, parser_used,
+             created_at, updated_at)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, $4, NULL,
+                $5, false, $6,
+                NOW(), NOW())
+        ON CONFLICT (report_id) DO UPDATE SET
+            title      = EXCLUDED.title,
+            parser_used = EXCLUDED.parser_used,
+            updated_at = NOW()
+        RETURNING report_id::text AS report_id
+        """,
+        report_id, project_id, workspace_id, p.stem[:500], sha, parser_used,
+    )
+    document_id = row["report_id"]
 
     # One or more passages per sheet. Tabular content is not
     # paragraph-chunked — _sheet_passages splits on row boundaries only, so
-    # a row is never cut in half.
+    # a row is never cut in half. page_first/page_last carry the sheet's
+    # 1-based index so a citation can name the sheet; the row range is in the
+    # passage text header (there is no row column on document_passages).
     inserted = 0
-    for ordinal, text_with_header in _sheet_passages(sheet_texts):
-        h = hashlib.sha256(text_with_header.encode()).hexdigest()
+    for sp in _sheet_passages(sheet_texts):
+        h = hashlib.sha256(sp.text.encode()).hexdigest()
         try:
             r = await conn.fetchrow(
                 """
                 INSERT INTO silver.document_passages
                     (passage_id, document_id, workspace_id, revision_number,
-                     text, text_hash, ordinal, chunk_kind, created_at, updated_at)
+                     text, text_hash, ordinal, chunk_kind,
+                     page_first, page_last, created_at, updated_at)
                 VALUES (gen_random_uuid(), $1::uuid, $2::uuid, 1, $3, $4, $5,
-                        'table', NOW(), NOW())
+                        'table', $6::int, $7::int, NOW(), NOW())
                 ON CONFLICT (document_id, revision_number, text_hash) DO NOTHING
                 RETURNING passage_id
                 """,
-                document_id, workspace_id, text_with_header, h, ordinal,
+                document_id, workspace_id, sp.text, h, sp.ordinal,
+                sp.page, sp.page,
             )
             if r:
                 inserted += 1
@@ -428,5 +513,6 @@ __all__ = [
     "ingest_xlsx_file",
     "ingest_delimited_as_text",
     "land_sheets_as_text",
+    "SheetPassage",
     "XLSXIngestResult",
 ]

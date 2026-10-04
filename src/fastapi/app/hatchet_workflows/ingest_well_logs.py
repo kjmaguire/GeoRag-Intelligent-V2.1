@@ -91,6 +91,56 @@ class IngestWellLogsInput(BaseModel):
         return v
 
 
+#: Curves named in full in the warning text; the rest are counted. The Laravel
+#: progress endpoint caps a broadcast message at 500 characters, and a LAS can
+#: carry 60+ curves.
+_SKIPPED_NAMES_SHOWN = 8
+
+
+def _curves_skipped_warning(result: Any) -> dict[str, Any] | None:
+    """Warning naming every curve the parser dropped and why, or None.
+
+    ``las_parser`` builds ``skipped_details`` ({curve, reason}: length
+    mismatch, lasio read error) but this workflow used to keep only the COUNT,
+    so a gamma curve that did not make it was gone with nothing saying so and
+    the run ended ``completed``. Any entry here makes the run ``partial``
+    (``_progress.terminal_status`` downgrades on any warning).
+
+    ``curves`` / ``skipped_details`` ride along as structured keys beside the
+    prose; extra keys are inert on the Ingestion Runs page, which reads
+    ``detail`` and falls back to ``code``.
+    """
+    details = list(getattr(result, "skipped_details", None) or [])
+    count = int(getattr(result, "skipped_curves", 0) or 0)
+    if not details and count <= 0:
+        return None
+
+    total = int(getattr(result, "total_curves_in_file", 0) or 0)
+    shown = "; ".join(
+        f"{d.get('curve')!r} ({d.get('reason')})"
+        for d in details[:_SKIPPED_NAMES_SHOWN]
+    )
+    more = (
+        f" (+{len(details) - _SKIPPED_NAMES_SHOWN} more)"
+        if len(details) > _SKIPPED_NAMES_SHOWN else ""
+    )
+    if not details:
+        # The parser counted a skip it gave no reason for: say so rather
+        # than drop the warning.
+        shown = "reasons not reported by the parser"
+    return {
+        "code": "curves_skipped",
+        "detail": (
+            f"{count or len(details)} of {total} curve(s) in this LAS were "
+            f"NOT stored: {shown}{more}. The other curves were written; "
+            f"re-export the LAS with consistent curve lengths and upload it "
+            f"again to add the missing ones."
+        ),
+        "curves": [d.get("curve") for d in details],
+        "skipped_details": details,
+    }
+
+
 class IngestWellLogsOut(BaseModel):
     run_id: str | None
     well_name: str | None
@@ -209,6 +259,11 @@ async def run_ingest_well_logs(
             skipped = result.skipped_curves
             # las_depth_unit_assumed when the file declares no depth unit.
             warnings.extend(getattr(result, "warnings", None) or [])
+            # Which curves were dropped and why — a skipped curve makes the
+            # run 'partial' via terminal_status, not 'completed'.
+            skipped_warning = _curves_skipped_warning(result)
+            if skipped_warning is not None:
+                warnings.append(skipped_warning)
             # The caller's hole_id wins over the file's ~W well name: LAS
             # well names are free text ("EAGLE PT #1") and rarely match the
             # collar file's identifier.

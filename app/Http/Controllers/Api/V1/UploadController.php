@@ -98,7 +98,9 @@ class UploadController extends Controller
      *
      * @var list<string>
      */
-    private const RASTER_REPORT_EXTS = ['tif', 'tiff', 'rrd', 'jpg', 'jpeg'];
+    private const RASTER_REPORT_EXTS = [
+        'tif', 'tiff', 'rrd', 'jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp',
+    ];
 
     private const CATEGORIES = [
         // ADR-0005 (2026-05-23): TIFF scans normalize to PDF at the bronze
@@ -127,6 +129,11 @@ class UploadController extends Controller
         // valid 1-page 144,439-byte PDF out). And a JPEG carries no CRS, so
         // _is_measurement_raster returns False on its first line and the
         // sheet always reaches OCR rather than being filed as a data grid.
+        //
+        // 'png'/'bmp'/'gif'/'webp' added 2026-10-04: standalone scanned
+        // images and photographed logs take the same Pillow wrap
+        // (tiff_to_pdf flattens palette/alpha modes to RGB/L first). None of
+        // them can be a float/int16 DEM, so they always reach OCR.
         //
         // Spread rather than a fourth literal: the docblock above warns that
         // adding a format to two of the three places routes the upload to
@@ -799,7 +806,10 @@ class UploadController extends Controller
             ]);
             $responseData['ingest'] = [
                 'dispatched' => false,
-                'reason' => 'exception: '.$e->getMessage(),
+                // Neutral on purpose: the body goes to the browser and the
+                // exception text can name internal hosts (the FastAPI URL, a
+                // connection string). The detail is in the log line above.
+                'reason' => 'dispatch_exception',
             ];
         }
     }
@@ -1026,7 +1036,10 @@ class UploadController extends Controller
             ]);
             $responseData['ingest'] = [
                 'dispatched' => false,
-                'reason' => 'exception: '.$e->getMessage(),
+                // Neutral on purpose: the body goes to the browser and the
+                // exception text can name internal hosts (the FastAPI URL, a
+                // connection string). The detail is in the log line above.
+                'reason' => 'dispatch_exception',
             ];
         }
     }
@@ -1258,7 +1271,10 @@ class UploadController extends Controller
             ]);
             $responseData['ingest'] = [
                 'dispatched' => false,
-                'reason' => 'exception: '.$e->getMessage(),
+                // Neutral on purpose: the body goes to the browser and the
+                // exception text can name internal hosts (the FastAPI URL, a
+                // connection string). The detail is in the log line above.
+                'reason' => 'dispatch_exception',
             ];
         }
     }

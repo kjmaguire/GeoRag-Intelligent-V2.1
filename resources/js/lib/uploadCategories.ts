@@ -40,7 +40,9 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   // geological map, i.e. nothing but the unit descriptions that make the map
   // readable. They wrap to PDF through the same Pillow path as a TIFF and,
   // carrying no CRS, always reach OCR rather than being filed as a data grid.
-  reports: ['pdf', 'tif', 'tiff', 'rrd', 'jpg', 'jpeg'],
+  // `.png`/`.bmp`/`.gif`/`.webp` (2026-10-04) take the same wrap: standalone
+  // scanned images and photographed logs.
+  reports: ['pdf', 'tif', 'tiff', 'rrd', 'jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp'],
   archive: ['zip'],
   collars: ['csv', 'txt', 'tsv'],
   surveys: ['csv', 'txt', 'tsv'],
@@ -138,10 +140,11 @@ export const LIVE_CATEGORIES = (Object.keys(CATEGORY_LABEL) as Category[]).filte
  * accepted them and every UI still refused them. `everyAcceptedExtensionResolves`
  * in the test file now pins the two against each other.
  *
- * PNG/GIF/BMP stay: no category lists them, so they genuinely have nowhere to
- * go, and saying so at the picker beats a 422 after the upload.
+ * PNG/GIF/BMP/WEBP were here until 2026-10-04, when they joined `reports`
+ * (RASTER_REPORT_EXTS) as standalone scanned images. The set is now empty but
+ * kept: it is how a format the backend rejects is refused at the picker.
  */
-export const UNSUPPORTED_EXTS = new Set(['png', 'gif', 'bmp']);
+export const UNSUPPORTED_EXTS = new Set<string>();
 
 export function extensionOf(filename: string): string {
   return filename.split('.').pop()?.toLowerCase() ?? '';
