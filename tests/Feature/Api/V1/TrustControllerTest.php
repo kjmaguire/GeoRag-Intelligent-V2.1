@@ -11,6 +11,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\RequiresPostgres;
@@ -179,6 +180,27 @@ final class TrustControllerTest extends TestCase
         $run = $this->answerRunIn($this->projectA);
 
         $this->actingAs($this->user, 'sanctum')->getJson($this->url($run))->assertStatus(404);
+    }
+
+    public function test_a_non_2xx_upstream_body_is_not_forwarded_but_is_logged(): void
+    {
+        Http::fake(['*/trust-summary' => Http::response(
+            ['detail' => 'asyncpg.exceptions.ConnectionDoesNotExistError at georag-postgresql:5432'],
+            500,
+        )]);
+        Log::spy();
+        $run = $this->answerRunIn($this->projectA);
+
+        $response = $this->actingAs($this->user, 'sanctum')
+            ->getJson($this->url($run))
+            ->assertStatus(500)
+            ->assertExactJson(['error' => 'upstream_error', 'status' => 500]);
+
+        $this->assertStringNotContainsString('asyncpg', $response->getContent());
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $message, array $context): bool => $context['status'] === 500
+                && str_contains((string) $context['body'], 'asyncpg'),
+        )->once();
     }
 
     public function test_an_unreachable_upstream_is_a_502_without_internal_detail(): void

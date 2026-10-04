@@ -8,10 +8,12 @@ use App\Events\Admin\AdminSurfaceUpdated;
 use App\Events\Workspace\WorkspaceActivityBroadcast;
 use App\Events\WorkspaceDataUpdated;
 use App\Jobs\DebounceWorkspaceMvRefresh;
+use Illuminate\Contracts\Queue\Job;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
+use Mockery;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -68,6 +70,67 @@ final class DebounceWorkspaceMvRefreshFailedViewTest extends TestCase
         });
         Event::assertDispatched(WorkspaceActivityBroadcast::class);
         Event::assertNotDispatched(AdminSurfaceUpdated::class);
+    }
+
+    private function jobOnAttempt(int $attempt): DebounceWorkspaceMvRefresh
+    {
+        $queueJob = Mockery::mock(Job::class);
+        $queueJob->shouldReceive('attempts')->andReturn($attempt);
+
+        $job = $this->job();
+        $job->setJob($queueJob);
+
+        return $job;
+    }
+
+    public function test_a_retry_whose_view_failed_again_does_not_rebroadcast_but_still_throws(): void
+    {
+        Http::fake([
+            'fastapi.test/internal/v1/mv-refresh/run' => Http::response([
+                'results' => [['view_name' => 'silver.mv_collar_summary', 'status' => 'failed']],
+            ]),
+        ]);
+
+        try {
+            $this->jobOnAttempt(2)->handle();
+            $this->fail('the job must still throw so the queue keeps retrying');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('failed to refresh', $e->getMessage());
+        }
+
+        Event::assertNotDispatched(WorkspaceDataUpdated::class);
+        Event::assertNotDispatched(WorkspaceActivityBroadcast::class);
+    }
+
+    public function test_the_first_attempt_emits_exactly_once_when_a_view_fails(): void
+    {
+        Http::fake([
+            'fastapi.test/internal/v1/mv-refresh/run' => Http::response([
+                'results' => [['view_name' => 'silver.mv_collar_summary', 'status' => 'failed']],
+            ]),
+        ]);
+
+        try {
+            $this->jobOnAttempt(1)->handle();
+        } catch (RuntimeException) {
+            // expected
+        }
+
+        Event::assertDispatchedTimes(WorkspaceDataUpdated::class, 1);
+    }
+
+    public function test_a_retry_that_succeeds_emits_the_now_fresh_types(): void
+    {
+        Http::fake([
+            'fastapi.test/internal/v1/mv-refresh/run' => Http::response([
+                'results' => [['view_name' => 'silver.mv_collar_summary', 'status' => 'completed']],
+            ]),
+            'fastapi.test/internal/v1/metrics/*' => Http::response([], 200),
+        ]);
+
+        $this->jobOnAttempt(3)->handle();
+
+        Event::assertDispatched(WorkspaceDataUpdated::class, fn (WorkspaceDataUpdated $e): bool => in_array('collars', $e->affectedTypes, true));
     }
 
     public function test_the_job_keeps_its_retry_configuration(): void

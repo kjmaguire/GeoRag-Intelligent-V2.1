@@ -10,6 +10,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -437,5 +438,138 @@ class DrillUploadControllerTest extends TestCase
             $row->mime_type,
             'mime_type must come from server-side content sniffing, not the client-declared value',
         );
+    }
+
+    public function test_a_concurrent_identical_upload_is_a_duplicate_not_a_second_dispatch(): void
+    {
+        $content = "hole_id,east,north\nDH001,500000,6000000\n";
+        $sha = hash('sha256', $content);
+
+        // Another request for the same bytes into this project is between
+        // its bronze insert and FastAPI's ingest_progress write: it holds
+        // the lock, and there is no progress row yet for the dedupe SELECT
+        // to find.
+        $held = Cache::lock("drill-upload:{$this->workspaceId}:{$this->project->project_id}:{$sha}", 60);
+        $this->assertTrue($held->get());
+
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv', $content)])
+            ->assertOk()
+            ->assertJsonPath('duplicate', true);
+
+        $this->assertSame(0, $this->triggerCount(), 'a concurrent duplicate must not dispatch');
+        $this->assertCount(0, DB::table('bronze.source_files')->where('workspace_id', $this->workspaceId)->get());
+
+        // Once the first request finishes, the lock is free again.
+        $held->release();
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv', $content)])
+            ->assertCreated();
+        $this->assertSame(1, $this->triggerCount());
+    }
+
+    public function test_the_upload_lock_is_released_after_the_request(): void
+    {
+        $content = "hole_id,east,north\nDH001,500000,6000000\n";
+        $sha = hash('sha256', $content);
+
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv', $content)])
+            ->assertCreated();
+
+        $lock = Cache::lock("drill-upload:{$this->workspaceId}:{$this->project->project_id}:{$sha}", 60);
+        $this->assertTrue($lock->get(), 'the lock must be released when the request ends');
+        $lock->release();
+    }
+
+    /**
+     * Make the bronze.source_files INSERT fail once, as a unique-violation
+     * loser would, after (optionally) landing the winner's row.
+     *
+     * @param string|null $winnerKey null = no winner row; 'SAME' = the winner
+     *                               minted the very key the loser did
+     */
+    private function failBronzeInsertOnce(string $content, ?string $winnerKey): void
+    {
+        $armed = true;
+        $workspaceId = $this->workspaceId;
+        $userId = $this->user->id;
+        DB::beforeExecuting(function (string $query, array $bindings) use (&$armed, $content, $winnerKey, $workspaceId, $userId): void {
+            if (! $armed || ! str_starts_with($query, 'insert into "bronze"."source_files"')) {
+                return;
+            }
+            $armed = false;
+            $mintedKey = collect($bindings)->first(
+                fn ($b) => is_string($b) && str_starts_with($b, 'drill-uploads/'),
+            );
+            if ($winnerKey !== null) {
+                DB::table('bronze.source_files')->insert([
+                    'id' => (string) Str::uuid(),
+                    'workspace_id' => $workspaceId,
+                    'seaweedfs_key' => $winnerKey === 'SAME' ? $mintedKey : $winnerKey,
+                    'original_filename' => 'winner.csv',
+                    'file_sha256' => hash('sha256', $content),
+                    'file_size_bytes' => strlen($content),
+                    'mime_type' => 'text/csv',
+                    'source_type' => 'drill_upload',
+                    'data_type' => 'collar',
+                    'campaign_id' => null,
+                    'ingested_by' => (string) $userId,
+                    'ingested_at' => now(),
+                ]);
+            }
+
+            throw new \RuntimeException('simulated unique violation');
+        });
+    }
+
+    public function test_a_losing_racer_does_not_delete_the_winners_object(): void
+    {
+        $content = "hole_id,east,north\nDH001,500000,6000000\n";
+        // Same bytes, same second -> the winner minted the very same key.
+        $this->failBronzeInsertOnce($content, 'SAME');
+
+        $response = $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv', $content)])
+            ->assertOk()
+            ->assertJsonPath('duplicate', true);
+
+        $this->assertTrue(
+            Storage::disk('s3')->exists((string) $response->json('seaweedfs_key')),
+            'the object the winner row points at must survive the loser\'s catch',
+        );
+        $this->assertSame(0, $this->triggerCount());
+    }
+
+    public function test_a_losing_racer_deletes_the_object_it_created_itself(): void
+    {
+        $content = "hole_id,east,north\nDH001,500000,6000000\n";
+        $winnerKey = 'drill-uploads/'.$this->workspaceId.'/winner_key.csv';
+        $this->failBronzeInsertOnce($content, $winnerKey);
+
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv', $content)])
+            ->assertOk()
+            ->assertJsonPath('duplicate', true)
+            ->assertJsonPath('seaweedfs_key', $winnerKey);
+
+        $this->assertSame(
+            [],
+            Storage::disk('s3')->allFiles('drill-uploads'),
+            'the loser\'s own, now-unreferenced object is removed',
+        );
+    }
+
+    public function test_a_failed_insert_with_no_winner_removes_the_orphan_and_500s(): void
+    {
+        $content = "hole_id,east,north\nDH001,500000,6000000\n";
+        $this->failBronzeInsertOnce($content, null);
+
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv', $content)])
+            ->assertStatus(500)
+            ->assertJsonPath('error', 'persist_failed');
+
+        $this->assertSame([], Storage::disk('s3')->allFiles('drill-uploads'));
     }
 }

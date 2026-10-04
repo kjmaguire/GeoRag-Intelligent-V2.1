@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -105,10 +106,18 @@ class TrustController extends Controller
                 ], 502);
             }
 
-            return response()->json([
-                'error' => 'fastapi non-2xx',
+            // FastAPI's body stays server-side: it can name internal hosts
+            // and carry framework error text. The browser gets the status
+            // only.
+            Log::warning('TrustController: FastAPI returned non-2xx', [
+                'answer_run_id' => $answerRunId,
                 'status' => $resp->status(),
-                'body' => $resp->json() ?? $resp->body(),
+                'body' => substr($resp->body(), 0, 480),
+            ]);
+
+            return response()->json([
+                'error' => 'upstream_error',
+                'status' => $resp->status(),
             ], $resp->status() >= 400 && $resp->status() < 600 ? $resp->status() : 502);
         }
 

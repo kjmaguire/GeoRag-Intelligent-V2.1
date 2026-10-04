@@ -47,21 +47,24 @@ final class StreamQueryFailClosedTest extends TestCase
     }
 
     /**
+     * Every failure reaches the browser as ACCESS_CHECK_FAILED; the message
+     * says whether the check errored (retry) or came back negative.
+     *
      * @return array<string, array{0: string, 1: string}>
      */
     public static function unresolvedIdentityCases(): array
     {
         return [
-            'audit lookup throws' => ['auditLookupThrows', 'AUDIT_LOOKUP_FAILED'],
-            'workspace lookup throws' => ['workspaceLookupThrows', 'WORKSPACE_LOOKUP_FAILED'],
-            'project has no workspace' => ['workspaceMissing', 'WORKSPACE_UNRESOLVED'],
-            'audit row missing' => ['auditRowMissing', 'IDENTITY_UNRESOLVED'],
-            'audit row has no user' => ['userMissing', 'IDENTITY_UNRESOLVED'],
+            'audit lookup throws' => ['auditLookupThrows', 'could not verify your access'],
+            'workspace lookup throws' => ['workspaceLookupThrows', 'could not verify your access'],
+            'project has no workspace' => ['workspaceMissing', 'do not appear to have access'],
+            'audit row missing' => ['auditRowMissing', 'do not appear to have access'],
+            'audit row has no user' => ['userMissing', 'do not appear to have access'],
         ];
     }
 
     #[DataProvider('unresolvedIdentityCases')]
-    public function test_an_unresolved_identity_fails_the_job_without_calling_fastapi(string $break, string $expectedCode): void
+    public function test_an_unresolved_identity_fails_the_job_without_calling_fastapi(string $break, string $expectedMessage): void
     {
         Event::fake([QueryStreamEvent::class]);
         $job = $this->job();
@@ -79,14 +82,66 @@ final class StreamQueryFailClosedTest extends TestCase
         $this->assertNull($job->sentPayload, 'FastAPI must not be called without a resolved user and workspace.');
         Event::assertNotDispatched(QueryStreamEvent::class, fn (QueryStreamEvent $e): bool => $e->eventType === 'completed');
         Event::assertDispatchedTimes(QueryStreamEvent::class, 1);
-        Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e) use ($expectedCode): bool {
+        Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e) use ($expectedMessage): bool {
             $wire = (string) json_encode($e->payload);
 
             return $e->eventType === 'failed'
-                && $e->payload['code'] === $expectedCode
+                && $e->payload['code'] === 'ACCESS_CHECK_FAILED'
+                && str_contains((string) $e->payload['error'], $expectedMessage)
                 && ! str_contains($wire, 'SQLSTATE')
                 && ! str_contains($wire, 'unknown');
         });
+    }
+
+    public function test_the_audit_marker_keeps_the_specific_reason(): void
+    {
+        Event::fake([QueryStreamEvent::class]);
+        $row = new class extends QueryAuditLog
+        {
+            public function save(array $options = []): bool
+            {
+                return true;
+            }
+        };
+        $row->forceFill(['user_id' => 7]);
+        $job = $this->job();
+        $job->auditRow = $row;
+        $job->workspaceId = null;
+
+        $job->handle();
+
+        $this->assertStringContainsString('WORKSPACE_UNRESOLVED', (string) $row->response_text);
+        $this->assertStringNotContainsString('ACCESS_CHECK_FAILED', (string) $row->response_text);
+    }
+
+    public function test_a_fastapi_503_is_reported_as_a_retryable_project_check_failure(): void
+    {
+        Event::fake([QueryStreamEvent::class]);
+        $job = $this->job('{"detail":"project_lifecycle_check_unavailable"}');
+        $job->fakeStatus = 503;
+
+        $job->handle();
+
+        Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e): bool {
+            return $e->eventType === 'failed'
+                && $e->payload['code'] === 'SERVICE_UNAVAILABLE'
+                && $e->payload['error'] === 'The project could not be checked right now. Please try again in a few seconds.'
+                && ! str_contains((string) json_encode($e->payload), 'HTTP 503')
+                && ! str_contains((string) json_encode($e->payload), 'project_lifecycle_check_unavailable');
+        });
+    }
+
+    public function test_other_non_2xx_statuses_keep_the_generic_message(): void
+    {
+        Event::fake([QueryStreamEvent::class]);
+        $job = $this->job('boom');
+        $job->fakeStatus = 500;
+
+        $job->handle();
+
+        Event::assertDispatched(QueryStreamEvent::class, fn (QueryStreamEvent $e): bool => $e->eventType === 'failed'
+            && $e->payload['code'] === 500
+            && str_contains((string) $e->payload['error'], 'HTTP 500'));
     }
 
     public function test_a_resolved_identity_streams_normally(): void

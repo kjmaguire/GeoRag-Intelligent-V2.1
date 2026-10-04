@@ -40,6 +40,8 @@ use Illuminate\Http\Request;
  * Supported source_chunk_id prefixes
  * ----------------------------------
  *   silver.collars:count=20:first=...
+ *   silver.collars:hole=PLS-20-01:collar=<uuid>:assays=12:litho=4
+ *   silver.collars:miss
  *   silver.lithology_logs:hole=PLS-20-01:collar=...:intervals=4
  *   silver.samples:element=U3O8_ppm:count=25
  *   georag_reports:44a67709-...:section=13:chunk=...

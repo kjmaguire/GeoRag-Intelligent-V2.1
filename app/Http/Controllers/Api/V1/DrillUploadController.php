@@ -17,6 +17,8 @@ use App\Support\UploadContentGuard;
 use App\Support\Uploads;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -156,6 +158,57 @@ class DrillUploadController extends Controller
 
         $shortSha = substr($sha256, 0, 8);
 
+        // Serialise dedupe-through-dispatch per (workspace, project, bytes).
+        // Between the bronze insert and FastAPI writing the ingest_progress
+        // row there is a window in which a second identical upload finds a
+        // bronze row but no progress row, concludes the file was never
+        // processed, and dispatches the same key again. The lock closes that
+        // window; a caller that cannot take it is a concurrent duplicate of
+        // an upload that is already being handled. The TTL only bounds a
+        // crashed worker -- the happy path releases in `finally`.
+        $lock = Cache::lock("drill-upload:{$workspaceId}:{$project->project_id}:{$sha256}", 60);
+        if (! $lock->get()) {
+            $inFlight = DB::table('bronze.source_files')
+                ->where('workspace_id', $workspaceId)
+                ->where('file_sha256', $sha256)
+                ->first();
+
+            return response()->json([
+                'duplicate' => true,
+                'source_file_id' => $inFlight?->id,
+                'seaweedfs_key' => $inFlight?->seaweedfs_key,
+                'message' => 'An identical upload is already being processed for this project.',
+            ], 200);
+        }
+
+        try {
+            return $this->ingestUnderLock(
+                $storage, $user, $project, $workspaceId, $file, $ext,
+                $originalName, $sha256, $shortSha, $validated,
+            );
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * The dedupe -> bronze write -> dispatch sequence, run while holding the
+     * per-(workspace, project, sha256) lock taken by {@see self::store()}.
+     *
+     * @param array<string, mixed> $validated
+     */
+    private function ingestUnderLock(
+        StorageService $storage,
+        User $user,
+        Project $project,
+        string $workspaceId,
+        UploadedFile $file,
+        string $ext,
+        string $originalName,
+        string $sha256,
+        string $shortSha,
+        array $validated,
+    ): JsonResponse {
         // Dedupe early, per (workspace, project, sha256). The bronze row is
         // unique per (workspace, sha256) -- it has no project column -- so a
         // row existing is NOT proof this PROJECT ever ingested the file:
@@ -260,21 +313,29 @@ class DrillUploadController extends Controller
                     'ingested_at' => now(),
                 ]);
             } catch (Throwable $e) {
-                // The object was written before the row — on any branch that
-                // exits without a row referencing $seaweedfsKey, delete it or
-                // it becomes invisible unbounded storage growth (the Tier-1
-                // sweep audits rows, not objects).
-                try {
-                    $storage->bronze()->delete($seaweedfsKey);
-                } catch (Throwable) {
-                    // Best-effort; orphan is logged below either way.
-                }
                 // Race: another request inserted the same (workspace_id, sha256)
-                // between our SELECT and INSERT. Return the canonical row.
+                // between our SELECT and INSERT. Look the winner up BEFORE
+                // touching the object: two first-time uploads of the same
+                // bytes in the same second mint the same key, so the loser's
+                // object IS the winner's object and deleting it would orphan
+                // the winner's row.
                 $canonical = DB::table('bronze.source_files')
                     ->where('workspace_id', $workspaceId)
                     ->where('file_sha256', $sha256)
                     ->first();
+
+                // The object was written before the row — on any branch that
+                // exits without a row referencing $seaweedfsKey, delete it or
+                // it becomes invisible unbounded storage growth (the Tier-1
+                // sweep audits rows, not objects). Delete only the object this
+                // request created: never one a bronze row already points at.
+                if ($canonical === null || (string) $canonical->seaweedfs_key !== $seaweedfsKey) {
+                    try {
+                        $storage->bronze()->delete($seaweedfsKey);
+                    } catch (Throwable) {
+                        // Best-effort; orphan is logged below either way.
+                    }
+                }
                 if ($canonical !== null) {
                     return response()->json([
                         'duplicate' => true,

@@ -68,8 +68,14 @@ final class IngestionSnapshot
     /** Lifetime of the rebuild lock; longer than any sane listing so a crashed worker cannot wedge it for long. */
     private const UPLOAD_LISTING_LOCK_SECONDS = 20;
 
-    /** How long a caller that lost the lock waits for the winner before serving stale data. */
-    private const UPLOAD_LISTING_LOCK_WAIT_SECONDS = 5;
+    /**
+     * How long a caller that lost the lock waits for the winner before serving stale data.
+     *
+     * block() sleeps in-process, so on Octane/Swoole it pins the worker for
+     * the whole wait; 2 s is the most a worker should give a listing it can
+     * serve stale instead.
+     */
+    private const UPLOAD_LISTING_LOCK_WAIT_SECONDS = 2;
 
     /**
      * Rows kept per section (reports, progress rows, bronze uploads), newest

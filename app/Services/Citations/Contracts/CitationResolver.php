@@ -60,8 +60,7 @@ interface CitationResolver
      * visible in the given workspace — deliberately identical for
      * "does not exist" and "exists in another tenant" so the endpoint is
      * not an existence oracle.
-     */
-    /**
+     *
      * @param list<string>|null $projectIds
      */
     public function resolve(string $sourceId, ?string $workspaceId = null, ?array $projectIds = null): JsonResponse;

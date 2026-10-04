@@ -371,10 +371,22 @@ class StreamQueryFromFastApi implements ShouldQueue
                     'status' => $statusCode,
                     'body' => substr($body, 0, 480),
                 ]);
-                $this->broadcastError(
-                    "The answer service returned an error (HTTP {$statusCode}). Please try again.",
-                    $statusCode,
-                );
+                // 503 is FastAPI's fail-closed answer when it could not
+                // check the project's lifecycle (project_lifecycle_check_
+                // unavailable, with Retry-After): transient and
+                // retryable, and "the answer service returned an error"
+                // says nothing about what to do.
+                if ($statusCode === 503) {
+                    $this->broadcastError(
+                        'The project could not be checked right now. Please try again in a few seconds.',
+                        'SERVICE_UNAVAILABLE',
+                    );
+                } else {
+                    $this->broadcastError(
+                        "The answer service returned an error (HTTP {$statusCode}). Please try again.",
+                        $statusCode,
+                    );
+                }
                 // Fall through to the shared audit finalisation instead of
                 // returning — an early return left every non-2xx run's
                 // audit row indistinguishable from "reserved but never
@@ -754,21 +766,42 @@ class StreamQueryFromFastApi implements ShouldQueue
     }
 
     /**
+     * User-facing code on the terminal frame for every pre-stream identity /
+     * workspace failure. The specific reason (AUDIT_LOOKUP_FAILED, ...) is an
+     * implementation detail: the UI renders the code as a title ("Reason:
+     * Audit Lookup Failed"), so it stays in the log and the audit marker only.
+     */
+    private const ACCESS_CHECK_FAILED = 'ACCESS_CHECK_FAILED';
+
+    /** Reasons where a lookup itself errored: nothing is known about access. */
+    private const ACCESS_LOOKUP_ERROR_REASONS = ['AUDIT_LOOKUP_FAILED', 'WORKSPACE_LOOKUP_FAILED'];
+
+    /**
      * End the job with a terminal `failed` frame BEFORE FastAPI is called,
      * because the caller's identity or workspace could not be established.
      *
      * Goes through dispatchSseEvent() so the terminal-delivery fallback
      * applies, then records the failure on the audit row when there is one.
-     * The user-facing text is deliberately generic; the cause is in the log.
+     * The frame carries the single user-facing code ACCESS_CHECK_FAILED and
+     * a message that separates "could not verify" (a lookup errored; retry)
+     * from "no access" (the identity or workspace did not resolve). The
+     * specific `$reason` goes to the log and the audit marker.
      */
-    private function failBeforeStream(string $code, ?QueryAuditLog $row): void
+    private function failBeforeStream(string $reason, ?QueryAuditLog $row): void
     {
+        $lookupErrored = in_array($reason, self::ACCESS_LOOKUP_ERROR_REASONS, true);
         $payload = [
             'event' => 'failed',
             'query_id' => $this->queryId,
-            'code' => $code,
-            'error' => 'We could not verify your access to this project, so the query was not run. Please try again.',
+            'code' => self::ACCESS_CHECK_FAILED,
+            'error' => $lookupErrored
+                ? 'We could not verify your access to this project right now, so the query was not run. Please try again in a few seconds.'
+                : 'You do not appear to have access to this project, so the query was not run. If you think this is a mistake, contact your administrator.',
         ];
+        Log::warning('StreamQueryFromFastApi: pre-stream access check failed', [
+            'query_id' => $this->queryId,
+            'reason' => $reason,
+        ]);
         $this->dispatchSseEvent('failed', (string) json_encode($payload));
 
         if ($row === null) {
@@ -776,7 +809,9 @@ class StreamQueryFromFastApi implements ShouldQueue
         }
 
         try {
-            $row->response_text = $this->formatFailureMarker($payload);
+            // The audit marker keeps the specific reason; only the browser
+            // sees the generic code.
+            $row->response_text = $this->formatFailureMarker(['code' => $reason] + $payload);
             $row->response_time_ms = (int) ((microtime(true) - $this->startTime) * 1000);
             $row->save();
         } catch (\Throwable $e) {

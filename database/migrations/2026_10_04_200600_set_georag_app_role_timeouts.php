@@ -42,7 +42,7 @@ use Illuminate\Support\Facades\DB;
  * OPERATOR NOTE. Role settings apply to NEW sessions only. After this runs,
  * existing connections (Octane workers, FastAPI pools, hatchet-worker) keep
  * their old settings until they reconnect: restart the ECS services, or wait for
- * the next nightly stop/start. And a statement longer than 120 s as georag_app
+ * the next nightly stop/start. And a statement longer than 300 s as georag_app
  * -- a very large COPY, a first-time MV population -- is now cancelled; a job
  * that legitimately needs longer must `SET LOCAL statement_timeout` for itself.
  *

@@ -10,6 +10,7 @@ use App\Events\WorkspaceDataUpdated;
 use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -84,6 +85,7 @@ use RuntimeException;
  */
 class DebounceWorkspaceMvRefresh implements ShouldQueue
 {
+    use InteractsWithQueue;
     use Queueable;
 
     /** Refresh debounce window (quiet period after the last completion). */
@@ -229,7 +231,16 @@ class DebounceWorkspaceMvRefresh implements ShouldQueue
         // `$anyCompleted` is logged, not gated on: on an empty results array
         // the honest reading is "nothing to refresh" and one redundant partial
         // reload costs less than suppressing a real update.
-        $this->emitDataUpdated($results);
+        //
+        // Only once per failing burst: a retry whose view failed again would
+        // re-broadcast an identical event (and re-trigger every open page's
+        // reload) on each of $tries attempts. The first attempt already told
+        // the pages about the non-MV rows; a retry emits only when it
+        // succeeds, because then the previously-failed view's types are newly
+        // fresh. attempts() is 1 when there is no queue job (direct call).
+        if (! $anyFailed || $this->attempts() === 1) {
+            $this->emitDataUpdated($results);
+        }
 
         if ($anyFailed) {
             // Throw AFTER emitting so the queue retries the MV part ($tries /

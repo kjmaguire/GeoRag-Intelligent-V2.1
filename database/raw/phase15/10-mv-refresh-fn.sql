@@ -19,25 +19,36 @@
 -- Idempotent.
 -- =============================================================================
 
+-- Body and search_path mirror migration 2026_10_04_200100 exactly, so a raw
+-- apply cannot revert the CONCURRENTLY refresh or the hardened search_path.
+-- CONCURRENTLY needs the unique index idx_mv_collar_summary_project and a
+-- populated view; an unpopulated one takes the plain form (no readers to
+-- protect on a first fill).
 CREATE OR REPLACE FUNCTION workflow.refresh_silver_agent_mvs()
 RETURNS TABLE (mv_name text, refreshed_at timestamptz)
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = workflow, silver, public, pg_catalog
-AS $$
+    SET search_path = pg_catalog, workflow
+AS $fn$
+DECLARE
+    v_populated boolean;
 BEGIN
-    -- silver.mv_collar_summary — agent's per-project facts source
-    REFRESH MATERIALIZED VIEW silver.mv_collar_summary;
+    SELECT m.ispopulated INTO v_populated
+      FROM pg_catalog.pg_matviews m
+     WHERE m.schemaname = 'silver'
+       AND m.matviewname = 'mv_collar_summary';
+
+    IF v_populated THEN
+        REFRESH MATERIALIZED VIEW CONCURRENTLY silver.mv_collar_summary;
+    ELSE
+        REFRESH MATERIALIZED VIEW silver.mv_collar_summary;
+    END IF;
+
     mv_name := 'silver.mv_collar_summary';
     refreshed_at := clock_timestamp();
     RETURN NEXT;
-
-    -- Future: additional agent-prompt MVs land here, one REFRESH +
-    -- RETURN NEXT block each. CONCURRENTLY is preferable for any
-    -- MV that has a UNIQUE index — silver.mv_collar_summary does
-    -- not currently, so we use the simpler form.
 END;
-$$;
+$fn$;
 
 GRANT EXECUTE ON FUNCTION workflow.refresh_silver_agent_mvs() TO georag_app;
 

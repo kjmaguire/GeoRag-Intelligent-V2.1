@@ -26,17 +26,12 @@ use Illuminate\Support\Facades\DB;
  *     scan. Complements idx_document_passages_pending_embed (document_id),
  *     which serves the per-document lookups and cannot give this ordering.
  *
- *   idx_document_passages_text_trgm / idx_entity_aliases_norm_trgm
- *     services/qdrant_fallback.py (the Qdrant-outage lexical fallback) and
- *     agent/entity_resolver.py (fuzzy alias match) call pg_trgm. A function in
- *     the WHERE (`strict_word_similarity(...) > x`, `similarity(...) >= x`)
- *     cannot use an index, so both scanned every row they were allowed to see;
- *     the entity_resolver comment even claimed a trigram index existed. Both
- *     now use the indexable operators (`<<%`, `%`), and these are the GIN
- *     trigram indexes they need. WRITE COST: the document_passages one indexes
- *     the full text of every passage, so it is large and slows ingestion
- *     inserts; it is worth it only because the fallback runs when semantic
- *     search is already down. pg_trgm itself is created by
+ *   idx_entity_aliases_norm_trgm
+ *     agent/entity_resolver.py (fuzzy alias match) calls pg_trgm. A function
+ *     in the WHERE (`similarity(...) >= x`) cannot use an index, so it scanned
+ *     every alias it was allowed to see; the entity_resolver comment even
+ *     claimed a trigram index existed. It now uses the indexable `%` operator,
+ *     and this is the GIN trigram index it needs. pg_trgm itself is created by
  *     2026_04_09_173750 / deploy/aws/bootstrap.sql; it is asserted here
  *     (IF NOT EXISTS) as 2026_05_23_120000 does.
  *
