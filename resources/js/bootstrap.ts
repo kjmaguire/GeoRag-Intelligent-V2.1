@@ -4,7 +4,7 @@ import Pusher from 'pusher-js';
 declare global {
     interface Window {
         Pusher: typeof Pusher;
-        Echo: any;
+        Echo: Echo<'reverb'>;
     }
 }
 
@@ -41,11 +41,12 @@ function shouldBounceOnAuthFailure(requestUrl: string | URL | Request): boolean 
     // anything cross-origin.
     let parsed: URL;
     try {
-        const raw = typeof requestUrl === 'string'
-            ? requestUrl
-            : requestUrl instanceof URL
-                ? requestUrl.href
-                : (requestUrl as Request).url;
+        const raw =
+            typeof requestUrl === 'string'
+                ? requestUrl
+                : requestUrl instanceof URL
+                  ? requestUrl.href
+                  : (requestUrl as Request).url;
         parsed = new URL(raw, window.location.origin);
     } catch {
         return false;
@@ -67,18 +68,14 @@ function redirectToLogin(): void {
         /* storage disabled is fine */
     }
     const returnTo = window.location.pathname + window.location.search;
-    const qs = returnTo && returnTo !== '/' && returnTo !== '/login'
-        ? `?return_to=${encodeURIComponent(returnTo)}`
-        : '';
+    const qs =
+        returnTo && returnTo !== '/' && returnTo !== '/login' ? `?return_to=${encodeURIComponent(returnTo)}` : '';
     window.location.href = `/login${qs}`;
 }
 
 if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     const originalFetch = window.fetch.bind(window);
-    window.fetch = async function patchedFetch(
-        input: RequestInfo | URL,
-        init?: RequestInit,
-    ): Promise<Response> {
+    window.fetch = async function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
         const response = await originalFetch(input, init);
         if (
             (response.status === 401 || response.status === 419) &&
@@ -99,14 +96,12 @@ window.Pusher = Pusher;
 // wsHost from window.location silently dials an endpoint that doesn't speak
 // WebSocket and every chat stream/progress event is lost. Falls back to the
 // page hostname for localhost / docker-compose builds, where that is correct.
-const reverbScheme: string = import.meta.env.VITE_REVERB_SCHEME
-    ?? (window.location.protocol === 'https:' ? 'https' : 'http');
+const reverbScheme: string =
+    import.meta.env.VITE_REVERB_SCHEME ?? (window.location.protocol === 'https:' ? 'https' : 'http');
 const reverbHost: string = import.meta.env.VITE_REVERB_HOST || window.location.hostname;
 // Port default follows the scheme: TLS deployments terminate on 443;
 // plain-http local stacks keep the legacy 8085 Reverb port.
-const reverbPort: number = Number(
-    import.meta.env.VITE_REVERB_PORT || (reverbScheme === 'https' ? 443 : 8085),
-);
+const reverbPort: number = Number(import.meta.env.VITE_REVERB_PORT || (reverbScheme === 'https' ? 443 : 8085));
 if (!import.meta.env.VITE_REVERB_APP_KEY) {
     console.error('GeoRAG: VITE_REVERB_APP_KEY is not set in this build, so live chat updates cannot connect.');
 }

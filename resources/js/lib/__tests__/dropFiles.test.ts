@@ -95,10 +95,7 @@ describe('filesFromDataTransfer', () => {
 
         const files = await filesFromDataTransfer(dataTransferOf([dirEntry('delivery', tree)]));
 
-        expect(files.map(relPath).sort()).toEqual([
-            'delivery/claims/faults.shp',
-            'delivery/geology/faults.shp',
-        ]);
+        expect(files.map(relPath).sort()).toEqual(['delivery/claims/faults.shp', 'delivery/geology/faults.shp']);
     });
 
     it('leaves a path the directory picker already set alone', async () => {
@@ -141,7 +138,12 @@ describe('filesFromDataTransfer', () => {
         // A folder the browser refuses to read must not silently swallow the
         // plain list that came with the same drop.
         const plain = new File(['x'], 'loose.csv');
-        const unreadable = { isFile: false, isDirectory: true, name: 'nope', createReader: () => ({ readEntries: (ok: (e: unknown[]) => void) => ok([]) }) };
+        const unreadable = {
+            isFile: false,
+            isDirectory: true,
+            name: 'nope',
+            createReader: () => ({ readEntries: (ok: (e: unknown[]) => void) => ok([]) }),
+        };
 
         const files = await filesFromDataTransfer(dataTransferOf([unreadable], [plain]));
 

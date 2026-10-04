@@ -64,7 +64,10 @@ export function Card({
                 >
                     <div className="flex flex-col gap-0.5">
                         {eyebrow && (
-                            <div className="text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>
+                            <div
+                                className="text-[10px] font-mono uppercase tracking-[0.12em]"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
                                 {eyebrow}
                             </div>
                         )}
@@ -199,13 +202,18 @@ export function EmptyState({
 }) {
     return (
         <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
-            <div className="w-10 h-10 rounded border border-dashed flex items-center justify-center mb-4" style={{ borderColor: 'var(--line-2)', color: 'var(--fg-3)' }}>
+            <div
+                className="w-10 h-10 rounded border border-dashed flex items-center justify-center mb-4"
+                style={{ borderColor: 'var(--line-2)', color: 'var(--fg-3)' }}
+            >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <circle cx="12" cy="12" r="9" />
                     <path d="M8 12h8" />
                 </svg>
             </div>
-            <div className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>{title}</div>
+            <div className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>
+                {title}
+            </div>
             {detail && (
                 <div className="text-xs mt-1.5 max-w-md" style={{ color: 'var(--fg-2)' }}>
                     {detail}
@@ -243,23 +251,21 @@ export function PageHeader({
     actions?: React.ReactNode;
 }) {
     return (
-        <header
-            className="flex items-end gap-4 px-8 pt-6 pb-4 border-b"
-            style={{ borderColor: 'var(--line-1)' }}
-        >
+        <header className="flex items-end gap-4 px-8 pt-6 pb-4 border-b" style={{ borderColor: 'var(--line-1)' }}>
             <div className="flex-1">
                 {eyebrow && (
                     <div className="text-[10px] font-mono uppercase tracking-[0.14em]" style={{ color: 'var(--fg-3)' }}>
                         {eyebrow}
                     </div>
                 )}
-                <h1
-                    className="text-3xl font-semibold mt-1"
-                    style={{ color: 'var(--fg-0)', letterSpacing: '-0.02em' }}
-                >
+                <h1 className="text-3xl font-semibold mt-1" style={{ color: 'var(--fg-0)', letterSpacing: '-0.02em' }}>
                     {title}
                 </h1>
-                {sub && <div className="text-xs mt-1.5" style={{ color: 'var(--fg-3)' }}>{sub}</div>}
+                {sub && (
+                    <div className="text-xs mt-1.5" style={{ color: 'var(--fg-3)' }}>
+                        {sub}
+                    </div>
+                )}
             </div>
             {actions && <div className="flex items-center gap-2">{actions}</div>}
         </header>
@@ -315,10 +321,7 @@ export function ProgressBar({
 }) {
     const pct = Math.max(0, Math.min(100, (value / max) * 100));
     return (
-        <div
-            className="rounded-sm overflow-hidden w-full"
-            style={{ background: 'var(--bg-3)', height }}
-        >
+        <div className="rounded-sm overflow-hidden w-full" style={{ background: 'var(--bg-3)', height }}>
             <div
                 style={{
                     width: `${pct}%`,
@@ -361,7 +364,12 @@ export function Modal({
     zIndex?: number;
 }) {
     return (
-        <DialogPrimitive.Root open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
+        <DialogPrimitive.Root
+            open={open}
+            onOpenChange={(next) => {
+                if (!next) onClose();
+            }}
+        >
             <DialogPrimitive.Overlay
                 data-testid="modal-overlay"
                 className="fixed inset-0"

@@ -25,15 +25,7 @@ describe('MVT_LAYERS registry', () => {
 
     it('contains all 7 silver layers', () => {
         const ids = MVT_LAYERS.map((l) => l.id);
-        const required = [
-            'collars',
-            'traces',
-            'boundaries',
-            'formations',
-            'historic-workings',
-            'seismic',
-            'geochem',
-        ];
+        const required = ['collars', 'traces', 'boundaries', 'formations', 'historic-workings', 'seismic', 'geochem'];
         for (const id of required) {
             expect(ids).toContain(id);
         }
@@ -147,10 +139,7 @@ describe('MVT_DEFAULT_VISIBILITY', () => {
     });
 
     it('all 7 layers have a default visibility entry', () => {
-        const required = [
-            'collars', 'traces', 'boundaries', 'formations',
-            'historic-workings', 'seismic', 'geochem',
-        ];
+        const required = ['collars', 'traces', 'boundaries', 'formations', 'historic-workings', 'seismic', 'geochem'];
         for (const id of required) {
             expect(MVT_DEFAULT_VISIBILITY).toHaveProperty(id);
             expect(typeof MVT_DEFAULT_VISIBILITY[id]).toBe('boolean');
@@ -168,24 +157,24 @@ describe('sourceLayer values — confirmed from ST_AsMVT literals in migrations'
     };
 
     // Migration: 2026_04_22_130000_create_silver_mvt_functions.php
-    it('collars sourceLayer = "collars" (ST_AsMVT(tile, \'collars\', 4096, \'geom\'))', () => {
+    it("collars sourceLayer = \"collars\" (ST_AsMVT(tile, 'collars', 4096, 'geom'))", () => {
         expect(getSourceLayer('collars')).toBe('collars');
     });
 
-    it('traces sourceLayer = "drill_traces" (ST_AsMVT(tile, \'drill_traces\', 4096, \'geom\'))', () => {
+    it("traces sourceLayer = \"drill_traces\" (ST_AsMVT(tile, 'drill_traces', 4096, 'geom'))", () => {
         expect(getSourceLayer('traces')).toBe('drill_traces');
     });
 
-    it('seismic sourceLayer = "seismic" (ST_AsMVT(tile, \'seismic\', 4096, \'geom\'))', () => {
+    it("seismic sourceLayer = \"seismic\" (ST_AsMVT(tile, 'seismic', 4096, 'geom'))", () => {
         expect(getSourceLayer('seismic')).toBe('seismic');
     });
 
     // Migration: 2026_04_22_140000_create_silver_boundary_formation_working_geochem.php
-    it('boundaries sourceLayer = "boundaries" (ST_AsMVT(tile, \'boundaries\', 4096, \'geom\'))', () => {
+    it("boundaries sourceLayer = \"boundaries\" (ST_AsMVT(tile, 'boundaries', 4096, 'geom'))", () => {
         expect(getSourceLayer('boundaries')).toBe('boundaries');
     });
 
-    it('formations sourceLayer = "formations" (ST_AsMVT(tile, \'formations\', 4096, \'geom\'))', () => {
+    it("formations sourceLayer = \"formations\" (ST_AsMVT(tile, 'formations', 4096, 'geom'))", () => {
         expect(getSourceLayer('formations')).toBe('formations');
     });
 
@@ -193,7 +182,7 @@ describe('sourceLayer values — confirmed from ST_AsMVT literals in migrations'
         expect(getSourceLayer('historic-workings')).toBe('historic_workings');
     });
 
-    it('geochem sourceLayer = "geochem" (ST_AsMVT(tile, \'geochem\', 4096, \'geom\'))', () => {
+    it("geochem sourceLayer = \"geochem\" (ST_AsMVT(tile, 'geochem', 4096, 'geom'))", () => {
         expect(getSourceLayer('geochem')).toBe('geochem');
     });
 });

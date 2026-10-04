@@ -122,10 +122,7 @@ export default function FoundrySources({
         <>
             <Head title={`Data · ${project.project_name}`} />
 
-            <div
-                className="flex-1 overflow-y-auto"
-                style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}
-            >
+            <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
                 <PageHeader
                     eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · DATA`}
                     title="Project data sources and import history"
@@ -254,10 +251,7 @@ export default function FoundrySources({
 
                         {/* Tabs */}
                         <section className="px-8">
-                            <div
-                                className="flex items-center gap-1 border-b"
-                                style={{ borderColor: 'var(--line-1)' }}
-                            >
+                            <div className="flex items-center gap-1 border-b" style={{ borderColor: 'var(--line-1)' }}>
                                 {TABS.map((t) => (
                                     <button
                                         key={t.id}
@@ -267,8 +261,7 @@ export default function FoundrySources({
                                         style={{
                                             color: tab === t.id ? 'var(--accent)' : 'var(--fg-2)',
                                             borderBottom:
-                                                '2px solid ' +
-                                                (tab === t.id ? 'var(--accent)' : 'transparent'),
+                                                '2px solid ' + (tab === t.id ? 'var(--accent)' : 'transparent'),
                                         }}
                                     >
                                         {t.label}
@@ -278,7 +271,13 @@ export default function FoundrySources({
                         </section>
 
                         <section className="px-8 py-6">
-                            {tab === 'inventory' && <FileInventoryTab rows={file_types} totalFiles={stats.total_files_in_project} totalBytes={stats.total_bytes_in_project} />}
+                            {tab === 'inventory' && (
+                                <FileInventoryTab
+                                    rows={file_types}
+                                    totalFiles={stats.total_files_in_project}
+                                    totalBytes={stats.total_bytes_in_project}
+                                />
+                            )}
                             {tab === 'parsers' && <ParsersTab rows={parser_activity} />}
                             {tab === 'reports' && <ReportsTab rows={reports} project={project} stats={stats} />}
                             {tab === 'runs' && <RunsTab rows={recent_runs} />}
@@ -319,7 +318,10 @@ function FileInventoryTab({
                                 <div className="flex items-center gap-2">
                                     <Pill tone={kindTone(r.kind)}>{r.kind}</Pill>
                                 </div>
-                                <div className="relative h-3 rounded overflow-hidden" style={{ background: 'var(--bg-2)' }}>
+                                <div
+                                    className="relative h-3 rounded overflow-hidden"
+                                    style={{ background: 'var(--bg-2)' }}
+                                >
                                     <div
                                         className="absolute inset-y-0 left-0"
                                         style={{
@@ -366,8 +368,8 @@ function ParsersTab({ rows }: { rows: ParserActivityRow[] }) {
     return (
         <Card eyebrow="DATA LINEAGE" title="File readers used on this project's data">
             <div className="text-xs mb-3" style={{ color: 'var(--fg-2)' }}>
-                Every drill collar and report in this project is tagged with the file reader that
-                loaded it. Use this to see which import routes produced the data you're querying.
+                Every drill collar and report in this project is tagged with the file reader that loaded it. Use this to
+                see which import routes produced the data you're querying.
             </div>
             {rows.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--fg-3)' }}>
@@ -430,8 +432,8 @@ function ReportsTab({
             title={`${stats.reports_in_project.toLocaleString()} reports linked to ${project.project_name}`}
         >
             <div className="text-xs mb-3" style={{ color: 'var(--fg-2)' }}>
-                Reports that have been processed and are searchable in this project.
-                Showing the {Math.min(rows.length, 30)} most recent.
+                Reports that have been processed and are searchable in this project. Showing the{' '}
+                {Math.min(rows.length, 30)} most recent.
             </div>
             {rows.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--fg-3)' }}>
@@ -483,9 +485,8 @@ function RunsTab({ rows }: { rows: IngestRunRow[] }) {
     return (
         <Card eyebrow="IMPORT JOBS" title="Ingestion jobs that touched this project's sections">
             <div className="text-xs mb-3" style={{ color: 'var(--fg-2)' }}>
-                Every import of an archive (zip or folder) is listed here with its file counts and
-                sizes. A status other than completed means the archive is still being processed or
-                has stalled.
+                Every import of an archive (zip or folder) is listed here with its file counts and sizes. A status other
+                than completed means the archive is still being processed or has stalled.
             </div>
             {rows.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--fg-3)' }}>
@@ -571,14 +572,8 @@ function StatTile({
                 ? 'var(--info, #6aa7ff)'
                 : 'var(--fg-0)';
     return (
-        <div
-            className="p-3 rounded-md border"
-            style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
-        >
-            <div
-                className="text-[10px] font-mono uppercase tracking-wider mb-1"
-                style={{ color: 'var(--fg-3)' }}
-            >
+        <div className="p-3 rounded-md border" style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}>
+            <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>
                 {label}
             </div>
             <div className="text-xl font-mono" style={{ color }}>

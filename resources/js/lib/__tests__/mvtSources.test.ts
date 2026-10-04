@@ -54,9 +54,7 @@ function fakeMap() {
 
 const OPTS = { projectId: 'p-1', dataVersion: 7 };
 
-const spatial = MVT_LAYERS.filter(
-    (l) => l.functionName === 'pg_spatial_features_by_project',
-);
+const spatial = MVT_LAYERS.filter((l) => l.functionName === 'pg_spatial_features_by_project');
 
 describe('addMvtLayers', () => {
     it('adds a style layer for every definition', () => {

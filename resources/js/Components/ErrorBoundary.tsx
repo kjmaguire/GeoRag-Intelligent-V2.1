@@ -61,7 +61,7 @@ export class ErrorBoundary extends Component<Props, State> {
             /* telemetry is best-effort */
         }
         // Always surface in console for developers.
-        // eslint-disable-next-line no-console
+
         console.error('[ErrorBoundary]', this.props.scope ?? 'root', error, info.componentStack);
     }
 
@@ -79,8 +79,7 @@ export class ErrorBoundary extends Component<Props, State> {
         if (!this.state.error) return this.props.children;
 
         const isDev =
-            typeof import.meta !== 'undefined' &&
-            (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+            typeof import.meta !== 'undefined' && (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
 
         return (
             <div
@@ -94,8 +93,8 @@ export class ErrorBoundary extends Component<Props, State> {
                         <h1 className="text-lg font-semibold">Something went wrong</h1>
                     </div>
                     <p className="text-sm text-[var(--fg-2)] mb-4">
-                        The page hit an unexpected error. Your session is still active — try
-                        recovering the current view or reloading the app.
+                        The page hit an unexpected error. Your session is still active — try recovering the current view
+                        or reloading the app.
                     </p>
                     {isDev && (
                         <pre className="text-xs text-[var(--danger)] bg-[var(--bg-0)] border border-[color:var(--line-1)] rounded-lg p-3 mb-4 overflow-auto max-h-48 whitespace-pre-wrap break-all">

@@ -18,14 +18,20 @@ import { lithologyColour, type StripTracks } from '../../lib/stripLog';
 const tracks: StripTracks = {
     lithology: [
         {
-            from: 0, to: 5, code: 'GRN', label: 'Grey granite', color: '#8899aa',
+            from: 0,
+            to: 5,
+            code: 'GRN',
+            label: 'Grey granite',
+            color: '#8899aa',
             detail: { description: 'Grey granite', colour: 'dark grey', grain_size: 'Fine', rqd: 85, recovery: 98 },
         },
         { from: 5, to: 10, code: 'SST', label: 'Sandstone', color: '' },
     ],
     alteration: [
         {
-            from: 0, to: 5, label: 'Chlorite (Strong); Silica',
+            from: 0,
+            to: 5,
+            label: 'Chlorite (Strong); Silica',
             alterations: [
                 { type: 'Chlorite', intensity: 'Strong', minerals: ['chlorite'], notes: null },
                 { type: 'Silica', intensity: null, minerals: [], notes: null },
@@ -34,7 +40,15 @@ const tracks: StripTracks = {
     ],
     mineralization: [
         { from: 5, to: 10, mineral: 'Pyrite', abundance_pct: 3, form: 'Disseminated', grain_size: null, notes: null },
-        { from: 5, to: 10, mineral: 'Chalcopyrite', abundance_pct: null, form: null, grain_size: null, notes: 'abundance: trace' },
+        {
+            from: 5,
+            to: 10,
+            mineral: 'Chalcopyrite',
+            abundance_pct: null,
+            form: null,
+            grain_size: null,
+            notes: 'abundance: trace',
+        },
     ],
     truncated: { lithology: false, alteration: false, mineralization: false },
 };
@@ -200,16 +214,54 @@ describe('StripLogViewer (inline in chat)', () => {
     afterEach(() => vi.restoreAllMocks());
 
     const collar = {
-        collar_id: 'c1', hole_id: 'DH-9', project_id: 'p1', total_depth: 0, azimuth: 0, dip: -60,
+        collar_id: 'c1',
+        hole_id: 'DH-9',
+        project_id: 'p1',
+        total_depth: 0,
+        azimuth: 0,
+        dip: -60,
         lithology_logs: [
-            { log_id: 'a', from_depth: 0, to_depth: 5, lithology_code: 'QZ-MON', lithology_description: 'Quartz monzonite', color: '#334455', rqd: 80, recovery: 95 },
-            { log_id: 'b', from_depth: 5, to_depth: 12, lithology_code: 'SST', lithology_description: 'Sandstone', color: 'red' },
+            {
+                log_id: 'a',
+                from_depth: 0,
+                to_depth: 5,
+                lithology_code: 'QZ-MON',
+                lithology_description: 'Quartz monzonite',
+                color: '#334455',
+                rqd: 80,
+                recovery: 95,
+            },
+            {
+                log_id: 'b',
+                from_depth: 5,
+                to_depth: 12,
+                lithology_code: 'SST',
+                lithology_description: 'Sandstone',
+                color: 'red',
+            },
         ],
         alterations: [
-            { alteration_id: 'x', from_depth: 0, to_depth: 5, alteration_type: 'Chlorite', intensity: 'Strong', minerals: [], notes: null },
+            {
+                alteration_id: 'x',
+                from_depth: 0,
+                to_depth: 5,
+                alteration_type: 'Chlorite',
+                intensity: 'Strong',
+                minerals: [],
+                notes: null,
+            },
         ],
         mineralization: [
-            { mineralization_id: 'm', from_depth: 5, to_depth: 12, mineral: 'Pyrite', abundance_pct: 3, form: null, grain_size: null, notes: null },
+            {
+                mineralization_id: 'm',
+                from_depth: 5,
+                to_depth: 12,
+                mineral: 'Pyrite',
+                abundance_pct: 3,
+                form: null,
+                grain_size: null,
+                notes: null,
+            },
         ],
         well_log_curves: [],
     };

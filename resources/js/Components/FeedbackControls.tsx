@@ -24,12 +24,7 @@ import { useEffect, useRef, useState } from 'react';
  */
 
 type FeedbackCategory =
-    | 'hallucinated'
-    | 'wrong_facts'
-    | 'missing_info'
-    | 'off_topic'
-    | 'citation_issue'
-    | 'length_issue';
+    'hallucinated' | 'wrong_facts' | 'missing_info' | 'off_topic' | 'citation_issue' | 'length_issue';
 
 const CATEGORY_LABELS: Record<FeedbackCategory, string> = {
     hallucinated: 'Unsupported claim',
@@ -75,9 +70,12 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
     const [thanks, setThanks] = useState(false);
     const thanksTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    useEffect(() => () => {
-        if (thanksTimerRef.current) clearTimeout(thanksTimerRef.current);
-    }, []);
+    useEffect(
+        () => () => {
+            if (thanksTimerRef.current) clearTimeout(thanksTimerRef.current);
+        },
+        [],
+    );
 
     function showThanks() {
         setThanks(true);
@@ -91,7 +89,6 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
         setCategory(presetCategory.category);
         if (presetCategory.note !== undefined) setNote(presetCategory.note);
         setThanks(false);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [presetCategory]);
 
     if (!answerRunId) return null;
@@ -182,7 +179,12 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
                     👎
                 </button>
                 {thanks && (
-                    <span className="text-[10px] font-mono" style={{ color: 'var(--accent)' }} role="status" data-testid="feedback-thanks">
+                    <span
+                        className="text-[10px] font-mono"
+                        style={{ color: 'var(--accent)' }}
+                        role="status"
+                        data-testid="feedback-thanks"
+                    >
                         Thanks for the feedback.
                     </span>
                 )}
@@ -229,7 +231,11 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
                         type="submit"
                         disabled={!category || status === 'submitting'}
                         className={pillBase + ' disabled:opacity-40'}
-                        style={{ color: 'var(--warn, #d97706)', borderColor: 'var(--warn, #d97706)', background: 'transparent' }}
+                        style={{
+                            color: 'var(--warn, #d97706)',
+                            borderColor: 'var(--warn, #d97706)',
+                            background: 'transparent',
+                        }}
                     >
                         {status === 'submitting' ? 'Sending…' : 'Submit feedback'}
                     </button>

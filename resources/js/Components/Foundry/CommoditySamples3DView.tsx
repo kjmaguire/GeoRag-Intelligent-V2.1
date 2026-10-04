@@ -98,8 +98,8 @@ export default function CommoditySamples3DView({
 
         // Guess a unit hint from the key name. Most U3O8_pct_e values are
         // fractions of a percent so we just label as the raw key for now.
-        const unitLabel = selected.endsWith('_pct') || selected.endsWith('_pct_e') ? '%'
-            : selected.endsWith('_ppm') ? 'ppm' : '';
+        const unitLabel =
+            selected.endsWith('_pct') || selected.endsWith('_pct_e') ? '%' : selected.endsWith('_ppm') ? 'ppm' : '';
 
         for (const collar of valid) {
             const path = scene.fullPath(collar.collar_id);
@@ -157,9 +157,27 @@ export default function CommoditySamples3DView({
 
         const layoutObj: Record<string, unknown> = {
             scene: {
-                xaxis: { title: { text: 'Easting (m)', font: { color: '#9ba9b8', size: 10 } }, color: '#9ba9b8', gridcolor: 'rgba(155,169,184,0.18)', backgroundcolor: '#0a0e14', showbackground: true },
-                yaxis: { title: { text: 'Northing (m)', font: { color: '#9ba9b8', size: 10 } }, color: '#9ba9b8', gridcolor: 'rgba(155,169,184,0.18)', backgroundcolor: '#0a0e14', showbackground: true },
-                zaxis: { title: { text: sceneZAxisTitle(scene), font: { color: '#9ba9b8', size: 10 } }, color: '#9ba9b8', gridcolor: 'rgba(155,169,184,0.18)', backgroundcolor: '#0a0e14', showbackground: true },
+                xaxis: {
+                    title: { text: 'Easting (m)', font: { color: '#9ba9b8', size: 10 } },
+                    color: '#9ba9b8',
+                    gridcolor: 'rgba(155,169,184,0.18)',
+                    backgroundcolor: '#0a0e14',
+                    showbackground: true,
+                },
+                yaxis: {
+                    title: { text: 'Northing (m)', font: { color: '#9ba9b8', size: 10 } },
+                    color: '#9ba9b8',
+                    gridcolor: 'rgba(155,169,184,0.18)',
+                    backgroundcolor: '#0a0e14',
+                    showbackground: true,
+                },
+                zaxis: {
+                    title: { text: sceneZAxisTitle(scene), font: { color: '#9ba9b8', size: 10 } },
+                    color: '#9ba9b8',
+                    gridcolor: 'rgba(155,169,184,0.18)',
+                    backgroundcolor: '#0a0e14',
+                    showbackground: true,
+                },
                 bgcolor: '#0a0e14',
                 aspectmode: 'manual',
                 aspectratio: { x: 1, y: 1, z: 0.6 },
@@ -172,7 +190,13 @@ export default function CommoditySamples3DView({
             hovermode: 'closest',
         };
 
-        return { data: traces, layout: layoutObj, gradeRange: [gMin, gMax] as [number, number], unit: unitLabel, caption: scene.caption };
+        return {
+            data: traces,
+            layout: layoutObj,
+            gradeRange: [gMin, gMax] as [number, number],
+            unit: unitLabel,
+            caption: scene.caption,
+        };
     }, [collars, surveys, filtered, selected]);
 
     if (commodityKeys.length === 0) {
@@ -186,7 +210,9 @@ export default function CommoditySamples3DView({
     return (
         <div className="flex flex-col h-full min-h-0">
             <div className="flex items-center gap-3 mb-2 shrink-0 flex-wrap">
-                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Commodity</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                    Commodity
+                </span>
                 <select
                     aria-label="Commodity to plot"
                     value={selected}
@@ -195,16 +221,25 @@ export default function CommoditySamples3DView({
                     style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
                 >
                     {commodityKeys.map((k) => (
-                        <option key={k.key} value={k.key}>{k.key} ({k.count})</option>
+                        <option key={k.key} value={k.key}>
+                            {k.key} ({k.count})
+                        </option>
                     ))}
                 </select>
                 {filtered.length > 0 && (
                     <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
-                        {filtered.length} samples · range {gradeRange[0].toFixed(4)}–{gradeRange[1].toFixed(4)}{unit ? ' ' + unit : ''}
+                        {filtered.length} samples · range {gradeRange[0].toFixed(4)}–{gradeRange[1].toFixed(4)}
+                        {unit ? ' ' + unit : ''}
                     </span>
                 )}
                 {caption && (
-                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
+                    <span
+                        className="text-[10px] font-mono"
+                        style={{ color: 'var(--fg-3)' }}
+                        data-testid="desurvey-caption"
+                    >
+                        {caption}
+                    </span>
                 )}
             </div>
             {data.length === 0 ? (

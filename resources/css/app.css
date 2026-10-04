@@ -15,7 +15,8 @@
 @custom-variant dark (&:is(.foundry:not(.light):not(:has(.foundry.light)) *));
 
 @theme {
-    --font-sans: 'Inter Tight', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+    --font-sans:
+        'Inter Tight', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
@@ -84,16 +85,86 @@
     --animate-overlay-in: overlay-in 200ms ease-out;
     --animate-overlay-out: overlay-out 150ms ease-in forwards;
 
-    @keyframes sheet-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
-    @keyframes sheet-out-right { from { transform: translateX(0); } to { transform: translateX(100%); } }
-    @keyframes sheet-in-left { from { transform: translateX(-100%); } to { transform: translateX(0); } }
-    @keyframes sheet-out-left { from { transform: translateX(0); } to { transform: translateX(-100%); } }
-    @keyframes sheet-in-top { from { transform: translateY(-100%); } to { transform: translateY(0); } }
-    @keyframes sheet-out-top { from { transform: translateY(0); } to { transform: translateY(-100%); } }
-    @keyframes sheet-in-bottom { from { transform: translateY(100%); } to { transform: translateY(0); } }
-    @keyframes sheet-out-bottom { from { transform: translateY(0); } to { transform: translateY(100%); } }
-    @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes overlay-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes sheet-in-right {
+        from {
+            transform: translateX(100%);
+        }
+        to {
+            transform: translateX(0);
+        }
+    }
+    @keyframes sheet-out-right {
+        from {
+            transform: translateX(0);
+        }
+        to {
+            transform: translateX(100%);
+        }
+    }
+    @keyframes sheet-in-left {
+        from {
+            transform: translateX(-100%);
+        }
+        to {
+            transform: translateX(0);
+        }
+    }
+    @keyframes sheet-out-left {
+        from {
+            transform: translateX(0);
+        }
+        to {
+            transform: translateX(-100%);
+        }
+    }
+    @keyframes sheet-in-top {
+        from {
+            transform: translateY(-100%);
+        }
+        to {
+            transform: translateY(0);
+        }
+    }
+    @keyframes sheet-out-top {
+        from {
+            transform: translateY(0);
+        }
+        to {
+            transform: translateY(-100%);
+        }
+    }
+    @keyframes sheet-in-bottom {
+        from {
+            transform: translateY(100%);
+        }
+        to {
+            transform: translateY(0);
+        }
+    }
+    @keyframes sheet-out-bottom {
+        from {
+            transform: translateY(0);
+        }
+        to {
+            transform: translateY(100%);
+        }
+    }
+    @keyframes overlay-in {
+        from {
+            opacity: 0;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+    @keyframes overlay-out {
+        from {
+            opacity: 1;
+        }
+        to {
+            opacity: 0;
+        }
+    }
 }
 
 /* shadcn/ui colour utilities (`bg-background`, `text-muted-foreground`,
@@ -246,8 +317,18 @@ body.foundry:has(.foundry.light) {
     --ui-destructive: oklch(0.52 0.2 25);
 }
 
-.foundry ::-webkit-scrollbar { width: 8px; height: 8px; }
-.foundry ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 4px; }
-.foundry ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.14); }
+.foundry ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+.foundry ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+}
+.foundry ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.14);
+}
 .foundry.light ::-webkit-scrollbar-thumb,
-body.foundry:has(.foundry.light) ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); }
+body.foundry:has(.foundry.light) ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.12);
+}

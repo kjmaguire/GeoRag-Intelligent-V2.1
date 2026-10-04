@@ -80,8 +80,24 @@ function hsl(h: number, sat: number, light: number): string {
     const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
     const m = light - c / 2;
     const [r, g, b] =
-        h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
-    return `#${[r, g, b].map((v) => Math.round((v + m) * 255).toString(16).padStart(2, '0')).join('')}`;
+        h < 60
+            ? [c, x, 0]
+            : h < 120
+              ? [x, c, 0]
+              : h < 180
+                ? [0, c, x]
+                : h < 240
+                  ? [0, x, c]
+                  : h < 300
+                    ? [x, 0, c]
+                    : [c, 0, x];
+    return `#${[r, g, b]
+        .map((v) =>
+            Math.round((v + m) * 255)
+                .toString(16)
+                .padStart(2, '0'),
+        )
+        .join('')}`;
 }
 
 /**
@@ -126,10 +142,7 @@ export function lithologyColour(code: string, hint?: string | null): string {
  * that a colliding code may differ from its colour on another hole, which the
  * per-hole legend states.
  */
-export function categoryColours(
-    entries: { key: string; hint?: string | null }[],
-    offset = 0,
-): Map<string, string> {
+export function categoryColours(entries: { key: string; hint?: string | null }[], offset = 0): Map<string, string> {
     const out = new Map<string, string>();
     const taken = new Set<string>();
     for (const { key, hint } of entries) {
@@ -168,18 +181,28 @@ export function mineralColour(mineral: string): string {
 
 /** Colours for the alteration types / minerals of one hole. */
 export function alterationColourMap(types: string[]): Map<string, string> {
-    return categoryColours(types.map((key) => ({ key })), 5);
+    return categoryColours(
+        types.map((key) => ({ key })),
+        5,
+    );
 }
 
 export function mineralColourMap(minerals: string[]): Map<string, string> {
-    return categoryColours(minerals.map((key) => ({ key })), 11);
+    return categoryColours(
+        minerals.map((key) => ({ key })),
+        11,
+    );
 }
 
 /** Black or white, whichever reads on *fill*. Non-hex input falls back to dark text. */
 export function readableOn(fill: string): string {
     if (!isDisplayColour(fill)) return '#111827';
     let hex = fill.trim().slice(1);
-    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    if (hex.length === 3)
+        hex = hex
+            .split('')
+            .map((c) => c + c)
+            .join('');
     const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
     const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     return luminance > 0.55 ? '#111827' : '#f9fafb';
@@ -189,7 +212,11 @@ export function readableOn(fill: string): string {
 export function edgeOf(fill: string): string {
     if (!isDisplayColour(fill)) return 'rgba(0,0,0,0.35)';
     let hex = fill.trim().slice(1);
-    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    if (hex.length === 3)
+        hex = hex
+            .split('')
+            .map((c) => c + c)
+            .join('');
     const parts = [0, 2, 4].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * 0.65));
     return `#${parts.map((p) => p.toString(16).padStart(2, '0')).join('')}`;
 }
@@ -204,9 +231,7 @@ export interface Laned<T> {
  * minerals over the same metres): each interval takes the first lane whose last
  * interval has already ended. Input order is preserved in the output.
  */
-export function packLanes<T extends { from: number; to: number }>(
-    items: T[],
-): { placed: Laned<T>[]; lanes: number } {
+export function packLanes<T extends { from: number; to: number }>(items: T[]): { placed: Laned<T>[]; lanes: number } {
     const order = items
         .map((item, index) => ({ item, index }))
         .sort((a, b) => a.item.from - b.item.from || a.item.to - b.item.to || a.index - b.index);

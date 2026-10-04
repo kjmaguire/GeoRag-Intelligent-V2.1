@@ -82,10 +82,7 @@ export default function EvidencePacketBadge({ packet }: Props) {
     if (!summary) return null;
 
     return (
-        <div
-            className="mt-2 flex flex-wrap items-center gap-1.5"
-            data-testid="evidence-packet-badge"
-        >
+        <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="evidence-packet-badge">
             {summary.ordered.map((kind) => {
                 const label = KIND_LABELS[kind] ?? kind;
                 return (

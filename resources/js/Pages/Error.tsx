@@ -40,7 +40,7 @@ const COPY: Record<number, { title: string; body: string }> = {
     },
     503: {
         title: 'Down for maintenance',
-        body: "GeoRAG is briefly unavailable while we do some work. Try again shortly.",
+        body: 'GeoRAG is briefly unavailable while we do some work. Try again shortly.',
     },
 };
 
@@ -80,12 +80,8 @@ export default function ErrorPage({ status }: ErrorPageProps) {
             >
                 GeoRAG - Error {status}
             </div>
-            <h1 style={{ fontSize: 28, fontWeight: 600, color: 'var(--fg-0)', margin: 0 }}>
-                {copy.title}
-            </h1>
-            <p style={{ maxWidth: 440, fontSize: 14, color: 'var(--fg-2)', margin: 0 }}>
-                {copy.body}
-            </p>
+            <h1 style={{ fontSize: 28, fontWeight: 600, color: 'var(--fg-0)', margin: 0 }}>{copy.title}</h1>
+            <p style={{ maxWidth: 440, fontSize: 14, color: 'var(--fg-2)', margin: 0 }}>{copy.body}</p>
             <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
                 <Link
                     href={homeHref}

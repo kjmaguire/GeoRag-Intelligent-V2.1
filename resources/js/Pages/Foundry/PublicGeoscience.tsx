@@ -41,10 +41,14 @@ const MOVE_DEBOUNCE_MS = 350;
 const LAYER_COLOR_MATCH = [
     'match',
     ['get', 'layer'],
-    'mine', PUBLIC_GEO_LAYER_COLORS.mine,
-    'mineral_occurrence', PUBLIC_GEO_LAYER_COLORS.mineral_occurrence,
-    'drillhole_collar', PUBLIC_GEO_LAYER_COLORS.drillhole_collar,
-    'rock_sample', PUBLIC_GEO_LAYER_COLORS.rock_sample,
+    'mine',
+    PUBLIC_GEO_LAYER_COLORS.mine,
+    'mineral_occurrence',
+    PUBLIC_GEO_LAYER_COLORS.mineral_occurrence,
+    'drillhole_collar',
+    PUBLIC_GEO_LAYER_COLORS.drillhole_collar,
+    'rock_sample',
+    PUBLIC_GEO_LAYER_COLORS.rock_sample,
     '#9ca3af',
 ];
 
@@ -147,9 +151,7 @@ export default function PublicGeoscience() {
     const readViewport = useCallback((map: MapLibreMap): Viewport => {
         const b = map.getBounds();
         return {
-            bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-                .map((n) => n.toFixed(5))
-                .join(','),
+            bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((n) => n.toFixed(5)).join(','),
             zoom: Math.round(map.getZoom() * 10) / 10,
         };
     }, []);
@@ -356,11 +358,17 @@ export default function PublicGeoscience() {
             filter: ['==', ['get', 'cluster'], true],
             paint: {
                 'circle-radius': [
-                    'interpolate', ['linear'], ['get', 'point_count'],
-                    1, 8,
-                    100, 16,
-                    1000, 24,
-                    10000, 34,
+                    'interpolate',
+                    ['linear'],
+                    ['get', 'point_count'],
+                    1,
+                    8,
+                    100,
+                    16,
+                    1000,
+                    24,
+                    10000,
+                    34,
                 ],
                 'circle-color': LAYER_COLOR_MATCH,
                 'circle-opacity': 0.72,
@@ -426,8 +434,18 @@ export default function PublicGeoscience() {
             const layerLabel = PUBLIC_GEO_LAYER_LABELS[props.layer] ?? props.layer;
             setHover(
                 props.cluster
-                    ? { title: `${props.point_count.toLocaleString()} records`, sub: `${layerLabel} · click to zoom in`, x: e.point.x, y: e.point.y }
-                    : { title: props.label ?? layerLabel, sub: `${layerLabel} · ${props.jurisdiction_code} · click for detail`, x: e.point.x, y: e.point.y },
+                    ? {
+                          title: `${props.point_count.toLocaleString()} records`,
+                          sub: `${layerLabel} · click to zoom in`,
+                          x: e.point.x,
+                          y: e.point.y,
+                      }
+                    : {
+                          title: props.label ?? layerLabel,
+                          sub: `${layerLabel} · ${props.jurisdiction_code} · click for detail`,
+                          x: e.point.x,
+                          y: e.point.y,
+                      },
             );
         };
 
@@ -462,7 +480,9 @@ export default function PublicGeoscience() {
             const polygons = map.getLayer(POLYGON_FILL_LAYER_ID)
                 ? map.queryRenderedFeatures(e.point, { layers: [POLYGON_FILL_LAYER_ID] })
                 : [];
-            setSelection(polygons.length ? { kind: 'polygon', props: polygons[0].properties as PolygonFeatureProperties } : null);
+            setSelection(
+                polygons.length ? { kind: 'polygon', props: polygons[0].properties as PolygonFeatureProperties } : null,
+            );
         };
 
         map.on('mousemove', onMove);
@@ -493,20 +513,32 @@ export default function PublicGeoscience() {
     return (
         <>
             <Head title="Public Geoscience" />
-            <div className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
+            <div
+                className="flex-1 flex flex-col overflow-hidden"
+                style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}
+            >
                 <PageHeader
                     eyebrow="PUBLIC GEOSCIENCE"
                     title="Public Geoscience"
                     sub={
                         <span>
                             {error ? <span className="text-red-400">{error}</span> : summary}
-                            {' · mines, mineral occurrences, public drillholes, rock samples, tenure & geology overlays'}
+                            {
+                                ' · mines, mineral occurrences, public drillholes, rock samples, tenure & geology overlays'
+                            }
                         </span>
                     }
                 />
 
-                <div className="px-8 py-3 flex items-center gap-3 border-b flex-wrap" style={{ borderColor: 'var(--line-1)' }}>
-                    <label htmlFor="pg-jurisdiction" className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                <div
+                    className="px-8 py-3 flex items-center gap-3 border-b flex-wrap"
+                    style={{ borderColor: 'var(--line-1)' }}
+                >
+                    <label
+                        htmlFor="pg-jurisdiction"
+                        className="text-[10px] font-mono uppercase tracking-wider"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
                         Jurisdiction
                     </label>
                     <select
@@ -518,21 +550,28 @@ export default function PublicGeoscience() {
                     >
                         <option value="">All</option>
                         {seenJurisdictions.map((code) => (
-                            <option key={code} value={code}>{code}</option>
+                            <option key={code} value={code}>
+                                {code}
+                            </option>
                         ))}
                     </select>
 
-                    <div className="flex items-center gap-3 ml-4 text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
-                        {(Object.keys(PUBLIC_GEO_LAYER_LABELS) as Array<keyof typeof PUBLIC_GEO_LAYER_LABELS>).map((key) => (
-                            <span key={key} className="flex items-center gap-1.5">
-                                <span
-                                    className="w-2 h-2 rounded-full inline-block"
-                                    style={{ background: PUBLIC_GEO_LAYER_COLORS[key] }}
-                                    aria-hidden="true"
-                                />
-                                {PUBLIC_GEO_LAYER_LABELS[key]}
-                            </span>
-                        ))}
+                    <div
+                        className="flex items-center gap-3 ml-4 text-[10px] font-mono"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
+                        {(Object.keys(PUBLIC_GEO_LAYER_LABELS) as Array<keyof typeof PUBLIC_GEO_LAYER_LABELS>).map(
+                            (key) => (
+                                <span key={key} className="flex items-center gap-1.5">
+                                    <span
+                                        className="w-2 h-2 rounded-full inline-block"
+                                        style={{ background: PUBLIC_GEO_LAYER_COLORS[key] }}
+                                        aria-hidden="true"
+                                    />
+                                    {PUBLIC_GEO_LAYER_LABELS[key]}
+                                </span>
+                            ),
+                        )}
                     </div>
 
                     {clustered && (
@@ -546,15 +585,24 @@ export default function PublicGeoscience() {
                         </span>
                     )}
                     {loading && data && (
-                        <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>Updating…</span>
+                        <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
+                            Updating…
+                        </span>
                     )}
                 </div>
 
-                <div className="px-8 py-2 flex items-center gap-4 border-b flex-wrap" style={{ borderColor: 'var(--line-1)' }}>
+                <div
+                    className="px-8 py-2 flex items-center gap-4 border-b flex-wrap"
+                    style={{ borderColor: 'var(--line-1)' }}
+                >
                     <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
                         Overlays
                     </span>
-                    <PolygonLayerToggles enabled={polygonLayers} onChange={setPolygonLayers} meta={data?.polygon_layers} />
+                    <PolygonLayerToggles
+                        enabled={polygonLayers}
+                        onChange={setPolygonLayers}
+                        meta={data?.polygon_layers}
+                    />
                     <div className="ml-auto">
                         <PublicGeoSyncControls isAdmin={isAdmin} />
                     </div>
@@ -602,7 +650,9 @@ export default function PublicGeoscience() {
                         className="absolute bottom-8 right-2 z-10 flex items-center gap-2 text-[10px] font-mono px-2 py-1.5 rounded border"
                         style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
                     >
-                        <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Map</span>
+                        <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                            Map
+                        </span>
                         <select
                             aria-label="Basemap"
                             value={basemap}
@@ -611,7 +661,9 @@ export default function PublicGeoscience() {
                             style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
                         >
                             {BASEMAP_OPTIONS.map((o) => (
-                                <option key={o.id} value={o.id}>{o.label}</option>
+                                <option key={o.id} value={o.id}>
+                                    {o.label}
+                                </option>
                             ))}
                         </select>
                     </div>

@@ -161,10 +161,7 @@ describe('groupShapefiles', () => {
     });
 
     it('reports which required sidecars were absent without refusing the upload', async () => {
-        const { bundles } = await groupShapefiles([
-            makeFile('faults.shp'),
-            makeFile('faults.dbf'),
-        ]);
+        const { bundles } = await groupShapefiles([makeFile('faults.shp'), makeFile('faults.dbf')]);
 
         // GDAL rebuilds a missing index from the .shp itself, so .shx is not
         // worth a word — but a missing .prj means the file declares no CRS,
@@ -198,10 +195,7 @@ describe('groupShapefiles', () => {
 
         expect(unusable).toHaveLength(0);
         expect(bundles).toHaveLength(1);
-        expect(await membersOf(bundles[0].file)).toEqual([
-            'Drobeck_Shumagin_Veins.prj',
-            'drobeck_shumagin_veins.shp',
-        ]);
+        expect(await membersOf(bundles[0].file)).toEqual(['Drobeck_Shumagin_Veins.prj', 'drobeck_shumagin_veins.shp']);
         expect(bundles[0].missing).not.toContain('prj');
     });
 
@@ -220,19 +214,11 @@ describe('groupShapefiles', () => {
     });
 
     it('leaves non-shapefile uploads alone', async () => {
-        const files = [
-            makeFile('report.pdf'),
-            makeFile('collars.csv'),
-            makeFile('map.tif'),
-        ];
+        const files = [makeFile('report.pdf'), makeFile('collars.csv'), makeFile('map.tif')];
         const { bundles, passthrough } = await groupShapefiles(files);
 
         expect(bundles).toHaveLength(0);
-        expect(passthrough.map((f) => f.name)).toEqual([
-            'report.pdf',
-            'collars.csv',
-            'map.tif',
-        ]);
+        expect(passthrough.map((f) => f.name)).toEqual(['report.pdf', 'collars.csv', 'map.tif']);
     });
 
     it('uploads a standalone .dbf as an attribute table instead of discarding it', async () => {
@@ -242,9 +228,7 @@ describe('groupShapefiles', () => {
         // geometry — and a large part of the GIS world still hands over collar
         // and sample tables in exactly that form. Dropping them at the drop
         // zone meant the files could not be imported by any route at all.
-        const { bundles, passthrough, unusable } = await groupShapefiles([
-            makeFile('MiscPoints_2005.dbf'),
-        ]);
+        const { bundles, passthrough, unusable } = await groupShapefiles([makeFile('MiscPoints_2005.dbf')]);
 
         expect(bundles).toHaveLength(0);
         expect(unusable).toHaveLength(0);
@@ -274,10 +258,7 @@ describe('groupShapefiles', () => {
             makeFile('faults.pdf'),
         ]);
 
-        expect(await membersOf(bundles[0].file)).toEqual([
-            'faults.shp',
-            'faults.shx',
-        ]);
+        expect(await membersOf(bundles[0].file)).toEqual(['faults.shp', 'faults.shx']);
         expect(passthrough.map((f) => f.name)).toEqual(['faults.pdf']);
     });
 
@@ -294,10 +275,7 @@ describe('groupShapefiles', () => {
     });
 
     it('matches sidecar extensions case-insensitively', async () => {
-        const { bundles, unusable } = await groupShapefiles([
-            makeFile('UPPER.SHP'),
-            makeFile('UPPER.SHX'),
-        ]);
+        const { bundles, unusable } = await groupShapefiles([makeFile('UPPER.SHP'), makeFile('UPPER.SHX')]);
 
         expect(unusable).toHaveLength(0);
         expect(bundles).toHaveLength(1);
@@ -305,9 +283,7 @@ describe('groupShapefiles', () => {
     });
 
     it('explains a shapefile sidecar whose .shp was never selected', async () => {
-        const { bundles, passthrough, unusable } = await groupShapefiles([
-            makeFile('orphan.prj'),
-        ]);
+        const { bundles, passthrough, unusable } = await groupShapefiles([makeFile('orphan.prj')]);
 
         expect(bundles).toHaveLength(0);
         expect(passthrough).toHaveLength(0);
@@ -354,15 +330,9 @@ describe('groupShapefiles — MapInfo', () => {
     });
 
     it('pairs a .mif with its .mid and flags a .mif that has none', async () => {
-        const paired = await groupShapefiles([
-            makeFile('alteration.mif'),
-            makeFile('alteration.mid'),
-        ]);
+        const paired = await groupShapefiles([makeFile('alteration.mif'), makeFile('alteration.mid')]);
         expect(paired.bundles).toHaveLength(1);
-        expect(await membersOf(paired.bundles[0].file)).toEqual([
-            'alteration.mid',
-            'alteration.mif',
-        ]);
+        expect(await membersOf(paired.bundles[0].file)).toEqual(['alteration.mid', 'alteration.mif']);
         expect(paired.bundles[0].verdict).toBeNull();
 
         // A .mif with no .mid parses and returns every attribute as null —
@@ -374,9 +344,7 @@ describe('groupShapefiles — MapInfo', () => {
     it('never treats a .mid as an entry point of its own', async () => {
         // A .mid opens directly in GDAL. If it were bundled as a master, a
         // MIF/MID pair would be ingested twice.
-        const { bundles, passthrough, unusable } = await groupShapefiles([
-            makeFile('alteration.mid'),
-        ]);
+        const { bundles, passthrough, unusable } = await groupShapefiles([makeFile('alteration.mid')]);
 
         expect(bundles).toHaveLength(0);
         expect(passthrough).toHaveLength(0);
@@ -396,11 +364,7 @@ describe('groupShapefiles — MapInfo', () => {
 
         expect(bundles).toHaveLength(0);
         expect(passthrough).toHaveLength(0);
-        expect(unusable.map((u) => u.file.name).sort()).toEqual([
-            'Shumagin.ID',
-            'Shumagin.IND',
-            'Unga_Geology.MAP',
-        ]);
+        expect(unusable.map((u) => u.file.name).sort()).toEqual(['Shumagin.ID', 'Shumagin.IND', 'Unga_Geology.MAP']);
         for (const u of unusable) {
             expect(u.reason, u.file.name).toContain('MapInfo');
         }
@@ -417,9 +381,7 @@ describe('groupShapefiles — MapInfo', () => {
         // and all_historical_soils_clean.DAT held 854 soil samples with
         // easting/northing and Au/Ag/As assays. The folder's only .tab was
         // Sitka_trA — one letter off the stem — so both were dropped.
-        const { bundles, passthrough, unusable } = await groupShapefiles([
-            makeFile('Sitka_trD.DAT'),
-        ]);
+        const { bundles, passthrough, unusable } = await groupShapefiles([makeFile('Sitka_trD.DAT')]);
 
         expect(bundles).toHaveLength(0);
         expect(unusable).toHaveLength(0);
@@ -454,12 +416,7 @@ describe('groupShapefiles — MapInfo', () => {
         expect(passthrough).toHaveLength(0);
         expect(bundles.map((b) => b.kind)).toEqual(['shapefile', 'mapinfo']);
         expect(await membersOf(bundles[0].file)).toEqual(['veins.prj', 'veins.shp']);
-        expect(await membersOf(bundles[1].file)).toEqual([
-            'veins.dat',
-            'veins.id',
-            'veins.map',
-            'veins.tab',
-        ]);
+        expect(await membersOf(bundles[1].file)).toEqual(['veins.dat', 'veins.id', 'veins.map', 'veins.tab']);
     });
 });
 
@@ -536,11 +493,7 @@ describe('groupShapefiles - CRS donation', () => {
         // that is the whole mechanism. Nothing resolves WKT to an EPSG code
         // in the browser; pyproj reads this copy exactly as it reads a .prj
         // the file came with.
-        expect(await membersOf(bundles[1].file)).toEqual([
-            'geology_poly.dbf',
-            'geology_poly.prj',
-            'geology_poly.shp',
-        ]);
+        expect(await membersOf(bundles[1].file)).toEqual(['geology_poly.dbf', 'geology_poly.prj', 'geology_poly.shp']);
         expect(await memberText(bundles[1].file, 'geology_poly.prj')).toBe(UTM4N_WKT);
         expect(bundles[1].members).toContain('geology_poly.prj');
         expect(bundles[1].missing).toEqual(['shx']);
@@ -555,10 +508,7 @@ describe('groupShapefiles - CRS donation', () => {
         expect(bundles[2].verdict).toContain('copied from Drobeck_Shumagin_Veins.prj');
 
         // The donor keeps its own file and is not listed as a recipient.
-        expect(await membersOf(bundles[0].file)).toEqual([
-            'Drobeck_Shumagin_Veins.prj',
-            'Drobeck_Shumagin_Veins.shp',
-        ]);
+        expect(await membersOf(bundles[0].file)).toEqual(['Drobeck_Shumagin_Veins.prj', 'Drobeck_Shumagin_Veins.shp']);
         expect(crsDonation?.appliedTo).not.toContain('Drobeck_Shumagin_Veins');
     });
 
@@ -625,10 +575,7 @@ describe('groupShapefiles - CRS donation', () => {
 
         expect(bundles[1].stem).toBe('qgis_layer');
         expect(bundles[1].crsFrom).toBeNull();
-        expect(await membersOf(bundles[1].file)).toEqual([
-            'qgis_layer.qpj',
-            'qgis_layer.shp',
-        ]);
+        expect(await membersOf(bundles[1].file)).toEqual(['qgis_layer.qpj', 'qgis_layer.shp']);
         // The .prj is still absent and the ingest still needs one, so the row
         // says so — but not by claiming the file declares no coordinate
         // system, which would be false with the .qpj sitting in the ZIP.
@@ -686,12 +633,7 @@ describe('groupShapefiles - CRS donation', () => {
         // geology/faults already had its own .prj: complete set, no donation.
         expect(bundles[0].crsFrom).toBeNull();
         expect(bundles[0].verdict).toBeNull();
-        expect(await membersOf(bundles[0].file)).toEqual([
-            'faults.dbf',
-            'faults.prj',
-            'faults.shp',
-            'faults.shx',
-        ]);
+        expect(await membersOf(bundles[0].file)).toEqual(['faults.dbf', 'faults.prj', 'faults.shp', 'faults.shx']);
 
         // claims/faults took the copy — and it is still missing its .dbf, so
         // the donation must not read as "this set is now complete".
@@ -700,11 +642,7 @@ describe('groupShapefiles - CRS donation', () => {
             label: 'NAD 1983 UTM Zone 4N',
             memberName: 'faults.prj',
         });
-        expect(await membersOf(bundles[1].file)).toEqual([
-            'faults.prj',
-            'faults.shp',
-            'faults.shx',
-        ]);
+        expect(await membersOf(bundles[1].file)).toEqual(['faults.prj', 'faults.shp', 'faults.shx']);
         expect(await memberText(bundles[1].file, 'faults.prj')).toBe(UTM4N_WKT);
         expect(bundles[1].missing).toEqual(['dbf']);
         expect(bundles[1].verdict).toContain('no .dbf');
@@ -725,18 +663,13 @@ describe('groupShapefiles - CRS donation', () => {
         expect(crsDonation?.sourceName).toBe('GeoPoints_2005.prj');
         expect(crsDonation?.appliedTo).toEqual(['geology_poly']);
         expect(bundles[0].crsFrom?.sourceName).toBe('GeoPoints_2005.prj');
-        expect(await membersOf(bundles[0].file)).toEqual([
-            'geology_poly.prj',
-            'geology_poly.shp',
-        ]);
+        expect(await membersOf(bundles[0].file)).toEqual(['geology_poly.prj', 'geology_poly.shp']);
     });
 
     it('still reports an orphaned .prj that nothing could take', async () => {
         // No recipient, no donation. A "coordinate system applied" line on a
         // screen where nothing was applied to anything is worse than silence.
-        const { unusable, crsDonation } = await groupShapefiles([
-            makeFile('orphan.prj', '', UTM4N_WKT),
-        ]);
+        const { unusable, crsDonation } = await groupShapefiles([makeFile('orphan.prj', '', UTM4N_WKT)]);
 
         expect(crsDonation).toBeNull();
         expect(unusable.map((u) => u.file.name)).toEqual(['orphan.prj']);
@@ -755,20 +688,12 @@ describe('groupShapefiles - CRS donation', () => {
 
         expect(crsDonation).toBeNull();
         expect(bundles[0].crsFrom).toBeNull();
-        expect(await membersOf(bundles[0].file)).toEqual([
-            'Veins.DAT',
-            'Veins.ID',
-            'Veins.MAP',
-            'Veins.TAB',
-        ]);
+        expect(await membersOf(bundles[0].file)).toEqual(['Veins.DAT', 'Veins.ID', 'Veins.MAP', 'Veins.TAB']);
         expect(unusable.map((u) => u.file.name)).toEqual(['GeoPoints_2005.prj']);
     });
 
     it('labels a geographic CRS from its GEOGCS name', async () => {
-        const { crsDonation } = await groupShapefiles([
-            makeFile('pts.shp'),
-            makeFile('donor.prj', '', WGS84_WKT),
-        ]);
+        const { crsDonation } = await groupShapefiles([makeFile('pts.shp'), makeFile('donor.prj', '', WGS84_WKT)]);
 
         expect(crsDonation?.label).toBe('GCS WGS 1984');
     });
@@ -837,9 +762,7 @@ describe('groupShapefiles - raster TAB', () => {
 
         expect(bundles).toHaveLength(0);
         expect(passthrough).toHaveLength(0);
-        expect(unusable.map((u) => u.file.name)).toEqual([
-            'BMGC_UngaIsSouth_Geology_1990.TAB',
-        ]);
+        expect(unusable.map((u) => u.file.name)).toEqual(['BMGC_UngaIsSouth_Geology_1990.TAB']);
 
         const reason = unusable[0].reason;
         expect(reason).toContain('bmgc_ungaissouth_geology_1990.tif');
@@ -884,9 +807,7 @@ describe('groupShapefiles - raster TAB', () => {
         ]);
 
         expect(bundles).toHaveLength(0);
-        expect(passthrough.map((f) => f.name)).toEqual([
-            'BMGC_UngaIsSouth_Geology_1990.tif',
-        ]);
+        expect(passthrough.map((f) => f.name)).toEqual(['BMGC_UngaIsSouth_Geology_1990.tif']);
         expect(unusable[0].reason).toContain('is in this selection');
     });
 
@@ -935,17 +856,13 @@ describe('groupShapefiles - NATIVE TABs that are not map layers', () => {
     it('reports the coordinate system a GCP header declares', async () => {
         // The one genuinely useful thing in the file: these headers name the
         // CRS the .prj-less shapefiles in the same delivery needed.
-        const { unusable } = await groupShapefiles([
-            makeFile('tr006.4-geology_gcp.TAB', '', GCP_TAB_HEADER),
-        ]);
+        const { unusable } = await groupShapefiles([makeFile('tr006.4-geology_gcp.TAB', '', GCP_TAB_HEADER)]);
 
         expect(unusable[0].reason).toContain('UTM Zone 4 (NAD 83)');
     });
 
     it('names a Discover cross-section table for what it is', async () => {
-        const { unusable } = await groupShapefiles([
-            makeFile('Sitka_trA.tab', '', XSECT_TAB_HEADER),
-        ]);
+        const { unusable } = await groupShapefiles([makeFile('Sitka_trA.tab', '', XSECT_TAB_HEADER)]);
 
         expect(unusable).toHaveLength(1);
         const reason = unusable[0].reason;
@@ -955,9 +872,7 @@ describe('groupShapefiles - NATIVE TABs that are not map layers', () => {
     });
 
     it('does not repeat the file name, which the row already renders', async () => {
-        const { unusable } = await groupShapefiles([
-            makeFile('tr006.4-geology_gcp.TAB', '', GCP_TAB_HEADER),
-        ]);
+        const { unusable } = await groupShapefiles([makeFile('tr006.4-geology_gcp.TAB', '', GCP_TAB_HEADER)]);
 
         expect(unusable[0].reason.startsWith('tr006.4-geology_gcp.TAB')).toBe(false);
     });
@@ -971,9 +886,7 @@ describe('groupShapefiles - NATIVE TABs that are not map layers', () => {
         // uploaded, and the verdict is what the "Files needing attention"
         // list renders. Only a file with nothing worth uploading becomes
         // `unusable`, which is where the two Discover kinds above now go.
-        const { bundles, unusable } = await groupShapefiles([
-            makeFile('Veins.TAB', '', NATIVE_TAB_HEADER),
-        ]);
+        const { bundles, unusable } = await groupShapefiles([makeFile('Veins.TAB', '', NATIVE_TAB_HEADER)]);
 
         expect(unusable).toHaveLength(0);
         expect(bundles).toHaveLength(1);
@@ -990,11 +903,10 @@ describe('groupShapefiles — WKT-carriage donation (.dxf/.dgn)', () => {
 
     it('hands a lone .dxf the agreed WKT as text, not as a member', async () => {
         const dxf = makeFile('NEW_HYD.BX_Central_Clean.dxf');
-        const { passthrough, wktRecipients, crsDonation, unusable } =
-            await groupShapefiles([
-                dxf,
-                makeFile('GeoPoints_2005.prj', '', UTM4N_WKT),
-            ]);
+        const { passthrough, wktRecipients, crsDonation, unusable } = await groupShapefiles([
+            dxf,
+            makeFile('GeoPoints_2005.prj', '', UTM4N_WKT),
+        ]);
 
         // The file itself still goes up byte-identical, as itself.
         expect(passthrough).toContain(dxf);
@@ -1023,16 +935,11 @@ describe('groupShapefiles — WKT-carriage donation (.dxf/.dgn)', () => {
         expect(bundles).toHaveLength(1);
         expect(bundles[0].crsFrom?.memberName).toBe('veins.prj');
         expect(wktRecipients).toHaveLength(1);
-        expect(crsDonation?.appliedTo).toEqual(
-            expect.arrayContaining(['veins', 'plan']),
-        );
+        expect(crsDonation?.appliedTo).toEqual(expect.arrayContaining(['veins', 'plan']));
     });
 
     it('a .dgn takes the donation the same way', async () => {
-        const { wktRecipients } = await groupShapefiles([
-            makeFile('site.dgn'),
-            makeFile('donor.prj', '', UTM4N_WKT),
-        ]);
+        const { wktRecipients } = await groupShapefiles([makeFile('site.dgn'), makeFile('donor.prj', '', UTM4N_WKT)]);
 
         expect(wktRecipients).toHaveLength(1);
         expect(wktRecipients[0].crs.wkt).toBe(UTM4N_WKT);
@@ -1120,8 +1027,7 @@ describe('selection identity across a regroup', () => {
     });
 
     it('a bundle key is stable when the same selection is grouped again', async () => {
-        const build = () =>
-            groupShapefiles([makeFile('geology_poly.shp'), makeFile('geology_poly.dbf')]);
+        const build = () => groupShapefiles([makeFile('geology_poly.shp'), makeFile('geology_poly.dbf')]);
         const a = await build();
         const b = await build();
         // The ZIPs are different File objects; the key is what survives.
@@ -1130,9 +1036,7 @@ describe('selection identity across a regroup', () => {
     });
 
     it('a file key distinguishes same-named files from different folders', () => {
-        expect(fileKey(makeFile('notes.csv', 'geology'))).not.toEqual(
-            fileKey(makeFile('notes.csv', 'claims')),
-        );
+        expect(fileKey(makeFile('notes.csv', 'geology'))).not.toEqual(fileKey(makeFile('notes.csv', 'claims')));
     });
 
     it('dedupeFiles drops a re-selected file rather than queueing it twice', () => {
@@ -1140,8 +1044,7 @@ describe('selection identity across a regroup', () => {
         // clock, so two calls a millisecond apart model two DIFFERENT files
         // and the test passes or fails on timing. A file re-selected from
         // disk keeps its mtime, which is the case being modelled.
-        const onDisk = (name: string) =>
-            new File(['x'], name, { lastModified: 1_700_000_000_000 });
+        const onDisk = (name: string) => new File(['x'], name, { lastModified: 1_700_000_000_000 });
 
         const deduped = dedupeFiles([onDisk('a.csv'), onDisk('a.csv'), onDisk('b.csv')]);
         expect(deduped.map((f) => f.name)).toEqual(['a.csv', 'b.csv']);
@@ -1154,14 +1057,8 @@ describe('selection identity across a regroup', () => {
     });
 
     it('a bundle carries its source files so removing the row un-selects them', async () => {
-        const { bundles } = await groupShapefiles([
-            makeFile('geology_poly.shp'),
-            makeFile('geology_poly.dbf'),
-        ]);
-        expect(bundles[0].sources.map((f) => f.name).sort()).toEqual([
-            'geology_poly.dbf',
-            'geology_poly.shp',
-        ]);
+        const { bundles } = await groupShapefiles([makeFile('geology_poly.shp'), makeFile('geology_poly.dbf')]);
+        expect(bundles[0].sources.map((f) => f.name).sort()).toEqual(['geology_poly.dbf', 'geology_poly.shp']);
     });
 
     it('a donated .prj is NOT a source — removing the recipient must not un-select it', async () => {

@@ -6,13 +6,11 @@ import { Head, Link } from '@inertiajs/react';
  * Uses Laravel's built-in password reset functionality via Sanctum.
  */
 
-interface ForgotPasswordProps {}
-
 interface ForgotPasswordApiResponse {
     message?: string;
 }
 
-export default function ForgotPassword(_props: ForgotPasswordProps): JSX.Element {
+export default function ForgotPassword(): JSX.Element {
     const [email, setEmail] = useState<string>('');
     const [sent, setSent] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
@@ -46,9 +44,7 @@ export default function ForgotPassword(_props: ForgotPasswordProps): JSX.Element
                 <div className="w-full max-w-sm">
                     <div className="text-center mb-6">
                         <h1 className="text-xl font-semibold text-gray-100">Reset Password</h1>
-                        <p className="text-sm text-gray-500 mt-1">
-                            Enter your email and we'll send you a reset link.
-                        </p>
+                        <p className="text-sm text-gray-500 mt-1">Enter your email and we'll send you a reset link.</p>
                     </div>
 
                     {sent ? (
@@ -61,14 +57,19 @@ export default function ForgotPassword(_props: ForgotPasswordProps): JSX.Element
                             </Link>
                         </div>
                     ) : (
-                        <form onSubmit={handleSubmit} className="bg-gray-900 border border-gray-800 rounded-xl p-6 shadow-xl space-y-4">
+                        <form
+                            onSubmit={handleSubmit}
+                            className="bg-gray-900 border border-gray-800 rounded-xl p-6 shadow-xl space-y-4"
+                        >
                             {error && (
                                 <div className="text-sm text-red-400 bg-red-950/50 border border-red-800/50 rounded-lg px-3 py-2">
                                     {error}
                                 </div>
                             )}
                             <div>
-                                <label htmlFor="email" className="block text-xs text-gray-400 mb-1.5 font-medium">Email</label>
+                                <label htmlFor="email" className="block text-xs text-gray-400 mb-1.5 font-medium">
+                                    Email
+                                </label>
                                 <input
                                     id="email"
                                     type="email"
@@ -88,7 +89,9 @@ export default function ForgotPassword(_props: ForgotPasswordProps): JSX.Element
                                 {loading ? 'Sending…' : 'Send Reset Link'}
                             </button>
                             <p className="text-xs text-gray-600 text-center">
-                                <Link href="/login" className="text-gray-400 hover:text-gray-200 underline">Back to login</Link>
+                                <Link href="/login" className="text-gray-400 hover:text-gray-200 underline">
+                                    Back to login
+                                </Link>
                             </p>
                         </form>
                     )}

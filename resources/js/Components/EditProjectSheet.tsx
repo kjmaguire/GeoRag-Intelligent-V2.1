@@ -1,13 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { router, useHttp } from '@inertiajs/react';
-import {
-    Sheet,
-    SheetContent,
-    SheetDescription,
-    SheetFooter,
-    SheetHeader,
-    SheetTitle,
-} from '@/Components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/Components/ui/sheet';
 import {
     AzimuthReferenceFields,
     COMMODITIES,
@@ -157,7 +150,8 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
                     <SheetHeader>
                         <SheetTitle style={{ color: 'var(--fg-0)' }}>Edit project</SheetTitle>
                         <SheetDescription style={{ color: 'var(--fg-3)' }}>
-                            Rename the project, correct its operator, commodity and region, or set which north its survey azimuths use. The project URL stays the same.
+                            Rename the project, correct its operator, commodity and region, or set which north its
+                            survey azimuths use. The project URL stays the same.
                         </SheetDescription>
                     </SheetHeader>
 
@@ -201,7 +195,9 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
                             >
                                 <option value="">— none —</option>
                                 {commodityOptions.map((o) => (
-                                    <option key={o.value} value={o.value}>{o.label}</option>
+                                    <option key={o.value} value={o.value}>
+                                        {o.label}
+                                    </option>
                                 ))}
                             </select>
                             <FieldError message={form.errors.commodity} />
@@ -241,11 +237,13 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
                         >
                             <span className="font-mono uppercase tracking-wider">Coordinate system</span>{' '}
                             <span style={{ color: 'var(--fg-1)' }}>
-                                {project.crs_epsg ? `EPSG:${project.crs_epsg}` : 'not set (CSV imports default to EPSG:32613)'}
+                                {project.crs_epsg
+                                    ? `EPSG:${project.crs_epsg}`
+                                    : 'not set (CSV imports default to EPSG:32613)'}
                             </span>
                             <br />
-                            Not editable here: changing it would not reproject the drill holes already
-                            ingested, leaving the project in two coordinate systems.
+                            Not editable here: changing it would not reproject the drill holes already ingested, leaving
+                            the project in two coordinate systems.
                         </div>
 
                         {failure && (
@@ -272,7 +270,11 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
                             type="submit"
                             disabled={form.processing || localDeclinationError !== undefined}
                             className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-50"
-                            style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                            style={{
+                                color: 'var(--accent)',
+                                background: 'var(--accent-bg)',
+                                borderColor: 'var(--accent-dim)',
+                            }}
                         >
                             {form.processing ? 'Saving…' : 'Save changes'}
                         </button>

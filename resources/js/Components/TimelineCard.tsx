@@ -71,9 +71,7 @@ export default function TimelineCard({ swimlanes, title }: TimelineCardProps) {
                 `<b>${lane.technique}</b><br>` +
                 `Years: ${startYear}–${endYear}<br>` +
                 `Count: ${lane.count.toLocaleString()}` +
-                (lane.total_metres != null
-                    ? `<br>Total metres: ${lane.total_metres.toLocaleString()}`
-                    : '') +
+                (lane.total_metres != null ? `<br>Total metres: ${lane.total_metres.toLocaleString()}` : '') +
                 `<br>Contractor: ${formatField(lane.contractor)}` +
                 `<br>Geologist: ${formatField(lane.geologist)}` +
                 '<extra></extra>';
@@ -135,10 +133,7 @@ export default function TimelineCard({ swimlanes, title }: TimelineCardProps) {
 
     if (!swimlanes || swimlanes.length === 0) {
         return (
-            <div
-                className="flex items-center justify-center h-full text-xs text-gray-500"
-                data-testid="timeline-empty"
-            >
+            <div className="flex items-center justify-center h-full text-xs text-gray-500" data-testid="timeline-empty">
                 No timeline data to display.
             </div>
         );

@@ -56,21 +56,14 @@ export default function ResetPassword({ token, email }: ResetPasswordProps): JSX
             <div className="flex min-h-screen items-center justify-center bg-gray-950 px-4">
                 <div className="w-full max-w-sm">
                     <div className="mb-6 text-center">
-                        <h1 className="text-xl font-semibold text-gray-100">
-                            Choose a new password
-                        </h1>
+                        <h1 className="text-xl font-semibold text-gray-100">Choose a new password</h1>
                         <p className="mt-1 text-sm text-gray-500">{email}</p>
                     </div>
 
                     {completed ? (
                         <div className="rounded-xl border border-green-800/40 bg-green-950/40 p-6 text-center">
-                            <p className="mb-3 text-sm text-green-300">
-                                Your password has been reset.
-                            </p>
-                            <Link
-                                href="/login"
-                                className="text-xs text-amber-400 underline hover:text-amber-300"
-                            >
+                            <p className="mb-3 text-sm text-green-300">Your password has been reset.</p>
+                            <Link href="/login" className="text-xs text-amber-400 underline hover:text-amber-300">
                                 Continue to login
                             </Link>
                         </div>

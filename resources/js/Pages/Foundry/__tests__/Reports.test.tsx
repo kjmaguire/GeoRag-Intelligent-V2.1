@@ -14,7 +14,15 @@ const inertia = vi.hoisted(() => ({
 
 vi.mock('@inertiajs/react', () => ({
     Head: () => null,
-    Link: ({ href, data, children, only: _only, preserveState: _ps, preserveScroll: _psc, ...rest }: {
+    Link: ({
+        href,
+        data,
+        children,
+        only: _only,
+        preserveState: _ps,
+        preserveScroll: _psc,
+        ...rest
+    }: {
         href: string;
         data?: Record<string, unknown>;
         children: ReactNode;
@@ -22,7 +30,9 @@ vi.mock('@inertiajs/react', () => ({
         preserveState?: boolean;
         preserveScroll?: boolean;
     }) => (
-        <a href={href} data-query={data ? JSON.stringify(data) : undefined} {...rest}>{children}</a>
+        <a href={href} data-query={data ? JSON.stringify(data) : undefined} {...rest}>
+            {children}
+        </a>
     ),
     router: { get: inertia.get, reload: inertia.reload, visit: vi.fn() },
 }));
@@ -88,7 +98,9 @@ describe('Foundry/Reports pager', () => {
         expect(screen.getByText('Page 2 of 3')).toBeInTheDocument();
         unmount();
 
-        render(<FoundryReports {...props({ reports_pagination: { total: 2, page: 1, per_page: 50, last_page: 1 } })} />);
+        render(
+            <FoundryReports {...props({ reports_pagination: { total: 2, page: 1, per_page: 50, last_page: 1 } })} />,
+        );
         expect(screen.queryByTestId('reports-pager')).toBeNull();
     });
 
@@ -101,7 +113,11 @@ describe('Foundry/Reports pager', () => {
         const [url, data, options] = inertia.get.mock.calls[0];
         expect(url).toBe('/projects/red-star/reports/r-2');
         expect(data).toEqual({ page: 3, per_page: 50 });
-        expect(options).toMatchObject({ preserveState: true, preserveScroll: true, only: ['reports', 'reports_pagination'] });
+        expect(options).toMatchObject({
+            preserveState: true,
+            preserveScroll: true,
+            only: ['reports', 'reports_pagination'],
+        });
     });
 
     it('pages without a document open against the bare list URL', () => {
@@ -122,17 +138,23 @@ describe('Foundry/Reports pager', () => {
     });
 
     it('does not page past the ends', () => {
-        render(<FoundryReports {...props({ reports_pagination: { total: 120, page: 3, per_page: 50, last_page: 3 } })} />);
+        render(
+            <FoundryReports {...props({ reports_pagination: { total: 120, page: 3, per_page: 50, last_page: 3 } })} />,
+        );
         expect(screen.getByRole('button', { name: 'Next page of documents' })).toBeDisabled();
     });
 
     describe('a stale page beyond the last', () => {
         it('shows the last page and asks the server for it, replacing the history entry', () => {
-            render(<FoundryReports {...props({
-                selected_id: 'r-2',
-                reports: [],
-                reports_pagination: { total: 120, page: 9, per_page: 50, last_page: 3 },
-            })} />);
+            render(
+                <FoundryReports
+                    {...props({
+                        selected_id: 'r-2',
+                        reports: [],
+                        reports_pagination: { total: 120, page: 9, per_page: 50, last_page: 3 },
+                    })}
+                />,
+            );
 
             expect(screen.getByText('Page 3 of 3')).toBeInTheDocument();
             expect(screen.getByText('101–120 of 120 documents')).toBeInTheDocument();
@@ -146,7 +168,11 @@ describe('Foundry/Reports pager', () => {
         });
 
         it('Prev from the clamped page goes to the page before the last, not before the stale one', () => {
-            render(<FoundryReports {...props({ reports_pagination: { total: 120, page: 9, per_page: 50, last_page: 3 } })} />);
+            render(
+                <FoundryReports
+                    {...props({ reports_pagination: { total: 120, page: 9, per_page: 50, last_page: 3 } })}
+                />,
+            );
             inertia.get.mockClear();
 
             fireEvent.click(screen.getByRole('button', { name: 'Previous page of documents' }));

@@ -16,8 +16,7 @@ import StereonetCard, { type StereonetMeta, type StereonetPoint } from '../Stere
 
 // Tiny 1x1 transparent PNG (base64). Enough to satisfy the <img src>
 // without going to the network. We never decode it in jsdom.
-const TINY_PNG_B64 =
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
 const POINTS: StereonetPoint[] = [
     {

@@ -24,13 +24,7 @@ const VIEWS: ReadonlyArray<{ value: ReportsViewId; label: string; suffix: string
     { value: 'tables', label: 'Tables', suffix: '/attribute-tables' },
 ];
 
-export default function ReportsViewBar({
-    slug,
-    active,
-}: {
-    slug: string;
-    active: ReportsViewId;
-}) {
+export default function ReportsViewBar({ slug, active }: { slug: string; active: ReportsViewId }) {
     return (
         <Segmented<ReportsViewId>
             value={active}

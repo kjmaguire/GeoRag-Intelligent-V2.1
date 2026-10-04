@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { Head, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
-import { Pill, EmptyState, BrandDiamond } from '@/Components/Foundry/primitives';
+import { Pill, BrandDiamond } from '@/Components/Foundry/primitives';
 import EvidencePacketBadge from '@/Components/EvidencePacketBadge';
 import InlineViz from '@/Components/InlineViz';
 import ResolutionPreviewChip from '@/Components/ResolutionPreviewChip';
@@ -71,7 +71,11 @@ import {
  *     existing silver.message_feedback writer.
  */
 
-interface ChatThread { id: string; title: string; updated: string }
+interface ChatThread {
+    id: string;
+    title: string;
+    updated: string;
+}
 interface Citation {
     citation_id: string;
     citation_type: string;
@@ -185,13 +189,31 @@ function suggestionChips(commodity?: string | null): Array<{ label: string; quer
     const c = commodity?.trim();
     return [
         { label: 'How many drill holes are in this project?', query: 'How many drill holes are in this project?' },
-        { label: 'What is the deepest hole on this project?', query: 'What is the deepest drill hole on this project, and what is its total depth?' },
-        { label: 'Summarise the lithology of the main zone', query: 'Summarise the lithology of the main zone on this project.' },
-        { label: 'Which reports mention a resource estimate?', query: 'Which reports mention a resource estimate, and what do they report?' },
+        {
+            label: 'What is the deepest hole on this project?',
+            query: 'What is the deepest drill hole on this project, and what is its total depth?',
+        },
+        {
+            label: 'Summarise the lithology of the main zone',
+            query: 'Summarise the lithology of the main zone on this project.',
+        },
+        {
+            label: 'Which reports mention a resource estimate?',
+            query: 'Which reports mention a resource estimate, and what do they report?',
+        },
         c
-            ? { label: `Compare mean ${c} grade across holes`, query: `Compare the mean ${c} grade across every hole in this project.` }
-            : { label: 'Which holes have the best intervals?', query: 'Which holes have the best assay intervals in this project?' },
-        { label: 'What deposit does this project host?', query: 'What deposit style does this project host and what is its geological setting?' },
+            ? {
+                  label: `Compare mean ${c} grade across holes`,
+                  query: `Compare the mean ${c} grade across every hole in this project.`,
+              }
+            : {
+                  label: 'Which holes have the best intervals?',
+                  query: 'Which holes have the best assay intervals in this project?',
+              },
+        {
+            label: 'What deposit does this project host?',
+            query: 'What deposit style does this project host and what is its geological setting?',
+        },
     ];
 }
 
@@ -245,10 +267,18 @@ const STICK_TO_BOTTOM_PX = 80;
 const STOPPED_PARTIAL = 'Stopped by you. The text above is incomplete and unchecked.';
 const STOPPED_EMPTY = 'Stopped by you before any answer text arrived.';
 
-export default function FoundryChat({ project, threads, active_thread_id, active_thread, messages: initialMessages }: ChatPageProps) {
+export default function FoundryChat({
+    project,
+    threads,
+    active_thread_id,
+    active_thread,
+    messages: initialMessages,
+}: ChatPageProps) {
     // FE-4 — the Workspace copilot dock navigates here with ?prompt=; the
     // question is prefilled (not auto-sent) so the user sees and owns it.
-    const [composer, setComposer] = useState(() => (typeof window === 'undefined' ? '' : readPromptParam(window.location.search)));
+    const [composer, setComposer] = useState(() =>
+        typeof window === 'undefined' ? '' : readPromptParam(window.location.search),
+    );
     // CHAT-4 — surfaced when a thread sync is rejected.
     const [persistError, setPersistError] = useState<string | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
@@ -411,13 +441,25 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     function leaveChannel() {
         const ref = echoRef.current;
         if (ref) {
-            try { ref.channel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
-            try { window.Echo?.leave?.(ref.name); } catch { /* noop */ }
+            try {
+                ref.channel.stopListening('.QueryStreamEvent');
+            } catch {
+                /* noop */
+            }
+            try {
+                window.Echo?.leave?.(ref.name);
+            } catch {
+                /* noop */
+            }
             echoRef.current = null;
         }
         const listener = connectionListenerRef.current;
         if (listener) {
-            try { window.Echo?.connector?.pusher?.connection?.unbind?.('state_change', listener); } catch { /* noop */ }
+            try {
+                window.Echo?.connector?.pusher?.connection?.unbind?.('state_change', listener);
+            } catch {
+                /* noop */
+            }
             connectionListenerRef.current = null;
         }
     }
@@ -439,35 +481,44 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         // above may be incomplete" is only true when there IS an answer;
         // said over an empty bubble it sends the reader looking for text
         // that never arrived.
-        const partial = 'The stream went quiet for 2 minutes and the server has no finished answer yet. The text above is unchecked and may be incomplete.';
+        const partial =
+            'The stream went quiet for 2 minutes and the server has no finished answer yet. The text above is unchecked and may be incomplete.';
         const nothing = 'The stream went quiet for 2 minutes and nothing arrived. Retry the question.';
         flushDeltasNow();
-        updateMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
-            ? {
-                  ...m,
-                  // Preserve whatever streamed. Nothing is synthesized
-                  // into content — the error row below the bubble is
-                  // the one place the message belongs.
-                  status: null,
-                  error: m.content ? partial : nothing,
-                  isStreaming: false,
-                  // The text preserved above is the RAW stream. Every
-                  // §04i guard, the Layer-2 orphan-marker strip and the
-                  // confidence floor run server-side after generation
-                  // and only ever reach the browser on the completed
-                  // frame, which never arrived here.
-                  validationState: 'unverified',
-              }
-            : m)));
+        updateMessages((prev) =>
+            prev.map((m) =>
+                m.id === assistantId && m.isStreaming
+                    ? {
+                          ...m,
+                          // Preserve whatever streamed. Nothing is synthesized
+                          // into content — the error row below the bubble is
+                          // the one place the message belongs.
+                          status: null,
+                          error: m.content ? partial : nothing,
+                          isStreaming: false,
+                          // The text preserved above is the RAW stream. Every
+                          // §04i guard, the Layer-2 orphan-marker strip and the
+                          // confidence floor run server-side after generation
+                          // and only ever reach the browser on the completed
+                          // frame, which never arrived here.
+                          validationState: 'unverified',
+                      }
+                    : m,
+            ),
+        );
         endStream();
     }
 
     function armWatchdog(assistantId: string) {
         clearWatchdog();
         const warn = setTimeout(() => {
-            updateMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
-                ? { ...m, status: 'Still working… large queries can take a few minutes.' }
-                : m)));
+            updateMessages((prev) =>
+                prev.map((m) =>
+                    m.id === assistantId && m.isStreaming
+                        ? { ...m, status: 'Still working… large queries can take a few minutes.' }
+                        : m,
+                ),
+            );
         }, 30_000);
         const fatal = setTimeout(() => {
             watchdogRef.current = null;
@@ -484,7 +535,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     }
 
     const streamingRef = useRef(streaming);
-    useEffect(() => { streamingRef.current = streaming; }, [streaming]);
+    useEffect(() => {
+        streamingRef.current = streaming;
+    }, [streaming]);
 
     // Sync to initialMessages on thread switch ONLY. Keying this on the
     // initialMessages array identity re-ran it on every Inertia prop
@@ -537,11 +590,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         setComposer('');
         setMobileThreadsOpen(false);
         if (typeof window !== 'undefined' && window.history && window.location.search) {
-            window.history.replaceState(
-                window.history.state,
-                '',
-                `/projects/${project.slug}/chat`,
-            );
+            window.history.replaceState(window.history.state, '', `/projects/${project.slug}/chat`);
         }
     }
 
@@ -551,7 +600,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             method: 'POST',
             credentials: 'same-origin',
             headers: jsonHeaders(),
-        }).catch(() => { /* best-effort: the job still ends on its own */ });
+        }).catch(() => {
+            /* best-effort: the job still ends on its own */
+        });
     }
 
     function stopStreaming() {
@@ -604,7 +655,6 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             cancelDeltaFlush();
             leaveChannel();
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     async function persistConversation(convoId: string, msgs: ChatMessage[]) {
@@ -622,7 +672,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             });
             // CHAT-4 — a rejected sync used to be invisible; every later
             // turn then silently failed to save too.
-            setPersistError(resp.ok ? null : `This thread could not be saved (HTTP ${resp.status}). Answers above will be lost on reload.`);
+            setPersistError(
+                resp.ok
+                    ? null
+                    : `This thread could not be saved (HTTP ${resp.status}). Answers above will be lost on reload.`,
+            );
             // Refresh the rail (a new thread, a new title) without touching
             // `messages` or `active_thread_id`: the thread-sync effect above is
             // keyed on active_thread_id, so leaving it out of `only` keeps the
@@ -644,7 +698,13 @@ export default function FoundryChat({ project, threads, active_thread_id, active
      * completed frame, or from GET /queries/:id/result when the frame was
      * lost (CHAT-8). Returns false when the bubble no longer exists.
      */
-    function applyCompleted(event: Record<string, unknown>, assistantId: string, convoId: string, streamedText: string, runningCitations: Citation[]): boolean {
+    function applyCompleted(
+        event: Record<string, unknown>,
+        assistantId: string,
+        convoId: string,
+        streamedText: string,
+        runningCitations: Citation[],
+    ): boolean {
         // Stopped, superseded or unmounted: this query no longer owns the
         // stream, and endStream() below would tear down whichever one does.
         if (!isActiveQuery(assistantId)) return false;
@@ -658,7 +718,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         const finalConfidence = typeof event.confidence === 'number' ? event.confidence : null;
         // Backend: GeoRAGResponse.validation_state, set by validate_node.
         let finalValidationState: ValidationState = normaliseValidationState(event.validation_state);
-        const finalCitations = (Array.isArray(event.citations) && event.citations.length > 0 ? event.citations : runningCitations) as Citation[];
+        const finalCitations = (
+            Array.isArray(event.citations) && event.citations.length > 0 ? event.citations : runningCitations
+        ) as Citation[];
         const answerRunId = event.answer_run_id ? String(event.answer_run_id) : null;
         // M2 P5 — viz_payload (chart hint) + map_payload (GeoJSON) ride on the
         // completed event. Backend: agentic_retrieval/nodes.py
@@ -769,7 +831,13 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             if (!isActiveQuery(active.assistantId)) return true;
             if (body.status === 'completed') {
                 const current = messagesRef.current.find((m) => m.id === active.assistantId);
-                return applyCompleted(body, active.assistantId, active.convoId, current?.content ?? '', current?.citations ?? []);
+                return applyCompleted(
+                    body,
+                    active.assistantId,
+                    active.convoId,
+                    current?.content ?? '',
+                    current?.citations ?? [],
+                );
             }
             if (body.status === 'failed') {
                 applyFailed(body, active.assistantId);
@@ -796,16 +864,19 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         if (!window.Echo) {
             // Surface in-conversation instead of window.alert().
             console.error('GeoRAG chat: window.Echo unavailable — Reverb may be down.');
-            updateMessages((prev) => [...prev, {
-                id: newUuid(),
-                role: 'assistant' as const,
-                content: '',
-                created_at: new Date().toISOString(),
-                citations: [],
-                confidence: null,
-                answer_run_id: null,
-                error: 'Live updates are unavailable right now, so this question was not sent. Reload the page and try again.',
-            }]);
+            updateMessages((prev) => [
+                ...prev,
+                {
+                    id: newUuid(),
+                    role: 'assistant' as const,
+                    content: '',
+                    created_at: new Date().toISOString(),
+                    citations: [],
+                    confidence: null,
+                    answer_run_id: null,
+                    error: 'Live updates are unavailable right now, so this question was not sent. Reload the page and try again.',
+                },
+            ]);
             return;
         }
 
@@ -864,9 +935,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             if (!isCurrent()) return;
             endStream();
             updateMessages((prev) =>
-                prev.map((m) =>
-                    m.id === assistantId ? { ...m, status: null, error: msg, isStreaming: false } : m,
-                ),
+                prev.map((m) => (m.id === assistantId ? { ...m, status: null, error: msg, isStreaming: false } : m)),
             );
         };
 
@@ -972,7 +1041,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         // be delivered; fetch it rather than failing.
                         clearWatchdog();
                         leaveChannel();
-                        updateMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, status: 'Loading the finished answer…' } : m)));
+                        updateMessages((prev) =>
+                            prev.map((m) =>
+                                m.id === assistantId ? { ...m, status: 'Loading the finished answer…' } : m,
+                            ),
+                        );
                         void recoverWithRetry(active).then((settled) => {
                             if (!settled) applyFailed(event, assistantId);
                         });
@@ -990,7 +1063,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             withError.error?.((err: unknown) => {
                 subscriptionFailed = true;
                 console.error('GeoRAG chat: realtime channel subscription failed', err);
-                failBeforeStream('Could not subscribe to the realtime channel (authorisation failed). Reload the page and try again.');
+                failBeforeStream(
+                    'Could not subscribe to the realtime channel (authorisation failed). Reload the page and try again.',
+                );
             });
 
             // CHAT-8 — a pusher-js reconnect mid-answer can swallow the
@@ -998,7 +1073,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             const pusherConnection = window.Echo?.connector?.pusher?.connection;
             if (pusherConnection?.bind) {
                 const onStateChange: ConnectionStateListener = (states) => {
-                    if (states.current === 'connected' && states.previous !== 'connected' && activeQueryRef.current?.assistantId === assistantId) {
+                    if (
+                        states.current === 'connected' &&
+                        states.previous !== 'connected' &&
+                        activeQueryRef.current?.assistantId === assistantId
+                    ) {
                         void recoverFromServer(active);
                     }
                 };
@@ -1051,7 +1130,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     const state = window.Echo?.connector?.pusher?.connection?.state;
                     if (typeof state === 'string' && state !== 'connected') {
                         startFired = true; // never start this one
-                        failBeforeStream(`Realtime channel unavailable (socket ${state}), so the query was not started. Check your connection and retry.`);
+                        failBeforeStream(
+                            `Realtime channel unavailable (socket ${state}), so the query was not started. Check your connection and retry.`,
+                        );
                         return;
                     }
                     fireStart();
@@ -1068,8 +1149,12 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // keeps one identity for the life of the page; a new closure per render
     // would defeat React.memo on the whole transcript.
     const sendMessageRef = useRef(sendMessage);
-    useEffect(() => { sendMessageRef.current = sendMessage; });
-    const handleRetry = useCallback((text: string) => { void sendMessageRef.current(text); }, []);
+    useEffect(() => {
+        sendMessageRef.current = sendMessage;
+    });
+    const handleRetry = useCallback((text: string) => {
+        void sendMessageRef.current(text);
+    }, []);
 
     function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -1092,7 +1177,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         <AppLayout>
             <Head title={active_thread?.title ?? 'Chat — GeoRAG'} />
 
-            <div className="flex-1 grid lg:grid-cols-[280px_1fr] overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
+            <div
+                className="flex-1 grid lg:grid-cols-[280px_1fr] overflow-hidden"
+                style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}
+            >
                 {/* Thread rail — below `lg:` this is collapsed by default and
                     toggled via the hamburger button in the conversation
                     header; renders inline above the conversation instead of
@@ -1105,16 +1193,32 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     ].join(' ')}
                     style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
                 >
-                    <div className="px-3 py-3 flex items-center justify-between border-b" style={{ borderColor: 'var(--line-1)' }}>
-                        <span className="text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>Threads · {threads.length}</span>
+                    <div
+                        className="px-3 py-3 flex items-center justify-between border-b"
+                        style={{ borderColor: 'var(--line-1)' }}
+                    >
+                        <span
+                            className="text-[10px] font-mono uppercase tracking-[0.12em]"
+                            style={{ color: 'var(--fg-3)' }}
+                        >
+                            Threads · {threads.length}
+                        </span>
                         <button
                             type="button"
                             onClick={newThread}
                             // CHAT-3 — never mid-answer: see newThread().
                             disabled={streaming}
-                            title={streaming ? 'Wait for the answer (or press Stop) before starting a new thread' : undefined}
+                            title={
+                                streaming
+                                    ? 'Wait for the answer (or press Stop) before starting a new thread'
+                                    : undefined
+                            }
                             className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border disabled:opacity-40 disabled:cursor-not-allowed"
-                            style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                            style={{
+                                color: 'var(--accent)',
+                                background: 'var(--accent-bg)',
+                                borderColor: 'var(--accent-dim)',
+                            }}
                         >
                             + New
                         </button>
@@ -1140,7 +1244,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                 }}
                             >
                                 <div className="text-xs font-medium truncate">{t.title}</div>
-                                <div className="text-[10px] font-mono uppercase tracking-wider mt-0.5" style={{ color: 'var(--fg-3)' }}>
+                                <div
+                                    className="text-[10px] font-mono uppercase tracking-wider mt-0.5"
+                                    style={{ color: 'var(--fg-3)' }}
+                                >
                                     {formatWhen(t.updated)}
                                 </div>
                             </button>
@@ -1150,7 +1257,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
 
                 {/* Active conversation */}
                 <section className="flex flex-col overflow-hidden">
-                    <header className="px-6 py-3 border-b flex items-center gap-3 shrink-0" style={{ borderColor: 'var(--line-1)' }}>
+                    <header
+                        className="px-6 py-3 border-b flex items-center gap-3 shrink-0"
+                        style={{ borderColor: 'var(--line-1)' }}
+                    >
                         <button
                             type="button"
                             onClick={() => setMobileThreadsOpen((v) => !v)}
@@ -1168,7 +1278,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                             <div className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>
                                 {active_thread?.title ?? (messages.length === 0 ? 'New thread' : 'Untitled thread')}
                             </div>
-                            <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                            <div
+                                className="text-[10px] font-mono uppercase tracking-wider"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
                                 {messages.length} messages · project {project.project_name}
                             </div>
                         </div>
@@ -1189,15 +1302,22 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         {messages.length === 0 ? (
                             <div className="flex flex-col items-center gap-6 py-8">
                                 <div className="text-center max-w-xl">
-                                    <div className="text-[10px] font-mono uppercase tracking-[0.14em] mb-2" style={{ color: 'var(--accent)' }}>
+                                    <div
+                                        className="text-[10px] font-mono uppercase tracking-[0.14em] mb-2"
+                                        style={{ color: 'var(--accent)' }}
+                                    >
                                         GeoRAG · Project context loaded
                                     </div>
                                     <div className="text-lg" style={{ color: 'var(--fg-0)' }}>
-                                        Ask anything about <span style={{ color: 'var(--fg-0)', fontWeight: 600 }}>{project.project_name}</span>
+                                        Ask anything about{' '}
+                                        <span style={{ color: 'var(--fg-0)', fontWeight: 600 }}>
+                                            {project.project_name}
+                                        </span>
                                     </div>
                                     <div className="text-xs mt-2" style={{ color: 'var(--fg-2)' }}>
-                                        Drill holes, geological reports, ore grades, derived intervals, audit log entries.
-                                        Don't worry about phrasing — the retriever rewrites your query, resolves anaphora, and classifies intent before searching.
+                                        Drill holes, geological reports, ore grades, derived intervals, audit log
+                                        entries. Don't worry about phrasing — the retriever rewrites your query,
+                                        resolves anaphora, and classifies intent before searching.
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-2xl">
@@ -1207,7 +1327,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                             type="button"
                                             onClick={() => sendMessage(chip.query)}
                                             className="text-left text-xs px-3 py-2 rounded border hover:opacity-90 transition-opacity"
-                                            style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)', color: 'var(--fg-1)' }}
+                                            style={{
+                                                borderColor: 'var(--line-1)',
+                                                background: 'var(--bg-1)',
+                                                color: 'var(--fg-1)',
+                                            }}
                                         >
                                             <span style={{ color: 'var(--accent)' }}>→</span> {chip.label}
                                         </button>
@@ -1242,7 +1366,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     </div>
 
                     {/* Composer */}
-                    <footer className="border-t px-6 py-3 shrink-0" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
+                    <footer
+                        className="border-t px-6 py-3 shrink-0"
+                        style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
+                    >
                         <div className="flex items-center gap-2 mb-2">
                             {/* CHAT-11 — an "LLM synthesis: off (raw retrieval)"
                                 toggle lived here. Nothing server-side ever read
@@ -1260,7 +1387,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                     onClick={stopStreaming}
                                     aria-label="Stop generating"
                                     className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border ml-auto"
-                                    style={{ color: 'var(--warn)', borderColor: 'var(--warn)', background: 'rgba(217,119,6,0.1)' }}
+                                    style={{
+                                        color: 'var(--warn)',
+                                        borderColor: 'var(--warn)',
+                                        background: 'rgba(217,119,6,0.1)',
+                                    }}
                                 >
                                     ■ Stop
                                 </button>
@@ -1283,7 +1414,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                 rows={2}
                                 disabled={streaming}
                                 className="flex-1 text-sm px-3 py-2 rounded border resize-none disabled:opacity-60"
-                                style={{ background: 'var(--bg-2)', color: 'var(--fg-0)', borderColor: 'var(--line-2)' }}
+                                style={{
+                                    background: 'var(--bg-2)',
+                                    color: 'var(--fg-0)',
+                                    borderColor: 'var(--line-2)',
+                                }}
                                 onKeyDown={onKeyDown}
                             />
                             <button
@@ -1292,12 +1427,19 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                 aria-busy={streaming}
                                 aria-label={streaming ? 'Sending' : 'Send'}
                                 className="text-xs font-mono uppercase tracking-wider px-4 py-2 rounded border self-stretch disabled:opacity-40"
-                                style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                                style={{
+                                    color: 'var(--accent)',
+                                    background: 'var(--accent-bg)',
+                                    borderColor: 'var(--accent-dim)',
+                                }}
                             >
                                 {streaming ? '…' : 'Send →'}
                             </button>
                         </form>
-                        <div className="text-[10px] font-mono uppercase tracking-wider mt-1.5" style={{ color: 'var(--fg-3)' }}>
+                        <div
+                            className="text-[10px] font-mono uppercase tracking-wider mt-1.5"
+                            style={{ color: 'var(--fg-3)' }}
+                        >
                             enter sends · shift+enter newline
                         </div>
                     </footer>
@@ -1362,9 +1504,12 @@ const MessageBubble = memo(function MessageBubble({
     // Copy-to-clipboard with a brief confirmation flash.
     const [copied, setCopied] = useState(false);
     const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    useEffect(() => () => {
-        if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    }, []);
+    useEffect(
+        () => () => {
+            if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+        },
+        [],
+    );
 
     function copyContent() {
         if (!m.content) return;
@@ -1425,13 +1570,18 @@ const MessageBubble = memo(function MessageBubble({
                     }}
                 >
                     {m.isStreaming && m.status && !m.content && (
-                        <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--accent)' }}>
+                        <span
+                            className="text-[10px] font-mono uppercase tracking-wider"
+                            style={{ color: 'var(--accent)' }}
+                        >
                             ● {m.status}
                         </span>
                     )}
                     {m.content}
                     {m.isStreaming && m.content && (
-                        <span className="inline-block ml-1 animate-pulse" style={{ color: 'var(--accent)' }}>▍</span>
+                        <span className="inline-block ml-1 animate-pulse" style={{ color: 'var(--accent)' }}>
+                            ▍
+                        </span>
                     )}
                 </div>
                 {/* Built 2026-09-24 (§10u) — a typed refusal/failure panel
@@ -1463,17 +1613,21 @@ const MessageBubble = memo(function MessageBubble({
                         className="mt-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
                         style={{ borderColor: 'var(--warn, #d97706)', color: 'var(--warn, #d97706)' }}
                     >
-                        No citations were returned for this answer — treat it as unverified.
-                        Nothing above is backed by a source the system could point to.
+                        No citations were returned for this answer — treat it as unverified. Nothing above is backed by
+                        a source the system could point to.
                     </div>
                 )}
                 {/* CHAT-5 — the completed frame was too large for the
                     realtime channel and the job sent a slim one. The answer
                     and its citations are complete; the visualisation is not. */}
                 {!isUser && m.truncatedFields && m.truncatedFields.length > 0 && (
-                    <div data-testid="payload-truncated-note" className="mt-2 text-[11px]" style={{ color: 'var(--fg-3)' }}>
-                        The chart/map for this answer was too large to deliver over the realtime channel and was left out
-                        ({m.truncatedFields.join(', ')}). The answer text and citations are complete.
+                    <div
+                        data-testid="payload-truncated-note"
+                        className="mt-2 text-[11px]"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
+                        The chart/map for this answer was too large to deliver over the realtime channel and was left
+                        out ({m.truncatedFields.join(', ')}). The answer text and citations are complete.
                     </div>
                 )}
                 {/* M2 P5 — inline visualizations (map / strip log / timeline / stereonet /
@@ -1501,10 +1655,11 @@ const MessageBubble = memo(function MessageBubble({
                 {/* Built 2026-09-24 (§10p) — 👍/👎 + taxonomy + note on a
                     settled answer. No-ops while answer_run_id is null
                     (streaming, or errored before a run was persisted). */}
-                {!isUser && (
-                    <FeedbackControls answerRunId={m.answer_run_id} presetCategory={feedbackPreset} />
-                )}
-                <div className="flex items-center gap-2 mt-1.5 text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                {!isUser && <FeedbackControls answerRunId={m.answer_run_id} presetCategory={feedbackPreset} />}
+                <div
+                    className="flex items-center gap-2 mt-1.5 text-[10px] font-mono uppercase tracking-wider"
+                    style={{ color: 'var(--fg-3)' }}
+                >
                     <span>{m.role}</span>
                     <span>·</span>
                     <span>{formatTime(m.created_at)}</span>
@@ -1515,9 +1670,7 @@ const MessageBubble = memo(function MessageBubble({
                     {m.confidence !== null && (
                         <>
                             <span>·</span>
-                            <Pill tone={confidenceTone(m.confidence)}>
-                                conf {m.confidence.toFixed(2)}
-                            </Pill>
+                            <Pill tone={confidenceTone(m.confidence)}>conf {m.confidence.toFixed(2)}</Pill>
                         </>
                     )}
                     {/* The answer-level verdict, rendered independently of the
@@ -1587,7 +1740,8 @@ const MessageBubble = memo(function MessageBubble({
                                 style={{
                                     color: 'var(--fg-2)',
                                     borderColor:
-                                        expandedPgeo === c.source_chunk_id || (inspectorCitation !== null && isSameCitation(inspectorCitation, c))
+                                        expandedPgeo === c.source_chunk_id ||
+                                        (inspectorCitation !== null && isSameCitation(inspectorCitation, c))
                                             ? 'var(--accent)'
                                             : 'var(--line-2)',
                                     background: 'transparent',
@@ -1596,7 +1750,10 @@ const MessageBubble = memo(function MessageBubble({
                             >
                                 [{i + 1}] {c.document_title ?? c.citation_type ?? '—'}
                                 {typeof c.relevance_score === 'number' && (
-                                    <span style={{ color: 'var(--fg-3)' }}> · {(c.relevance_score * 100).toFixed(0)}%</span>
+                                    <span style={{ color: 'var(--fg-3)' }}>
+                                        {' '}
+                                        · {(c.relevance_score * 100).toFixed(0)}%
+                                    </span>
                                 )}
                             </button>
                         ))}

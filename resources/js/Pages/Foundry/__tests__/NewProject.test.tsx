@@ -43,8 +43,12 @@ beforeEach(() => {
         value: {
             ...realLocation,
             origin: 'http://localhost',
-            set href(v: string) { hrefSets.push(v); },
-            get href() { return 'http://localhost/projects/new'; },
+            set href(v: string) {
+                hrefSets.push(v);
+            },
+            get href() {
+                return 'http://localhost/projects/new';
+            },
         },
     });
 });
@@ -176,7 +180,9 @@ describe('NewProject', () => {
         it('blocks creating a magnetic-north project with no declination', () => {
             toJurisdiction();
             fireEvent.change(screen.getByLabelText(/Azimuth reference/), { target: { value: 'magnetic' } });
-            expect(screen.getByText('Magnetic north needs a declination (degrees, east positive).')).toBeInTheDocument();
+            expect(
+                screen.getByText('Magnetic north needs a declination (degrees, east positive).'),
+            ).toBeInTheDocument();
             toReview();
             expect(screen.getByRole('button', { name: /create project/i })).toBeDisabled();
             expect(projectCreates()).toHaveLength(0);

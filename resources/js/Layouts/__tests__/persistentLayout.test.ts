@@ -3,14 +3,22 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/Layouts/AppLayout', () => ({ default: function AppLayoutStub() { return null; } }));
+vi.mock('@/Layouts/AppLayout', () => ({
+    default: function AppLayoutStub() {
+        return null;
+    },
+}));
 
 import AppLayout from '@/Layouts/AppLayout';
 import { SELF_WRAPPED_PAGES, resolvePageLayout } from '../persistentLayout';
 import appEntry from '../../app.tsx?raw';
 import ssrEntry from '../../ssr.tsx?raw';
 
-const pageSources = import.meta.glob('../../Pages/**/*.tsx', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const pageSources = import.meta.glob('../../Pages/**/*.tsx', {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+}) as Record<string, string>;
 
 function pageName(path: string): string {
     return path.replace('../../Pages/', '').replace(/\.tsx$/, '');
@@ -51,7 +59,10 @@ describe('pages agree with the layout resolver', () => {
 });
 
 describe('page globs exclude specs (FE-12)', () => {
-    it.each([['app.tsx', appEntry], ['ssr.tsx', ssrEntry]])('%s negates Pages/**/__tests__', (_n, src) => {
+    it.each([
+        ['app.tsx', appEntry],
+        ['ssr.tsx', ssrEntry],
+    ])('%s negates Pages/**/__tests__', (_n, src) => {
         expect(src).toContain("'!./Pages/**/__tests__/**'");
     });
 });

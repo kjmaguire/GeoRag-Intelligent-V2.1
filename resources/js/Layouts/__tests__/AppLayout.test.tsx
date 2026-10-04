@@ -11,6 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
 
 // Mock Inertia — AppLayout reads usePage() for auth.user and url.
 vi.mock('@inertiajs/react', () => ({
@@ -18,8 +19,20 @@ vi.mock('@inertiajs/react', () => ({
         props: { auth: { user: { name: 'Kyle', email: 'k@example.com' } } },
         url: '/chat',
     })),
-    Link: ({ href, children, className, onClick }: any) => (
-        <a href={href} className={className} onClick={onClick}>{children}</a>
+    Link: ({
+        href,
+        children,
+        className,
+        onClick,
+    }: {
+        href: string;
+        children?: ReactNode;
+        className?: string;
+        onClick?: () => void;
+    }) => (
+        <a href={href} className={className} onClick={onClick}>
+            {children}
+        </a>
     ),
     router: { visit: vi.fn() },
 }));
@@ -51,17 +64,23 @@ describe('AppLayout — auth surface', () => {
     });
 
     it('does not read auth tokens from localStorage on mount', () => {
-        render(<AppLayout><div /></AppLayout>);
+        render(
+            <AppLayout>
+                <div />
+            </AppLayout>,
+        );
 
         const tokenLike = /token|jwt|secret/i;
-        const offending = getItemSpy.mock.calls
-            .map(([key]) => String(key))
-            .filter((k) => tokenLike.test(k));
+        const offending = getItemSpy.mock.calls.map(([key]) => String(key)).filter((k) => tokenLike.test(k));
         expect(offending).toEqual([]);
     });
 
     it('does not read auth tokens from localStorage when logout is triggered', async () => {
-        const { getByRole } = render(<AppLayout><div /></AppLayout>);
+        const { getByRole } = render(
+            <AppLayout>
+                <div />
+            </AppLayout>,
+        );
 
         // FoundryShell's UserMenu hides logout behind a collapsed dropdown
         // anchored on the user-initials button (haspopup). Open it first.
@@ -71,14 +90,16 @@ describe('AppLayout — auth surface', () => {
         await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
 
         const tokenLike = /token|jwt|secret/i;
-        const offending = getItemSpy.mock.calls
-            .map(([key]) => String(key))
-            .filter((k) => tokenLike.test(k));
+        const offending = getItemSpy.mock.calls.map(([key]) => String(key)).filter((k) => tokenLike.test(k));
         expect(offending).toEqual([]);
     });
 
     it('logout fetch uses same-origin credentials', async () => {
-        const { getByRole } = render(<AppLayout><div /></AppLayout>);
+        const { getByRole } = render(
+            <AppLayout>
+                <div />
+            </AppLayout>,
+        );
 
         fireEvent.click(getByRole('button', { expanded: false }));
         fireEvent.click(getByRole('menuitem', { name: /sign out/i }));
@@ -101,9 +122,17 @@ describe('AppLayout — FE-20 / FE-24', () => {
         const visit = router.visit as unknown as ReturnType<typeof vi.fn>;
         visit.mockClear();
         let finish: (r: Response) => void = () => {};
-        vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise<Response>((res) => { finish = res; }));
+        vi.spyOn(globalThis, 'fetch').mockReturnValue(
+            new Promise<Response>((res) => {
+                finish = res;
+            }),
+        );
 
-        const { getByRole } = render(<AppLayout><div /></AppLayout>);
+        const { getByRole } = render(
+            <AppLayout>
+                <div />
+            </AppLayout>,
+        );
         fireEvent.click(getByRole('button', { expanded: false }));
         fireEvent.click(getByRole('menuitem', { name: /sign out/i }));
 
@@ -116,9 +145,16 @@ describe('AppLayout — FE-20 / FE-24', () => {
 
     it('labels the theme toggle and reports which theme is on', () => {
         vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
-        const { getByRole } = render(<AppLayout><div /></AppLayout>);
+        const { getByRole } = render(
+            <AppLayout>
+                <div />
+            </AppLayout>,
+        );
         const dark = getByRole('button', { name: 'Dark theme' });
         const light = getByRole('button', { name: 'Light theme' });
-        expect([dark.getAttribute('aria-pressed'), light.getAttribute('aria-pressed')].sort()).toEqual(['false', 'true']);
+        expect([dark.getAttribute('aria-pressed'), light.getAttribute('aria-pressed')].sort()).toEqual([
+            'false',
+            'true',
+        ]);
     });
 });

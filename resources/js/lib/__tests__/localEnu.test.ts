@@ -17,7 +17,10 @@ describe('localEnu (GIS-9)', () => {
     });
 
     it('converts about the centroid', () => {
-        const o = centroidOrigin([{ lon: -105, lat: 58 }, { lon: -104.99, lat: 58.01 }])!;
+        const o = centroidOrigin([
+            { lon: -105, lat: 58 },
+            { lon: -104.99, lat: 58.01 },
+        ])!;
         const f = toLocalMetres(o);
         const a = f(-105, 58);
         const b = f(-104.99, 58.01);

@@ -7,11 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-    mergeLayerVisibility,
-    readLayerVisibility,
-    writeLayerVisibility,
-} from '../layerVisibilityStorage';
+import { mergeLayerVisibility, readLayerVisibility, writeLayerVisibility } from '../layerVisibilityStorage';
 
 const KEY = 'georag:map_layer_visibility:v1';
 const DEFAULTS = {
@@ -49,10 +45,7 @@ describe('readLayerVisibility', () => {
     });
 
     it('drops non-boolean values from a tampered store', () => {
-        window.localStorage.setItem(
-            KEY,
-            JSON.stringify({ collars: true, seismic: 'truthy?', extra: 1 }),
-        );
+        window.localStorage.setItem(KEY, JSON.stringify({ collars: true, seismic: 'truthy?', extra: 1 }));
         expect(readLayerVisibility()).toEqual({ collars: true });
     });
 
@@ -90,9 +83,9 @@ describe('mergeLayerVisibility', () => {
     it('overlays persisted values onto defaults', () => {
         const merged = mergeLayerVisibility(DEFAULTS, { collars: false, seismic: true });
         expect(merged).toEqual({
-            collars: false,        // overridden
-            drill_traces: true,    // unchanged from default
-            seismic: true,         // overridden
+            collars: false, // overridden
+            drill_traces: true, // unchanged from default
+            seismic: true, // overridden
         });
     });
 

@@ -16,99 +16,112 @@
  */
 
 export type Category =
-  | 'reports'
-  | 'archive'
-  | 'collars'
-  | 'surveys'
-  | 'lithology'
-  | 'samples'
-  | 'excel'
-  | 'spatial'
-  | 'tables'
-  | 'well_logs'
-  | 'seismic'
-  | 'xyz'
-  | 'geochronology';
+    | 'reports'
+    | 'archive'
+    | 'collars'
+    | 'surveys'
+    | 'lithology'
+    | 'samples'
+    | 'excel'
+    | 'spatial'
+    | 'tables'
+    | 'well_logs'
+    | 'seismic'
+    | 'xyz'
+    | 'geochronology';
 
 /** Extensions each category accepts. Mirrors UploadController::CATEGORIES. */
 export const CATEGORY_EXTS: Record<Category, string[]> = {
-  // `.rrd` is an ERDAS pyramid — normally a derived companion of a raster,
-  // but the only surviving copy of the image when its parent is missing,
-  // which is how it arrived in a real delivery. tiff_normalize extracts the
-  // finest level.
-  // `.jpg`/`.jpeg` are scanned sheets: RedStar's is the legend for a 1990
-  // geological map, i.e. nothing but the unit descriptions that make the map
-  // readable. They wrap to PDF through the same Pillow path as a TIFF and,
-  // carrying no CRS, always reach OCR rather than being filed as a data grid.
-  // `.png`/`.bmp`/`.gif`/`.webp` (2026-10-04) take the same wrap: standalone
-  // scanned images and photographed logs.
-  reports: ['pdf', 'tif', 'tiff', 'rrd', 'jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp'],
-  archive: ['zip'],
-  collars: ['csv', 'txt', 'tsv'],
-  surveys: ['csv', 'txt', 'tsv'],
-  lithology: ['csv', 'txt', 'tsv'],
-  samples: ['csv', 'txt', 'tsv'],
-  excel: ['xlsx', 'xls', 'xlsm'],
-  // A dBASE table with no `.shp` beside it is not a shapefile sidecar, it is
-  // an attribute table, and it routes to ingest_tabular. Its own category
-  // rather than a slot in `excel` or in the four drill categories: nothing
-  // in the extension says which drill table a .dbf holds, so listing it
-  // under collars/surveys/lithology/samples would make categoryForExtension
-  // pick one arbitrarily and pin a wrong sheet_type on every auto-routed
-  // file. A `.dbf` beside a same-stem `.shp` never reaches here —
-  // groupShapefiles() zips it into the shapefile bundle first, and that
-  // sibling is the only thing that discriminates the two cases.
-  // `.dat` is here for the same reason: a MapInfo attribute half IS a dBASE
-  // file and reads standalone once its master is absent. The long-standing
-  // comment that ".dat is already claimed by the retired xyz category"
-  // describes a constraint that does not exist — UploadController consults
-  // RETIRED_CATEGORIES by category NAME only, never by extension. The proof
-  // already ships: `txt` sits in retired `xyz` AND in live `collars`, and
-  // .txt uploads work today.
-  // `.mdb`/`.accdb` are here too: an Access database is a container of
-  // TABLES, and it fans out to one attribute table per Access table.
-  tables: ['dbf', 'dat', 'mdb', 'accdb'],
-  // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
-  // travel together and a lone .shp cannot be read without them.
-  // MapInfo: `.tab` and `.mif` are the ENTRY POINTS GDAL opens. Their
-  // geometry/index companions (.map/.id/.ind) are absent because they cannot
-  // be read alone, and `.mid` because it opens on its own — accepting it
-  // would ingest a MIF/MID pair twice. `.dat` is NOT in that group: it is the
-  // attribute half, a whole dBASE table, and it lives in `tables` above.
-  // shapefileBundle.ts zips the complete set under this category.
-  spatial: [
-    'geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'dgn',
-    'fgb', 'gdb', 'zip', 'qgs', 'qgz', 'tab', 'mif',
-    // Surpac string file — mine-design strings (vein outlines, level plans).
-    // No CRS of its own, so it needs an EPSG the same way a .dxf does.
-    'str',
-  ],
-  well_logs: ['las'],
-  seismic: ['sgy', 'segy'],
-  // Live since 2026-09-29 (ING-19): Geosoft XYZ line data -> ingest_geophysics.
-  // Only `.xyz` — `.dat` and `.txt` are tables and live in `tables`/`collars`.
-  // A DCIP2D inversion export is a folder and uploads as an `archive`.
-  xyz: ['xyz'],
-  // Radiometric-age tables -> ingest_tabular with the geochronology hint. A
-  // workbook goes through `excel`, where each sheet is recognised by its
-  // headers.
-  geochronology: ['csv', 'txt', 'tsv'],
+    // `.rrd` is an ERDAS pyramid — normally a derived companion of a raster,
+    // but the only surviving copy of the image when its parent is missing,
+    // which is how it arrived in a real delivery. tiff_normalize extracts the
+    // finest level.
+    // `.jpg`/`.jpeg` are scanned sheets: RedStar's is the legend for a 1990
+    // geological map, i.e. nothing but the unit descriptions that make the map
+    // readable. They wrap to PDF through the same Pillow path as a TIFF and,
+    // carrying no CRS, always reach OCR rather than being filed as a data grid.
+    // `.png`/`.bmp`/`.gif`/`.webp` (2026-10-04) take the same wrap: standalone
+    // scanned images and photographed logs.
+    reports: ['pdf', 'tif', 'tiff', 'rrd', 'jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp'],
+    archive: ['zip'],
+    collars: ['csv', 'txt', 'tsv'],
+    surveys: ['csv', 'txt', 'tsv'],
+    lithology: ['csv', 'txt', 'tsv'],
+    samples: ['csv', 'txt', 'tsv'],
+    excel: ['xlsx', 'xls', 'xlsm'],
+    // A dBASE table with no `.shp` beside it is not a shapefile sidecar, it is
+    // an attribute table, and it routes to ingest_tabular. Its own category
+    // rather than a slot in `excel` or in the four drill categories: nothing
+    // in the extension says which drill table a .dbf holds, so listing it
+    // under collars/surveys/lithology/samples would make categoryForExtension
+    // pick one arbitrarily and pin a wrong sheet_type on every auto-routed
+    // file. A `.dbf` beside a same-stem `.shp` never reaches here —
+    // groupShapefiles() zips it into the shapefile bundle first, and that
+    // sibling is the only thing that discriminates the two cases.
+    // `.dat` is here for the same reason: a MapInfo attribute half IS a dBASE
+    // file and reads standalone once its master is absent. The long-standing
+    // comment that ".dat is already claimed by the retired xyz category"
+    // describes a constraint that does not exist — UploadController consults
+    // RETIRED_CATEGORIES by category NAME only, never by extension. The proof
+    // already ships: `txt` sits in retired `xyz` AND in live `collars`, and
+    // .txt uploads work today.
+    // `.mdb`/`.accdb` are here too: an Access database is a container of
+    // TABLES, and it fans out to one attribute table per Access table.
+    tables: ['dbf', 'dat', 'mdb', 'accdb'],
+    // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
+    // travel together and a lone .shp cannot be read without them.
+    // MapInfo: `.tab` and `.mif` are the ENTRY POINTS GDAL opens. Their
+    // geometry/index companions (.map/.id/.ind) are absent because they cannot
+    // be read alone, and `.mid` because it opens on its own — accepting it
+    // would ingest a MIF/MID pair twice. `.dat` is NOT in that group: it is the
+    // attribute half, a whole dBASE table, and it lives in `tables` above.
+    // shapefileBundle.ts zips the complete set under this category.
+    spatial: [
+        'geojson',
+        'json',
+        'shp',
+        'gpkg',
+        'gml',
+        'gpx',
+        'dxf',
+        'dgn',
+        'fgb',
+        'gdb',
+        'zip',
+        'qgs',
+        'qgz',
+        'tab',
+        'mif',
+        // Surpac string file — mine-design strings (vein outlines, level plans).
+        // No CRS of its own, so it needs an EPSG the same way a .dxf does.
+        'str',
+    ],
+    well_logs: ['las'],
+    seismic: ['sgy', 'segy'],
+    // Live since 2026-09-29 (ING-19): Geosoft XYZ line data -> ingest_geophysics.
+    // Only `.xyz` — `.dat` and `.txt` are tables and live in `tables`/`collars`.
+    // A DCIP2D inversion export is a folder and uploads as an `archive`.
+    xyz: ['xyz'],
+    // Radiometric-age tables -> ingest_tabular with the geochronology hint. A
+    // workbook goes through `excel`, where each sheet is recognised by its
+    // headers.
+    geochronology: ['csv', 'txt', 'tsv'],
 };
 
 export const CATEGORY_LABEL: Record<Category, string> = {
-  reports: 'NI 43-101 / reports & scans (PDF, TIFF, JPEG, ERDAS RRD)',
-  archive: 'Archive of mixed files (ZIP)',
-  collars: 'Drill collars (CSV)',
-  surveys: 'Down-hole surveys (CSV)',
-  lithology: 'Lithology logs (CSV)',
-  samples: 'Assay samples (CSV)',
-  excel: 'Excel workbooks (XLSX)',
-  tables: 'Attribute table (DBF, MapInfo DAT, Access MDB)',
-  spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, Surpac, ZIP)',
-  well_logs: 'Well logs (LAS)',
-  seismic: 'Seismic (SEG-Y)',
-  xyz: 'Geophysics line data (Geosoft XYZ)',
-  geochronology: 'Geochronology / radiometric ages (CSV)',
+    reports: 'NI 43-101 / reports & scans (PDF, TIFF, JPEG, ERDAS RRD)',
+    archive: 'Archive of mixed files (ZIP)',
+    collars: 'Drill collars (CSV)',
+    surveys: 'Down-hole surveys (CSV)',
+    lithology: 'Lithology logs (CSV)',
+    samples: 'Assay samples (CSV)',
+    excel: 'Excel workbooks (XLSX)',
+    tables: 'Attribute table (DBF, MapInfo DAT, Access MDB)',
+    spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, Surpac, ZIP)',
+    well_logs: 'Well logs (LAS)',
+    seismic: 'Seismic (SEG-Y)',
+    xyz: 'Geophysics line data (Geosoft XYZ)',
+    geochronology: 'Geochronology / radiometric ages (CSV)',
 };
 
 /**
@@ -122,9 +135,7 @@ export const CATEGORY_LABEL: Record<Category, string> = {
 export const RETIRED_CATEGORIES = new Set<Category>(['seismic']);
 
 /** Categories a user may actually choose. */
-export const LIVE_CATEGORIES = (Object.keys(CATEGORY_LABEL) as Category[]).filter(
-  (c) => !RETIRED_CATEGORIES.has(c),
-);
+export const LIVE_CATEGORIES = (Object.keys(CATEGORY_LABEL) as Category[]).filter((c) => !RETIRED_CATEGORIES.has(c));
 
 /**
  * Image formats the backend rejects outright.
@@ -147,7 +158,7 @@ export const LIVE_CATEGORIES = (Object.keys(CATEGORY_LABEL) as Category[]).filte
 export const UNSUPPORTED_EXTS = new Set<string>();
 
 export function extensionOf(filename: string): string {
-  return filename.split('.').pop()?.toLowerCase() ?? '';
+    return filename.split('.').pop()?.toLowerCase() ?? '';
 }
 
 /**
@@ -160,38 +171,38 @@ export function extensionOf(filename: string): string {
  * first, and the other drill types are one click away.
  */
 export function categoryForExtension(ext: string): Category | null {
-  if (UNSUPPORTED_EXTS.has(ext)) return null;
+    if (UNSUPPORTED_EXTS.has(ext)) return null;
 
-  const preference: Category[] = [
-    'reports',
-    'archive',
-    'collars',
-    'surveys',
-    'lithology',
-    'samples',
-    'excel',
-    'tables',
-    'spatial',
-    'well_logs',
-    'xyz',
-    // Never wins for .csv (collars comes first); listed so the order is total.
-    'geochronology',
-  ];
+    const preference: Category[] = [
+        'reports',
+        'archive',
+        'collars',
+        'surveys',
+        'lithology',
+        'samples',
+        'excel',
+        'tables',
+        'spatial',
+        'well_logs',
+        'xyz',
+        // Never wins for .csv (collars comes first); listed so the order is total.
+        'geochronology',
+    ];
 
-  for (const cat of preference) {
-    if (RETIRED_CATEGORIES.has(cat)) continue;
-    if (CATEGORY_EXTS[cat].includes(ext)) return cat;
-  }
-  return null;
+    for (const cat of preference) {
+        if (RETIRED_CATEGORIES.has(cat)) continue;
+        if (CATEGORY_EXTS[cat].includes(ext)) return cat;
+    }
+    return null;
 }
 
 /** Every extension any live category accepts — for an `accept=` attribute. */
 export function acceptedExtensions(): string[] {
-  const all = new Set<string>();
-  for (const cat of LIVE_CATEGORIES) {
-    for (const ext of CATEGORY_EXTS[cat]) all.add(ext);
-  }
-  return [...all].sort();
+    const all = new Set<string>();
+    for (const cat of LIVE_CATEGORIES) {
+        for (const ext of CATEGORY_EXTS[cat]) all.add(ext);
+    }
+    return [...all].sort();
 }
 
 /* ------------------------------------------------------------------ *
@@ -217,10 +228,10 @@ export const EPSG_MIN = 1024;
 export const EPSG_MAX = 32767;
 
 export interface EpsgParse {
-  /** Set only when the text is a legal EPSG code. */
-  epsg?: number;
-  /** Set only when the text is present and illegal. Render it; do not upload. */
-  error?: string;
+    /** Set only when the text is a legal EPSG code. */
+    epsg?: number;
+    /** Set only when the text is present and illegal. Render it; do not upload. */
+    error?: string;
 }
 
 /**
@@ -230,16 +241,16 @@ export interface EpsgParse {
  * declared CRS wins over it in every case where the file has one.
  */
 export function parseEpsg(text: string): EpsgParse {
-  const trimmed = text.trim();
-  if (trimmed === '') return {};
-  if (!/^\d+$/.test(trimmed)) {
-    return { error: `“${trimmed}” is not an EPSG code — enter the number only, e.g. 26904.` };
-  }
-  const n = Number(trimmed);
-  if (n < EPSG_MIN || n > EPSG_MAX) {
-    return { error: `EPSG codes must be in the range ${EPSG_MIN}-${EPSG_MAX}.` };
-  }
-  return { epsg: n };
+    const trimmed = text.trim();
+    if (trimmed === '') return {};
+    if (!/^\d+$/.test(trimmed)) {
+        return { error: `“${trimmed}” is not an EPSG code — enter the number only, e.g. 26904.` };
+    }
+    const n = Number(trimmed);
+    if (n < EPSG_MIN || n > EPSG_MAX) {
+        return { error: `EPSG codes must be in the range ${EPSG_MIN}-${EPSG_MAX}.` };
+    }
+    return { epsg: n };
 }
 
 /**
@@ -265,25 +276,25 @@ export function parseEpsg(text: string): EpsgParse {
  * no such field and are deliberately absent.
  */
 export function supportsCrsOverride(category: Category | null): boolean {
-  return (
-    category === 'spatial' ||
-    category === 'collars' ||
-    category === 'surveys' ||
-    category === 'lithology' ||
-    category === 'samples' ||
-    category === 'excel' ||
-    category === 'tables' ||
-    // `archive` joined on 2026-08-25. A ZIP is the ONLY way to upload a
-    // large delivery, and its members go to exactly the ingesters listed
-    // above — so excluding it here meant a zipped collar table had no way
-    // to declare its CRS and was written as the Athabasca default,
-    // EPSG:32613. RedStar's Sitka collars landed 3,430 km east of Unga
-    // Island, and the run's advice ("re-upload with the correct EPSG
-    // code") could not be followed for a file inside an archive.
-    category === 'archive' ||
-    // ING-19 (2026-09-29): ingest_geophysics declares source_epsg (an XYZ
-    // file states no CRS), and `geochronology` routes to ingest_tabular.
-    category === 'xyz' ||
-    category === 'geochronology'
-  );
+    return (
+        category === 'spatial' ||
+        category === 'collars' ||
+        category === 'surveys' ||
+        category === 'lithology' ||
+        category === 'samples' ||
+        category === 'excel' ||
+        category === 'tables' ||
+        // `archive` joined on 2026-08-25. A ZIP is the ONLY way to upload a
+        // large delivery, and its members go to exactly the ingesters listed
+        // above — so excluding it here meant a zipped collar table had no way
+        // to declare its CRS and was written as the Athabasca default,
+        // EPSG:32613. RedStar's Sitka collars landed 3,430 km east of Unga
+        // Island, and the run's advice ("re-upload with the correct EPSG
+        // code") could not be followed for a file inside an archive.
+        category === 'archive' ||
+        // ING-19 (2026-09-29): ingest_geophysics declares source_epsg (an XYZ
+        // file states no CRS), and `geochronology` routes to ingest_tabular.
+        category === 'xyz' ||
+        category === 'geochronology'
+    );
 }

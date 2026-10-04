@@ -8,11 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import DataQualityFlagsBadge, {
-    type DataQualityFlag,
-    type DataQualityFlagsBadgeData,
-} from '../DataQualityFlagsBadge';
-
+import DataQualityFlagsBadge, { type DataQualityFlag, type DataQualityFlagsBadgeData } from '../DataQualityFlagsBadge';
 
 function _flag(overrides: Partial<DataQualityFlag> = {}): DataQualityFlag {
     return {
@@ -27,7 +23,6 @@ function _flag(overrides: Partial<DataQualityFlag> = {}): DataQualityFlag {
     };
 }
 
-
 function _data(overrides: Partial<DataQualityFlagsBadgeData> = {}): DataQualityFlagsBadgeData {
     return {
         counts: { ERROR: 0, WARNING: 1, INFO: 2 },
@@ -41,11 +36,9 @@ function _data(overrides: Partial<DataQualityFlagsBadgeData> = {}): DataQualityF
     };
 }
 
-
 // ---------------------------------------------------------------------------
 // Visibility
 // ---------------------------------------------------------------------------
-
 
 describe('DataQualityFlagsBadge — visibility', () => {
     it('renders nothing when data is null', () => {
@@ -59,22 +52,24 @@ describe('DataQualityFlagsBadge — visibility', () => {
     });
 
     it('renders nothing when open_total is 0', () => {
-        const { container } = render(<DataQualityFlagsBadge data={_data({
-            counts: { ERROR: 0, WARNING: 0, INFO: 0 },
-            open_total: 0,
-            flags: [],
-        })} />);
+        const { container } = render(
+            <DataQualityFlagsBadge
+                data={_data({
+                    counts: { ERROR: 0, WARNING: 0, INFO: 0 },
+                    open_total: 0,
+                    flags: [],
+                })}
+            />,
+        );
         expect(container.firstChild).toBeNull();
     });
 });
-
 
 // ---------------------------------------------------------------------------
 // "Checked and clean" vs "nobody looked"
 //
 // Both used to render as blank space, so the second read as the first.
 // ---------------------------------------------------------------------------
-
 
 function _empty(overrides: Partial<DataQualityFlagsBadgeData> = {}): DataQualityFlagsBadgeData {
     return _data({
@@ -122,30 +117,36 @@ describe('DataQualityFlagsBadge — evaluated', () => {
     });
 });
 
-
 // ---------------------------------------------------------------------------
 // Severity dot counts
 // ---------------------------------------------------------------------------
 
-
 describe('DataQualityFlagsBadge — severity counts', () => {
     it('shows counts for each non-zero severity', () => {
-        render(<DataQualityFlagsBadge data={_data({
-            counts: { ERROR: 1, WARNING: 2, INFO: 3 },
-            open_total: 6,
-        })} />);
+        render(
+            <DataQualityFlagsBadge
+                data={_data({
+                    counts: { ERROR: 1, WARNING: 2, INFO: 3 },
+                    open_total: 6,
+                })}
+            />,
+        );
         // The numbers should be visible somewhere in the badge text.
         const button = screen.getByRole('button');
-        expect(button.textContent).toContain('1');  // ERROR
-        expect(button.textContent).toContain('2');  // WARNING
-        expect(button.textContent).toContain('3');  // INFO
+        expect(button.textContent).toContain('1'); // ERROR
+        expect(button.textContent).toContain('2'); // WARNING
+        expect(button.textContent).toContain('3'); // INFO
     });
 
     it('omits a severity dot when its count is 0', () => {
-        const { container } = render(<DataQualityFlagsBadge data={_data({
-            counts: { ERROR: 0, WARNING: 1, INFO: 0 },
-            open_total: 1,
-        })} />);
+        const { container } = render(
+            <DataQualityFlagsBadge
+                data={_data({
+                    counts: { ERROR: 0, WARNING: 1, INFO: 0 },
+                    open_total: 1,
+                })}
+            />,
+        );
         // Only WARNING dot rendered → only one dot.
         const dots = container.querySelectorAll('.rounded-full');
         expect(dots.length).toBe(1);
@@ -162,11 +163,9 @@ describe('DataQualityFlagsBadge — severity counts', () => {
     });
 });
 
-
 // ---------------------------------------------------------------------------
 // Popover toggle
 // ---------------------------------------------------------------------------
-
 
 describe('DataQualityFlagsBadge — popover', () => {
     it('flag list is hidden by default', () => {

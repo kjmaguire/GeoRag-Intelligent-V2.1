@@ -1589,12 +1589,10 @@ jobs:
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:
-    # Renamed 2026-08-21. The title said ESLint; the steps are tsc, vitest
-    # and vite build. There is no eslint config, no eslint dependency and no
-    # lint script in package.json, so a reviewer trusting the check name
-    # assumed lint coverage over 27+ React source files that have none.
-    # Adding ESLint is worth doing and is a separate change with its own
-    # findings to burn down — what could not stay is the name claiming it.
+    # Renamed 2026-08-21, when the title said ESLint but no lint existed.
+    # ESLint (flat config, eslint.config.js) and Prettier were added
+    # 2026-10-04 as the `npm run lint` and `npm run format:check` steps below.
+    # The name is unchanged on purpose: it is a required-check name.
     name: Frontend (types + tests + build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1613,6 +1611,12 @@ jobs:
 
       - name: TypeScript type check
         run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier format check
+        run: npm run format:check
 
       # Instrumentation, not a gate. `noImplicitAny` is false in
       # tsconfig.json, which cancels most of `strict: true`: untyped

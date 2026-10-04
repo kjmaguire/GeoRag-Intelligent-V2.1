@@ -24,7 +24,11 @@ import FoundryChat from '../Chat';
 
 type Handler = (event: Record<string, unknown>) => void;
 
-const project = { project_id: '11111111-1111-1111-1111-111111111111', project_name: 'Shirley Basin', slug: 'shirley-basin' };
+const project = {
+    project_id: '11111111-1111-1111-1111-111111111111',
+    project_name: 'Shirley Basin',
+    slug: 'shirley-basin',
+};
 const QUERY_ID = '22222222-2222-2222-2222-222222222222';
 
 let handler: Handler | null = null;
@@ -142,7 +146,13 @@ describe('Foundry chat', () => {
         expect(screen.getByRole('button', { name: /Earlier thread/ })).toBeDisabled();
 
         await act(async () => {
-            handler!({ event: 'completed', text: 'PLS-22-08 is 412 m deep [DATA-1].', citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }], confidence: 0.9, validation_state: 'clean' });
+            handler!({
+                event: 'completed',
+                text: 'PLS-22-08 is 412 m deep [DATA-1].',
+                citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }],
+                confidence: 0.9,
+                validation_state: 'clean',
+            });
         });
 
         expect(screen.getByRole('button', { name: '+ New' })).toBeEnabled();
@@ -165,7 +175,13 @@ describe('Foundry chat', () => {
         await ask('How deep is PLS-22-08?');
 
         await act(async () => {
-            handler!({ event: 'completed', text: 'It is 412 m deep.', citations: [], confidence: 0.9, validation_state: 'clean' });
+            handler!({
+                event: 'completed',
+                text: 'It is 412 m deep.',
+                citations: [],
+                confidence: 0.9,
+                validation_state: 'clean',
+            });
         });
 
         expect(screen.getByTestId('no-citations-warning')).toHaveTextContent(/treat it as unverified/);
@@ -181,7 +197,9 @@ describe('Foundry chat', () => {
             fireEvent.click(screen.getByRole('button', { name: /Stop/ }));
         });
 
-        expect(fetchCalls.some((c) => c.url === `/api/v1/queries/${QUERY_ID}/cancel` && c.init?.method === 'POST')).toBe(true);
+        expect(
+            fetchCalls.some((c) => c.url === `/api/v1/queries/${QUERY_ID}/cancel` && c.init?.method === 'POST'),
+        ).toBe(true);
     });
 
     it('exposes the transcript as a polite live log and marks the send button busy mid-answer', async () => {
@@ -225,7 +243,12 @@ describe('Foundry chat', () => {
             await act(async () => {
                 // Buffered, not yet flushed: the failure must not lose it.
                 handler!({ event: 'delta', token: 'PLS-22-08 reaches ', token_seq: 0, event_id: 'd0' });
-                handler!({ event: 'failed', error: 'Your query took too long to process.', code: 'TIMEOUT', event_id: 'f1' });
+                handler!({
+                    event: 'failed',
+                    error: 'Your query took too long to process.',
+                    code: 'TIMEOUT',
+                    event_id: 'f1',
+                });
             });
 
             const panel = screen.getByTestId('refusal-panel');
@@ -276,7 +299,11 @@ describe('Foundry chat', () => {
                     event: 'completed',
                     text: '',
                     citations: [],
-                    refusal_payload: { type: 'refusal', reason_code: 'AMBIGUOUS_HOLE_ID', message: 'PLS-1 matches three holes.' },
+                    refusal_payload: {
+                        type: 'refusal',
+                        reason_code: 'AMBIGUOUS_HOLE_ID',
+                        message: 'PLS-1 matches three holes.',
+                    },
                 });
             });
 
@@ -344,7 +371,11 @@ describe('Foundry chat', () => {
             installEcho({ ack: false });
             const fiveSecond: Array<() => void> = [];
             const realSetTimeout = globalThis.setTimeout;
-            const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+            const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+                fn: () => void,
+                ms?: number,
+                ...rest: unknown[]
+            ) => {
                 if (ms === 5_000) {
                     fiveSecond.push(fn);
                     return 0 as unknown as ReturnType<typeof setTimeout>;
@@ -375,7 +406,11 @@ describe('Foundry chat', () => {
             installEcho({ ack: false });
             const fiveSecond: Array<() => void> = [];
             const realSetTimeout = globalThis.setTimeout;
-            const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+            const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+                fn: () => void,
+                ms?: number,
+                ...rest: unknown[]
+            ) => {
                 if (ms === 5_000) {
                     fiveSecond.push(fn);
                     return 0 as unknown as ReturnType<typeof setTimeout>;
@@ -388,7 +423,9 @@ describe('Foundry chat', () => {
                 await act(async () => {
                     fiveSecond.forEach((fn) => fn());
                 });
-                expect(fetchCalls.some((c) => c.url === `/api/v1/queries/${QUERY_ID}/start` && c.init?.method === 'POST')).toBe(true);
+                expect(
+                    fetchCalls.some((c) => c.url === `/api/v1/queries/${QUERY_ID}/start` && c.init?.method === 'POST'),
+                ).toBe(true);
             } finally {
                 spy.mockRestore();
             }
@@ -400,9 +437,17 @@ describe('Foundry chat', () => {
             let top = 0;
             Object.defineProperty(log, 'scrollHeight', { configurable: true, get: () => 2000 });
             Object.defineProperty(log, 'clientHeight', { configurable: true, get: () => 400 });
-            Object.defineProperty(log, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v; } });
+            Object.defineProperty(log, 'scrollTop', {
+                configurable: true,
+                get: () => top,
+                set: (v: number) => {
+                    top = v;
+                },
+            });
             return {
-                get top() { return top; },
+                get top() {
+                    return top;
+                },
                 scrollTo(v: number) {
                     top = v;
                     fireEvent.scroll(log);
@@ -454,9 +499,15 @@ describe('Foundry chat', () => {
             expect(screen.getByText(/PLS-22-08 is about/)).toBeInTheDocument();
             expect(screen.getByRole('button', { name: /Retry the question/ })).toBeEnabled();
 
-            await waitFor(() => expect(fetchCalls.some((c) => c.url.startsWith('/api/v1/conversations/') && c.init?.method === 'PUT')).toBe(true));
+            await waitFor(() =>
+                expect(
+                    fetchCalls.some((c) => c.url.startsWith('/api/v1/conversations/') && c.init?.method === 'PUT'),
+                ).toBe(true),
+            );
             const put = fetchCalls.find((c) => c.url.startsWith('/api/v1/conversations/') && c.init?.method === 'PUT')!;
-            const body = JSON.parse(String(put.init?.body)) as { messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }> };
+            const body = JSON.parse(String(put.init?.body)) as {
+                messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
+            };
             const assistant = body.messages.find((m) => m.role === 'assistant')!;
             expect(assistant.content).toBe('PLS-22-08 is about ');
             expect(assistant.metadata.error).toBe('Stopped by you. The text above is incomplete and unchecked.');
@@ -465,14 +516,19 @@ describe('Foundry chat', () => {
 
     describe('lifecycle', () => {
         /** Wrap the installed fetch so one URL is held until the test releases it. */
-        function holdFetch(match: (url: string) => boolean, respond?: () => Response): { release: () => void; held: () => boolean } {
+        function holdFetch(
+            match: (url: string) => boolean,
+            respond?: () => Response,
+        ): { release: () => void; held: () => boolean } {
             const inner = globalThis.fetch;
             let release: () => void = () => {};
             let hit = false;
             globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
                 if (!hit && match(String(url))) {
                     hit = true;
-                    await new Promise<void>((resolve) => { release = resolve; });
+                    await new Promise<void>((resolve) => {
+                        release = resolve;
+                    });
                     if (respond) return respond();
                 }
                 return inner(url, init);
@@ -505,7 +561,9 @@ describe('Foundry chat', () => {
 
             view.unmount();
 
-            expect(fetchCalls.some((c) => c.url === `/api/v1/queries/${QUERY_ID}/cancel` && c.init?.method === 'POST')).toBe(true);
+            expect(
+                fetchCalls.some((c) => c.url === `/api/v1/queries/${QUERY_ID}/cancel` && c.init?.method === 'POST'),
+            ).toBe(true);
         });
 
         it('does not reload the thread rail when a late PUT resolves after unmount', async () => {
@@ -515,7 +573,13 @@ describe('Foundry chat', () => {
             await ask('How deep is PLS-22-08?');
 
             await act(async () => {
-                handler!({ event: 'completed', text: 'It is 412 m deep [DATA-1].', citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }], confidence: 0.9, validation_state: 'clean' });
+                handler!({
+                    event: 'completed',
+                    text: 'It is 412 m deep [DATA-1].',
+                    citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }],
+                    confidence: 0.9,
+                    validation_state: 'clean',
+                });
             });
             await waitFor(() => expect(gate.held()).toBe(true));
 
@@ -568,8 +632,16 @@ describe('Foundry chat', () => {
 
     describe('fail-closed access check frames', () => {
         it.each([
-            ['ACCESS_CHECK_FAILED', 'Could not check your access', 'We could not verify your access to this project right now. Please try again in a few seconds.'],
-            ['SERVICE_UNAVAILABLE', 'Service busy, try again', 'The project could not be checked right now. Please try again in a few seconds.'],
+            [
+                'ACCESS_CHECK_FAILED',
+                'Could not check your access',
+                'We could not verify your access to this project right now. Please try again in a few seconds.',
+            ],
+            [
+                'SERVICE_UNAVAILABLE',
+                'Service busy, try again',
+                'The project could not be checked right now. Please try again in a few seconds.',
+            ],
         ])('%s gets its own headline and offers Retry', async (code, headline, message) => {
             renderChat();
             await ask('How deep is PLS-22-08?');
@@ -590,7 +662,13 @@ describe('Foundry chat', () => {
             await ask('How deep is PLS-22-08?');
 
             await act(async () => {
-                handler!({ event: 'completed', text: 'It is 412 m deep [DATA-1].', citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }], confidence: 0.9, validation_state: 'clean' });
+                handler!({
+                    event: 'completed',
+                    text: 'It is 412 m deep [DATA-1].',
+                    citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }],
+                    confidence: 0.9,
+                    validation_state: 'clean',
+                });
             });
 
             await waitFor(() => expect(router.reload).toHaveBeenCalledWith({ only: ['threads', 'active_thread'] }));
@@ -608,8 +686,18 @@ describe('Foundry chat', () => {
                     event: 'completed',
                     text: 'Two sources.',
                     citations: [
-                        { citation_id: '', source_chunk_id: 'georag_reports:r1:section=7:chunk=aaa', citation_type: 'NI43', document_title: 'Report One' },
-                        { citation_id: '', source_chunk_id: 'georag_reports:r2:section=3:chunk=bbb', citation_type: 'NI43', document_title: 'Report Two' },
+                        {
+                            citation_id: '',
+                            source_chunk_id: 'georag_reports:r1:section=7:chunk=aaa',
+                            citation_type: 'NI43',
+                            document_title: 'Report One',
+                        },
+                        {
+                            citation_id: '',
+                            source_chunk_id: 'georag_reports:r2:section=3:chunk=bbb',
+                            citation_type: 'NI43',
+                            document_title: 'Report Two',
+                        },
                     ],
                     confidence: 0.9,
                     validation_state: 'clean',

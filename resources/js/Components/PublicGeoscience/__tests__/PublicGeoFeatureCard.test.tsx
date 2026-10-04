@@ -14,7 +14,9 @@ afterEach(() => {
 describe('pgeoChunkId', () => {
     it('builds the key the PGEO citation resolver parses', () => {
         // AbstractPgeoResolver::parseChunkId: ^pg_<type>:<source_id> … pg_id=<uuid>
-        expect(pgeoChunkId('drillhole_collar', 'CA-SK-DRILLHOLE', 'abc')).toBe('pg_drillhole_collar:CA-SK-DRILLHOLE:pg_id=abc');
+        expect(pgeoChunkId('drillhole_collar', 'CA-SK-DRILLHOLE', 'abc')).toBe(
+            'pg_drillhole_collar:CA-SK-DRILLHOLE:pg_id=abc',
+        );
     });
 });
 
@@ -101,24 +103,33 @@ describe('PublicGeoFeatureCard', () => {
     it('says so when the record has left the synced data', async () => {
         vi.stubGlobal(
             'fetch',
-            vi.fn(async () =>
-                new Response(
-                    JSON.stringify({
-                        title: null,
-                        jurisdiction: { code: 'CA-SK', name: null, authority: null },
-                        source: { source_id: 'CA-SK-MINE-LOC', name: null, service_url: null },
-                        license: { summary: null, url: null },
-                        refresh: { last_refreshed_at: null },
-                        references_summary: { count: 0, documents: [] },
-                        entity: null,
-                    }),
-                    { status: 200 },
-                ),
+            vi.fn(
+                async () =>
+                    new Response(
+                        JSON.stringify({
+                            title: null,
+                            jurisdiction: { code: 'CA-SK', name: null, authority: null },
+                            source: { source_id: 'CA-SK-MINE-LOC', name: null, service_url: null },
+                            license: { summary: null, url: null },
+                            refresh: { last_refreshed_at: null },
+                            references_summary: { count: 0, documents: [] },
+                            entity: null,
+                        }),
+                        { status: 200 },
+                    ),
             ),
         );
         render(
             <PublicGeoFeatureCard
-                selection={{ kind: 'point', layer: 'mine', id: 'm1', sourceId: 'CA-SK-MINE-LOC', label: 'Old Mine', jurisdiction: 'CA-SK', lngLat: [-105, 55] }}
+                selection={{
+                    kind: 'point',
+                    layer: 'mine',
+                    id: 'm1',
+                    sourceId: 'CA-SK-MINE-LOC',
+                    label: 'Old Mine',
+                    jurisdiction: 'CA-SK',
+                    lngLat: [-105, 55],
+                }}
                 onClose={() => {}}
             />,
         );

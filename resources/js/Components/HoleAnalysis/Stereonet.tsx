@@ -40,18 +40,18 @@ interface StereonetProps {
  */
 
 const TYPE_COLORS: Record<string, string> = {
-    bedding:   '#3b82f6',  // blue
-    foliation: '#a855f7',  // purple
-    fault:     '#ef4444',  // red
-    shear:     '#f97316',  // orange
-    joint:     '#14b8a6',  // teal
-    fracture:  '#eab308',  // yellow
-    vein:      '#22c55e',  // green
-    lineation: '#ec4899',  // pink
+    bedding: '#3b82f6', // blue
+    foliation: '#a855f7', // purple
+    fault: '#ef4444', // red
+    shear: '#f97316', // orange
+    joint: '#14b8a6', // teal
+    fracture: '#eab308', // yellow
+    vein: '#22c55e', // green
+    lineation: '#ec4899', // pink
 };
 
-const R = 140;          // primitive radius, px
-const PAD = 24;         // padding around the net
+const R = 140; // primitive radius, px
+const PAD = 24; // padding around the net
 const SIZE = 2 * (R + PAD);
 const CX = R + PAD;
 const CY = R + PAD;
@@ -99,17 +99,17 @@ function planeGreatCircle(dipDirection: number, dip: number, nSamples = 80): { x
     // rotated primitive circle. For each t in [0, π], compute the
     // trend/plunge of the point on the great circle at rake t from the
     // strike line.
-    const strike = (dipDirection - 90 + 360) % 360;  // strike is 90° CCW from dip dir
+    const strike = (dipDirection - 90 + 360) % 360; // strike is 90° CCW from dip dir
     const dipRad = (dip * Math.PI) / 180;
     const points: { x: number; y: number }[] = [];
 
     for (let i = 0; i <= nSamples; i++) {
-        const t = (i / nSamples) * Math.PI;  // 0 → π, walking along the plane
+        const t = (i / nSamples) * Math.PI; // 0 → π, walking along the plane
         // Direction cosines of the point on the plane in a local frame
         // where x = strike, y = horizontal-perp-to-strike (pointing dip
         // direction), z = up.
-        const lx = Math.cos(t);              // along strike
-        const ly = Math.sin(t) * Math.cos(dipRad);  // toward dip dir, horiz component
+        const lx = Math.cos(t); // along strike
+        const ly = Math.sin(t) * Math.cos(dipRad); // toward dip dir, horiz component
         const lz = -Math.sin(t) * Math.sin(dipRad); // down
 
         // Rotate from local frame to geographic (N, E, down) frame.
@@ -128,7 +128,7 @@ function planeGreatCircle(dipDirection: number, dip: number, nSamples = 80): { x
 
         const nGeo = lx * nStrike + ly * nDip;
         const eGeo = lx * eStrike + ly * eDip;
-        const dGeo = -lz;  // down component (positive below horizon)
+        const dGeo = -lz; // down component (positive below horizon)
 
         // If the point is on the upper hemisphere (dGeo < 0), skip —
         // lower-hemisphere nets ignore upper-hemi sample points.
@@ -138,7 +138,7 @@ function planeGreatCircle(dipDirection: number, dip: number, nSamples = 80): { x
         const horizLen = Math.hypot(nGeo, eGeo);
         const plungeRad = Math.atan2(dGeo, horizLen);
         const plungeDeg = (plungeRad * 180) / Math.PI;
-        let trendRad = Math.atan2(eGeo, nGeo);
+        const trendRad = Math.atan2(eGeo, nGeo);
         let trendDeg = (trendRad * 180) / Math.PI;
         if (trendDeg < 0) trendDeg += 360;
 
@@ -190,7 +190,10 @@ export default function Stereonet({ structures, holeId, visibleTypes }: Stereone
                         onMouseEnter={() => setHovered(i)}
                         onMouseLeave={() => setHovered(null)}
                     >
-                        <title>{s.description ?? `${type} ${s.true_dip.toFixed(0)}°/${s.dip_direction.toFixed(0)}° @ ${s.depth.toFixed(1)}m`}</title>
+                        <title>
+                            {s.description ??
+                                `${type} ${s.true_dip.toFixed(0)}°/${s.dip_direction.toFixed(0)}° @ ${s.depth.toFixed(1)}m`}
+                        </title>
                     </circle>,
                 );
                 linearN++;
@@ -199,7 +202,9 @@ export default function Stereonet({ structures, holeId, visibleTypes }: Stereone
                 planarN++;
                 const points = planeGreatCircle(s.dip_direction, s.true_dip);
                 if (points.length > 1) {
-                    const d = points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ');
+                    const d = points
+                        .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`)
+                        .join(' ');
                     els.push(
                         <path
                             key={`gc-${i}`}
@@ -212,7 +217,10 @@ export default function Stereonet({ structures, holeId, visibleTypes }: Stereone
                             onMouseEnter={() => setHovered(i)}
                             onMouseLeave={() => setHovered(null)}
                         >
-                            <title>{s.description ?? `${type} ${s.true_dip.toFixed(0)}°/${s.dip_direction.toFixed(0)}° @ ${s.depth.toFixed(1)}m`}</title>
+                            <title>
+                                {s.description ??
+                                    `${type} ${s.true_dip.toFixed(0)}°/${s.dip_direction.toFixed(0)}° @ ${s.depth.toFixed(1)}m`}
+                            </title>
                         </path>,
                     );
                 }
@@ -239,25 +247,17 @@ export default function Stereonet({ structures, holeId, visibleTypes }: Stereone
     // Compass ticks every 30°.
     const ticks: React.ReactElement[] = [];
     for (let deg = 0; deg < 360; deg += 30) {
-        const { x: x1, y: y1 } = projectLine(deg, 0);  // on primitive
+        const { x: x1, y: y1 } = projectLine(deg, 0); // on primitive
         const rad = (deg * Math.PI) / 180;
         const x2 = CX + (R + 8) * Math.sin(rad);
         const y2 = CY - (R + 8) * Math.cos(rad);
         ticks.push(
-            <line
-                key={`tick-${deg}`}
-                x1={x1}
-                y1={y1}
-                x2={x2}
-                y2={y2}
-                stroke="rgba(148,163,184,0.6)"
-                strokeWidth={1}
-            />
+            <line key={`tick-${deg}`} x1={x1} y1={y1} x2={x2} y2={y2} stroke="rgba(148,163,184,0.6)" strokeWidth={1} />,
         );
     }
 
     // Inner grid: small circles at plunges 30, 60 (equal-area radii)
-    const innerCircles: number[] = [30, 60].map((p) => Math.SQRT2 * Math.sin(((90 - p) / 2) * Math.PI / 180) * R);
+    const innerCircles: number[] = [30, 60].map((p) => Math.SQRT2 * Math.sin((((90 - p) / 2) * Math.PI) / 180) * R);
 
     return (
         <div className="w-full h-full flex flex-col items-center gap-2">
@@ -268,10 +268,25 @@ export default function Stereonet({ structures, holeId, visibleTypes }: Stereone
                 aria-label={`Stereonet for drill hole ${holeId}`}
             >
                 {/* Background fill */}
-                <circle cx={CX} cy={CY} r={R} fill="rgba(15,23,42,0.6)" stroke="rgba(148,163,184,0.8)" strokeWidth={1.4} />
+                <circle
+                    cx={CX}
+                    cy={CY}
+                    r={R}
+                    fill="rgba(15,23,42,0.6)"
+                    stroke="rgba(148,163,184,0.8)"
+                    strokeWidth={1.4}
+                />
                 {/* Inner grid circles */}
                 {innerCircles.map((rInner, idx) => (
-                    <circle key={`inner-${idx}`} cx={CX} cy={CY} r={rInner} fill="none" stroke="rgba(148,163,184,0.2)" strokeWidth={0.8} />
+                    <circle
+                        key={`inner-${idx}`}
+                        cx={CX}
+                        cy={CY}
+                        r={rInner}
+                        fill="none"
+                        stroke="rgba(148,163,184,0.2)"
+                        strokeWidth={0.8}
+                    />
                 ))}
                 {/* Cross-hair */}
                 <line x1={CX - R} y1={CY} x2={CX + R} y2={CY} stroke="rgba(148,163,184,0.18)" strokeWidth={0.8} />
@@ -279,10 +294,18 @@ export default function Stereonet({ structures, holeId, visibleTypes }: Stereone
                 {/* Compass ticks */}
                 {ticks}
                 {/* Cardinal labels */}
-                <text x={CX} y={CY - R - 12} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>N</text>
-                <text x={CX + R + 14} y={CY + 4} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>E</text>
-                <text x={CX} y={CY + R + 20} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>S</text>
-                <text x={CX - R - 14} y={CY + 4} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>W</text>
+                <text x={CX} y={CY - R - 12} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>
+                    N
+                </text>
+                <text x={CX + R + 14} y={CY + 4} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>
+                    E
+                </text>
+                <text x={CX} y={CY + R + 20} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>
+                    S
+                </text>
+                <text x={CX - R - 14} y={CY + 4} textAnchor="middle" fontSize={12} fill="#e2e8f0" fontWeight={600}>
+                    W
+                </text>
                 {/* Plotted structures */}
                 {elements}
             </svg>

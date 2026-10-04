@@ -46,9 +46,7 @@ describe('StripLogViewer — auth surface', () => {
         await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
 
         const tokenLike = /token|jwt|secret/i;
-        const offending = getItemSpy.mock.calls
-            .map(([key]) => String(key))
-            .filter((k) => tokenLike.test(k));
+        const offending = getItemSpy.mock.calls.map(([key]) => String(key)).filter((k) => tokenLike.test(k));
         expect(offending).toEqual([]);
     });
 
@@ -56,15 +54,16 @@ describe('StripLogViewer — auth surface', () => {
         const noTd = {
             ...collarPayload,
             total_depth: null,
-            lithology_logs: [
-                { log_id: 'l1', from_depth: 0, to_depth: 120, lithology_code: 'SST' },
-            ],
+            lithology_logs: [{ log_id: 'l1', from_depth: 0, to_depth: 120, lithology_code: 'SST' }],
         };
         // First the collar index (a list), then the collar itself.
-        fetchSpy.mockImplementation(async (url: RequestInfo | URL) => new Response(
-            JSON.stringify({ data: String(url).includes('/collars?') ? [noTd] : noTd }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ));
+        fetchSpy.mockImplementation(
+            async (url: RequestInfo | URL) =>
+                new Response(JSON.stringify({ data: String(url).includes('/collars?') ? [noTd] : noTd }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                }),
+        );
 
         const { container } = render(<StripLogViewer holeId="DH-001" projectId="proj-abc" />);
         await waitFor(() => expect(container.textContent).toContain('SST'));
@@ -87,10 +86,13 @@ describe('StripLogViewer — auth surface', () => {
     });
 
     it('resolves the hole server-side with hole_id and per_page=1, not by paging the whole index', async () => {
-        fetchSpy.mockImplementation(async (url: RequestInfo | URL) => new Response(
-            JSON.stringify({ data: String(url).includes('/collars?') ? [collarPayload] : collarPayload }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ));
+        fetchSpy.mockImplementation(
+            async (url: RequestInfo | URL) =>
+                new Response(
+                    JSON.stringify({ data: String(url).includes('/collars?') ? [collarPayload] : collarPayload }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } },
+                ),
+        );
 
         render(<StripLogViewer holeId="DH 001/A" projectId="proj-abc" />);
         await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
@@ -111,17 +113,25 @@ describe('StripLogViewer — auth surface', () => {
             // response can arrive after the second hole's.
             if (isIndex) {
                 return new Promise<Response>((resolve) => {
-                    resolvers.push((body) => resolve(new Response(
-                        JSON.stringify({ data: body }),
-                        { status: 200, headers: { 'Content-Type': 'application/json' } },
-                    )));
+                    resolvers.push((body) =>
+                        resolve(
+                            new Response(JSON.stringify({ data: body }), {
+                                status: 200,
+                                headers: { 'Content-Type': 'application/json' },
+                            }),
+                        ),
+                    );
                 });
             }
             const id = String(url).split('/').pop();
-            return Promise.resolve(new Response(
-                JSON.stringify({ data: { ...collarPayload, collar_id: id, hole_id: id === 'col-B' ? 'DH-B' : 'DH-A' } }),
-                { status: 200, headers: { 'Content-Type': 'application/json' } },
-            ));
+            return Promise.resolve(
+                new Response(
+                    JSON.stringify({
+                        data: { ...collarPayload, collar_id: id, hole_id: id === 'col-B' ? 'DH-B' : 'DH-A' },
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } },
+                ),
+            );
         });
 
         const { rerender, container } = render(<StripLogViewer holeId="DH-A" projectId="proj-abc" />);
@@ -134,9 +144,13 @@ describe('StripLogViewer — auth surface', () => {
         expect(signals[1].aborted).toBe(false);
 
         // Second hole answers first, then the stale first-hole response lands.
-        await act(async () => { resolvers[1]([{ ...collarPayload, collar_id: 'col-B', hole_id: 'DH-B' }]); });
+        await act(async () => {
+            resolvers[1]([{ ...collarPayload, collar_id: 'col-B', hole_id: 'DH-B' }]);
+        });
         await waitFor(() => expect(container.textContent).toContain('DH-B'));
-        await act(async () => { resolvers[0]([{ ...collarPayload, collar_id: 'col-A', hole_id: 'DH-A' }]); });
+        await act(async () => {
+            resolvers[0]([{ ...collarPayload, collar_id: 'col-A', hole_id: 'DH-A' }]);
+        });
 
         expect(container.textContent).toContain('DH-B');
         expect(container.textContent).not.toContain('DH-A');

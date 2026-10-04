@@ -21,17 +21,11 @@
  * @param dataVersion    Workspace data_version from Inertia props (0 if unknown)
  * @returns              URL template string with {z}/{x}/{y} placeholders
  */
-export function buildSilverTileUrl(
-    functionName: string,
-    projectId: string,
-    dataVersion: number,
-): string {
+export function buildSilverTileUrl(functionName: string, projectId: string, dataVersion: number): string {
     // MapLibre fetches MVT tiles from a Web Worker. Workers have no document
     // base, so relative URLs fail `new Request()` with "Failed to parse URL".
     // Always emit an absolute URL bound to the page's origin.
-    const origin = typeof window !== 'undefined' && window.location
-        ? window.location.origin
-        : '';
+    const origin = typeof window !== 'undefined' && window.location ? window.location.origin : '';
     return `${origin}/tiles/silver/${functionName}/{z}/{x}/{y}.pbf?project_id=${projectId}&v=${dataVersion}`;
 }
 

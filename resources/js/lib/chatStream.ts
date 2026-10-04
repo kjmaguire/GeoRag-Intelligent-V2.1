@@ -87,7 +87,7 @@ export function createDeltaBuffer(): DeltaBuffer {
             // (stable for equal seqs; typical arrival is in order, so this
             // walks zero steps from the end).
             let i = parts.length;
-            while (i > 0 && (parts[i - 1].seq > entry.seq)) i--;
+            while (i > 0 && parts[i - 1].seq > entry.seq) i--;
             if (i === parts.length) {
                 parts.push(entry);
                 assembled += token;
@@ -130,7 +130,11 @@ export interface PersistableMessage {
  * maps the same keys back — and keeps an assistant turn that failed before
  * any text as '' plus its error (CHAT-4), which the server now accepts.
  */
-export function toPersistedMessage(m: PersistableMessage): { role: string; content: string; metadata: Record<string, unknown> } {
+export function toPersistedMessage(m: PersistableMessage): {
+    role: string;
+    content: string;
+    metadata: Record<string, unknown>;
+} {
     return {
         role: m.role,
         content: m.content ?? '',

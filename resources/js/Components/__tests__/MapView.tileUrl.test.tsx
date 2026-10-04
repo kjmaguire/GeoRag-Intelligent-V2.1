@@ -18,9 +18,7 @@ describe('buildSilverTileUrl', () => {
         const url = buildSilverTileUrl('pg_collars_by_project', PROJECT_UUID, 0);
         // URL is now absolute (origin-prefixed) so MapLibre's tile worker can
         // parse it from a Web Worker context. The path + query must still match.
-        expect(url).toContain(
-            `/tiles/silver/pg_collars_by_project/{z}/{x}/{y}.pbf?project_id=${PROJECT_UUID}&v=0`,
-        );
+        expect(url).toContain(`/tiles/silver/pg_collars_by_project/{z}/{x}/{y}.pbf?project_id=${PROJECT_UUID}&v=0`);
     });
 
     it('includes the v= cache-bust suffix when data_version is non-zero', () => {

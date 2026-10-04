@@ -18,9 +18,7 @@ describe('EvidencePacketBadge', () => {
     });
 
     it('renders nothing when evidence list is empty', () => {
-        const { container } = render(
-            <EvidencePacketBadge packet={{ evidence: [], remaining_budget: 5000 }} />
-        );
+        const { container } = render(<EvidencePacketBadge packet={{ evidence: [], remaining_budget: 5000 }} />);
         expect(container.firstChild).toBeNull();
     });
 
@@ -38,7 +36,7 @@ describe('EvidencePacketBadge', () => {
                     ],
                     remaining_budget: 4200,
                 }}
-            />
+            />,
         );
         expect(screen.getByText('Documents')).toBeInTheDocument();
         expect(screen.getByText('×2')).toBeInTheDocument();
@@ -53,14 +51,10 @@ describe('EvidencePacketBadge', () => {
         render(
             <EvidencePacketBadge
                 packet={{
-                    evidence: [
-                        { kind: 'spatial' },
-                        { kind: 'collar' },
-                        { kind: 'document' },
-                    ],
+                    evidence: [{ kind: 'spatial' }, { kind: 'collar' }, { kind: 'document' }],
                     remaining_budget: 1000,
                 }}
-            />
+            />,
         );
         const labelTexts = screen
             .getAllByText(/Documents|Collars|Spatial/)
@@ -76,7 +70,7 @@ describe('EvidencePacketBadge', () => {
                     evidence: [{ kind: 'document' }],
                     remaining_budget: 4200,
                 }}
-            />
+            />,
         );
         expect(screen.getByText('Documents')).toBeInTheDocument();
         expect(screen.queryByText(/budget/i)).not.toBeInTheDocument();
@@ -89,7 +83,7 @@ describe('EvidencePacketBadge', () => {
                 packet={{
                     evidence: [{ kind: 'document' }, { kind: 'graph' }],
                 }}
-            />
+            />,
         );
         expect(container.textContent ?? '').not.toMatch(/graph paths/i);
     });
@@ -101,7 +95,7 @@ describe('EvidencePacketBadge', () => {
                     evidence: [{ kind: 'experimental_kind' }],
                     remaining_budget: 100,
                 }}
-            />
+            />,
         );
         expect(screen.getByText('experimental_kind')).toBeInTheDocument();
     });

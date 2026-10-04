@@ -7,9 +7,23 @@ import { Deferred, Head, Link, router } from '@inertiajs/react';
 // LogicException even before deletion, and saved map views were never in
 // this restoration's scope. Everything else below is unmodified.
 import { PageHeader, Card, Pill, Segmented, EmptyState } from '@/Components/Foundry/primitives';
-import { StereonetMini, RoseMini, DownholeMultiLog, ChronoColumn, LithologyStripColumn, type StratUnit, type LithologyInterval, type StereonetPole } from '@/Components/Foundry/Charts';
+import {
+    StereonetMini,
+    RoseMini,
+    DownholeMultiLog,
+    ChronoColumn,
+    LithologyStripColumn,
+    type StratUnit,
+    type LithologyInterval,
+    type StereonetPole,
+} from '@/Components/Foundry/Charts';
 import type { StripAlterationBand, StripMineralBand } from '@/lib/stripLog';
-import { WorkspaceMap, type MapProjectInfo, type MapProjectSummary, type MapCollar, type BasemapId } from '@/Components/Foundry/WorkspaceMap';
+import {
+    WorkspaceMap,
+    type MapProjectSummary,
+    type MapCollar,
+    type BasemapId,
+} from '@/Components/Foundry/WorkspaceMap';
 import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/CompareHolesModal';
 import { SectionView } from '@/Components/Foundry/SectionView';
 import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
@@ -281,7 +295,49 @@ function DeferredPanelSkeleton({ label }: { label: string }) {
     );
 }
 
-export default function FoundryWorkspace({ project, project_extent = null, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_available_curves, log_selected_curves, log_curves_max, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, log_alteration_intervals = [], log_mineralization_intervals = [], log_tracks_truncated, first_holes_intervals = EMPTY, project_layers, strat_units, strat_source, project_country, surveys_3d = EMPTY, structures_3d = EMPTY, assay_composites_3d = EMPTY, assay_elements_3d = EMPTY, significant_intersections_3d = EMPTY, structures_visual_3d = EMPTY, commodity_samples_3d = EMPTY, commodity_keys_3d = EMPTY, survey_holes_downsampled, empty, truncation }: WorkspaceProps) {
+export default function FoundryWorkspace({
+    project,
+    project_extent = null,
+    project_summary,
+    project_aoi,
+    collars,
+    sections_count,
+    intervals_count,
+    structures_count,
+    structures_visual_count,
+    well_log_curves_count,
+    curve_summary,
+    log_tracks,
+    log_available_curves,
+    log_selected_curves,
+    log_curves_max,
+    log_hole_id,
+    log_depth_max,
+    log_hole_options,
+    log_hole_total_depth,
+    log_hole_easting,
+    log_hole_northing,
+    log_lithology_intervals,
+    log_alteration_intervals = [],
+    log_mineralization_intervals = [],
+    log_tracks_truncated,
+    first_holes_intervals = EMPTY,
+    project_layers,
+    strat_units,
+    strat_source,
+    project_country,
+    surveys_3d = EMPTY,
+    structures_3d = EMPTY,
+    assay_composites_3d = EMPTY,
+    assay_elements_3d = EMPTY,
+    significant_intersections_3d = EMPTY,
+    structures_visual_3d = EMPTY,
+    commodity_samples_3d = EMPTY,
+    commodity_keys_3d = EMPTY,
+    survey_holes_downsampled,
+    empty,
+    truncation,
+}: WorkspaceProps) {
     // Real-time push, scoped (FE-11). This used to router.reload() every
     // prop — the whole multi-MB 3D payload included — on any event carrying
     // `reports`, which every ingest completion carries. reloadPlan() maps
@@ -350,15 +406,17 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
     // Judged on the EAGER counts: the 3D arrays arrive deferred, after mount.
     // An only-gold-structures project opens on Structure Discs (the view that
     // draws that table), not an empty Stereosphere (FE-25).
-    const [view3d, setView3d] = useState<View3D>(() => initialView3D({
-        intervalsCount: intervals_count,
-        collarsCount: collars.length,
-        structuresCount: structures_count,
-        structuresVisualCount: structures_visual_count,
-    }));
+    const [view3d, setView3d] = useState<View3D>(() =>
+        initialView3D({
+            intervalsCount: intervals_count,
+            collarsCount: collars.length,
+            structuresCount: structures_count,
+            structuresVisualCount: structures_visual_count,
+        }),
+    );
     const [tool, setTool] = useState<Tool>('pan');
-    const [projectLayersOn, setProjectLayersOn] = useState<Record<string, boolean>>(
-        () => Object.fromEntries(project_layers.map((l) => [l.id, l.on])),
+    const [projectLayersOn, setProjectLayersOn] = useState<Record<string, boolean>>(() =>
+        Object.fromEntries(project_layers.map((l) => [l.id, l.on])),
     );
     const [copilotOpen, setCopilotOpen] = useState(true);
     const [copilotPrompt, setCopilotPrompt] = useState('');
@@ -535,7 +593,10 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
         <>
             <Head title={`Workspace · ${project.project_name}`} />
 
-            <div className="flex-1 flex flex-col overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
+            <div
+                className="flex-1 flex flex-col overflow-hidden"
+                style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}
+            >
                 {!isCanvasFullscreen && (
                     <PageHeader
                         eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · WORKSPACE`}
@@ -548,8 +609,16 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                     Hidden in fullscreen; mode switching from there requires
                     Esc (or the floating Exit button) first. */}
                 {!isCanvasFullscreen && (
-                    <div className="flex items-center gap-3 px-8 py-2 border-b shrink-0" style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}>
-                        <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>Mode</span>
+                    <div
+                        className="flex items-center gap-3 px-8 py-2 border-b shrink-0"
+                        style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                    >
+                        <span
+                            className="text-[10px] font-mono uppercase tracking-widest"
+                            style={{ color: 'var(--fg-3)' }}
+                        >
+                            Mode
+                        </span>
                         {/* Shared with the Rasters page so both render one
                             row of modes. RASTERS is a URL, not a panel here —
                             see Components/Foundry/WorkspaceModeBar. */}
@@ -595,24 +664,42 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                         className={`border-r overflow-y-auto${isCanvasFullscreen ? ' hidden' : ''}`}
                         style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
                     >
-                        <div className="px-3 py-3 border-b text-[10px] font-mono uppercase tracking-[0.12em]" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>
+                        <div
+                            className="px-3 py-3 border-b text-[10px] font-mono uppercase tracking-[0.12em]"
+                            style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}
+                        >
                             Layers
                         </div>
                         <div className="px-3 py-2">
-                            <div className="text-[10px] font-mono uppercase tracking-wider mb-1.5" style={{ color: 'var(--fg-3)' }}>Project</div>
+                            <div
+                                className="text-[10px] font-mono uppercase tracking-wider mb-1.5"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
+                                Project
+                            </div>
                             {project_layers.map((layer) => {
                                 const has = layer.count > 0;
                                 const checked = projectLayersOn[layer.id] ?? false;
                                 return (
-                                    <label key={layer.id} className={`flex items-center gap-2 py-1 text-xs ${has ? 'cursor-pointer' : 'cursor-default'}`}>
+                                    <label
+                                        key={layer.id}
+                                        className={`flex items-center gap-2 py-1 text-xs ${has ? 'cursor-pointer' : 'cursor-default'}`}
+                                    >
                                         <input
                                             type="checkbox"
                                             checked={checked}
                                             disabled={!has}
-                                            onChange={(e) => setProjectLayersOn({ ...projectLayersOn, [layer.id]: e.target.checked })}
+                                            onChange={(e) =>
+                                                setProjectLayersOn({ ...projectLayersOn, [layer.id]: e.target.checked })
+                                            }
                                         />
-                                        <span style={{ color: has ? 'var(--fg-1)' : 'var(--fg-3)' }}>{layer.label}</span>
-                                        <span className="ml-auto text-[10px] font-mono" style={{ color: has ? 'var(--fg-2)' : 'var(--fg-3)' }}>
+                                        <span style={{ color: has ? 'var(--fg-1)' : 'var(--fg-3)' }}>
+                                            {layer.label}
+                                        </span>
+                                        <span
+                                            className="ml-auto text-[10px] font-mono"
+                                            style={{ color: has ? 'var(--fg-2)' : 'var(--fg-3)' }}
+                                        >
                                             {layer.count.toLocaleString()}
                                         </span>
                                     </label>
@@ -629,70 +716,88 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                             <EmptyState
                                 title="Nothing to show in this project yet."
                                 detail="Upload drill data (collars, surveys, logs) or map layers (shapefiles, GeoPackage, geochemistry, claims) via Data → Connect Source to populate the workspace canvases."
-                                action={<Link href={`/projects/${project.slug}/reports`} className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border" style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}>Open import quality →</Link>}
+                                action={
+                                    <Link
+                                        href={`/projects/${project.slug}/reports`}
+                                        className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                        style={{
+                                            color: 'var(--accent)',
+                                            background: 'var(--accent-bg)',
+                                            borderColor: 'var(--accent-dim)',
+                                        }}
+                                    >
+                                        Open import quality →
+                                    </Link>
+                                }
                             />
                         ) : (
                             <>
-                                {renderModePanel('map', (
+                                {renderModePanel(
+                                    'map',
                                     <Card
                                         eyebrow={`MAP · MAPLIBRE · ${collars.length} COLLARS`}
                                         title="Project collars on basemap"
                                         className="flex-1 flex flex-col min-h-0"
                                         contentClassName="flex-1 flex flex-col min-h-0"
                                     >
-                                        <div className="text-[10px] font-mono mb-2 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                            Click any collar for detail + jump to LOGS. Hover for tooltip.
-                                            Layer toggles (left rail): "Collars" hides dots · "Ore-bearing holes only" filters to ore-bearing holes · "Ore heatmap" turns on the thickness heatmap.
+                                        <div
+                                            className="text-[10px] font-mono mb-2 shrink-0"
+                                            style={{ color: 'var(--fg-3)' }}
+                                        >
+                                            Click any collar for detail + jump to LOGS. Hover for tooltip. Layer toggles
+                                            (left rail): "Collars" hides dots · "Ore-bearing holes only" filters to
+                                            ore-bearing holes · "Ore heatmap" turns on the thickness heatmap.
                                         </div>
                                         <div className="flex-1 min-h-0">
-                                        <WorkspaceMap
-                                            collars={collars}
-                                            projectSlug={project.slug}
-                                            // The MVT tile URL keys on the UUID,
-                                            // not the slug: /tiles/silver/{fn}/
-                                            // {z}/{x}/{y}.pbf?project_id={uuid}
-                                            projectId={project.project_id}
-                                            dataVersion={project.data_version ?? 0}
-                                            projectExtent={project_extent}
-                                            projectInfo={{
-                                                project_name: project.project_name,
-                                                company: project.company,
-                                                commodity: project.commodity,
-                                                region: project.region,
-                                                crs_epsg: project.crs_epsg,
-                                            }}
-                                            projectSummary={project_summary}
-                                            projectAoi={project_aoi}
-                                            visibleLayers={projectLayersOn}
-                                            activeHole={activeHole}
-                                            setActiveHole={setActiveHole}
-                                            compareSet={compareSet}
-                                            onToggleCompare={toggleCompare}
-                                            onOpenCompare={() => setCompareOpen(true)}
-                                            onClearCompare={closeCompareKeepOriginal}
-                                            basemap={basemap}
-                                            onBasemapChange={setBasemap}
-                                            terrainOn={terrainOn}
-                                            onTerrainChange={setTerrainOn}
-                                            activeTool={tool}
-                                            onToolChange={setTool}
-                                            onJumpToLogs={(holeId) => {
-                                                setMode('logs');
-                                                router.get(
-                                                    `/projects/${project.slug}/workspace`,
-                                                    { log_hole: holeId },
-                                                    {
-                                                        preserveScroll: true,
-                                                        preserveState: true,
-                                                        only: [...LOG_PROPS],
-                                                    },
-                                                );
-                                            }}
-                                        />
+                                            <WorkspaceMap
+                                                collars={collars}
+                                                projectSlug={project.slug}
+                                                // The MVT tile URL keys on the UUID,
+                                                // not the slug: /tiles/silver/{fn}/
+                                                // {z}/{x}/{y}.pbf?project_id={uuid}
+                                                projectId={project.project_id}
+                                                dataVersion={project.data_version ?? 0}
+                                                projectExtent={project_extent}
+                                                projectInfo={{
+                                                    project_name: project.project_name,
+                                                    company: project.company,
+                                                    commodity: project.commodity,
+                                                    region: project.region,
+                                                    crs_epsg: project.crs_epsg,
+                                                }}
+                                                projectSummary={project_summary}
+                                                projectAoi={project_aoi}
+                                                visibleLayers={projectLayersOn}
+                                                activeHole={activeHole}
+                                                setActiveHole={setActiveHole}
+                                                compareSet={compareSet}
+                                                onToggleCompare={toggleCompare}
+                                                onOpenCompare={() => setCompareOpen(true)}
+                                                onClearCompare={closeCompareKeepOriginal}
+                                                basemap={basemap}
+                                                onBasemapChange={setBasemap}
+                                                terrainOn={terrainOn}
+                                                onTerrainChange={setTerrainOn}
+                                                activeTool={tool}
+                                                onToolChange={setTool}
+                                                onJumpToLogs={(holeId) => {
+                                                    setMode('logs');
+                                                    router.get(
+                                                        `/projects/${project.slug}/workspace`,
+                                                        { log_hole: holeId },
+                                                        {
+                                                            preserveScroll: true,
+                                                            preserveState: true,
+                                                            only: [...LOG_PROPS],
+                                                        },
+                                                    );
+                                                }}
+                                            />
                                         </div>
-                                    </Card>
-                                ))}
-                                {renderModePanel('section', (
+                                    </Card>,
+                                )}
+                                {renderModePanel(
+                                    'section',
                                     <Card
                                         eyebrow={`SECTION · AD-HOC · ${log_hole_options.length} HOLES AVAILABLE`}
                                         title="2-hole cross section"
@@ -713,377 +818,530 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 detail="This project has fewer than 2 collars with well-log curves. Ingest more LAS files via Data → Connect Source."
                                             />
                                         )}
-                                    </Card>
-                                ))}
-                                {renderModePanel('3d', (
-                                    <Deferred data={[...VIZ3D_PROPS]} fallback={<DeferredPanelSkeleton label="Loading 3D data…" />}>
-                                    {(() => {
-                                    // Resolve the "active hole" for the per-hole 3D sub-views
-                                    // (Spiral). Prefer the LOGS panel's current hole if set,
-                                    // otherwise fall back to the first collar with usable
-                                    // azimuth/dip on the project.
-                                    const spiralCollar = (() => {
-                                        const target = log_hole_id;
-                                        const match = collars.find((c) =>
-                                            target ? (c.hole_id_canonical === target || c.hole_id === target) : false,
-                                        );
-                                        return match ?? collars[0] ?? null;
-                                    })();
-                                    const spiralSurveys = spiralCollar
-                                        ? surveys_3d.filter((s) => s.collar_id === spiralCollar.collar_id)
-                                        : [];
-                                    return (
-                                    <Card
-                                        eyebrow={(() => {
-                                            if (view3d === 'lithology') {
-                                                return `3D · LITHOLOGY · ${intervals_count > 0 ? `${first_holes_intervals.length} HOLES · ${intervals_count} INTERVALS` : 'NO DATA'}`;
-                                            }
-                                            if (view3d === 'trajectories') {
-                                                return `3D · TRAJECTORIES · ${collars.length} COLLARS · ${surveys_3d.length} SURVEY STATIONS`;
-                                            }
-                                            if (view3d === 'stereosphere') {
-                                                return `3D · STEREOSPHERE · ${structures_3d.length} MEASUREMENTS`;
-                                            }
-                                            if (view3d === 'spiral') {
-                                                const hid = spiralCollar ? (spiralCollar.hole_id_canonical || spiralCollar.hole_id) : '—';
-                                                return `3D · ORIENTATION SPIRAL · HOLE ${hid} · ${spiralSurveys.length} STATIONS`;
-                                            }
-                                            if (view3d === 'project_stereonet') {
-                                                return `3D · PROJECT STEREONET · ${structures_3d.length} MEASUREMENTS`;
-                                            }
-                                            if (view3d === 'assay_grade') {
-                                                return `3D · ASSAY GRADE · ${assay_composites_3d.length} COMPOSITES · ${assay_elements_3d.length} ELEMENTS`;
-                                            }
-                                            if (view3d === 'significant_intersections') {
-                                                return `3D · SIGNIFICANT INTERSECTIONS · ${significant_intersections_3d.length} HITS`;
-                                            }
-                                            if (view3d === 'structure_discs') {
-                                                return `3D · STRUCTURE DISCS · ${structures_visual_3d.length} MEASUREMENTS`;
-                                            }
-                                            return `3D · COMMODITY SAMPLES · ${commodity_samples_3d.length} SAMPLES · ${commodity_keys_3d.length} COMMODITIES`;
-                                        })()}
-                                        title={(() => {
-                                            if (view3d === 'lithology') return 'Borehole 3D viewer';
-                                            if (view3d === 'trajectories') return '3D drill trajectories';
-                                            if (view3d === 'stereosphere') return '3D stereosphere · lower hemisphere';
-                                            if (view3d === 'spiral') return 'Per-hole 3D orientation spiral';
-                                            if (view3d === 'project_stereonet') return 'Project-wide aggregate stereonet (2D + 3D)';
-                                            if (view3d === 'assay_grade') return 'Assay composites · grade-coloured sticks';
-                                            if (view3d === 'significant_intersections') return 'Significant cutoff-grade intersections';
-                                            if (view3d === 'structure_discs') return 'Structure measurements · oriented discs in space';
-                                            return 'Commodity grade samples';
-                                        })()}
-                                        actions={(
-                                            <Segmented<View3D>
-                                                value={view3d}
-                                                onChange={setView3d}
-                                                options={[
-                                                    { value: 'lithology', label: 'Lithology' },
-                                                    { value: 'trajectories', label: 'Trajectories' },
-                                                    { value: 'spiral', label: 'Spiral' },
-                                                    { value: 'stereosphere', label: 'Stereosphere' },
-                                                    { value: 'project_stereonet', label: 'Project Stereonet' },
-                                                    { value: 'assay_grade', label: 'Assay Grade' },
-                                                    { value: 'significant_intersections', label: 'Intersections' },
-                                                    { value: 'structure_discs', label: 'Structure Discs' },
-                                                    { value: 'commodity_samples', label: 'Commodity Samples' },
-                                                ]}
-                                            />
-                                        )}
-                                        className="flex-1 flex flex-col min-h-0"
-                                        contentClassName="flex-1 flex flex-col min-h-0"
+                                    </Card>,
+                                )}
+                                {renderModePanel(
+                                    '3d',
+                                    <Deferred
+                                        data={[...VIZ3D_PROPS]}
+                                        fallback={<DeferredPanelSkeleton label="Loading 3D data…" />}
                                     >
-                                        {view3d === 'lithology' && (
-                                            intervals_count > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Each hole drawn along its desurveyed path (surveys, or collar azimuth/dip when it has none) and coloured by derived lithology bands.
-                                                        Drag to rotate, scroll to zoom, shift-drag to pan. Hover a band for hole ID / depth interval / lithology code.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading 3D viewer…" detail="" />}>
-                                                            <Borehole3DView holes={first_holes_intervals} collars={collars} surveys={surveys_3d} height={chartH} />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No 3D intervals for this project yet."
-                                                    detail="3D intervals are built from well-log curves. If this project has curves but no intervals, they have not been computed yet — they appear once the curves have been processed."
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'trajectories' && (
-                                            collars.length > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Every drill hole desurveyed from its collar (minimum curvature) and extended to TD. Dashed = no
-                                                        downhole survey, projected along the collar azimuth/dip. Colour-coded by hole status — green =
-                                                        completed, amber = active, red = abandoned.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading 3D trajectories…" detail="" />}>
-                                                            <MultiHole3DTrace
-                                                                collars={collars.map((c) => ({
-                                                                    collar_id: c.collar_id,
-                                                                    hole_id: c.hole_id_canonical || c.hole_id,
-                                                                    azimuth: c.azimuth ?? null,
-                                                                    dip: c.dip ?? null,
-                                                                    elevation: c.elevation ?? null,
-                                                                    easting: c.easting,
-                                                                    northing: c.northing,
-                                                                    total_depth: c.total_depth,
-                                                                    hole_type: c.hole_type ?? null,
-                                                                    status: c.status ?? null,
-                                                                }))}
-                                                                surveys={surveys_3d}
-                                                                colorBy="status"
+                                        {(() => {
+                                            // Resolve the "active hole" for the per-hole 3D sub-views
+                                            // (Spiral). Prefer the LOGS panel's current hole if set,
+                                            // otherwise fall back to the first collar with usable
+                                            // azimuth/dip on the project.
+                                            const spiralCollar = (() => {
+                                                const target = log_hole_id;
+                                                const match = collars.find((c) =>
+                                                    target
+                                                        ? c.hole_id_canonical === target || c.hole_id === target
+                                                        : false,
+                                                );
+                                                return match ?? collars[0] ?? null;
+                                            })();
+                                            const spiralSurveys = spiralCollar
+                                                ? surveys_3d.filter((s) => s.collar_id === spiralCollar.collar_id)
+                                                : [];
+                                            return (
+                                                <Card
+                                                    eyebrow={(() => {
+                                                        if (view3d === 'lithology') {
+                                                            return `3D · LITHOLOGY · ${intervals_count > 0 ? `${first_holes_intervals.length} HOLES · ${intervals_count} INTERVALS` : 'NO DATA'}`;
+                                                        }
+                                                        if (view3d === 'trajectories') {
+                                                            return `3D · TRAJECTORIES · ${collars.length} COLLARS · ${surveys_3d.length} SURVEY STATIONS`;
+                                                        }
+                                                        if (view3d === 'stereosphere') {
+                                                            return `3D · STEREOSPHERE · ${structures_3d.length} MEASUREMENTS`;
+                                                        }
+                                                        if (view3d === 'spiral') {
+                                                            const hid = spiralCollar
+                                                                ? spiralCollar.hole_id_canonical || spiralCollar.hole_id
+                                                                : '—';
+                                                            return `3D · ORIENTATION SPIRAL · HOLE ${hid} · ${spiralSurveys.length} STATIONS`;
+                                                        }
+                                                        if (view3d === 'project_stereonet') {
+                                                            return `3D · PROJECT STEREONET · ${structures_3d.length} MEASUREMENTS`;
+                                                        }
+                                                        if (view3d === 'assay_grade') {
+                                                            return `3D · ASSAY GRADE · ${assay_composites_3d.length} COMPOSITES · ${assay_elements_3d.length} ELEMENTS`;
+                                                        }
+                                                        if (view3d === 'significant_intersections') {
+                                                            return `3D · SIGNIFICANT INTERSECTIONS · ${significant_intersections_3d.length} HITS`;
+                                                        }
+                                                        if (view3d === 'structure_discs') {
+                                                            return `3D · STRUCTURE DISCS · ${structures_visual_3d.length} MEASUREMENTS`;
+                                                        }
+                                                        return `3D · COMMODITY SAMPLES · ${commodity_samples_3d.length} SAMPLES · ${commodity_keys_3d.length} COMMODITIES`;
+                                                    })()}
+                                                    title={(() => {
+                                                        if (view3d === 'lithology') return 'Borehole 3D viewer';
+                                                        if (view3d === 'trajectories') return '3D drill trajectories';
+                                                        if (view3d === 'stereosphere')
+                                                            return '3D stereosphere · lower hemisphere';
+                                                        if (view3d === 'spiral')
+                                                            return 'Per-hole 3D orientation spiral';
+                                                        if (view3d === 'project_stereonet')
+                                                            return 'Project-wide aggregate stereonet (2D + 3D)';
+                                                        if (view3d === 'assay_grade')
+                                                            return 'Assay composites · grade-coloured sticks';
+                                                        if (view3d === 'significant_intersections')
+                                                            return 'Significant cutoff-grade intersections';
+                                                        if (view3d === 'structure_discs')
+                                                            return 'Structure measurements · oriented discs in space';
+                                                        return 'Commodity grade samples';
+                                                    })()}
+                                                    actions={
+                                                        <Segmented<View3D>
+                                                            value={view3d}
+                                                            onChange={setView3d}
+                                                            options={[
+                                                                { value: 'lithology', label: 'Lithology' },
+                                                                { value: 'trajectories', label: 'Trajectories' },
+                                                                { value: 'spiral', label: 'Spiral' },
+                                                                { value: 'stereosphere', label: 'Stereosphere' },
+                                                                {
+                                                                    value: 'project_stereonet',
+                                                                    label: 'Project Stereonet',
+                                                                },
+                                                                { value: 'assay_grade', label: 'Assay Grade' },
+                                                                {
+                                                                    value: 'significant_intersections',
+                                                                    label: 'Intersections',
+                                                                },
+                                                                { value: 'structure_discs', label: 'Structure Discs' },
+                                                                {
+                                                                    value: 'commodity_samples',
+                                                                    label: 'Commodity Samples',
+                                                                },
+                                                            ]}
+                                                        />
+                                                    }
+                                                    className="flex-1 flex flex-col min-h-0"
+                                                    contentClassName="flex-1 flex flex-col min-h-0"
+                                                >
+                                                    {view3d === 'lithology' &&
+                                                        (intervals_count > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Each hole drawn along its desurveyed path (surveys,
+                                                                    or collar azimuth/dip when it has none) and coloured
+                                                                    by derived lithology bands. Drag to rotate, scroll
+                                                                    to zoom, shift-drag to pan. Hover a band for hole ID
+                                                                    / depth interval / lithology code.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading 3D viewer…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <Borehole3DView
+                                                                            holes={first_holes_intervals}
+                                                                            collars={collars}
+                                                                            surveys={surveys_3d}
+                                                                            height={chartH}
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No 3D intervals for this project yet."
+                                                                detail="3D intervals are built from well-log curves. If this project has curves but no intervals, they have not been computed yet — they appear once the curves have been processed."
                                                             />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No collars to plot."
-                                                    detail="Trajectories needs collars with easting/northing and at least one azimuth+dip survey station per hole."
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'stereosphere' && (
-                                            structures_3d.length > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Planar measurements rendered as great-circle arcs on the lower hemisphere; lineations as point cloud.
-                                                        Colour-coded by structure type. Drag to rotate, scroll to zoom — read structural geometry directly
-                                                        rather than through a 2-D equal-area projection.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading 3D stereosphere…" detail="" />}>
-                                                            <Stereosphere
-                                                                structures={structures_3d}
-                                                                holeId={`project-${project.slug}`}
+                                                        ))}
+                                                    {view3d === 'trajectories' &&
+                                                        (collars.length > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Every drill hole desurveyed from its collar (minimum
+                                                                    curvature) and extended to TD. Dashed = no downhole
+                                                                    survey, projected along the collar azimuth/dip.
+                                                                    Colour-coded by hole status — green = completed,
+                                                                    amber = active, red = abandoned.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading 3D trajectories…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <MultiHole3DTrace
+                                                                            collars={collars.map((c) => ({
+                                                                                collar_id: c.collar_id,
+                                                                                hole_id:
+                                                                                    c.hole_id_canonical || c.hole_id,
+                                                                                azimuth: c.azimuth ?? null,
+                                                                                dip: c.dip ?? null,
+                                                                                elevation: c.elevation ?? null,
+                                                                                easting: c.easting,
+                                                                                northing: c.northing,
+                                                                                total_depth: c.total_depth,
+                                                                                hole_type: c.hole_type ?? null,
+                                                                                status: c.status ?? null,
+                                                                            }))}
+                                                                            surveys={surveys_3d}
+                                                                            colorBy="status"
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No collars to plot."
+                                                                detail="Trajectories needs collars with easting/northing and at least one azimuth+dip survey station per hole."
                                                             />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No logged planar structures in this project."
-                                                    detail={structures_visual_3d.length > 0
-                                                        ? 'The stereosphere draws logged structure rows (dip + dip direction). This project has derived structure measurements instead — see Structure Discs.'
-                                                        : 'The stereosphere needs logged planar features (bedding, foliation, joints, faults, veins) with a dip and a dip direction. Upload a structure table (hole, depth, dip, dip direction) via Data → Connect Source.'}
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'spiral' && (
-                                            spiralCollar && (spiralSurveys.length > 0 || (spiralCollar.azimuth != null && spiralCollar.dip != null)) ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Active hole's deviation surveys integrated into a 3-D minimum-curvature spiral.
-                                                        Hole picked from the LOGS panel (or first collar by default). Useful for spotting
-                                                        survey drift, dogleg severity, and how far the bit walked from its planned path.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading orientation spiral…" detail="" />}>
-                                                            <OrientationSpiral
-                                                                surveys={spiralSurveys}
-                                                                collarAzimuth={spiralCollar.azimuth ?? null}
-                                                                collarDip={spiralCollar.dip ?? null}
-                                                                collarElevation={spiralCollar.elevation ?? null}
-                                                                totalDepth={spiralCollar.total_depth ?? null}
-                                                                view="3d"
+                                                        ))}
+                                                    {view3d === 'stereosphere' &&
+                                                        (structures_3d.length > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Planar measurements rendered as great-circle arcs on
+                                                                    the lower hemisphere; lineations as point cloud.
+                                                                    Colour-coded by structure type. Drag to rotate,
+                                                                    scroll to zoom — read structural geometry directly
+                                                                    rather than through a 2-D equal-area projection.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading 3D stereosphere…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <Stereosphere
+                                                                            structures={structures_3d}
+                                                                            holeId={`project-${project.slug}`}
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No logged planar structures in this project."
+                                                                detail={
+                                                                    structures_visual_3d.length > 0
+                                                                        ? 'The stereosphere draws logged structure rows (dip + dip direction). This project has derived structure measurements instead — see Structure Discs.'
+                                                                        : 'The stereosphere needs logged planar features (bedding, foliation, joints, faults, veins) with a dip and a dip direction. Upload a structure table (hole, depth, dip, dip direction) via Data → Connect Source.'
+                                                                }
                                                             />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="Not enough survey data for an orientation spiral."
-                                                    detail="Needs downhole survey stations for the active hole, or a collar azimuth + dip. Upload a survey table (hole, depth, azimuth, dip) via Data → Connect Source."
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'project_stereonet' && (
-                                            structures_3d.length > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Project-wide aggregate of every structural measurement across every hole. Toggle 2D/3D
-                                                        with the dimension switch on the left. Filter by structure type to isolate bedding,
-                                                        foliation, joints, faults, shears, veins, or lineations.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0 overflow-auto">
-                                                        <Suspense fallback={<EmptyState title="Loading project stereonet…" detail="" />}>
-                                                            <AggregateStereonet structures={structures_3d} />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No logged planar structures in this project."
-                                                    detail="The aggregate stereonet combines logged planar features (bedding, foliation, joints, faults) across every hole in this project. Upload a structure table via Data → Connect Source."
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'assay_grade' && (
-                                            assay_elements_3d.length > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Composited assay grades for this project.
-                                                        Each band on each hole is coloured by the composite's weighted-average grade for the
-                                                        selected element. Compare with the Lithology view — Lithology shows derived rock type,
-                                                        this shows real assayed grade.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading assay composites…" detail="" />}>
-                                                            <AssayComposites3DView
-                                                                collars={collars}
-                                                                surveys={surveys_3d}
-                                                                composites={assay_composites_3d}
-                                                                elements={assay_elements_3d}
-                                                                height={chartH}
+                                                        ))}
+                                                    {view3d === 'spiral' &&
+                                                        (spiralCollar &&
+                                                        (spiralSurveys.length > 0 ||
+                                                            (spiralCollar.azimuth != null &&
+                                                                spiralCollar.dip != null)) ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Active hole's deviation surveys integrated into a
+                                                                    3-D minimum-curvature spiral. Hole picked from the
+                                                                    LOGS panel (or first collar by default). Useful for
+                                                                    spotting survey drift, dogleg severity, and how far
+                                                                    the bit walked from its planned path.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading orientation spiral…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <OrientationSpiral
+                                                                            surveys={spiralSurveys}
+                                                                            collarAzimuth={spiralCollar.azimuth ?? null}
+                                                                            collarDip={spiralCollar.dip ?? null}
+                                                                            collarElevation={
+                                                                                spiralCollar.elevation ?? null
+                                                                            }
+                                                                            totalDepth={
+                                                                                spiralCollar.total_depth ?? null
+                                                                            }
+                                                                            view="3d"
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="Not enough survey data for an orientation spiral."
+                                                                detail="Needs downhole survey stations for the active hole, or a collar azimuth + dip. Upload a survey table (hole, depth, azimuth, dip) via Data → Connect Source."
                                                             />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No assay composites yet."
-                                                    detail="Assay composites are computed from this project's assays at common cutoff grades. Upload assay data via Data → Connect Source and they will appear once the assays have been processed."
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'significant_intersections' && (
-                                            significant_intersections_3d.length > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Cutoff-grade hits for this project.
-                                                        Ghost-rendered hole sticks with each significant interval glowing in heat-palette colour
-                                                        by weighted-average grade. White marker = peak grade depth. Use it to spot which holes
-                                                        hit ore-grade mineralisation and where.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading significant intersections…" detail="" />}>
-                                                            <SignificantIntersections3DView
-                                                                collars={collars}
-                                                                surveys={surveys_3d}
-                                                                intersections={significant_intersections_3d}
-                                                                height={chartH}
+                                                        ))}
+                                                    {view3d === 'project_stereonet' &&
+                                                        (structures_3d.length > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Project-wide aggregate of every structural
+                                                                    measurement across every hole. Toggle 2D/3D with the
+                                                                    dimension switch on the left. Filter by structure
+                                                                    type to isolate bedding, foliation, joints, faults,
+                                                                    shears, veins, or lineations.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0 overflow-auto">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading project stereonet…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <AggregateStereonet
+                                                                            structures={structures_3d}
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No logged planar structures in this project."
+                                                                detail="The aggregate stereonet combines logged planar features (bedding, foliation, joints, faults) across every hole in this project. Upload a structure table via Data → Connect Source."
                                                             />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No significant intersections yet."
-                                                    detail="Significant intersections are computed from this project's assays at cutoff grades. Once assays have been imported and processed, every cutoff-grade hit per hole shows up here as a highlight ribbon."
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'commodity_samples' && (
-                                            commodity_keys_3d.length > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Commodity grades per sample interval,
-                                                        placed along each hole's desurveyed path. Pick a commodity to see grade variation along every hole.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading commodity samples…" detail="" />}>
-                                                            <CommoditySamples3DView
-                                                                collars={collars}
-                                                                surveys={surveys_3d}
-                                                                samples={commodity_samples_3d}
-                                                                commodityKeys={commodity_keys_3d}
-                                                                height={chartH}
+                                                        ))}
+                                                    {view3d === 'assay_grade' &&
+                                                        (assay_elements_3d.length > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Composited assay grades for this project. Each band
+                                                                    on each hole is coloured by the composite's
+                                                                    weighted-average grade for the selected element.
+                                                                    Compare with the Lithology view — Lithology shows
+                                                                    derived rock type, this shows real assayed grade.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading assay composites…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <AssayComposites3DView
+                                                                            collars={collars}
+                                                                            surveys={surveys_3d}
+                                                                            composites={assay_composites_3d}
+                                                                            elements={assay_elements_3d}
+                                                                            height={chartH}
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No assay composites yet."
+                                                                detail="Assay composites are computed from this project's assays at common cutoff grades. Upload assay data via Data → Connect Source and they will appear once the assays have been processed."
                                                             />
-                                                        </Suspense>
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No commodity samples for this project yet."
-                                                    detail="Commodity samples hold the grade for each sampled interval (for example U3O8 % or Au g/t). Import a CSV or QGIS assay sample file via Data → Connect Source to see them here."
-                                                />
-                                            )
-                                        )}
-                                        {view3d === 'structure_discs' && (
-                                            structures_visual_3d.length > 0 ? (
-                                                <>
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Each structural measurement is
-                                                        rendered as an oriented disc in the plane perpendicular to its pole, positioned at the
-                                                        measurement depth on its collar. Different from Stereosphere — that abstracts onto a unit
-                                                        sphere; this anchors in real space so spatial clustering is visible.
-                                                    </div>
-                                                    <div className="flex-1 min-h-0">
-                                                        <Suspense fallback={<EmptyState title="Loading structure discs…" detail="" />}>
-                                                            <StructureDiscs3DView
-                                                                collars={collars}
-                                                                surveys={surveys_3d}
-                                                                structures={structures_visual_3d}
-                                                                height={chartH}
+                                                        ))}
+                                                    {view3d === 'significant_intersections' &&
+                                                        (significant_intersections_3d.length > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Cutoff-grade hits for this project. Ghost-rendered
+                                                                    hole sticks with each significant interval glowing
+                                                                    in heat-palette colour by weighted-average grade.
+                                                                    White marker = peak grade depth. Use it to spot
+                                                                    which holes hit ore-grade mineralisation and where.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading significant intersections…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <SignificantIntersections3DView
+                                                                            collars={collars}
+                                                                            surveys={surveys_3d}
+                                                                            intersections={significant_intersections_3d}
+                                                                            height={chartH}
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No significant intersections yet."
+                                                                detail="Significant intersections are computed from this project's assays at cutoff grades. Once assays have been imported and processed, every cutoff-grade hit per hole shows up here as a highlight ribbon."
                                                             />
-                                                        </Suspense>
+                                                        ))}
+                                                    {view3d === 'commodity_samples' &&
+                                                        (commodity_keys_3d.length > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Commodity grades per sample interval, placed along
+                                                                    each hole's desurveyed path. Pick a commodity to see
+                                                                    grade variation along every hole.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading commodity samples…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <CommoditySamples3DView
+                                                                            collars={collars}
+                                                                            surveys={surveys_3d}
+                                                                            samples={commodity_samples_3d}
+                                                                            commodityKeys={commodity_keys_3d}
+                                                                            height={chartH}
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No commodity samples for this project yet."
+                                                                detail="Commodity samples hold the grade for each sampled interval (for example U3O8 % or Au g/t). Import a CSV or QGIS assay sample file via Data → Connect Source to see them here."
+                                                            />
+                                                        ))}
+                                                    {view3d === 'structure_discs' &&
+                                                        (structures_visual_3d.length > 0 ? (
+                                                            <>
+                                                                <div
+                                                                    className="text-[11px] font-mono mb-3 shrink-0"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Each structural measurement is rendered as an
+                                                                    oriented disc in the plane perpendicular to its
+                                                                    pole, positioned at the measurement depth on its
+                                                                    collar. Different from Stereosphere — that abstracts
+                                                                    onto a unit sphere; this anchors in real space so
+                                                                    spatial clustering is visible.
+                                                                </div>
+                                                                <div className="flex-1 min-h-0">
+                                                                    <Suspense
+                                                                        fallback={
+                                                                            <EmptyState
+                                                                                title="Loading structure discs…"
+                                                                                detail=""
+                                                                            />
+                                                                        }
+                                                                    >
+                                                                        <StructureDiscs3DView
+                                                                            collars={collars}
+                                                                            surveys={surveys_3d}
+                                                                            structures={structures_visual_3d}
+                                                                            height={chartH}
+                                                                        />
+                                                                    </Suspense>
+                                                                </div>
+                                                            </>
+                                                        ) : (
+                                                            <EmptyState
+                                                                title="No structural measurements to display in 3D yet."
+                                                                detail="Oriented discs need structural measurements that have been processed for 3D. Until then, the Stereosphere and Project Stereonet views still work from the logged structure data."
+                                                            />
+                                                        ))}
+                                                </Card>
+                                            );
+                                        })()}
+                                    </Deferred>,
+                                )}
+                                {renderModePanel(
+                                    'structure',
+                                    <Deferred
+                                        data={['structures_3d', 'structures_visual_3d']}
+                                        fallback={<DeferredPanelSkeleton label="Loading structure measurements…" />}
+                                    >
+                                        {structures_count > 0 || structures_visual_count > 0 ? (
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <Card
+                                                    eyebrow={`STEREONET · ${poles.length} poles`}
+                                                    title="Schmidt equal-area"
+                                                >
+                                                    <StereonetMini poles={poles} size={260} />
+                                                    <div
+                                                        className="text-[10px] font-mono mt-2"
+                                                        style={{ color: 'var(--fg-3)' }}
+                                                    >
+                                                        {poles.length > 0
+                                                            ? 'Poles to planes, lower hemisphere. North up.'
+                                                            : `${structures_count + structures_visual_count} structure row(s) recorded, none carrying both a dip and a dip direction — nothing to project.`}
                                                     </div>
-                                                </>
-                                            ) : (
-                                                <EmptyState
-                                                    title="No structural measurements to display in 3D yet."
-                                                    detail="Oriented discs need structural measurements that have been processed for 3D. Until then, the Stereosphere and Project Stereonet views still work from the logged structure data."
-                                                />
-                                            )
-                                        )}
-                                    </Card>
-                                    );
-                                })()}
-                                    </Deferred>
-                                ))}
-                                {renderModePanel('structure', (
-                                    <Deferred data={['structures_3d', 'structures_visual_3d']} fallback={<DeferredPanelSkeleton label="Loading structure measurements…" />}>
-                                    {
-                                    structures_count > 0 || structures_visual_count > 0 ? (
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <Card eyebrow={`STEREONET · ${poles.length} poles`} title="Schmidt equal-area">
-                                                <StereonetMini poles={poles} size={260} />
-                                                <div className="text-[10px] font-mono mt-2" style={{ color: 'var(--fg-3)' }}>
-                                                    {poles.length > 0
-                                                        ? 'Poles to planes, lower hemisphere. North up.'
-                                                        : `${structures_count + structures_visual_count} structure row(s) recorded, none carrying both a dip and a dip direction — nothing to project.`}
-                                                </div>
-                                            </Card>
-                                            <Card eyebrow={`ROSE DIAGRAM · ${strikes.length} strikes`} title="Strike frequency">
-                                                <RoseMini strikes={strikes} size={260} />
-                                                <div className="text-[10px] font-mono mt-2" style={{ color: 'var(--fg-3)' }}>
-                                                    {strikes.length > 0
-                                                        ? '10° bins, radius proportional to count.'
-                                                        : 'No dip directions recorded, so no strikes to bin.'}
-                                                </div>
-                                            </Card>
-                                        </div>
-                                    ) : (
-                                        <Card eyebrow="STRUCTURE" title="No structure measurements yet">
-                                            {/* Was: "0 rows in silver.structures +
+                                                </Card>
+                                                <Card
+                                                    eyebrow={`ROSE DIAGRAM · ${strikes.length} strikes`}
+                                                    title="Strike frequency"
+                                                >
+                                                    <RoseMini strikes={strikes} size={260} />
+                                                    <div
+                                                        className="text-[10px] font-mono mt-2"
+                                                        style={{ color: 'var(--fg-3)' }}
+                                                    >
+                                                        {strikes.length > 0
+                                                            ? '10° bins, radius proportional to count.'
+                                                            : 'No dip directions recorded, so no strikes to bin.'}
+                                                    </div>
+                                                </Card>
+                                            </div>
+                                        ) : (
+                                            <Card eyebrow="STRUCTURE" title="No structure measurements yet">
+                                                {/* Was: "0 rows in silver.structures +
                                                 gold.structure_measurements_visual" — two table
                                                 names, one of them wrong (the table is
                                                 silver.structure, singular), addressed to nobody
                                                 who reads this screen. A geologist needs to know
                                                 what to upload. */}
-                                            <EmptyState
-                                                title="Nothing to plot on a stereonet yet."
-                                                detail="Downhole surveys give this project hole orientation, but a stereonet needs logged planar readings — joint, foliation, fault or bedding measurements with a dip and a dip direction. Upload a structure table, or a shapefile of structural readings, and this panel fills in."
-                                            />
-                                        </Card>
-                                    )}
-                                    </Deferred>
-                                ))}
-                                {renderModePanel('logs', (
+                                                <EmptyState
+                                                    title="Nothing to plot on a stereonet yet."
+                                                    detail="Downhole surveys give this project hole orientation, but a stereonet needs logged planar readings — joint, foliation, fault or bedding measurements with a dip and a dip direction. Upload a structure table, or a shapefile of structural readings, and this panel fills in."
+                                                />
+                                            </Card>
+                                        )}
+                                    </Deferred>,
+                                )}
+                                {renderModePanel(
+                                    'logs',
                                     <Card
                                         eyebrow={log_hole_id ? `LOGS · HOLE ${log_hole_id}` : 'LOGS'}
                                         title={
                                             log_tracks.length > 0
                                                 ? `${log_tracks.length} of ${log_available_curves.length} curves rendered · ${well_log_curves_count} total in project`
                                                 : hasLogGeology
-                                                    ? `${log_lithology_intervals.length} lithology · ${log_alteration_intervals.length} alteration · ${log_mineralization_intervals.length} mineralization · no curves`
-                                                    : 'No curve data'
+                                                  ? `${log_lithology_intervals.length} lithology · ${log_alteration_intervals.length} alteration · ${log_mineralization_intervals.length} mineralization · no curves`
+                                                  : 'No curve data'
                                         }
                                         className="flex-1 flex flex-col min-h-0"
                                         contentClassName="flex-1 flex flex-col min-h-0"
@@ -1104,14 +1362,25 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                         {log_tracks.length > 0 || hasLogGeology ? (
                                             <>
                                                 {log_tracks.length > 0 && (
-                                                    <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Curves available across project: {curve_summary.map((c) => `${c.curve_name} (${c.curves})`).join(' · ')}
+                                                    <div
+                                                        className="text-[11px] font-mono mb-3 shrink-0"
+                                                        style={{ color: 'var(--fg-3)' }}
+                                                    >
+                                                        Curves available across project:{' '}
+                                                        {curve_summary
+                                                            .map((c) => `${c.curve_name} (${c.curves})`)
+                                                            .join(' · ')}
                                                     </div>
                                                 )}
                                                 <div className="flex gap-6 overflow-auto items-start flex-1 min-h-0 py-1 px-1">
                                                     {log_tracks.length > 0 && (
                                                         <div className="shrink-0">
-                                                            <DownholeMultiLog tracks={log_tracks} depthMax={log_depth_max} height={chartH} trackWidth={96} />
+                                                            <DownholeMultiLog
+                                                                tracks={log_tracks}
+                                                                depthMax={log_depth_max}
+                                                                height={chartH}
+                                                                trackWidth={96}
+                                                            />
                                                         </div>
                                                     )}
                                                     <div className="shrink-0">
@@ -1126,30 +1395,56 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                             width={hasLogGeologyTracks ? 520 : 380}
                                                         />
                                                     </div>
-                                                    <div className="shrink-0 flex flex-col gap-3" style={{ width: 420 }}>
+                                                    <div
+                                                        className="shrink-0 flex flex-col gap-3"
+                                                        style={{ width: 420 }}
+                                                    >
                                                         <div
                                                             className="text-[11px] font-mono px-4 py-3 rounded border"
-                                                            style={{ borderColor: 'var(--line-1)', background: 'var(--bg-2)', color: 'var(--fg-2)' }}
+                                                            style={{
+                                                                borderColor: 'var(--line-1)',
+                                                                background: 'var(--bg-2)',
+                                                                color: 'var(--fg-2)',
+                                                            }}
                                                         >
-                                                            <div className="uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>Hole context</div>
+                                                            <div
+                                                                className="uppercase tracking-wider mb-1"
+                                                                style={{ color: 'var(--fg-3)' }}
+                                                            >
+                                                                Hole context
+                                                            </div>
                                                             <div className="text-sm" style={{ color: 'var(--fg-0)' }}>
                                                                 {log_hole_id ?? '—'}
                                                                 {log_hole_total_depth !== null && (
-                                                                    <span style={{ color: 'var(--fg-2)' }}> · TD {log_hole_total_depth.toFixed(1)} m</span>
+                                                                    <span style={{ color: 'var(--fg-2)' }}>
+                                                                        {' '}
+                                                                        · TD {log_hole_total_depth.toFixed(1)} m
+                                                                    </span>
                                                                 )}
                                                             </div>
-                                                            {(log_hole_easting !== null && log_hole_northing !== null) && (
-                                                                <div className="mt-1.5" style={{ color: 'var(--fg-3)' }}>
-                                                                    {/* FE-18: was a hard-coded "UTM 13N" on every project. */}
-                                                                    {crsLabel(project.crs_epsg)} · E {Math.round(log_hole_easting).toLocaleString()} · N {Math.round(log_hole_northing).toLocaleString()}
-                                                                </div>
-                                                            )}
+                                                            {log_hole_easting !== null &&
+                                                                log_hole_northing !== null && (
+                                                                    <div
+                                                                        className="mt-1.5"
+                                                                        style={{ color: 'var(--fg-3)' }}
+                                                                    >
+                                                                        {/* FE-18: was a hard-coded "UTM 13N" on every project. */}
+                                                                        {crsLabel(project.crs_epsg)} · E{' '}
+                                                                        {Math.round(log_hole_easting).toLocaleString()}{' '}
+                                                                        · N{' '}
+                                                                        {Math.round(log_hole_northing).toLocaleString()}
+                                                                    </div>
+                                                                )}
                                                             {logCollar && (
                                                                 // FE-15: the per-hole page had no inbound link.
                                                                 <Link
                                                                     href={`/projects/${project.slug}/holes/${encodeURIComponent(logCollar.collar_id)}/detail`}
                                                                     className="inline-block mt-2 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
-                                                                    style={{ color: 'var(--accent)', borderColor: 'var(--accent-dim)', background: 'var(--accent-bg)' }}
+                                                                    style={{
+                                                                        color: 'var(--accent)',
+                                                                        borderColor: 'var(--accent-dim)',
+                                                                        background: 'var(--accent-bg)',
+                                                                    }}
                                                                 >
                                                                     Open hole page →
                                                                 </Link>
@@ -1160,8 +1455,18 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                                 units={strat_units}
                                                                 height={Math.max(360, chartH - 100)}
                                                                 width={420}
-                                                                eyebrow={strat_source === 'project' ? 'Project chronostratigraphy' : `Regional reference — NOT this project's stratigraphy · ${project_country === 'US' ? 'Wyoming roll-front uranium' : 'Athabasca / Wollaston Domain'}`}
-                                                                title={strat_source === 'project' ? 'Stratigraphic column' : (project_country === 'US' ? 'Shirley / PRB / WRB roll-front host stack' : 'Athabasca Group · Wollaston Domain')}
+                                                                eyebrow={
+                                                                    strat_source === 'project'
+                                                                        ? 'Project chronostratigraphy'
+                                                                        : `Regional reference — NOT this project's stratigraphy · ${project_country === 'US' ? 'Wyoming roll-front uranium' : 'Athabasca / Wollaston Domain'}`
+                                                                }
+                                                                title={
+                                                                    strat_source === 'project'
+                                                                        ? 'Stratigraphic column'
+                                                                        : project_country === 'US'
+                                                                          ? 'Shirley / PRB / WRB roll-front host stack'
+                                                                          : 'Athabasca Group · Wollaston Domain'
+                                                                }
                                                             />
                                                         ) : (
                                                             // FE-25: a regional column (Athabasca, or a Wyoming
@@ -1171,25 +1476,46 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                             // project is an SME call.
                                                             <div
                                                                 className="text-[11px] font-mono px-4 py-3 rounded border"
-                                                                style={{ borderColor: 'var(--line-1)', background: 'var(--bg-2)', color: 'var(--fg-2)' }}
+                                                                style={{
+                                                                    borderColor: 'var(--line-1)',
+                                                                    background: 'var(--bg-2)',
+                                                                    color: 'var(--fg-2)',
+                                                                }}
                                                             >
-                                                                <div className="uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>Stratigraphic column</div>
+                                                                <div
+                                                                    className="uppercase tracking-wider mb-1"
+                                                                    style={{ color: 'var(--fg-3)' }}
+                                                                >
+                                                                    Stratigraphic column
+                                                                </div>
                                                                 No formations are recorded for this project yet.
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => setShowReferenceStrat(true)}
                                                                     className="block mt-2 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
-                                                                    style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}
+                                                                    style={{
+                                                                        color: 'var(--fg-2)',
+                                                                        borderColor: 'var(--line-2)',
+                                                                        background: 'var(--bg-1)',
+                                                                    }}
                                                                 >
-                                                                    Show a regional reference column ({project_country === 'US' ? 'Wyoming roll-front' : 'Athabasca / Wollaston'})
+                                                                    Show a regional reference column (
+                                                                    {project_country === 'US'
+                                                                        ? 'Wyoming roll-front'
+                                                                        : 'Athabasca / Wollaston'}
+                                                                    )
                                                                 </button>
                                                             </div>
                                                         )}
                                                     </div>
                                                 </div>
                                                 {strat_source === 'reference' && showReferenceStrat && (
-                                                    <div className="text-[10px] font-mono mt-2 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Chrono column = regional reference, not derived from this project (no formations recorded for it).
+                                                    <div
+                                                        className="text-[10px] font-mono mt-2 shrink-0"
+                                                        style={{ color: 'var(--fg-3)' }}
+                                                    >
+                                                        Chrono column = regional reference, not derived from this
+                                                        project (no formations recorded for it).
                                                     </div>
                                                 )}
                                             </>
@@ -1199,8 +1525,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 detail="LOGS shows a hole's downhole curves (LAS) and its logged lithology, alteration and mineralization. Upload a LAS file, or a geology log with hole, from, to and lithology columns (alteration and mineral columns are read too), via Data → Connect Source."
                                             />
                                         )}
-                                    </Card>
-                                ))}
+                                    </Card>,
+                                )}
 
                                 {/* COMPARE — absorbed 2026-08-19 from the standalone
                                     /projects/{slug}/compare page (HoleCompareController
@@ -1214,7 +1540,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                     lithology bands, ore-band counts and mean grade.
                                     Nothing was ported — the weaker path was removed and
                                     the existing renderer given a picker. */}
-                                {renderModePanel('compare', (
+                                {renderModePanel(
+                                    'compare',
                                     <Card
                                         eyebrow="COMPARE · HOLE VS HOLE"
                                         title={
@@ -1233,18 +1560,41 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                         ) : (
                                             <>
                                                 <div className="flex items-center gap-3 mb-4 shrink-0">
-                                                    <ComparePicker label="LEFT" value={compareLeft} collars={collars} onChange={setCompareLeft} />
-                                                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>vs</span>
-                                                    <ComparePicker label="RIGHT" value={compareRight} collars={collars} onChange={setCompareRight} />
+                                                    <ComparePicker
+                                                        label="LEFT"
+                                                        value={compareLeft}
+                                                        collars={collars}
+                                                        onChange={setCompareLeft}
+                                                    />
+                                                    <span
+                                                        className="text-[10px] font-mono uppercase tracking-wider"
+                                                        style={{ color: 'var(--fg-3)' }}
+                                                    >
+                                                        vs
+                                                    </span>
+                                                    <ComparePicker
+                                                        label="RIGHT"
+                                                        value={compareRight}
+                                                        collars={collars}
+                                                        onChange={setCompareRight}
+                                                    />
                                                     {collars.length >= 2 && !(compareLeft && compareRight) && (
                                                         <button
                                                             type="button"
                                                             onClick={() => {
-                                                                setCompareLeft(collars[0].hole_id_canonical ?? collars[0].hole_id);
-                                                                setCompareRight(collars[1].hole_id_canonical ?? collars[1].hole_id);
+                                                                setCompareLeft(
+                                                                    collars[0].hole_id_canonical ?? collars[0].hole_id,
+                                                                );
+                                                                setCompareRight(
+                                                                    collars[1].hole_id_canonical ?? collars[1].hole_id,
+                                                                );
                                                             }}
                                                             className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
-                                                            style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
+                                                            style={{
+                                                                color: 'var(--fg-2)',
+                                                                borderColor: 'var(--line-2)',
+                                                                background: 'var(--bg-2)',
+                                                            }}
                                                         >
                                                             Use first two
                                                         </button>
@@ -1274,8 +1624,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 </div>
                                             </>
                                         )}
-                                    </Card>
-                                ))}
+                                    </Card>,
+                                )}
                             </>
                         )}
                     </section>
@@ -1286,27 +1636,53 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                         style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
                     >
                         <div className="px-3 py-3 border-b flex items-center" style={{ borderColor: 'var(--line-1)' }}>
-                            <span className="text-[10px] font-mono uppercase tracking-[0.12em] flex-1" style={{ color: 'var(--fg-3)' }}>Copilot</span>
-                            <button type="button" onClick={() => setCopilotOpen((v) => !v)} className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-2)' }}>
+                            <span
+                                className="text-[10px] font-mono uppercase tracking-[0.12em] flex-1"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
+                                Copilot
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setCopilotOpen((v) => !v)}
+                                className="text-[10px] font-mono uppercase tracking-wider"
+                                style={{ color: 'var(--fg-2)' }}
+                            >
                                 {copilotOpen ? '−' : '+'}
                             </button>
                         </div>
                         {copilotOpen && (
                             <>
-                                <div className="flex-1 overflow-y-auto px-3 py-2 text-xs space-y-2" style={{ color: 'var(--fg-2)' }}>
+                                <div
+                                    className="flex-1 overflow-y-auto px-3 py-2 text-xs space-y-2"
+                                    style={{ color: 'var(--fg-2)' }}
+                                >
                                     <div className="px-2 py-1.5 rounded" style={{ background: 'var(--bg-2)' }}>
-                                        <Pill tone="accent" dot>READY</Pill>
+                                        <Pill tone="accent" dot>
+                                            READY
+                                        </Pill>
                                         <div className="mt-1 text-xs">
-                                            Ask about <span style={{ color: 'var(--fg-0)' }}>{project.project_name}</span> — geology, holes, ore zones, or analogues.
+                                            Ask about{' '}
+                                            <span style={{ color: 'var(--fg-0)' }}>{project.project_name}</span> —
+                                            geology, holes, ore zones, or analogues.
                                         </div>
                                     </div>
-                                    <div className="text-[10px] font-mono uppercase tracking-wider pt-2" style={{ color: 'var(--fg-3)' }}>Quick prompts</div>
+                                    <div
+                                        className="text-[10px] font-mono uppercase tracking-wider pt-2"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
+                                        Quick prompts
+                                    </div>
                                     {copilotQuickPrompts(project.commodity).map((q) => (
                                         <Link
                                             key={q}
                                             href={`/projects/${project.slug}/chat?prompt=${encodeURIComponent(q)}`}
                                             className="block text-left text-[11px] px-2 py-1.5 rounded border hover:opacity-80"
-                                            style={{ borderColor: 'var(--line-1)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
+                                            style={{
+                                                borderColor: 'var(--line-1)',
+                                                color: 'var(--fg-1)',
+                                                background: 'var(--bg-2)',
+                                            }}
                                         >
                                             {q}
                                         </Link>
@@ -1327,14 +1703,22 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                         onChange={(e) => setCopilotPrompt(e.target.value)}
                                         placeholder="Ask a question…"
                                         className="text-xs px-2 py-1.5 rounded border"
-                                        style={{ borderColor: 'var(--line-2)', color: 'var(--fg-0)', background: 'var(--bg-2)' }}
+                                        style={{
+                                            borderColor: 'var(--line-2)',
+                                            color: 'var(--fg-0)',
+                                            background: 'var(--bg-2)',
+                                        }}
                                     />
                                     <div className="flex gap-2">
                                         <button
                                             type="submit"
                                             disabled={!copilotPrompt.trim()}
                                             className="flex-1 text-[10px] font-mono uppercase tracking-wider px-2 py-1.5 rounded border disabled:opacity-40"
-                                            style={{ color: 'var(--accent)', borderColor: 'var(--accent-dim)', background: 'var(--accent-bg)' }}
+                                            style={{
+                                                color: 'var(--accent)',
+                                                borderColor: 'var(--accent-dim)',
+                                                background: 'var(--accent-bg)',
+                                            }}
                                         >
                                             Ask →
                                         </button>
@@ -1386,7 +1770,12 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
  * separate 200-row `pickable` query the deleted HoleCompareController ran —
  * one fewer round trip, and the two lists can no longer disagree.
  */
-function ComparePicker({ label, value, collars, onChange }: {
+function ComparePicker({
+    label,
+    value,
+    collars,
+    onChange,
+}: {
     label: string;
     value: string;
     collars: Collar[];
@@ -1394,7 +1783,9 @@ function ComparePicker({ label, value, collars, onChange }: {
 }) {
     return (
         <label className="flex items-center gap-2">
-            <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>{label}</span>
+            <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                {label}
+            </span>
             <select
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
@@ -1404,14 +1795,26 @@ function ComparePicker({ label, value, collars, onChange }: {
                 <option value="">— pick hole —</option>
                 {collars.map((c) => {
                     const id = c.hole_id_canonical ?? c.hole_id;
-                    return <option key={c.collar_id} value={id}>{id}</option>;
+                    return (
+                        <option key={c.collar_id} value={id}>
+                            {id}
+                        </option>
+                    );
                 })}
             </select>
         </label>
     );
 }
 
-function LogsHolePicker({ projectSlug, activeHoleId, holes }: { projectSlug: string; activeHoleId: string | null; holes: string[] }) {
+function LogsHolePicker({
+    projectSlug,
+    activeHoleId,
+    holes,
+}: {
+    projectSlug: string;
+    activeHoleId: string | null;
+    holes: string[];
+}) {
     const idx = activeHoleId ? holes.indexOf(activeHoleId) : -1;
     const prev = idx > 0 ? holes[idx - 1] : null;
     const next = idx >= 0 && idx < holes.length - 1 ? holes[idx + 1] : null;
@@ -1451,7 +1854,9 @@ function LogsHolePicker({ projectSlug, activeHoleId, holes }: { projectSlug: str
                 style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
             >
                 {holes.map((h) => (
-                    <option key={h} value={h}>{h}</option>
+                    <option key={h} value={h}>
+                        {h}
+                    </option>
                 ))}
             </select>
             <button
@@ -1464,51 +1869,5 @@ function LogsHolePicker({ projectSlug, activeHoleId, holes }: { projectSlug: str
                 next →
             </button>
         </div>
-    );
-}
-
-function MiniHoleStrip({ hole, onClick }: { hole: HoleIntervals; onClick?: () => void }) {
-    const totalDepth = Math.max(
-        hole.total_depth ?? 0,
-        ...hole.bands.map((b) => b.to),
-        1,
-    );
-    const H = 220;
-    const W = 32;
-    const oreCount = hole.bands.filter((b) => b.code.endsWith('-ORE')).length;
-
-    return (
-        <button
-            type="button"
-            onClick={onClick}
-            className="shrink-0 flex flex-col items-center cursor-pointer hover:opacity-90 transition-opacity"
-            style={{ background: 'transparent', border: 0, padding: 0 }}
-            title={`${hole.hole_id} · ${oreCount} U bands · click to open in LOGS`}
-        >
-            <div className="text-[9px] font-mono mb-0.5" style={{ color: 'var(--fg-3)' }}>{hole.hole_id}</div>
-            <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ background: 'var(--bg-2)', border: '1px solid var(--line-1)', borderRadius: 2 }}>
-                {hole.bands.map((b, i) => {
-                    const y1 = (b.from / totalDepth) * H;
-                    const y2 = (b.to / totalDepth) * H;
-                    const h = Math.max(0.5, y2 - y1);
-                    const isOre = b.code.endsWith('-ORE');
-                    return (
-                        <rect
-                            key={i}
-                            x={0}
-                            y={y1}
-                            width={W}
-                            height={h}
-                            fill={b.color}
-                            stroke={isOre ? '#fff' : 'rgba(0,0,0,0.15)'}
-                            strokeWidth={isOre ? '0.5' : '0.2'}
-                        />
-                    );
-                })}
-            </svg>
-            <div className="text-[8px] font-mono mt-0.5" style={{ color: 'var(--fg-3)' }}>
-                {hole.total_depth !== null ? `${hole.total_depth.toFixed(0)} m` : '—'}
-            </div>
-        </button>
     );
 }

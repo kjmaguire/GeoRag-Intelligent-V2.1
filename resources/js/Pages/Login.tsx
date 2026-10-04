@@ -143,7 +143,12 @@ export default function Login(): JSX.Element {
                             })}
                         </pattern>
                         <pattern id="lp-grid" x="0" y="0" width="48" height="48" patternUnits="userSpaceOnUse">
-                            <path d="M 48 0 L 0 0 0 48" fill="none" stroke="oklch(0.78 0.06 200 / 0.3)" strokeWidth="0.5" />
+                            <path
+                                d="M 48 0 L 0 0 0 48"
+                                fill="none"
+                                stroke="oklch(0.78 0.06 200 / 0.3)"
+                                strokeWidth="0.5"
+                            />
                         </pattern>
                     </defs>
                     <rect width="100%" height="100%" fill="url(#lp-grid)" />
@@ -228,10 +233,7 @@ export default function Login(): JSX.Element {
                         The next ore body
                         <br />
                         is in your{' '}
-                        <em style={{ fontStyle: 'italic', color: 'var(--accent)', fontWeight: 400 }}>
-                            archives
-                        </em>
-                        .
+                        <em style={{ fontStyle: 'italic', color: 'var(--accent)', fontWeight: 400 }}>archives</em>.
                     </h1>
                     <p
                         style={{
@@ -242,9 +244,8 @@ export default function Login(): JSX.Element {
                             maxWidth: 480,
                         }}
                     >
-                        GeoRAG turns decades of drill logs, gamma traces, and scanned-paper archives
-                        into a queryable, citation-grounded reasoning corpus — alongside live public
-                        geoscience.
+                        GeoRAG turns decades of drill logs, gamma traces, and scanned-paper archives into a queryable,
+                        citation-grounded reasoning corpus — alongside live public geoscience.
                     </p>
 
                     <div
@@ -265,8 +266,8 @@ export default function Login(): JSX.Element {
                                 fontStyle: 'italic',
                             }}
                         >
-                            Every answer cites the chunk it came from — drill collar, NI 43-101
-                            paragraph, or assay row. No best-effort citations. No hallucinations.
+                            Every answer cites the chunk it came from — drill collar, NI 43-101 paragraph, or assay row.
+                            No best-effort citations. No hallucinations.
                         </div>
                         <div
                             style={{
@@ -617,8 +618,8 @@ export default function Login(): JSX.Element {
                     >
                         <ShieldIcon size={11} style={{ color: 'var(--fg-2)', marginTop: 2 }} />
                         <div style={{ fontSize: 11, color: 'var(--fg-3)', lineHeight: 1.5 }}>
-                            Indexes are isolated per workspace. Your private corpus is never
-                            co-mingled with other operators or with public geoscience.
+                            Indexes are isolated per workspace. Your private corpus is never co-mingled with other
+                            operators or with public geoscience.
                         </div>
                     </div>
 
@@ -631,10 +632,7 @@ export default function Login(): JSX.Element {
                         }}
                     >
                         Need a workspace?{' '}
-                        <a
-                            href="mailto:hello@georag.io"
-                            style={{ color: 'var(--accent)', textDecoration: 'none' }}
-                        >
+                        <a href="mailto:hello@georag.io" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
                             Request access →
                         </a>
                     </div>
@@ -729,13 +727,7 @@ function LockIcon({ size = 11 }: { size?: number }) {
     );
 }
 
-function ShieldIcon({
-    size = 11,
-    style,
-}: {
-    size?: number;
-    style?: React.CSSProperties;
-}) {
+function ShieldIcon({ size = 11, style }: { size?: number; style?: React.CSSProperties }) {
     return (
         <svg
             width={size}

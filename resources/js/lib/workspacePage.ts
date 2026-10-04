@@ -65,11 +65,13 @@ export function reloadPlan(affectedTypes: readonly string[]): ReloadPlan {
     const props = new Set<string>();
     let viz3d = false;
     if (t.has('structures')) {
-        for (const p of ['project', 'project_layers', 'project_extent', 'structures_count', 'structures_visual_count']) props.add(p);
+        for (const p of ['project', 'project_layers', 'project_extent', 'structures_count', 'structures_visual_count'])
+            props.add(p);
         viz3d = true;
     }
     if (t.has('curves')) {
-        for (const p of [...LOG_PROPS, 'project', 'curve_summary', 'well_log_curves_count', 'intervals_count']) props.add(p);
+        for (const p of [...LOG_PROPS, 'project', 'curve_summary', 'well_log_curves_count', 'intervals_count'])
+            props.add(p);
         viz3d = true;
     }
     return { props: Array.from(props), viz3d };
@@ -127,6 +129,8 @@ export function copilotQuickPrompts(commodity: string | null | undefined): strin
     return [
         'Summarise the mineralised zones in this project',
         c ? `Which holes have the best ${c} intervals?` : 'Which holes have the best-grade intervals?',
-        c ? `Which reports describe analogue ${c} deposits for this project?` : 'Which reports describe analogue deposits for this project?',
+        c
+            ? `Which reports describe analogue ${c} deposits for this project?`
+            : 'Which reports describe analogue deposits for this project?',
     ];
 }

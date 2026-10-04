@@ -10,13 +10,21 @@ import type { CSSProperties, ReactNode } from 'react';
  */
 export const COMMODITIES = ['Uranium', 'Gold', 'Copper', 'Nickel', 'Lithium', 'Zinc', 'Silver', 'Lead', 'REE'];
 
-export const inputStyle = { background: 'var(--bg-2)', color: 'var(--fg-0)', borderColor: 'var(--line-2)' } as CSSProperties;
+export const inputStyle = {
+    background: 'var(--bg-2)',
+    color: 'var(--fg-0)',
+    borderColor: 'var(--line-2)',
+} as CSSProperties;
 
 export function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
     return (
         <label className="block">
-            <span className="text-[10px] font-mono uppercase tracking-wider mb-1 block" style={{ color: 'var(--fg-3)' }}>
-                {label}{required && <span style={{ color: 'var(--accent)' }}> *</span>}
+            <span
+                className="text-[10px] font-mono uppercase tracking-wider mb-1 block"
+                style={{ color: 'var(--fg-3)' }}
+            >
+                {label}
+                {required && <span style={{ color: 'var(--accent)' }}> *</span>}
             </span>
             {children}
         </label>
@@ -57,7 +65,9 @@ export const ORIENTATION_REFERENCE_GROUPS: ReadonlyArray<{
     },
 ];
 
-const ORIENTATION_VALUES: ReadonlyArray<string> = ORIENTATION_REFERENCE_GROUPS.flatMap((g) => g.options.map((o) => o.value));
+const ORIENTATION_VALUES: ReadonlyArray<string> = ORIENTATION_REFERENCE_GROUPS.flatMap((g) =>
+    g.options.map((o) => o.value),
+);
 
 /**
  * A stored orientation_reference as a value the picker offers. The LAS /
@@ -125,16 +135,17 @@ export function AzimuthReferenceFields({
                     {ORIENTATION_REFERENCE_GROUPS.map((group) => (
                         <optgroup key={group.label} label={group.label}>
                             {group.options.map((o) => (
-                                <option key={o.value} value={o.value}>{o.label}</option>
+                                <option key={o.value} value={o.value}>
+                                    {o.label}
+                                </option>
                             ))}
                         </optgroup>
                     ))}
                 </select>
                 <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--fg-3)' }}>
-                    Which north your survey azimuths are measured from. True and magnetic are converted
-                    to grid when drill traces are built; BOH / TOH and grid leave them as recorded. A
-                    survey file with its own reference column (e.g. <code>Azimuth_Ref</code>) overrides
-                    this for its stations.
+                    Which north your survey azimuths are measured from. True and magnetic are converted to grid when
+                    drill traces are built; BOH / TOH and grid leave them as recorded. A survey file with its own
+                    reference column (e.g. <code>Azimuth_Ref</code>) overrides this for its stations.
                 </p>
                 {referenceError && (
                     <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--danger, #f87171)' }}>
@@ -156,8 +167,8 @@ export function AzimuthReferenceFields({
                         style={inputStyle}
                     />
                     <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--fg-3)' }}>
-                        East of true north is positive, west is negative. Use the declination for the
-                        survey epoch; it drifts by tenths of a degree a year.
+                        East of true north is positive, west is negative. Use the declination for the survey epoch; it
+                        drifts by tenths of a degree a year.
                     </p>
                     {shownError && (
                         <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--danger, #f87171)' }}>

@@ -58,15 +58,17 @@ export default function SignificantIntersections3DView({
 
     const [selected, setSelected] = useState<string>(() => elementOptions[0]?.element ?? '');
 
-    const filtered = useMemo(
-        () => intersections.filter((it) => it.element === selected),
-        [intersections, selected],
-    );
+    const filtered = useMemo(() => intersections.filter((it) => it.element === selected), [intersections, selected]);
 
     const { data, layout, peakSummary, caption } = useMemo(() => {
         const valid = collars.filter((c) => c.easting !== null && c.northing !== null);
         if (valid.length === 0) {
-            return { data: [] as Record<string, unknown>[], layout: {} as Record<string, unknown>, peakSummary: null as null | { min: number; max: number; unit: string }, caption: '' };
+            return {
+                data: [] as Record<string, unknown>[],
+                layout: {} as Record<string, unknown>,
+                peakSummary: null as null | { min: number; max: number; unit: string },
+                caption: '',
+            };
         }
 
         const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(intersections));
@@ -197,7 +199,12 @@ export default function SignificantIntersections3DView({
             hovermode: 'closest',
         };
 
-        return { data: traces, layout: layoutObj, peakSummary: peaks.length > 0 ? { min: pMin, max: pMax, unit } : null, caption: scene.caption };
+        return {
+            data: traces,
+            layout: layoutObj,
+            peakSummary: peaks.length > 0 ? { min: pMin, max: pMax, unit } : null,
+            caption: scene.caption,
+        };
     }, [collars, surveys, intersections, filtered]);
 
     if (elementOptions.length === 0) {
@@ -211,7 +218,9 @@ export default function SignificantIntersections3DView({
     return (
         <div className="flex flex-col h-full min-h-0">
             <div className="flex items-center gap-3 mb-2 shrink-0 flex-wrap">
-                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Element</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                    Element
+                </span>
                 <select
                     aria-label="Element to plot"
                     value={selected}
@@ -220,13 +229,19 @@ export default function SignificantIntersections3DView({
                     style={{ borderColor: 'var(--line-2)', color: 'var(--fg-1)', background: 'var(--bg-2)' }}
                 >
                     {elementOptions.map((el) => (
-                        <option key={el.element} value={el.element}>{el.element} ({el.count})</option>
+                        <option key={el.element} value={el.element}>
+                            {el.element} ({el.count})
+                        </option>
                     ))}
                 </select>
                 <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
-                    {filtered.length} intersections{peakSummary && ` · WAvg ${peakSummary.min.toFixed(3)}–${peakSummary.max.toFixed(3)} ${peakSummary.unit}`}
+                    {filtered.length} intersections
+                    {peakSummary &&
+                        ` · WAvg ${peakSummary.min.toFixed(3)}–${peakSummary.max.toFixed(3)} ${peakSummary.unit}`}
                 </span>
-                <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">{caption}</span>
+                <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">
+                    {caption}
+                </span>
             </div>
             <div className="flex-1 min-h-0" style={{ height }}>
                 <GeoPlot data={data} layout={layout} />

@@ -11,11 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import {
-    listenPrivate,
-    subscriberCount,
-    __resetEchoChannelRefCounts,
-} from '../echoChannel';
+import { listenPrivate, subscriberCount, __resetEchoChannelRefCounts } from '../echoChannel';
 
 type Handler = (payload: unknown) => void;
 

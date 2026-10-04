@@ -28,10 +28,7 @@ interface HolePayload {
     mean_u3o8_pct: number | null;
 }
 
-type FetchState =
-    | { kind: 'loading' }
-    | { kind: 'error'; message: string }
-    | { kind: 'ready'; payload: HolePayload };
+type FetchState = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; payload: HolePayload };
 
 async function fetchHolePayload(slug: string, holeId: string): Promise<HolePayload> {
     const r = await fetch(`/projects/${slug}/holes/${encodeURIComponent(holeId)}/payload`, {
@@ -105,11 +102,16 @@ export function CompareHolesPanel({
                     const label = i === 0 ? leftHole : rightHole;
                     return (
                         <div key={label} className="space-y-3">
-                            <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                            <div
+                                className="text-[10px] font-mono uppercase tracking-wider"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
                                 {i === 0 ? 'LEFT' : 'RIGHT'} · {label}
                             </div>
                             {state.kind === 'loading' && (
-                                <div className="text-xs" style={{ color: 'var(--fg-3)' }}>Loading hole payload…</div>
+                                <div className="text-xs" style={{ color: 'var(--fg-3)' }}>
+                                    Loading hole payload…
+                                </div>
                             )}
                             {state.kind === 'error' && (
                                 <div className="text-xs" style={{ color: 'var(--warn, #d97706)' }}>
@@ -155,32 +157,44 @@ export function CompareHolesModal({
     // FE-24: a real dialog (Radix, via primitives Modal) — it had no
     // role/aria-modal, no Escape, and focus stayed on the page behind it.
     return (
-        <Modal open onClose={onClose} maxWidth={1600} height="96vh" zIndex={50} label={`Hole comparison: ${leftHole} vs ${rightHole}`}>
-                <div className="flex items-center justify-between px-6 py-3 border-b shrink-0" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
-                    <div>
-                        <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Hole comparison</div>
-                        <div className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>
-                            {leftHole} <span style={{ color: 'var(--fg-3)' }}>vs</span> {rightHole}
-                        </div>
+        <Modal
+            open
+            onClose={onClose}
+            maxWidth={1600}
+            height="96vh"
+            zIndex={50}
+            label={`Hole comparison: ${leftHole} vs ${rightHole}`}
+        >
+            <div
+                className="flex items-center justify-between px-6 py-3 border-b shrink-0"
+                style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
+            >
+                <div>
+                    <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                        Hole comparison
                     </div>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="text-[11px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                        style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
-                    >
-                        Close ✕
-                    </button>
+                    <div className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>
+                        {leftHole} <span style={{ color: 'var(--fg-3)' }}>vs</span> {rightHole}
+                    </div>
                 </div>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    className="text-[11px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                    style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
+                >
+                    Close ✕
+                </button>
+            </div>
 
-                <div className="flex-1 overflow-y-auto p-6">
-                    <CompareHolesPanel
-                        projectSlug={projectSlug}
-                        leftHole={leftHole}
-                        rightHole={rightHole}
-                        chartHeight={chartH}
-                    />
-                </div>
+            <div className="flex-1 overflow-y-auto p-6">
+                <CompareHolesPanel
+                    projectSlug={projectSlug}
+                    leftHole={leftHole}
+                    rightHole={rightHole}
+                    chartHeight={chartH}
+                />
+            </div>
         </Modal>
     );
 }
@@ -199,20 +213,48 @@ function DiffStats({ left, right }: { left: FetchState; right: FetchState }) {
     const L = left.payload;
     const R = right.payload;
     const rows: Array<{ label: string; l: string; r: string; tone?: 'highlight' }> = [
-        { label: 'Total depth', l: L.total_depth !== null ? `${L.total_depth.toFixed(1)} m` : '—', r: R.total_depth !== null ? `${R.total_depth.toFixed(1)} m` : '—' },
-        { label: 'Derived ore bands', l: String(L.ore_bands), r: String(R.ore_bands), tone: L.ore_bands > 0 || R.ore_bands > 0 ? 'highlight' : undefined },
-        { label: 'U-host thickness', l: `${L.ore_thickness_m.toFixed(1)} m`, r: `${R.ore_thickness_m.toFixed(1)} m`, tone: 'highlight' },
+        {
+            label: 'Total depth',
+            l: L.total_depth !== null ? `${L.total_depth.toFixed(1)} m` : '—',
+            r: R.total_depth !== null ? `${R.total_depth.toFixed(1)} m` : '—',
+        },
+        {
+            label: 'Derived ore bands',
+            l: String(L.ore_bands),
+            r: String(R.ore_bands),
+            tone: L.ore_bands > 0 || R.ore_bands > 0 ? 'highlight' : undefined,
+        },
+        {
+            label: 'U-host thickness',
+            l: `${L.ore_thickness_m.toFixed(1)} m`,
+            r: `${R.ore_thickness_m.toFixed(1)} m`,
+            tone: 'highlight',
+        },
         // Unit contract lives in lib/grade.ts — this row used to multiply by
         // 100 and overstated every grade by 100x. See that module's docblock.
         { label: 'Mean U₃O₈ (eU)', l: formatU3O8Pct(L.mean_u3o8_pct), r: formatU3O8Pct(R.mean_u3o8_pct) },
         { label: 'Curves rendered', l: String(L.log_tracks.length), r: String(R.log_tracks.length) },
         { label: 'Lithology bands', l: String(L.lithology_intervals.length), r: String(R.lithology_intervals.length) },
-        { label: 'Easting (UTM 13N)', l: L.easting !== null ? Math.round(L.easting).toLocaleString() : '—', r: R.easting !== null ? Math.round(R.easting).toLocaleString() : '—' },
-        { label: 'Northing (UTM 13N)', l: L.northing !== null ? Math.round(L.northing).toLocaleString() : '—', r: R.northing !== null ? Math.round(R.northing).toLocaleString() : '—' },
+        {
+            label: 'Easting (UTM 13N)',
+            l: L.easting !== null ? Math.round(L.easting).toLocaleString() : '—',
+            r: R.easting !== null ? Math.round(R.easting).toLocaleString() : '—',
+        },
+        {
+            label: 'Northing (UTM 13N)',
+            l: L.northing !== null ? Math.round(L.northing).toLocaleString() : '—',
+            r: R.northing !== null ? Math.round(R.northing).toLocaleString() : '—',
+        },
     ];
     return (
-        <div className="rounded border overflow-hidden" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
-            <div className="grid grid-cols-[1fr_1fr_1fr] text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)', background: 'var(--bg-2)' }}>
+        <div
+            className="rounded border overflow-hidden"
+            style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
+        >
+            <div
+                className="grid grid-cols-[1fr_1fr_1fr] text-[10px] font-mono uppercase tracking-wider"
+                style={{ color: 'var(--fg-3)', background: 'var(--bg-2)' }}
+            >
                 <div className="px-3 py-1.5">Metric</div>
                 <div className="px-3 py-1.5">Left · {L.hole_id}</div>
                 <div className="px-3 py-1.5">Right · {R.hole_id}</div>
@@ -223,9 +265,21 @@ function DiffStats({ left, right }: { left: FetchState; right: FetchState }) {
                     className="grid grid-cols-[1fr_1fr_1fr] text-xs border-t"
                     style={{ borderColor: 'var(--line-1)' }}
                 >
-                    <div className="px-3 py-1.5" style={{ color: 'var(--fg-3)' }}>{row.label}</div>
-                    <div className="px-3 py-1.5 font-mono" style={{ color: row.tone === 'highlight' ? '#8fe28b' : 'var(--fg-1)' }}>{row.l}</div>
-                    <div className="px-3 py-1.5 font-mono" style={{ color: row.tone === 'highlight' ? '#8fe28b' : 'var(--fg-1)' }}>{row.r}</div>
+                    <div className="px-3 py-1.5" style={{ color: 'var(--fg-3)' }}>
+                        {row.label}
+                    </div>
+                    <div
+                        className="px-3 py-1.5 font-mono"
+                        style={{ color: row.tone === 'highlight' ? '#8fe28b' : 'var(--fg-1)' }}
+                    >
+                        {row.l}
+                    </div>
+                    <div
+                        className="px-3 py-1.5 font-mono"
+                        style={{ color: row.tone === 'highlight' ? '#8fe28b' : 'var(--fg-1)' }}
+                    >
+                        {row.r}
+                    </div>
                 </div>
             ))}
         </div>

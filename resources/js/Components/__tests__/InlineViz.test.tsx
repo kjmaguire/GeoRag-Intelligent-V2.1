@@ -15,6 +15,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import type { VizPayload } from '@/types';
 import { KNOWN_VIZ_CHART_TYPES } from '@/types';
 
@@ -29,9 +30,7 @@ vi.mock('../MapView', () => ({
     ),
 }));
 vi.mock('../StripLogViewer', () => ({
-    default: ({ holeId }: { holeId: string }) => (
-        <div data-testid="mock-strip-log">strip:{holeId}</div>
-    ),
+    default: ({ holeId }: { holeId: string }) => <div data-testid="mock-strip-log">strip:{holeId}</div>,
 }));
 vi.mock('../GeoPlot', () => ({
     default: () => <div data-testid="mock-geo-plot">plot</div>,
@@ -59,13 +58,11 @@ vi.mock('../StereonetCard', () => ({
 
 import InlineViz from '../InlineViz';
 
-
 // ---------------------------------------------------------------------------
 // Fixture builders — one per chart_type, with minimal-valid meta
 // ---------------------------------------------------------------------------
 
-
-const MAP_PAYLOAD: any = {
+const MAP_PAYLOAD: ComponentProps<typeof InlineViz>['mapPayload'] = {
     geojson: {
         type: 'FeatureCollection' as const,
         features: [
@@ -134,11 +131,9 @@ const VIZ_STEREONET: VizPayload = {
     },
 };
 
-
 // ---------------------------------------------------------------------------
 // Null safety
 // ---------------------------------------------------------------------------
-
 
 describe('InlineViz — null safety', () => {
     it('renders nothing when both map and viz are null', () => {
@@ -152,11 +147,9 @@ describe('InlineViz — null safety', () => {
     });
 });
 
-
 // ---------------------------------------------------------------------------
 // Map-only / viz-only / both paths
 // ---------------------------------------------------------------------------
-
 
 describe('InlineViz — orthogonal map/viz states', () => {
     it('renders ONLY the map card when vizPayload is null', async () => {
@@ -179,21 +172,19 @@ describe('InlineViz — orthogonal map/viz states', () => {
     });
 });
 
-
 // ---------------------------------------------------------------------------
 // Per-card dispatch — one test per chart_type
 // ---------------------------------------------------------------------------
 
-
 describe('InlineViz — chart_type → card dispatch', () => {
     it.each([
-        ['downhole_strip',     VIZ_STRIP,      'mock-strip-log'],
-        ['assay_histogram',    VIZ_HISTOGRAM,  'mock-geo-plot'],
-        ['cross_section',      { ...VIZ_HISTOGRAM, chart_type: 'cross_section' as const }, 'mock-geo-plot'],
-        ['drill_trace_3d',     VIZ_3D,         'mock-drill-trace-3d'],
-        ['technique_timeline', VIZ_TIMELINE,   'mock-timeline'],
-        ['coverage_table',     VIZ_COVERAGE,   'mock-coverage-table'],
-        ['stereonet',          VIZ_STEREONET,  'mock-stereonet'],
+        ['downhole_strip', VIZ_STRIP, 'mock-strip-log'],
+        ['assay_histogram', VIZ_HISTOGRAM, 'mock-geo-plot'],
+        ['cross_section', { ...VIZ_HISTOGRAM, chart_type: 'cross_section' as const }, 'mock-geo-plot'],
+        ['drill_trace_3d', VIZ_3D, 'mock-drill-trace-3d'],
+        ['technique_timeline', VIZ_TIMELINE, 'mock-timeline'],
+        ['coverage_table', VIZ_COVERAGE, 'mock-coverage-table'],
+        ['stereonet', VIZ_STEREONET, 'mock-stereonet'],
     ])('chart_type=%s mounts %s', async (_label, payload, expectedTestId) => {
         render(<InlineViz vizPayload={payload as VizPayload} />);
         expect(await screen.findByTestId(expectedTestId)).toBeTruthy();
@@ -205,19 +196,23 @@ describe('InlineViz — chart_type → card dispatch', () => {
         // pins both sides in sync. (It originally guarded a Sentry tag
         // drift check; Sentry was removed 2026-08-28, the sync is still
         // worth pinning.)
-        expect(new Set(KNOWN_VIZ_CHART_TYPES)).toEqual(new Set([
-            'downhole_strip', 'assay_histogram', 'cross_section',
-            'drill_trace_3d', 'technique_timeline',
-            'coverage_table', 'stereonet',
-        ]));
+        expect(new Set(KNOWN_VIZ_CHART_TYPES)).toEqual(
+            new Set([
+                'downhole_strip',
+                'assay_histogram',
+                'cross_section',
+                'drill_trace_3d',
+                'technique_timeline',
+                'coverage_table',
+                'stereonet',
+            ]),
+        );
     });
 });
-
 
 // ---------------------------------------------------------------------------
 // Empty-meta fallthrough
 // ---------------------------------------------------------------------------
-
 
 describe('InlineViz — empty meta falls through cleanly', () => {
     it('chart_type=downhole_strip with no hole_id renders nothing', () => {
@@ -272,11 +267,9 @@ describe('InlineViz — empty meta falls through cleanly', () => {
     });
 });
 
-
 // ---------------------------------------------------------------------------
 // Per-card dismiss behaviour
 // ---------------------------------------------------------------------------
-
 
 describe('InlineViz — dismiss behaviour', () => {
     it('clicking the map close button hides the map card', async () => {
@@ -316,11 +309,9 @@ describe('InlineViz — dismiss behaviour', () => {
     });
 });
 
-
 // ---------------------------------------------------------------------------
 // Data is propagated to child mocks
 // ---------------------------------------------------------------------------
-
 
 describe('InlineViz — data prop propagation', () => {
     it('passes meta.hole_id through to StripLogViewer', async () => {
@@ -354,11 +345,9 @@ describe('InlineViz — data prop propagation', () => {
     });
 });
 
-
 // ---------------------------------------------------------------------------
 // Theme tokens — no hard-coded gray palette
 // ---------------------------------------------------------------------------
-
 
 describe('InlineViz — Foundry theme tokens', () => {
     it('styles the card shell with Foundry variables, not bg-gray-*/border-gray-*', async () => {
@@ -376,4 +365,3 @@ describe('InlineViz — Foundry theme tokens', () => {
         expect(container.textContent ?? '').not.toMatch(/silver\.|gold\.|§|ADR-/);
     });
 });
-

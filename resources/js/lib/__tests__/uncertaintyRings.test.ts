@@ -26,38 +26,47 @@ function styleWith(layer: Record<string, unknown>) {
 
 describe('uncertainty-rings paint validates against the MapLibre style spec', () => {
     it('GeoJSON layer has no validation errors', () => {
-        const errors = validateStyleMin(styleWith({
-            id: 'uncertainty-rings',
-            type: 'circle',
-            source: 'collars',
-            filter: UNCERTAINTY_RINGS_FILTER,
-            paint: UNCERTAINTY_RINGS_PAINT,
-        }) as never);
+        const errors = validateStyleMin(
+            styleWith({
+                id: 'uncertainty-rings',
+                type: 'circle',
+                source: 'collars',
+                filter: UNCERTAINTY_RINGS_FILTER,
+                paint: UNCERTAINTY_RINGS_PAINT,
+            }) as never,
+        );
         expect(errors.map((e) => e.message)).toEqual([]);
     });
 
     it('MVT layer has no validation errors', () => {
-        const errors = validateStyleMin(styleWith({
-            id: 'mvt-uncertainty-rings',
-            type: 'circle',
-            source: 'mvt-collars-source',
-            'source-layer': 'collars',
-            filter: UNCERTAINTY_RINGS_FILTER,
-            paint: UNCERTAINTY_RINGS_PAINT,
-        }) as never);
+        const errors = validateStyleMin(
+            styleWith({
+                id: 'mvt-uncertainty-rings',
+                type: 'circle',
+                source: 'mvt-collars-source',
+                'source-layer': 'collars',
+                filter: UNCERTAINTY_RINGS_FILTER,
+                paint: UNCERTAINTY_RINGS_PAINT,
+            }) as never,
+        );
         expect(errors.map((e) => e.message)).toEqual([]);
     });
 
     it('rejects the pre-fix expression, proving the validator catches it', () => {
-        const errors = validateStyleMin(styleWith({
-            id: 'old',
-            type: 'circle',
-            source: 'collars',
-            paint: {
-                'circle-radius': ['*', ['get', 'spatial_uncertainty_m'],
-                    ['/', ['^', 2, ['zoom']], ['*', 156543.03392, ['cos', ['*', ['get', '_lat'], 0.0174]]]]],
-            },
-        }) as never);
+        const errors = validateStyleMin(
+            styleWith({
+                id: 'old',
+                type: 'circle',
+                source: 'collars',
+                paint: {
+                    'circle-radius': [
+                        '*',
+                        ['get', 'spatial_uncertainty_m'],
+                        ['/', ['^', 2, ['zoom']], ['*', 156543.03392, ['cos', ['*', ['get', '_lat'], 0.0174]]]],
+                    ],
+                },
+            }) as never,
+        );
         expect(errors.length).toBeGreaterThan(0);
     });
 });

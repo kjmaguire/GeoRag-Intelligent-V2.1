@@ -9,10 +9,7 @@ import { escapeHtml } from '@/lib/escapeHtml';
  */
 
 export type PolygonLayerKey =
-    | 'mineral_disposition'
-    | 'resource_potential_zone'
-    | 'assessment_survey'
-    | 'bedrock_geology';
+    'mineral_disposition' | 'resource_potential_zone' | 'assessment_survey' | 'bedrock_geology';
 
 export const POLYGON_LAYER_KEYS: PolygonLayerKey[] = [
     'mineral_disposition',

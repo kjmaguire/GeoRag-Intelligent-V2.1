@@ -97,7 +97,16 @@ function Icon({ name, size = 12 }: { name: string; size?: number }) {
         cube: <path d="M12 2 L21 7 V17 L12 22 L3 17 V7 Z M3 7 L12 12 L21 7 M12 12 V22" />,
     };
     return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
             {paths[name] ?? paths.home}
         </svg>
     );
@@ -123,43 +132,77 @@ function UserMenu() {
         } catch {
             // Network failure: still leave; the session expires server-side.
         }
-        try { localStorage.removeItem('georag_user'); } catch { /* */ }
+        try {
+            localStorage.removeItem('georag_user');
+        } catch {
+            /* */
+        }
         router.visit('/login');
     }
 
     if (!user) {
         return (
-            <Link href="/login" className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-[var(--line-1)] text-[var(--fg-3)] hover:text-[var(--fg-0)] hover:border-[var(--line-2)]">
+            <Link
+                href="/login"
+                className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-[var(--line-1)] text-[var(--fg-3)] hover:text-[var(--fg-0)] hover:border-[var(--line-2)]"
+            >
                 Sign in
             </Link>
         );
     }
 
-    const initials = user.name.split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
+    const initials = user.name
+        .split(' ')
+        .map((s) => s[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase();
 
     return (
         <div className="relative">
             <button
                 type="button"
                 onClick={() => setOpen((v) => !v)}
-                onBlur={(e) => { if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) setOpen(false); }}
+                onBlur={(e) => {
+                    if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) setOpen(false);
+                }}
                 className="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-[var(--bg-2)]"
                 aria-haspopup="true"
                 aria-expanded={open}
             >
-                <span className="w-6 h-6 rounded text-[10px] font-mono flex items-center justify-center" style={{ background: 'var(--accent-bg)', color: 'var(--accent)' }}>
+                <span
+                    className="w-6 h-6 rounded text-[10px] font-mono flex items-center justify-center"
+                    style={{ background: 'var(--accent-bg)', color: 'var(--accent)' }}
+                >
                     {initials}
                 </span>
-                <span className="text-[11px] font-mono text-[var(--fg-2)] hidden sm:inline" title={user.email}>{user.name}</span>
+                <span className="text-[11px] font-mono text-[var(--fg-2)] hidden sm:inline" title={user.email}>
+                    {user.name}
+                </span>
             </button>
             {open && (
-                <div className="absolute right-0 top-full mt-1 w-56 rounded border z-50" style={{ background: 'var(--bg-1)', borderColor: 'var(--line-2)', boxShadow: '0 16px 40px rgba(0,0,0,0.45)' }} role="menu">
-                    <div className="px-3 py-2 border-b text-[10px] font-mono uppercase tracking-wider" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>
+                <div
+                    className="absolute right-0 top-full mt-1 w-56 rounded border z-50"
+                    style={{
+                        background: 'var(--bg-1)',
+                        borderColor: 'var(--line-2)',
+                        boxShadow: '0 16px 40px rgba(0,0,0,0.45)',
+                    }}
+                    role="menu"
+                >
+                    <div
+                        className="px-3 py-2 border-b text-[10px] font-mono uppercase tracking-wider"
+                        style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}
+                    >
                         Signed in as
                     </div>
                     <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--line-1)' }}>
-                        <div className="text-xs" style={{ color: 'var(--fg-0)' }}>{user.name}</div>
-                        <div className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>{user.email}</div>
+                        <div className="text-xs" style={{ color: 'var(--fg-0)' }}>
+                            {user.name}
+                        </div>
+                        <div className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
+                            {user.email}
+                        </div>
                     </div>
                     <button
                         type="button"
@@ -223,8 +266,7 @@ interface IngestProgressEvent {
 function IngestToastBridge({ projectSlug }: { projectSlug: string | null }) {
     const { url, props } = usePage<PageProps>();
     const { pushToast } = useToast();
-    const projectId =
-        (props as PageProps & { project?: { project_id?: string } }).project?.project_id ?? null;
+    const projectId = (props as PageProps & { project?: { project_id?: string } }).project?.project_id ?? null;
     const onRunsPage = url.includes('/ingestion-runs');
     // Dedupe guard — Echo reconnect replays / double broadcasts shouldn't
     // stack identical toasts.
@@ -295,14 +337,24 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
     // Theme — persisted dark/light.
     const [theme, setTheme] = useState<'dark' | 'light'>(() => {
         if (typeof window === 'undefined') return 'dark';
-        try { return (localStorage.getItem('georag-foundry-theme') as 'dark' | 'light') ?? 'dark'; } catch { return 'dark'; }
+        try {
+            return (localStorage.getItem('georag-foundry-theme') as 'dark' | 'light') ?? 'dark';
+        } catch {
+            return 'dark';
+        }
     });
-    useEffect(() => { try { localStorage.setItem('georag-foundry-theme', theme); } catch { /* */ } }, [theme]);
+    useEffect(() => {
+        try {
+            localStorage.setItem('georag-foundry-theme', theme);
+        } catch {
+            /* */
+        }
+    }, [theme]);
 
     const [mobileOpen, setMobileOpen] = useState(false);
 
     // Project-scope detection — anything starting with /projects/{slug}.
-    const projectMatch = url.match(/^\/projects\/([^\/?#]+)(\/[^?#]*)?/);
+    const projectMatch = url.match(/^\/projects\/([^/?#]+)(\/[^?#]*)?/);
     const inProject = Boolean(projectMatch && projectMatch[1] !== 'new');
     const currentSlug = inProject ? projectMatch![1] : null;
     const currentSubpath = inProject ? (projectMatch![2] ?? '') : '';
@@ -325,209 +377,271 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
     const projectNavMemo = useMemo(() => PROJECT_NAV, []);
 
     return (
-        <div className={rootClass} style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div
+            className={rootClass}
+            style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+        >
             {/* ToastProvider lives INSIDE the themed root so the fixed
                 viewport inherits the .foundry / .foundry.light tokens. */}
             <ToastProvider>
-            <a
-                href="#main-content"
-                className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-[var(--accent)] focus:text-[var(--bg-0)] focus:px-4 focus:py-2 focus:rounded focus:text-xs"
-            >
-                Skip to content
-            </a>
-
-            <div className={`flex-1 ${layoutGrid}`} style={{ minHeight: 0, overflow: 'hidden' }}>
-                {/* ORG bar — spans both columns */}
-                <header
-                    className="h-11 flex items-center gap-3 px-4 border-b shrink-0 col-span-full"
-                    style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                <a
+                    href="#main-content"
+                    className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-[var(--accent)] focus:text-[var(--bg-0)] focus:px-4 focus:py-2 focus:rounded focus:text-xs"
                 >
-                    {/* Brand */}
-                    <Link href="/projects" className="flex items-center gap-2 select-none">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="text-[var(--accent)]">
-                            <path d="M12 3 L21 8 L21 16 L12 21 L3 16 L3 8 Z" />
-                            <path d="M12 3 L12 21 M3 8 L21 16 M21 8 L3 16" opacity="0.35" />
-                        </svg>
-                        <span className="text-[11px] font-mono font-semibold tracking-[0.12em] text-[var(--fg-0)]">GEORAG</span>
-                    </Link>
+                    Skip to content
+                </a>
 
-                    {/* LEFT — Projects · + New */}
-                    <nav className="hidden sm:flex items-center gap-1 ml-2" aria-label="Org navigation">
-                        {ORG_NAV.map((n) => (
-                            <Link key={n.id} href={n.href} className={orgNavClass(orgActive(n.href))}>
-                                {n.label}
-                            </Link>
-                        ))}
-                        <Link
-                            href="/foundry/projects/new"
-                            className="flex items-center gap-1 text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 text-[var(--accent)] hover:bg-[var(--accent-bg)] rounded"
-                        >
-                            <Icon name="plus" size={10} /> New
+                <div className={`flex-1 ${layoutGrid}`} style={{ minHeight: 0, overflow: 'hidden' }}>
+                    {/* ORG bar — spans both columns */}
+                    <header
+                        className="h-11 flex items-center gap-3 px-4 border-b shrink-0 col-span-full"
+                        style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                    >
+                        {/* Brand */}
+                        <Link href="/projects" className="flex items-center gap-2 select-none">
+                            <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                className="text-[var(--accent)]"
+                            >
+                                <path d="M12 3 L21 8 L21 16 L12 21 L3 16 L3 8 Z" />
+                                <path d="M12 3 L12 21 M3 8 L21 16 M21 8 L3 16" opacity="0.35" />
+                            </svg>
+                            <span className="text-[11px] font-mono font-semibold tracking-[0.12em] text-[var(--fg-0)]">
+                                GEORAG
+                            </span>
                         </Link>
-                    </nav>
 
-                    {inProject && (
-                        <div className="ml-3 hidden md:flex items-center gap-2 pl-3 border-l" style={{ borderColor: 'var(--line-1)' }}>
-                            <ProjectSelector onProjectChange={onProjectChange} />
-                        </div>
-                    )}
+                        {/* LEFT — Projects · + New */}
+                        <nav className="hidden sm:flex items-center gap-1 ml-2" aria-label="Org navigation">
+                            {ORG_NAV.map((n) => (
+                                <Link key={n.id} href={n.href} className={orgNavClass(orgActive(n.href))}>
+                                    {n.label}
+                                </Link>
+                            ))}
+                            <Link
+                                href="/foundry/projects/new"
+                                className="flex items-center gap-1 text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 text-[var(--accent)] hover:bg-[var(--accent-bg)] rounded"
+                            >
+                                <Icon name="plus" size={10} /> New
+                            </Link>
+                        </nav>
 
-                    <div className="flex-1" />
+                        {inProject && (
+                            <div
+                                className="ml-3 hidden md:flex items-center gap-2 pl-3 border-l"
+                                style={{ borderColor: 'var(--line-1)' }}
+                            >
+                                <ProjectSelector onProjectChange={onProjectChange} />
+                            </div>
+                        )}
 
-                    {/* RIGHT — Search */}
-                    <button
-                        type="button"
-                        onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))}
-                        className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
-                        style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
-                        title="Search (⌘K / Ctrl+K)"
-                    >
-                        <Icon name="search" size={10} />
-                        Search
-                        <span className="ml-1 px-1 rounded text-[9px]" style={{ background: 'var(--bg-3)', color: 'var(--fg-3)' }}>⌘K</span>
-                    </button>
+                        <div className="flex-1" />
 
-                    {/* Theme toggle */}
-                    <div role="group" aria-label="Theme" className="flex p-0.5 rounded border" style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)' }}>
+                        {/* RIGHT — Search */}
                         <button
                             type="button"
-                            aria-label="Dark theme"
-                            aria-pressed={theme === 'dark'}
-                            onClick={() => setTheme('dark')}
-                            className={['px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded', theme === 'dark' ? 'text-[var(--fg-0)]' : 'text-[var(--fg-3)]'].join(' ')}
-                            style={{ background: theme === 'dark' ? 'var(--bg-3)' : 'transparent' }}
-                            title="Dark"
+                            onClick={() =>
+                                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
+                            }
+                            className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
+                            style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
+                            title="Search (⌘K / Ctrl+K)"
                         >
-                            D
+                            <Icon name="search" size={10} />
+                            Search
+                            <span
+                                className="ml-1 px-1 rounded text-[9px]"
+                                style={{ background: 'var(--bg-3)', color: 'var(--fg-3)' }}
+                            >
+                                ⌘K
+                            </span>
                         </button>
-                        <button
-                            type="button"
-                            aria-label="Light theme"
-                            aria-pressed={theme === 'light'}
-                            onClick={() => setTheme('light')}
-                            className={['px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded', theme === 'light' ? 'text-[var(--fg-0)]' : 'text-[var(--fg-3)]'].join(' ')}
-                            style={{ background: theme === 'light' ? 'var(--bg-3)' : 'transparent' }}
-                            title="Light"
-                        >
-                            L
-                        </button>
-                    </div>
 
-                    <UserMenu />
-
-                    <button
-                        type="button"
-                        onClick={() => setMobileOpen(!mobileOpen)}
-                        className="sm:hidden text-[var(--fg-3)] hover:text-[var(--fg-1)] p-1"
-                        aria-label="Toggle navigation"
-                    >
-                        <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M3 6h18 M3 12h18 M3 18h18" stroke="currentColor" strokeWidth="2" />
-                        </svg>
-                    </button>
-                </header>
-
-                {inProject && currentSlug && (
-                    <>
-                        {/* PROJECT sub-bar (horizontal) — spans both columns below the org bar */}
+                        {/* Theme toggle */}
                         <div
-                            className="h-9 flex items-stretch gap-1 px-4 border-b shrink-0 col-span-full overflow-x-auto"
-                            style={{ background: 'var(--bg-0)', borderColor: 'var(--line-1)' }}
+                            role="group"
+                            aria-label="Theme"
+                            className="flex p-0.5 rounded border"
+                            style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)' }}
                         >
-                            <div className="flex items-center text-[10px] font-mono uppercase tracking-widest pr-3 mr-1 border-r" style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}>
-                                Project
-                            </div>
-                            {projectNavMemo.map((n) => {
-                                const href = `/projects/${currentSlug}${n.suffix}`;
-                                const isActive = (n.suffix === '' && currentSubpath === '') || (n.suffix !== '' && currentSubpath.startsWith(n.suffix));
-                                return (
-                                    <Link key={n.id} href={href} className={projectSubBarClass(isActive)}>
-                                        {n.label}
-                                    </Link>
-                                );
-                            })}
-                            <div className="flex-1" />
-                            <div className="flex items-center text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
-                                {currentSlug}
-                            </div>
+                            <button
+                                type="button"
+                                aria-label="Dark theme"
+                                aria-pressed={theme === 'dark'}
+                                onClick={() => setTheme('dark')}
+                                className={[
+                                    'px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded',
+                                    theme === 'dark' ? 'text-[var(--fg-0)]' : 'text-[var(--fg-3)]',
+                                ].join(' ')}
+                                style={{ background: theme === 'dark' ? 'var(--bg-3)' : 'transparent' }}
+                                title="Dark"
+                            >
+                                D
+                            </button>
+                            <button
+                                type="button"
+                                aria-label="Light theme"
+                                aria-pressed={theme === 'light'}
+                                onClick={() => setTheme('light')}
+                                className={[
+                                    'px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded',
+                                    theme === 'light' ? 'text-[var(--fg-0)]' : 'text-[var(--fg-3)]',
+                                ].join(' ')}
+                                style={{ background: theme === 'light' ? 'var(--bg-3)' : 'transparent' }}
+                                title="Light"
+                            >
+                                L
+                            </button>
                         </div>
 
-                        {/* PROJECT left rail (vertical) — in row 3, column 1 */}
-                        <aside
-                            className="overflow-y-auto border-r"
-                            style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
-                            aria-label="Project navigation"
+                        <UserMenu />
+
+                        <button
+                            type="button"
+                            onClick={() => setMobileOpen(!mobileOpen)}
+                            className="sm:hidden text-[var(--fg-3)] hover:text-[var(--fg-1)] p-1"
+                            aria-label="Toggle navigation"
                         >
-                            <nav className="py-2">
+                            <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M3 6h18 M3 12h18 M3 18h18" stroke="currentColor" strokeWidth="2" />
+                            </svg>
+                        </button>
+                    </header>
+
+                    {inProject && currentSlug && (
+                        <>
+                            {/* PROJECT sub-bar (horizontal) — spans both columns below the org bar */}
+                            <div
+                                className="h-9 flex items-stretch gap-1 px-4 border-b shrink-0 col-span-full overflow-x-auto"
+                                style={{ background: 'var(--bg-0)', borderColor: 'var(--line-1)' }}
+                            >
+                                <div
+                                    className="flex items-center text-[10px] font-mono uppercase tracking-widest pr-3 mr-1 border-r"
+                                    style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
+                                >
+                                    Project
+                                </div>
                                 {projectNavMemo.map((n) => {
                                     const href = `/projects/${currentSlug}${n.suffix}`;
-                                    const isActive = (n.suffix === '' && currentSubpath === '') || (n.suffix !== '' && currentSubpath.startsWith(n.suffix));
+                                    const isActive =
+                                        (n.suffix === '' && currentSubpath === '') ||
+                                        (n.suffix !== '' && currentSubpath.startsWith(n.suffix));
                                     return (
-                                        <Link key={n.id} href={href} className={projectRailClass(isActive)}>
-                                            <Icon name={n.icon} size={12} />
-                                            <span>{n.label}</span>
+                                        <Link key={n.id} href={href} className={projectSubBarClass(isActive)}>
+                                            {n.label}
                                         </Link>
                                     );
                                 })}
-                            </nav>
-
-                            {/* Chat threads (project-scoped) */}
-                            <div className="border-t mt-2 pt-3" style={{ borderColor: 'var(--line-1)' }}>
-                                <div className="flex items-center justify-between px-3 pb-1.5">
-                                    <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
-                                        Chat threads
-                                    </span>
-                                    <Link href={`/projects/${currentSlug}/chat`} className="text-[10px] font-mono" style={{ color: 'var(--accent)' }}>
-                                        view all
-                                    </Link>
+                                <div className="flex-1" />
+                                <div
+                                    className="flex items-center text-[10px] font-mono uppercase tracking-widest"
+                                    style={{ color: 'var(--fg-3)' }}
+                                >
+                                    {currentSlug}
                                 </div>
-                                {threads.length === 0 ? (
-                                    <div className="px-3 py-1 text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
-                                        no threads yet
-                                    </div>
-                                ) : (
-                                    threads.slice(0, 6).map((t) => (
-                                        <Link
-                                            key={t.id}
-                                            href={`/projects/${currentSlug}/chat?thread=${t.id}`}
-                                            className="block px-3 py-1.5 text-[11px] truncate"
-                                            style={{ color: 'var(--fg-2)' }}
-                                            title={t.title}
-                                        >
-                                            <Icon name="chat" size={9} />
-                                            <span className="ml-2">{t.title}</span>
-                                        </Link>
-                                    ))
-                                )}
                             </div>
 
-                        </aside>
-                    </>
-                )}
+                            {/* PROJECT left rail (vertical) — in row 3, column 1 */}
+                            <aside
+                                className="overflow-y-auto border-r"
+                                style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                                aria-label="Project navigation"
+                            >
+                                <nav className="py-2">
+                                    {projectNavMemo.map((n) => {
+                                        const href = `/projects/${currentSlug}${n.suffix}`;
+                                        const isActive =
+                                            (n.suffix === '' && currentSubpath === '') ||
+                                            (n.suffix !== '' && currentSubpath.startsWith(n.suffix));
+                                        return (
+                                            <Link key={n.id} href={href} className={projectRailClass(isActive)}>
+                                                <Icon name={n.icon} size={12} />
+                                                <span>{n.label}</span>
+                                            </Link>
+                                        );
+                                    })}
+                                </nav>
 
-                {/* Mobile org-nav drawer */}
-                {mobileOpen && (
-                    <nav className="sm:hidden border-b px-3 py-2 flex flex-col gap-1 col-span-full" style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }} aria-label="Mobile navigation">
-                        {ORG_NAV.map((n) => (
-                            <Link key={n.id} href={n.href} className={orgNavClass(orgActive(n.href))} onClick={() => setMobileOpen(false)}>
-                                {n.label}
-                            </Link>
-                        ))}
-                    </nav>
-                )}
+                                {/* Chat threads (project-scoped) */}
+                                <div className="border-t mt-2 pt-3" style={{ borderColor: 'var(--line-1)' }}>
+                                    <div className="flex items-center justify-between px-3 pb-1.5">
+                                        <span
+                                            className="text-[10px] font-mono uppercase tracking-widest"
+                                            style={{ color: 'var(--fg-3)' }}
+                                        >
+                                            Chat threads
+                                        </span>
+                                        <Link
+                                            href={`/projects/${currentSlug}/chat`}
+                                            className="text-[10px] font-mono"
+                                            style={{ color: 'var(--accent)' }}
+                                        >
+                                            view all
+                                        </Link>
+                                    </div>
+                                    {threads.length === 0 ? (
+                                        <div
+                                            className="px-3 py-1 text-[10px] font-mono"
+                                            style={{ color: 'var(--fg-3)' }}
+                                        >
+                                            no threads yet
+                                        </div>
+                                    ) : (
+                                        threads.slice(0, 6).map((t) => (
+                                            <Link
+                                                key={t.id}
+                                                href={`/projects/${currentSlug}/chat?thread=${t.id}`}
+                                                className="block px-3 py-1.5 text-[11px] truncate"
+                                                style={{ color: 'var(--fg-2)' }}
+                                                title={t.title}
+                                            >
+                                                <Icon name="chat" size={9} />
+                                                <span className="ml-2">{t.title}</span>
+                                            </Link>
+                                        ))
+                                    )}
+                                </div>
+                            </aside>
+                        </>
+                    )}
 
-                {/* Main content area — col-span-1 when inProject (so left rail takes col 1), col-span-full otherwise */}
-                <main
-                    id="main-content"
-                    className={`flex flex-col overflow-hidden ${inProject ? '' : 'col-span-full'}`}
-                    style={{ background: 'var(--bg-0)' }}
-                >
-                    {children}
-                </main>
-            </div>
+                    {/* Mobile org-nav drawer */}
+                    {mobileOpen && (
+                        <nav
+                            className="sm:hidden border-b px-3 py-2 flex flex-col gap-1 col-span-full"
+                            style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                            aria-label="Mobile navigation"
+                        >
+                            {ORG_NAV.map((n) => (
+                                <Link
+                                    key={n.id}
+                                    href={n.href}
+                                    className={orgNavClass(orgActive(n.href))}
+                                    onClick={() => setMobileOpen(false)}
+                                >
+                                    {n.label}
+                                </Link>
+                            ))}
+                        </nav>
+                    )}
 
-            <CommandPalette projectSlug={currentSlug} />
-            <IngestToastBridge projectSlug={currentSlug} />
+                    {/* Main content area — col-span-1 when inProject (so left rail takes col 1), col-span-full otherwise */}
+                    <main
+                        id="main-content"
+                        className={`flex flex-col overflow-hidden ${inProject ? '' : 'col-span-full'}`}
+                        style={{ background: 'var(--bg-0)' }}
+                    >
+                        {children}
+                    </main>
+                </div>
+
+                <CommandPalette projectSlug={currentSlug} />
+                <IngestToastBridge projectSlug={currentSlug} />
             </ToastProvider>
         </div>
     );

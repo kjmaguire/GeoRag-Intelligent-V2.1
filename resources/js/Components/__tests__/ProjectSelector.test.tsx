@@ -25,9 +25,7 @@ describe('ProjectSelector — auth surface', () => {
     let getItemSpy: ReturnType<typeof vi.spyOn>;
     let fetchSpy: ReturnType<typeof vi.spyOn>;
 
-    const projectList = [
-        { project_id: 'proj-001', project_name: 'Patterson Lake South', slug: 'pls' },
-    ];
+    const projectList = [{ project_id: 'proj-001', project_name: 'Patterson Lake South', slug: 'pls' }];
 
     beforeEach(() => {
         getItemSpy = vi.spyOn(Storage.prototype, 'getItem');
@@ -49,9 +47,7 @@ describe('ProjectSelector — auth surface', () => {
         await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
 
         const tokenLike = /token|jwt|secret/i;
-        const offending = getItemSpy.mock.calls
-            .map(([key]) => String(key))
-            .filter((k) => tokenLike.test(k));
+        const offending = getItemSpy.mock.calls.map(([key]) => String(key)).filter((k) => tokenLike.test(k));
         expect(offending).toEqual([]);
     });
 
@@ -72,11 +68,17 @@ describe('ProjectSelector — FE-14', () => {
     });
 
     it('Retry actually refetches after a failure', async () => {
-        const fetchSpy = vi.spyOn(globalThis, 'fetch')
+        const fetchSpy = vi
+            .spyOn(globalThis, 'fetch')
             .mockResolvedValueOnce(new Response('nope', { status: 500 }))
-            .mockResolvedValueOnce(new Response(JSON.stringify({ data: [
-                { project_id: 'proj-001', project_name: 'Patterson Lake South', slug: 'pls' },
-            ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        data: [{ project_id: 'proj-001', project_name: 'Patterson Lake South', slug: 'pls' }],
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } },
+                ),
+            );
 
         render(<ProjectSelector />);
         fireEvent.click(await screen.findByRole('button', { name: /retry/i }));

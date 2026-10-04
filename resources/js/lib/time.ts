@@ -25,8 +25,8 @@ export interface StalenessInfo {
 // Thresholds are deliberately per-hour/day, not configured per-workspace.
 // The kickoff locks these as V1 defaults; "measured, not planned" lets us
 // tune once real upstream refresh cadence data is in hand.
-const FRESH_SECONDS = 86_400 * 2;        // ≤ 2 days = fresh
-const STALE_SECONDS = 86_400 * 10;       // ≤ 10 days = stale, > = very_stale
+const FRESH_SECONDS = 86_400 * 2; // ≤ 2 days = fresh
+const STALE_SECONDS = 86_400 * 10; // ≤ 10 days = stale, > = very_stale
 
 /**
  * Format a staleness age in seconds as a short human-readable label.
@@ -46,11 +46,7 @@ export function formatStaleness(seconds: number | null | undefined): StalenessIn
     }
 
     const level: StalenessLevel =
-        seconds <= FRESH_SECONDS
-            ? 'fresh'
-            : seconds <= STALE_SECONDS
-                ? 'stale'
-                : 'very_stale';
+        seconds <= FRESH_SECONDS ? 'fresh' : seconds <= STALE_SECONDS ? 'stale' : 'very_stale';
 
     const label = _humanize(seconds);
     return {

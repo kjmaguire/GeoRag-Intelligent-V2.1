@@ -24,7 +24,10 @@ export const DEFAULT_UPLOAD_LIMIT: UploadLimit = { bytes: 512 * 1024 * 1024, hum
 export function uploadLimitFromProps(props: Record<string, unknown> | undefined): UploadLimit {
     const raw = props?.upload_limit as Partial<UploadLimit> | undefined;
     if (raw && typeof raw.bytes === 'number' && raw.bytes > 0) {
-        return { bytes: raw.bytes, human: typeof raw.human === 'string' && raw.human ? raw.human : DEFAULT_UPLOAD_LIMIT.human };
+        return {
+            bytes: raw.bytes,
+            human: typeof raw.human === 'string' && raw.human ? raw.human : DEFAULT_UPLOAD_LIMIT.human,
+        };
     }
     return DEFAULT_UPLOAD_LIMIT;
 }

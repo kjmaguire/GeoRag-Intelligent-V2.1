@@ -11,7 +11,9 @@ interface Structure {
     dip_direction: number | null;
 }
 
-interface Props { structures: Structure[]; }
+interface Props {
+    structures: Structure[];
+}
 
 /**
  * Project-wide stereonet aggregating every structural measurement from
@@ -39,14 +41,21 @@ export default function AggregateStereonet({ structures }: Props) {
             const next = { ...prev };
             let changed = false;
             for (const t of Object.keys(typeCounts)) {
-                if (next[t] === undefined) { next[t] = true; changed = true; }
+                if (next[t] === undefined) {
+                    next[t] = true;
+                    changed = true;
+                }
             }
             return changed ? next : prev;
         });
     }, [typeCounts]);
 
     if (structures.length === 0) {
-        return <div className="h-[360px] flex items-center justify-center text-sm text-gray-500">No structural measurements in this project.</div>;
+        return (
+            <div className="h-[360px] flex items-center justify-center text-sm text-gray-500">
+                No structural measurements in this project.
+            </div>
+        );
     }
 
     return (
@@ -54,7 +63,11 @@ export default function AggregateStereonet({ structures }: Props) {
             <aside className="lg:w-60 shrink-0 space-y-3">
                 <div className="flex items-center justify-between">
                     <div className="text-xs uppercase tracking-wide text-gray-500">Structure types</div>
-                    <div role="group" aria-label="View dimension" className="inline-flex rounded-full border border-gray-700 bg-gray-900/60 p-0.5 text-[11px] font-medium">
+                    <div
+                        role="group"
+                        aria-label="View dimension"
+                        className="inline-flex rounded-full border border-gray-700 bg-gray-900/60 p-0.5 text-[11px] font-medium"
+                    >
                         {(['2d', '3d'] as const).map((m) => {
                             const active = view === m;
                             return (
@@ -73,7 +86,10 @@ export default function AggregateStereonet({ structures }: Props) {
                 </div>
                 <div className="space-y-1.5">
                     {Object.entries(typeCounts).map(([type, n]) => (
-                        <label key={type} className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none">
+                        <label
+                            key={type}
+                            className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none"
+                        >
                             <input
                                 type="checkbox"
                                 checked={visibleTypes[type] ?? true}
@@ -91,7 +107,13 @@ export default function AggregateStereonet({ structures }: Props) {
             </aside>
             <div className="flex-1">
                 {view === '3d' ? (
-                    <Suspense fallback={<div className="flex items-center justify-center h-full text-xs text-gray-500">Loading 3-D hemisphere…</div>}>
+                    <Suspense
+                        fallback={
+                            <div className="flex items-center justify-center h-full text-xs text-gray-500">
+                                Loading 3-D hemisphere…
+                            </div>
+                        }
+                    >
                         <Stereosphere structures={structures} holeId="project-wide" visibleTypes={visibleTypes} />
                     </Suspense>
                 ) : (

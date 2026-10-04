@@ -71,9 +71,21 @@ import JSZip from 'jszip';
  * dropping a `.cpg` silently mangles non-ASCII attribute values.
  */
 export const SHAPEFILE_SIDECAR_EXTS = [
-    'shx', 'dbf', 'prj', 'cpg', 'qpj',
-    'sbn', 'sbx', 'qix', 'fbn', 'fbx',
-    'ain', 'aih', 'atx', 'ixs', 'mxs',
+    'shx',
+    'dbf',
+    'prj',
+    'cpg',
+    'qpj',
+    'sbn',
+    'sbx',
+    'qix',
+    'fbn',
+    'fbx',
+    'ain',
+    'aih',
+    'atx',
+    'ixs',
+    'mxs',
 ] as const;
 
 /**
@@ -106,9 +118,7 @@ const MAPINFO_SIDECARS: Record<string, { all: string[]; required: string[] }> = 
 
 const SIDECARS = new Set<string>(SHAPEFILE_SIDECAR_EXTS);
 const MASTERS = new Set<string>(MAPINFO_MASTER_EXTS);
-const MAPINFO_SIDECAR_SET = new Set<string>(
-    Object.values(MAPINFO_SIDECARS).flatMap((s) => s.all),
-);
+const MAPINFO_SIDECAR_SET = new Set<string>(Object.values(MAPINFO_SIDECARS).flatMap((s) => s.all));
 
 /**
  * Every extension that only ever travels as part of a bundle.
@@ -119,10 +129,7 @@ const MAPINFO_SIDECAR_SET = new Set<string>(
  * hands this module a lone `.shp`, manufacturing the very `.prj`-less bundle
  * whose missing CRS the ingest now refuses.
  */
-export const BUNDLE_MEMBER_EXTS: string[] = [
-    ...SHAPEFILE_SIDECAR_EXTS,
-    ...MAPINFO_SIDECAR_SET,
-].sort();
+export const BUNDLE_MEMBER_EXTS: string[] = [...SHAPEFILE_SIDECAR_EXTS, ...MAPINFO_SIDECAR_SET].sort();
 
 export type BundleKind = 'shapefile' | 'mapinfo';
 
@@ -616,10 +623,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
         const image = match ? baseName(match[1]) : null;
         nonVectorTabs.push({
             file: f,
-            reason: rasterTabReason(
-                image,
-                image !== null && selectedNames.has(image.toLowerCase()),
-            ),
+            reason: rasterTabReason(image, image !== null && selectedNames.has(image.toLowerCase())),
         });
     }
 
@@ -643,10 +647,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
     // the user to go and check is the one they will recognise. The bytes are
     // the same whichever is picked, or there would be more than one distinct
     // WKT here and no donation at all.
-    const agreed =
-        distinctWkts.size === 1
-            ? (crsFiles.find((c) => extOf(c.file.name) === 'prj') ?? crsFiles[0])
-            : null;
+    const agreed = distinctWkts.size === 1 ? (crsFiles.find((c) => extOf(c.file.name) === 'prj') ?? crsFiles[0]) : null;
     // Agreement is not enough: one empty `.prj` agrees with itself. Donate
     // only text that names a CRS.
     const donor = agreed && CRS_WKT_RE.test(agreed.text) ? agreed : null;
@@ -686,8 +687,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
 
             // The copy is named for its recipient, not for its source: GDAL
             // reads `<stem>.prj` beside `<stem>.shp` and nothing else.
-            const donated =
-                donor && !declaresCrs ? { name: `${stem}.prj`, source: donor.file } : null;
+            const donated = donor && !declaresCrs ? { name: `${stem}.prj`, source: donor.file } : null;
             const reported = donated ? missing.filter((e) => e !== 'prj') : missing;
             if (donated) appliedTo.push(stem);
 
@@ -695,9 +695,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
                 file: await zipOf(stem, members, donated),
                 stem,
                 kind: 'shapefile',
-                members: donated
-                    ? [...members.map((m) => m.name), donated.name]
-                    : members.map((m) => m.name),
+                members: donated ? [...members.map((m) => m.name), donated.name] : members.map((m) => m.name),
                 sources: members,
                 missing: reported,
                 // The recipient marker. Two bundles can share `stem`; only
@@ -721,10 +719,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
             if (!unclaimed.has(master)) continue;
             const masterExt = extOf(master.name);
             const wanted = MAPINFO_SIDECARS[masterExt].all;
-            const members = [
-                master,
-                ...group.filter((f) => unclaimed.has(f) && wanted.includes(extOf(f.name))),
-            ];
+            const members = [master, ...group.filter((f) => unclaimed.has(f) && wanted.includes(extOf(f.name)))];
             for (const m of members) unclaimed.delete(m);
             const present = new Set(members.map((m) => extOf(m.name)));
             const missing = wanted.filter((e) => !present.has(e));
@@ -821,9 +816,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
     // by construction (a donation requires them all to agree), and leaving
     // one behind would tell the user a file "has nothing to attach to"
     // moments after the same bytes were attached to seven bundles.
-    const donatedPrjFiles = new Set(
-        crsDonation ? crsFiles.filter((c) => c.key === donor?.key).map((c) => c.file) : [],
-    );
+    const donatedPrjFiles = new Set(crsDonation ? crsFiles.filter((c) => c.key === donor?.key).map((c) => c.file) : []);
 
     return {
         bundles,

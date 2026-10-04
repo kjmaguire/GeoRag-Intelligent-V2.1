@@ -11,7 +11,10 @@ describe('bundle hygiene', () => {
     it('does not ship Axios (FE-23 — Inertia v3 dropped it; nothing called it)', () => {
         expect(bootstrapSource).not.toMatch(/from 'axios'/);
         expect(bootstrapSource).not.toContain('window.axios');
-        const deps = { ...(packageJson.dependencies ?? {}), ...(packageJson.devDependencies ?? {}) } as Record<string, string>;
+        const deps = { ...(packageJson.dependencies ?? {}), ...(packageJson.devDependencies ?? {}) } as Record<
+            string,
+            string
+        >;
         expect(deps.axios).toBeUndefined();
     });
 

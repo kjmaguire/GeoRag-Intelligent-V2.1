@@ -42,9 +42,7 @@ describe('EvidenceInspector', () => {
     });
 
     it('renders nothing (closed Sheet) when open is false', () => {
-        render(
-            <EvidenceInspector citation={null} open={false} onOpenChange={() => {}} projectSlug="demo" />
-        );
+        render(<EvidenceInspector citation={null} open={false} onOpenChange={() => {}} projectSlug="demo" />);
         expect(screen.queryByTestId('evidence-inspector')).not.toBeInTheDocument();
         expect(fetchMock).not.toHaveBeenCalled();
     });
@@ -59,23 +57,26 @@ describe('EvidenceInspector', () => {
                 title: 'NI 43-101 Technical Report',
                 section_title: 'Section 7',
                 section_number: '7',
-                metadata: { company: 'Acme Uranium', filing_date: '2024-03-15T00:00:00Z', report_id: 'report-1', commodity: 'U' },
+                metadata: {
+                    company: 'Acme Uranium',
+                    filing_date: '2024-03-15T00:00:00Z',
+                    report_id: 'report-1',
+                    commodity: 'U',
+                },
             }),
         });
 
-        render(
-            <EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />
-        );
+        render(<EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />);
 
         expect(fetchMock).toHaveBeenCalledWith(
             expect.stringContaining('/api/v1/citations/resolve?source_chunk_id='),
-            expect.any(Object)
+            expect.any(Object),
         );
 
         await waitFor(() =>
             expect(screen.getByTestId('evidence-inspector-text')).toHaveTextContent(
-                'The deposit hosts a roll-front uranium mineralisation style.'
-            )
+                'The deposit hosts a roll-front uranium mineralisation style.',
+            ),
         );
         expect(screen.getByText('NI 43-101 Technical Report')).toBeInTheDocument();
         expect(screen.getByText('Report date')).toBeInTheDocument();
@@ -86,7 +87,7 @@ describe('EvidenceInspector', () => {
         expect(screen.queryByText('report-1')).not.toBeInTheDocument();
         expect(screen.getByText('Open in Reader →')).toHaveAttribute(
             'href',
-            '/projects/demo/reports/report-1?section=7'
+            '/projects/demo/reports/report-1?section=7',
         );
     });
 
@@ -126,17 +127,13 @@ describe('EvidenceInspector', () => {
 
     it('shows a loading state before the fetch resolves', () => {
         fetchMock.mockReturnValue(new Promise(() => {})); // never resolves
-        render(
-            <EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />
-        );
+        render(<EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />);
         expect(screen.getByTestId('evidence-inspector-loading')).toBeInTheDocument();
     });
 
     it('shows an error state when the fetch fails', async () => {
         fetchMock.mockResolvedValue({ ok: false, status: 500 });
-        render(
-            <EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />
-        );
+        render(<EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />);
         await waitFor(() => expect(screen.getByTestId('evidence-inspector-error')).toBeInTheDocument());
     });
 
@@ -155,30 +152,33 @@ describe('EvidenceInspector', () => {
                 projectSlug="demo"
                 answerRunId="run-1"
                 onReportIssue={onReportIssue}
-            />
+            />,
         );
         await waitFor(() => expect(screen.getByTestId('evidence-inspector-text')).toBeInTheDocument());
         fireEvent.click(screen.getByText('👎 Report citation issue'));
         expect(onReportIssue).toHaveBeenCalledWith(citation);
     });
 
-    it.each([null, undefined])('does not offer "Report citation issue" without an answer run (%s)', async (answerRunId) => {
-        fetchMock.mockResolvedValue({
-            ok: true,
-            status: 200,
-            json: async () => ({ text: 'Some text', source_type: 'report' }),
-        });
-        render(
-            <EvidenceInspector
-                citation={citation}
-                open
-                onOpenChange={() => {}}
-                projectSlug="demo"
-                answerRunId={answerRunId}
-                onReportIssue={vi.fn()}
-            />
-        );
-        await waitFor(() => expect(screen.getByTestId('evidence-inspector-text')).toBeInTheDocument());
-        expect(screen.queryByText('👎 Report citation issue')).not.toBeInTheDocument();
-    });
+    it.each([null, undefined])(
+        'does not offer "Report citation issue" without an answer run (%s)',
+        async (answerRunId) => {
+            fetchMock.mockResolvedValue({
+                ok: true,
+                status: 200,
+                json: async () => ({ text: 'Some text', source_type: 'report' }),
+            });
+            render(
+                <EvidenceInspector
+                    citation={citation}
+                    open
+                    onOpenChange={() => {}}
+                    projectSlug="demo"
+                    answerRunId={answerRunId}
+                    onReportIssue={vi.fn()}
+                />,
+            );
+            await waitFor(() => expect(screen.getByTestId('evidence-inspector-text')).toBeInTheDocument());
+            expect(screen.queryByText('👎 Report citation issue')).not.toBeInTheDocument();
+        },
+    );
 });

@@ -86,7 +86,7 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
     const noOutput = variant === 'refusal' && normalisedCode === 'model_no_output';
     const heading =
         variant === 'failed'
-            ? FAILED_HEADINGS[normalisedCode] ?? 'Query failed'
+            ? (FAILED_HEADINGS[normalisedCode] ?? 'Query failed')
             : insufficientEvidence
               ? 'Refused — insufficient evidence'
               : noOutput
@@ -108,10 +108,7 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
                 background: 'color-mix(in oklch, ' + tone + ' 8%, transparent)',
             }}
         >
-            <div
-                className="text-[10px] font-mono uppercase tracking-wider mb-1"
-                style={{ color: tone }}
-            >
+            <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: tone }}>
                 {heading}
             </div>
             {insufficientEvidence && (

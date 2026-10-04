@@ -22,14 +22,7 @@ import { Segmented } from './primitives';
  * this module is imported BY Workspace, so importing the union back out of it
  * would be circular.
  */
-export type WorkspaceModeId =
-    | 'map'
-    | 'rasters'
-    | 'section'
-    | '3d'
-    | 'structure'
-    | 'logs'
-    | 'compare';
+export type WorkspaceModeId = 'map' | 'rasters' | 'section' | '3d' | 'structure' | 'logs' | 'compare';
 
 /**
  * Modes in display order.
@@ -57,9 +50,7 @@ export const WORKSPACE_MODES: ReadonlyArray<{
 ];
 
 /** Modes Workspace itself renders as panels. */
-export const IN_PAGE_MODES = WORKSPACE_MODES.filter((m) => m.page === undefined).map(
-    (m) => m.value,
-);
+export const IN_PAGE_MODES = WORKSPACE_MODES.filter((m) => m.page === undefined).map((m) => m.value);
 
 export default function WorkspaceModeBar({
     slug,

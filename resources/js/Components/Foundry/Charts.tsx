@@ -46,15 +46,16 @@ const DEFAULT_REFUSAL_GATES = [
 ];
 
 export function RefusalByGate({ weeks }: RefusalByGateProps) {
-    const data = weeks && weeks.length > 0
-        ? weeks
-        : Array.from({ length: 12 }).map((_, i) => ({
-            week: `W${i + 1}`,
-            gates: DEFAULT_REFUSAL_GATES.reduce<Record<string, number>>((acc, g) => {
-                acc[g.id] = 0;
-                return acc;
-            }, {}),
-        }));
+    const data =
+        weeks && weeks.length > 0
+            ? weeks
+            : Array.from({ length: 12 }).map((_, i) => ({
+                  week: `W${i + 1}`,
+                  gates: DEFAULT_REFUSAL_GATES.reduce<Record<string, number>>((acc, g) => {
+                      acc[g.id] = 0;
+                      return acc;
+                  }, {}),
+              }));
 
     const maxTotal = Math.max(1, ...data.map((d) => Object.values(d.gates).reduce((a, b) => a + b, 0)));
     const barWidth = 20;
@@ -75,7 +76,14 @@ export function RefusalByGate({ weeks }: RefusalByGateProps) {
                                 yCursor -= h;
                                 return <rect key={g.id} x={0} y={yCursor} width={barWidth} height={h} fill={g.color} />;
                             })}
-                            <text x={barWidth / 2} y={height + 14} fill="var(--fg-3)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">
+                            <text
+                                x={barWidth / 2}
+                                y={height + 14}
+                                fill="var(--fg-3)"
+                                fontSize="9"
+                                textAnchor="middle"
+                                fontFamily="var(--font-mono)"
+                            >
                                 {d.week}
                             </text>
                         </g>
@@ -84,7 +92,11 @@ export function RefusalByGate({ weeks }: RefusalByGateProps) {
             </svg>
             <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
                 {DEFAULT_REFUSAL_GATES.map((g) => (
-                    <span key={g.id} className="inline-flex items-center gap-1.5 text-[10px] font-mono" style={{ color: 'var(--fg-2)' }}>
+                    <span
+                        key={g.id}
+                        className="inline-flex items-center gap-1.5 text-[10px] font-mono"
+                        style={{ color: 'var(--fg-2)' }}
+                    >
                         <span className="w-2 h-2 rounded-sm inline-block" style={{ background: g.color }} />
                         {g.label}
                     </span>
@@ -104,9 +116,10 @@ interface ConfidenceHistogramProps {
 }
 
 export function ConfidenceHistogram({ bins, refusalFloor = 0.5 }: ConfidenceHistogramProps) {
-    const data = bins && bins.length > 0
-        ? bins
-        : Array.from({ length: 20 }).map((_, i) => ({ low: i * 0.05, high: (i + 1) * 0.05, count: 0 }));
+    const data =
+        bins && bins.length > 0
+            ? bins
+            : Array.from({ length: 20 }).map((_, i) => ({ low: i * 0.05, high: (i + 1) * 0.05, count: 0 }));
     const maxCount = Math.max(1, ...data.map((b) => b.count));
     const width = 320;
     const height = 120;
@@ -130,14 +143,29 @@ export function ConfidenceHistogram({ bins, refusalFloor = 0.5 }: ConfidenceHist
                     />
                 );
             })}
-            <line x1={floorX} x2={floorX} y1={0} y2={height} stroke="var(--warn)" strokeDasharray="4 2" strokeWidth="1.4" />
+            <line
+                x1={floorX}
+                x2={floorX}
+                y1={0}
+                y2={height}
+                stroke="var(--warn)"
+                strokeDasharray="4 2"
+                strokeWidth="1.4"
+            />
             <text x={floorX + 4} y={12} fill="var(--warn)" fontSize="9" fontFamily="var(--font-mono)">
                 refusal floor · {refusalFloor.toFixed(2)}
             </text>
             <text x={0} y={height + 14} fill="var(--fg-3)" fontSize="9" fontFamily="var(--font-mono)">
                 0.0
             </text>
-            <text x={width} y={height + 14} fill="var(--fg-3)" fontSize="9" textAnchor="end" fontFamily="var(--font-mono)">
+            <text
+                x={width}
+                y={height + 14}
+                fill="var(--fg-3)"
+                fontSize="9"
+                textAnchor="end"
+                fontFamily="var(--font-mono)"
+            >
                 1.0
             </text>
         </svg>
@@ -169,7 +197,10 @@ export function InvestigationFunnel({ stages }: InvestigationFunnelProps) {
                 const pct = (s.count / max) * 100;
                 return (
                     <div key={i}>
-                        <div className="flex justify-between text-[10px] font-mono uppercase tracking-wider mb-0.5" style={{ color: 'var(--fg-3)' }}>
+                        <div
+                            className="flex justify-between text-[10px] font-mono uppercase tracking-wider mb-0.5"
+                            style={{ color: 'var(--fg-3)' }}
+                        >
                             <span>{s.label}</span>
                             <span>{s.count}</span>
                         </div>
@@ -222,7 +253,14 @@ export function QueryDensityHeatmap({ cells, width = 320, height = 200 }: QueryD
                 );
             })}
             {data.length === 0 && (
-                <text x={width / 2} y={height / 2} fill="var(--fg-3)" fontSize="11" textAnchor="middle" fontFamily="var(--font-mono)">
+                <text
+                    x={width / 2}
+                    y={height / 2}
+                    fill="var(--fg-3)"
+                    fontSize="11"
+                    textAnchor="middle"
+                    fontFamily="var(--font-mono)"
+                >
                     No query density data
                 </text>
             )}
@@ -232,9 +270,15 @@ export function QueryDensityHeatmap({ cells, width = 320, height = 200 }: QueryD
 
 export function HeatmapLegend({ max = 100 }: { max?: number }) {
     return (
-        <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+        <div
+            className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider"
+            style={{ color: 'var(--fg-3)' }}
+        >
             <span>0</span>
-            <div className="w-32 h-2 rounded-sm" style={{ background: 'linear-gradient(90deg, transparent, var(--accent))' }} />
+            <div
+                className="w-32 h-2 rounded-sm"
+                style={{ background: 'linear-gradient(90deg, transparent, var(--accent))' }}
+            />
             <span>{max} queries</span>
         </div>
     );
@@ -252,13 +296,19 @@ export function PerJurisdictionVolume({ rows }: PerJurisdictionVolumeProps) {
     const data = rows && rows.length > 0 ? rows : [];
     const max = Math.max(1, ...data.map((r) => r.volume));
     if (data.length === 0) {
-        return <div className="text-[11px] font-mono" style={{ color: 'var(--fg-3)' }}>No jurisdiction volume data.</div>;
+        return (
+            <div className="text-[11px] font-mono" style={{ color: 'var(--fg-3)' }}>
+                No jurisdiction volume data.
+            </div>
+        );
     }
     return (
         <div className="flex flex-col gap-1.5">
             {data.map((r) => (
                 <div key={r.code} className="grid grid-cols-[40px_1fr_60px] gap-2 items-center text-xs">
-                    <span className="font-mono" style={{ color: 'var(--fg-2)' }}>{r.code}</span>
+                    <span className="font-mono" style={{ color: 'var(--fg-2)' }}>
+                        {r.code}
+                    </span>
                     <div className="h-2 rounded-sm" style={{ background: 'var(--bg-3)' }}>
                         <div
                             style={{
@@ -268,7 +318,9 @@ export function PerJurisdictionVolume({ rows }: PerJurisdictionVolumeProps) {
                             }}
                         />
                     </div>
-                    <span className="font-mono text-right" style={{ color: 'var(--fg-1)' }}>{r.volume}</span>
+                    <span className="font-mono text-right" style={{ color: 'var(--fg-1)' }}>
+                        {r.volume}
+                    </span>
                 </div>
             ))}
         </div>
@@ -312,7 +364,15 @@ export function StereonetMini({ poles, size = 200 }: StereonetMiniProps) {
     return (
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
             <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--line-2)" strokeWidth="1" />
-            <circle cx={cx} cy={cy} r={r / 2} fill="none" stroke="var(--line-1)" strokeWidth="0.5" strokeDasharray="2 2" />
+            <circle
+                cx={cx}
+                cy={cy}
+                r={r / 2}
+                fill="none"
+                stroke="var(--line-1)"
+                strokeWidth="0.5"
+                strokeDasharray="2 2"
+            />
             <line x1={cx - r} x2={cx + r} y1={cy} y2={cy} stroke="var(--line-1)" strokeWidth="0.5" />
             <line x1={cx} x2={cx} y1={cy - r} y2={cy + r} stroke="var(--line-1)" strokeWidth="0.5" />
             {data.map((p, i) => {
@@ -326,7 +386,16 @@ export function StereonetMini({ poles, size = 200 }: StereonetMiniProps) {
                 const y = cy - rho * Math.cos(trendRad);
                 return <circle key={i} cx={x} cy={y} r={2.2} fill="var(--accent)" opacity={0.85} />;
             })}
-            <text x={cx} y={cy - r - 2} fill="var(--fg-3)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">N</text>
+            <text
+                x={cx}
+                y={cy - r - 2}
+                fill="var(--fg-3)"
+                fontSize="9"
+                textAnchor="middle"
+                fontFamily="var(--font-mono)"
+            >
+                N
+            </text>
         </svg>
     );
 }
@@ -371,7 +440,16 @@ export function RoseMini({ strikes, size = 200 }: { strikes?: number[]; size?: n
                     />
                 );
             })}
-            <text x={cx} y={cy - r - 2} fill="var(--fg-3)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">N</text>
+            <text
+                x={cx}
+                y={cy - r - 2}
+                fill="var(--fg-3)"
+                fontSize="9"
+                textAnchor="middle"
+                fontFamily="var(--font-mono)"
+            >
+                N
+            </text>
         </svg>
     );
 }
@@ -388,7 +466,12 @@ interface DownholeTrack {
     max: number;
 }
 
-export function DownholeMultiLog({ tracks, depthMax = 600, height = 360, trackWidth = 80 }: {
+export function DownholeMultiLog({
+    tracks,
+    depthMax = 600,
+    height = 360,
+    trackWidth = 80,
+}: {
     tracks?: DownholeTrack[];
     depthMax?: number;
     height?: number;
@@ -396,31 +479,66 @@ export function DownholeMultiLog({ tracks, depthMax = 600, height = 360, trackWi
 }) {
     const data = tracks ?? [];
     if (data.length === 0) {
-        return <div className="text-[11px] font-mono p-4 text-center" style={{ color: 'var(--fg-3)' }}>No log curves loaded.</div>;
+        return (
+            <div className="text-[11px] font-mono p-4 text-center" style={{ color: 'var(--fg-3)' }}>
+                No log curves loaded.
+            </div>
+        );
     }
     const width = data.length * (trackWidth + 6) + 40;
     return (
         <svg width={width} height={height + 20} viewBox={`0 0 ${width} ${height + 20}`}>
             {/* Depth axis */}
-            <text x={4} y={12} fill="var(--fg-3)" fontSize="9" fontFamily="var(--font-mono)">DEPTH (m)</text>
+            <text x={4} y={12} fill="var(--fg-3)" fontSize="9" fontFamily="var(--font-mono)">
+                DEPTH (m)
+            </text>
             {[0, 0.25, 0.5, 0.75, 1].map((p) => (
                 <g key={p}>
-                    <line x1={36} y1={p * height + 16} x2={width} y2={p * height + 16} stroke="var(--line-1)" strokeDasharray="2 2" strokeWidth="0.4" />
-                    <text x={4} y={p * height + 20} fill="var(--fg-3)" fontSize="9" fontFamily="var(--font-mono)">{Math.round(p * depthMax)}</text>
+                    <line
+                        x1={36}
+                        y1={p * height + 16}
+                        x2={width}
+                        y2={p * height + 16}
+                        stroke="var(--line-1)"
+                        strokeDasharray="2 2"
+                        strokeWidth="0.4"
+                    />
+                    <text x={4} y={p * height + 20} fill="var(--fg-3)" fontSize="9" fontFamily="var(--font-mono)">
+                        {Math.round(p * depthMax)}
+                    </text>
                 </g>
             ))}
             {data.map((t, i) => {
                 const x0 = 40 + i * (trackWidth + 6);
                 const range = t.max - t.min || 1;
-                const d = t.points.map((p, j) => {
-                    const x = x0 + ((p.value - t.min) / range) * trackWidth;
-                    const y = 16 + (p.depth / depthMax) * height;
-                    return `${j === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-                }).join(' ');
+                const d = t.points
+                    .map((p, j) => {
+                        const x = x0 + ((p.value - t.min) / range) * trackWidth;
+                        const y = 16 + (p.depth / depthMax) * height;
+                        return `${j === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+                    })
+                    .join(' ');
                 return (
                     <g key={i}>
-                        <rect x={x0} y={16} width={trackWidth} height={height} fill="var(--bg-2)" stroke="var(--line-1)" strokeWidth="0.5" />
-                        <text x={x0 + trackWidth / 2} y={12} fill="var(--fg-2)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">{t.label}</text>
+                        <rect
+                            x={x0}
+                            y={16}
+                            width={trackWidth}
+                            height={height}
+                            fill="var(--bg-2)"
+                            stroke="var(--line-1)"
+                            strokeWidth="0.5"
+                        />
+                        <text
+                            x={x0 + trackWidth / 2}
+                            y={12}
+                            fill="var(--fg-2)"
+                            fontSize="9"
+                            textAnchor="middle"
+                            fontFamily="var(--font-mono)"
+                        >
+                            {t.label}
+                        </text>
                         <path d={d} fill="none" stroke={t.color} strokeWidth="1.2" />
                     </g>
                 );
@@ -472,7 +590,6 @@ const LITHO_SHORT: Record<string, string> = {
 export function LithologyStripColumn({
     intervals,
     holeId,
-    depthMax,
     height = 520,
     width = 220,
     alteration = [],
@@ -493,7 +610,15 @@ export function LithologyStripColumn({
     const hasOther = alteration.length > 0 || mineralization.length > 0;
     if (!intervals.length && !hasOther) {
         return (
-            <div className="text-[11px] font-mono p-4 text-center" style={{ color: 'var(--fg-3)', background: 'var(--bg-1)', border: '1px solid var(--line-1)', borderRadius: 6 }}>
+            <div
+                className="text-[11px] font-mono p-4 text-center"
+                style={{
+                    color: 'var(--fg-3)',
+                    background: 'var(--bg-1)',
+                    border: '1px solid var(--line-1)',
+                    borderRadius: 6,
+                }}
+            >
                 No lithology logged for this hole.
             </div>
         );
@@ -552,10 +677,20 @@ export function LithologyStripColumn({
     const minerals = Array.from(new Set(mineralization.map((b) => b.mineral)));
     const altColours = alterationColourMap(altTypes);
     const mineralColours = mineralColourMap(minerals);
-    const cut = Object.entries(truncated ?? {}).filter(([, v]) => v).map(([k]) => k);
+    const cut = Object.entries(truncated ?? {})
+        .filter(([, v]) => v)
+        .map(([k]) => k);
 
     return (
-        <div style={{ background: 'var(--bg-1)', border: '1px solid var(--line-1)', borderRadius: 6, padding: 10, width: width + 20 }}>
+        <div
+            style={{
+                background: 'var(--bg-1)',
+                border: '1px solid var(--line-1)',
+                borderRadius: 6,
+                padding: 10,
+                width: width + 20,
+            }}
+        >
             <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
                 {derived ? 'Lithology · derived' : 'Lithology'}
             </div>
@@ -566,33 +701,81 @@ export function LithologyStripColumn({
                 {mineralization.length > 0 ? ` · ${mineralization.length} mineral` : ''}
             </div>
             {/* Legend — right under the header, before the user's eye reaches the bars. */}
-            <div className="mt-1.5 mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono" style={{ color: 'var(--fg-2)' }}>
+            <div
+                className="mt-1.5 mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono"
+                style={{ color: 'var(--fg-2)' }}
+            >
                 {legendCodes.map((code) => {
                     const short = LITHO_SHORT[code] ?? code.replace('DERIVED-', '');
                     const isOre = code.endsWith('-ORE');
                     return (
                         <span key={code} className="flex items-center gap-1.5">
-                            <span style={{ display: 'inline-block', width: 10, height: 10, background: legendColors.get(code), border: '1px solid rgba(0,0,0,0.25)' }} />
-                            <span style={{ color: isOre ? '#8fe28b' : 'var(--fg-2)', fontWeight: isOre ? 600 : 400 }}>{short}</span>
+                            <span
+                                style={{
+                                    display: 'inline-block',
+                                    width: 10,
+                                    height: 10,
+                                    background: legendColors.get(code),
+                                    border: '1px solid rgba(0,0,0,0.25)',
+                                }}
+                            />
+                            <span style={{ color: isOre ? '#8fe28b' : 'var(--fg-2)', fontWeight: isOre ? 600 : 400 }}>
+                                {short}
+                            </span>
                         </span>
                     );
                 })}
             </div>
-            <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }} role="img" aria-label="Lithology strip log">
+            <svg
+                width={width}
+                height={height}
+                viewBox={`0 0 ${width} ${height}`}
+                style={{ display: 'block' }}
+                role="img"
+                aria-label="Lithology strip log"
+            >
                 {/* Header */}
-                <text x={axisW / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
+                <text
+                    x={axisW / 2}
+                    y={padT - 8}
+                    textAnchor="middle"
+                    fontSize="9"
+                    fill="var(--fg-3)"
+                    fontFamily="var(--font-mono)"
+                >
                     DEPTH (m)
                 </text>
-                <text x={frames.lith.x + frames.lith.width / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
+                <text
+                    x={frames.lith.x + frames.lith.width / 2}
+                    y={padT - 8}
+                    textAnchor="middle"
+                    fontSize="9"
+                    fill="var(--fg-3)"
+                    fontFamily="var(--font-mono)"
+                >
                     LITHOLOGY
                 </text>
                 {frames.alt && (
-                    <text x={frames.alt.x + frames.alt.width / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
+                    <text
+                        x={frames.alt.x + frames.alt.width / 2}
+                        y={padT - 8}
+                        textAnchor="middle"
+                        fontSize="9"
+                        fill="var(--fg-3)"
+                        fontFamily="var(--font-mono)"
+                    >
                         ALTERATION
                     </text>
                 )}
                 {frames.min && (
-                    <text x={frames.min.x + frames.min.width / 2} y={padT - 8} textAnchor="middle" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
+                    <text
+                        x={frames.min.x + frames.min.width / 2}
+                        y={padT - 8}
+                        textAnchor="middle"
+                        fontSize="9"
+                        fill="var(--fg-3)"
+                        fontFamily="var(--font-mono)"
+                    >
                         MINERALS
                     </text>
                 )}
@@ -602,8 +785,26 @@ export function LithologyStripColumn({
                     const y = yOf(d);
                     return (
                         <g key={`grid-${d}`}>
-                            <line x1={axisW - 2} y1={y} x2={width} y2={y} stroke="var(--line-1)" strokeWidth="0.5" strokeDasharray="2 3" opacity="0.5" />
-                            <text x={axisW - 4} y={y + 3} textAnchor="end" fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">{d}</text>
+                            <line
+                                x1={axisW - 2}
+                                y1={y}
+                                x2={width}
+                                y2={y}
+                                stroke="var(--line-1)"
+                                strokeWidth="0.5"
+                                strokeDasharray="2 3"
+                                opacity="0.5"
+                            />
+                            <text
+                                x={axisW - 4}
+                                y={y + 3}
+                                textAnchor="end"
+                                fontSize="9"
+                                fill="var(--fg-3)"
+                                fontFamily="var(--font-mono)"
+                            >
+                                {d}
+                            </text>
                         </g>
                     );
                 })}
@@ -622,8 +823,18 @@ export function LithologyStripColumn({
             <IntervalDetail lines={selected} onClose={() => setSelected(null)} />
             {(altTypes.length > 0 || minerals.length > 0) && (
                 <div className="mt-2 flex flex-col gap-1">
-                    <SwatchLegend title="Alteration" entries={altTypes.map((t) => ({ key: t, colour: altColours.get(t) ?? '#6b7280', label: t }))} />
-                    <SwatchLegend title="Minerals" entries={minerals.map((m) => ({ key: m, colour: mineralColours.get(m) ?? '#6b7280', label: m }))} />
+                    <SwatchLegend
+                        title="Alteration"
+                        entries={altTypes.map((t) => ({ key: t, colour: altColours.get(t) ?? '#6b7280', label: t }))}
+                    />
+                    <SwatchLegend
+                        title="Minerals"
+                        entries={minerals.map((m) => ({
+                            key: m,
+                            colour: mineralColours.get(m) ?? '#6b7280',
+                            label: m,
+                        }))}
+                    />
                 </div>
             )}
             {cut.length > 0 && (
@@ -664,7 +875,11 @@ export function ChronoColumn({
     width?: number;
 }) {
     if (!units.length) {
-        return <div className="text-[11px] font-mono p-4 text-center" style={{ color: 'var(--fg-3)' }}>No stratigraphic units loaded.</div>;
+        return (
+            <div className="text-[11px] font-mono p-4 text-center" style={{ color: 'var(--fg-3)' }}>
+                No stratigraphic units loaded.
+            </div>
+        );
     }
     const padT = 20;
     const padB = 12;
@@ -675,13 +890,21 @@ export function ChronoColumn({
     return (
         <div style={{ background: 'var(--bg-1)', border: '1px solid var(--line-1)', borderRadius: 6, padding: 12 }}>
             {eyebrow && (
-                <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>{eyebrow}</div>
+                <div className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--fg-3)' }}>
+                    {eyebrow}
+                </div>
             )}
-            <div className="text-xs font-medium mb-2" style={{ color: 'var(--fg-0)' }}>{title}</div>
+            <div className="text-xs font-medium mb-2" style={{ color: 'var(--fg-0)' }}>
+                {title}
+            </div>
             <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }}>
                 <g style={{ fontFamily: 'var(--font-mono)', fontSize: 9 }}>
-                    <text x={42} y={padT - 6} textAnchor="middle" fill="var(--fg-3)">AGE</text>
-                    <text x={width / 2 + 20} y={padT - 6} textAnchor="middle" fill="var(--fg-3)">UNIT</text>
+                    <text x={42} y={padT - 6} textAnchor="middle" fill="var(--fg-3)">
+                        AGE
+                    </text>
+                    <text x={width / 2 + 20} y={padT - 6} textAnchor="middle" fill="var(--fg-3)">
+                        UNIT
+                    </text>
                 </g>
                 {units.map((u, i) => {
                     const y = padT + i * slotH;
@@ -698,28 +921,68 @@ export function ChronoColumn({
                                 strokeWidth="0.6"
                                 strokeDasharray={u.is_unconformity ? '4 4' : '0'}
                             />
-                            <text x={45} y={y + slotH / 2 + 3} textAnchor="middle" fontSize="9.5" fill="oklch(0.18 0.04 50)" fontFamily="var(--font-mono)" fontWeight="500">
+                            <text
+                                x={45}
+                                y={y + slotH / 2 + 3}
+                                textAnchor="middle"
+                                fontSize="9.5"
+                                fill="oklch(0.18 0.04 50)"
+                                fontFamily="var(--font-mono)"
+                                fontWeight="500"
+                            >
                                 {u.age}
                             </text>
-                            <text x={92} y={y + 14} fontSize="11" fill="var(--fg-0)" fontWeight={u.is_host ? '600' : '500'}>
+                            <text
+                                x={92}
+                                y={y + 14}
+                                fontSize="11"
+                                fill="var(--fg-0)"
+                                fontWeight={u.is_host ? '600' : '500'}
+                            >
                                 {u.unit_name}
                             </text>
                             {u.age_period && (
                                 <text x={92} y={y + 26} fontSize="9" fill="var(--fg-3)" fontFamily="var(--font-mono)">
-                                    {u.age_period}{u.lithology ? ` · ${u.lithology}` : ''}
+                                    {u.age_period}
+                                    {u.lithology ? ` · ${u.lithology}` : ''}
                                 </text>
                             )}
                             {(u.notes ?? []).slice(0, 2).map((n, j) => (
-                                <text key={j} x={92} y={y + 40 + j * 12} fontSize="9.5" fill="var(--fg-2)">· {n}</text>
+                                <text key={j} x={92} y={y + 40 + j * 12} fontSize="9.5" fill="var(--fg-2)">
+                                    · {n}
+                                </text>
                             ))}
                             {u.is_host && (
                                 <>
-                                    <circle cx={width - 16} cy={y + slotH / 2} r="5" fill="oklch(0.82 0.18 145)" stroke="var(--bg-0)" strokeWidth="1.2" />
-                                    <text x={width - 16} y={y + slotH / 2 + 16} textAnchor="middle" fontSize="8.5" fontFamily="var(--font-mono)" fill="oklch(0.82 0.18 145)">U HOST</text>
+                                    <circle
+                                        cx={width - 16}
+                                        cy={y + slotH / 2}
+                                        r="5"
+                                        fill="oklch(0.82 0.18 145)"
+                                        stroke="var(--bg-0)"
+                                        strokeWidth="1.2"
+                                    />
+                                    <text
+                                        x={width - 16}
+                                        y={y + slotH / 2 + 16}
+                                        textAnchor="middle"
+                                        fontSize="8.5"
+                                        fontFamily="var(--font-mono)"
+                                        fill="oklch(0.82 0.18 145)"
+                                    >
+                                        U HOST
+                                    </text>
                                 </>
                             )}
                             {i < units.length - 1 && (
-                                <line x1={8} y1={y + slotH} x2={width - 8} y2={y + slotH} stroke="var(--line-2)" strokeWidth="0.6" />
+                                <line
+                                    x1={8}
+                                    y1={y + slotH}
+                                    x2={width - 8}
+                                    y2={y + slotH}
+                                    stroke="var(--line-2)"
+                                    strokeWidth="0.6"
+                                />
                             )}
                         </g>
                     );

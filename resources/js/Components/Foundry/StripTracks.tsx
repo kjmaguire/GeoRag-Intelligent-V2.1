@@ -137,7 +137,7 @@ export function AlterationTrack({
                         onClick={onSelect ? () => onSelect(lines) : undefined}
                     >
                         {parts.map((item, j) => {
-                            const fill = item ? colours.get(item.type) ?? '#6b7280' : '#6b7280';
+                            const fill = item ? (colours.get(item.type) ?? '#6b7280') : '#6b7280';
                             return (
                                 <React.Fragment key={j}>
                                     <rect
@@ -236,14 +236,28 @@ export function SwatchLegend({
 }) {
     if (entries.length === 0) return null;
     return (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono" aria-label={`${title} legend`}>
+        <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono"
+            aria-label={`${title} legend`}
+        >
             <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
                 {title}
             </span>
             {entries.map((e) => (
-                <span key={e.key} className="flex items-center gap-1.5" style={{ color: 'var(--fg-2)' }} title={e.hint || e.label}>
+                <span
+                    key={e.key}
+                    className="flex items-center gap-1.5"
+                    style={{ color: 'var(--fg-2)' }}
+                    title={e.hint || e.label}
+                >
                     <span
-                        style={{ display: 'inline-block', width: 10, height: 10, background: e.colour, border: '1px solid rgba(0,0,0,0.25)' }}
+                        style={{
+                            display: 'inline-block',
+                            width: 10,
+                            height: 10,
+                            background: e.colour,
+                            border: '1px solid rgba(0,0,0,0.25)',
+                        }}
                     />
                     <span>{e.label}</span>
                 </span>
@@ -266,7 +280,13 @@ export function IntervalDetail({ lines, onClose }: { lines: string[] | null; onC
             <div className="flex items-start justify-between gap-2">
                 <div style={{ color: 'var(--fg-0)', fontWeight: 600 }}>{head}</div>
                 {onClose && (
-                    <button type="button" onClick={onClose} className="text-[10px]" style={{ color: 'var(--fg-3)' }} aria-label="Clear selection">
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="text-[10px]"
+                        style={{ color: 'var(--fg-3)' }}
+                        aria-label="Clear selection"
+                    >
                         clear
                     </button>
                 )}

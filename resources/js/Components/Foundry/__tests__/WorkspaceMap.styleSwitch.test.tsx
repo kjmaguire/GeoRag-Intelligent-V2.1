@@ -99,7 +99,9 @@ vi.mock('@inertiajs/react', () => ({
     usePage: () => ({ props: { basemap_dem: 'https://dem.example.test/tilejson.json' } }),
     router: { get: vi.fn(), visit: vi.fn() },
     Link: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
-        <a href={href} {...rest}>{children}</a>
+        <a href={href} {...rest}>
+            {children}
+        </a>
     ),
 }));
 
@@ -115,7 +117,13 @@ const collar: MapCollar = {
     ore_bands: 1,
     ore_thickness_m: 12,
 };
-const secondCollar: MapCollar = { ...collar, collar_id: '99999999-2222-3333-4444-555555555555', hole_id: 'RS-002', hole_id_canonical: 'RS-002', lat: 58.2 };
+const secondCollar: MapCollar = {
+    ...collar,
+    collar_id: '99999999-2222-3333-4444-555555555555',
+    hole_id: 'RS-002',
+    hole_id_canonical: 'RS-002',
+    lat: 58.2,
+};
 
 function baseProps(over: Partial<ComponentProps<typeof WorkspaceMap>> = {}): ComponentProps<typeof WorkspaceMap> {
     return {
@@ -123,7 +131,13 @@ function baseProps(over: Partial<ComponentProps<typeof WorkspaceMap>> = {}): Com
         projectSlug: 'red-star',
         projectId: 'p-uuid',
         projectInfo: { project_name: 'Red Star', company: null, commodity: null, region: null, crs_epsg: 26913 },
-        projectSummary: { total_drilled_m: 300, mean_td_m: 300, ore_hole_count: 1, total_ore_thickness_m: 12, mean_u3o8_pct: null },
+        projectSummary: {
+            total_drilled_m: 300,
+            mean_td_m: 300,
+            ore_hole_count: 1,
+            total_ore_thickness_m: 12,
+            mean_u3o8_pct: null,
+        },
         visibleLayers: { collars: true, ore_heatmap: true, tier_10: true, traces: true },
         projectAoi: null,
         activeHole: null,
@@ -182,9 +196,21 @@ describe('WorkspaceMap style switch and collar updates', () => {
         });
 
         // Every layer id is back, and the state effects re-ran against it.
-        for (const id of ['collars-heatmap', 'collars-halo', 'collars-dot', 'cluster-circles', 'cluster-count',
-            'collars-compare-ring', 'collars-label', 'uncertainty-rings', 'spider-lines', 'spider-halo',
-            'spider-dot', 'spider-label', 'mvt-traces']) {
+        for (const id of [
+            'collars-heatmap',
+            'collars-halo',
+            'collars-dot',
+            'cluster-circles',
+            'cluster-count',
+            'collars-compare-ring',
+            'collars-label',
+            'uncertainty-rings',
+            'spider-lines',
+            'spider-halo',
+            'spider-dot',
+            'spider-label',
+            'mvt-traces',
+        ]) {
             expect(map.getLayer(id), id).toBeDefined();
         }
         expect(map.getSource('terrain-dem')).toBeDefined();
@@ -347,7 +373,9 @@ describe('WorkspaceMap style switch and collar updates', () => {
             expect(screen.getByText(/Selection · 1/)).toBeInTheDocument();
             await waitFor(() => expect(map.getSource('select-highlight')).toBeDefined());
             const ring = map.getSource('select-highlight') as { setData: ReturnType<typeof vi.fn> };
-            const drawn = ring.setData.mock.calls.at(-1)?.[0] as { features: Array<{ properties: { hole_id: string } }> };
+            const drawn = ring.setData.mock.calls.at(-1)?.[0] as {
+                features: Array<{ properties: { hole_id: string } }>;
+            };
             expect(drawn.features.map((f) => f.properties.hole_id)).toEqual(['RS-001']);
         });
 

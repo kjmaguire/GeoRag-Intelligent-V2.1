@@ -52,13 +52,16 @@ interface DataQualityFlagsBadgeProps {
     label?: string;
 }
 
-const SEVERITY_TONE: Record<DataQualityFlag['severity'], {
-    dot: string;
-    text: string;
-    bg: string;
-    border: string;
-    badge: string;
-}> = {
+const SEVERITY_TONE: Record<
+    DataQualityFlag['severity'],
+    {
+        dot: string;
+        text: string;
+        bg: string;
+        border: string;
+        badge: string;
+    }
+> = {
     ERROR: {
         dot: 'bg-red-500',
         text: 'text-red-300',
@@ -82,11 +85,7 @@ const SEVERITY_TONE: Record<DataQualityFlag['severity'], {
     },
 };
 
-
-export default function DataQualityFlagsBadge({
-    data,
-    label = 'Quality',
-}: DataQualityFlagsBadgeProps) {
+export default function DataQualityFlagsBadge({ data, label = 'Quality' }: DataQualityFlagsBadgeProps) {
     const [expanded, setExpanded] = useState(false);
 
     if (!data) {
@@ -101,15 +100,12 @@ export default function DataQualityFlagsBadge({
                 <span
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-gray-700/60 bg-gray-900/50 text-[10px] uppercase tracking-wider text-gray-500"
                     title={
-                        'No data-quality rule has produced a finding in this project, '
-                        + 'so this hole has not been checked. This is not the same as '
-                        + 'a clean hole.'
+                        'No data-quality rule has produced a finding in this project, ' +
+                        'so this hole has not been checked. This is not the same as ' +
+                        'a clean hole.'
                     }
                 >
-                    <span
-                        className="w-1.5 h-1.5 rounded-full border border-gray-600"
-                        aria-hidden="true"
-                    />
+                    <span className="w-1.5 h-1.5 rounded-full border border-gray-600" aria-hidden="true" />
                     {label} · not checked
                 </span>
             );
@@ -157,7 +153,11 @@ export default function DataQualityFlagsBadge({
                     className={`w-3 h-3 text-gray-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
                     aria-hidden="true"
                 >
-                    <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                    <path
+                        fillRule="evenodd"
+                        d="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
+                        clipRule="evenodd"
+                    />
                 </svg>
             </button>
 
@@ -173,8 +173,17 @@ export default function DataQualityFlagsBadge({
                             className="text-gray-500 hover:text-gray-200 p-1"
                             aria-label="Close flag list"
                         >
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3">
-                                <path fillRule="evenodd" d="M5.47 5.47a.75.75 0 0 1 1.06 0L12 10.94l5.47-5.47a.75.75 0 1 1 1.06 1.06L13.06 12l5.47 5.47a.75.75 0 1 1-1.06 1.06L12 13.06l-5.47 5.47a.75.75 0 0 1-1.06-1.06L10.94 12 5.47 6.53a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 24 24"
+                                fill="currentColor"
+                                className="w-3 h-3"
+                            >
+                                <path
+                                    fillRule="evenodd"
+                                    d="M5.47 5.47a.75.75 0 0 1 1.06 0L12 10.94l5.47-5.47a.75.75 0 1 1 1.06 1.06L13.06 12l5.47 5.47a.75.75 0 1 1-1.06 1.06L12 13.06l-5.47 5.47a.75.75 0 0 1-1.06-1.06L10.94 12 5.47 6.53a.75.75 0 0 1 0-1.06Z"
+                                    clipRule="evenodd"
+                                />
                             </svg>
                         </button>
                     </div>
@@ -184,7 +193,9 @@ export default function DataQualityFlagsBadge({
                             return (
                                 <li key={f.flag_id} className={`px-3 py-2 ${tone.bg} border-l-2 ${tone.border}`}>
                                     <div className="flex items-center gap-2 mb-1">
-                                        <span className={`text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded ${tone.badge}`}>
+                                        <span
+                                            className={`text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded ${tone.badge}`}
+                                        >
                                             {f.severity}
                                         </span>
                                         <code className="text-[10px] text-gray-400 font-mono truncate">

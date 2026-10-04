@@ -17,8 +17,17 @@ interface ProjectSelectorProps {
  * routes/web.php). Anything else under /projects/{slug}/ names a record.
  */
 const PROJECT_PAGES = new Set([
-    'attribute-tables', 'chat', 'compare', 'corpus', 'imports/quality',
-    'ingestion-runs', 'map', 'rasters', 'reports', 'sources', 'workspace',
+    'attribute-tables',
+    'chat',
+    'compare',
+    'corpus',
+    'imports/quality',
+    'ingestion-runs',
+    'map',
+    'rasters',
+    'reports',
+    'sources',
+    'workspace',
 ]);
 
 /**
@@ -66,7 +75,7 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
                 const response = await fetch('/api/v1/projects', {
                     credentials: 'same-origin',
                     headers: {
-                        'Accept': 'application/json',
+                        Accept: 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',
                     },
                 });
@@ -86,7 +95,7 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
                         setSelectedSlug(list[0].slug);
                     }
                 }
-            } catch (err) {
+            } catch {
                 if (!cancelled) {
                     setError('Projects unavailable');
                 }
@@ -102,7 +111,7 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
         return () => {
             cancelled = true;
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [reloadKey]);
 
     function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -137,7 +146,11 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
                     type="button"
                     // Bumping reloadKey is what refetches; clearing the
                     // error alone left "Loading projects…" up forever (FE-14).
-                    onClick={() => { setError(null); setLoading(true); setReloadKey((k) => k + 1); }}
+                    onClick={() => {
+                        setError(null);
+                        setLoading(true);
+                        setReloadKey((k) => k + 1);
+                    }}
                     className="text-xs text-amber-400 hover:text-amber-300 underline"
                 >
                     Retry
@@ -159,10 +172,7 @@ export default function ProjectSelector({ onProjectChange }: ProjectSelectorProp
 
     return (
         <div className="flex items-center gap-2">
-            <label
-                htmlFor="project-select"
-                className="text-xs text-gray-400 uppercase tracking-wider"
-            >
+            <label htmlFor="project-select" className="text-xs text-gray-400 uppercase tracking-wider">
                 Project
             </label>
             <select

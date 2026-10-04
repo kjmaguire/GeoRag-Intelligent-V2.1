@@ -57,7 +57,15 @@ interface OverviewProps {
     empty: boolean;
 }
 
-export default function FoundryOverview({ project, kpis, next_action, recent_activity, ingest_summary, ocr_coverage, empty }: OverviewProps) {
+export default function FoundryOverview({
+    project,
+    kpis,
+    next_action,
+    recent_activity,
+    ingest_summary,
+    ocr_coverage,
+    empty,
+}: OverviewProps) {
     const [deleting, setDeleting] = useState(false);
     const [editing, setEditing] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -88,7 +96,9 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                     // The server's pick (newest row still MOVING); in_flight[0]
                     // can be a settled row in its 24 h grace window.
                     latest_in_flight:
-                        body.runs?.latest_in_flight !== undefined ? body.runs.latest_in_flight : (inFlightList[0]?.filename ?? null),
+                        body.runs?.latest_in_flight !== undefined
+                            ? body.runs.latest_in_flight
+                            : (inFlightList[0]?.filename ?? null),
                 });
             } catch {
                 // ignore — retry on next tick if still polling
@@ -127,8 +137,7 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
         setDeleting(true);
         setDeleteError(null);
         try {
-            const csrf =
-                document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
+            const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
             const headers: Record<string, string> = { Accept: 'application/json' };
             if (csrf) headers['X-CSRF-TOKEN'] = csrf;
 
@@ -170,7 +179,10 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                 bare "— · — · status" placeholder header. */}
                             {project.region && <span>{project.region} · </span>}
                             {project.commodity && <span>{project.commodity} · </span>}
-                            status <Pill tone={project.status === 'active' ? 'accent' : 'neutral'} dot>{project.status}</Pill>
+                            status{' '}
+                            <Pill tone={project.status === 'active' ? 'accent' : 'neutral'} dot>
+                                {project.status}
+                            </Pill>
                             {project.crs_epsg && <span> · EPSG:{project.crs_epsg}</span>}
                             <span> · v{project.data_version}</span>
                         </span>
@@ -180,14 +192,22 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                             <Link
                                 href={`/projects/${project.slug}/chat`}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                                style={{
+                                    color: 'var(--accent)',
+                                    background: 'var(--accent-bg)',
+                                    borderColor: 'var(--accent-dim)',
+                                }}
                             >
                                 Open Chat →
                             </Link>
                             <Link
                                 href={importWizardHref(project.slug)}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                style={{ color: 'var(--fg-1)', background: 'var(--bg-2)', borderColor: 'var(--line-2)' }}
+                                style={{
+                                    color: 'var(--fg-1)',
+                                    background: 'var(--bg-2)',
+                                    borderColor: 'var(--line-2)',
+                                }}
                                 title="Upload more reports, drill tables, logs or GIS files into this project"
                             >
                                 + Add Documents
@@ -196,7 +216,11 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                 type="button"
                                 onClick={() => setEditing(true)}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                style={{ color: 'var(--fg-1)', background: 'var(--bg-2)', borderColor: 'var(--line-2)' }}
+                                style={{
+                                    color: 'var(--fg-1)',
+                                    background: 'var(--bg-2)',
+                                    borderColor: 'var(--line-2)',
+                                }}
                                 title="Rename this project or change its operator, commodity and region"
                             >
                                 Edit Project
@@ -206,7 +230,11 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                 onClick={handleDelete}
                                 disabled={deleting}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-50"
-                                style={{ color: '#fca5a5', background: 'rgba(127, 29, 29, 0.15)', borderColor: 'rgba(220, 38, 38, 0.4)' }}
+                                style={{
+                                    color: '#fca5a5',
+                                    background: 'rgba(127, 29, 29, 0.15)',
+                                    borderColor: 'rgba(220, 38, 38, 0.4)',
+                                }}
                                 title="Permanently delete this project from the database"
                             >
                                 {deleting ? 'Deleting…' : 'Delete Project'}
@@ -241,10 +269,16 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                     {ingest.in_flight > 0 && (
                                         <span
                                             className="inline-block h-2 w-2 rounded-full"
-                                            style={{ background: 'var(--accent)', animation: 'pulse 2s ease-in-out infinite' }}
+                                            style={{
+                                                background: 'var(--accent)',
+                                                animation: 'pulse 2s ease-in-out infinite',
+                                            }}
                                         />
                                     )}
-                                    <span className="text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>
+                                    <span
+                                        className="text-[10px] font-mono uppercase tracking-[0.12em]"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
                                         Ingestion
                                     </span>
                                 </div>
@@ -262,11 +296,15 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                         </>
                                     ) : (
                                         <span>
-                                            {ingest.completed} document{ingest.completed === 1 ? '' : 's'} ingested · nothing processing
+                                            {ingest.completed} document{ingest.completed === 1 ? '' : 's'} ingested ·
+                                            nothing processing
                                         </span>
                                     )}
                                 </div>
-                                <span className="text-xs font-mono uppercase tracking-wider" style={{ color: 'var(--fg-2)' }}>
+                                <span
+                                    className="text-xs font-mono uppercase tracking-wider"
+                                    style={{ color: 'var(--fg-2)' }}
+                                >
                                     Open runs →
                                 </span>
                             </div>
@@ -275,32 +313,64 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                 )}
 
                 {/* KPI strip */}
-                <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px px-8 py-5" style={{ background: 'var(--line-1)' }}>
+                <section
+                    className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px px-8 py-5"
+                    style={{ background: 'var(--line-1)' }}
+                >
                     {kpis.map((k, i) => (
-                        <Stat key={i} label={k.label} value={k.value} sub={k.sub} tone={k.tone as 'accent' | 'warn' | 'neutral' | undefined} />
+                        <Stat
+                            key={i}
+                            label={k.label}
+                            value={k.value}
+                            sub={k.sub}
+                            tone={k.tone as 'accent' | 'warn' | 'neutral' | undefined}
+                        />
                     ))}
                 </section>
 
                 <section className="px-8 py-6 grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-5">
                     {/* Next-action card */}
                     <Card eyebrow="NEXT ACTION" title={next_action.title}>
-                        <p className="text-sm leading-relaxed mb-3" style={{ color: 'var(--fg-1)' }}>{next_action.detail}</p>
+                        <p className="text-sm leading-relaxed mb-3" style={{ color: 'var(--fg-1)' }}>
+                            {next_action.detail}
+                        </p>
                         <Link
                             href={next_action.href}
                             className="inline-block text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                            style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
+                            style={{
+                                color: 'var(--accent)',
+                                background: 'var(--accent-bg)',
+                                borderColor: 'var(--accent-dim)',
+                            }}
                         >
                             {next_action.cta} →
                         </Link>
 
                         {/* Quick links grid */}
                         <div className="mt-6 pt-4 border-t" style={{ borderColor: 'var(--line-1)' }}>
-                            <div className="text-[10px] font-mono uppercase tracking-[0.12em] mb-3" style={{ color: 'var(--fg-3)' }}>Jump to surface</div>
+                            <div
+                                className="text-[10px] font-mono uppercase tracking-[0.12em] mb-3"
+                                style={{ color: 'var(--fg-3)' }}
+                            >
+                                Jump to surface
+                            </div>
                             <div className="grid grid-cols-3 gap-2">
                                 {[
-                                    { label: 'Chat', href: `/projects/${project.slug}/chat`, sub: 'Threaded reasoning' },
-                                    { label: 'Data', href: `/projects/${project.slug}/sources`, sub: 'Sources + lineage' },
-                                    { label: 'Reports', href: `/projects/${project.slug}/reports`, sub: 'Documents & ingest quality' },
+                                    {
+                                        label: 'Chat',
+                                        href: `/projects/${project.slug}/chat`,
+                                        sub: 'Threaded reasoning',
+                                    },
+                                    {
+                                        label: 'Data',
+                                        href: `/projects/${project.slug}/sources`,
+                                        sub: 'Sources + lineage',
+                                    },
+                                    {
+                                        label: 'Reports',
+                                        href: `/projects/${project.slug}/reports`,
+                                        sub: 'Documents & ingest quality',
+                                    },
                                 ].map((q) => (
                                     <Link
                                         key={q.label}
@@ -308,8 +378,12 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                         className="block p-3 rounded border transition-colors hover:bg-[var(--bg-hover)]"
                                         style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)' }}
                                     >
-                                        <div className="text-xs font-medium" style={{ color: 'var(--fg-0)' }}>{q.label}</div>
-                                        <div className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--fg-3)' }}>{q.sub}</div>
+                                        <div className="text-xs font-medium" style={{ color: 'var(--fg-0)' }}>
+                                            {q.label}
+                                        </div>
+                                        <div className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--fg-3)' }}>
+                                            {q.sub}
+                                        </div>
                                     </Link>
                                 ))}
                             </div>
@@ -327,11 +401,17 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                 <div
                                     key={a.id}
                                     className="px-4 py-2.5 grid grid-cols-[60px_1fr] gap-3 border-b"
-                                    style={{ borderColor: i === recent_activity.length - 1 ? 'transparent' : 'var(--line-1)' }}
+                                    style={{
+                                        borderColor: i === recent_activity.length - 1 ? 'transparent' : 'var(--line-1)',
+                                    }}
                                 >
-                                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>{a.when}</span>
+                                    <span className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
+                                        {a.when}
+                                    </span>
                                     <div>
-                                        <Pill tone={a.kind === 'refusal' ? 'warn' : 'info'} dot>{a.kind}</Pill>
+                                        <Pill tone={a.kind === 'refusal' ? 'warn' : 'info'} dot>
+                                            {a.kind}
+                                        </Pill>
                                         <div className="text-xs mt-1" style={{ color: 'var(--fg-1)' }}>
                                             {a.text || <em style={{ color: 'var(--fg-3)' }}>(no text)</em>}
                                         </div>
@@ -343,11 +423,11 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                 </section>
 
                 {/*
-                  * OCR corpus coverage. Coverage, NOT accuracy — see the
-                  * OcrCoverage interface above and ocrCoverage() in
-                  * OverviewController for why that distinction is the whole
-                  * point of this card.
-                  */}
+                 * OCR corpus coverage. Coverage, NOT accuracy — see the
+                 * OcrCoverage interface above and ocrCoverage() in
+                 * OverviewController for why that distinction is the whole
+                 * point of this card.
+                 */}
                 <section className="px-8 pb-6">
                     <Card
                         eyebrow="DOCUMENT CORPUS"
@@ -364,10 +444,9 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                         ) : (
                             <>
                                 <p className="text-xs leading-relaxed mb-4" style={{ color: 'var(--fg-2)' }}>
-                                    How the text was obtained — <strong>not</strong> how accurate it is.
-                                    Nothing measures OCR accuracy yet, so treat a high OCR share as
-                                    &ldquo;more of this corpus was read by a machine that can misread&rdquo;,
-                                    not as an error rate.
+                                    How the text was obtained — <strong>not</strong> how accurate it is. Nothing
+                                    measures OCR accuracy yet, so treat a high OCR share as &ldquo;more of this corpus
+                                    was read by a machine that can misread&rdquo;, not as an error rate.
                                 </p>
                                 <div className="grid gap-px" style={{ background: 'var(--line-1)' }}>
                                     {ocr_coverage.by_method.map((m) => (
@@ -384,7 +463,10 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                                     </span>
                                                 )}
                                             </span>
-                                            <span className="text-xs font-mono tabular-nums" style={{ color: 'var(--fg-0)' }}>
+                                            <span
+                                                className="text-xs font-mono tabular-nums"
+                                                style={{ color: 'var(--fg-0)' }}
+                                            >
                                                 {m.count}
                                             </span>
                                             <span
@@ -399,8 +481,8 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                 {ocr_coverage.unknown_total > 0 && (
                                     <p className="text-[10px] font-mono mt-3" style={{ color: 'var(--fg-3)' }}>
                                         {ocr_coverage.unknown_total} passage
-                                        {ocr_coverage.unknown_total === 1 ? '' : 's'} predate the
-                                        ocr_method column and cannot be attributed to an engine.
+                                        {ocr_coverage.unknown_total === 1 ? '' : 's'} predate the ocr_method column and
+                                        cannot be attributed to an engine.
                                     </p>
                                 )}
                             </>

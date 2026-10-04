@@ -90,7 +90,9 @@ vi.mock('@inertiajs/react', () => ({
     usePage: () => ({ props: { basemap_dem: 'https://dem.example.test/tilejson.json' } }),
     router: { get: vi.fn(), visit: vi.fn() },
     Link: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
-        <a href={href} {...rest}>{children}</a>
+        <a href={href} {...rest}>
+            {children}
+        </a>
     ),
 }));
 
@@ -115,7 +117,13 @@ function baseProps(over: Partial<ComponentProps<typeof WorkspaceMap>> = {}): Com
         projectSlug: 'red-star',
         projectId: 'p-uuid',
         projectInfo: { project_name: 'Red Star', company: null, commodity: null, region: null, crs_epsg: 26913 },
-        projectSummary: { total_drilled_m: 300, mean_td_m: 300, ore_hole_count: 1, total_ore_thickness_m: 12, mean_u3o8_pct: null },
+        projectSummary: {
+            total_drilled_m: 300,
+            mean_td_m: 300,
+            ore_hole_count: 1,
+            total_ore_thickness_m: 12,
+            mean_u3o8_pct: null,
+        },
         visibleLayers: { collars: true, ore_heatmap: true, tier_10: true, traces: true },
         projectAoi: null,
         activeHole: null,

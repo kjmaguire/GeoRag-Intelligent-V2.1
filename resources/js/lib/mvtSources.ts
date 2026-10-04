@@ -24,11 +24,7 @@
  * `mvtSourceId()` in mvtLayers.ts is the shared rule; this module must go
  * through it rather than deriving ids of its own.
  */
-import {
-    MVT_LAYERS,
-    mvtSourceId,
-    type MvtLayerDef,
-} from '@/lib/mvtLayers';
+import { MVT_LAYERS, mvtSourceId, type MvtLayerDef } from '@/lib/mvtLayers';
 import { buildSilverTileUrl } from '@/lib/tileUrl';
 
 /** The minimum MapLibre surface this module needs. Keeps maplibre-gl out of

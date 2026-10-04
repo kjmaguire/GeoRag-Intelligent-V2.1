@@ -34,7 +34,7 @@ describe('FeedbackControls', () => {
             expect.objectContaining({
                 method: 'POST',
                 body: JSON.stringify({ polarity: 'up', category: null, note: null }),
-            })
+            }),
         );
     });
 
@@ -62,14 +62,12 @@ describe('FeedbackControls', () => {
             '/api/v1/answer-runs/run-1/feedback',
             expect.objectContaining({
                 body: JSON.stringify({ polarity: 'down', category: 'citation_issue', note: 'wrong source' }),
-            })
+            }),
         );
     });
 
     it('opens pre-filled to citation_issue when presetCategory is set', () => {
-        render(
-            <FeedbackControls answerRunId="run-1" presetCategory={{ category: 'citation_issue' }} />
-        );
+        render(<FeedbackControls answerRunId="run-1" presetCategory={{ category: 'citation_issue' }} />);
         expect(screen.getByLabelText('Feedback category')).toHaveValue('citation_issue');
     });
 
@@ -78,7 +76,7 @@ describe('FeedbackControls', () => {
             <FeedbackControls
                 answerRunId="run-1"
                 presetCategory={{ category: 'citation_issue', note: 'Citation [2] Report Two: ' }}
-            />
+            />,
         );
         expect(screen.getByLabelText('Feedback note')).toHaveValue('Citation [2] Report Two: ');
     });
@@ -101,7 +99,11 @@ describe('FeedbackControls', () => {
 
     it('disables both thumbs while a submit is in flight and posts only once', async () => {
         let release: (r: unknown) => void = () => {};
-        fetchMock.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+        fetchMock.mockReturnValue(
+            new Promise((resolve) => {
+                release = resolve;
+            }),
+        );
         render(<FeedbackControls answerRunId="run-1" />);
         fireEvent.click(screen.getByLabelText('Good answer'));
         await waitFor(() => expect(screen.getByLabelText('Good answer')).toBeDisabled());

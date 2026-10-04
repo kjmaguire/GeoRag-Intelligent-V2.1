@@ -13,13 +13,7 @@
  */
 import { useMemo, type ReactElement } from 'react';
 
-import {
-    emptyColumns,
-    parseDocumentBlocks,
-    tableWidth,
-    type Cell,
-    type TableBlock,
-} from '@/lib/documentBlocks';
+import { emptyColumns, parseDocumentBlocks, tableWidth, type Cell, type TableBlock } from '@/lib/documentBlocks';
 
 /** A cell that is a bare number gets tabular figures so columns line up. */
 function isNumeric(text: string): boolean {
@@ -75,10 +69,7 @@ function RecoveredTable({ block }: { block: TableBlock }) {
             {/* Wide tables scroll inside their own box; the page itself must
                 never scroll sideways. */}
             <div className="overflow-x-auto rounded border" style={{ borderColor: 'var(--line-1)' }}>
-                <table
-                    className="text-[12px] border-collapse w-full"
-                    style={{ fontFamily: 'var(--font-mono)' }}
-                >
+                <table className="text-[12px] border-collapse w-full" style={{ fontFamily: 'var(--font-mono)' }}>
                     {block.head.length > 0 && (
                         <thead>
                             {block.head.map((row, r) => (
@@ -93,10 +84,7 @@ function RecoveredTable({ block }: { block: TableBlock }) {
                     </tbody>
                 </table>
             </div>
-            <div
-                className="text-[10px] font-mono uppercase tracking-wider mt-1"
-                style={{ color: 'var(--fg-3)' }}
-            >
+            <div className="text-[10px] font-mono uppercase tracking-wider mt-1" style={{ color: 'var(--fg-3)' }}>
                 recovered table · {block.body.length} row
                 {block.body.length === 1 ? '' : 's'} · {visibleWidth} col
                 {visibleWidth === 1 ? '' : 's'}

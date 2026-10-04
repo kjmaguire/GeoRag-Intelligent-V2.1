@@ -1,13 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from '@inertiajs/react';
-import {
-    Sheet,
-    SheetContent,
-    SheetDescription,
-    SheetFooter,
-    SheetHeader,
-    SheetTitle,
-} from '@/Components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/Components/ui/sheet';
 
 /**
  * EvidenceInspector — §10s Evidence Inspector (chat-adjacent slice, built
@@ -111,12 +104,22 @@ function evidenceFacts(metadata: Record<string, unknown> | undefined): EvidenceF
 
     const confidence = depthValue(metadata.confidence);
     if (confidence !== null) {
-        push('Confidence', confidence >= 0 && confidence <= 1 ? `${Math.round(confidence * 100)}%` : String(confidence));
+        push(
+            'Confidence',
+            confidence >= 0 && confidence <= 1 ? `${Math.round(confidence * 100)}%` : String(confidence),
+        );
     }
     return facts;
 }
 
-export default function EvidenceInspector({ citation, open, onOpenChange, projectSlug, answerRunId, onReportIssue }: Props) {
+export default function EvidenceInspector({
+    citation,
+    open,
+    onOpenChange,
+    projectSlug,
+    answerRunId,
+    onReportIssue,
+}: Props) {
     const [resolved, setResolved] = useState<ResolvedEvidence | 'loading' | 'error' | null>(null);
 
     useEffect(() => {
@@ -144,15 +147,18 @@ export default function EvidenceInspector({ citation, open, onOpenChange, projec
         };
     }, [open, citation?.source_chunk_id]);
 
-    const facts =
-        resolved && resolved !== 'loading' && resolved !== 'error' ? evidenceFacts(resolved.metadata) : [];
+    const facts = resolved && resolved !== 'loading' && resolved !== 'error' ? evidenceFacts(resolved.metadata) : [];
 
     const reportId =
         resolved && resolved !== 'loading' && resolved !== 'error' && typeof resolved.metadata?.report_id === 'string'
             ? (resolved.metadata.report_id as string)
             : null;
     const sectionParam =
-        resolved && resolved !== 'loading' && resolved !== 'error' && resolved.section_number && resolved.section_number !== 'unknown'
+        resolved &&
+        resolved !== 'loading' &&
+        resolved !== 'error' &&
+        resolved.section_number &&
+        resolved.section_number !== 'unknown'
             ? resolved.section_number
             : null;
 

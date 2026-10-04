@@ -6,11 +6,20 @@ import type { Citation, SourceData } from '@/types';
 // EntityReferencesDrillIn fetches a different endpoint when expanded; we mock
 // it here to keep these tests focused on the parent card.
 vi.mock('../EntityReferencesDrillIn', () => ({
-    default: ({ canonicalType, pgId, summary }: any) => (
-        <div data-testid="references-drill-in"
-             data-canonical={canonicalType}
-             data-pg-id={pgId ?? ''}
-             data-count={summary?.count ?? 0}
+    default: ({
+        canonicalType,
+        pgId,
+        summary,
+    }: {
+        canonicalType: string;
+        pgId?: string | null;
+        summary?: { count?: number } | null;
+    }) => (
+        <div
+            data-testid="references-drill-in"
+            data-canonical={canonicalType}
+            data-pg-id={pgId ?? ''}
+            data-count={summary?.count ?? 0}
         >
             references-drill-in
         </div>
@@ -171,7 +180,11 @@ describe('<CitationPGEODetail /> details fetch', () => {
         corpus: 'public_geo',
         canonical_type: 'mineral_occurrence',
         jurisdiction: { code: 'CA-SK', name: 'Saskatchewan', authority: 'Saskatchewan Geological Survey' },
-        source: { source_id: 'CA-SK-SMDI', name: 'Mineral Deposits Index', service_url: 'https://gis.saskatchewan.ca/...' },
+        source: {
+            source_id: 'CA-SK-SMDI',
+            name: 'Mineral Deposits Index',
+            service_url: 'https://gis.saskatchewan.ca/...',
+        },
         license: { summary: '...', url: '...' },
         refresh: { last_refreshed_at: '2026-04-15T01:00:00Z', staleness_seconds: 1985 },
         references_summary: { count: 0, documents: [] },
@@ -193,7 +206,7 @@ describe('<CitationPGEODetail /> details fetch', () => {
             ok: true,
             status: 200,
             json: async () => fakeSourceData,
-        }) as any;
+        }) as unknown as typeof fetch;
     });
 
     afterEach(() => {
@@ -217,7 +230,7 @@ describe('<CitationPGEODetail /> details fetch', () => {
             expect(globalThis.fetch).toHaveBeenCalledTimes(1);
         });
 
-        const url = (globalThis.fetch as any).mock.calls[0][0];
+        const url = vi.mocked(globalThis.fetch).mock.calls[0][0];
         expect(url).toContain('/api/v1/citations/resolve');
         expect(url).toContain(encodeURIComponent(baseCitation.source_chunk_id));
         expect(url).toContain('citation_type=PGEO');
@@ -267,7 +280,7 @@ describe('<CitationPGEODetail /> details fetch', () => {
     });
 
     it('shows error message when fetch fails', async () => {
-        globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as any;
+        globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as unknown as typeof fetch;
         render(<CitationPGEODetail citation={baseCitation} />);
         fireEvent.click(screen.getByText('View details'));
         await waitFor(() => {
@@ -282,9 +295,7 @@ describe('<CitationPGEODetail /> details fetch', () => {
         await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
 
         const tokenLike = /token|jwt|secret/i;
-        const offendingKeys = getItemSpy.mock.calls
-            .map((call) => String(call[0]))
-            .filter((key) => tokenLike.test(key));
+        const offendingKeys = getItemSpy.mock.calls.map((call) => String(call[0])).filter((key) => tokenLike.test(key));
         expect(offendingKeys).toEqual([]);
         getItemSpy.mockRestore();
     });
@@ -294,7 +305,7 @@ describe('<CitationPGEODetail /> details fetch', () => {
         fireEvent.click(screen.getByText('View details'));
         await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
 
-        const [, init] = (globalThis.fetch as any).mock.calls[0] as [string, RequestInit];
+        const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
         expect(init?.credentials).toBe('same-origin');
         const headers = (init?.headers ?? {}) as Record<string, string>;
         expect(headers.Authorization).toBeUndefined();

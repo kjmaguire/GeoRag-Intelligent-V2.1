@@ -45,7 +45,7 @@ describe('<EntityReferencesDrillIn /> empty state (plan §07d clean-empty)', () 
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 0, documents: [] }}
-            />
+            />,
         );
         expect(screen.getByText(/No assessment reports reference this record yet/)).toBeInTheDocument();
         expect(screen.queryByRole('button')).toBeNull();
@@ -57,7 +57,7 @@ describe('<EntityReferencesDrillIn /> empty state (plan §07d clean-empty)', () 
                 canonicalType="mine"
                 pgId="abc-123"
                 summary={null as unknown as SourceData['references_summary']}
-            />
+            />,
         );
         expect(screen.getByText(/No assessment reports reference this record yet/)).toBeInTheDocument();
     });
@@ -74,7 +74,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
             status: 200,
             json: async () => fakeResponse,
         });
-        globalThis.fetch = fetchMock as any;
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
     });
 
     afterEach(() => {
@@ -88,7 +88,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 3, documents: [] }}
-            />
+            />,
         );
         expect(screen.getByText('Referenced in 3 assessment reports')).toBeInTheDocument();
         expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -100,7 +100,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 1, documents: [] }}
-            />
+            />,
         );
         expect(screen.getByText('Referenced in 1 assessment report')).toBeInTheDocument();
     });
@@ -111,7 +111,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
 
@@ -127,7 +127,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
 
@@ -143,7 +143,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
 
@@ -159,7 +159,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
 
@@ -174,7 +174,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
 
@@ -189,7 +189,7 @@ describe('<EntityReferencesDrillIn /> collapsed → expand', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
         await waitFor(() => expect(screen.getByText(/Hide references/)).toBeInTheDocument());
@@ -209,7 +209,7 @@ describe('<EntityReferencesDrillIn /> include-possible toggle', () => {
             status: 200,
             json: async () => fakeResponse,
         });
-        globalThis.fetch = fetchMock as any;
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
     });
 
     afterEach(() => {
@@ -223,7 +223,7 @@ describe('<EntityReferencesDrillIn /> include-possible toggle', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
         await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -247,13 +247,13 @@ describe('<EntityReferencesDrillIn /> error path', () => {
 
     it('shows a "Failed to load" message on HTTP error', async () => {
         originalFetch = globalThis.fetch;
-        globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as any;
+        globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 }) as unknown as typeof fetch;
         render(
             <EntityReferencesDrillIn
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
         await waitFor(() => {
@@ -275,7 +275,7 @@ describe('<EntityReferencesDrillIn /> auth surface', () => {
             status: 200,
             json: async () => fakeResponse,
         });
-        globalThis.fetch = fetchMock as any;
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
     });
 
     afterEach(() => {
@@ -290,15 +290,13 @@ describe('<EntityReferencesDrillIn /> auth surface', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
         await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
         const tokenLike = /token|jwt|secret/i;
-        const offendingKeys = getItemSpy.mock.calls
-            .map((call) => String(call[0]))
-            .filter((key) => tokenLike.test(key));
+        const offendingKeys = getItemSpy.mock.calls.map((call) => String(call[0])).filter((key) => tokenLike.test(key));
         expect(offendingKeys).toEqual([]);
         getItemSpy.mockRestore();
     });
@@ -309,7 +307,7 @@ describe('<EntityReferencesDrillIn /> auth surface', () => {
                 canonicalType="mineral_occurrence"
                 pgId="abc-123"
                 summary={{ count: 2, documents: [] }}
-            />
+            />,
         );
         fireEvent.click(screen.getByRole('button', { name: /Referenced in 2/ }));
         await waitFor(() => expect(fetchMock).toHaveBeenCalled());

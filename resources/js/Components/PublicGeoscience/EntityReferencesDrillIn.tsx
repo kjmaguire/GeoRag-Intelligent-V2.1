@@ -35,11 +35,7 @@ interface EntityReferencesDrillInProps {
     summary: SourceData['references_summary'];
 }
 
-export default function EntityReferencesDrillIn({
-    canonicalType,
-    pgId,
-    summary,
-}: EntityReferencesDrillInProps) {
+export default function EntityReferencesDrillIn({ canonicalType, pgId, summary }: EntityReferencesDrillInProps) {
     const [expanded, setExpanded] = useState<boolean>(false);
     const [includePossible, setIncludePossible] = useState<boolean>(false);
     const [data, setData] = useState<EntityReferencesResponse | null>(null);
@@ -73,7 +69,7 @@ export default function EntityReferencesDrillIn({
         <div className="space-y-2">
             <button
                 type="button"
-                onClick={() => setExpanded(v => !v)}
+                onClick={() => setExpanded((v) => !v)}
                 className="text-xs text-rose-400 hover:text-rose-300 border border-rose-800/50 hover:border-rose-700 bg-rose-950/30 hover:bg-rose-950/50 rounded px-2 py-1 transition-colors w-full text-left"
                 aria-expanded={expanded}
             >
@@ -87,15 +83,13 @@ export default function EntityReferencesDrillIn({
                         <input
                             type="checkbox"
                             checked={includePossible}
-                            onChange={e => setIncludePossible(e.target.checked)}
+                            onChange={(e) => setIncludePossible(e.target.checked)}
                             className="accent-rose-500"
                         />
                         Include lower-confidence matches (0.4 - 0.6)
                     </label>
 
-                    {error && (
-                        <p className="text-[11px] text-red-400">Failed to load: {error}</p>
-                    )}
+                    {error && <p className="text-[11px] text-red-400">Failed to load: {error}</p>}
 
                     {data && data.documents.length === 0 && (
                         <p className="text-[11px] text-gray-500 italic">
@@ -125,13 +119,12 @@ interface ReferenceItemProps {
 function ReferenceItem({ doc }: ReferenceItemProps) {
     const pct = Math.round(doc.confidence * 100);
     // Plan section 07d confidence gating — high/likely/possible.
-    const level =
-        doc.confidence >= 0.9 ? 'high' : doc.confidence >= 0.6 ? 'likely' : 'possible';
+    const level = doc.confidence >= 0.9 ? 'high' : doc.confidence >= 0.6 ? 'likely' : 'possible';
 
     const levelChip = {
-        high:     { label: 'match',        cls: 'bg-emerald-950/40 text-emerald-300 border-emerald-800/50' },
-        likely:   { label: 'likely match', cls: 'bg-amber-950/40 text-amber-300 border-amber-800/50' },
-        possible: { label: 'possible',     cls: 'bg-gray-800 text-gray-400 border-gray-700' },
+        high: { label: 'match', cls: 'bg-emerald-950/40 text-emerald-300 border-emerald-800/50' },
+        likely: { label: 'likely match', cls: 'bg-amber-950/40 text-amber-300 border-amber-800/50' },
+        possible: { label: 'possible', cls: 'bg-gray-800 text-gray-400 border-gray-700' },
     }[level];
 
     return (
@@ -154,7 +147,7 @@ function ReferenceItem({ doc }: ReferenceItemProps) {
             </div>
             {doc.signals.length > 0 && (
                 <div className="flex flex-wrap gap-1">
-                    {doc.signals.map(signal => (
+                    {doc.signals.map((signal) => (
                         <span
                             key={signal}
                             className="text-[10px] font-mono bg-gray-950/50 border border-gray-700 rounded px-1 py-0.5 text-gray-400"

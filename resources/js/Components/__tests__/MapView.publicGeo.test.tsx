@@ -13,23 +13,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-const {
-    mockOn,
-    mockOff,
-    mockGetLayer,
-    mockQueryRenderedFeatures,
-    mockSetHTML,
-    mockPopupRemove,
-    mockPopupInstances,
-} = vi.hoisted(() => ({
-    mockOn: vi.fn(),
-    mockOff: vi.fn(),
-    mockGetLayer: vi.fn().mockReturnValue(true),
-    mockQueryRenderedFeatures: vi.fn().mockReturnValue([]),
-    mockSetHTML: vi.fn(),
-    mockPopupRemove: vi.fn(),
-    mockPopupInstances: [] as Array<{ options: Record<string, unknown> }>,
-}));
+const { mockOn, mockOff, mockGetLayer, mockQueryRenderedFeatures, mockSetHTML, mockPopupRemove, mockPopupInstances } =
+    vi.hoisted(() => ({
+        mockOn: vi.fn(),
+        mockOff: vi.fn(),
+        mockGetLayer: vi.fn().mockReturnValue(true),
+        mockQueryRenderedFeatures: vi.fn().mockReturnValue([]),
+        mockSetHTML: vi.fn(),
+        mockPopupRemove: vi.fn(),
+        mockPopupInstances: [] as Array<{ options: Record<string, unknown> }>,
+    }));
 
 vi.mock('maplibre-gl', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -47,7 +40,10 @@ vi.mock('maplibre-gl', () => {
         this.setTerrain = vi.fn();
         this.getZoom = vi.fn().mockReturnValue(5);
         this.getBounds = vi.fn().mockReturnValue({
-            getWest: () => -110, getSouth: () => 50, getEast: () => -100, getNorth: () => 56,
+            getWest: () => -110,
+            getSouth: () => 50,
+            getEast: () => -100,
+            getNorth: () => 56,
         });
         this.getStyle = vi.fn().mockReturnValue({ layers: [] });
         this.getCanvas = vi.fn().mockReturnValue({ style: {} });
@@ -61,7 +57,9 @@ vi.mock('maplibre-gl', () => {
         this.queryRenderedFeatures = mockQueryRenderedFeatures;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    function Ctrl(this: any) { void this; }
+    function Ctrl(this: any) {
+        void this;
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function MarkerMock(this: any) {
         this.setLngLat = vi.fn().mockReturnThis();
@@ -112,13 +110,14 @@ function mapHandlers(event: string): Handler[] {
 
 /** Handlers registered via map.on(event, layerId, fn). */
 function layerHandlers(event: string, layerId: string): Handler[] {
-    return mockOn.mock.calls
-        .filter(([name, id]) => name === event && id === layerId)
-        .map(([, , fn]) => fn as Handler);
+    return mockOn.mock.calls.filter(([name, id]) => name === event && id === layerId).map(([, , fn]) => fn as Handler);
 }
 
 function triggerMapLoad() {
-    for (const cb of mapHandlers('load')) act(() => { cb(); });
+    for (const cb of mapHandlers('load'))
+        act(() => {
+            cb();
+        });
 }
 
 function enablePublicGeo() {
@@ -136,10 +135,13 @@ beforeEach(() => {
     mockPopupInstances.length = 0;
     mockGetLayer.mockReturnValue(true);
     mockQueryRenderedFeatures.mockReturnValue([]);
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(
-        JSON.stringify(emptyOverlay),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-    ));
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+        async () =>
+            new Response(JSON.stringify(emptyOverlay), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+    );
 });
 
 afterEach(() => {
@@ -155,16 +157,20 @@ describe('MapView public-geoscience hover popup', () => {
         await waitFor(() => expect(layerHandlers('mousemove', 'public-geoscience-circle')).toHaveLength(1));
 
         const payload = '<img src=x onerror=alert(1)>';
-        mockQueryRenderedFeatures.mockReturnValue([{
-            properties: {
-                layer: 'mine',
-                label: payload,
-                jurisdiction_code: '<b>CA-SK</b>',
-                cluster: false,
+        mockQueryRenderedFeatures.mockReturnValue([
+            {
+                properties: {
+                    layer: 'mine',
+                    label: payload,
+                    jurisdiction_code: '<b>CA-SK</b>',
+                    cluster: false,
+                },
             },
-        }]);
+        ]);
         const [onMove] = layerHandlers('mousemove', 'public-geoscience-circle');
-        act(() => { onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } }); });
+        act(() => {
+            onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } });
+        });
 
         const html = mockSetHTML.mock.calls.at(-1)?.[0] as string;
         expect(html).not.toContain('<img');
@@ -180,11 +186,15 @@ describe('MapView public-geoscience hover popup', () => {
         enablePublicGeo();
         await waitFor(() => expect(layerHandlers('mousemove', 'public-geoscience-circle')).toHaveLength(1));
 
-        mockQueryRenderedFeatures.mockReturnValue([{
-            properties: { layer: '<script>x</script>', cluster: true, point_count: 1234 },
-        }]);
+        mockQueryRenderedFeatures.mockReturnValue([
+            {
+                properties: { layer: '<script>x</script>', cluster: true, point_count: 1234 },
+            },
+        ]);
         const [onMove] = layerHandlers('mousemove', 'public-geoscience-circle');
-        act(() => { onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } }); });
+        act(() => {
+            onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } });
+        });
 
         const html = mockSetHTML.mock.calls.at(-1)?.[0] as string;
         expect(html).not.toContain('<script>');
@@ -205,7 +215,11 @@ describe('MapView public-geoscience overlay refetch', () => {
         expect(onMoveEnd).toBeDefined();
 
         // A burst of moveend events is one refetch, not three, and not instant.
-        act(() => { onMoveEnd(); onMoveEnd(); onMoveEnd(); });
+        act(() => {
+            onMoveEnd();
+            onMoveEnd();
+            onMoveEnd();
+        });
         expect(publicGeoFetches()).toHaveLength(1);
         await waitFor(() => expect(publicGeoFetches()).toHaveLength(2), { timeout: 1500 });
         await new Promise((resolve) => setTimeout(resolve, 450));
@@ -224,23 +238,25 @@ describe('MapView MVT hover popup', () => {
         await waitFor(() => expect(mapHandlers('mousemove').length).toBeGreaterThan(0));
 
         const onMove = mapHandlers('mousemove').at(-1) as Handler;
-        mockQueryRenderedFeatures.mockReturnValue([
-            { properties: { hole_id: 'DH-1' }, sourceLayer: 'collars' },
-        ]);
-        act(() => { onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } }); });
+        mockQueryRenderedFeatures.mockReturnValue([{ properties: { hole_id: 'DH-1' }, sourceLayer: 'collars' }]);
+        act(() => {
+            onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } });
+        });
         expect(mockPopupInstances).toHaveLength(1);
         mockPopupRemove.mockClear();
 
         mockQueryRenderedFeatures.mockReturnValue([]);
-        act(() => { onMove({ point: { x: 50, y: 50 }, lngLat: { lng: -104, lat: 55 } }); });
+        act(() => {
+            onMove({ point: { x: 50, y: 50 }, lngLat: { lng: -104, lat: 55 } });
+        });
         expect(mockPopupRemove).toHaveBeenCalledTimes(1);
 
         // Hovering the same feature again opens a fresh popup (the stale
         // popup reference was cleared, so the debounce does not swallow it).
-        mockQueryRenderedFeatures.mockReturnValue([
-            { properties: { hole_id: 'DH-1' }, sourceLayer: 'collars' },
-        ]);
-        act(() => { onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } }); });
+        mockQueryRenderedFeatures.mockReturnValue([{ properties: { hole_id: 'DH-1' }, sourceLayer: 'collars' }]);
+        act(() => {
+            onMove({ point: { x: 1, y: 1 }, lngLat: { lng: -105, lat: 55 } });
+        });
         expect(mockPopupInstances).toHaveLength(2);
     });
 });
@@ -262,7 +278,9 @@ describe('MapView tile-failure toast', () => {
         const layer = MVT_LAYERS[0];
         const onError = mapHandlers('error').at(-1) as Handler;
         for (let i = 0; i < 3; i += 1) {
-            act(() => { onError({ sourceId: mvtSourceId(layer), error: { status: 500 } }); });
+            act(() => {
+                onError({ sourceId: mvtSourceId(layer), error: { status: 500 } });
+            });
         }
 
         const toast = await screen.findByRole('alert');

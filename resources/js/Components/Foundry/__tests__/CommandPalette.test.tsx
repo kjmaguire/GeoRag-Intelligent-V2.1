@@ -64,7 +64,10 @@ describe('Foundry/CommandPalette keyboard behaviour', () => {
 
         fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
         expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-selected', 'true');
-        expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', screen.getAllByRole('option')[0].id);
+        expect(screen.getByRole('combobox')).toHaveAttribute(
+            'aria-activedescendant',
+            screen.getAllByRole('option')[0].id,
+        );
     });
 
     it('also starts on the first row after closing with Escape from a lower row', () => {

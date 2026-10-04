@@ -92,8 +92,7 @@ async function withoutDonatedPrj(bundle: File, memberName: string): Promise<File
     // a message instead of a silent success.
     if (!zip.file(memberName)) {
         throw new Error(
-            `${memberName} is not in this archive, so the copied coordinate system ` +
-                'cannot be removed from it',
+            `${memberName} is not in this archive, so the copied coordinate system ` + 'cannot be removed from it',
         );
     }
     zip.remove(memberName);
@@ -477,9 +476,7 @@ export default function FoundryDataImportWizard() {
         // very large .dbf, say) from swallowing the whole selection: the .shp
         // is queued and fails server-side with a message, which beats a drop
         // zone that silently does nothing.
-        const { bundles, passthrough, unusable, wktRecipients } = await groupShapefiles(
-            arr,
-        ).catch(() => ({
+        const { bundles, passthrough, unusable, wktRecipients } = await groupShapefiles(arr).catch(() => ({
             bundles: [],
             passthrough: arr,
             unusable: [],
@@ -528,9 +525,7 @@ export default function FoundryDataImportWizard() {
         // Matched by File identity, never by name: two folders in one drop
         // can each hold a `plan.dxf`, and only the object the grouper saw
         // beside the donor is the recipient.
-        const wktCrsByFile = new Map<File, DonatedCrs>(
-            wktRecipients.map((r): [File, DonatedCrs] => [r.file, r.crs]),
-        );
+        const wktCrsByFile = new Map<File, DonatedCrs>(wktRecipients.map((r): [File, DonatedCrs] => [r.file, r.crs]));
         for (const f of passthrough) {
             const key = fileKey(f);
             if (settled.has(key)) continue;
@@ -554,10 +549,7 @@ export default function FoundryDataImportWizard() {
         // Rows that already uploaded successfully keep their existing entry
         // (`settled` above skipped rebuilding them) so the no-re-upload
         // guard in handleSubmit still recognises them.
-        setFiles((prev) => [
-            ...prev.filter((qf) => settledIds.has(qf.id)),
-            ...accepted,
-        ]);
+        setFiles((prev) => [...prev.filter((qf) => settledIds.has(qf.id)), ...accepted]);
         setRejected(rejected);
         setBundleNotes(notes);
         // Keep successful outcomes (their pills + the no-re-upload guard in
@@ -573,9 +565,7 @@ export default function FoundryDataImportWizard() {
         const target = filesRef.current.find((qf) => qf.id === id);
         if (target) {
             const gone = new Set((target.sources ?? [target.file]).map(fileKey));
-            selectedFilesRef.current = selectedFilesRef.current.filter(
-                (f) => !gone.has(fileKey(f)),
-            );
+            selectedFilesRef.current = selectedFilesRef.current.filter((f) => !gone.has(fileKey(f)));
         }
         setFiles((prev) => prev.filter((qf) => qf.id !== id));
         setOutcomes((prev) => prev.filter((o) => o.id !== id && o.ok));
@@ -595,9 +585,7 @@ export default function FoundryDataImportWizard() {
     // dropped on the way out. A control whose value is silently discarded is
     // the failure this whole change set exists to stop.
     const epsgErrorCount = files.filter(
-        (qf) =>
-            supportsCrsOverride(effectiveCategory(qf)) &&
-            parseEpsg(qf.sourceEpsgText ?? '').error !== undefined,
+        (qf) => supportsCrsOverride(effectiveCategory(qf)) && parseEpsg(qf.sourceEpsgText ?? '').error !== undefined,
     ).length;
 
     /**
@@ -608,10 +596,7 @@ export default function FoundryDataImportWizard() {
      * `source_epsg` server-side — so this is also the test for stripping it.
      */
     function hasExplicitEpsg(qf: QueuedFile): boolean {
-        return (
-            supportsCrsOverride(effectiveCategory(qf)) &&
-            parseEpsg(qf.sourceEpsgText ?? '').epsg !== undefined
-        );
+        return supportsCrsOverride(effectiveCategory(qf)) && parseEpsg(qf.sourceEpsgText ?? '').epsg !== undefined;
     }
 
     /** True when the copied coordinate system is what this row will upload with. */
@@ -661,8 +646,7 @@ export default function FoundryDataImportWizard() {
     }
 
     function csrfHeader(): Record<string, string> {
-        const token =
-            document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
+        const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
         return token ? { 'X-CSRF-TOKEN': token } : {};
     }
 
@@ -685,9 +669,7 @@ export default function FoundryDataImportWizard() {
             return {
                 id: qf.id,
                 ok: false,
-                message:
-                    `Unsupported type .${ext} — accepted: ` +
-                    acceptedExtensions().join(', '),
+                message: `Unsupported type .${ext} — accepted: ` + acceptedExtensions().join(', '),
             };
         }
         // `source_epsg`, an integer, and only when the user typed a legal one
@@ -790,9 +772,7 @@ export default function FoundryDataImportWizard() {
                 setOutcomes([...priorOk, ...(results.filter(Boolean) as UploadOutcome[])]);
             }
         }
-        await Promise.all(
-            Array.from({ length: Math.min(CONCURRENCY, pending.length) }, () => worker()),
-        );
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, () => worker()));
 
         setSubmitting(false);
         setFinished(true);
@@ -814,10 +794,7 @@ export default function FoundryDataImportWizard() {
         <>
             <Head title="Data import — GeoRAG" />
 
-            <div
-                className="flex-1 overflow-y-auto"
-                style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}
-            >
+            <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
                 <PageHeader
                     eyebrow="DATA · IMPORT"
                     title="Upload files for ingestion"
@@ -1114,23 +1091,17 @@ export default function FoundryDataImportWizard() {
                                     Selected · {files.length}
                                 </div>
                                 {files.some((qf) => supportsCrsOverride(effectiveCategory(qf))) && (
-                                    <div
-                                        className="text-[11px] mb-2"
-                                        style={{ color: 'var(--fg-3)' }}
-                                    >
-                                        EPSG is optional and is only used when the file declares
-                                        no coordinate system of its own — a shapefile shipped
-                                        without its .prj, or a table of bare eastings and
-                                        northings. A declared CRS always wins, and the geometry is
-                                        checked against whatever code you give rather than trusted.
+                                    <div className="text-[11px] mb-2" style={{ color: 'var(--fg-3)' }}>
+                                        EPSG is optional and is only used when the file declares no coordinate system of
+                                        its own — a shapefile shipped without its .prj, or a table of bare eastings and
+                                        northings. A declared CRS always wins, and the geometry is checked against
+                                        whatever code you give rather than trusted.
                                     </div>
                                 )}
                                 <ul className="text-xs space-y-1">
                                     {files.map((qf) => {
                                         const outcome = outcomes.find((o) => o.id === qf.id);
-                                        const canOverrideCrs = supportsCrsOverride(
-                                            effectiveCategory(qf),
-                                        );
+                                        const canOverrideCrs = supportsCrsOverride(effectiveCategory(qf));
                                         const epsg = parseEpsg(qf.sourceEpsgText ?? '');
                                         const donated = qf.crsDonation;
                                         const usingDonation = donationInEffect(qf);
@@ -1140,8 +1111,7 @@ export default function FoundryDataImportWizard() {
                                         // code. Typing one anyway wins: the
                                         // copy is dropped from the ZIP at
                                         // upload.
-                                        const epsgPlaceholder =
-                                            usingDonation && donated ? donated.label : '26904';
+                                        const epsgPlaceholder = usingDonation && donated ? donated.label : '26904';
                                         const epsgTitle =
                                             usingDonation && donated
                                                 ? `Using ${donated.label}, copied from ${donated.sourceName}. Type an EPSG code to use that instead — the copy is removed from this upload.`
@@ -1150,10 +1120,7 @@ export default function FoundryDataImportWizard() {
                                             <li key={qf.id} style={{ color: 'var(--fg-1)' }}>
                                                 <div className="flex items-center gap-3">
                                                     <span className="font-mono">{qf.file.name}</span>
-                                                    <span
-                                                        className="font-mono"
-                                                        style={{ color: 'var(--fg-3)' }}
-                                                    >
+                                                    <span className="font-mono" style={{ color: 'var(--fg-3)' }}>
                                                         {(qf.file.size / 1024).toFixed(1)} KB
                                                     </span>
                                                     {exceedsUploadLimit(qf.file.size, uploadLimit) && (
@@ -1177,9 +1144,7 @@ export default function FoundryDataImportWizard() {
                                                                 type="text"
                                                                 inputMode="numeric"
                                                                 value={qf.sourceEpsgText ?? ''}
-                                                                onChange={(e) =>
-                                                                    setSourceEpsg(qf.id, e.target.value)
-                                                                }
+                                                                onChange={(e) => setSourceEpsg(qf.id, e.target.value)}
                                                                 disabled={submitting || outcome?.ok}
                                                                 placeholder={epsgPlaceholder}
                                                                 title={epsgTitle}
@@ -1196,13 +1161,8 @@ export default function FoundryDataImportWizard() {
                                                         </label>
                                                     )}
                                                     {outcome && (
-                                                        <Pill
-                                                            tone={outcome.ok ? 'accent' : 'warn'}
-                                                            dot
-                                                        >
-                                                            {outcome.ok
-                                                                ? 'queued'
-                                                                : outcome.message}
+                                                        <Pill tone={outcome.ok ? 'accent' : 'warn'} dot>
+                                                            {outcome.ok ? 'queued' : outcome.message}
                                                         </Pill>
                                                     )}
                                                     {!submitting && (!outcome || !outcome.ok) && (
@@ -1235,9 +1195,7 @@ export default function FoundryDataImportWizard() {
                                                         <div
                                                             className="text-[11px] mt-0.5"
                                                             style={{
-                                                                color: usingDonation
-                                                                    ? 'var(--fg-2)'
-                                                                    : 'var(--warn)',
+                                                                color: usingDonation ? 'var(--fg-2)' : 'var(--warn)',
                                                             }}
                                                         >
                                                             {usingDonation
@@ -1326,22 +1284,13 @@ export default function FoundryDataImportWizard() {
 
                     <footer className="flex justify-end items-center gap-3">
                         {epsgErrorCount > 0 && (
-                            <span
-                                className="text-xs"
-                                style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}
-                            >
-                                Fix {epsgErrorCount} EPSG code{epsgErrorCount === 1 ? '' : 's'}{' '}
-                                before uploading.
+                            <span className="text-xs" style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                                Fix {epsgErrorCount} EPSG code{epsgErrorCount === 1 ? '' : 's'} before uploading.
                             </span>
                         )}
                         <button
                             type="button"
-                            disabled={
-                                !selectedProject ||
-                                files.length === 0 ||
-                                submitting ||
-                                epsgErrorCount > 0
-                            }
+                            disabled={!selectedProject || files.length === 0 || submitting || epsgErrorCount > 0}
                             onClick={handleSubmit}
                             className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-30"
                             style={{

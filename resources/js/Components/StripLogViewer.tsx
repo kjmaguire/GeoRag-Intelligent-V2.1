@@ -2,11 +2,7 @@ import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
 import { formatWhen } from '../lib/time';
-import {
-    AlterationTrack,
-    MineralizationTrack,
-    type TrackFrame,
-} from './Foundry/StripTracks';
+import { AlterationTrack, MineralizationTrack, type TrackFrame } from './Foundry/StripTracks';
 import {
     edgeOf,
     isDisplayColour,
@@ -109,20 +105,18 @@ function getLithoColor(colours: Map<string, string>, code) {
 }
 
 // ── Layout constants ──────────────────────────────────────────────────────────
-const DEPTH_AXIS_WIDTH  = 70;   // px — left depth scale column
-const LITHO_COL_WIDTH   = 160;  // px — lithology rectangles
-const ALT_COL_WIDTH     = 100;  // px — alteration track
-const MIN_COL_WIDTH     = 110;  // px — mineralization track
-const CURVE_COL_WIDTH   = 180;  // px — LAS continuous curves column (GR, RHOB)
-const DETAIL_COL_WIDTH  = 180;  // px — RQD/recovery bars column
-const STRIP_HEIGHT      = 600;  // px — default SVG height (fills container via viewBox)
-const HEADER_HEIGHT     = 0;    // handled in HTML, not SVG
-const TICK_INTERVAL     = 10;   // m  — depth tick every N metres
-const FONT_FAMILY       = 'ui-monospace, SFMono-Regular, Menlo, monospace';
-const FONT_SIZE_TICK    = 10;   // depth tick labels
+const DEPTH_AXIS_WIDTH = 70; // px — left depth scale column
+const LITHO_COL_WIDTH = 160; // px — lithology rectangles
+const ALT_COL_WIDTH = 100; // px — alteration track
+const MIN_COL_WIDTH = 110; // px — mineralization track
+const CURVE_COL_WIDTH = 180; // px — LAS continuous curves column (GR, RHOB)
+const DETAIL_COL_WIDTH = 180; // px — RQD/recovery bars column
+const TICK_INTERVAL = 10; // m  — depth tick every N metres
+const FONT_FAMILY = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+const FONT_SIZE_TICK = 10; // depth tick labels
 const FONT_SIZE_TICK_MAJOR = 12; // major tick labels (every 50m)
-const FONT_SIZE_CODE    = 11;   // lithology code inside bars
-const FONT_SIZE_AXIS    = 10;   // "DEPTH (m)" axis label
+const FONT_SIZE_CODE = 11; // lithology code inside bars
+const FONT_SIZE_AXIS = 10; // "DEPTH (m)" axis label
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 function depthToY(depth, totalDepth, svgHeight) {
@@ -150,9 +144,7 @@ function EmptyState({ holeId }) {
                     {holeId ? `No lithology data for ${holeId}` : 'Select a drill hole to view the strip log.'}
                 </p>
                 {holeId && (
-                    <p className="text-xs text-gray-600">
-                        Lithology logs may not yet be imported for this hole.
-                    </p>
+                    <p className="text-xs text-gray-600">Lithology logs may not yet be imported for this hole.</p>
                 )}
             </div>
         </div>
@@ -161,7 +153,10 @@ function EmptyState({ holeId }) {
 
 function ErrorState({ message }) {
     return (
-        <div className="mx-4 mt-4 text-xs text-red-400 bg-red-950/40 border border-red-800/40 rounded px-3 py-2" role="alert">
+        <div
+            className="mx-4 mt-4 text-xs text-red-400 bg-red-950/40 border border-red-800/40 rounded px-3 py-2"
+            role="alert"
+        >
             Error loading strip log: {message}
         </div>
     );
@@ -170,7 +165,15 @@ function ErrorState({ message }) {
 /**
  * Depth tick marks on the left axis.
  */
-function DepthAxis({ totalDepth, svgHeight, horizontal = false }: { totalDepth: number; svgHeight: number; horizontal?: boolean }) {
+function DepthAxis({
+    totalDepth,
+    svgHeight,
+    horizontal = false,
+}: {
+    totalDepth: number;
+    svgHeight: number;
+    horizontal?: boolean;
+}) {
     const ticks: React.ReactElement[] = [];
     for (let d = 0; d <= totalDepth; d += TICK_INTERVAL) {
         const y = depthToY(d, totalDepth, svgHeight);
@@ -214,23 +217,13 @@ function DepthAxis({ totalDepth, svgHeight, horizontal = false }: { totalDepth: 
                 fontSize={FONT_SIZE_AXIS + 1}
                 fill="#9ca3af"
                 fontFamily={FONT_FAMILY}
-                transform={horizontal
-                    ? `rotate(-90, 12, ${svgHeight / 2})`
-                    : `rotate(-90, 12, ${svgHeight / 2})`
-                }
+                transform={horizontal ? `rotate(-90, 12, ${svgHeight / 2})` : `rotate(-90, 12, ${svgHeight / 2})`}
                 letterSpacing="1"
             >
                 DEPTH (m)
             </text>
             {/* Vertical rule */}
-            <line
-                x1={DEPTH_AXIS_WIDTH}
-                y1={0}
-                x2={DEPTH_AXIS_WIDTH}
-                y2={svgHeight}
-                stroke="#374151"
-                strokeWidth={1}
-            />
+            <line x1={DEPTH_AXIS_WIDTH} y1={0} x2={DEPTH_AXIS_WIDTH} y2={svgHeight} stroke="#374151" strokeWidth={1} />
             {ticks}
         </g>
     );
@@ -262,24 +255,26 @@ function GridLines({ totalDepth, svgHeight, svgWidth }: { totalDepth: number; sv
 /**
  * Lithology column — coloured rectangles.
  */
-function LithologyColumn({ intervals, totalDepth, svgHeight, onIntervalHover, onIntervalLeave, hoveredLogId, colours }) {
+function LithologyColumn({
+    intervals,
+    totalDepth,
+    svgHeight,
+    onIntervalHover,
+    onIntervalLeave,
+    hoveredLogId,
+    colours,
+}) {
     const x = DEPTH_AXIS_WIDTH;
 
     return (
         <g aria-label="Lithology column">
             {/* Column background */}
-            <rect
-                x={x}
-                y={0}
-                width={LITHO_COL_WIDTH}
-                height={svgHeight}
-                fill="#111827"
-            />
+            <rect x={x} y={0} width={LITHO_COL_WIDTH} height={svgHeight} fill="#111827" />
 
             {intervals.map((interval) => {
                 const y1 = depthToY(interval.from_depth, totalDepth, svgHeight);
                 const y2 = depthToY(interval.to_depth, totalDepth, svgHeight);
-                const h  = Math.max(y2 - y1, 1);
+                const h = Math.max(y2 - y1, 1);
                 const { fill, stroke } = getLithoColor(colours, interval.lithology_code);
                 const isHovered = hoveredLogId === interval.log_id;
 
@@ -303,13 +298,7 @@ function LithologyColumn({ intervals, totalDepth, svgHeight, onIntervalHover, on
             })}
 
             {/* Column header rule */}
-            <rect
-                x={x}
-                y={0}
-                width={LITHO_COL_WIDTH}
-                height={1}
-                fill="#374151"
-            />
+            <rect x={x} y={0} width={LITHO_COL_WIDTH} height={1} fill="#374151" />
         </g>
     );
 }
@@ -326,7 +315,7 @@ function LithologyLabels({ intervals, totalDepth, svgHeight, horizontal = false 
             {intervals.map((interval) => {
                 const y1 = depthToY(interval.from_depth, totalDepth, svgHeight);
                 const y2 = depthToY(interval.to_depth, totalDepth, svgHeight);
-                const h  = y2 - y1;
+                const h = y2 - y1;
 
                 if (h < MIN_HEIGHT_FOR_LABEL) return null;
 
@@ -336,9 +325,7 @@ function LithologyLabels({ intervals, totalDepth, svgHeight, horizontal = false 
 
                 // In horizontal mode the whole SVG is rotated 90° CW,
                 // so we counter-rotate text -90° to keep it upright/readable.
-                const transform = horizontal
-                    ? `rotate(-90, ${cx}, ${cy})`
-                    : undefined;
+                const transform = horizontal ? `rotate(-90, ${cx}, ${cy})` : undefined;
 
                 return (
                     <text
@@ -363,10 +350,10 @@ function LithologyLabels({ intervals, totalDepth, svgHeight, horizontal = false 
 
 // ── Curve colour palette ──────────────────────────────────────────────────────
 const CURVE_COLORS = {
-    GR:   { stroke: '#22c55e', label: 'Gamma Ray' },     // green
-    RHOB: { stroke: '#3b82f6', label: 'Density' },       // blue
+    GR: { stroke: '#22c55e', label: 'Gamma Ray' }, // green
+    RHOB: { stroke: '#3b82f6', label: 'Density' }, // blue
     NPHI: { stroke: '#f59e0b', label: 'Neutron Porosity' }, // amber
-    SP:   { stroke: '#ef4444', label: 'Spontaneous Potential' }, // red
+    SP: { stroke: '#ef4444', label: 'Spontaneous Potential' }, // red
 };
 
 function getCurveColor(name) {
@@ -430,18 +417,18 @@ function CurveTraces({ curves, totalDepth, svgHeight, x }) {
 
             {/* Curve legend in top-left */}
             {curves.map((curve, i) => {
-                const { stroke, label } = getCurveColor(curve.curve_name);
+                const { stroke } = getCurveColor(curve.curve_name);
                 return (
                     <g key={curve.curve_name}>
                         <line
-                            x1={x + 6} y1={12 + i * 14}
-                            x2={x + 20} y2={12 + i * 14}
-                            stroke={stroke} strokeWidth={2}
+                            x1={x + 6}
+                            y1={12 + i * 14}
+                            x2={x + 20}
+                            y2={12 + i * 14}
+                            stroke={stroke}
+                            strokeWidth={2}
                         />
-                        <text
-                            x={x + 24} y={12 + i * 14 + 3}
-                            fontSize={10} fill="#9ca3af" fontFamily={FONT_FAMILY}
-                        >
+                        <text x={x + 24} y={12 + i * 14 + 3} fontSize={10} fill="#9ca3af" fontFamily={FONT_FAMILY}>
                             {curve.curve_name} ({curve.curve_unit || '?'})
                         </text>
                     </g>
@@ -456,7 +443,7 @@ function CurveTraces({ curves, totalDepth, svgHeight, x }) {
  * Renders thin horizontal bars proportional to the value (0–100).
  */
 function RqdBars({ intervals, totalDepth, svgHeight, x: columnX }) {
-    const x    = columnX + 4;
+    const x = columnX + 4;
     const colW = 60;
 
     return (
@@ -464,9 +451,9 @@ function RqdBars({ intervals, totalDepth, svgHeight, x: columnX }) {
             {intervals.map((interval) => {
                 const y1 = depthToY(interval.from_depth, totalDepth, svgHeight);
                 const y2 = depthToY(interval.to_depth, totalDepth, svgHeight);
-                const h  = Math.max(y2 - y1 - 2, 1);
+                const h = Math.max(y2 - y1 - 2, 1);
 
-                const rqd      = interval.rqd      != null ? Math.min(100, Math.max(0, interval.rqd))      : null;
+                const rqd = interval.rqd != null ? Math.min(100, Math.max(0, interval.rqd)) : null;
                 const recovery = interval.recovery != null ? Math.min(100, Math.max(0, interval.recovery)) : null;
 
                 const barH = Math.max(Math.min(h / 2, 6), 2);
@@ -476,17 +463,29 @@ function RqdBars({ intervals, totalDepth, svgHeight, x: columnX }) {
                         {/* RQD bar */}
                         {rqd != null && (
                             <>
-                                <rect x={x} y={y1 + 1}           width={colW} height={barH} fill="#1f2937" rx={1} />
-                                <rect x={x} y={y1 + 1}           width={(rqd / 100) * colW} height={barH}
-                                      fill={rqd >= 75 ? '#22c55e' : rqd >= 50 ? '#f59e0b' : '#ef4444'} rx={1} />
+                                <rect x={x} y={y1 + 1} width={colW} height={barH} fill="#1f2937" rx={1} />
+                                <rect
+                                    x={x}
+                                    y={y1 + 1}
+                                    width={(rqd / 100) * colW}
+                                    height={barH}
+                                    fill={rqd >= 75 ? '#22c55e' : rqd >= 50 ? '#f59e0b' : '#ef4444'}
+                                    rx={1}
+                                />
                             </>
                         )}
                         {/* Recovery bar */}
                         {recovery != null && (
                             <>
                                 <rect x={x} y={y1 + 1 + barH + 1} width={colW} height={barH} fill="#1f2937" rx={1} />
-                                <rect x={x} y={y1 + 1 + barH + 1} width={(recovery / 100) * colW} height={barH}
-                                      fill="#3b82f6" rx={1} />
+                                <rect
+                                    x={x}
+                                    y={y1 + 1 + barH + 1}
+                                    width={(recovery / 100) * colW}
+                                    height={barH}
+                                    fill="#3b82f6"
+                                    rx={1}
+                                />
                             </>
                         )}
                     </g>
@@ -499,7 +498,7 @@ function RqdBars({ intervals, totalDepth, svgHeight, x: columnX }) {
 /**
  * Tooltip overlay — rendered as HTML positioned over the SVG container.
  */
-function IntervalTooltip({ interval, position, totalDepth, colours }) {
+function IntervalTooltip({ interval, position, colours }) {
     if (!interval || !position) return null;
 
     const { fill } = getLithoColor(colours, interval.lithology_code);
@@ -509,8 +508,8 @@ function IntervalTooltip({ interval, position, totalDepth, colours }) {
         <div
             className="absolute z-50 pointer-events-none"
             style={{
-                left:  position.x + 12,
-                top:   Math.max(0, position.y - 10),
+                left: position.x + 12,
+                top: Math.max(0, position.y - 10),
                 maxWidth: '220px',
             }}
             role="tooltip"
@@ -523,9 +522,7 @@ function IntervalTooltip({ interval, position, totalDepth, colours }) {
                         style={{ background: fill }}
                         aria-hidden="true"
                     />
-                    <span className="font-mono font-bold text-gray-100">
-                        {interval.lithology_code ?? '?'}
-                    </span>
+                    <span className="font-mono font-bold text-gray-100">{interval.lithology_code ?? '?'}</span>
                 </div>
 
                 {/* Depth range */}
@@ -537,7 +534,13 @@ function IntervalTooltip({ interval, position, totalDepth, colours }) {
                 {/* Colour as described, grain size, hardness */}
                 {(interval.color || interval.grain_size || interval.hardness) && (
                     <div className="text-gray-500 border-t border-gray-700/50 pt-1.5">
-                        {[interval.color && `Colour: ${interval.color}`, interval.grain_size && `Grain: ${interval.grain_size}`, interval.hardness && `Hardness: ${interval.hardness}`].filter(Boolean).join(' · ')}
+                        {[
+                            interval.color && `Colour: ${interval.color}`,
+                            interval.grain_size && `Grain: ${interval.grain_size}`,
+                            interval.hardness && `Hardness: ${interval.hardness}`,
+                        ]
+                            .filter(Boolean)
+                            .join(' · ')}
                     </div>
                 )}
 
@@ -565,11 +568,7 @@ function IntervalTooltip({ interval, position, totalDepth, colours }) {
                 )}
 
                 {/* Weathering */}
-                {interval.weathering && (
-                    <div className="text-gray-500 text-xs">
-                        Weathering: {interval.weathering}
-                    </div>
-                )}
+                {interval.weathering && <div className="text-gray-500 text-xs">Weathering: {interval.weathering}</div>}
             </div>
         </div>
     );
@@ -640,22 +639,18 @@ function Legend({ entries }: { entries: { code: string; fill: string; label: str
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function StripLogViewer({
-    holeId,
-    projectId,
-    onQueryHole,
-}: StripLogViewerProps) {
+export default function StripLogViewer({ holeId, projectId, onQueryHole }: StripLogViewerProps) {
     // V1.5-10 — typed state. Previous untyped useState(null) inferred `never`
     // and broke every collar.lithology_logs / collar.well_log_curves access.
-    const [collar, setCollar]         = useState<CollarRecord | null>(null);
-    const [loading, setLoading]       = useState<boolean>(false);
-    const [error, setError]           = useState<string | null>(null);
+    const [collar, setCollar] = useState<CollarRecord | null>(null);
+    const [loading, setLoading] = useState<boolean>(false);
+    const [error, setError] = useState<string | null>(null);
     const [horizontal, setHorizontal] = useState<boolean>(false);
 
     // Tooltip state
     const [hoveredInterval, setHoveredInterval] = useState<LithologyLog | null>(null);
-    const [tooltipPos, setTooltipPos]           = useState<TooltipPos | null>(null);
-    const [hoveredLogId, setHoveredLogId]       = useState<string | null>(null);
+    const [tooltipPos, setTooltipPos] = useState<TooltipPos | null>(null);
+    const [hoveredLogId, setHoveredLogId] = useState<string | null>(null);
 
     const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -703,10 +698,7 @@ export default function StripLogViewer({
                 const match = Array.isArray(collarList) ? collarList[0] : undefined;
                 if (!match) throw new Error(`Collar ${requestedHole} not found in project.`);
 
-                const showRes = await fetch(
-                    `/api/v1/projects/${projectId}/collars/${match.collar_id}`,
-                    requestInit,
-                );
+                const showRes = await fetch(`/api/v1/projects/${projectId}/collars/${match.collar_id}`, requestInit);
                 if (!showRes.ok) throw new Error(`HTTP ${showRes.status}`);
                 const showBody = await showRes.json();
                 if (signal.aborted) return;
@@ -755,12 +747,14 @@ export default function StripLogViewer({
             from: Number(a.from_depth),
             to: Number(a.to_depth),
             label: a.intensity ? `${a.alteration_type} (${a.intensity})` : String(a.alteration_type),
-            alterations: [{
-                type: String(a.alteration_type),
-                intensity: a.intensity ?? null,
-                minerals: Array.isArray(a.minerals) ? a.minerals : [],
-                notes: a.notes ?? null,
-            }],
+            alterations: [
+                {
+                    type: String(a.alteration_type),
+                    intensity: a.intensity ?? null,
+                    minerals: Array.isArray(a.minerals) ? a.minerals : [],
+                    notes: a.notes ?? null,
+                },
+            ],
         }));
     const mineralBands: StripMineralBand[] = (collar?.mineralization ?? [])
         .filter((m) => m.mineral && m.from_depth != null && m.to_depth != null)
@@ -792,7 +786,7 @@ export default function StripLogViewer({
             return Number.isFinite(last) ? last : 0;
         }),
     );
-    const totalDepth    = Math.max(collar?.total_depth ?? 0, deepestLogged);
+    const totalDepth = Math.max(collar?.total_depth ?? 0, deepestLogged);
 
     // Sort intervals top-to-bottom
     const sortedLogs = [...lithologyLogs].sort(
@@ -816,19 +810,19 @@ export default function StripLogViewer({
     // SVG dimensions — add curve column width only if curves exist
     const hasCurves = wellLogCurves.length > 0;
     const svgHeight = Math.min(Math.max(totalDepth * 8, 400), 1200);
-    const altX      = DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH;
-    const minX      = altX + (hasAlteration ? ALT_COL_WIDTH : 0);
-    const curveX    = minX + (hasMineralization ? MIN_COL_WIDTH : 0);
-    const detailX   = curveX + (hasCurves ? CURVE_COL_WIDTH : 0);
-    const svgWidth  = detailX + DETAIL_COL_WIDTH;
-    const yOf       = (depth: number) => depthToY(depth, totalDepth, svgHeight);
+    const altX = DEPTH_AXIS_WIDTH + LITHO_COL_WIDTH;
+    const minX = altX + (hasAlteration ? ALT_COL_WIDTH : 0);
+    const curveX = minX + (hasMineralization ? MIN_COL_WIDTH : 0);
+    const detailX = curveX + (hasCurves ? CURVE_COL_WIDTH : 0);
+    const svgWidth = detailX + DETAIL_COL_WIDTH;
+    const yOf = (depth: number) => depthToY(depth, totalDepth, svgHeight);
     const altFrame: TrackFrame = { x: altX + 2, width: ALT_COL_WIDTH - 4, yOf };
     const minFrame: TrackFrame = { x: minX + 2, width: MIN_COL_WIDTH - 4, yOf };
 
     // ── Early return states ───────────────────────────────────────────────────
 
     if (loading) return <LoadingState />;
-    if (error)   return <ErrorState message={error} />;
+    if (error) return <ErrorState message={error} />;
     if (!holeId || !collar) return <EmptyState holeId={holeId} />;
     if (lithologyLogs.length === 0 && !hasAlteration && !hasMineralization) return <EmptyState holeId={holeId} />;
 
@@ -841,24 +835,17 @@ export default function StripLogViewer({
 
     return (
         <div className="flex flex-col h-full bg-gray-950 overflow-hidden">
-
             {/* ── Header: hole metadata ── */}
             <div className="px-4 py-3 border-b border-gray-800 bg-gray-900 shrink-0">
                 <div className="flex items-start justify-between gap-4">
                     <div>
-                        <h2 className="text-base font-bold text-gray-100 font-mono">
-                            {collar.hole_id}
-                        </h2>
+                        <h2 className="text-base font-bold text-gray-100 font-mono">{collar.hole_id}</h2>
                         <p className="text-xs text-gray-500 mt-0.5">
                             {collar.hole_type ?? '—'}
                             {collar.total_depth != null && (
-                                <span className="ml-2">
-                                    {collar.total_depth.toFixed(1)} m TD
-                                </span>
+                                <span className="ml-2">{collar.total_depth.toFixed(1)} m TD</span>
                             )}
-                            {collar.drill_date && (
-                                <span className="ml-2">{drillDate}</span>
-                            )}
+                            {collar.drill_date && <span className="ml-2">{drillDate}</span>}
                         </p>
                     </div>
 
@@ -902,7 +889,9 @@ export default function StripLogViewer({
                 {onQueryHole && (
                     <button
                         type="button"
-                        onClick={() => onQueryHole(`Summarise the lithology intersections for drill hole ${collar.hole_id}`)}
+                        onClick={() =>
+                            onQueryHole(`Summarise the lithology intersections for drill hole ${collar.hole_id}`)
+                        }
                         className={cn(
                             'mt-2 text-xs text-amber-400 hover:text-amber-300',
                             'border border-amber-800/50 hover:border-amber-600/50',
@@ -932,10 +921,7 @@ export default function StripLogViewer({
                 <svg
                     width={horizontal ? '100%' : '100%'}
                     height={horizontal ? '100%' : svgHeight}
-                    viewBox={horizontal
-                        ? `0 0 ${svgHeight} ${svgWidth}`
-                        : `0 0 ${svgWidth} ${svgHeight}`
-                    }
+                    viewBox={horizontal ? `0 0 ${svgHeight} ${svgWidth}` : `0 0 ${svgWidth} ${svgHeight}`}
                     preserveAspectRatio={horizontal ? 'xMinYMin meet' : 'xMidYMin meet'}
                     xmlns="http://www.w3.org/2000/svg"
                     aria-label={`Strip log for drill hole ${holeId}`}
@@ -944,89 +930,75 @@ export default function StripLogViewer({
                 >
                     {/* When horizontal, rotate all geometry 90° CW so depth runs L→R,
                         then the viewBox swap (svgHeight × svgWidth) maps it to landscape. */}
-                    <g transform={horizontal
-                        ? `rotate(90, 0, 0) translate(0, -${svgHeight})`
-                        : undefined
-                    }>
-                    {/* Background */}
-                    <rect width={svgWidth} height={svgHeight} fill="#030712" />
+                    <g transform={horizontal ? `rotate(90, 0, 0) translate(0, -${svgHeight})` : undefined}>
+                        {/* Background */}
+                        <rect width={svgWidth} height={svgHeight} fill="#030712" />
 
-                    {/* Grid lines */}
-                    <GridLines totalDepth={totalDepth} svgHeight={svgHeight} svgWidth={svgWidth} />
+                        {/* Grid lines */}
+                        <GridLines totalDepth={totalDepth} svgHeight={svgHeight} svgWidth={svgWidth} />
 
-                    {/* Depth axis */}
-                    <DepthAxis totalDepth={totalDepth} svgHeight={svgHeight} horizontal={horizontal} />
+                        {/* Depth axis */}
+                        <DepthAxis totalDepth={totalDepth} svgHeight={svgHeight} horizontal={horizontal} />
 
-                    {/* Lithology rectangles */}
-                    <LithologyColumn
-                        intervals={sortedLogs}
-                        totalDepth={totalDepth}
-                        svgHeight={svgHeight}
-                        onIntervalHover={handleIntervalHover}
-                        onIntervalLeave={handleIntervalLeave}
-                        hoveredLogId={hoveredLogId}
-                        colours={lithoColours}
-                    />
-
-                    {/* Lithology code text labels */}
-                    <LithologyLabels
-                        intervals={sortedLogs}
-                        totalDepth={totalDepth}
-                        svgHeight={svgHeight}
-                        horizontal={horizontal}
-                    />
-
-                    {/* Alteration and mineralization tracks */}
-                    {hasAlteration && (
-                        <>
-                            <rect x={altX} y={0} width={ALT_COL_WIDTH} height={svgHeight} fill="#0a0a0f" />
-                            <AlterationTrack bands={alterationBands} frame={altFrame} />
-                        </>
-                    )}
-                    {hasMineralization && (
-                        <>
-                            <rect x={minX} y={0} width={MIN_COL_WIDTH} height={svgHeight} fill="#0a0a0f" />
-                            <MineralizationTrack bands={mineralBands} frame={minFrame} />
-                        </>
-                    )}
-
-                    {/* LAS continuous curves (GR, RHOB, etc.) */}
-                    {hasCurves && (
-                        <CurveTraces
-                            curves={wellLogCurves}
+                        {/* Lithology rectangles */}
+                        <LithologyColumn
+                            intervals={sortedLogs}
                             totalDepth={totalDepth}
                             svgHeight={svgHeight}
-                            x={curveX}
+                            onIntervalHover={handleIntervalHover}
+                            onIntervalLeave={handleIntervalLeave}
+                            hoveredLogId={hoveredLogId}
+                            colours={lithoColours}
                         />
-                    )}
 
-                    {/* RQD / Recovery bars */}
-                    <RqdBars
-                        intervals={sortedLogs}
-                        totalDepth={totalDepth}
-                        svgHeight={svgHeight}
-                        x={curveX + (hasCurves ? CURVE_COL_WIDTH : 0)}
-                    />
+                        {/* Lithology code text labels */}
+                        <LithologyLabels
+                            intervals={sortedLogs}
+                            totalDepth={totalDepth}
+                            svgHeight={svgHeight}
+                            horizontal={horizontal}
+                        />
 
-                    {/* RQD column header rule */}
-                    <line
-                        x1={detailX}
-                        y1={0}
-                        x2={detailX}
-                        y2={svgHeight}
-                        stroke="#1f2937"
-                        strokeWidth={1}
-                    />
-                    </g>{/* close horizontal rotation group */}
+                        {/* Alteration and mineralization tracks */}
+                        {hasAlteration && (
+                            <>
+                                <rect x={altX} y={0} width={ALT_COL_WIDTH} height={svgHeight} fill="#0a0a0f" />
+                                <AlterationTrack bands={alterationBands} frame={altFrame} />
+                            </>
+                        )}
+                        {hasMineralization && (
+                            <>
+                                <rect x={minX} y={0} width={MIN_COL_WIDTH} height={svgHeight} fill="#0a0a0f" />
+                                <MineralizationTrack bands={mineralBands} frame={minFrame} />
+                            </>
+                        )}
+
+                        {/* LAS continuous curves (GR, RHOB, etc.) */}
+                        {hasCurves && (
+                            <CurveTraces
+                                curves={wellLogCurves}
+                                totalDepth={totalDepth}
+                                svgHeight={svgHeight}
+                                x={curveX}
+                            />
+                        )}
+
+                        {/* RQD / Recovery bars */}
+                        <RqdBars
+                            intervals={sortedLogs}
+                            totalDepth={totalDepth}
+                            svgHeight={svgHeight}
+                            x={curveX + (hasCurves ? CURVE_COL_WIDTH : 0)}
+                        />
+
+                        {/* RQD column header rule */}
+                        <line x1={detailX} y1={0} x2={detailX} y2={svgHeight} stroke="#1f2937" strokeWidth={1} />
+                    </g>
+                    {/* close horizontal rotation group */}
                 </svg>
 
                 {/* Tooltip overlay (HTML, positioned over SVG) */}
-                <IntervalTooltip
-                    interval={hoveredInterval}
-                    position={tooltipPos}
-                    totalDepth={totalDepth}
-                    colours={lithoColours}
-                />
+                <IntervalTooltip interval={hoveredInterval} position={tooltipPos} colours={lithoColours} />
             </div>
 
             {/* ── Legend ── */}

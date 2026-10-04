@@ -125,8 +125,15 @@ const featureCollection = {
 const drillholeRecord = {
     title: 'Drillhole PLS-20-001',
     jurisdiction: { code: 'CA-SK', name: 'Saskatchewan', authority: null },
-    source: { source_id: 'CA-SK-DRILLHOLE', name: 'Saskatchewan Minerals & Quaternary Drillhole Compilation', service_url: null },
-    license: { summary: 'Government of Saskatchewan Standard Unrestricted Use Data License v2.0', url: 'https://example.test/licence.pdf' },
+    source: {
+        source_id: 'CA-SK-DRILLHOLE',
+        name: 'Saskatchewan Minerals & Quaternary Drillhole Compilation',
+        service_url: null,
+    },
+    license: {
+        summary: 'Government of Saskatchewan Standard Unrestricted Use Data License v2.0',
+        url: 'https://example.test/licence.pdf',
+    },
     refresh: { last_refreshed_at: null },
     references_summary: { count: 0, documents: [] },
     entity: {
@@ -152,11 +159,15 @@ beforeEach(() => {
     for (const key of Object.keys(handlers)) delete handlers[key];
     vi.stubGlobal(
         'fetch',
-        vi.fn(async (url: string) =>
-            new Response(JSON.stringify(String(url).includes('/citations/resolve') ? drillholeRecord : featureCollection), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-            }),
+        vi.fn(
+            async (url: string) =>
+                new Response(
+                    JSON.stringify(String(url).includes('/citations/resolve') ? drillholeRecord : featureCollection),
+                    {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    },
+                ),
         ),
     );
 });
@@ -242,7 +253,10 @@ describe('PublicGeoscience', () => {
     it('zooms into a cluster rather than opening a card', async () => {
         await mountAndLoad();
         state.rendered = [
-            { geometry: { type: 'Point', coordinates: [-105, 55] }, properties: { cluster: true, layer: 'drillhole_collar', point_count: 120 } },
+            {
+                geometry: { type: 'Point', coordinates: [-105, 55] },
+                properties: { cluster: true, layer: 'drillhole_collar', point_count: 120 },
+            },
         ];
         await act(async () => {
             for (const fn of handlers.click ?? []) fn({ point: { x: 10, y: 10 }, lngLat: { lng: -105, lat: 55 } });

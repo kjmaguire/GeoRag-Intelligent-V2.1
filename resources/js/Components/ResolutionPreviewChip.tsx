@@ -47,9 +47,7 @@ export default function ResolutionPreviewChip({ resolution }: Props) {
     const rewritten = typed.rewritten_query;
     if (!original || !rewritten || original === rewritten) return null;
 
-    const confidence = typeof typed.overall_confidence === 'number'
-        ? typed.overall_confidence
-        : null;
+    const confidence = typeof typed.overall_confidence === 'number' ? typed.overall_confidence : null;
 
     let tone: 'high' | 'medium' | 'low' | null = null;
     if (confidence !== null) {
@@ -89,19 +87,14 @@ export default function ResolutionPreviewChip({ resolution }: Props) {
                         className={baseChipClass}
                         style={toneStyle}
                         title={
-                            confidence !== null
-                                ? `Resolver confidence: ${(confidence * 100).toFixed(0)}%`
-                                : undefined
+                            confidence !== null ? `Resolver confidence: ${(confidence * 100).toFixed(0)}%` : undefined
                         }
                     >
                         {tone === 'high' ? 'high' : tone === 'medium' ? 'medium' : 'low'}
                     </span>
                 )}
             </div>
-            <div
-                className="mt-1 text-[10px] italic"
-                style={{ color: 'var(--fg-3, #888)' }}
-            >
+            <div className="mt-1 text-[10px] italic" style={{ color: 'var(--fg-3, #888)' }}>
                 from your message: {original}
             </div>
         </div>

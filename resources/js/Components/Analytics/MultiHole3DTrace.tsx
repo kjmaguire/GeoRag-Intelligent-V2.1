@@ -16,7 +16,12 @@ interface Collar {
     total_depth?: number | null;
 }
 
-interface Survey { collar_id: string; depth: number; azimuth: number | null; dip: number | null; }
+interface Survey {
+    collar_id: string;
+    depth: number;
+    azimuth: number | null;
+    dip: number | null;
+}
 
 interface Props {
     collars: Collar[];
@@ -26,16 +31,16 @@ interface Props {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-    Completed:     '#22c55e',
+    Completed: '#22c55e',
     'In Progress': '#eab308',
-    Active:        '#eab308',
-    Abandoned:     '#ef4444',
+    Active: '#eab308',
+    Abandoned: '#ef4444',
 };
 
 const TYPE_COLORS: Record<string, string> = {
     Diamond: '#38bdf8',
-    RC:      '#a855f7',
-    RAB:     '#ec4899',
+    RC: '#a855f7',
+    RAB: '#ec4899',
 };
 
 /**
@@ -75,9 +80,9 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             const label = `${c.hole_id} — ${c.hole_type ?? '—'} (${c.status ?? 'unknown'})`;
             const unsurveyed = !hole.surveyed;
             const note = unsurveyed
-                ? (hole.orientation === 'collar'
+                ? hole.orientation === 'collar'
                     ? ' · UNSURVEYED — projected on collar az/dip'
-                    : ' · NO ORIENTATION — drawn vertical')
+                    : ' · NO ORIENTATION — drawn vertical'
                 : '';
             const toXYZ = (pts: PathPoint[]) => ({
                 x: pts.map((p) => hole.origin.x + p.x),
@@ -123,7 +128,9 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             (groups[k] = groups[k] || []).push({
                 type: 'scatter3d',
                 mode: 'markers',
-                x: [hole.origin.x], y: [hole.origin.y], z: [hole.origin.z],
+                x: [hole.origin.x],
+                y: [hole.origin.y],
+                z: [hole.origin.z],
                 marker: unsurveyed
                     ? { size: 4, color: 'rgba(0,0,0,0)', symbol: 'circle-open', line: { color, width: 2 } }
                     : { size: 4, color, symbol: 'diamond', line: { color: 'rgba(0,0,0,0.4)', width: 1 } },
@@ -141,7 +148,9 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             traces.push({
                 type: 'scatter3d',
                 mode: 'markers',
-                x: [null], y: [null], z: [null],
+                x: [null],
+                y: [null],
+                z: [null],
                 marker: { size: 8, color: palette[k] ?? '#94a3b8' },
                 name: k,
                 showlegend: true,
@@ -153,7 +162,9 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             traces.push({
                 type: 'scatter3d',
                 mode: 'lines',
-                x: [null], y: [null], z: [null],
+                x: [null],
+                y: [null],
+                z: [null],
                 line: { color: '#94a3b8', width: 2, dash: 'dash' },
                 name: 'projected (no survey)',
                 showlegend: true,
@@ -174,9 +185,21 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             },
             scene: {
                 bgcolor: 'rgba(0,0,0,0)',
-                xaxis: { title: { text: 'Easting (m)', font: { color: '#94a3b8' } }, color: '#94a3b8', gridcolor: 'rgba(148,163,184,0.15)' },
-                yaxis: { title: { text: 'Northing (m)', font: { color: '#94a3b8' } }, color: '#94a3b8', gridcolor: 'rgba(148,163,184,0.15)' },
-                zaxis: { title: { text: 'Elevation (m)', font: { color: '#94a3b8' } }, color: '#94a3b8', gridcolor: 'rgba(148,163,184,0.15)' },
+                xaxis: {
+                    title: { text: 'Easting (m)', font: { color: '#94a3b8' } },
+                    color: '#94a3b8',
+                    gridcolor: 'rgba(148,163,184,0.15)',
+                },
+                yaxis: {
+                    title: { text: 'Northing (m)', font: { color: '#94a3b8' } },
+                    color: '#94a3b8',
+                    gridcolor: 'rgba(148,163,184,0.15)',
+                },
+                zaxis: {
+                    title: { text: 'Elevation (m)', font: { color: '#94a3b8' } },
+                    color: '#94a3b8',
+                    gridcolor: 'rgba(148,163,184,0.15)',
+                },
                 aspectmode: 'data' as const,
                 camera: { eye: { x: 1.4, y: 1.4, z: 0.8 } },
             },
@@ -190,7 +213,11 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
     }
     return (
         <div className="flex flex-col h-full min-h-0">
-            <div className="text-[10px] font-mono mb-1 shrink-0" style={{ color: 'var(--fg-3)' }} data-testid="desurvey-caption">
+            <div
+                className="text-[10px] font-mono mb-1 shrink-0"
+                style={{ color: 'var(--fg-3)' }}
+                data-testid="desurvey-caption"
+            >
                 {caption}
             </div>
             <div className="flex-1 min-h-0">
