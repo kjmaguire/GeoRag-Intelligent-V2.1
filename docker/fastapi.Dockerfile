@@ -83,6 +83,24 @@ RUN mkdir -p /opt/tesseract/share/tessdata \
     && curl -fsSL https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata \
         -o /opt/tesseract/share/tessdata/eng.traineddata
 
+# Language data for the Tesseract floor's detected-language path. The PDF
+# parser (pdf_report._TESSERACT_LANG_BY_DETECTED) maps the langdetect tags it
+# emits -- fr, es, de, zh-cn -- to fra, spa, deu, chi_sim and asks Tesseract
+# for "<lang>+eng". Without these files the OCR call falls back to eng with an
+# `ocr_language_unavailable` run warning (pdf_report._tesseract_lang), which
+# reads French/Spanish/German scans with English models. Same tessdata_fast
+# source, same unpinned `main` ref as the eng line above (NOT a commit pin -- a
+# rebuild can pick up newer weights; pin both lines together if that matters).
+# One layer, ~7 MB; `set -eux` so one failed download fails the build instead
+# of leaving a language missing -- a bare for-loop would report only its LAST
+# iteration's exit status.
+RUN set -eux; \
+    for lang in fra spa deu chi_sim; do \
+        curl -fsSL "https://github.com/tesseract-ocr/tessdata_fast/raw/main/${lang}.traineddata" \
+            -o "/opt/tesseract/share/tessdata/${lang}.traineddata"; \
+        test -s "/opt/tesseract/share/tessdata/${lang}.traineddata"; \
+    done
+
 
 # =============================================================================
 # Stage 1 — builder

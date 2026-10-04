@@ -2638,6 +2638,28 @@ def _parse_with_fitz(
                 "pdf_report: fitz+OCR recovered %d/%d short pages",
                 ocr_recovered, len(short_page_nums),
             )
+        # The document is mostly French/Spanish/German/Chinese, Tesseract read
+        # some of its pages, and it did so without that language's data. Said
+        # on the run, not just in the process log (`_tesseract_lang` logs once
+        # per process): the pages read this way are the ones English models
+        # garble. Only when Tesseract actually read a page -- a document the
+        # remote engine handled entirely never needed the data.
+        _tess_page_count = sum(1 for m in per_page_method.values() if m == "tesseract")
+        if _doc_ocr_lang and _tess_page_count and _tesseract_lang(_doc_ocr_lang) == "eng":
+            _wanted_code = _TESSERACT_LANG_BY_DETECTED[_doc_ocr_lang]
+            warnings.append({
+                "code": "ocr_language_unavailable",
+                "language": _doc_ocr_lang,
+                "tesseract_language": _wanted_code,
+                "fallback": "eng",
+                "pages_affected": _tess_page_count,
+                "message": (
+                    f"The document is mostly '{_doc_ocr_lang}' but Tesseract data "
+                    f"'{_wanted_code}' is not available; {_tess_page_count} "
+                    f"scanned page(s) were read with the English model and may "
+                    f"contain recognition errors (accents, special characters)."
+                ),
+            })
         if engine_first_native:
             warnings.append(
                 _parse_mode_summary_warning(
@@ -3081,14 +3103,20 @@ _TESSERACT_LANG_BY_DETECTED = {
 
 _TESSERACT_LANGS_LOGGED: set[str] = set()
 
+#: Tesseract codes whose data was listed as installed but failed at call time
+#: (corrupt or truncated traineddata). Treated as unavailable for the rest of
+#: the process, so `_tesseract_lang` stops asking for them.
+_TESSERACT_LANGS_BROKEN: set[str] = set()
+
 
 @functools.lru_cache(maxsize=1)
 def _installed_tesseract_langs() -> frozenset[str]:
     """Language data this process's Tesseract has (``tesseract --list-langs``).
 
     Asked once per process. Any failure answers ``{"eng"}``: the English data
-    is the only thing the image build guarantees (docker/fastapi.Dockerfile
-    ships eng.traineddata alone), and a question that cannot be answered must
+    is the only thing every build guarantees (docker/fastapi.Dockerfile
+    also ships fra, spa, deu and chi_sim, but a custom TESSDATA_PREFIX may
+    not), and a question that cannot be answered must
     not stop OCR.
     """
     try:
@@ -3118,7 +3146,7 @@ def _tesseract_lang(hint: str | None) -> str:
     code = _TESSERACT_LANG_BY_DETECTED.get(hint or "")
     if not code or code == "eng":
         return "eng"
-    if code in _installed_tesseract_langs():
+    if code in _installed_tesseract_langs() and code not in _TESSERACT_LANGS_BROKEN:
         return f"{code}+eng"
     if code not in _TESSERACT_LANGS_LOGGED:
         _TESSERACT_LANGS_LOGGED.add(code)
@@ -3390,11 +3418,29 @@ def _ocr_single_page(
                     page_num, conf_exc,
                 )
                 # Fall through to legacy image_to_string path below
-        text = pytesseract.image_to_string(
-            processed,
-            lang=_tess_lang,
-            config="--psm 3 --oem 3",
-        )
+        try:
+            text = pytesseract.image_to_string(
+                processed,
+                lang=_tess_lang,
+                config="--psm 3 --oem 3",
+            )
+        except Exception as lang_exc:  # noqa: BLE001
+            if _tess_lang == "eng":
+                raise
+            # The data was listed but cannot be loaded (corrupt/truncated):
+            # read the page with English rather than losing it, and stop
+            # asking for that language in this process.
+            _TESSERACT_LANGS_BROKEN.add(_tess_lang.split("+", 1)[0])
+            logger.warning(
+                "pdf_report: Tesseract failed with lang=%r on page %d of '%s' "
+                "(%s) -- retrying with eng",
+                _tess_lang, page_num, pdf_path, lang_exc,
+            )
+            text = pytesseract.image_to_string(
+                processed,
+                lang="eng",
+                config="--psm 3 --oem 3",
+            )
         out_text = _postprocess_ocr_text(text) if text and text.strip() else ""
         # When confidence was requested but image_to_data raised, return
         # 0.0 to signal "unknown" rather than fabricating a number.

@@ -26,6 +26,20 @@ georag_reports
     georag_chunks (RETRIEVAL_USE_DOCUMENT_PASSAGES=true); georag_reports is
     retained for the legacy path.
 
+Adopting ``is_tenant`` on a live collection
+-------------------------------------------
+A ``workspace_id`` index created before ``is_tenant`` was declared is left as
+it is on every normal run: re-PUTting it would rebuild it on a collection that
+is serving traffic. ``--adopt-tenant-index`` is the explicit, one-off way to
+do that rebuild: for each collection whose spec declares ``workspace_id`` as
+the tenant index and whose live index is KNOWN to lack ``is_tenant``, it
+deletes the index (``wait=true``) and re-creates it with
+``{"type": "keyword", "is_tenant": true}`` (``wait=false``). Run it in a quiet
+period: filters on ``workspace_id`` keep working while the index rebuilds, only
+slower (no index to use until the build finishes). When the server's
+``payload_schema`` does not expose ``params`` the state is reported as UNKNOWN
+and nothing is changed.
+
 Payload indices match the fields the runtime writer actually emits
 (index_document_passages._build_payload / index_reports), so filtered vector
 searches skip full collection scans. (Audit 2026-06-27 C1/IND-3: the previous
@@ -35,6 +49,7 @@ document_type/source_id/chunk_index — fields no live point carries.)
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import sys
@@ -238,8 +253,8 @@ def index_field_schema(index: PayloadIndex) -> str | dict:
     return index.field_schema
 
 
-async def _existing_payload_fields(client: httpx.AsyncClient, name: str) -> set[str]:
-    """Fields that already have a payload index on an existing collection.
+async def _payload_schema(client: httpx.AsyncClient, name: str) -> dict:
+    """``payload_schema`` of an existing collection: field -> index info.
 
     RAISES when the answer cannot be read. It used to return an empty set on a
     non-200 or an unparseable body, and an empty set means "nothing is
@@ -260,15 +275,122 @@ async def _existing_payload_fields(client: httpx.AsyncClient, name: str) -> set[
         raise RuntimeError(
             f"Read payload schema of '{name}' - unparseable response: {exc!r}"
         ) from exc
-    return set(schema)
+    return schema
+
+
+async def _existing_payload_fields(client: httpx.AsyncClient, name: str) -> set[str]:
+    """Fields that already have a payload index on an existing collection."""
+    return set(await _payload_schema(client, name))
+
+
+TENANT_YES = "tenant"
+TENANT_NO = "not_tenant"
+TENANT_UNKNOWN = "unknown"
+
+
+def tenant_state(entry: object) -> str:
+    """Whether a ``payload_schema`` entry is an ``is_tenant`` index.
+
+    Qdrant reports ``PayloadIndexInfo`` as ``{"data_type", "params", "points"}``.
+    ``params`` carries the schema ONLY when the index was created with the
+    parameterised form; an index created with the bare ``"keyword"`` form -
+    which is exactly how ``georag_chunks`` was first bootstrapped - comes back
+    with ``params`` null. That is the case this tool exists for, so:
+
+    * ``params`` is a dict with ``is_tenant`` true                  -> ``tenant``
+    * ``params`` is a dict without it (or false)                     -> ``not_tenant``
+    * ``params`` absent / null and ``data_type`` is ``"keyword"``   -> ``not_tenant``
+      (a keyword index created without options has no tenant flag)
+    * the entry is not a dict, has no ``data_type``, or is indexed as some
+      other type -> ``unknown``: rebuilding it as a keyword index would
+      change its type, so the caller is told and nothing is touched.
+    """
+    if not isinstance(entry, dict):
+        return TENANT_UNKNOWN
+    params = entry.get("params")
+    if isinstance(params, dict):
+        return TENANT_YES if params.get("is_tenant") is True else TENANT_NO
+    if params is None and entry.get("data_type") == "keyword":
+        return TENANT_NO
+    return TENANT_UNKNOWN
+
+
+async def _adopt_tenant_index(
+    client: httpx.AsyncClient,
+    collection_name: str,
+    index: PayloadIndex,
+    points: object,
+) -> None:
+    """Rebuild ``index`` WITH ``is_tenant``: DELETE (wait=true), then PUT (wait=false).
+
+    Two requests, and a failure between them leaves the collection with NO
+    index on the field (filters still work, by payload scan) - so the PUT's
+    failure says exactly that and a plain re-run of this script re-creates it.
+    """
+    field_name = index.field_name
+    print(
+        f"  Adopt is_tenant  '{field_name}': BEFORE keyword index without is_tenant "
+        f"(points={points}) - deleting"
+    )
+    resp = await client.delete(
+        f"/collections/{collection_name}/index/{field_name}",
+        params={"wait": "true"},
+    )
+    _ok(resp, f"Delete index '{field_name}' on '{collection_name}'")
+    try:
+        await _create_payload_index(client, collection_name, index)
+    except Exception as exc:
+        raise RuntimeError(
+            f"'{field_name}' index on '{collection_name}' was DELETED and NOT "
+            f"re-created ({exc}). Filters still work but scan every point until "
+            f"it exists: re-run this script (with or without --adopt-tenant-index) "
+            f"to create it."
+        ) from exc
+    print(
+        f"  Adopt is_tenant  '{field_name}': AFTER re-created as "
+        f"{index_field_schema(index)} - build continues in the background "
+        f"(wait=false); filters work meanwhile, only slower"
+    )
+
+
+async def _report_or_adopt_tenant(
+    client: httpx.AsyncClient,
+    collection_name: str,
+    index: PayloadIndex,
+    entry: object,
+    adopt: bool,
+) -> None:
+    """An existing index the spec declares ``is_tenant``: say where it stands,
+    and rebuild it only when ``adopt`` is set AND it is known to lack the flag."""
+    state = tenant_state(entry)
+    if state == TENANT_YES:
+        print(f"  Index present  '{index.field_name}' (is_tenant) — left as is")
+    elif state == TENANT_NO:
+        if adopt:
+            points = entry.get("points", "?") if isinstance(entry, dict) else "?"
+            await _adopt_tenant_index(client, collection_name, index, points)
+        else:
+            print(
+                f"  Index present  '{index.field_name}' lacks is_tenant — left as is; "
+                f"re-run with --adopt-tenant-index to rebuild it (quiet period)"
+            )
+    else:
+        print(
+            f"  Index present  '{index.field_name}': is_tenant UNKNOWN (payload_schema "
+            f"exposes no params: {entry!r}) — left as is, nothing changed"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Main bootstrap routine
 # ---------------------------------------------------------------------------
 
-async def bootstrap() -> None:
-    """Create all collections and their payload indices."""
+async def bootstrap(adopt_tenant_index: bool = False) -> None:
+    """Create all collections and their payload indices.
+
+    ``adopt_tenant_index`` additionally rebuilds a ``workspace_id`` index that
+    exists without ``is_tenant`` (see the module docstring); off by default.
+    """
     print(f"Connecting to Qdrant at {QDRANT_BASE_URL} …")
     print(
         f"  georag_chunks dense size = {CHUNKS_VECTOR_SIZE} "
@@ -303,14 +425,16 @@ async def bootstrap() -> None:
             print(f"--- Collection: {spec.name} ---")
 
             already_indexed: set[str] = set()
+            live_schema: dict = {}
             if await _collection_exists(client, spec.name):
                 print("  Already exists — skipping creation.")
                 # Idempotent on a live collection: an index that is already
                 # there is left exactly as it is. Re-PUTting workspace_id with
                 # is_tenant would REBUILD it on a collection serving traffic,
-                # so adopting is_tenant on an existing collection is a
-                # deliberate, manual step (drop the index, re-run this).
-                already_indexed = await _existing_payload_fields(client, spec.name)
+                # so adopting is_tenant on an existing collection is the
+                # deliberate --adopt-tenant-index step, never a side effect.
+                live_schema = await _payload_schema(client, spec.name)
+                already_indexed = set(live_schema)
             else:
                 await _create_collection(client, spec)
                 print(
@@ -321,7 +445,13 @@ async def bootstrap() -> None:
 
             for idx in spec.payload_indices:
                 if idx.field_name in already_indexed:
-                    print(f"  Index present  '{idx.field_name}' — left as is")
+                    if idx.is_tenant:
+                        await _report_or_adopt_tenant(
+                            client, spec.name, idx,
+                            live_schema[idx.field_name], adopt_tenant_index,
+                        )
+                    else:
+                        print(f"  Index present  '{idx.field_name}' — left as is")
                     continue
                 await _create_payload_index(client, spec.name, idx)
                 tenant = ", is_tenant" if idx.is_tenant else ""
@@ -357,5 +487,23 @@ async def bootstrap() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Bootstrap the GeoRAG Qdrant collections and payload indices.",
+    )
+    parser.add_argument(
+        "--adopt-tenant-index",
+        action="store_true",
+        help=(
+            "Rebuild a workspace_id index that exists WITHOUT is_tenant "
+            "(DELETE, then re-create with is_tenant, wait=false). Rebuilds an "
+            "index on a live collection: run it in a quiet period. Does "
+            "nothing when the index already has is_tenant or its state is "
+            "unknown."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    asyncio.run(bootstrap())
+    asyncio.run(bootstrap(adopt_tenant_index=_parse_args().adopt_tenant_index))

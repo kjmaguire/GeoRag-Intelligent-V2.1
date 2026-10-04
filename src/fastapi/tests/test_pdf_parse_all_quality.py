@@ -541,6 +541,89 @@ class TestTesseractLanguage:
             pdf_report._parse_with_fitz("/data/en.pdf")
         assert seen and all("lang_hint" not in kw for kw in seen)
 
+    # -- ocr_language_unavailable (run warning) and the call-time fallback ----
+
+    _FRENCH_PAGE = (
+        "Le gisement aurifère de Madsen se trouve dans la ceinture de roches vertes "
+        "du lac Rouge et contient des veines de quartz minéralisées dans les zones "
+        "Austin et McVeigh, avec des teneurs proches de sept grammes par tonne. "
+    ) * 2
+
+    def _parse_french_with_ocr(self, monkeypatch, method: str) -> list[dict]:
+        monkeypatch.setenv("OCR_ENGINE", "tesseract")
+        monkeypatch.setenv("PDF_PARSE_MODE", "ocr_only")
+        _install_fake_pypdfium2(
+            monkeypatch, [self._FRENCH_PAGE, self._FRENCH_PAGE, self._FRENCH_PAGE, ""]
+        )
+        assessment = pdf_report._assess_ocr_result(
+            "x" * 200, [0.9] * 20, detected_region_count=20, ocr_method=method,
+        )
+
+        def fake_single(path, page, *a, **kw):
+            return ("x" * 200, 0.9, assessment, [])
+
+        with patch.object(pdf_report, "_ocr_single_page", side_effect=fake_single):
+            return pdf_report._parse_with_fitz("/data/fr.pdf")[3]
+
+    def test_missing_data_is_a_run_warning_naming_language_and_fallback(
+        self, monkeypatch, tess_langs
+    ) -> None:
+        tess_langs("eng", "osd")
+        warnings = self._parse_french_with_ocr(monkeypatch, "tesseract")
+        found = [w for w in warnings if w.get("code") == "ocr_language_unavailable"]
+        assert len(found) == 1
+        assert found[0]["language"] == "fr"
+        assert found[0]["tesseract_language"] == "fra"
+        assert found[0]["fallback"] == "eng"
+        assert found[0]["pages_affected"] == 1
+        assert "fra" in found[0]["message"]
+
+    def test_installed_data_raises_no_warning(self, monkeypatch, tess_langs) -> None:
+        tess_langs("eng", "fra", "osd")
+        warnings = self._parse_french_with_ocr(monkeypatch, "tesseract")
+        assert not [w for w in warnings if w.get("code") == "ocr_language_unavailable"]
+
+    def test_no_warning_when_the_remote_engine_read_every_scanned_page(
+        self, monkeypatch, tess_langs
+    ) -> None:
+        tess_langs("eng", "osd")  # data missing, but Tesseract never read a page
+        warnings = self._parse_french_with_ocr(monkeypatch, "cohere_parse")
+        assert not [w for w in warnings if w.get("code") == "ocr_language_unavailable"]
+
+    def test_listed_but_unloadable_data_retries_with_eng_instead_of_losing_the_page(
+        self, monkeypatch, tess_langs, caplog
+    ) -> None:
+        fake = tess_langs("eng", "fra")
+        fake.Output = types.SimpleNamespace(DICT="dict")
+        fake.image_to_data = MagicMock(side_effect=RuntimeError("Failed loading language 'fra'"))
+
+        def image_to_string(_img, lang, config):
+            if lang != "eng":
+                raise RuntimeError("Failed loading language 'fra'")
+            return "Rapport technique sur le gisement"
+
+        fake.image_to_string = MagicMock(side_effect=image_to_string)
+        pdf2image = types.ModuleType("pdf2image")
+        pdf2image.convert_from_path = MagicMock(return_value=[object()])
+        monkeypatch.setitem(sys.modules, "pdf2image", pdf2image)
+        monkeypatch.setenv("OCR_ENGINE", "tesseract")
+        monkeypatch.setattr(pdf_report, "_TESSERACT_LANGS_BROKEN", set())
+
+        with (
+            patch.object(pdf_report, "_preprocess_image_for_ocr", side_effect=lambda im: im),
+            patch.object(pdf_report, "_meter_ocr_page"),
+            caplog.at_level("WARNING", logger="app.services.ingest.pdf_report"),
+        ):
+            text = pdf_report._ocr_single_page("/x.pdf", 1, lang_hint="fr")
+            again = pdf_report._ocr_single_page("/x.pdf", 2, lang_hint="fr")
+
+        assert "Rapport technique" in text and "Rapport technique" in again
+        assert [c.kwargs["lang"] for c in fake.image_to_string.call_args_list] == [
+            "fra+eng", "eng", "eng",
+        ]
+        assert any("retrying with eng" in r.getMessage() for r in caplog.records)
+        assert pdf_report._tesseract_lang("fr") == "eng"  # remembered as unusable
+
 
 # ---------------------------------------------------------------------------
 # The upload ceiling

@@ -215,3 +215,180 @@ async def test_existing_payload_fields_reads_the_schema_when_it_can(init_qdrant)
     assert await init_qdrant._existing_payload_fields(client, "georag_chunks") == {
         "workspace_id", "chunk_kind",
     }
+
+
+# ---------------------------------------------------------------------------
+# --adopt-tenant-index
+# ---------------------------------------------------------------------------
+
+_CHUNK_FIELDS = ("workspace_id", "project_id", "report_id", "section_number", "chunk_kind")
+_TENANT_PARAMS = {"type": "keyword", "is_tenant": True}
+_NO_TENANT_PARAMS = {"type": "keyword"}
+
+
+class _TenantClient:
+    """Existing collections with a controllable ``workspace_id`` schema entry.
+
+    ``ws_entry`` is the raw ``payload_schema["workspace_id"]`` Qdrant reports for
+    georag_chunks; every other index is a plain keyword. Records every mutating
+    call in order so the DELETE-then-PUT sequence is assertable.
+    """
+
+    def __init__(self, ws_entry: dict, put_status: int = 200) -> None:
+        self.ws_entry = ws_entry
+        self.put_status = put_status
+        self.calls: list[tuple[str, str, dict | None, dict | None]] = []
+
+    async def get(self, url: str):
+        if url == "/healthz":
+            return _Resp()
+        if url == "/collections":
+            return _Resp(payload={"result": {"collections": [
+                {"name": n} for n in ("georag_chunks", "georag_reports")
+            ]}})
+        if url == "/collections/georag_chunks":
+            schema = {f: {"data_type": "keyword", "points": 7} for f in _CHUNK_FIELDS}
+            schema["workspace_id"] = self.ws_entry
+            return _Resp(payload={"result": {"payload_schema": schema}})
+        if url == "/collections/georag_reports":
+            return _Resp(payload={"result": {"payload_schema": {
+                "workspace_id": {"data_type": "keyword"},
+                "report_id": {"data_type": "keyword"},
+                "section_number": {"data_type": "integer"},
+                "commodity": {"data_type": "keyword"},
+            }}})
+        return _Resp(404)
+
+    async def put(self, url: str, json: dict | None = None, params: dict | None = None):
+        self.calls.append(("PUT", url, json, params))
+        return _Resp(self.put_status)
+
+    async def delete(self, url: str, params: dict | None = None):
+        self.calls.append(("DELETE", url, None, params))
+        return _Resp()
+
+    @property
+    def mutations(self) -> list[tuple[str, str, dict | None, dict | None]]:
+        return self.calls
+
+
+async def _run_adopt(init_qdrant, monkeypatch, client, *, adopt: bool) -> None:
+    monkeypatch.setattr(init_qdrant.httpx, "AsyncClient", lambda **kw: _ClientCM(client))
+    await init_qdrant.bootstrap(adopt_tenant_index=adopt)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adopt", [False, True])
+async def test_an_index_that_is_already_tenant_is_never_touched(
+    init_qdrant, monkeypatch, capsys, adopt,
+) -> None:
+    client = _TenantClient({"data_type": "keyword", "params": _TENANT_PARAMS, "points": 7})
+    await _run_adopt(init_qdrant, monkeypatch, client, adopt=adopt)
+    assert client.mutations == []
+    assert "'workspace_id' (is_tenant) — left as is" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_missing_is_tenant_without_the_flag_logs_one_line_and_changes_nothing(
+    init_qdrant, monkeypatch, capsys,
+) -> None:
+    client = _TenantClient({"data_type": "keyword", "params": _NO_TENANT_PARAMS, "points": 7})
+    await _run_adopt(init_qdrant, monkeypatch, client, adopt=False)
+    assert client.mutations == []
+    lines = [
+        ln for ln in capsys.readouterr().out.splitlines()
+        if "lacks is_tenant" in ln
+    ]
+    assert len(lines) == 1
+    assert "--adopt-tenant-index" in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_with_the_flag_the_index_is_deleted_then_recreated_with_is_tenant(
+    init_qdrant, monkeypatch, capsys,
+) -> None:
+    client = _TenantClient({"data_type": "keyword", "params": _NO_TENANT_PARAMS, "points": 7})
+    await _run_adopt(init_qdrant, monkeypatch, client, adopt=True)
+    assert client.mutations == [
+        ("DELETE", "/collections/georag_chunks/index/workspace_id", None, {"wait": "true"}),
+        (
+            "PUT",
+            "/collections/georag_chunks/index",
+            {"field_name": "workspace_id",
+             "field_schema": {"type": "keyword", "is_tenant": True}},
+            {"wait": "false"},
+        ),
+    ]
+    out = capsys.readouterr().out
+    assert "BEFORE" in out and "AFTER" in out
+
+
+@pytest.mark.asyncio
+async def test_the_frozen_reports_collection_is_never_adopted(
+    init_qdrant, monkeypatch,
+) -> None:
+    client = _TenantClient({"data_type": "keyword", "params": _NO_TENANT_PARAMS})
+    await _run_adopt(init_qdrant, monkeypatch, client, adopt=True)
+    assert not any("georag_reports" in url for _m, url, _b, _p in client.mutations)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"points": 7},                                   # no data_type at all
+        {"data_type": "integer", "params": None},       # indexed as another type
+        "keyword",                                       # not an object at all
+    ],
+)
+@pytest.mark.parametrize("adopt", [False, True])
+async def test_a_schema_that_does_not_expose_params_is_unknown_and_not_acted_on(
+    init_qdrant, monkeypatch, capsys, entry, adopt,
+) -> None:
+    client = _TenantClient(entry)  # type: ignore[arg-type]
+    await _run_adopt(init_qdrant, monkeypatch, client, adopt=adopt)
+    assert client.mutations == []
+    out = capsys.readouterr().out
+    assert "is_tenant UNKNOWN" in out
+    assert "lacks is_tenant" not in out
+
+
+@pytest.mark.asyncio
+async def test_the_bare_keyword_bootstrap_form_is_adopted_with_the_flag(
+    init_qdrant, monkeypatch,
+) -> None:
+    """The live georag_chunks index was created as plain "keyword", which
+    Qdrant reports with params null - the one shape the flag must act on."""
+    client = _TenantClient({"data_type": "keyword", "params": None, "points": 3})
+    await _run_adopt(init_qdrant, monkeypatch, client, adopt=True)
+    assert [m for m, *_ in client.mutations] == ["DELETE", "PUT"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_recreate_after_the_delete_says_the_index_is_gone(
+    init_qdrant, monkeypatch,
+) -> None:
+    client = _TenantClient(
+        {"data_type": "keyword", "params": _NO_TENANT_PARAMS}, put_status=500,
+    )
+    with pytest.raises(RuntimeError, match="DELETED and NOT re-created"):
+        await _run_adopt(init_qdrant, monkeypatch, client, adopt=True)
+    assert [m for m, *_ in client.mutations] == ["DELETE", "PUT"]
+
+
+def test_tenant_state_reads_only_params_is_tenant(init_qdrant) -> None:
+    state = init_qdrant.tenant_state
+    assert state({"params": {"type": "keyword", "is_tenant": True}}) == "tenant"
+    assert state({"params": {"type": "keyword", "is_tenant": False}}) == "not_tenant"
+    assert state({"params": {"type": "keyword"}}) == "not_tenant"
+    # The bare-"keyword" bootstrap form: Qdrant reports params null.
+    assert state({"data_type": "keyword", "params": None, "points": 3}) == "not_tenant"
+    assert state({"data_type": "keyword"}) == "not_tenant"
+    assert state({"data_type": "integer", "params": None}) == "unknown"
+    assert state({"points": 3}) == "unknown"
+    assert state(None) == "unknown"
+
+
+def test_the_cli_flag_defaults_off(init_qdrant) -> None:
+    assert init_qdrant._parse_args([]).adopt_tenant_index is False
+    assert init_qdrant._parse_args(["--adopt-tenant-index"]).adopt_tenant_index is True

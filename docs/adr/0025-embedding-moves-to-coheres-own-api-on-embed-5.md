@@ -96,7 +96,9 @@ measured step (see sub-decision).**
 - **`georag_chunks` keeps its shape**: dense slot `''`, 1024 dims, Cosine,
   plus SPLADE++ sparse. Embed 5 Pro supports output dimensions 2048, 1536,
   1024, 768, 512 and 256, so no collection schema migration and no
-  `init_qdrant.py --recreate` is required. **Every vector still has to be
+  drop-and-recreate of the collection is required (`init_qdrant.py` has no
+  such mode; `scripts/reset_embeddings_for_reencode.py --all` is the
+  mechanism). **Every vector still has to be
   rewritten** (see Migration mechanics).
 - **Rerank stays on Bedrock, Rerank 3.5.** ADR-0023's sub-decision and its
   trigger ("revisit when the credits are exhausted") are unchanged.
