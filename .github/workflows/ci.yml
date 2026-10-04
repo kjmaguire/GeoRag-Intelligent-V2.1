@@ -143,7 +143,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: ci_root_password
@@ -277,7 +277,7 @@ jobs:
         # Digest pinned (Chunk 10.2): sha256 captured 2026-04-26 from
         # docker pull postgis/postgis:18-3.6 on the Debian (non-alpine) variant.
         # Re-pin when upgrading PostGIS minor version.
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           # 2026-08-17 CI-gap audit: matches phpunit.pgsql.xml's hardcoded
@@ -863,7 +863,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1076,7 +1076,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1406,7 +1406,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1516,7 +1516,7 @@ jobs:
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
@@ -1871,7 +1871,7 @@ jobs:
         # Both variants carry PostgreSQL 18 + PostGIS 3.6 — the major version
         # match is what closes H-A4-03.
         # Digest pinned (Chunk 10.2): sha256 captured 2026-04-26.
-        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
         env:
           POSTGRES_USER: georag
           POSTGRES_PASSWORD: test_password
