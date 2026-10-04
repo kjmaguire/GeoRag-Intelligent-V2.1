@@ -114,11 +114,32 @@ describe('EvidenceInspector', () => {
                 open
                 onOpenChange={() => {}}
                 projectSlug="demo"
+                answerRunId="run-1"
                 onReportIssue={onReportIssue}
             />
         );
         await waitFor(() => expect(screen.getByTestId('evidence-inspector-text')).toBeInTheDocument());
         fireEvent.click(screen.getByText('👎 Report citation issue'));
         expect(onReportIssue).toHaveBeenCalledWith(citation);
+    });
+
+    it.each([null, undefined])('does not offer "Report citation issue" without an answer run (%s)', async (answerRunId) => {
+        fetchMock.mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({ text: 'Some text', source_type: 'report' }),
+        });
+        render(
+            <EvidenceInspector
+                citation={citation}
+                open
+                onOpenChange={() => {}}
+                projectSlug="demo"
+                answerRunId={answerRunId}
+                onReportIssue={vi.fn()}
+            />
+        );
+        await waitFor(() => expect(screen.getByTestId('evidence-inspector-text')).toBeInTheDocument());
+        expect(screen.queryByText('👎 Report citation issue')).not.toBeInTheDocument();
     });
 });

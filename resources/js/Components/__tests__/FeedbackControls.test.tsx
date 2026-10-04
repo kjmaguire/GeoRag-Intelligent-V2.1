@@ -73,6 +73,54 @@ describe('FeedbackControls', () => {
         expect(screen.getByLabelText('Feedback category')).toHaveValue('citation_issue');
     });
 
+    it('opens with the note pre-filled when the preset carries one', () => {
+        render(
+            <FeedbackControls
+                answerRunId="run-1"
+                presetCategory={{ category: 'citation_issue', note: 'Citation [2] Report Two: ' }}
+            />
+        );
+        expect(screen.getByLabelText('Feedback note')).toHaveValue('Citation [2] Report Two: ');
+    });
+
+    it('confirms with a brief thanks after a thumbs-up', async () => {
+        render(<FeedbackControls answerRunId="run-1" />);
+        fireEvent.click(screen.getByLabelText('Good answer'));
+        await waitFor(() => expect(screen.getByTestId('feedback-thanks')).toHaveTextContent('Thanks'));
+    });
+
+    it('closes the form and confirms after a thumbs-down submit', async () => {
+        render(<FeedbackControls answerRunId="run-1" />);
+        fireEvent.click(screen.getByLabelText('Bad answer'));
+        fireEvent.change(screen.getByLabelText('Feedback category'), { target: { value: 'wrong_facts' } });
+        fireEvent.click(screen.getByText('Submit feedback'));
+        await waitFor(() => expect(screen.getByTestId('feedback-thanks')).toBeInTheDocument());
+        expect(screen.queryByLabelText('Feedback category')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Bad answer')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('disables both thumbs while a submit is in flight and posts only once', async () => {
+        let release: (r: unknown) => void = () => {};
+        fetchMock.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+        render(<FeedbackControls answerRunId="run-1" />);
+        fireEvent.click(screen.getByLabelText('Good answer'));
+        await waitFor(() => expect(screen.getByLabelText('Good answer')).toBeDisabled());
+        expect(screen.getByLabelText('Bad answer')).toBeDisabled();
+        fireEvent.click(screen.getByLabelText('Good answer'));
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        release({ ok: true, status: 201, json: async () => ({}) });
+        await waitFor(() => expect(screen.getByLabelText('Good answer')).toBeEnabled());
+    });
+
+    it('does not show the thanks when the request fails', async () => {
+        fetchMock.mockResolvedValue({ ok: false, status: 500 });
+        render(<FeedbackControls answerRunId="run-1" />);
+        fireEvent.click(screen.getByLabelText('Good answer'));
+        await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+        expect(screen.queryByTestId('feedback-thanks')).not.toBeInTheDocument();
+    });
+
     it('shows an error message when the request fails', async () => {
         fetchMock.mockResolvedValue({ ok: false, status: 500 });
         render(<FeedbackControls answerRunId="run-1" />);

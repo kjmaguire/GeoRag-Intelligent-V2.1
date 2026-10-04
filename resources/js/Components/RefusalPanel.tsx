@@ -18,12 +18,17 @@
  *     `CONFLICTING_SOURCES`; `guard_codes` lists every code that fired).
  *
  * Deliberately non-hedging per §10u: "Insufficient evidence to answer this
- * question from the current corpus." is the fixed headline for the refusal
- * variant — the backend's own `message` renders as supporting detail
- * underneath, not as a replacement for it. The `failed` variant has no
- * fixed headline (a timeout or a quota ceiling is not "insufficient
+ * question from the current corpus." is the fixed headline for a refusal
+ * whose reason is `insufficient_evidence` (case-insensitive) or whose reason
+ * is absent — the backend's own `message` renders as supporting detail
+ * underneath, not as a replacement for it. A refusal for any OTHER reason
+ * (an ambiguous hole id, conflicting sources, missing assay units ...) is
+ * not an evidence shortfall, and saying so would send the reader looking
+ * for data that is not missing, so it gets a neutral "Answer withheld"
+ * heading over the backend's own message. The `failed` variant has no
+ * fixed headline either (a timeout or a quota ceiling is not "insufficient
  * evidence"), so it shows the backend's own message under a neutral
- * "This query failed." heading.
+ * "Query failed" heading.
  *
  * `code` is humanised from SCREAMING_SNAKE_CASE to Title Case rather than
  * looked up in an exhaustive label table: the three enums this prop can
@@ -56,6 +61,14 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
     if (!message) return null;
 
     const tone = 'var(--warn, #d97706)';
+    const insufficientEvidence =
+        variant === 'refusal' && (!code || code.trim().toLowerCase() === 'insufficient_evidence');
+    const heading =
+        variant === 'failed'
+            ? 'Query failed'
+            : insufficientEvidence
+              ? 'Refused — insufficient evidence'
+              : 'Answer withheld';
 
     return (
         <div
@@ -73,9 +86,9 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
                 className="text-[10px] font-mono uppercase tracking-wider mb-1"
                 style={{ color: tone }}
             >
-                {variant === 'refusal' ? 'Refused — insufficient evidence' : 'Query failed'}
+                {heading}
             </div>
-            {variant === 'refusal' && (
+            {insufficientEvidence && (
                 <div className="mb-1" style={{ color: 'var(--fg-1)' }}>
                     Insufficient evidence to answer this question from the current corpus.
                 </div>

@@ -19,7 +19,36 @@ describe('RefusalPanel', () => {
         expect(container.firstChild).toBeNull();
     });
 
-    it('renders the fixed non-hedging headline for the refusal variant', () => {
+    it('renders the fixed non-hedging headline for an insufficient_evidence refusal', () => {
+        render(
+            <RefusalPanel
+                variant="refusal"
+                message="Nothing retrieved cleared the quality floor."
+                code="insufficient_evidence"
+                guardCodes={['LAYER1_EMPTY']}
+            />
+        );
+        expect(
+            screen.getByText('Insufficient evidence to answer this question from the current corpus.')
+        ).toBeInTheDocument();
+        expect(screen.getByText('Refused — insufficient evidence')).toBeInTheDocument();
+        expect(screen.getByText('Nothing retrieved cleared the quality floor.')).toBeInTheDocument();
+        expect(screen.getByText(/Insufficient Evidence/)).toBeInTheDocument();
+    });
+
+    it('matches insufficient_evidence case-insensitively', () => {
+        render(<RefusalPanel variant="refusal" message="m" code="INSUFFICIENT_EVIDENCE" />);
+        expect(screen.getByText(/Insufficient evidence to answer this question/)).toBeInTheDocument();
+    });
+
+    it('uses the fixed headline when a refusal carries no code', () => {
+        render(<RefusalPanel variant="refusal" message="Backend detail." />);
+        expect(screen.getByText(/Insufficient evidence to answer this question/)).toBeInTheDocument();
+        expect(screen.getByText('Backend detail.')).toBeInTheDocument();
+        expect(screen.queryByText(/Reason:/)).not.toBeInTheDocument();
+    });
+
+    it('does not call a refusal for any other reason "insufficient evidence"', () => {
         render(
             <RefusalPanel
                 variant="refusal"
@@ -28,9 +57,8 @@ describe('RefusalPanel', () => {
                 guardCodes={['SOURCE_SCOPE_VIOLATION', 'UNSUPPORTED_QUERY_TYPE']}
             />
         );
-        expect(
-            screen.getByText('Insufficient evidence to answer this question from the current corpus.')
-        ).toBeInTheDocument();
+        expect(screen.getByText('Answer withheld')).toBeInTheDocument();
+        expect(screen.queryByText(/insufficient evidence/i)).not.toBeInTheDocument();
         expect(screen.getByText("This question is outside what the project's data can answer.")).toBeInTheDocument();
         expect(screen.getByText(/Source Scope Violation/)).toBeInTheDocument();
     });

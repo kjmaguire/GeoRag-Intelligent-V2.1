@@ -26,6 +26,7 @@ declare global {
 //     (otherwise we'd infinite-loop during sign-in)
 //   - we're already ON /login (no sense redirecting to where we are)
 //   - the page is pre-hydration (window/location not available)
+//   - the request is cross-origin (a 401 from another host is not our session)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const AUTH_PATHS = ['/sanctum/csrf-cookie', '/api/v1/auth/login', '/api/v1/auth/spa-login'];
@@ -34,19 +35,25 @@ function shouldBounceOnAuthFailure(requestUrl: string | URL | Request): boolean 
     if (typeof window === 'undefined') return false;
     if (window.location.pathname === '/login') return false;
 
-    let url = '';
-    if (typeof requestUrl === 'string') url = requestUrl;
-    else if (requestUrl instanceof URL) url = requestUrl.pathname;
-    else if (requestUrl && typeof (requestUrl as Request).url === 'string') {
-        try {
-            url = new URL((requestUrl as Request).url, window.location.origin).pathname;
-        } catch {
-            return false;
-        }
+    // Only OUR session expiring should bounce the user to /login. A 401 from
+    // a third-party host (a tile server, an external API) says nothing about
+    // the Sanctum session, so resolve against the page origin and ignore
+    // anything cross-origin.
+    let parsed: URL;
+    try {
+        const raw = typeof requestUrl === 'string'
+            ? requestUrl
+            : requestUrl instanceof URL
+                ? requestUrl.href
+                : (requestUrl as Request).url;
+        parsed = new URL(raw, window.location.origin);
+    } catch {
+        return false;
     }
+    if (parsed.origin !== window.location.origin) return false;
 
     for (const path of AUTH_PATHS) {
-        if (url.includes(path)) return false;
+        if (parsed.pathname.includes(path)) return false;
     }
     return true;
 }
@@ -87,21 +94,22 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
 // Reverb uses the Pusher protocol but runs on our own server.
 window.Pusher = Pusher;
 
-// WS host resolution (2026-08-07): honour VITE_REVERB_HOST when the build
-// provides one — on Azure Container Apps, Reverb lives on a DIFFERENT
-// hostname than the page (laravel-reverb-cc vs laravel-octane-cc), so
-// deriving wsHost from window.location silently dials an endpoint that
-// doesn't speak WebSocket and every chat stream/progress event is lost.
-// Falls back to the page hostname for localhost / docker-compose builds,
-// where the old behaviour was correct.
+// WS host resolution: honour VITE_REVERB_HOST when the build provides one —
+// where Reverb is served from a DIFFERENT hostname than the page, deriving
+// wsHost from window.location silently dials an endpoint that doesn't speak
+// WebSocket and every chat stream/progress event is lost. Falls back to the
+// page hostname for localhost / docker-compose builds, where that is correct.
 const reverbScheme: string = import.meta.env.VITE_REVERB_SCHEME
     ?? (window.location.protocol === 'https:' ? 'https' : 'http');
 const reverbHost: string = import.meta.env.VITE_REVERB_HOST || window.location.hostname;
-// Port default follows the scheme: TLS deployments (Azure ingress) terminate
-// on 443; plain-http local stacks keep the legacy 8085 Reverb port.
+// Port default follows the scheme: TLS deployments terminate on 443;
+// plain-http local stacks keep the legacy 8085 Reverb port.
 const reverbPort: number = Number(
     import.meta.env.VITE_REVERB_PORT || (reverbScheme === 'https' ? 443 : 8085),
 );
+if (!import.meta.env.VITE_REVERB_APP_KEY) {
+    console.error('GeoRAG: VITE_REVERB_APP_KEY is not set in this build, so live chat updates cannot connect.');
+}
 window.Echo = new Echo({
     broadcaster: 'reverb',
     key: import.meta.env.VITE_REVERB_APP_KEY,

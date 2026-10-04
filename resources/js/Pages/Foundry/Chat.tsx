@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { Head, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { Pill, EmptyState, BrandDiamond } from '@/Components/Foundry/primitives';
@@ -178,16 +178,22 @@ interface ChatPageProps {
     empty: boolean;
 }
 
-// Six suggestion chips covering the main intent classes. Same set as
-// legacy Pages/Chat.tsx; copy worded for Wyoming roll-front uranium.
-const SUGGESTION_CHIPS: Array<{ label: string; query: string }> = [
-    { label: 'How many drill holes are in this project?', query: 'How many drill holes are in this project?' },
-    { label: 'Summarise the deepest five holes', query: 'Summarise the deepest five drill holes with their total depth and ore intercepts.' },
-    { label: 'What deposit does this project host?', query: 'What deposit style does this project host and what is its geological setting?' },
-    { label: 'Top derived ore intervals', query: 'What are the top five derived ore intervals across all holes in this project?' },
-    { label: 'Compare mean grade across holes', query: 'Compare the mean uranium grade across every hole in this project.' },
-    { label: 'Recommend where to drill next', query: 'Where should the next drill hole be located based on existing grades and collar coverage?' },
-];
+// Six suggestion chips covering the main intent classes. Neutral geology
+// prompts; the commodity-specific ones are filled in from the project's own
+// `commodity` when it has one and fall back to a commodity-free wording.
+function suggestionChips(commodity?: string | null): Array<{ label: string; query: string }> {
+    const c = commodity?.trim();
+    return [
+        { label: 'How many drill holes are in this project?', query: 'How many drill holes are in this project?' },
+        { label: 'What is the deepest hole on this project?', query: 'What is the deepest drill hole on this project, and what is its total depth?' },
+        { label: 'Summarise the lithology of the main zone', query: 'Summarise the lithology of the main zone on this project.' },
+        { label: 'Which reports mention a resource estimate?', query: 'Which reports mention a resource estimate, and what do they report?' },
+        c
+            ? { label: `Compare mean ${c} grade across holes`, query: `Compare the mean ${c} grade across every hole in this project.` }
+            : { label: 'Which holes have the best intervals?', query: 'Which holes have the best assay intervals in this project?' },
+        { label: 'What deposit does this project host?', query: 'What deposit style does this project host and what is its geological setting?' },
+    ];
+}
 
 // Crypto.randomUUID polyfill for older browsers.
 function newUuid(): string {
@@ -228,6 +234,17 @@ type ConnectionStateListener = (states: { previous: string; current: string }) =
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const window: any;
 
+// InlineViz re-renders (and can re-mount a Plotly/MapLibre canvas) on any
+// parent render unless its props are referentially stable; they are, because
+// the payloads are carried on the message object.
+const MemoInlineViz = memo(InlineViz);
+
+/** Distance from the bottom, in px, within which the transcript follows new text. */
+const STICK_TO_BOTTOM_PX = 80;
+
+const STOPPED_PARTIAL = 'Stopped by you. The text above is incomplete and unchecked.';
+const STOPPED_EMPTY = 'Stopped by you before any answer text arrived.';
+
 export default function FoundryChat({ project, threads, active_thread_id, active_thread, messages: initialMessages }: ChatPageProps) {
     // FE-4 — the Workspace copilot dock navigates here with ?prompt=; the
     // question is prefilled (not auto-sent) so the user sees and owns it.
@@ -243,6 +260,8 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // below the header" convention as FoundryShell's own `sm:hidden`
     // hamburger drawer) rather than a fixed overlay.
     const [mobileThreadsOpen, setMobileThreadsOpen] = useState(false);
+
+    const chips = useMemo(() => suggestionChips(project.commodity), [project.commodity]);
 
     // Phase 3 / Steps 3.2 + 3.3 — context envelope + Field/Office mode.
     // Mode is persisted per-user in localStorage; the 12 fields reset each
@@ -292,6 +311,15 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // reconnect can trigger recovery (CHAT-8). Held for unbinding.
     const connectionListenerRef = useRef<ConnectionStateListener | null>(null);
     const scrollerRef = useRef<HTMLDivElement | null>(null);
+    // Whether the transcript is following the newest text. Cleared when the
+    // reader scrolls up, so streaming never yanks them back down (item: forced
+    // auto-scroll); set again on send and when they return to the bottom.
+    const stickToBottomRef = useRef(true);
+    // Streamed tokens are buffered and flushed to React state at most once per
+    // animation frame, instead of one setMessages (and one re-render of the
+    // whole transcript) per token.
+    const flushFrameRef = useRef<number | null>(null);
+    const pendingFlushRef = useRef<(() => void) | null>(null);
     // P0.2 — timeout watchdog, reworked 2026-08-11. The original version
     // armed a single 60s wall-clock timer at send and REPLACED the
     // assistant message content when it fired — on a pipeline whose
@@ -324,6 +352,48 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         }
     }
 
+    /**
+     * Apply a change to one message in BOTH the state and the ref snapshot.
+     * Terminal handlers build their next state from messagesRef (see
+     * applyCompleted), and the ref is only re-synced after a render, so a
+     * state-only update made in the same tick would be invisible to them.
+     * `patch` must be pure — it runs once against each.
+     */
+    function patchMessage(id: string, patch: (m: ChatMessage) => ChatMessage) {
+        messagesRef.current = messagesRef.current.map((m) => (m.id === id ? patch(m) : m));
+        setMessages((prev) => prev.map((m) => (m.id === id ? patch(m) : m)));
+    }
+
+    function cancelDeltaFlush() {
+        if (flushFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(flushFrameRef.current);
+        }
+        flushFrameRef.current = null;
+        pendingFlushRef.current = null;
+    }
+
+    /** Apply any buffered tokens now — before a terminal path reads the message. */
+    function flushDeltasNow() {
+        const pending = pendingFlushRef.current;
+        cancelDeltaFlush();
+        pending?.();
+    }
+
+    function scheduleDeltaFlush(apply: () => void) {
+        pendingFlushRef.current = apply;
+        if (flushFrameRef.current !== null) return;
+        if (typeof requestAnimationFrame !== 'function') {
+            flushDeltasNow();
+            return;
+        }
+        flushFrameRef.current = requestAnimationFrame(() => {
+            flushFrameRef.current = null;
+            const pending = pendingFlushRef.current;
+            pendingFlushRef.current = null;
+            pending?.();
+        });
+    }
+
     /** Stop listening, leave the private channel, unbind the reconnect hook. */
     function leaveChannel() {
         const ref = echoRef.current;
@@ -341,6 +411,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
 
     function endStream() {
         clearWatchdog();
+        cancelDeltaFlush();
         leaveChannel();
         activeQueryRef.current = null;
         setStreaming(false);
@@ -354,6 +425,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         // that never arrived.
         const partial = 'The stream went quiet for 2 minutes and the server has no finished answer yet. The text above is unchecked and may be incomplete.';
         const nothing = 'The stream went quiet for 2 minutes and nothing arrived. Retry the question.';
+        flushDeltasNow();
         setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
             ? {
                   ...m,
@@ -412,14 +484,23 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         if (streamingRef.current) return;
         setMessages(initialMessages);
         setConversationId(active_thread_id ?? '');
+        stickToBottomRef.current = true;
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [active_thread_id]);
 
-    // Auto-scroll on new tokens.
+    // Follow new tokens only while the reader is already at (or within a few
+    // lines of) the bottom. Scrolling up to re-read an earlier answer while
+    // a new one streams must not be fought.
     useEffect(() => {
         const el = scrollerRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
     }, [messages]);
+
+    function onTranscriptScroll() {
+        const el = scrollerRef.current;
+        if (!el) return;
+        stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_PX;
+    }
 
     function selectThread(id: string) {
         // CHAT-12 — switching mid-answer showed thread B's title over
@@ -456,23 +537,37 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         // CHAT-18 — leaving the channel alone left the Horizon job and the
         // FastAPI run going for up to 180 s, billed and holding an llm slot.
         const active = activeQueryRef.current;
-        if (active) {
+        // queryId is '' until POST /queries answers; there is nothing to cancel yet.
+        if (active?.queryId) {
             void fetch(`/api/v1/queries/${active.queryId}/cancel`, {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: jsonHeaders(),
             }).catch(() => { /* best-effort: the job still ends on its own */ });
         }
+        const convoId = active?.convoId ?? activeConvoIdRef.current;
+        // Whatever was buffered is on screen too; keep all of it.
+        flushDeltasNow();
         endStream();
         // Stopped mid-generation: the partial text on screen never reached
         // validate_node either. Same reasoning as the watchdog path above.
-        setMessages((prev) =>
-            prev.map((m) =>
-                m.isStreaming
-                    ? { ...m, isStreaming: false, status: null, validationState: 'unverified' }
-                    : m,
-            ),
+        // The error row says so in words (a reader who did not press Stop,
+        // or who reloads, must not mistake the fragment for an answer) and
+        // the turn is persisted so the fragment and that note survive.
+        const next = messagesRef.current.map((m) =>
+            m.isStreaming
+                ? {
+                      ...m,
+                      isStreaming: false,
+                      status: null,
+                      validationState: 'unverified' as const,
+                      error: m.content ? STOPPED_PARTIAL : STOPPED_EMPTY,
+                  }
+                : m,
         );
+        messagesRef.current = next;
+        setMessages(next);
+        if (convoId) void persistConversation(convoId, next);
     }
 
     // CHAT-21 — on unmount (an Inertia navigation away mid-stream) leave the
@@ -480,6 +575,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // up per visit until a full reload.
     useEffect(() => () => {
         clearWatchdog();
+        cancelDeltaFlush();
         leaveChannel();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -500,6 +596,12 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             // CHAT-4 — a rejected sync used to be invisible; every later
             // turn then silently failed to save too.
             setPersistError(resp.ok ? null : `This thread could not be saved (HTTP ${resp.status}). Answers above will be lost on reload.`);
+            // Refresh the rail (a new thread, a new title) without touching
+            // `messages` or `active_thread_id`: the thread-sync effect above is
+            // keyed on active_thread_id, so leaving it out of `only` keeps the
+            // transcript on screen exactly as it is. (router.reload already
+            // preserves component state; its options type has no preserveState.)
+            if (resp.ok) router.reload({ only: ['threads', 'active_thread'] });
         } catch {
             setPersistError('This thread could not be saved (network error). Answers above will be lost on reload.');
         }
@@ -577,6 +679,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     }
 
     function applyFailed(event: Record<string, unknown>, assistantId: string) {
+        flushDeltasNow();
         const errMsg = String(event.error ?? event.message ?? 'Query failed');
         // Typed code off classify_error() (app/agent/errors.py) or the job.
         const errCode = event.code !== undefined && event.code !== null ? String(event.code) : null;
@@ -611,6 +714,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
      * (answer or failure), false when the server has nothing final yet.
      */
     async function recoverFromServer(active: ActiveQuery): Promise<boolean> {
+        // No query id yet: POST /queries has not answered, so there is nothing to ask about.
+        if (!active.queryId) return false;
+        flushDeltasNow();
         try {
             const resp = await fetch(`/api/v1/queries/${active.queryId}/result`, {
                 credentials: 'same-origin',
@@ -655,7 +761,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 citations: [],
                 confidence: null,
                 answer_run_id: null,
-                error: 'Realtime channel unavailable (Reverb may be down). Reload the page and try again.',
+                error: 'Live updates are unavailable right now, so this question was not sent. Reload the page and try again.',
             }]);
             return;
         }
@@ -696,11 +802,23 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         setMessages(withTurn);
         setComposer('');
         setStreaming(true);
+        // Sending is an explicit "show me the answer": follow it down.
+        stickToBottomRef.current = true;
 
         // P0.2 watchdog — idle timers, re-armed on every received frame.
         armWatchdog(assistantId);
 
+        // This send owns the stream only while it is the active query. Stop,
+        // a newer send, or a terminal frame clears/replaces it; every deferred
+        // callback below (the 5 s start fallback, the subscribe ACK, a late
+        // failure) checks this first so it cannot start a cancelled run or
+        // tear down someone else's stream. queryId is '' until POST /queries
+        // answers.
+        activeQueryRef.current = { queryId: '', assistantId, convoId };
+        const isCurrent = () => activeQueryRef.current?.assistantId === assistantId;
+
         const failBeforeStream = (msg: string) => {
+            if (!isCurrent()) return;
             endStream();
             setMessages((prev) =>
                 prev.map((m) =>
@@ -731,8 +849,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 throw new Error(`Query rejected (${resp.status}): ${detail.slice(0, 200)}`);
             }
             const { query_id, channel } = await resp.json();
-            const active: ActiveQuery = { queryId: String(query_id), assistantId, convoId };
-            activeQueryRef.current = active;
+            // Stopped (or superseded) while the query was being opened: do not
+            // subscribe to, or start, a run nobody is waiting for.
+            const active = activeQueryRef.current;
+            if (!active || active.assistantId !== assistantId) return;
+            active.queryId = String(query_id);
 
             // Phase 2: subscribe to the broadcast channel.
             // QueryStreamEvent broadcasts on a PrivateChannel (see
@@ -770,12 +891,16 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 // deltas carry token — accept both.
                 const deltaToken = event.token ?? event.text;
                 if (eventType === 'status' && event.message) {
-                    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, status: String(event.message) } : m)));
+                    patchMessage(assistantId, (m) => ({ ...m, status: String(event.message) }));
                 } else if (eventType === 'delta' && deltaToken) {
                     // CHAT-15 — ordered by token_seq, not arrival.
                     const assembled = deltas.add(String(deltaToken), event.token_seq ?? event.seq, null);
                     if (assembled === null) return;
-                    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: assembled, status: null } : m)));
+                    // Buffered: at most one state update per animation frame.
+                    scheduleDeltaFlush(() => {
+                        const text = deltas.text();
+                        patchMessage(assistantId, (m) => ({ ...m, content: text, status: null }));
+                    });
                 } else if (eventType === 'citation') {
                     runningCitations.push({
                         citation_id: String(event.citation_id ?? ''),
@@ -793,11 +918,13 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         source_url: event.source_url ? String(event.source_url) : null,
                         staleness_seconds: typeof event.staleness_seconds === 'number' ? event.staleness_seconds : null,
                     });
-                    setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, citations: [...runningCitations] } : m)));
+                    const snapshot = [...runningCitations];
+                    patchMessage(assistantId, (m) => ({ ...m, citations: snapshot }));
                 } else if (eventType === 'completed') {
                     applyCompleted(event, assistantId, convoId, deltas.text(), runningCitations);
                 } else if (eventType === 'failed' || eventType === 'error') {
                     if (event.recoverable === true) {
+                        flushDeltasNow();
                         // CHAT-5 — the answer exists but its frame could not
                         // be delivered; fetch it rather than failing.
                         clearWatchdog();
@@ -869,7 +996,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             };
             let startFired = false;
             const fireStart = () => {
-                if (startFired || subscriptionFailed) return;
+                if (startFired || subscriptionFailed || !isCurrent()) return;
                 startFired = true;
                 void startQuery();
             };
@@ -877,7 +1004,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             if (typeof subscribable.subscribed === 'function') {
                 subscribable.subscribed(fireStart);
                 setTimeout(() => {
-                    if (startFired || subscriptionFailed) return;
+                    if (startFired || subscriptionFailed || !isCurrent()) return;
                     const state = window.Echo?.connector?.pusher?.connection?.state;
                     if (typeof state === 'string' && state !== 'connected') {
                         startFired = true; // never start this one
@@ -893,6 +1020,13 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             failBeforeStream(e instanceof Error ? e.message : 'Network error');
         }
     }
+
+    // Retry goes through a ref so the callback handed to every MessageBubble
+    // keeps one identity for the life of the page; a new closure per render
+    // would defeat React.memo on the whole transcript.
+    const sendMessageRef = useRef(sendMessage);
+    useEffect(() => { sendMessageRef.current = sendMessage; });
+    const handleRetry = useCallback((text: string) => { void sendMessageRef.current(text); }, []);
 
     function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -997,7 +1131,18 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         </div>
                     </header>
 
-                    <div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                    <div
+                        ref={scrollerRef}
+                        onScroll={onTranscriptScroll}
+                        role="log"
+                        aria-label="Conversation"
+                        aria-live="polite"
+                        aria-relevant="additions text"
+                        // Deferring announcements while an answer streams keeps a
+                        // screen reader from reading every token flush.
+                        aria-busy={streaming}
+                        className="flex-1 overflow-y-auto px-6 py-4 space-y-4"
+                    >
                         {messages.length === 0 ? (
                             <div className="flex flex-col items-center gap-6 py-8">
                                 <div className="text-center max-w-xl">
@@ -1013,7 +1158,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-2xl">
-                                    {SUGGESTION_CHIPS.map((chip) => (
+                                    {chips.map((chip) => (
                                         <button
                                             key={chip.label}
                                             type="button"
@@ -1044,11 +1189,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                         m={m}
                                         projectId={project.project_id}
                                         projectSlug={project.slug}
-                                        onRetry={
-                                            pairedUser && !streaming
-                                                ? () => sendMessage(pairedUser.content)
-                                                : undefined
-                                        }
+                                        retryText={pairedUser?.content}
+                                        retryDisabled={streaming}
+                                        onRetry={handleRetry}
                                     />
                                 );
                             })
@@ -1072,6 +1215,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                 <button
                                     type="button"
                                     onClick={stopStreaming}
+                                    aria-label="Stop generating"
                                     className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border ml-auto"
                                     style={{ color: 'var(--warn)', borderColor: 'var(--warn)', background: 'rgba(217,119,6,0.1)' }}
                                 >
@@ -1102,6 +1246,8 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                             <button
                                 type="submit"
                                 disabled={streaming || !composer.trim()}
+                                aria-busy={streaming}
+                                aria-label={streaming ? 'Sending' : 'Send'}
                                 className="text-xs font-mono uppercase tracking-wider px-4 py-2 rounded border self-stretch disabled:opacity-40"
                                 style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
                             >
@@ -1109,7 +1255,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                             </button>
                         </form>
                         <div className="text-[10px] font-mono uppercase tracking-wider mt-1.5" style={{ color: 'var(--fg-3)' }}>
-                            enter sends · shift+enter newline · citations resolve via /api/v1/citations · stream via Reverb
+                            enter sends · shift+enter newline
                         </div>
                     </footer>
                 </section>
@@ -1133,16 +1279,41 @@ function confidenceTone(value: number): 'accent' | 'warn' | 'danger' {
     return 'accent';
 }
 
-function MessageBubble({
+/**
+ * Human label for a citation chip: its place in the answer and the document
+ * it points at. Never the raw chunk id — that is an internal handle.
+ */
+function citationLabel(c: Citation, index: number): string {
+    const doc = c.document_title || c.citation_type || 'source';
+    return index >= 0 ? `[${index + 1}] ${doc}` : doc;
+}
+
+/**
+ * Two chips are the same citation by id when they have one. Streamed
+ * citations can arrive with an empty citation_id; comparing '' === '' marked
+ * every such chip as the open one, so fall back to the chunk id.
+ */
+function isSameCitation(a: Citation, b: Citation): boolean {
+    if (a === b) return true;
+    if (a.citation_id !== '' || b.citation_id !== '') return a.citation_id === b.citation_id;
+    return a.source_chunk_id !== '' && a.source_chunk_id === b.source_chunk_id;
+}
+
+const MessageBubble = memo(function MessageBubble({
     m,
     projectId,
     projectSlug,
+    retryText,
+    retryDisabled,
     onRetry,
 }: {
     m: ChatMessage;
     projectId?: string | null;
     projectSlug: string;
-    onRetry?: () => void;
+    /** The user turn this bubble answered; Retry re-sends it. */
+    retryText?: string;
+    retryDisabled?: boolean;
+    onRetry: (text: string) => void;
 }) {
     const isUser = m.role === 'user';
     // Copy-to-clipboard with a brief confirmation flash.
@@ -1181,7 +1352,7 @@ function MessageBubble({
     // button — a fresh object identity on every click so FeedbackControls'
     // effect re-opens the down-vote form even on a repeat click for the
     // same category.
-    const [feedbackPreset, setFeedbackPreset] = useState<{ category: 'citation_issue' } | null>(null);
+    const [feedbackPreset, setFeedbackPreset] = useState<{ category: 'citation_issue'; note?: string } | null>(null);
 
     function handleCitationClick(c: Citation) {
         if (c.citation_type === 'PGEO') {
@@ -1191,9 +1362,12 @@ function MessageBubble({
         setInspectorCitation(c);
     }
 
-    function handleReportCitationIssue() {
+    function handleReportCitationIssue(c: Citation) {
         setInspectorCitation(null);
-        setFeedbackPreset({ category: 'citation_issue' });
+        // Name the citation in the note so the report says which one it is
+        // about; the geologist adds the "why".
+        const n = m.citations.indexOf(c);
+        setFeedbackPreset({ category: 'citation_issue', note: `Citation ${citationLabel(c, n)}: ` });
     }
 
     return (
@@ -1264,7 +1438,7 @@ function MessageBubble({
                     map_payload + viz_payload. InlineViz no-ops when both are null. */}
                 {!isUser && (m.mapPayload || m.vizPayload) && (
                     <div className="mt-2">
-                        <InlineViz
+                        <MemoInlineViz
                             mapPayload={m.mapPayload as Parameters<typeof InlineViz>[0]['mapPayload']}
                             vizPayload={m.vizPayload as Parameters<typeof InlineViz>[0]['vizPayload']}
                             projectId={projectId ?? null}
@@ -1321,42 +1495,42 @@ function MessageBubble({
                             </Pill>
                         </>
                     )}
-                    {/* Hover actions — copy on any settled assistant message,
-                        retry on error bubbles. Kept in the micro-mono meta row;
-                        revealed on hover/focus so the transcript stays quiet. */}
-                    {!isUser && !m.isStreaming && (
+                    {/* Copy is a hover/focus affordance on any settled assistant
+                        message — quiet in the transcript. Retry is NOT: on a
+                        touch screen there is no hover, so an errored bubble
+                        always shows it. */}
+                    {!isUser && !m.isStreaming && m.content && (
                         <span className="inline-flex items-center gap-2 ml-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                            {m.content && (
-                                <button
-                                    type="button"
-                                    onClick={copyContent}
-                                    aria-label="Copy message to clipboard"
-                                    className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
-                                    style={{
-                                        color: copied ? 'var(--accent)' : 'var(--fg-3)',
-                                        borderColor: copied ? 'var(--accent)' : 'var(--line-2)',
-                                        background: 'transparent',
-                                    }}
-                                >
-                                    {copied ? '✓ copied' : 'copy'}
-                                </button>
-                            )}
-                            {m.error && onRetry && (
-                                <button
-                                    type="button"
-                                    onClick={onRetry}
-                                    aria-label="Retry the question that produced this error"
-                                    className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
-                                    style={{
-                                        color: 'var(--warn)',
-                                        borderColor: 'var(--warn)',
-                                        background: 'transparent',
-                                    }}
-                                >
-                                    ↻ retry
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                onClick={copyContent}
+                                aria-label="Copy message to clipboard"
+                                className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
+                                style={{
+                                    color: copied ? 'var(--accent)' : 'var(--fg-3)',
+                                    borderColor: copied ? 'var(--accent)' : 'var(--line-2)',
+                                    background: 'transparent',
+                                }}
+                            >
+                                {copied ? '✓ copied' : 'copy'}
+                            </button>
                         </span>
+                    )}
+                    {!isUser && !m.isStreaming && m.error && retryText !== undefined && (
+                        <button
+                            type="button"
+                            onClick={() => onRetry(retryText)}
+                            disabled={retryDisabled}
+                            aria-label="Retry the question that produced this error"
+                            className="ml-1 font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border disabled:opacity-40"
+                            style={{
+                                color: 'var(--warn)',
+                                borderColor: 'var(--warn)',
+                                background: 'transparent',
+                            }}
+                        >
+                            ↻ retry
+                        </button>
                     )}
                 </div>
                 {m.citations.length > 0 && (
@@ -1370,12 +1544,12 @@ function MessageBubble({
                                 style={{
                                     color: 'var(--fg-2)',
                                     borderColor:
-                                        expandedPgeo === c.source_chunk_id || inspectorCitation?.citation_id === c.citation_id
+                                        expandedPgeo === c.source_chunk_id || (inspectorCitation !== null && isSameCitation(inspectorCitation, c))
                                             ? 'var(--accent)'
                                             : 'var(--line-2)',
                                     background: 'transparent',
                                 }}
-                                title={c.source_chunk_id}
+                                title={citationLabel(c, i)}
                             >
                                 [{i + 1}] {c.document_title ?? c.citation_type ?? '—'}
                                 {typeof c.relevance_score === 'number' && (
@@ -1427,9 +1601,9 @@ function MessageBubble({
                     if (!open) setInspectorCitation(null);
                 }}
                 projectSlug={projectSlug}
+                answerRunId={m.answer_run_id}
                 onReportIssue={handleReportCitationIssue}
             />
         </div>
     );
-}
-
+});

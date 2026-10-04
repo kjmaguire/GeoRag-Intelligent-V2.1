@@ -52,6 +52,11 @@ interface Props {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     projectSlug: string;
+    // The answer this citation belongs to. Feedback is recorded against an
+    // answer run, so without one (a turn that errored before a run was
+    // persisted) there is nowhere to send a report and the button is not
+    // offered.
+    answerRunId?: string | null;
     // Wired by the caller to pre-fill FeedbackControls' thumbs-down
     // taxonomy to 'citation_issue' (§10p) — the inspector itself has no
     // opinion on how feedback is collected, it just raises the intent.
@@ -76,7 +81,7 @@ function humanizeKey(key: string): string {
         .join(' ');
 }
 
-export default function EvidenceInspector({ citation, open, onOpenChange, projectSlug, onReportIssue }: Props) {
+export default function EvidenceInspector({ citation, open, onOpenChange, projectSlug, answerRunId, onReportIssue }: Props) {
     const [resolved, setResolved] = useState<ResolvedEvidence | 'loading' | 'error' | null>(null);
 
     useEffect(() => {
@@ -177,7 +182,7 @@ export default function EvidenceInspector({ citation, open, onOpenChange, projec
                 </div>
 
                 <SheetFooter>
-                    {citation && onReportIssue && (
+                    {citation && answerRunId && onReportIssue && (
                         <button
                             type="button"
                             onClick={() => onReportIssue(citation)}
