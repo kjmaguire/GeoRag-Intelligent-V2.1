@@ -463,6 +463,127 @@ describe('Foundry chat', () => {
         });
     });
 
+    describe('lifecycle', () => {
+        /** Wrap the installed fetch so one URL is held until the test releases it. */
+        function holdFetch(match: (url: string) => boolean, respond?: () => Response): { release: () => void; held: () => boolean } {
+            const inner = globalThis.fetch;
+            let release: () => void = () => {};
+            let hit = false;
+            globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+                if (!hit && match(String(url))) {
+                    hit = true;
+                    await new Promise<void>((resolve) => { release = resolve; });
+                    if (respond) return respond();
+                }
+                return inner(url, init);
+            }) as unknown as typeof fetch;
+            return { release: () => release(), held: () => hit };
+        }
+
+        it('does not subscribe to or start a run when the page unmounts while POST /queries is in flight', async () => {
+            const gate = holdFetch((u) => u === '/api/v1/queries');
+            const view = renderChat();
+            fireEvent.change(screen.getByLabelText('Ask a question'), { target: { value: 'How deep is PLS-22-08?' } });
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: /send/i }));
+            });
+            await waitFor(() => expect(gate.held()).toBe(true));
+
+            view.unmount();
+            await act(async () => {
+                gate.release();
+            });
+
+            const echo = (window as unknown as { Echo: { private: ReturnType<typeof vi.fn> } }).Echo;
+            expect(echo.private).not.toHaveBeenCalled();
+            expect(fetchCalls.some((c) => c.url.endsWith('/start'))).toBe(false);
+        });
+
+        it('cancels a known run on the server when the page unmounts mid-stream', async () => {
+            const view = renderChat();
+            await ask('How deep is PLS-22-08?');
+
+            view.unmount();
+
+            expect(fetchCalls.some((c) => c.url === `/api/v1/queries/${QUERY_ID}/cancel` && c.init?.method === 'POST')).toBe(true);
+        });
+
+        it('does not reload the thread rail when a late PUT resolves after unmount', async () => {
+            stubAnimationFrames();
+            const gate = holdFetch((u) => u.startsWith('/api/v1/conversations/'));
+            const view = renderChat();
+            await ask('How deep is PLS-22-08?');
+
+            await act(async () => {
+                handler!({ event: 'completed', text: 'It is 412 m deep [DATA-1].', citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }], confidence: 0.9, validation_state: 'clean' });
+            });
+            await waitFor(() => expect(gate.held()).toBe(true));
+
+            view.unmount();
+            await act(async () => {
+                gate.release();
+            });
+
+            expect(router.reload).not.toHaveBeenCalled();
+        });
+
+        it('a late recovery from a stopped query does not end the next stream', async () => {
+            stubAnimationFrames();
+            const gate = holdFetch(
+                (u) => u === `/api/v1/queries/${QUERY_ID}/result`,
+                () => new Response(JSON.stringify({ status: 'completed', text: 'A late answer' }), { status: 200 }),
+            );
+            renderChat();
+            await ask('First question?');
+
+            // A's terminal frame is flagged recoverable: the page asks the server for it.
+            await act(async () => {
+                handler!({ event: 'failed', recoverable: true, error: 'frame too large', event_id: 'f1' });
+            });
+            await waitFor(() => expect(gate.held()).toBe(true));
+
+            await act(async () => {
+                fireEvent.click(screen.getByRole('button', { name: /Stop/ }));
+            });
+
+            handler = null;
+            await ask('Second question?');
+
+            await act(async () => {
+                gate.release();
+            });
+            // The server's answer for A arrives now, as a completed result.
+            await act(async () => {});
+
+            await act(async () => {
+                handler!({ event: 'delta', token: 'B is still streaming', token_seq: 0, event_id: 'b1' });
+            });
+            runFrames();
+
+            expect(screen.getByRole('button', { name: /Stop/ })).toBeInTheDocument();
+            expect(screen.getByText(/B is still streaming/)).toBeInTheDocument();
+            expect(screen.queryByText(/A late answer/)).toBeNull();
+        });
+    });
+
+    describe('fail-closed access check frames', () => {
+        it.each([
+            ['ACCESS_CHECK_FAILED', 'Could not check your access', 'We could not verify your access to this project right now. Please try again in a few seconds.'],
+            ['SERVICE_UNAVAILABLE', 'Service busy, try again', 'The project could not be checked right now. Please try again in a few seconds.'],
+        ])('%s gets its own headline and offers Retry', async (code, headline, message) => {
+            renderChat();
+            await ask('How deep is PLS-22-08?');
+
+            await act(async () => {
+                handler!({ event: 'failed', code, error: message, event_id: 'f1' });
+            });
+
+            expect(screen.getByText(headline)).toBeInTheDocument();
+            expect(screen.getByText(message)).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /Retry the question/ })).toBeEnabled();
+        });
+    });
+
     describe('thread rail', () => {
         it('refreshes threads after a successful sync without reloading the transcript props', async () => {
             renderChat();

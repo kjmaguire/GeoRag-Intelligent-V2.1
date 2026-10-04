@@ -551,15 +551,30 @@ function DocumentList({
     pagination: ReportsPagination | null;
 }) {
     const paged = pagination !== null && pagination.last_page > 1;
-    const goToPage = (page: number) => {
+    // A stale `?page=` past the end (documents were deleted since the link was
+    // made) shows the last page rather than an empty list: the pager reads the
+    // clamped number, and the effect below asks for that page.
+    const page = pagination ? Math.min(Math.max(pagination.page, 1), Math.max(pagination.last_page, 1)) : 1;
+    // The open document is part of the URL; paging must not close it.
+    const listUrl = `/projects/${slug}/reports${selectedId ? `/${selectedId}` : ''}`;
+    const goToPage = (target: number, replace = false) => {
         router.get(
-            `/projects/${slug}/reports`,
-            { page, per_page: pagination?.per_page },
-            { preserveState: true, preserveScroll: true, only: ['reports', 'reports_pagination'] }
+            listUrl,
+            { page: target, per_page: pagination?.per_page },
+            { preserveState: true, preserveScroll: true, replace, only: ['reports', 'reports_pagination'] }
         );
     };
-    const first = paged ? (pagination.page - 1) * pagination.per_page + 1 : 1;
-    const last = paged ? Math.min(pagination.page * pagination.per_page, pagination.total) : reports.length;
+    const beyondLastPage = pagination !== null && pagination.page > Math.max(pagination.last_page, 1);
+    useEffect(() => {
+        if (beyondLastPage) goToPage(page, true);
+        // goToPage closes over props that only matter when this fires.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [beyondLastPage, page]);
+    // Document links carry the page the list is on, so opening one does not
+    // send the reader back to page 1.
+    const pageQuery = pagination ? { page, per_page: pagination.per_page } : undefined;
+    const first = paged ? (page - 1) * pagination.per_page + 1 : 1;
+    const last = paged ? Math.min(page * pagination.per_page, pagination.total) : reports.length;
     return (
         <nav
             className="w-[320px] shrink-0 overflow-y-auto border-r"
@@ -587,20 +602,20 @@ function DocumentList({
                     <button
                         type="button"
                         className="font-mono uppercase tracking-wider disabled:opacity-40"
-                        disabled={pagination.page <= 1}
-                        onClick={() => goToPage(pagination.page - 1)}
+                        disabled={page <= 1}
+                        onClick={() => goToPage(page - 1)}
                         aria-label="Previous page of documents"
                     >
                         ← Prev
                     </button>
                     <span>
-                        Page {pagination.page} of {pagination.last_page}
+                        Page {page} of {pagination.last_page}
                     </span>
                     <button
                         type="button"
                         className="font-mono uppercase tracking-wider disabled:opacity-40"
-                        disabled={pagination.page >= pagination.last_page}
-                        onClick={() => goToPage(pagination.page + 1)}
+                        disabled={page >= pagination.last_page}
+                        onClick={() => goToPage(page + 1)}
                         aria-label="Next page of documents"
                     >
                         Next →
@@ -614,6 +629,7 @@ function DocumentList({
                     <Link
                         key={r.report_id}
                         href={`/projects/${slug}/reports/${r.report_id}`}
+                        data={pageQuery}
                         // Only the detail pane changes, so ask for just those
                         // props and keep the list + rollup we already have.
                         // preserveScroll stops the long list jumping to top on
@@ -859,7 +875,7 @@ function QualityTab({
                         {status === 'ok'
                             ? 'Every passage is embedded — chat can retrieve from this document.'
                             : status === 'warn'
-                              ? 'Some passages are not embedded yet. The embed sweep runs every 10 minutes; if this does not clear, check the ingest run.'
+                              ? 'Some passages are not embedded yet. Search indexing runs every 10 minutes; if this does not clear, check the ingest run.'
                               : status === 'error'
                                 ? 'Passages exist but none are embedded, so chat cannot retrieve this document at all.'
                                 : 'No passages were written for this document — the parse produced nothing to index.'}
@@ -1232,8 +1248,8 @@ function PassagesTab({
     }
     const title =
         total > passages.length
-            ? `${total} chunked passages (first ${passages.length})`
-            : `${total} chunked passages`;
+            ? `${total} searchable passages (first ${passages.length})`
+            : `${total} searchable passages`;
     return (
         <Card eyebrow="PASSAGES" title={title}>
             <div className="space-y-2">

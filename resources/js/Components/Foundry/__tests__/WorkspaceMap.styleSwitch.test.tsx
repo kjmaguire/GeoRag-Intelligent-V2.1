@@ -5,7 +5,7 @@
  * GeoJSON source in place. Neither may rebuild the map, because a rebuild
  * resets the camera.
  */
-import { act, render, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 
@@ -23,6 +23,10 @@ class FakeMap {
     onceHandlers: Record<string, Handler[]> = {};
     setStyleCalls: Array<{ style: unknown; options: unknown }> = [];
     removed = false;
+    // True while the style has not loaded: like MapLibre, runtime sources
+    // cannot be added to it.
+    notLoaded = false;
+    rendered: unknown[] = [];
     dragPan = { enable: vi.fn(), disable: vi.fn() };
     constructor(opts: Record<string, unknown>) {
         this.opts = opts;
@@ -36,11 +40,11 @@ class FakeMap {
         (this.onceHandlers[event] ??= []).push(cb);
     }
     off() {}
-    fire(event: string) {
-        for (const h of this.handlers[event] ?? []) h();
+    fire(event: string, ...args: unknown[]) {
+        for (const h of this.handlers[event] ?? []) h(...args);
         const once = this.onceHandlers[event] ?? [];
         this.onceHandlers[event] = [];
-        for (const h of once) h();
+        for (const h of once) h(...args);
     }
     setStyle(style: unknown, options: unknown) {
         // Like MapLibre: a new style discards every runtime source and layer
@@ -51,6 +55,7 @@ class FakeMap {
         this.terrain = undefined;
     }
     addSource(id: string, s: Record<string, unknown>) {
+        if (this.notLoaded) throw new Error('Style is not done loading.');
         if (this.sources.has(id)) throw new Error(`dup source ${id}`);
         this.sources.set(id, { ...s, setData: vi.fn(), setTiles: vi.fn() });
     }
@@ -77,7 +82,7 @@ class FakeMap {
         return { style: {} as Record<string, string> };
     }
     queryRenderedFeatures() {
-        return [];
+        return this.rendered;
     }
     remove() {
         this.removed = true;
@@ -235,5 +240,130 @@ describe('WorkspaceMap style switch and collar updates', () => {
         await loadedMap(1);
         expect(first.removed).toBe(true);
         expect(FakeMap.instances).toHaveLength(2);
+    });
+
+    describe('a basemap style that never loads', () => {
+        const NO_STYLE_LAYERS = ['collars-dot', 'collars-halo', 'cluster-circles'];
+
+        async function swapAndFail(props: Partial<ComponentProps<typeof WorkspaceMap>> = {}) {
+            const view = render(<WorkspaceMap {...baseProps(props)} />);
+            const map = await loadedMap(0);
+            view.rerender(<WorkspaceMap {...baseProps({ ...props, basemap: 'positron' })} />);
+            await waitFor(() => expect(map.setStyleCalls).toHaveLength(1));
+            return { view, map };
+        }
+
+        it('re-publishes the map on idle after an error so the tools work again', async () => {
+            const { map } = await swapAndFail({ activeTool: 'measure' });
+            // Withdrawn while the swap is pending: nothing measure-related yet.
+            expect(map.getSource('measure-points')).toBeUndefined();
+
+            await act(async () => {
+                map.fire('error', { error: new Error('404') });
+                map.fire('idle');
+            });
+
+            for (const id of NO_STYLE_LAYERS) expect(map.getLayer(id), id).toBeDefined();
+            // The tool effect ran against the re-published map.
+            await waitFor(() => expect(map.getSource('measure-points')).toBeDefined());
+            await waitFor(() => expect(map.terrain).toMatchObject({ source: 'terrain-dem' }));
+            expect(map.setStyleCalls).toHaveLength(1);
+            expect(FakeMap.instances).toHaveLength(1);
+        });
+
+        it('re-publishes after the timeout when idle never comes', async () => {
+            const { map } = await swapAndFail();
+            vi.useFakeTimers();
+            try {
+                await act(async () => {
+                    map.fire('error', { error: new Error('offline') });
+                });
+                expect(map.getLayer('collars-dot')).toBeUndefined();
+                await act(async () => {
+                    vi.advanceTimersByTime(3_000);
+                });
+            } finally {
+                vi.useRealTimers();
+            }
+            expect(map.getLayer('collars-dot')).toBeDefined();
+            await waitFor(() => expect(map.terrain).toMatchObject({ source: 'terrain-dem' }));
+        });
+
+        it('leaves the map alone when style.load arrives before the timeout', async () => {
+            const { map } = await swapAndFail();
+            await act(async () => {
+                map.fire('error', { error: new Error('one tile failed') });
+                map.fire('style.load');
+            });
+            // style.load published it exactly once; the later idle is a no-op.
+            await act(async () => {
+                map.fire('idle');
+            });
+            expect(map.getLayer('collars-dot')).toBeDefined();
+            expect(map.setStyleCalls).toHaveLength(1);
+        });
+
+        it('falls back to a blank basemap when the style cannot take layers, then recovers on its style.load', async () => {
+            const { map } = await swapAndFail();
+            map.notLoaded = true;
+
+            await act(async () => {
+                map.fire('error', { error: new Error('404') });
+                map.fire('idle');
+            });
+
+            expect(map.setStyleCalls).toHaveLength(2);
+            expect(map.setStyleCalls[1].style).toMatchObject({ version: 8, sources: {}, layers: [] });
+            expect(map.getLayer('collars-dot')).toBeUndefined();
+
+            map.notLoaded = false;
+            await act(async () => {
+                map.fire('style.load');
+            });
+            expect(map.getLayer('collars-dot')).toBeDefined();
+            await waitFor(() => expect(map.terrain).toMatchObject({ source: 'terrain-dem' }));
+        });
+    });
+
+    describe('Select tool across a basemap swap', () => {
+        it('keeps the selection and redraws its highlight on the new style', async () => {
+            const { rerender } = render(<WorkspaceMap {...baseProps({ activeTool: 'select' })} />);
+            const map = await loadedMap(0);
+            await waitFor(() => expect(map.getSource('select-highlight')).toBeDefined());
+
+            map.rendered = [{ properties: { hole_id: 'RS-001' } }];
+            await act(async () => {
+                map.fire('mousedown', { point: { x: 0, y: 0 }, originalEvent: { button: 0 } });
+                map.fire('mouseup', { point: { x: 50, y: 50 } });
+            });
+            expect(screen.getByText(/Selection · 1/)).toBeInTheDocument();
+
+            rerender(<WorkspaceMap {...baseProps({ activeTool: 'select', basemap: 'positron' })} />);
+            await waitFor(() => expect(map.setStyleCalls).toHaveLength(1));
+            await act(async () => {
+                map.fire('style.load');
+            });
+
+            expect(screen.getByText(/Selection · 1/)).toBeInTheDocument();
+            await waitFor(() => expect(map.getSource('select-highlight')).toBeDefined());
+            const ring = map.getSource('select-highlight') as { setData: ReturnType<typeof vi.fn> };
+            const drawn = ring.setData.mock.calls.at(-1)?.[0] as { features: Array<{ properties: { hole_id: string } }> };
+            expect(drawn.features.map((f) => f.properties.hole_id)).toEqual(['RS-001']);
+        });
+
+        it('still clears the selection when the tool changes', async () => {
+            const { rerender } = render(<WorkspaceMap {...baseProps({ activeTool: 'select' })} />);
+            const map = await loadedMap(0);
+            await waitFor(() => expect(map.getSource('select-highlight')).toBeDefined());
+            map.rendered = [{ properties: { hole_id: 'RS-001' } }];
+            await act(async () => {
+                map.fire('mousedown', { point: { x: 0, y: 0 }, originalEvent: { button: 0 } });
+                map.fire('mouseup', { point: { x: 50, y: 50 } });
+            });
+            expect(screen.getByText(/Selection · 1/)).toBeInTheDocument();
+
+            rerender(<WorkspaceMap {...baseProps({ activeTool: 'pan' })} />);
+            await waitFor(() => expect(screen.queryByText(/Selection · /)).toBeNull());
+        });
     });
 });

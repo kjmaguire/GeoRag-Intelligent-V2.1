@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Map as MaplibreMap } from 'maplibre-gl';
 import { Link, router } from '@inertiajs/react';
-import { BASEMAP_OPTIONS, demSourceSpec, useBasemapStyleSpec, useTerrainDemUrl, type BasemapId } from '@/lib/basemap';
+import { BASEMAP_OPTIONS, demSourceSpec, useBasemapGlyphsUrl, useBasemapStyleSpec, useTerrainDemUrl, type BasemapId } from '@/lib/basemap';
 import { formatU3O8Pct } from '@/lib/grade';
 import { addMvtLayers, setMvtTileVersion, setMvtVisibility, type MvtCapableMap } from '@/lib/mvtSources';
 import { UNCERTAINTY_RINGS_FILTER, UNCERTAINTY_RINGS_PAINT } from '@/lib/uncertaintyRings';
@@ -65,6 +65,8 @@ type GeoJsonGeometry = any;
 export type { BasemapId };
 export type MapTool = 'pan' | 'draw' | 'measure' | 'select';
 
+/** How long a basemap swap may report an `error` before `style.load` and still be given up on. */
+const STYLE_RECOVERY_MS = 3_000;
 
 /**
  * GeoJSON point features for the `collars` source — one per positioned collar.
@@ -190,6 +192,9 @@ export function WorkspaceMap({
     // Terrain DEM from the same registry (BASEMAP_DEM_TILES). It was a
     // hard-coded AWS bucket, so on-prem the Terrain toggle did nothing (FE-19).
     const demUrl = useTerrainDemUrl();
+    const glyphsUrl = useBasemapGlyphsUrl();
+    const glyphsUrlRef = useRef(glyphsUrl);
+    glyphsUrlRef.current = glyphsUrl;
     // The live map, once its style has loaded. Held in STATE (mapRef is only
     // for cleanup) so every effect that styles the map re-runs against a new
     // instance: a basemap switch rebuilds the map, and the layer toggles,
@@ -252,6 +257,14 @@ export function WorkspaceMap({
     // Re-adds every source + layer; set by the build effect, called again from
     // the style-switch effect once the new style has loaded.
     const addMapLayersRef = useRef<((m: MaplibreMap) => void) | null>(null);
+    // Pending basemap-swap recovery timer (see the style-switch effect);
+    // cleared when the map is torn down.
+    const styleRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // The tool the tool effect last ran for, and the Select tool's current
+    // selection: a re-publish of the map after a basemap swap re-runs the
+    // tool effect without a tool change and must keep the selection.
+    const lastToolRef = useRef<MapTool | null>(null);
+    const selectedHolesRef = useRef<string[]>([]);
 
     useEffect(() => {
         if (!containerRef.current) return;
@@ -873,6 +886,10 @@ export function WorkspaceMap({
         return () => {
             cancelled = true;
             setMap(null);
+            if (styleRecoveryTimerRef.current !== null) {
+                clearTimeout(styleRecoveryTimerRef.current);
+                styleRecoveryTimerRef.current = null;
+            }
             addMapLayersRef.current = null;
             renderedCollarsRef.current = null;
             if (mapRef.current?.remove) {
@@ -901,12 +918,65 @@ export function WorkspaceMap({
 
         const swapped = map as MaplibreMap;
         setMap(null);
-        swapped.once('style.load', () => {
-            // Unmounted or rebuilt for another project while the style loaded.
-            if (mapRef.current !== swapped) return;
-            addMapLayersRef.current?.(swapped);
+
+        // A style that never loads (404, offline, a bad style.json URL) never
+        // fires `style.load`, which used to leave `map` null for good: no
+        // tools, no layer toggles, no hole picker. So the swap is also
+        // watched for `error`; if `style.load` has not arrived by `idle` or
+        // after STYLE_RECOVERY_MS, the map is re-published anyway.
+        let pending = true;
+        const clearRecovery = () => {
+            if (styleRecoveryTimerRef.current !== null) {
+                clearTimeout(styleRecoveryTimerRef.current);
+                styleRecoveryTimerRef.current = null;
+            }
+        };
+        // Re-add the layers if the swap dropped them, then publish the map.
+        // Returns false when the style is not in a state that accepts them.
+        const publish = (): boolean => {
+            // Unmounted or rebuilt for another project in the meantime.
+            if (mapRef.current !== swapped) return true;
+            if (!swapped.getSource('collars')) {
+                try {
+                    addMapLayersRef.current?.(swapped);
+                } catch (err) {
+                    console.warn('WorkspaceMap: layers could not be re-added after a basemap swap', err);
+                    return false;
+                }
+            }
             setMap(swapped);
-        });
+            return true;
+        };
+        const onStyleLoad = () => {
+            pending = false;
+            clearRecovery();
+            swapped.off('error', onError);
+            publish();
+        };
+        const recover = () => {
+            if (!pending || mapRef.current !== swapped) return;
+            clearRecovery();
+            if (publish()) {
+                pending = false;
+                swapped.off('error', onError);
+                return;
+            }
+            // The style is not loaded, so the layers cannot go on it: put a
+            // blank style (same glyphs) underneath. Its `style.load` publishes.
+            console.warn('WorkspaceMap: basemap style did not load; falling back to a blank basemap');
+            swapped.setStyle(
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                { version: 8, glyphs: glyphsUrlRef.current, sources: {}, layers: [] } as any,
+                { diff: false },
+            );
+        };
+        function onError() {
+            if (!pending || styleRecoveryTimerRef.current !== null) return;
+            swapped.once('idle', recover);
+            styleRecoveryTimerRef.current = setTimeout(recover, STYLE_RECOVERY_MS);
+        }
+        swapped.once('style.load', onStyleLoad);
+        swapped.on('error', onError);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         swapped.setStyle(styleSpec as any, { diff: false });
     }, [map, styleSpec, demUrl]);
@@ -1139,6 +1209,13 @@ export function WorkspaceMap({
     useEffect(() => {
         if (!map) return;
 
+        // This effect also re-runs when the map is re-published after a basemap
+        // swap. That is not a tool change: the Select tool's selection must
+        // survive it (its highlight ring was dropped with the old style and is
+        // redrawn below), so only a real tool change clears it.
+        const toolChanged = lastToolRef.current !== activeTool;
+        lastToolRef.current = activeTool;
+
         // Clean prior tool layers' data so nothing stale lingers.
         const clearDraw = () => {
             (map.getSource('draw-polygon') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
@@ -1148,17 +1225,18 @@ export function WorkspaceMap({
             (map.getSource('select-highlight') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
             setSelectRect(null);
             setSelectedHoles([]);
+            selectedHolesRef.current = [];
         };
 
         if (activeTool !== 'draw' && activeTool !== 'select') {
             clearDraw();
-            clearSelect();
+            if (toolChanged) clearSelect();
             return;
         }
 
         // ── Draw polygon ──────────────────────────────────────────
         if (activeTool === 'draw') {
-            clearSelect();
+            if (toolChanged) clearSelect();
             if (!map.getSource('draw-polygon')) {
                 map.addSource('draw-polygon', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
                 map.addSource('draw-vertices', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -1282,6 +1360,21 @@ export function WorkspaceMap({
                         'circle-stroke-width': 2.5,
                     },
                 });
+                // A re-created source (basemap swap) starts empty: put the
+                // ring back on whatever is still selected.
+                const kept = selectedHolesRef.current;
+                if (kept.length > 0) {
+                    (map.getSource('select-highlight') as { setData: (d: unknown) => void }).setData({
+                        type: 'FeatureCollection',
+                        features: collarsRef.current
+                            .filter((c) => kept.includes(c.hole_id_canonical) && c.lat !== null && c.lng !== null)
+                            .map((c) => ({
+                                type: 'Feature' as const,
+                                geometry: { type: 'Point' as const, coordinates: [c.lng, c.lat] },
+                                properties: { hole_id: c.hole_id_canonical },
+                            })),
+                    });
+                }
             }
 
             // Disable drag-pan so the box drag captures cleanly. Re-enabled
@@ -1326,6 +1419,7 @@ export function WorkspaceMap({
                 });
                 const ids = Array.from(new Set((feats as Array<{ properties: { hole_id: string } }>).map((f) => String(f.properties.hole_id))));
                 setSelectedHoles(ids);
+                selectedHolesRef.current = ids;
                 // Drop the highlight ring at each selected collar.
                 const matchingPoints = collars.filter((c) => ids.includes(c.hole_id_canonical) && c.lat !== null && c.lng !== null);
                 (map.getSource('select-highlight') as { setData: (d: unknown) => void }).setData({
@@ -1419,6 +1513,7 @@ export function WorkspaceMap({
                             type="button"
                             onClick={() => {
                                 setSelectedHoles([]);
+                                selectedHolesRef.current = [];
                                 const map = mapRef.current;
                                 (map?.getSource?.('select-highlight') as { setData: (d: unknown) => void } | undefined)?.setData({ type: 'FeatureCollection', features: [] });
                             }}

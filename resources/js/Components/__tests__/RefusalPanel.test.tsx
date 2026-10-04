@@ -33,7 +33,8 @@ describe('RefusalPanel', () => {
         ).toBeInTheDocument();
         expect(screen.getByText('Refused — insufficient evidence')).toBeInTheDocument();
         expect(screen.getByText('Nothing retrieved cleared the quality floor.')).toBeInTheDocument();
-        expect(screen.getByText(/Insufficient Evidence/)).toBeInTheDocument();
+        // The headline already says it; the "Reason:" line would repeat it.
+        expect(screen.queryByText(/Reason:/)).not.toBeInTheDocument();
     });
 
     it('matches insufficient_evidence case-insensitively', () => {
@@ -61,6 +62,46 @@ describe('RefusalPanel', () => {
         expect(screen.queryByText(/insufficient evidence/i)).not.toBeInTheDocument();
         expect(screen.getByText("This question is outside what the project's data can answer.")).toBeInTheDocument();
         expect(screen.getByText(/Source Scope Violation/)).toBeInTheDocument();
+    });
+
+    it('says "No answer produced" when the model returned nothing usable', () => {
+        render(<RefusalPanel variant="refusal" message="The model returned an empty answer." code="model_no_output" />);
+        expect(screen.getByText('No answer produced')).toBeInTheDocument();
+        expect(screen.queryByText('Answer withheld')).not.toBeInTheDocument();
+        expect(screen.queryByText(/insufficient evidence/i)).not.toBeInTheDocument();
+        expect(screen.getByText('The model returned an empty answer.')).toBeInTheDocument();
+        expect(screen.getByText(/Reason: Model No Output/)).toBeInTheDocument();
+    });
+
+    it('withholds neutrally when the answer was unsupported by its sources', () => {
+        render(<RefusalPanel variant="refusal" message="The draft claims were not backed by the retrieved sources." code="unsupported_by_sources" />);
+        expect(screen.getByText('Answer withheld')).toBeInTheDocument();
+        expect(screen.queryByText(/insufficient evidence/i)).not.toBeInTheDocument();
+        expect(screen.getByText(/Reason: Unsupported By Sources/)).toBeInTheDocument();
+    });
+
+    it('renders a QUERY_NOT_SEARCHABLE failed frame as a failure with its reason', () => {
+        render(<RefusalPanel variant="failed" message="This question cannot be searched as written." code="QUERY_NOT_SEARCHABLE" />);
+        expect(screen.getByText('Query failed')).toBeInTheDocument();
+        expect(screen.getByText('This question cannot be searched as written.')).toBeInTheDocument();
+        expect(screen.getByText(/Reason: Query Not Searchable/)).toBeInTheDocument();
+        expect(screen.getByTestId('refusal-panel')).toHaveAttribute('data-variant', 'failed');
+    });
+
+    it('says the access check could not complete for ACCESS_CHECK_FAILED, keeping the server message as the body', () => {
+        const message = 'We could not verify your access to this project right now. Please try again in a few seconds.';
+        render(<RefusalPanel variant="failed" message={message} code="ACCESS_CHECK_FAILED" />);
+        expect(screen.getByText('Could not check your access')).toBeInTheDocument();
+        expect(screen.queryByText('Query failed')).not.toBeInTheDocument();
+        expect(screen.getByText(message)).toBeInTheDocument();
+    });
+
+    it('says the service is busy for SERVICE_UNAVAILABLE, keeping the server message as the body', () => {
+        const message = 'The project could not be checked right now. Please try again in a few seconds.';
+        render(<RefusalPanel variant="failed" message={message} code="SERVICE_UNAVAILABLE" />);
+        expect(screen.getByText('Service busy, try again')).toBeInTheDocument();
+        expect(screen.queryByText('Query failed')).not.toBeInTheDocument();
+        expect(screen.getByText(message)).toBeInTheDocument();
     });
 
     it('keeps internal guard codes out of the visible text', () => {

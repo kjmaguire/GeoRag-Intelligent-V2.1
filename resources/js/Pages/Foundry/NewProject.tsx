@@ -17,7 +17,6 @@ import {
     CATEGORY_EXTS,
     CATEGORY_LABEL,
     RETIRED_CATEGORIES,
-    UNSUPPORTED_EXTS,
     categoryForExtension,
     extensionOf,
     parseEpsg,
@@ -1197,7 +1196,7 @@ export default function FoundryNewProject() {
                                                                     a sentence — it gets its own
                                                                     full-width line below instead of
                                                                     being cut off at 40 characters. */}
-                                                                {!q.error && q.hint && !donated && <> · <span title={q.hint} style={{ color: 'var(--muted-foreground, oklch(0.55 0 0))' }}>{q.hint.slice(0, 40)}{q.hint.length > 40 ? '…' : ''}</span></>}
+                                                                {!q.error && q.hint && !donated && <> · <span title={q.hint} style={{ color: 'var(--fg-3)' }}>{q.hint.slice(0, 40)}{q.hint.length > 40 ? '…' : ''}</span></>}
                                                             </div>
                                                             {/* A row that was given a coordinate
                                                                 system reads as resolved and says
@@ -1262,7 +1261,7 @@ export default function FoundryNewProject() {
                                                         </div>
                                                         {unsupported ? (
                                                             <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded border text-center" style={{ color: 'var(--warn, oklch(0.78 0.18 75))', borderColor: 'var(--warn, oklch(0.78 0.18 75))' }}>
-                                                                raster · not supported
+                                                                not supported
                                                             </span>
                                                         ) : (
                                                             <select

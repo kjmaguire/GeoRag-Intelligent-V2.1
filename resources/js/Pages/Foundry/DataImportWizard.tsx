@@ -301,7 +301,6 @@ const REJECTION_REASONS: Record<string, string> = {
     // as scanned sheets. A stale entry would be dead text today and a
     // misleading explanation the moment anything consults this map by
     // extension rather than after a null category.
-    png: 'image — not ingested as a document',
 };
 
 function rejectionReason(ext: string): string {

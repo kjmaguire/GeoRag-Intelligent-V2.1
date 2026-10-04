@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { router } from '@inertiajs/react';
 
 /**
@@ -35,11 +35,29 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
     const baseId = useId();
     const listboxId = `${baseId}-listbox`;
     const optionId = (idx: number) => `${baseId}-option-${idx}`;
+    const dialogRef = useRef<HTMLDivElement | null>(null);
+    // What had focus when the palette opened, so closing hands it back.
+    const openerRef = useRef<HTMLElement | null>(null);
+    const openRef = useRef(false);
+    useEffect(() => {
+        openRef.current = open;
+        if (open) return;
+        // Closed (any route): the next open starts on the first row, and
+        // focus returns to where the user was.
+        setCursor(0);
+        const opener = openerRef.current;
+        openerRef.current = null;
+        if (opener?.isConnected) opener.focus();
+    }, [open]);
 
     useEffect(() => {
         function onKey(e: KeyboardEvent) {
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
                 e.preventDefault();
+                if (!openRef.current) {
+                    const active = document.activeElement;
+                    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+                }
                 setOpen((v) => !v);
             }
             if (e.key === 'Escape') setOpen(false);
@@ -95,13 +113,41 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
     function pick(item: PaletteItem) {
         setOpen(false);
         setQ('');
+        setCursor(0);
         router.visit(item.href);
+    }
+
+    // Modal: Tab must not walk out into the page behind the backdrop.
+    function trapTab(e: React.KeyboardEvent<HTMLDivElement>) {
+        if (e.key !== 'Tab') return;
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusable = Array.from(
+            dialog.querySelectorAll<HTMLElement>('input, button, select, textarea, a[href], [tabindex]:not([tabindex="-1"])'),
+        ).filter((el) => !el.hasAttribute('disabled'));
+        if (focusable.length === 0) {
+            e.preventDefault();
+            return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        if (!(active instanceof HTMLElement) || !dialog.contains(active)) {
+            e.preventDefault();
+            first.focus();
+        } else if (e.shiftKey && active === first) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && active === last) {
+            e.preventDefault();
+            first.focus();
+        }
     }
 
     function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
         if (e.key === 'ArrowDown') {
             e.preventDefault();
-            setCursor((c) => Math.min(filtered.length - 1, c + 1));
+            setCursor((c) => Math.max(0, Math.min(filtered.length - 1, c + 1)));
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             setCursor((c) => Math.max(0, c - 1));
@@ -122,7 +168,7 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
 
     return (
         <div className="fixed inset-0 z-[200] flex items-start justify-center pt-24 foundry" role="presentation" style={{ background: 'rgba(8,10,14,0.78)', backdropFilter: 'blur(4px)' }} onClick={() => setOpen(false)}>
-            <div role="dialog" aria-modal="true" aria-label="Command palette" className="w-[560px] max-w-[94vw] rounded-md border overflow-hidden flex flex-col" style={{ background: 'var(--bg-0)', borderColor: 'var(--line-2)', boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }} onClick={(e) => e.stopPropagation()}>
+            <div ref={dialogRef} onKeyDown={trapTab} role="dialog" aria-modal="true" aria-label="Command palette" className="w-[560px] max-w-[94vw] rounded-md border overflow-hidden flex flex-col" style={{ background: 'var(--bg-0)', borderColor: 'var(--line-2)', boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }} onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--line-1)' }}>
                     <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>⌘K</span>
                     <input
@@ -163,7 +209,7 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
                                             color: isActive ? 'var(--fg-0)' : 'var(--fg-1)',
                                         }}
                                     >
-                                        <span className="font-mono text-[10px] uppercase tracking-wider w-12" style={{ color: 'var(--fg-3)' }}>{i.kind}</span>
+                                        <span aria-hidden="true" className="font-mono text-[10px] uppercase tracking-wider w-12" style={{ color: 'var(--fg-3)' }}>{i.kind}</span>
                                         <div className="flex-1">
                                             <div className="text-xs font-medium">{i.title}</div>
                                             <div className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>{i.sub}</div>

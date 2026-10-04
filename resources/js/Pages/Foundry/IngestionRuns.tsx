@@ -622,7 +622,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
                 <PageHeader
                     eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · INGESTION RUNS`}
-                    title="Pipeline activity"
+                    title="Import activity"
                     sub={
                         <span>
                             {runs.totals.in_flight} in flight · {runs.totals.completed} completed

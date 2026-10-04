@@ -252,6 +252,22 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // CHAT-4 — surfaced when a thread sync is rejected.
     const [persistError, setPersistError] = useState<string | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+    // Snapshot of `messages` for event handlers that build their next state
+    // outside a React updater (see applyCompleted). It is assigned ONLY by
+    // updateMessages below — never from a post-render effect, which could
+    // lag a patchMessage made in the same tick and overwrite it with the
+    // previous render's state.
+    const messagesRef = useRef<ChatMessage[]>(initialMessages);
+    // The only writer of `messages`: updates the ref and the state together.
+    // `next` must be pure; it runs once, against the ref snapshot.
+    function updateMessages(next: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) {
+        const value = typeof next === 'function' ? next(messagesRef.current) : next;
+        messagesRef.current = value;
+        setMessages(value);
+    }
+    // False once the page has unmounted: late async work must not touch the
+    // router or open a stream on a page nobody is looking at.
+    const mountedRef = useRef(true);
     const [streaming, setStreaming] = useState(false);
     const [conversationId, setConversationId] = useState<string>(active_thread_id ?? '');
     // Mobile (< lg) thread rail — collapsed by default, toggled by the
@@ -353,15 +369,12 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     }
 
     /**
-     * Apply a change to one message in BOTH the state and the ref snapshot.
-     * Terminal handlers build their next state from messagesRef (see
-     * applyCompleted), and the ref is only re-synced after a render, so a
-     * state-only update made in the same tick would be invisible to them.
-     * `patch` must be pure — it runs once against each.
+     * Apply a change to one message. Goes through updateMessages so the ref
+     * snapshot terminal handlers read (see applyCompleted) sees it at once.
+     * `patch` must be pure.
      */
     function patchMessage(id: string, patch: (m: ChatMessage) => ChatMessage) {
-        messagesRef.current = messagesRef.current.map((m) => (m.id === id ? patch(m) : m));
-        setMessages((prev) => prev.map((m) => (m.id === id ? patch(m) : m)));
+        updateMessages((prev) => prev.map((m) => (m.id === id ? patch(m) : m)));
     }
 
     function cancelDeltaFlush() {
@@ -419,6 +432,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
 
     /** The fatal-idle outcome when the server has no finished answer either. */
     function markStalled(assistantId: string) {
+        // A late stall verdict for a query that is no longer the active one
+        // must not end the stream that replaced it.
+        if (!isActiveQuery(assistantId)) return;
         // Two different situations wear the same timeout. "The answer
         // above may be incomplete" is only true when there IS an answer;
         // said over an empty bubble it sends the reader looking for text
@@ -426,7 +442,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         const partial = 'The stream went quiet for 2 minutes and the server has no finished answer yet. The text above is unchecked and may be incomplete.';
         const nothing = 'The stream went quiet for 2 minutes and nothing arrived. Retry the question.';
         flushDeltasNow();
-        setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
+        updateMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
             ? {
                   ...m,
                   // Preserve whatever streamed. Nothing is synthesized
@@ -449,7 +465,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     function armWatchdog(assistantId: string) {
         clearWatchdog();
         const warn = setTimeout(() => {
-            setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
+            updateMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
                 ? { ...m, status: 'Still working… large queries can take a few minutes.' }
                 : m)));
         }, 30_000);
@@ -467,10 +483,6 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         watchdogRef.current = { assistantId, warn, fatal };
     }
 
-    // Snapshot ref for event handlers that need current messages outside
-    // a state updater (see applyCompleted).
-    const messagesRef = useRef<ChatMessage[]>(messages);
-    useEffect(() => { messagesRef.current = messages; }, [messages]);
     const streamingRef = useRef(streaming);
     useEffect(() => { streamingRef.current = streaming; }, [streaming]);
 
@@ -482,7 +494,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // (CHAT-12), so the bail below is belt and braces.
     useEffect(() => {
         if (streamingRef.current) return;
-        setMessages(initialMessages);
+        updateMessages(initialMessages);
         setConversationId(active_thread_id ?? '');
         stickToBottomRef.current = true;
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -520,7 +532,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         // selects the most recent thread when ?thread= is missing, so an
         // Inertia visit here would round-trip the page right back to the
         // previous conversation.
-        setMessages([]);
+        updateMessages([]);
         setConversationId('');
         setComposer('');
         setMobileThreadsOpen(false);
@@ -533,18 +545,21 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         }
     }
 
+    /** Ask the server to stop a run nobody is waiting for. Best-effort. */
+    function cancelQueryOnServer(queryId: string) {
+        void fetch(`/api/v1/queries/${queryId}/cancel`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: jsonHeaders(),
+        }).catch(() => { /* best-effort: the job still ends on its own */ });
+    }
+
     function stopStreaming() {
         // CHAT-18 — leaving the channel alone left the Horizon job and the
         // FastAPI run going for up to 180 s, billed and holding an llm slot.
         const active = activeQueryRef.current;
         // queryId is '' until POST /queries answers; there is nothing to cancel yet.
-        if (active?.queryId) {
-            void fetch(`/api/v1/queries/${active.queryId}/cancel`, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: jsonHeaders(),
-            }).catch(() => { /* best-effort: the job still ends on its own */ });
-        }
+        if (active?.queryId) cancelQueryOnServer(active.queryId);
         const convoId = active?.convoId ?? activeConvoIdRef.current;
         // Whatever was buffered is on screen too; keep all of it.
         flushDeltasNow();
@@ -566,17 +581,29 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 : m,
         );
         messagesRef.current = next;
-        setMessages(next);
+        updateMessages(next);
         if (convoId) void persistConversation(convoId, next);
     }
 
     // CHAT-21 — on unmount (an Inertia navigation away mid-stream) leave the
     // private channel too, not just the timers; subscriptions used to pile
     // up per visit until a full reload.
-    useEffect(() => () => {
-        clearWatchdog();
-        cancelDeltaFlush();
-        leaveChannel();
+    //
+    // The in-flight query is dropped too: without that, a POST /queries that
+    // resolves after unmount would still subscribe, start the (billed) run and
+    // arm the watchdog on a page that is gone. When the id is already known
+    // the run is cancelled on the server, exactly as Stop does.
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            const active = activeQueryRef.current;
+            activeQueryRef.current = null;
+            if (active?.queryId) cancelQueryOnServer(active.queryId);
+            clearWatchdog();
+            cancelDeltaFlush();
+            leaveChannel();
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -601,10 +628,15 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             // keyed on active_thread_id, so leaving it out of `only` keeps the
             // transcript on screen exactly as it is. (router.reload already
             // preserves component state; its options type has no preserveState.)
-            if (resp.ok) router.reload({ only: ['threads', 'active_thread'] });
+            if (resp.ok && mountedRef.current) router.reload({ only: ['threads', 'active_thread'] });
         } catch {
             setPersistError('This thread could not be saved (network error). Answers above will be lost on reload.');
         }
+    }
+
+    /** Whether this assistant bubble's query is still the one streaming. */
+    function isActiveQuery(assistantId: string): boolean {
+        return activeQueryRef.current?.assistantId === assistantId;
     }
 
     /**
@@ -613,6 +645,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
      * lost (CHAT-8). Returns false when the bubble no longer exists.
      */
     function applyCompleted(event: Record<string, unknown>, assistantId: string, convoId: string, streamedText: string, runningCitations: Citation[]): boolean {
+        // Stopped, superseded or unmounted: this query no longer owns the
+        // stream, and endStream() below would tear down whichever one does.
+        if (!isActiveQuery(assistantId)) return false;
         // CHAT-3 — the bubble is gone (thread reset): persisting now would
         // write this transcript under the wrong thread.
         if (!messagesRef.current.some((m) => m.id === assistantId)) {
@@ -672,13 +707,15 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 : m,
         );
         messagesRef.current = next;
-        setMessages(next);
+        updateMessages(next);
         void persistConversation(convoId, next);
         endStream();
         return true;
     }
 
     function applyFailed(event: Record<string, unknown>, assistantId: string) {
+        // Same ownership guard as applyCompleted.
+        if (!isActiveQuery(assistantId)) return;
         flushDeltasNow();
         const errMsg = String(event.error ?? event.message ?? 'Query failed');
         // Typed code off classify_error() (app/agent/errors.py) or the job.
@@ -700,7 +737,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 : m,
         );
         messagesRef.current = next;
-        setMessages(next);
+        updateMessages(next);
         endStream();
         // Persist the failed turn too (CHAT-4): the server now accepts an
         // empty assistant message carrying its error.
@@ -716,6 +753,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     async function recoverFromServer(active: ActiveQuery): Promise<boolean> {
         // No query id yet: POST /queries has not answered, so there is nothing to ask about.
         if (!active.queryId) return false;
+        // Stopped or superseded: there is nothing left to settle, and "true"
+        // keeps the retry loop and the stall path from touching a newer stream.
+        if (!isActiveQuery(active.assistantId)) return true;
         flushDeltasNow();
         try {
             const resp = await fetch(`/api/v1/queries/${active.queryId}/result`, {
@@ -724,6 +764,9 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             });
             if (!resp.ok) return false;
             const body = (await resp.json()) as Record<string, unknown>;
+            // The query may have been stopped (and another sent) while this
+            // request was in flight.
+            if (!isActiveQuery(active.assistantId)) return true;
             if (body.status === 'completed') {
                 const current = messagesRef.current.find((m) => m.id === active.assistantId);
                 return applyCompleted(body, active.assistantId, active.convoId, current?.content ?? '', current?.citations ?? []);
@@ -753,7 +796,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         if (!window.Echo) {
             // Surface in-conversation instead of window.alert().
             console.error('GeoRAG chat: window.Echo unavailable — Reverb may be down.');
-            setMessages((prev) => [...prev, {
+            updateMessages((prev) => [...prev, {
                 id: newUuid(),
                 role: 'assistant' as const,
                 content: '',
@@ -799,7 +842,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         };
         const withTurn = [...messagesRef.current, userMsg, assistantMsg];
         messagesRef.current = withTurn;
-        setMessages(withTurn);
+        updateMessages(withTurn);
         setComposer('');
         setStreaming(true);
         // Sending is an explicit "show me the answer": follow it down.
@@ -820,7 +863,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         const failBeforeStream = (msg: string) => {
             if (!isCurrent()) return;
             endStream();
-            setMessages((prev) =>
+            updateMessages((prev) =>
                 prev.map((m) =>
                     m.id === assistantId ? { ...m, status: null, error: msg, isStreaming: false } : m,
                 ),
@@ -929,7 +972,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         // be delivered; fetch it rather than failing.
                         clearWatchdog();
                         leaveChannel();
-                        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, status: 'Loading the finished answer…' } : m)));
+                        updateMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, status: 'Loading the finished answer…' } : m)));
                         void recoverWithRetry(active).then((settled) => {
                             if (!settled) applyFailed(event, assistantId);
                         });

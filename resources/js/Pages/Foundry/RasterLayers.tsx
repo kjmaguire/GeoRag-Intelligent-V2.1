@@ -552,7 +552,7 @@ export default function FoundryRasterLayers({
                                 <Stat
                                     label="Not OCR'd"
                                     value={summary.ocr_skipped}
-                                    title="Measurement grids (DEM, magnetics). Ingest skipped OCR deliberately, so these files have no document and cannot be found in chat."
+                                    title="Measurement grids (DEM, magnetics). Text recognition was skipped for these files on purpose, so they have no document and cannot be found in chat."
                                 />
                                 <Stat
                                     label="With warnings"

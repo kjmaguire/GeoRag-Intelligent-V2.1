@@ -59,7 +59,7 @@ describe('EvidenceInspector', () => {
                 title: 'NI 43-101 Technical Report',
                 section_title: 'Section 7',
                 section_number: '7',
-                metadata: { company: 'Acme Uranium', filing_date: '2024-03-15', report_id: 'report-1' },
+                metadata: { company: 'Acme Uranium', filing_date: '2024-03-15T00:00:00Z', report_id: 'report-1', commodity: 'U' },
             }),
         });
 
@@ -78,11 +78,50 @@ describe('EvidenceInspector', () => {
             )
         );
         expect(screen.getByText('NI 43-101 Technical Report')).toBeInTheDocument();
-        expect(screen.getByText('Acme Uranium')).toBeInTheDocument();
+        expect(screen.getByText('Report date')).toBeInTheDocument();
+        expect(screen.getByText('2024-03-15')).toBeInTheDocument();
+        // Not on the allow-list: raw bag keys and ids stay out of the panel.
+        expect(screen.queryByText('Acme Uranium')).not.toBeInTheDocument();
+        expect(screen.queryByText('Report ID')).not.toBeInTheDocument();
+        expect(screen.queryByText('report-1')).not.toBeInTheDocument();
         expect(screen.getByText('Open in Reader →')).toHaveAttribute(
             'href',
             '/projects/demo/reports/report-1?section=7'
         );
+    });
+
+    it('shows hole, depth interval and confidence from a structured source and hides ids and lab fields', async () => {
+        fetchMock.mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                text: 'U3O8 0.31 % over 1.5 m',
+                source_type: 'assays',
+                title: 'Assay PLS-22-08',
+                metadata: {
+                    assay_id: 'a-9',
+                    collar_id: 'c-1',
+                    hole_id: 'PLS-22-08',
+                    sample_id: 's-4',
+                    from_depth: 101.5,
+                    to_depth: '103',
+                    lab_name: 'SRC',
+                    certificate_ref: 'CERT-77',
+                    confidence: 0.82,
+                    page: 14,
+                },
+            }),
+        });
+        render(<EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />);
+
+        await waitFor(() => expect(screen.getByTestId('evidence-inspector-text')).toBeInTheDocument());
+        expect(screen.getByText('PLS-22-08')).toBeInTheDocument();
+        expect(screen.getByText('101.5–103 m')).toBeInTheDocument();
+        expect(screen.getByText('82%')).toBeInTheDocument();
+        expect(screen.getByText('14')).toBeInTheDocument();
+        for (const hidden of ['a-9', 'c-1', 's-4', 'SRC', 'CERT-77']) {
+            expect(screen.queryByText(hidden)).not.toBeInTheDocument();
+        }
     });
 
     it('shows a loading state before the fetch resolves', () => {

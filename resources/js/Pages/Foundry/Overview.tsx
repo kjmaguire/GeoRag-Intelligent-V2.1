@@ -262,7 +262,7 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                         </>
                                     ) : (
                                         <span>
-                                            {ingest.completed} document{ingest.completed === 1 ? '' : 's'} ingested · pipeline idle
+                                            {ingest.completed} document{ingest.completed === 1 ? '' : 's'} ingested · nothing processing
                                         </span>
                                     )}
                                 </div>

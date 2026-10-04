@@ -25,10 +25,15 @@
  * (an ambiguous hole id, conflicting sources, missing assay units ...) is
  * not an evidence shortfall, and saying so would send the reader looking
  * for data that is not missing, so it gets a neutral "Answer withheld"
- * heading over the backend's own message. The `failed` variant has no
+ * heading over the backend's own message ("No answer produced" for
+ * `model_no_output`, where the model returned nothing usable). The
+ * "Reason:" line is shown for every code except `insufficient_evidence`,
+ * whose headline already says the same thing. The `failed` variant has no
  * fixed headline either (a timeout or a quota ceiling is not "insufficient
  * evidence"), so it shows the backend's own message under a neutral
- * "Query failed" heading.
+ * "Query failed" heading (`ACCESS_CHECK_FAILED` and `SERVICE_UNAVAILABLE`,
+ * which come from Laravel's fail-closed access check rather than the query,
+ * have their own headlines; Chat offers Retry on every errored turn).
  *
  * `code` is humanised from SCREAMING_SNAKE_CASE to Title Case rather than
  * looked up in an exhaustive label table: the three enums this prop can
@@ -50,6 +55,18 @@ export function humanizeCode(code: string): string {
         .join(' ');
 }
 
+/**
+ * Plain headlines for `failed`-frame codes whose cause is not the query
+ * itself. Laravel's access check fails closed (StreamQueryFromFastApi): the
+ * question never ran, so "Query failed" would read as a problem with it.
+ * Keyed by lower-cased code; anything else keeps the neutral heading. The
+ * server's own message is always the body.
+ */
+const FAILED_HEADINGS: Record<string, string> = {
+    access_check_failed: 'Could not check your access',
+    service_unavailable: 'Service busy, try again',
+};
+
 interface Props {
     variant: 'refusal' | 'failed';
     message: string;
@@ -61,14 +78,23 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
     if (!message) return null;
 
     const tone = 'var(--warn, #d97706)';
+    const normalisedCode = code?.trim().toLowerCase() ?? '';
     const insufficientEvidence =
-        variant === 'refusal' && (!code || code.trim().toLowerCase() === 'insufficient_evidence');
+        variant === 'refusal' && (!normalisedCode || normalisedCode === 'insufficient_evidence');
+    // The model ran and produced nothing usable: not an evidence shortfall
+    // and not an intentional withholding, so it gets its own plain heading.
+    const noOutput = variant === 'refusal' && normalisedCode === 'model_no_output';
     const heading =
         variant === 'failed'
-            ? 'Query failed'
+            ? FAILED_HEADINGS[normalisedCode] ?? 'Query failed'
             : insufficientEvidence
               ? 'Refused — insufficient evidence'
-              : 'Answer withheld';
+              : noOutput
+                ? 'No answer produced'
+                : 'Answer withheld';
+    // For insufficient_evidence the headline already says it; a "Reason:"
+    // line would only repeat it.
+    const showReason = Boolean(code) && normalisedCode !== 'insufficient_evidence';
 
     return (
         <div
@@ -94,7 +120,7 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
                 </div>
             )}
             <div style={{ color: 'var(--fg-2)' }}>{message}</div>
-            {code && (
+            {code && showReason && (
                 <div className="mt-1.5 font-mono text-[10px]" style={{ color: 'var(--fg-3)' }}>
                     Reason: {humanizeCode(code)}
                 </div>
