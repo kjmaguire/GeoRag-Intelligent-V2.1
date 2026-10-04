@@ -476,6 +476,12 @@ locals {
     # Slower (~7.5 s/page, 4 in flight) and billed per page — see
     # pdf_report.py's module docstring for the three modes.
     PDF_PARSE_MODE = "all"
+    # Page images: `figures` only. The default in page_image.py is `all`, but
+    # IMAGE_VERBALIZATION_ENABLED is unset in every environment, so the
+    # verbalizer has never run and every page-image passage is a
+    # "[Page N ... not yet described]" placeholder that competes with real
+    # text for top-k slots. `all` stays selectable once verbalization is on.
+    IMAGE_EMBED_PAGE_SCOPE = "figures"
     # The per-document ceiling on billed Parse pages, stated rather than
     # inherited from pdf_report.py's default (audit AWS-15, 2026-09-29). With
     # PDF_PARSE_MODE=all every page is a billed page, so this is the only

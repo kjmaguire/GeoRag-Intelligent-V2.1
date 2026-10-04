@@ -669,18 +669,26 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                     pool, row["project_id"], report_id=row["report_id"],
                     workspace_id=row["workspace_id"],
                 ):
+            # Stored diagnostics (ingest_pdf persist) decide completed vs
+            # partial; see _progress.mark_completed_by_run.
             transitioned = await ingest_progress.mark_completed_by_run(run_id=run_id)
             if transitioned:
                 runs_marked_completed += 1
                 if row["project_id"]:
                     try:
+                        _status, _message = await ingest_progress.terminal_outcome(
+                            run_id=run_id,
+                            default_message=(
+                                "Recovered by stale sweep — embeddings already complete."
+                            ),
+                        )
                         await post_ingestion_progress(
                             workspace_id=row["workspace_id"],
                             project_id=row["project_id"],
                             run_id=run_id,
                             stage="embedding",
-                            status="completed",
-                            message="Recovered by stale sweep — embeddings already complete.",
+                            status=_status,
+                            message=_message,
                         )
                         broadcasts_emitted += 1
                     except Exception as exc:

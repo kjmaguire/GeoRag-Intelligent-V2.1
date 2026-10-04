@@ -9,9 +9,10 @@ PDF parser for NI 43-101 technical reports — it is not a fallback for
 anything. RAGFlow was replaced by this in-process stack per ADR-0002; there
 is no other parser in front of it. Extraction order: pypdfium2 (fitz) native
 text first, pdfplumber as the structural fallback when native text is
-insufficient, and per-page OCR (Tesseract by default, or Cohere Parse v5 on
-Cohere's own API when `OCR_ENGINE=cohere_parse` — ADR-0019 chose the model,
-ADR-0023 the host) for scanned/image pages. See `_attempt_ocr`,
+insufficient, and per-page OCR (Cohere Parse v5 on Cohere's own API by default, with
+Tesseract as the floor — `OCR_ENGINE=tesseract` or a missing
+`COHERE_API_KEY` runs Tesseract only; ADR-0019 chose the model, ADR-0023 the
+host) for scanned/image pages. See `_attempt_ocr`,
 `_attempt_ocr_cohere_parse`, and `cohere_parse_client` for the OCR dispatch.
 
 NOTE ON THE ENV VALUE: the selector is the exact string `cohere_parse` — see
@@ -20,13 +21,15 @@ is logged at CRITICAL and runs Tesseract; it never silently selects anything.
 
 PDF_PARSE_MODE — which pages the remote engine reads
 ----------------------------------------------------
-Only meaningful when `OCR_ENGINE=cohere_parse` and `COHERE_API_KEY` is set
-(see `ocr_engine.selected_parse_mode` and `_effective_parse_mode`; otherwise
-`tables` / `all` warn once and behave as `ocr_only`, and an unknown value
-logs CRITICAL once and behaves as `ocr_only`).
+Only meaningful when `OCR_ENGINE=cohere_parse` (the default) and
+`COHERE_API_KEY` is set (see `ocr_engine.selected_parse_mode` and
+`_effective_parse_mode`; otherwise `tables` / `all` degrade to `ocr_only` —
+quietly for the built-in default, with a warning/CRITICAL when the operator
+asked for them — and an unknown value logs CRITICAL once and behaves as
+`ocr_only`). Unset means `all` since 2026-10-04, matching production.
 
-  ocr_only (DEFAULT, unset == this)
-      Exactly the historical behaviour: the remote engine reads only pages
+  ocr_only
+      The historical behaviour: the remote engine reads only pages
       with no usable text layer (< PER_PAGE_MIN_CHARS chars, or failing the
       F16 native-text screen); Tesseract is the floor for those. Tables on
       text-layer pages come from pdfplumber.
@@ -84,6 +87,7 @@ import asyncio
 import contextlib
 import ctypes
 import difflib
+import functools
 import hashlib
 import json
 import logging
@@ -161,6 +165,18 @@ MIN_EXTRACTABLE_TEXT_CHARS = 200
 # figures, scanned drill log inserts, etc. arrive as page-sized images.
 # Without per-page OCR these pages contribute zero text to the index.
 PER_PAGE_MIN_CHARS = 80
+
+# PDF_PARSE_MODE=all: the engine's reading of a text-layer page replaces the
+# page's own text layer only when it is at least this fraction of the native
+# text's length. A bare PER_PAGE_MIN_CHARS (80) floor accepted any non-trivial
+# reading, so a vector cross-section whose labels live in the text layer lost
+# them whenever Parse returned only the title block (figure blocks are dropped
+# with COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS=0). Under it the native text is
+# kept, the page is counted as a native fallback and a `page_parse_under_read`
+# warning is recorded. 0.6 tolerates the headers/footers/page numbers Parse
+# legitimately drops (the 2026-09-29 comparison matched native at 99.5% on a
+# synthetic report) while still catching a reading that lost real content.
+PARSE_MIN_NATIVE_RATIO = 0.6
 
 # F16 (2026-08-11) — native text-layer quality screen. A page can clear the
 # PER_PAGE_MIN_CHARS length gate and still be garbage embedded OCR or a
@@ -722,6 +738,43 @@ def _snap_window_end(text: str, start: int, end: int) -> int:
     return line_break + 1 if line_break != -1 else end
 
 
+def _line_starts_table(text: str, line_start: int) -> bool:
+    """True when the line beginning at ``line_start`` is a markdown table row."""
+    return 0 <= line_start < len(text) and text.startswith("|", line_start)
+
+
+def _avoid_table_split(text: str, start: int, end: int) -> int:
+    """Pull ``end`` back to the first line of a markdown table it would cut.
+
+    `_snap_window_end` only knows about newlines, so a window boundary could
+    still land between two rows of a table: the first chunk then ends with
+    rows and no end, the second starts with bare rows under no header, and
+    neither can answer a question about the table. If ``end`` falls inside a
+    block of consecutive lines starting with ``|`` and that block began inside
+    this window (past the same floor `_snap_window_end` keeps, so the window
+    stays longer than the overlap), the whole table moves to the next window.
+
+    A table that began at or before ``start`` (longer than a window) has no
+    boundary to move to; ``end`` is returned unchanged and the row-boundary
+    snap already applied is the best that can be done.
+    """
+    if end <= start or end >= len(text):
+        return end
+    last_kept = text.rfind("\n", 0, end - 1) + 1  # line holding text[end - 1]
+    if not _line_starts_table(text, last_kept):
+        return end
+    mid_line = text[end - 1] != "\n"
+    if not mid_line and not _line_starts_table(text, end):
+        return end  # the cut is already on the table's closing boundary
+    block_start = last_kept
+    while block_start > 0 and _line_starts_table(
+        text, text.rfind("\n", 0, block_start - 1) + 1
+    ):
+        block_start = text.rfind("\n", 0, block_start - 1) + 1
+    floor = start + WINDOW_OVERLAP_CHARS + 1
+    return block_start if block_start >= floor else end
+
+
 def _emit_windows(
     full_text: str,
     abs_start: int,
@@ -769,6 +822,7 @@ def _emit_windows(
         b = min(a + WINDOW_CHARS, abs_end)
         if b < abs_end:
             b = _snap_window_end(full_text, a, b)
+            b = _avoid_table_split(full_text, a, b)
         chunk = full_text[a:b].strip()
         if chunk:
             p_first, p_last = _pages_for_range(page_index, a, b)
@@ -1960,6 +2014,64 @@ def _page_has_table_keywords(text: str) -> bool:
     return _TABLE_CAPTION_RE.search(text or "") is not None
 
 
+def _table_placeholders_for_grids(
+    text: str, tables: Sequence[Any] | None, page_num: int,
+) -> str:
+    """Swap each Parse table's inline markdown for a one-line placeholder.
+
+    Parse returns a table twice: the adapter renders it as markdown INTO the
+    page text (cohere_parse_client._page_from_blocks) and also returns the
+    grid, which `_ocr_tables_to_sections` indexes again as its own
+    `Table (OCR, page N, #k)` section. Both then embed, the same rows twice,
+    and a table query returns two near-identical hits that eat top-k.
+    When a grid exists the narrative keeps only ``[Table k, page N]`` so its
+    reading order survives; the section carries the rows. ``k`` is the grid's
+    1-based position, the number in that section's title.
+
+    Only call this where the grids are also kept (the callers that read
+    ``ocr_tables``): a caller that drops the grids needs the markdown in the
+    text. The match is on the adapter's own renderer, so a table whose text
+    was edited after rendering is left alone rather than guessed at.
+    """
+    if not text or not tables:
+        return text
+    from .cohere_parse_client import _table_markdown  # noqa: PLC0415
+
+    for k, grid in enumerate(tables, start=1):
+        rendered = _table_markdown(grid) if grid else ""
+        if rendered.strip() and rendered in text:
+            text = text.replace(rendered, f"[Table {k}, page {page_num}]", 1)
+    return text
+
+
+def _engine_reading_chars(text: str | None, tables: Sequence[Any] | None) -> int:
+    """Characters in an engine reading: its narrative text plus its table cells.
+
+    Table grids are counted because Parse's markdown for a table is replaced
+    in the narrative by a one-line placeholder (the grid is indexed on its own
+    as a `Table (OCR, ...)` section); comparing narrative alone against a
+    native text layer that includes every table cell would flag every table
+    page as under-read.
+    """
+    total = len((text or "").strip())
+    for grid in tables or ():
+        for row in grid or ():
+            for cell in row or ():
+                total += len(str(cell or "").strip())
+    return total
+
+
+def _parse_under_reads_native(
+    text: str | None, tables: Sequence[Any] | None, native_text: str | None,
+) -> bool:
+    """True when the engine's reading is shorter than PARSE_MIN_NATIVE_RATIO
+    of the page's own text layer (see that constant)."""
+    native_chars = len((native_text or "").strip())
+    if native_chars == 0:
+        return False
+    return _engine_reading_chars(text, tables) < PARSE_MIN_NATIVE_RATIO * native_chars
+
+
 def _parse_mode_summary_warning(mode: str, **pages: list[int]) -> dict[str, Any]:
     """The one warning a non-default parse mode adds to the parse result.
 
@@ -2079,6 +2191,7 @@ def _parse_with_fitz(
     path: str,
     apply_ocr_fallback: bool = True,
     progress_file: str | None = None,
+    allow_tesseract: bool = True,
 ) -> tuple[
     str, str, int, list, list[str], list[tuple[int, str]], list[int],
     dict[int, str], dict[int, float | None], dict[int, list[list[list[str]]]],
@@ -2110,6 +2223,11 @@ def _parse_with_fitz(
     - text-layer page → method='fitz_native', confidence=None
     - internal tesseract recovery → method='tesseract',
       confidence=mean_conf in [0, 1]
+
+    `allow_tesseract=False` (PDF_PARSER_TESSERACT_FALLBACK_ENABLED=false while
+    the remote engine is usable) keeps the per-page loop but removes ONLY the
+    Tesseract floor: a page the engine cannot read comes back empty with
+    ``ocr_method="native_fallback"`` instead of being re-read by Tesseract.
 
     Per-page OCR fallback (when `apply_ocr_fallback=True`, the default):
     runs tesseract on each short page and inserts the recovered text
@@ -2263,6 +2381,7 @@ def _parse_with_fitz(
         _OCR_PAGE_CONCURRENCY = max(
             1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4"))
         )
+        _doc_ocr_lang = _dominant_ocr_language(page_languages)
 
         # Grouping for the MIXED path (2026-08-23; re-based on Cohere Parse
         # 2026-09-02). This shape -- a text-native report with an appendix
@@ -2337,8 +2456,14 @@ def _parse_with_fitz(
                     # default path calls _ocr_single_page exactly as before.)
                     **(
                         {"allow_tesseract_fallback": False}
-                        if n in engine_first_native else {}
+                        if (n in engine_first_native or not allow_tesseract)
+                        else {}
                     ),
+                    # The Tesseract floor reads with the document's dominant
+                    # non-English language too, when its data is installed.
+                    # Passed only when there is one, so the default call is
+                    # unchanged.
+                    **({"lang_hint": _doc_ocr_lang} if _doc_ocr_lang else {}),
                 ), None
             except Exception as _ocr_exc:  # noqa: BLE001
                 return n, None, _ocr_exc
@@ -2375,17 +2500,23 @@ def _parse_with_fitz(
                 # authoritative text layer is not a scan to be second-guessed.
                 _native_txt = engine_first_native[n]
                 _accepted = False
+                _under_read = False
                 if _ocr_exc is None and _ocr_result is not None:
                     _e_text, _e_conf, _e_assessment, _e_tables = _ocr_result
-                    if (
+                    _engine_answered = bool(
                         str((_e_assessment or {}).get("ocr_method") or "")
                         == _engine.OCR_METHOD
                         and _e_text
                         and len(_e_text.strip()) >= PER_PAGE_MIN_CHARS
-                    ):
+                    )
+                    _under_read = _engine_answered and _parse_under_reads_native(
+                        _e_text, _e_tables, _native_txt
+                    )
+                    if _engine_answered and not _under_read:
                         _accepted = True
-                        pages_text.append(_e_text)
-                        per_page_text.append((n, _e_text))
+                        _e_narrative = _table_placeholders_for_grids(_e_text, _e_tables, n)
+                        pages_text.append(_e_narrative)
+                        per_page_text.append((n, _e_narrative))
                         per_page_method[n] = _engine.OCR_METHOD
                         per_page_confidence[n] = _reported_confidence(_e_assessment, _e_conf)
                         if _e_tables:
@@ -2397,6 +2528,14 @@ def _parse_with_fitz(
                     per_page_method[n] = "fitz_native"
                     per_page_confidence[n] = None
                     _native_fallback_pages.append(n)
+                    if _under_read:
+                        warnings.append({
+                            "code": "page_parse_under_read",
+                            "page": n,
+                            "native_chars": len(_native_txt.strip()),
+                            "parse_chars": _engine_reading_chars(_e_text, _e_tables),
+                            "min_ratio": PARSE_MIN_NATIVE_RATIO,
+                        })
                 continue
             if _ocr_exc is not None:
                 # F30 — an OCR exception must not drop sub-threshold native
@@ -2429,8 +2568,12 @@ def _parse_with_fitz(
             )
             if ocr_text and len(ocr_text.strip()) >= PER_PAGE_MIN_CHARS:
                 ocr_recovered += 1
-                pages_text.append(ocr_text)
-                per_page_text.append((n, ocr_text))
+                # The length gate above reads the engine's full text; the
+                # narrative keeps a placeholder where a grid was extracted
+                # (the grid is indexed as its own table section).
+                _ocr_narrative = _table_placeholders_for_grids(ocr_text, ocr_tables, n)
+                pages_text.append(_ocr_narrative)
+                per_page_text.append((n, _ocr_narrative))
                 # 2026-08-14 — _ocr_single_page may have routed to the
                 # remote engine; the assessment carries the true engine.
                 # Hard-coding "tesseract" mislabeled remote pages in
@@ -2493,8 +2636,9 @@ def _parse_with_fitz(
                         f"{len(_engine_text_pages)} of {len(engine_first_native)} "
                         f"text-layer page(s); {len(_native_fallback_pages)} kept "
                         f"their native text layer because the engine could not "
-                        f"answer (request failed, OCR page budget exhausted, or "
-                        f"empty/short output)."
+                        f"answer (request failed, OCR page budget exhausted, "
+                        f"empty/short output) or read under "
+                        f"{int(PARSE_MIN_NATIVE_RATIO * 100)}% of the text layer."
                     ),
                 }
             )
@@ -2911,6 +3055,98 @@ def _ocr_page_selection(
     return mapped
 
 
+#: langdetect tags (see `_detect_page_language`) -> Tesseract language codes.
+_TESSERACT_LANG_BY_DETECTED = {
+    "en": "eng",
+    "fr": "fra",
+    "es": "spa",
+    "de": "deu",
+    "zh-cn": "chi_sim",
+}
+
+_TESSERACT_LANGS_LOGGED: set[str] = set()
+
+
+@functools.lru_cache(maxsize=1)
+def _installed_tesseract_langs() -> frozenset[str]:
+    """Language data this process's Tesseract has (``tesseract --list-langs``).
+
+    Asked once per process. Any failure answers ``{"eng"}``: the English data
+    is the only thing the image build guarantees (docker/fastapi.Dockerfile
+    ships eng.traineddata alone), and a question that cannot be answered must
+    not stop OCR.
+    """
+    try:
+        import pytesseract  # noqa: PLC0415
+
+        langs = frozenset(str(x) for x in pytesseract.get_languages(config=""))
+        return langs or frozenset({"eng"})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "pdf_report: could not list Tesseract languages (%s) -- using eng only", exc,
+        )
+        return frozenset({"eng"})
+
+
+def _tesseract_lang(hint: str | None) -> str:
+    """The ``lang=`` value for a page, from a detected-language hint.
+
+    Tesseract was hard-wired to ``lang="eng"`` although the parser detects
+    mixed-language documents (`mixed_language_document`), so a French section
+    of a bilingual Canadian report was read with English models. With a hint
+    ("fr", "es", "de", "zh-cn") whose data is installed this returns
+    ``"fra+eng"`` (primary first, English kept for the technical terms); with
+    no hint, an English hint, or data that is not installed it returns
+    ``"eng"`` -- logging once per language per process when the data is
+    missing, so an image without it is visible rather than silent.
+    """
+    code = _TESSERACT_LANG_BY_DETECTED.get(hint or "")
+    if not code or code == "eng":
+        return "eng"
+    if code in _installed_tesseract_langs():
+        return f"{code}+eng"
+    if code not in _TESSERACT_LANGS_LOGGED:
+        _TESSERACT_LANGS_LOGGED.add(code)
+        logger.warning(
+            "pdf_report: the document is mostly %r but Tesseract data %r is not "
+            "installed -- OCR falls back to eng (add %s.traineddata to "
+            "TESSDATA_PREFIX to read it properly)",
+            hint, code, code,
+        )
+    return "eng"
+
+
+#: A non-English language must account for at least this fraction of the pages
+#: with a detected language before it steers Tesseract. langdetect on a short
+#: or table-heavy English page occasionally answers "fr" or "de"; one such page
+#: must not change how the whole document's scans are read.
+_OCR_LANG_HINT_MIN_SHARE = 0.2
+
+
+def _dominant_ocr_language(page_languages: Sequence[str]) -> str | None:
+    """The most common detected NON-English language, if it is material.
+
+    Only a non-English answer is returned: English is the default and a hint
+    for it would change nothing. ``unknown``/``other`` carry no information
+    and are not counted. A language qualifies at
+    :data:`_OCR_LANG_HINT_MIN_SHARE` of the pages that had one, so a bilingual
+    report (mostly English, a French section) still gets ``"fr"`` while a
+    stray misdetected page does not. Counted across the native-text pages,
+    because that is all that is detected before OCR runs; a fully scanned
+    document has none, so it gets no hint.
+    """
+    counts: dict[str, int] = {}
+    for lang in page_languages:
+        if lang in _TESSERACT_LANG_BY_DETECTED:
+            counts[lang] = counts.get(lang, 0) + 1
+    total = sum(counts.values())
+    non_english = {k: v for k, v in counts.items() if k != "en"}
+    if not total or not non_english:
+        return None
+    top = max(non_english, key=lambda k: non_english[k])
+    return top if non_english[top] / total >= _OCR_LANG_HINT_MIN_SHARE else None
+
+
 def _ocr_single_page(
     pdf_path: str,
     page_num: int,
@@ -2920,8 +3156,13 @@ def _ocr_single_page(
     *,
     skip_engine_page_request: bool = False,
     allow_tesseract_fallback: bool = True,
+    lang_hint: str | None = None,
 ):
     """OCR one PDF page: the remote engine first, Tesseract as the floor.
+
+    ``lang_hint`` is a `_detect_page_language` tag ("fr", "es", ...) for the
+    Tesseract floor only: it becomes ``lang="fra+eng"`` when that data is
+    installed (see `_tesseract_lang`) and is ignored otherwise.
 
     Phase 3 (2026-05-22): when `return_confidence=True`, returns
     ``(text, mean_confidence)`` where mean_confidence is the average
@@ -3070,6 +3311,7 @@ def _ocr_single_page(
             method=_engine.OCR_METHOD if engine_selected else "unavailable",
             return_tables=return_tables,
         )
+    _tess_lang = _tesseract_lang(lang_hint)
     try:
         images = convert_from_path(
             pdf_path,
@@ -3090,7 +3332,7 @@ def _ocr_single_page(
             try:
                 data = pytesseract.image_to_data(
                     processed,
-                    lang="eng",
+                    lang=_tess_lang,
                     config="--psm 3 --oem 3",
                     output_type=pytesseract.Output.DICT,
                 )
@@ -3135,7 +3377,7 @@ def _ocr_single_page(
                 # Fall through to legacy image_to_string path below
         text = pytesseract.image_to_string(
             processed,
-            lang="eng",
+            lang=_tess_lang,
             config="--psm 3 --oem 3",
         )
         out_text = _postprocess_ocr_text(text) if text and text.strip() else ""
@@ -3899,6 +4141,12 @@ def _attempt_ocr_cohere_parse(path: str) -> OcrAttemptResult:
             )
         else:
             page_text, mean_confidence, assessment, page_tables = _outcome
+            # The grids become their own `Table (OCR, ...)` sections (see the
+            # per_page_tables hand-off in parse_pdf_report); keep a
+            # placeholder in the narrative instead of the same rows again.
+            # Before _postprocess_ocr_text, which would alter the markdown
+            # the placeholder match depends on.
+            page_text = _table_placeholders_for_grids(page_text, page_tables, page_num)
         cleaned = _postprocess_ocr_text(page_text) if page_text.strip() else ""
         page_attempts.append(
             OcrPageAttempt(
@@ -4187,7 +4435,8 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     Dispatch tree:
       fitz (pypdfium2) → always runs first for native text extraction
         → per-page OCR for image pages routes to tesseract
-          (PDF_PARSER_TESSERACT_FALLBACK_ENABLED)
+          (the Tesseract floor of that loop is PDF_PARSER_TESSERACT_FALLBACK_ENABLED;
+          Parse runs regardless)
       pdfplumber → only fires when fitz crashes completely; whole-doc
         text + table extraction as a defensive last resort
       Whole-document OCR (when extraction is still below the minimum
@@ -4255,11 +4504,20 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         "PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "true"
     ).lower() == "true"
     fitz_enabled = os.environ.get("PDF_PARSER_FITZ_ENABLED", "true").lower() == "true"
-    # PDF_PARSE_MODE — "ocr_only" (the default, and what an unset variable
-    # means) leaves every code path below exactly as it was. Like the OCR
-    # loop itself, the non-default modes are off when the per-page OCR
-    # fallback is disabled.
-    _parse_mode = _effective_parse_mode() if _tesseract_fallback_enabled else "ocr_only"
+    # PDF_PARSER_TESSERACT_FALLBACK_ENABLED controls TESSERACT, not Parse.
+    # (Until 2026-10-04 it gated the whole per-page OCR loop, so setting it to
+    # false also switched Parse off for mixed documents and forced
+    # PDF_PARSE_MODE to ocr_only.) The per-page loop now runs whenever either
+    # engine can serve it; with the flag false and Parse usable, the loop runs
+    # with the Tesseract floor removed (`allow_tesseract=False`).
+    from . import cohere_parse_client as _engine_probe
+
+    _engine_ready = _engine_probe.is_engine_selected() and _engine_probe.is_configured()
+    _ocr_loop_enabled = _tesseract_fallback_enabled or _engine_ready
+    # PDF_PARSE_MODE — "ocr_only" leaves every code path below exactly as it
+    # was. The non-default modes need the remote engine; with no engine
+    # (and so no loop) they are off.
+    _parse_mode = _effective_parse_mode() if _ocr_loop_enabled else "ocr_only"
     if _parse_mode != "ocr_only":
         _provenance["pdf_parse_mode"] = _parse_mode
 
@@ -4282,8 +4540,15 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                  per_page_method, per_page_confidence,
                  per_page_tables) = _parse_with_fitz(
                     path,
-                    apply_ocr_fallback=_tesseract_fallback_enabled,
+                    apply_ocr_fallback=_ocr_loop_enabled,
                     progress_file=progress_file,
+                    # Passed only when it differs from the default, so a
+                    # caller/test double with the old signature still works.
+                    **(
+                        {"allow_tesseract": False}
+                        if _ocr_loop_enabled and not _tesseract_fallback_enabled
+                        else {}
+                    ),
                 )
                 _span.set_attribute("pdf.text_chars", len(full_text))
                 _span.set_attribute("pdf.page_count", len(page_languages))

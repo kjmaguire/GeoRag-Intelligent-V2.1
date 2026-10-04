@@ -155,6 +155,16 @@ seaweedfs:
     limits:   { cpu: "1",    memory: "2Gi" }
 
 # ─────────────────────────────────────────────────────────────────────
+# OCR engine for scanned PDF pages (OCR_ENGINE on fastapi + hatchet-worker).
+# cohere_parse is the hosted engine production runs and the code default; it
+# needs COHERE_API_KEY and egress. An AIR-GAPPED site sets `tesseract`
+# (values-airgap.yaml does). tesseract also makes PDF_PARSE_MODE degrade to
+# ocr_only, so native text layers keep flowing.
+# ─────────────────────────────────────────────────────────────────────
+ocr:
+  engine: cohere_parse   # cohere_parse | tesseract
+
+# ─────────────────────────────────────────────────────────────────────
 # FastAPI domain service — Pydantic AI + asyncpg + 6-layer §04i.
 # Deployment with HPA (2-8 replicas).
 # ─────────────────────────────────────────────────────────────────────

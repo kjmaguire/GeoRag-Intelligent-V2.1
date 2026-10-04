@@ -233,6 +233,21 @@ def _record_terminal_metrics(
         pass
 
 
+def _blocking_warnings(warnings: list[dict] | None) -> list[dict]:
+    """The warnings that count against a run: everything not ``severity: info``.
+
+    An informational entry (ingest_pdf stores a one-line "N pages recovered by
+    OCR", the parse-mode summary, the detected languages) is kept on the row so
+    a person can read it, but it is not a complaint, so it must not turn a
+    clean run amber. Every other workflow writes warnings with no ``severity``
+    key at all, which stay blocking exactly as before.
+    """
+    return [
+        w for w in (warnings or [])
+        if not (isinstance(w, dict) and w.get("severity") == "info")
+    ]
+
+
 def terminal_status(
     *, rows_written: int | None, warnings: list[dict] | None,
 ) -> str:
@@ -243,11 +258,14 @@ def terminal_status(
     ``rows_written`` is None for callers that do not report it, and None is
     deliberately not 0 — "did not say" is not "said zero".
 
+    Warnings with ``severity == "info"`` do not count (see
+    :func:`_blocking_warnings`).
+
     Shared rather than inlined because callers need to know which of the two
     the run was BEFORE they can name it in a broadcast, and re-deriving the
     rule at each call site is how the two answers drift apart.
     """
-    return "partial" if (warnings or rows_written == 0) else "completed"
+    return "partial" if (_blocking_warnings(warnings) or rows_written == 0) else "completed"
 
 
 def terminal_message(
@@ -269,7 +287,7 @@ def terminal_message(
     validation limit on `message`; a longer string is a 422, which is a
     dropped notification.
     """
-    warnings = warnings or []
+    warnings = _blocking_warnings(warnings)
     if rows_written is None:
         head = "Finished"
     elif rows_written == 0:
@@ -797,6 +815,99 @@ async def mark_report_id(
         )
 
 
+def _decode_warnings(raw: object) -> list[dict]:
+    """``silver.ingest_progress.warnings`` as a list of dicts.
+
+    asyncpg hands a ``jsonb`` column back as ``str`` unless a codec is
+    registered on the connection, and this module's pool registers none.
+    Tolerates NULL, a malformed value and a non-list: a diagnostics read must
+    never be the reason a run cannot be closed.
+    """
+    import json as _json  # noqa: PLC0415
+
+    value = raw
+    if isinstance(value, (str, bytes)):
+        try:
+            value = _json.loads(value)
+        except ValueError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [w for w in value if isinstance(w, dict)]
+
+
+async def mark_run_diagnostics(
+    *,
+    workspace_id: str,
+    minio_key: str,
+    rows_written: int,
+    warnings: list[dict],
+) -> bool:
+    """Store what a run has produced so far on its NON-terminal row.
+
+    ingest_pdf finishes in two places that are not the persist step: the
+    ``embed_verify`` task, and — when embedding is still pending — the
+    ``embed_pending_passages`` completion sweep or ``stale_run_detector``'s
+    race recovery. The last two see nothing but the row, so persist leaves
+    its verdict here and :func:`mark_completed_by_run` reads it back when the
+    caller passes neither ``rows_written`` nor ``warnings``. Without this the
+    sweeps wrote a bare ``completed`` over a document whose OCR had failed.
+
+    Idempotent overwrite (a retried persist writes the same values). Returns
+    True iff a row was updated; best-effort like every helper here.
+    """
+    import json as _json  # noqa: PLC0415
+
+    sql = f"""
+        UPDATE silver.ingest_progress
+        SET rows_written = $3,
+            warnings     = $4::jsonb,
+            updated_at   = now()
+        WHERE workspace_id = $1::uuid AND minio_key = $2
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                sql, workspace_id, minio_key, int(rows_written),
+                _json.dumps(warnings),
+            )
+        return not str(result).endswith(" 0")
+    except Exception as e:
+        log.warning(
+            "progress.mark_run_diagnostics failed (key=%s): %s", minio_key, e,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
+        return False
+
+
+async def terminal_outcome(
+    *, run_id: str, default_message: str, noun: str = "passage",
+) -> tuple[str, str]:
+    """``(status, message)`` for the broadcast that follows a completion.
+
+    Reads the row :func:`mark_completed_by_run` just closed, so a sweep that
+    never held the warnings in memory still tells the UI the truth: the
+    status the row actually earned, and for ``partial`` a line a person can
+    act on instead of "Ingestion complete; all chunks embedded.". A clean
+    run keeps ``default_message``. If the row cannot be read the answer is
+    ``completed`` — the row is already terminal either way and the UI
+    reconciles on its next poll.
+    """
+    row = await get_run(run_id=run_id)
+    if not row:
+        return "completed", default_message
+    status = str(row.get("status") or "completed")
+    if status != "partial":
+        return status, default_message
+    return status, terminal_message(
+        rows_written=row.get("rows_written"),
+        warnings=_decode_warnings(row.get("warnings")),
+        noun=noun,
+    )
+
+
 async def mark_completed_by_run(
     *,
     run_id: str,
@@ -814,8 +925,12 @@ async def mark_completed_by_run(
     first, or pass hole_id explicitly") lived only inside the Hatchet run
     object, which the product UI never reads.
 
-    Omit both and the behaviour is exactly as before, which is what the PDF
-    path wants: it has its own richer accounting.
+    Omit BOTH and the run's own stored diagnostics are used (see
+    :func:`mark_run_diagnostics`): ingest_pdf's persist step records its
+    passage count and OCR/parse warnings on the row, and the three places
+    that close a PDF run (``embed_verify``, the embed completion sweep,
+    ``stale_run_detector`` race recovery) all pass nothing. A row with no
+    stored diagnostics behaves exactly as it did before: ``completed``.
 
     Returns a TRI-STATE:
 
@@ -838,9 +953,6 @@ async def mark_completed_by_run(
     """
     import json as _json  # noqa: PLC0415
 
-    warnings = warnings or []
-    status = terminal_status(rows_written=rows_written, warnings=warnings)
-
     sql = f"""
         UPDATE silver.ingest_progress
         SET status        = $4,
@@ -862,6 +974,17 @@ async def mark_completed_by_run(
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
+            if warnings is None and rows_written is None:
+                stored = await conn.fetchrow(
+                    "SELECT rows_written, warnings FROM silver.ingest_progress "
+                    "WHERE run_id = $1::uuid",
+                    run_id,
+                )
+                if stored is not None:
+                    rows_written = stored["rows_written"]
+                    warnings = _decode_warnings(stored["warnings"])
+            warnings = warnings or []
+            status = terminal_status(rows_written=rows_written, warnings=warnings)
             row = await conn.fetchrow(
                 sql, run_id, report_id, rows_written, status, _json.dumps(warnings),
             )
@@ -877,7 +1000,10 @@ async def mark_completed_by_run(
                 "progress.mark_completed: run=%s finished PARTIAL "
                 "(rows_written=%s, %d warning(s)): %s",
                 run_id, rows_written, len(warnings),
-                "; ".join(str(w.get("detail") or w.get("code") or w) for w in warnings[:3]),
+                "; ".join(
+                    str(w.get("detail") or w.get("code") or w)
+                    for w in _blocking_warnings(warnings)[:3]
+                ),
                 extra={"run_id": run_id, "outcome": "partial"},
             )
         _record_terminal_metrics(

@@ -906,6 +906,13 @@ def _page_from_blocks(blocks: list[Any]) -> PageOcrResult:
             grid = html_table_to_grid(html_fragment) if html_fragment else []
             if grid:
                 tables.append(grid)
+                # Rendered inline here so callers that drop the grids (the
+                # pdfplumber-fallback OCR path) still get the rows. Callers
+                # that KEEP them (pdf_report._parse_with_fitz) swap this for a
+                # "[Table k, page N]" placeholder via
+                # _table_placeholders_for_grids, because the grid is indexed
+                # as its own section and the markdown would embed the same
+                # rows twice.
                 parts.append(_table_markdown(grid))
             elif html_fragment:
                 parts.append(html_fragment.strip())

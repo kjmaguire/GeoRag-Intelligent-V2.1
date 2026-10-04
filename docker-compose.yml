@@ -1835,9 +1835,17 @@ services:
       COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS: ${COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS:-0}
       OCR_PAGES_PER_BATCH: ${OCR_PAGES_PER_BATCH:-8}
       OCR_MAX_PAGES_PER_DOC: ${OCR_MAX_PAGES_PER_DOC:-300}
-      # ocr_only (default) | tables | all — see .env.example. Needs
-      # OCR_ENGINE=cohere_parse and COHERE_API_KEY, else it is ocr_only.
-      PDF_PARSE_MODE: ${PDF_PARSE_MODE:-ocr_only}
+      # all (default, = production; Kyle 2026-09-29) | tables | ocr_only — see
+      # .env.example. Needs OCR_ENGINE=cohere_parse and COHERE_API_KEY; a
+      # keyless dev box degrades to ocr_only (one CRITICAL) and keeps native
+      # text, so the default is safe without a key.
+      PDF_PARSE_MODE: ${PDF_PARSE_MODE:-all}
+      # Page-image scope: `figures` (default, = production) embeds only pages
+      # that are figure/scan pages. `all` embeds every page as an image, but
+      # IMAGE_VERBALIZATION_ENABLED has never been set anywhere, so each such
+      # passage is a "[Page N ... not yet described]" placeholder that takes
+      # top-k slots from real text. `all` stays selectable.
+      IMAGE_EMBED_PAGE_SCOPE: ${IMAGE_EMBED_PAGE_SCOPE:-figures}
       # OCR routing thresholds (ocr_quality.OcrRoutingThresholds schema).
       # Without this var every OCR page fail-closes to review_required
       # ("routing_thresholds_not_calibrated") — pure noise.

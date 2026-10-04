@@ -730,6 +730,11 @@ async def run(
 
         flipped = 0
         for r in rows_to_complete:
+            # No rows_written / warnings passed on purpose: ingest_pdf's
+            # persist step stored its verdict on this very row
+            # (_progress.mark_run_diagnostics) and mark_completed_by_run reads
+            # it back, so a document whose OCR produced nothing closes as
+            # 'partial' here too, not as a bare 'completed'.
             transitioned = await _ingest_progress.mark_completed_by_run(
                 run_id=r["run_id"],
             )
@@ -737,13 +742,17 @@ async def run(
                 continue
             flipped += 1
             try:
+                _status, _message = await _ingest_progress.terminal_outcome(
+                    run_id=r["run_id"],
+                    default_message="Ingestion complete; all chunks embedded.",
+                )
                 await post_ingestion_progress(
                     workspace_id=r["workspace_id"],
                     project_id=r["project_id"],
                     run_id=r["run_id"],
                     stage="embedding",
-                    status="completed",
-                    message="Ingestion complete; all chunks embedded.",
+                    status=_status,
+                    message=_message,
                 )
             except Exception as exc:
                 log.warning(
@@ -752,8 +761,8 @@ async def run(
                 )
         if flipped:
             log.info(
-                "embed_pending_passages: marked %d ingest_progress run(s) "
-                "completed via sweep", flipped,
+                "embed_pending_passages: closed %d ingest_progress run(s) "
+                "(completed or partial) via sweep", flipped,
             )
     except Exception as e:
         log.warning("embed_pending_passages: ingest_progress sweep failed: %s", e)

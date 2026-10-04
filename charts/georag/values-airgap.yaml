@@ -18,3 +18,7 @@ ingress:
   host: georag.local
   tls:
     enabled: false  # internal-only by default; layer TLS externally if needed
+
+# No egress, so no Cohere Parse: OCR runs Tesseract in-container.
+ocr:
+  engine: tesseract

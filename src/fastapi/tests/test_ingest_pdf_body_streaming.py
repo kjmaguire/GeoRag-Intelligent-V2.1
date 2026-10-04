@@ -182,7 +182,7 @@ class TestOversizeIsRejectedBeforeDownloading:
         out = await _preflight(storage)
 
         assert out.valid is False
-        assert "exceeds 2 GB" in (out.error or "")
+        assert "exceeds 512 MB" in (out.error or "")
         assert storage.head_calls == 1
         assert storage.get_file_calls == 0
         assert storage.get_bytes_calls == 0

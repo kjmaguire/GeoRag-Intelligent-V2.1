@@ -49,6 +49,8 @@ import io
 import logging
 from dataclasses import dataclass
 
+from app.services.ingest.upload_limits import max_upload_bytes
+
 log = logging.getLogger("georag.ingest.tiff_to_pdf")
 
 # Bound the wrap. The old tiff_ocr_ingester had a 50-page cap that silently
@@ -57,10 +59,11 @@ log = logging.getLogger("georag.ingest.tiff_to_pdf")
 # documents.
 MAX_FRAMES = 500
 
-# Cap raw input size at 2 GB to match the Laravel upload ceiling
-# (see [[upload-size-stack-2026-05-21]]). Larger files belong on the
-# silver_raster path, not document OCR.
-MAX_TIFF_BYTES = 2 * 1024 * 1024 * 1024
+# Cap raw input size at the upload ceiling, GEORAG_MAX_UPLOAD_BYTES (512 MiB
+# by default; see upload_limits and [[upload-size-stack-2026-05-21]]). This was
+# a hard-coded 2 GB "to match" a Laravel ceiling that had since been lowered.
+# Larger files belong on the silver_raster path, not document OCR.
+MAX_TIFF_BYTES = max_upload_bytes()
 
 #: Image formats (``PIL.Image.format``) whose frames are PAGES. Every other
 #: format contributes its first frame only.
