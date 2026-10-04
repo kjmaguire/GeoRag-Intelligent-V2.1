@@ -171,7 +171,7 @@ def test_number_cited_to_the_wrong_chunk_is_flagged_as_advisory() -> None:
     assert warnings == [
         f"{LAYER3_CITED_ELSEWHERE_PREFIX}12.5 cited to [NI43-1] appears only in [NI43-2]"
     ]
-    assert warnings[0].startswith("Layer 3: number ")
+    assert warnings[0].startswith("Layer 3 advisory: number ")
     # Advisory: not a retry trigger.
     assert retry_trigger_warnings(warnings) == []
 

@@ -38,9 +38,13 @@ with two independent findings:
 
 The cosine/RRF-fallback case
 -----------------------------
-``DocumentSearchResult.rerank_degraded=True`` means the reranker timed
-out, raised, or was never configured, and ``search_documents`` returned
-raw Qdrant RRF-fusion order instead (see that dataclass's docstring). RRF
+``DocumentSearchResult.rerank_degraded=True`` means the deployment uses an
+explicitly local/dev reranker backend (``cross_encoder`` / ``qwen3_causal``)
+and none was loaded, so ``search_documents`` returned raw Qdrant RRF-fusion
+order instead (see that dataclass's docstring). It is never set on a hosted
+deployment: with ``RERANKER_BACKEND=bedrock`` a reranker that is missing or
+fails twice is a typed ``reranker_unavailable`` retrieval failure and the
+query fails with RETRIEVAL_UNAVAILABLE before this gate runs. RRF
 scores (``float(point.score)``, roughly ``1/(k+rank)``) live on a
 completely different, uncalibrated scale from a cross-encoder or Cohere
 relevance score — an order of magnitude smaller. Comparing them against
@@ -302,7 +306,7 @@ def assess_retrieval_quality(
         reason = (
             "Layer 1: retrieval quality gate failed — no document passages "
             "cleared the relevance floor and no structured data (PostGIS, "
-            "public geoscience, graph) was retrieved for this query"
+            "public geoscience) was retrieved for this query"
         )
         logger.warning(
             "layer1_retrieval: refusing — zero evidence across %d tool "

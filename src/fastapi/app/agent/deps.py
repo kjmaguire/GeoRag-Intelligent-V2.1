@@ -63,10 +63,13 @@ class AgentDeps:
         query text at query time (search_documents) check for None and fall
         back gracefully.
     reranker:
-        Warm-loaded CrossEncoder instance (Qwen/Qwen3-Reranker-0.6B, score is
-        yes-vs-no token logit delta, ~[-15,+15] typical) for Layer 1 precision
-        reranking.  None if the model failed to load; search_documents falls back
-        to raw Qdrant cosine ordering instead.
+        The active reranker for RERANKER_BACKEND (Cohere Rerank 3.5 on Bedrock
+        by default; a sidecar proxy or local cross-encoder / Qwen3 causal model
+        in dev) for Layer 1 precision reranking.  None if it could not be
+        built.  With a hosted backend (RERANKER_BACKEND=bedrock) search_documents
+        then FAILS CLOSED (retrieval_failure="reranker_unavailable" ->
+        RETRIEVAL_UNAVAILABLE); only the explicitly local/dev backends degrade
+        to raw Qdrant RRF ordering.
     """
 
     pg_pool: asyncpg.Pool

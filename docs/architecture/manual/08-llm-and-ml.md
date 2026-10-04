@@ -289,11 +289,19 @@ rejected at startup.
 warning at the top of this chapter — `RERANKER_SCORE_THRESHOLD_HOSTED` was
 measured against v4 and is the only retrieval-quality gate in the system.
 
-A degraded reranker is not silent: `georag_rerank_degraded_total` counts
-calls that returned RRF-ordered results because the reranker timed out or
-raised. Answers on that path carry raw fusion scores an order of magnitude
-below a Cohere score, which drags down citation relevance for evidence that
-was fine. Nothing scrapes that counter ([Ch 12 §2.1](12-observability.md)).
+A missing or failing reranker fails closed, and not silently: when the
+reranker errors or times out twice, or `RERANKER_BACKEND=bedrock` is set with
+no reranker built (empty `BEDROCK_RERANK_MODEL_ID`, or a startup failure),
+`search_documents` returns `retrieval_failure="reranker_unavailable"` and the
+query fails with `RETRIEVAL_UNAVAILABLE` — an unfiltered RRF-order answer would
+bypass the Layer 1 relevance floor. `georag_rerank_degraded_total` counts each
+such call. Only the explicitly local/dev backends (`cross_encoder`,
+`qwen3_causal`) with no reranker loaded still degrade to RRF order
+(`rerank_degraded=True`, raw fusion scores an order of magnitude below a Cohere
+score). A retired backend value (`RERANKER_BACKEND=foundry`) stops startup.
+`qwen3_causal` returns a probability, so it has its own floor,
+`RERANKER_SCORE_THRESHOLD_PROBABILITY` (0.2, unmeasured). Nothing scrapes the
+counter ([Ch 12 §2.1](12-observability.md)).
 
 The `reranker_labels` LoRA fine-tune pipeline was a Dagster asset group and
 went with the tree on 2026-08-28. `eval.reranker_training_pairs` still

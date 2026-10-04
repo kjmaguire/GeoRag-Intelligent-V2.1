@@ -34,11 +34,12 @@ Score scale
 -----------
 Qwen3-Reranker emits a yes-token logit minus a no-token logit. Raw
 output is unbounded real ([-15, +15] typical range, broader than bge's
-[-10, +10]). The orchestrator's RERANKER_SCORE_THRESHOLD semantic
-("0.0 = any positive logit means relevant") carries over, but operators
-should re-tune the threshold against golden_queries after the swap —
-the absolute magnitudes are different even though the sign convention
-matches.
+[-10, +10]). That applies to the ``cross_encoder`` backend, whose
+RERANKER_SCORE_THRESHOLD ("0.0 = any positive logit means relevant") carries
+over, though operators should re-tune it against golden_queries after the
+swap — the absolute magnitudes are different even though the sign convention
+matches. The ``qwen3_causal`` backend instead returns softmax P(yes), a
+[0, 1] probability, and is gated by RERANKER_SCORE_THRESHOLD_PROBABILITY.
 
 CPU performance
 ---------------
@@ -71,8 +72,11 @@ benchmarking when golden query numbers are available.
 Timeout
 -------
 RERANKER_TIMEOUT_S = 2.0 seconds for a batch of up to 50 candidates on CPU.
-If the reranker exceeds this budget, the orchestrator logs + continues with
-RRF-ordered results (no hard failure per spec B6 fallback policy).
+If the reranker exceeds this budget (after one retry) ``search_documents``
+returns ``retrieval_failure="reranker_unavailable"`` and the query fails with
+RETRIEVAL_UNAVAILABLE: an unfiltered RRF answer would bypass the Layer 1
+relevance floor. Only a missing reranker on an explicitly local/dev backend
+still degrades to RRF order.
 
 Singleton
 ---------
@@ -744,15 +748,18 @@ def get_reranker_or_none() -> (
     — no torch, no sentence_transformers, no local model load at all. Then
     RERANKER_SERVICE_URL (HTTP proxy to the shared `reranker` sidecar).
     Otherwise loads the in-process CrossEncoder singleton. All exceptions are
-    caught so callers can handle the absent-reranker path (RRF order
-    fallback) without try/except boilerplate. Env is read fresh each call so
-    it stays monkeypatchable in tests.
+    caught and returned as None so the lifespan hook can start the service
+    without try/except boilerplate. None is NOT a licence to degrade: with
+    the hosted backend (RERANKER_BACKEND=bedrock) ``search_documents`` treats
+    a None reranker as ``retrieval_failure="reranker_unavailable"`` (an empty
+    BEDROCK_RERANK_MODEL_ID lands here); only an explicitly local/dev backend
+    degrades to RRF order. Env is read fresh each call so it stays
+    monkeypatchable in tests.
 
     One exception to "all exceptions are caught": a retired backend value
-    raises rather than returning None. Degrading silently to RRF order is the
-    right answer for a reranker that is misconfigured by accident, and the
-    wrong one for a deployment that was never repointed off Foundry — that
-    should stop, not quietly serve worse answers (ADR-0022 gotcha 3).
+    raises rather than returning None, and the lifespan hook re-raises it.
+    A deployment that was never repointed off Foundry should stop, not start
+    and quietly fail every document query (ADR-0022 gotcha 3).
 
     Cohere Rerank v4 discovery (2026-09-16, Kyle; advisory-only since
     2026-09-29): this also asks app.services._bedrock whether Bedrock's
@@ -809,7 +816,8 @@ def get_reranker_or_none() -> (
         if not BEDROCK_RERANK_MODEL_ID:
             logger.error(
                 "reranker: RERANKER_BACKEND=bedrock but BEDROCK_RERANK_MODEL_ID "
-                "is empty -- rerank step will be skipped"
+                "is empty -- no reranker; hosted document search will fail closed "
+                "(reranker_unavailable)"
             )
             return None
         return _BedrockReranker(

@@ -288,9 +288,11 @@ locals {
     # by _db_secret_ref above: the owner is not subject to plain ENABLE ROW
     # LEVEL SECURITY, so the application must never connect as it.
     POSTGRES_USER = "georag_app"
-    # PgBouncer is compose-only and was already absent on Azure. asyncpg
-    # runs statement_cache_size=0 regardless, so RDS Proxy drops in
-    # cleanly if connection counts ever justify it. Not day one.
+    # PgBouncer is compose-only and was already absent on Azure. asyncpg's
+    # statement cache defaults to 0 (the PgBouncer-safe value); the fastapi
+    # service sets ASYNCPG_STATEMENT_CACHE_SIZE=100 below because there is no
+    # pooler here. RDS Proxy in transaction mode would need it back at 0, so
+    # it is not day one.
     DB_HOST = local.db_host
     DB_PORT = 5432
 
@@ -627,6 +629,16 @@ locals {
           # vCPU still leaves headroom for a sync call that blocks one
           # process's event loop.
           UVICORN_WORKERS = 3
+
+          # asyncpg prepared-statement cache (main.py
+          # _statement_cache_size_from_env). The code default is 0, the only
+          # value that is safe behind PgBouncer in transaction mode -- which
+          # is compose. AWS has NO pooler (asyncpg talks to RDS directly), so
+          # 0 here just re-parses every query for nothing; 100 is asyncpg's
+          # own default. If RDS Proxy or any transaction-mode pooler is ever
+          # put in front, set this back to 0 or it fails under load with
+          # `prepared statement "__asyncpg_stmt_N__" does not exist`.
+          ASYNCPG_STATEMENT_CACHE_SIZE = "100"
 
           # The 2026-08-18 incident, which cd.yml's header wrongly claimed
           # could not recur here. It was never set on Azure either, so every

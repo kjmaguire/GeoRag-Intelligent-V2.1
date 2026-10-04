@@ -606,8 +606,9 @@ def _build_adversarial_query(query: str) -> str:
 #: sparse leg is gone, Qdrant errored, or the configured reranker failed
 #: twice (an unfiltered RRF-order answer would bypass Layer 1's floor), and
 #: there is no degraded fallback by design. A timeout or an unloaded model is surfaced in
-#: degraded_sources instead (and turns a Layer 1 refusal into a failure,
-#: see assemble_node), since the next query may well succeed.
+#: degraded_sources instead (and, for a DOCUMENT search only, turns a Layer 1
+#: refusal into a failure, see assemble_node), since the next query may well
+#: succeed.
 _HARD_RETRIEVAL_FAILURES = frozenset(
     {"sparse_encoder_unavailable", "error", "reranker_unavailable"}
 )
@@ -664,11 +665,16 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # failure before the drop. Audit item 12: the same for the structured
     # tools (a Postgres timeout used to read as "no holes / no assays").
     retrieval_failures: list[str] = []
+    # Audit item E: did a DOCUMENT search (not a structured tool) fail? One
+    # element so the nested function can set it without `nonlocal`.
+    document_search_failed: list[bool] = [False]
 
     def _note_retrieval_failure(tool_name: str, result: Any) -> None:
         failure = getattr(result, "retrieval_failure", None)
         if not failure:
             return
+        if tool_name.startswith("search_documents"):
+            document_search_failed[0] = True
         # Technical detail for the log; the plain label is what the response's
         # degraded_sources (a warning chip) shows (audit item 22).
         from app.agent.response_assembler import plain_source_label  # noqa: PLC0415
@@ -678,9 +684,9 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         retrieval_failures.append(label)
         # Only a DOCUMENT search outage is hard: there is no dense-only
         # fallback by design. A structured (PostGIS) tool that timed out is
-        # reported in degraded_sources, and turns a Layer 1 refusal into a
-        # failure (assemble_node), but does not fail a query the other
-        # stores can still answer. Its "error"/"timeout" value is the same
+        # reported in degraded_sources, but does not fail a query the other
+        # stores can still answer -- not even one that ends in a Layer 1
+        # refusal (assemble_node raises only for a document-search failure). Its "error"/"timeout" value is the same
         # string a document search uses, hence the tool-name check.
         if failure == "sparse_query_empty" and tool_name.startswith("search_documents"):
             # The question has no searchable terms (audit item 27): a typed
@@ -1008,6 +1014,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         "tool_results": results,
         "evidence_packet": evidence_packet,
         "retrieval_failures": retrieval_failures,
+        "document_search_failed": document_search_failed[0],
     }
 
 
@@ -1682,18 +1689,27 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     "agentic_retrieval.assemble: status_callback raised",
                     exc_info=True,
                 )
-        if state.retrieval_failures:
+        if state.document_search_failed:
             # Audit RAG-12: the refusal text says nothing cleared the
             # relevance floor. With a document search that never completed
             # that is false — the corpus was not searched — so fail the
             # query instead (no LLM call either way; the Layer 1 hard gate
             # still holds).
+            #
+            # Audit item E (2026-10-04): ONLY a document-search failure
+            # qualifies. The failure list also carries structured-tool
+            # failures (a PostGIS timeout); raising on those told the user
+            # "Document search is temporarily unavailable" about a corpus
+            # that WAS searched. Those fall through to the ordinary Layer 1
+            # refusal below, and _with_retrieval_failures keeps them in
+            # degraded_sources.
             from app.agent.errors import RetrievalBackendUnavailable  # noqa: PLC0415
 
             raise RetrievalBackendUnavailable(
                 "; ".join(state.retrieval_failures)
             )
         response = assemble_response(build_refusal_text(), state.tool_results)
+        response = _with_retrieval_failures(response, state.retrieval_failures)
         # CHAT-10 — stamp the machine-readable refusal UNCONDITIONALLY.
         # refusal_payload used to be set only by repair_stage2 behind
         # REPAIR_LOOP_TERMINAL_ENABLED (off everywhere), so this — the
@@ -2808,7 +2824,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # nothing, a violated geological constraint — not chatter; `should_retry`
     # is the subset severe enough to also floor the confidence and prepend a
     # banner, but a single ungrounded number in an otherwise clean answer is
-    # exactly the case the old UX lost entirely (below NUMERIC_RETRY_THRESHOLD,
+    # exactly the case the old UX lost entirely (below the old Layer 3 count threshold,
     # so no banner, no floor, and demote_node is a no-op while
     # GEO_ANSWER_OIUR_ENABLED is False).
     response = await _enrich_provenance_safely(response)
@@ -3302,6 +3318,7 @@ _REPAIR_LOOP_BUDGET_S = 45.0
 _REPAIR_CHECKPOINT_FIELDS = (
     "response",
     "retrieval_failures",
+    "document_search_failed",
     "validation_warnings",
     "demotion_reasons",
     "tool_results",
@@ -3309,6 +3326,14 @@ _REPAIR_CHECKPOINT_FIELDS = (
     "retrieval_filters",
     "retrieval_profile",
 )
+
+
+class RepairReissueNoOutputError(RuntimeError):
+    """A repair re-issue got no content from the model.
+
+    Raised so the repair loop's ``except Exception`` restores the checkpoint
+    and the answer that already passed the guards ships unchanged.
+    """
 
 
 def _repair_checkpoint(state: AgenticRetrievalState) -> dict[str, Any]:
@@ -3398,6 +3423,22 @@ async def _reissue_llm_only(
         pg_pool=getattr(state.deps, "pg_pool", None),
     )
 
+    # Audit item A (2026-10-04): the adapters return BUDGET_EXHAUSTED_FALLBACK
+    # (operator wording about token budgets) when the model produced no
+    # content. Assembled here it would REPLACE the validated answer as clean,
+    # high-confidence text -- the exact defect assemble_node closes for the
+    # first pass. A repair attempt that produced nothing is no improvement
+    # on an answer that already passed the guards: raise, and the caller
+    # restores the checkpoint so the validated answer ships unchanged.
+    from app.agent.hallucination.refusals import (  # noqa: PLC0415
+        is_budget_exhausted_text,
+    )
+
+    if is_budget_exhausted_text(text):
+        raise RepairReissueNoOutputError(
+            "repair re-issue (LLM-only): the model returned no content"
+        )
+
     # Same card payloads and envelope notes assemble_node attaches — a
     # Stage 3 answer used to lose its map/viz cards and OIUR notes.
     map_payload, viz_payload = _build_chat_card_payloads(
@@ -3462,12 +3503,24 @@ async def _reissue_retrieval(
     # retrieval described searches that no longer apply to these results, so a
     # re-issue that succeeded was still reported as degraded -- and a Layer 1
     # refusal on the re-issue was turned into a failure by the stale entry.
-    for name in ("tool_results", "evidence_packet", "retrieval_failures"):
+    for name in (
+        "tool_results", "evidence_packet", "retrieval_failures",
+        "document_search_failed",
+    ):
         if name in exec_update:
             setattr(silent, name, exec_update[name])
             setattr(state, name, exec_update[name])
 
     asm_update = await assemble_node(silent)
+    # assemble_node turns a no-content model reply into a model_no_output
+    # refusal. That is right for a first answer and wrong for a repair: the
+    # caller's checkpoint restore keeps the already-validated answer.
+    reissued = asm_update.get("response")
+    payload = getattr(reissued, "refusal_payload", None)
+    if isinstance(payload, dict) and payload.get("reason_code") == "model_no_output":
+        raise RepairReissueNoOutputError(
+            "repair re-issue (retrieval): the model returned no content"
+        )
     for name in ("response", "tool_results", "evidence_packet"):
         if name in asm_update:
             setattr(state, name, asm_update[name])
@@ -4309,20 +4362,31 @@ async def _persist_followups(
                 extra={"alert": True},
             )
 
-        logger.info(
-            "agentic_retrieval.persist: wrote answer_runs row "
-            "(intent=%s schema_version=%s retrieved_sources=%d "
-            "confidence=%s latency_ms=%s answer_run_id=%s "
-            "retrieval_items=%d citation_items=%d)",
-            state.effective_intent or state.intent,
-            cols["answer_schema_version"],
-            len(cols.get("lineage_retrieved_sources") or []),
-            response_confidence,
-            latency_ms,
-            answer_run_id,
-            retr_count,
-            cite_count,
-        )
+        # Audit item I: this summary line used to index cols[...] bare, OUTSIDE
+        # any guard, so a missing key raised past the usage metering below and
+        # the query's spend went unrecorded. It is observability only: a
+        # failure here is logged and the metering still runs.
+        try:
+            logger.info(
+                "agentic_retrieval.persist: wrote answer_runs row "
+                "(intent=%s schema_version=%s retrieved_sources=%d "
+                "confidence=%s latency_ms=%s answer_run_id=%s "
+                "retrieval_items=%d citation_items=%d)",
+                state.effective_intent or state.intent,
+                cols["answer_schema_version"],
+                len(cols.get("lineage_retrieved_sources") or []),
+                response_confidence,
+                latency_ms,
+                answer_run_id,
+                retr_count,
+                cite_count,
+            )
+        except Exception:
+            logger.warning(
+                "agentic_retrieval.persist: could not log the answer_runs "
+                "summary line (usage metering continues)",
+                exc_info=True,
+            )
 
     # L1546 — meter the spend. Deliberately independent of the INSERT: the
     # tokens were bought whether or not the lineage row landed.

@@ -673,6 +673,13 @@ class AssayDataResult:
     #: whole of it, so a mean / sigma computed from it describes the top 50
     #: values -- anomaly_detector reads this instead (audit item 4).
     std_value: float | None = None
+    #: Rows that MATCHED the element (the SQL ``COUNT(*)`` over the full
+    #: set), as opposed to ``len(samples)``, which is the LIMIT-capped plot
+    #: subset (50 by default). None only for a result built without the query
+    #: (tests, failures). The Layer 3 evidence walk reads its presence to stop
+    #: ``len(samples)`` counting as a number the answer may state -- the same
+    #: rule collars got in audit item 3 (audit item K, 2026-10-04).
+    total_count: int | None = None
     #: "timeout" / "error" when the query did not complete, so an outage is
     #: reported rather than read as "no assays" (audit item 12).
     retrieval_failure: str | None = None
@@ -1816,6 +1823,7 @@ async def query_assay_data(
                 return AssayDataResult(
                     samples=[],
                     count=0,
+                    total_count=0,
                     element=element or "",
                     available_elements=[],
                     min_value=None,
@@ -1984,6 +1992,7 @@ async def query_assay_data(
                 return AssayDataResult(
                     samples=[],
                     count=0,
+                    total_count=0,
                     element=chosen,
                     available_elements=available,
                     min_value=None,
@@ -2038,6 +2047,7 @@ async def query_assay_data(
                 # `count` reflects the FULL set so the LLM doesn't cite a
                 # truncated count. The samples list is the plottable subset.
                 count=total_n,
+                total_count=total_n,
                 element=chosen,
                 available_elements=available,
                 min_value=float(agg_row["min_v"]) if agg_row["min_v"] is not None else None,
@@ -2227,19 +2237,24 @@ async def search_documents(
       backend (RERANKER_BACKEND — live default "bedrock", Cohere Rerank 3.5;
       "cross_encoder"/"qwen3_causal" for the self-hosted fallback).
       Candidates are sorted by score descending; only the top RERANKER_TOP_K
-      (12) survive.  The score threshold is backend-aware:
-      RERANKER_SCORE_THRESHOLD (0.0, sign check) for cross_encoder/
-      qwen3_causal's unbounded logits, or RERANKER_SCORE_THRESHOLD_HOSTED
-      (0.2) for the hosted backend's calibrated [0,1] Cohere relevance score —
-      the two scales are not comparable, so a single threshold cannot gate
-      both. That 0.2 was measured against Rerank **v4** on Foundry and is
+      (12) survive.  The score threshold is backend-aware, one per scale:
+      RERANKER_SCORE_THRESHOLD (0.0, sign check) for cross_encoder's
+      unbounded logits; RERANKER_SCORE_THRESHOLD_PROBABILITY (0.2) for
+      qwen3_causal's softmax P(yes), a [0,1] probability; and
+      RERANKER_SCORE_THRESHOLD_HOSTED (0.2) for the hosted backend's
+      calibrated [0,1] Cohere relevance score — a logit and a probability are
+      not comparable, so a single threshold cannot gate them all. That 0.2 was measured against Rerank **v4** on Foundry and is
       carried over unvalidated to Rerank **3.5** on Bedrock; re-measure it on
       the golden set (ADR-0022).
       The reranker score replaces the raw Qdrant cosine in the returned
       relevance_score field.
 
-    When no reranker is available the tool returns the RRF ordering
-    truncated to RERANKER_TOP_K and sets ``rerank_degraded=True``. It does
+    When no reranker is available AND the backend is hosted
+    (RERANKER_BACKEND=bedrock) the tool fails closed with
+    ``retrieval_failure="reranker_unavailable"`` -- the same typed failure as a
+    reranker that errored twice. Only the explicitly local/dev backends
+    (cross_encoder, qwen3_causal) degrade: the tool then returns the RRF
+    ordering truncated to RERANKER_TOP_K and sets ``rerank_degraded=True``. It does
     NOT apply RETRIEVAL_QUALITY_THRESHOLD: that is a calibrated [0,1] gate
     and these are rank-derived fusion scores. Until 2026-08-21 it did, which
     meant that the moment the reranker was unavailable — an unset
@@ -2586,9 +2601,11 @@ async def search_documents(
     # Stage 2: cross-encoder reranking (Layer 1 precision gate).
     #
     # A configured reranker that fails (twice) is a typed retrieval failure,
-    # not a silent RRF fallback (audit item 1). The no-reranker-configured
-    # path further down still returns RRF order flagged rerank_degraded:
-    # that deployment never promised a precision stage.
+    # not a silent RRF fallback (audit item 1). So is a HOSTED backend
+    # (RERANKER_BACKEND=bedrock) with no reranker object at all (audit item B).
+    # Only the explicitly local/dev backends reach the no-reranker path
+    # further down, which returns RRF order flagged rerank_degraded: that
+    # deployment never promised a precision stage.
     if ctx.deps.reranker is not None:
         logger.info(
             "search_documents: reranking %d candidates for project=%s query_hash=%s",
@@ -2630,8 +2647,9 @@ async def search_documents(
         # answer built from unfiltered candidates. It is now treated exactly
         # like a dead sparse leg: one retry, then a typed retrieval failure
         # that execute_node raises as RetrievalBackendUnavailable. The only
-        # remaining rerank_degraded path is the explicit "no reranker
-        # configured" branch below, which never promised a precision stage.
+        # remaining rerank_degraded path is the "no reranker configured"
+        # branch below, and only for an explicitly local/dev backend (a
+        # hosted one fails closed there too, audit item B).
         scores: list[float] = []
         _rerank_ok = False
         for _attempt in (1, 2):
@@ -2722,21 +2740,25 @@ async def search_documents(
 
             # Pair chunks with raw scores, threshold, sort, top-K.
             #
-            # The threshold must be backend-aware (2026-08-15 audit fix):
-            # cross_encoder/qwen3_causal emit unbounded real-valued logits
-            # (~[-15,+15]) where RERANKER_SCORE_THRESHOLD's 0.0 default is a
-            # meaningful sign check ("any positive logit passes"). The
-            # hosted backend's raw_scores are ALREADY Cohere's calibrated
-            # [0,1] relevance score (never negative — see needs_sigmoid
-            # above), so
-            # gating those against the same 0.0 default was a no-op that let
-            # every candidate through regardless of actual relevance.
+            # The threshold must be backend-aware, one per score SCALE
+            # (2026-08-15 audit fix; qwen3_causal split out 2026-10-04):
+            #   * cross_encoder emits unbounded real-valued logits (~[-15,+15])
+            #     where RERANKER_SCORE_THRESHOLD's 0.0 default is a
+            #     meaningful sign check ("any positive logit passes").
+            #   * bedrock's raw_scores are ALREADY Cohere's calibrated [0,1]
+            #     relevance score (never negative -- see needs_sigmoid above),
+            #     so the 0.0 logit floor was a no-op that let every candidate
+            #     through; it uses RERANKER_SCORE_THRESHOLD_HOSTED.
+            #   * qwen3_causal is a softmax P(yes) in [0,1] -- the same
+            #     problem, so it gets RERANKER_SCORE_THRESHOLD_PROBABILITY
+            #     rather than the logit floor.
             pre_threshold_count = len(chunks)
-            min_score = (
-                settings.RERANKER_SCORE_THRESHOLD_HOSTED
-                if RERANKER_BACKEND == "bedrock"
-                else settings.RERANKER_SCORE_THRESHOLD
-            )
+            if RERANKER_BACKEND == "bedrock":
+                min_score = settings.RERANKER_SCORE_THRESHOLD_HOSTED
+            elif RERANKER_BACKEND == "qwen3_causal":
+                min_score = settings.RERANKER_SCORE_THRESHOLD_PROBABILITY
+            else:
+                min_score = settings.RERANKER_SCORE_THRESHOLD
             paired = [
                 (chunk, score)
                 for chunk, score in zip(chunks, raw_scores, strict=False)
@@ -2791,8 +2813,39 @@ async def search_documents(
 
     # No reranker at all — get_reranker_or_none() returned None. That is not
     # an exotic state: RERANKER_BACKEND=bedrock with an empty
-    # BEDROCK_RERANK_MODEL_ID lands here, as does any local model load
-    # failure.
+    # BEDROCK_RERANK_MODEL_ID lands here, as does any exception in the
+    # lifespan reranker block, as does any local model load failure.
+    #
+    # Audit item B (2026-10-04): the fail-closed rule above applied only when
+    # a reranker EXISTED. With the hosted backend selected and no reranker
+    # object, this branch returned unfiltered RRF order -- no relevance floor
+    # at all -- which is the one retrieval-quality gate in the system (Layer 1)
+    # silently switched off in production. A hosted deployment promised a
+    # precision stage, so its absence is the same typed failure as the stage
+    # failing twice. Only the explicitly local/dev backends keep the
+    # degrade-to-RRF path below.
+    if RERANKER_BACKEND == "bedrock":
+        logger.error(
+            "RERANKER_UNAVAILABLE search_documents: RERANKER_BACKEND=%s but no "
+            "reranker is configured (empty BEDROCK_RERANK_MODEL_ID or a failed "
+            "startup); refusing to return %d unfiltered RRF-order candidates "
+            "for project=%s. This is NOT an empty corpus.",
+            RERANKER_BACKEND,
+            len(chunks),
+            project_id,
+        )
+        try:
+            from app.metrics import RERANK_DEGRADED_TOTAL  # noqa: PLC0415
+
+            RERANK_DEGRADED_TOTAL.inc()
+        except Exception:  # noqa: BLE001
+            logger.debug("RERANK_DEGRADED_TOTAL increment failed", exc_info=True)
+        return DocumentSearchResult(
+            chunks=[],
+            count=0,
+            data_source=f"Qdrant {_doc_collection} (reranker unavailable)",
+            retrieval_failure="reranker_unavailable",
+        )
     #
     # This used to call filter_by_quality(chunks, RETRIEVAL_QUALITY_THRESHOLD).
     # `chunk.relevance_score` on this path is `float(point.score)` straight
@@ -3089,7 +3142,7 @@ async def query_graph_by_label(
 # audit PG-12 (2026-09-29) found silver.samples.sample_length / .recovery,
 # silver.geochemistry.value / .detection_limit (none exist) and
 # silver.alteration.intensity (text). A claim routed to one of them errored,
-# came back verified=False, and counted toward NUMERIC_RETRY_THRESHOLD — a
+# came back verified=False, and counted as a Layer 3 finding — a
 # spurious retry on a correct number.
 #
 # scope_mode drives how the tenancy WHERE clause + FROM clause are built:
@@ -3276,7 +3329,7 @@ async def verify_numerical_claim(
         # Not a refusal — single-tenant deployments have no workspace by
         # design, and `acquire_scoped()` is lenient for that reason.
         # Refusing would turn their verified claims into unverified ones,
-        # push Layer 3 past NUMERIC_RETRY_THRESHOLD and retry correct
+        # raise Layer 3 findings and retry correct
         # answers.
         #
         # But it IS worth saying out loud. This tool returns VALUES — the

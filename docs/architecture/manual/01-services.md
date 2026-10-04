@@ -337,8 +337,11 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
 - **Volumes** `./src/fastapi:/app:cached`, `fastapi_hf_cache:/tmp/hf_cache`
   (shared with the sidecars), `georag-phase-b-extract:/data`.
 - **Depends on** `pgbouncer`, `redis`, `qdrant`, `minio`, `embedding`,
-  `sparse` — all `service_healthy`. Not `reranker`: the orchestrator
-  degrades to RRF order when it is absent. Note the sidecar dependencies
+  `sparse` — all `service_healthy`. Not `reranker`: fastapi boots without
+  it, but with `RERANKER_BACKEND=cross_encoder`/`qwen3_causal` pointing at the
+  sidecar a down `reranker` makes document queries fail with
+  `RETRIEVAL_UNAVAILABLE` (`retrieval_failure="reranker_unavailable"`) — there
+  is no RRF-order fallback for a configured reranker since 2026-10-04. Note the sidecar dependencies
   apply even when both backends are `bedrock`, so a `dev-data` boot always
   waits for the Qwen3 embedding and SPLADE models to load.
 - **Healthcheck** `curl -f http://localhost:8000/health`. **Stop grace**

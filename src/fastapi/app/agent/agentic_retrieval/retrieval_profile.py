@@ -78,13 +78,16 @@ class RetrievalProfile(BaseModel):
     # in the same change. (The field-mode ``max_chunks`` on RetrievalFilters in
     # preprocessor.py is a separate, equally unread, value.)
     #
-    # ── NOT YET WIRED (audit 2026-06-28) ──────────────────────────────────
-    # These fields are declared + set per-intent but the execute path does not
-    # consume them yet. They are kept (not deleted) because applying each one
-    # changes retrieval breadth / ranking / output and therefore needs a
-    # golden-eval pass before flipping — blind-wiring would shift answer quality
-    # untested (same gating as the Qwen3 query-prefix item). Documented here so
-    # the profile does not misrepresent itself as tuning the pipeline.
+    # ── Declared, set per intent, and only LOGGED (re-audited 2026-10-04) ──
+    # The two fields below -- ``conflict_detection_enabled`` and
+    # ``require_regulatory_constraints`` -- are read by exactly one thing: the
+    # route node's log line (nodes.route_node). Neither changes tool dispatch,
+    # prompts or validation. They are kept (not deleted) because wiring either
+    # changes what the answer says and needs a golden-eval pass first; deleting
+    # them is equally legitimate. Documented here so the profile does not
+    # misrepresent itself as tuning the pipeline. (``bm25_weight`` and
+    # ``max_chunks``, which this header used to cover as well, are gone --
+    # see the "Deleted" note above.)
     conflict_detection_enabled: bool = Field(
         default=False,
         description=(

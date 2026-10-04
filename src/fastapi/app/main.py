@@ -24,7 +24,11 @@ Pool storage on app.state
   app.state.embedding_model  — embedding model (EMBEDDING_MODEL_NAME); a shared-
                                sidecar proxy when EMBEDDING_SERVICE_URL is set
                                (default), else a local SentenceTransformer (CPU)
-  app.state.reranker         — CrossEncoder (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
+  app.state.reranker         — the active reranker for RERANKER_BACKEND: Cohere
+                               Rerank 3.5 on Bedrock (default), a sidecar proxy,
+                               or a local cross-encoder / Qwen3 causal model;
+                               None when none could be built (then hosted-backend
+                               document search fails closed)
 
 Timeout constants are imported from app.config.settings so every module
 reading them gets the same validated value.
@@ -73,6 +77,7 @@ from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 from app.routers import workflow_trigger as workflow_trigger_router  # HAT-13
+from app.services._bedrock import RetiredAzureConfiguration
 from app.services.qdrant_conn import qdrant_client_kwargs
 
 # V1.5-05 — switch to JSON logs at module import so every logger.info() in
@@ -133,6 +138,64 @@ def qdrant_dense_dim(vectors_config: Any) -> int | None:
 # ---------------------------------------------------------------------------
 
 
+def _init_reranker(app: FastAPI) -> None:
+    """Build the reranker and stamp it on ``app.state`` (lifespan step 6).
+
+    Split out of the lifespan so the failure policy is testable: a retired
+    backend value (``RetiredAzureConfiguration``) propagates and stops
+    startup; any other failure leaves ``app.state.reranker = None``, which a
+    hosted backend turns into a ``reranker_unavailable`` retrieval failure
+    per query (see the lifespan comment).
+    """
+    _t1 = time.perf_counter()
+    try:
+        from app.services.reranker import (  # noqa: PLC0415
+            RERANKER_BACKEND,
+            active_reranker_version,
+            get_reranker_or_none,
+        )
+
+        # get_reranker_or_none() implements the full backend precedence:
+        # RERANKER_BACKEND=bedrock (Cohere Rerank 3.5, no local model at all)
+        # > RERANKER_SERVICE_URL (shared sidecar HTTP proxy, avoids the
+        # per-worker OOM from 6 uvicorn workers each loading a ~1 GiB model)
+        # > in-process CrossEncoder singleton. Delegating here instead of
+        # duplicating the sidecar-vs-local branch keeps this single source
+        # of truth in services/reranker.py.
+        reranker = get_reranker_or_none()
+        _elapsed_r = time.perf_counter() - _t1
+        _version = active_reranker_version()
+        app.state.reranker = reranker
+        app.state.reranker_version = _version if reranker is not None else None
+        if reranker is None:
+            logger.error(
+                "Reranker unavailable (backend=%s) — document search will "
+                "%s",
+                RERANKER_BACKEND,
+                "FAIL CLOSED with RETRIEVAL_UNAVAILABLE (hosted backend)"
+                if RERANKER_BACKEND == "bedrock"
+                else "degrade to RRF order, flagged rerank_degraded (local backend)",
+            )
+        else:
+            logger.info(
+                "Reranker ready: backend=%s version=%s loaded in %.2fs",
+                RERANKER_BACKEND, _version, _elapsed_r,
+            )
+    except RetiredAzureConfiguration:
+        # A deployment that was never repointed off Foundry: stop, do not
+        # serve (ADR-0022 gotcha 3). This used to be swallowed by the generic
+        # handler below, so the service started with no reranker.
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to load reranker — app.state.reranker is None; a hosted "
+            "backend now fails document search closed (RETRIEVAL_UNAVAILABLE), "
+            "a local backend degrades to RRF order"
+        )
+        app.state.reranker = None
+        app.state.reranker_version = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialise all shared database pools and clients before first request.
@@ -144,10 +207,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Startup sequence:
       1. asyncpg connection pool → PostGIS via PgBouncer
       2. AsyncQdrantClient → Qdrant vector store
-      3. Neo4j AsyncDriver → knowledge graph
+      3. (removed 2026-07-28 — there is no graph store)
       4. redis.asyncio client → caching / session store
       5. Embedding model — shared sidecar proxy (EMBEDDING_SERVICE_URL) or local
-      6. CrossEncoder reranker (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
+      6. Reranker for RERANKER_BACKEND (Bedrock Cohere Rerank 3.5 by default)
 
     Teardown is the mirror: each client is closed in reverse order so
     in-flight requests can complete before their pools disappear.
@@ -711,63 +774,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
 
     # -------------------------------------------------------------------------
-    # 6. Cross-encoder reranker — BAAI/bge-reranker-base (Module 4 Chunk 3)
+    # 6. Reranker — the backend RERANKER_BACKEND selects
     # -------------------------------------------------------------------------
-    # bge-reranker-base (Apache 2.0, ~278 MB) replaces ms-marco-MiniLM-L-6-v2.
-    # It is pinned by HuggingFace revision SHA (see reranker.py) so weight
-    # drift is detected via the version string in answer_runs.reranker_version.
+    # Hosted default: Cohere Rerank 3.5 on Bedrock (no local model). Dev: the
+    # `reranker` sidecar proxy (RERANKER_SERVICE_URL) or an in-process
+    # cross-encoder / Qwen3 causal model. The version string is stamped on
+    # answer_runs.reranker_version so weight/model drift is detectable.
     #
-    # CORRECTED 2026-08-22. This used to claim: "The reranker now runs on
-    # the FUSED candidate set (post cross-store RRF), not just on
-    # Qdrant-only results. Per-class top-k is defined in
-    # app.services.reranker.RERANKER_TOP_K_BY_CLASS."
+    # Reranking runs INSIDE `search_documents`, over Qdrant candidates only —
+    # nothing fuses Qdrant results with the PostGIS/assay tool results. The
+    # single RERANKER_TOP_K value applies (`top_k_for_class` has no callers).
     #
-    # Neither half is true. Reranking runs INSIDE `search_documents`, over
-    # Qdrant candidates only — nothing ever fuses Qdrant results with the
-    # PostGIS/assay tool results, so there is no cross-store RRF pool for
-    # it to run on. And `top_k_for_class` has zero callers anywhere in the
-    # tree, so RERANKER_TOP_K_BY_CLASS is inert; the single
-    # RERANKER_TOP_K value is what applies.
-    #
-    # Fallback policy (spec B6): if the reranker fails to load or predict,
-    # log + continue with RRF order. Do not fail the query.
-    _t1 = time.perf_counter()
-    try:
-        from app.services.reranker import (  # noqa: PLC0415
-            RERANKER_BACKEND,
-            active_reranker_version,
-            get_reranker_or_none,
-        )
-
-        # get_reranker_or_none() implements the full backend precedence:
-        # RERANKER_BACKEND=foundry (Cohere Rerank v4, no local model at all)
-        # > RERANKER_SERVICE_URL (shared sidecar HTTP proxy, avoids the
-        # per-worker OOM from 6 uvicorn workers each loading a ~1 GiB model)
-        # > in-process CrossEncoder singleton. Delegating here instead of
-        # duplicating the sidecar-vs-local branch keeps this single source
-        # of truth in services/reranker.py.
-        reranker = get_reranker_or_none()
-        _elapsed_r = time.perf_counter() - _t1
-        _version = active_reranker_version()
-        app.state.reranker = reranker
-        app.state.reranker_version = _version if reranker is not None else None
-        if reranker is None:
-            logger.warning(
-                "Reranker unavailable (backend=%s) — rerank step will be "
-                "skipped (RRF order used)",
-                RERANKER_BACKEND,
-            )
-        else:
-            logger.info(
-                "Reranker ready: backend=%s version=%s loaded in %.2fs",
-                RERANKER_BACKEND, _version, _elapsed_r,
-            )
-    except Exception:
-        logger.exception(
-            "Failed to load reranker model — reranker step will be skipped (RRF order used)"
-        )
-        app.state.reranker = None
-        app.state.reranker_version = None
+    # Failure policy (changed 2026-10-04, audit items B/C): this is NOT a
+    # degrade-to-RRF path any more. app.state.reranker = None is allowed to
+    # start the service, but with a HOSTED backend (RERANKER_BACKEND=bedrock)
+    # `search_documents` then returns retrieval_failure="reranker_unavailable"
+    # and the query fails with RETRIEVAL_UNAVAILABLE -- an unfiltered RRF
+    # answer would bypass the Layer 1 relevance floor. Only the explicitly
+    # local/dev backends (cross_encoder, qwen3_causal) still degrade to RRF
+    # order, flagged rerank_degraded. A retired backend value
+    # (RetiredAzureConfiguration) is a deployment error and stops startup.
+    _init_reranker(app)
 
     # -------------------------------------------------------------------------
     # 7. SPLADE++ sparse encoder pre-warm (Module 4 Chunk 2)

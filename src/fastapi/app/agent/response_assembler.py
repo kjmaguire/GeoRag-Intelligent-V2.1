@@ -727,13 +727,15 @@ def _extract_document_title(tool_name: str, result: Any) -> str:
         kind = result.drill_type or result.hole_type or "hole"
         return f"Hole {result.hole_id or 'unknown'} — {kind} · {depth_str}"
     if isinstance(result, SpatialQueryResult):
-        return f"Drill collars from PostGIS ({result.count} records)"
+        # total_count is the holes that MATCHED; count is the LIMIT-capped
+        # sample (a 567-hole project read "50 records", audit item 3). It is
+        # None only for a result built without the query -- fall back to count.
+        holes = result.total_count if result.total_count is not None else result.count
+        return f"Drill collars ({holes} {'hole' if holes == 1 else 'holes'})"
     if isinstance(result, DocumentSearchResult):
         if result.chunks:
             return result.chunks[0].document_title
-        return "Qdrant document search (no results)"
-    if isinstance(result, GraphTraversalResult):
-        return f"Neo4j knowledge graph ({result.count} entities)"
+        return "Document search (no results)"
     if isinstance(result, ProjectOverviewResult):
         name = result.project_name or "Project overview"
         return (

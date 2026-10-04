@@ -107,6 +107,7 @@ async def test_layer1_refusal_becomes_a_failure_when_search_did_not_run(monkeypa
     state = _state(
         tool_results=[],
         retrieval_failures=["Qdrant georag_chunks (timeout) via search_documents"],
+        document_search_failed=True,
     )
     with pytest.raises(RetrievalBackendUnavailable):
         await assemble_node(state)

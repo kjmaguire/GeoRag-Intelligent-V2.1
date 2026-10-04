@@ -25,7 +25,7 @@
 | 2f | Refusal spine staging tiers (SHADOW → TERMINAL → LOWCOST → FULL) | SAD | [x] | SAD §4.1 |
 | 2g | Model-routing tier system (FAST/STANDARD/DEEP) + select_tier rules | SAD | [x] | SAD §3.3.3 |
 | 2h | Reranker identity = bge-reranker-base + per-class top-K table | SAD | [x] | SAD §2.1 + §3.3.5 |
-| 2i | RRF fusion formula + per-list weighting via bm25_weight | DFS | [x] | DFS §2.3.1 |
+| 2i | RRF fusion formula (Qdrant server-side `Fusion.RRF`; the per-intent `bm25_weight` was deleted 2026-10-04, so there is no per-list weighting) | DFS | [x] | DFS §2.3.1 |
 | 7a-roles | `georag_app` + `martin_ro` provisioning gap (cold-start blocker) | DFS | [x] | DFS §4.1.1 + INDEX §5.3 |
 | 3 | LangGraph subgraphs (3) + 8 intents | SAD | [x] | SAD §3.3.2 |
 | 3-split | RAG flow names the agentic_retrieval graph | DFS | [x] | DFS §2.3 |

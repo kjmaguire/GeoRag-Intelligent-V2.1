@@ -1398,7 +1398,9 @@ class Settings(BaseSettings):
     #     Qwen3-Reranker-0.6B: typical [-15, +15]
     #
     # The RERANKER_SCORE_THRESHOLD default (0.0 — sign-only filter)
-    # carries over unchanged because the sign convention is preserved.
+    # carries over unchanged for the cross_encoder (logit) backend because the
+    # sign convention is preserved. qwen3_causal is a probability and uses
+    # RERANKER_SCORE_THRESHOLD_PROBABILITY instead.
     # Operators using non-zero thresholds must re-tune against the
     # golden_queries set (see scripts/run_eval_120.py) after the swap.
     # See app/services/reranker.py for the loader; this setting is the
@@ -1540,6 +1542,18 @@ class Settings(BaseSettings):
     # against golden_queries (scripts/run_eval_120.py) before changing.
     RERANKER_SCORE_THRESHOLD_HOSTED: float = 0.2
 
+    # Probability-scale counterpart for RERANKER_BACKEND=qwen3_causal (audit
+    # item G, 2026-10-04). _Qwen3CausalReranker.predict returns softmax
+    # P(yes) over the yes/no logits -- a [0, 1] probability, like Cohere's
+    # score and unlike the cross_encoder backend's unbounded logit. It was
+    # still gated by RERANKER_SCORE_THRESHOLD's 0.0 logit floor, a no-op on a
+    # probability (every candidate passes), so the self-hosted path had no
+    # relevance floor at all. 0.2 is the hosted backend's "clearly
+    # irrelevant" floor reused as a starting point: it is NOT measured against
+    # Qwen3-Reranker's probability distribution and must be re-tuned on the
+    # golden set.
+    RERANKER_SCORE_THRESHOLD_PROBABILITY: float = 0.2
+
     # -------------------------------------------------------------------------
     # Hallucination prevention layer configuration (Section 04i)
     # -------------------------------------------------------------------------
@@ -1591,17 +1605,10 @@ class Settings(BaseSettings):
     # When disabled the validator still logs but does not raise ModelRetry.
     NUMERICAL_VERIFICATION_ENABLED: bool = True
 
-    # Phase H — Layer 3 retry-escalation threshold. Historically Layer 3
-    # was log-only ("advisory") even when the model emitted many ungrounded
-    # numbers. The new policy:
-    #   - >= NUMERIC_RETRY_THRESHOLD ungrounded numbers in one answer
-    #     escalates Layer 3 from advisory to HIGH severity → triggers
-    #     an LLM retry with a correction hint.
-    #   - Any Layer 3 number co-located with a Layer 6 constraint
-    #     violation escalates to CRITICAL → also triggers retry.
-    # Default 3 — empirically separates "model rounded a citation"
-    # (1-2 ungrounded numbers) from "model is fabricating" (3+).
-    NUMERIC_RETRY_THRESHOLD: int = 3
+    # (NUMERIC_RETRY_THRESHOLD, the Phase H count threshold for escalating
+    # Layer 3 to a retry, was removed 2026-10-04: once ANY Layer 3 finding
+    # forces should_retry, the threshold and the "Layer 3 + Layer 6 co-located
+    # values" escalation it fed changed nothing.)
 
     # Layer 4: resolve drill-hole IDs and quoted entity names against PostGIS / Neo4j.
     # Left True after B1 (2026-07-28, Neo4j removal): this flag gates BOTH the

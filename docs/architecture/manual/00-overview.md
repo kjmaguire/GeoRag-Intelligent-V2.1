@@ -218,8 +218,10 @@ The on-prem / air-gapped target is still the Helm chart at
         └──── hatchet-worker (WORKER_POOL=all, direct PG) ◀───┘              {workflow}/trigger
 ```
 
-PgBouncer fronts the async application paths (asyncpg with
-`statement_cache_size=0`); Martin, the Hatchet worker and migrations
+PgBouncer fronts the async application paths in compose (asyncpg with
+`statement_cache_size=0`, the default of `ASYNCPG_STATEMENT_CACHE_SIZE`);
+the AWS deployment has no pooler and sets `ASYNCPG_STATEMENT_CACHE_SIZE=100`
+for fastapi in `deploy/aws/terraform/config.tf`. Martin, the Hatchet worker and migrations
 connect to Postgres directly. FastAPI uses Redis db 2, isolated from
 Laravel. Every internal hop carries `X-Service-Key`; both sides accept the
 previous key during rotation (`ops/runbooks/secret-rotation.md`).

@@ -838,10 +838,13 @@ def verify_numbers(
 
 #: Prefix of the per-sentence, advisory Layer 3 finding: a number that IS in
 #: the retrieved evidence, but not in the evidence of the id the sentence
-#: cites. Deliberately distinct from "Layer 3: Ungrounded number" so
-#: ``run_post_assembly_validation`` can keep it out of the hard bucket, while
-#: still opening with "Layer 3:" for every reader of the layer prefix.
-LAYER3_CITED_ELSEWHERE_PREFIX = "Layer 3: number "
+#: cites. Deliberately NOT one of ``LAYER3_WARNING_PREFIXES``: it opens with
+#: "Layer 3 advisory:", so neither the severity classifier (retry / floor /
+#: banner) nor ``confidence_computer._is_layer3_warning`` (the x0.7 demotion)
+#: counts it, while ``nodes._banner_reason`` -- which reads only the layer
+#: digit -- still maps it to the Layer 3 "numbers" reason, and it stays in
+#: ``validation_warnings`` for the logs and the lineage row.
+LAYER3_CITED_ELSEWHERE_PREFIX = "Layer 3 advisory: number "
 
 
 def _evidence_by_citation_id(
@@ -1293,7 +1296,12 @@ def _evidence_hole_ids(tool_results: list[tuple[str, Any]]) -> set[str]:
 
 
 def _measured_holes(answer: str, hole_ids: list[str]) -> set[str]:
-    """Canonical ids of the holes the answer attributes a measured value to.
+    """`hole_id_key` keys of the holes the answer attributes a measured value to.
+
+    Keyed with `hole_id_key`, the same identity `verify_entities` uses, NOT
+    the separator-free `canonical_hole_id`: that merges "PLS-2-28" with
+    "PLS-22-8", so a measured value attributed to one would be charged to the
+    other (audit item H).
 
     A measured value is a number with a unit (`_NUMBER_WITH_UNIT_RE`). Each
     is attributed to the nearest hole mention BEFORE it in the same
@@ -1308,7 +1316,7 @@ def _measured_holes(answer: str, hole_ids: list[str]) -> set[str]:
         mentions: list[tuple[int, int, str]] = []
         for hid in hole_ids:
             for m in re.finditer(r"(?<![\w-])" + re.escape(hid) + r"(?![\w-])", sentence, re.IGNORECASE):
-                mentions.append((m.start(), m.end(), canonical_hole_id(hid)))
+                mentions.append((m.start(), m.end(), hole_id_key(hid)))
         if not mentions:
             continue
         masked = [(a, b) for a, b, _ in mentions] + [
@@ -1332,7 +1340,7 @@ def _not_in_evidence_warning(hole_id: str, answer: str, hole_ids: list[str]) -> 
     exists and the number exists. Otherwise advisory: a hole named in
     passing ("unlike BH-21, ...") is not a claim about it.
     """
-    if canonical_hole_id(hole_id) in _measured_holes(answer, hole_ids):
+    if hole_id_key(hole_id) in _measured_holes(answer, hole_ids):
         return (
             f"Layer 4: Drill-hole ID '{hole_id}' exists in silver.collars but "
             f"appears in none of the evidence retrieved for this answer, and the "
@@ -1969,7 +1977,9 @@ def guard_tolerances(query_class: str | None = None) -> dict[str, int]:
 #:
 #: A tuple rather than `startswith("Layer 3")`: the loose form also matches
 #: a "Layer 30:" that nobody has written yet, and a guard against
-#: fabricated numbers should not itself be approximately right.
+#: fabricated numbers should not itself be approximately right. It also
+#: matches the advisory "Layer 3 advisory: number ..." finding, which must
+#: NOT trigger a retry or the demotion (LAYER3_CITED_ELSEWHERE_PREFIX).
 LAYER3_WARNING_PREFIXES: tuple[str, ...] = ("Layer 3:", "Layer 3 tuple:")
 
 
@@ -2003,13 +2013,12 @@ def _severity_buckets(
     # a space, not a colon. Matching on "Layer 3:" excluded every tuple
     # warning from this bucket, so the 2026-08-14 shadow->warn promotion
     # had no effect at all: unit-pair mismatches never counted toward
-    # NUMERIC_RETRY_THRESHOLD, never set should_retry, and were not even
-    # included in the advisory=%d figure logged below.
-    advisory = [
-        w for w in all_warnings
-        if w.startswith(LAYER3_WARNING_PREFIXES)
-        and not w.startswith(LAYER3_CITED_ELSEWHERE_PREFIX)
-    ]
+    # the count threshold that then gated retries, never set should_retry, and
+    # were not even included in the advisory=%d figure logged below.
+    # The per-sentence "cited elsewhere" finding is not in this bucket by
+    # construction: its prefix ("Layer 3 advisory:") is not in
+    # LAYER3_WARNING_PREFIXES.
+    advisory = [w for w in all_warnings if w.startswith(LAYER3_WARNING_PREFIXES)]
 
     return critical, high, advisory
 
@@ -2143,110 +2152,44 @@ async def run_post_assembly_validation(
     # above and deliberately NOT applied to the severity classification
     # below. They come from GUARD_TOLERANCE_NUMERIC_UNGROUNDED /
     # GUARD_TOLERANCE_ENTITY_UNRESOLVED, which default to 2, and applying
-    # them here would loosen fabrication detection rather than preserve
-    # existing behaviour: the Layer 3 escalation already fires at
-    # NUMERIC_RETRY_THRESHOLD (3) ungrounded numbers, so damping the count
-    # by 2 first would push the effective bar to 5. That is a live
-    # safety-posture change and needs its own calibration run against the
-    # golden set — it is not a side effect of deleting dead code. The
-    # tolerances are surfaced here (and covered by tests) so the model is
-    # available to whoever makes that call.
+    # them here would loosen fabrication detection: ANY Layer 3 finding now
+    # forces a retry (see should_retry below), so damping the count by 2
+    # first would let one or two fabricated numbers ship unflagged. That is a
+    # live safety-posture change and needs its own calibration run against
+    # the golden set. The tolerances are surfaced here (and covered by
+    # tests) so the model is available to whoever makes that call.
 
     # Classify warnings by severity — fabricated drill-hole IDs are
-    # critical, constraints are high, numerical grounding is advisory
-    # UNLESS it crosses a threshold or co-locates with a constraint
-    # violation. The other Layer 4 warnings (commodity / formation /
-    # entity grounding) come from heuristic token-bag checks with a real
-    # false-positive rate, so they escalate to critical only in bulk —
-    # mirroring the Layer 3 NUMERIC_RETRY_THRESHOLD policy below. They
+    # critical, constraints are high, and every Layer 3 numerical-grounding
+    # finding is a retry trigger on its own (below). The other Layer 4
+    # warnings (commodity / formation / entity grounding) come from heuristic
+    # token-bag checks with a real false-positive rate, so they escalate to
+    # critical only in bulk (_LAYER4_ADVISORY_CRITICAL_THRESHOLD). They
     # remain in all_warnings either way.
     critical, high, advisory = _severity_buckets(all_warnings)
-
-    # Phase H — Layer 3 escalation policy. Per the overnight app review,
-    # Layer 3 (numeric_claims) was historically log-only — even when the
-    # model emitted 8+ ungrounded numbers in one answer, the run still
-    # shipped. The new policy:
-    #
-    # (a) ≥ NUMERIC_RETRY_THRESHOLD (default 3) ungrounded numbers in
-    #     one answer escalates Layer 3 from "advisory" to "high" — the
-    #     density signals the model is fabricating, not just rounding.
-    # (b) Any Layer 3 number whose value ALSO appears in a Layer 6
-    #     constraint violation is critical — the number is BOTH
-    #     ungrounded AND violates a physical constraint, which is the
-    #     "fabricated impossible value" failure mode that the §04i
-    #     contract exists to prevent.
-    #
-    # Both rules are tunable via settings; safe defaults preserve the
-    # current pass rates while raising the retry-on-fabrication bar.
-    _numeric_threshold = int(getattr(settings, "NUMERIC_RETRY_THRESHOLD", 3))
-    _layer3_escalated_high = False
-    if len(advisory) >= _numeric_threshold:
-        _layer3_escalated_high = True
-        logger.warning(
-            "post_assembly_validation: Layer 3 escalated to HIGH — "
-            "%d ungrounded number(s) in one answer (threshold=%d). "
-            "Triggering retry.",
-            len(advisory), _numeric_threshold,
-        )
-
-    # Rule (b): co-location with a Layer 6 constraint violation.
-    # Both layers carry numeric values in their warning strings; we
-    # extract them and check for intersection. Any match elevates the
-    # Layer 3 warning to critical (matches "fabricated impossible value"
-    # severity).
-    _layer3_escalated_critical = False
-    if advisory and high:
-        import re as _re  # noqa: PLC0415
-        _num_re = _re.compile(r"-?\d+(?:\.\d+)?")
-        _layer3_nums = set()
-        for w in advisory:
-            for m in _num_re.findall(w):
-                with contextlib.suppress(ValueError):
-                    _layer3_nums.add(float(m))
-        _layer6_nums = set()
-        for w in high:
-            for m in _num_re.findall(w):
-                with contextlib.suppress(ValueError):
-                    _layer6_nums.add(float(m))
-        if _layer3_nums & _layer6_nums:
-            _layer3_escalated_critical = True
-            logger.error(
-                "post_assembly_validation: Layer 3 + Layer 6 colocate "
-                "on values %s — fabricated impossible value detected. "
-                "Triggering retry with critical severity.",
-                sorted(_layer3_nums & _layer6_nums),
-            )
 
     if all_warnings:
         logger.warning(
             "post_assembly_validation: %d warning(s) "
-            "(critical=%d, high=%d, advisory=%d, "
-            "L3_escalated_high=%s, L3_escalated_critical=%s):\n  %s",
+            "(critical=%d, high=%d, advisory=%d):\n  %s",
             len(all_warnings),
             len(critical),
             len(high),
             len(advisory),
-            _layer3_escalated_high,
-            _layer3_escalated_critical,
             "\n  ".join(all_warnings),
         )
 
     # Mark whether a retry is recommended — the orchestrator checks this
     # flag to decide whether to re-call the LLM.
     #
-    # Audit item 5a (2026-10-04): ANY Layer 3 finding now sets it. Below
-    # NUMERIC_RETRY_THRESHOLD an ungrounded number used to cost only the x0.7
-    # demotion -- no floor, no banner, the text untouched -- so one or two
-    # fabricated grades shipped looking like a normal cited answer. Same
-    # treatment as a Layer 4 / Layer 6 finding. The per-sentence advisory
+    # Audit item 5a (2026-10-04): ANY Layer 3 finding sets it. An ungrounded
+    # number used to cost only the x0.7 demotion unless several piled up (a
+    # count threshold, removed 2026-10-04 as inert once this rule landed) --
+    # no floor, no banner, the text untouched -- so one or two fabricated
+    # grades shipped looking like a normal cited answer. Same treatment as a
+    # Layer 4 / Layer 6 finding. The per-sentence advisory
     # (LAYER3_CITED_ELSEWHERE_PREFIX) stays out of this: it is not in
     # `advisory`.
-    should_retry = (
-        len(critical) > 0
-        or len(high) > 0
-        or len(advisory) > 0
-        or _layer3_escalated_high
-        or _layer3_escalated_critical
-    )
+    should_retry = len(critical) > 0 or len(high) > 0 or len(advisory) > 0
 
     return response, all_warnings, should_retry
