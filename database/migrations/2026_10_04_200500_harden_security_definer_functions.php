@@ -52,6 +52,16 @@ use Illuminate\Support\Facades\DB;
  * ALTER FUNCTION only: bodies, signatures, owners and results are untouched,
  * and a function that does not exist on this cluster is skipped.
  *
+ * Ownership guard: ALTER FUNCTION needs ownership of the function. Where the
+ * migrating role is not the owner (an RDS app role that did not create them,
+ * e.g. the "Migrations under production privileges" CI job), each function's
+ * statements run inside a block that catches `insufficient_privilege`, logs a
+ * NOTICE and moves on instead of aborting the migration run -- the same pattern
+ * 2026_10_04_200600 uses for ALTER ROLE. The block is per function, so a
+ * function that cannot be altered is left wholly as it was (the sub-transaction
+ * rolls back its REVOKE/GRANT too) and the others are still hardened. Run the
+ * printed statements by hand as the owner in that case.
+ *
  * Out of scope but worth knowing: silver.significant_intersections_by_project
  * (a Martin MVT function) is SECURITY DEFINER with search_path
  * `pg_catalog, public` and default PUBLIC EXECUTE; it is called by
@@ -89,12 +99,15 @@ return new class extends Migration
                 continue;
             }
 
-            DB::statement("ALTER FUNCTION {$signature} SET search_path = {$after}");
-            DB::statement("REVOKE EXECUTE ON FUNCTION {$signature} FROM PUBLIC");
-
+            $statements = [
+                "ALTER FUNCTION {$signature} SET search_path = {$after}",
+                "REVOKE EXECUTE ON FUNCTION {$signature} FROM PUBLIC",
+            ];
             if ($hasAppRole) {
-                DB::statement("GRANT EXECUTE ON FUNCTION {$signature} TO georag_app");
+                $statements[] = "GRANT EXECUTE ON FUNCTION {$signature} TO georag_app";
             }
+
+            $this->runGuarded($signature, $statements);
         }
     }
 
@@ -109,9 +122,35 @@ return new class extends Migration
                 continue;
             }
 
-            DB::statement("ALTER FUNCTION {$signature} SET search_path = {$before}");
-            DB::statement("GRANT EXECUTE ON FUNCTION {$signature} TO PUBLIC");
+            $this->runGuarded($signature, [
+                "ALTER FUNCTION {$signature} SET search_path = {$before}",
+                "GRANT EXECUTE ON FUNCTION {$signature} TO PUBLIC",
+            ]);
         }
+    }
+
+    /**
+     * Run one function's statements in a block that survives a non-owner
+     * migrating role (SQLSTATE 42501) with a NOTICE instead of failing the run.
+     *
+     * @param list<string> $statements
+     */
+    private function runGuarded(string $signature, array $statements): void
+    {
+        $body = implode("\n                ", array_map(static fn (string $sql): string => "{$sql};", $statements));
+        $notice = str_replace("'", "''", "not permitted to alter {$signature}; apply its search_path / EXECUTE changes by hand as the owner");
+
+        DB::unprepared(<<<SQL
+            DO \$do\$
+            BEGIN
+                BEGIN
+                {$body}
+                EXCEPTION WHEN insufficient_privilege THEN
+                    RAISE NOTICE '{$notice}';
+                END;
+            END
+            \$do\$;
+        SQL);
     }
 
     private function functionExists(string $signature): bool

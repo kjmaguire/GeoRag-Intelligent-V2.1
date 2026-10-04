@@ -66,14 +66,24 @@ return new class extends Migration
                 continue;
             }
 
-            DB::statement("ALTER TABLE {$table} ADD COLUMN IF NOT EXISTS source_file text");
-            DB::statement("ALTER TABLE {$table} ADD COLUMN IF NOT EXISTS source_file_sha256 varchar(64)");
-            DB::statement(
-                "COMMENT ON COLUMN {$table}.source_file IS 'Logical name of the uploaded file that wrote this row (upload timestamp prefix stripped). The replace key for ingest_tabular re-uploads. NULL = written before 2026-10-04.'",
-            );
-            DB::statement(
-                "COMMENT ON COLUMN {$table}.source_file_sha256 IS 'SHA-256 of the uploaded file bytes that wrote this row (lineage). NULL = written before 2026-10-04.'",
-            );
+            // ADD COLUMN takes ACCESS EXCLUSIVE, and the ingest worker may be
+            // upserting into these tables right now: without a bound the ALTER
+            // queues behind a long writer and every later reader/writer queues
+            // behind the ALTER. 15 s fails the migration instead (re-run is safe,
+            // everything is IF NOT EXISTS). The migration runs outside a
+            // transaction (the indexes below are CONCURRENTLY), so the columns
+            // get their own, and SET LOCAL resets with it at COMMIT.
+            DB::transaction(function () use ($table): void {
+                DB::statement("SET LOCAL lock_timeout = '15s'");
+                DB::statement("ALTER TABLE {$table} ADD COLUMN IF NOT EXISTS source_file text");
+                DB::statement("ALTER TABLE {$table} ADD COLUMN IF NOT EXISTS source_file_sha256 varchar(64)");
+                DB::statement(
+                    "COMMENT ON COLUMN {$table}.source_file IS 'Logical name of the uploaded file that wrote this row (upload timestamp prefix stripped). The replace key for ingest_tabular re-uploads. NULL = written before 2026-10-04.'",
+                );
+                DB::statement(
+                    "COMMENT ON COLUMN {$table}.source_file_sha256 IS 'SHA-256 of the uploaded file bytes that wrote this row (lineage). NULL = written before 2026-10-04.'",
+                );
+            });
 
             $schema = explode('.', $table, 2)[0];
             $this->dropIfInvalid($schema, $index);

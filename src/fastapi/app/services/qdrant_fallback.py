@@ -246,13 +246,19 @@ async def _pg_trgm_search(
                 await bind_workspace_scope(
                     conn, workspace_id=ws, site="qdrant_fallback",
                 )
-                # `$1 <<% text` is the indexable spelling of
-                # strict_word_similarity($1, text) >= threshold: it is served
-                # by idx_document_passages_text_trgm (GIN, gin_trgm_ops,
-                # migration 2026_10_04_200200), where a function call in the
-                # WHERE was a scan of every passage in the workspace. The
-                # operator reads its floor from this GUC, so the 0.3 above is
-                # set here for the transaction (set_config(..., true) is SET
+                # `$1 <<% text` is the operator spelling of
+                # strict_word_similarity($1, text) >= threshold. It is NOT
+                # index-served: the GIN trigram index this once named
+                # (idx_document_passages_text_trgm) was dropped from migration
+                # 2026_10_04_200200 because pg_trgm.so is broken in the CI
+                # image, and no other index on silver.document_passages covers
+                # `text`. What serves the query is idx_document_passages_
+                # workspace_id (the `workspace_id = $2` predicate), after which
+                # `<<%` is evaluated per row -- a scan of every passage in the
+                # workspace. Acceptable for an outage-only degraded path; a GIN
+                # gin_trgm_ops index on text is the fix if that stops being true.
+                # The operator reads its floor from this GUC, so the 0.3 above
+                # is set here for the transaction (set_config(..., true) is SET
                 # LOCAL; the transaction this block already needs scopes it).
                 await conn.execute(
                     "SELECT set_config("

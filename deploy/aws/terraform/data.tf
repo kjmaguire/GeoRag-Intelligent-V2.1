@@ -109,11 +109,17 @@ resource "aws_db_parameter_group" "this" {
   # idle_in_transaction_session_timeout: Laravel/Octane workers are resident
   # and a leaked transaction otherwise lives as long as the worker, pinning
   # the xmin horizon (vacuum cannot clean anything newer) and holding row
-  # locks. Compose uses 60 s; 120 s here because the ECS tasks reach RDS
-  # directly with no pooler to absorb a slow client.
+  # locks. Compose uses 60 s; 300 s here because the ECS tasks reach RDS
+  # directly with no pooler to absorb a slow client, and because
+  # ingest_tabular parses INSIDE its write transaction: the
+  # `async with conn.transaction()` in _parse_and_write_atomically
+  # (hatchet_workflows/ingest_tabular.py ~3562-3585) wraps _parse_and_write,
+  # whose asyncio.to_thread(_parse_one / _parse_rows) calls (~3394-3399,
+  # ~3479-3484) leave the connection idle-in-transaction for the whole parse
+  # of a large sheet. 120 s killed those sessions mid-ingest.
   parameter {
     name  = "idle_in_transaction_session_timeout"
-    value = "120000"
+    value = "300000"
   }
 
   # JIT compilation costs 50-500 ms of planning on the analytical queries
@@ -456,6 +462,41 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
       transition {
         days          = 90
         storage_class = "STANDARD_IA"
+      }
+    }
+  }
+
+  # Page-image staging (bronze-raster only). ingest_pdf's parse task renders
+  # each in-scope page to page-images/_pending/{sha256}/page_NNNNN.png and the
+  # persist task copies it to page-images/{report_id}/... and deletes the
+  # pending object. A document whose persist never succeeds (retries
+  # exhausted, worker lost, run cancelled) leaves its renders under _pending
+  # for good - up to one PNG per page. Nothing reads that prefix after the
+  # persist retries are over, so it expires after 7 days. The bucket is
+  # versioned, hence the short noncurrent expiry as well: without it the
+  # deleted/expired object lingers for the 90 days the rule above allows.
+  # Finalised images (page-images/{report_id}/) are untouched: the filter is
+  # the _pending prefix only.
+  dynamic "rule" {
+    for_each = each.key == "bronze-raster" ? [1] : []
+    content {
+      id     = "expire-page-image-staging"
+      status = "Enabled"
+
+      filter {
+        prefix = "page-images/_pending/"
+      }
+
+      expiration {
+        days = 7
+      }
+
+      noncurrent_version_expiration {
+        noncurrent_days = 1
+      }
+
+      abort_incomplete_multipart_upload {
+        days_after_initiation = 7
       }
     }
   }

@@ -206,6 +206,7 @@
             <!-- 2026-10-04 database audit: MV refresh CONCURRENTLY, hot-path and
                  FK indexes, SECURITY DEFINER ACL + search_path, role timeouts. -->
             <file>tests/Feature/Tenancy/DatabaseAuditHardeningMigrationsTest.php</file>
+            <file>tests/Feature/Database/AuditIndexAndSecurityDefinerMigrationsTest.php</file>
             <!-- 2026-09-29 (SEC-8/SEC-10): a binding that would disarm RLS
                  (empty / non-UUID workspace) is refused; {slug} routes bind.
                  PooledRlsBindingTest (SEC-2) self-skips unless RLS_POOLER_PORT
