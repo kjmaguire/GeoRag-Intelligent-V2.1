@@ -173,7 +173,7 @@ export function SectionView({
             </div>
             <div className="text-[10px] font-mono shrink-0" style={{ color: 'var(--fg-3)' }}>
                 Ad-hoc section — derived from each hole's lithology bands.
-                gold.cross_section_panels has 0 rows; this view doesn't persist.
+                Sections are not saved — they are rebuilt each time you open this view.
                 Click a hole on the MAP to set up a section, or pick from the dropdowns above.
             </div>
         </div>

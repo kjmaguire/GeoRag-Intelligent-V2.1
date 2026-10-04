@@ -97,14 +97,14 @@ export default function PublicGeoSyncControls({ isAdmin }: Props) {
             if (res.status === 202 && body.workflow_run_id) {
                 pushToast({
                     title: 'Public geo sync queued',
-                    detail: `Hatchet run ${body.workflow_run_id} · ${body.feeds ?? '?'} feeds. It runs for a while; counts update when it finishes.`,
+                    detail: `Sync started · ${body.feeds ?? '?'} feeds. It runs for a while; counts update when it finishes.`,
                     tone: 'accent',
                     durationMs: 15000,
                 });
             } else if (res.status === 429) {
                 pushToast({
                     title: 'A sync was just triggered',
-                    detail: body.workflow_run_id ? `Run ${body.workflow_run_id} is already queued.` : body.message,
+                    detail: body.workflow_run_id ? 'A sync is already queued — results will update when it finishes.' : body.message,
                     tone: 'warn',
                 });
             } else {

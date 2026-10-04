@@ -111,8 +111,8 @@ export default function StereonetCard({ meta, onPointClick }: StereonetCardProps
                         className="text-xs text-gray-500 text-center max-w-xs"
                         data-testid="stereonet-empty"
                     >
-                        No structural measurements extracted for this project yet — see
-                        ADR-0007 PR-2.
+                        No structural measurements have been recorded for this project yet.
+                        Import structure data to see them plotted here.
                     </div>
                 ) : (
                     <div

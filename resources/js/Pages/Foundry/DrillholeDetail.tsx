@@ -230,7 +230,7 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
                             <div className="px-4 py-6">
                                 <EmptyState
                                     title="No assays for this hole."
-                                    detail="Either silver.assays_v2 has no rows for this collar, or the migration that adds value_ppm hasn't run."
+                                    detail="No assay results have been loaded for this drill hole, or the loaded results have no numeric grade values. Import an assay file for this project to see them here."
                                 />
                             </div>
                         ) : (
@@ -305,7 +305,7 @@ export default function DrillholeDetail({ project, collar, intervals, strip_trac
  */
 const GEOREF_METHOD_VOCAB: Record<GeorefMethod, { tone: 'accent' | 'info' | 'warn' | 'danger' | 'neutral'; help: string }> = {
     declared: { tone: 'accent', help: 'declared — CRS stated explicitly in source metadata' },
-    detected: { tone: 'info',   help: 'detected — CRS inferred by the spatial pipeline from coordinate ranges' },
+    detected: { tone: 'info',   help: 'detected — CRS inferred automatically from the coordinate ranges' },
     assumed:  { tone: 'warn',   help: 'assumed — fallback projection (e.g. UTM zone derived from project bbox)' },
     manual:   { tone: 'accent', help: 'manual — geologist set the CRS / location in the UI' },
     survey:   { tone: 'accent', help: 'survey — exact survey instrument datum (highest provenance)' },

@@ -152,7 +152,7 @@ export default function FoundryAttributeTables({
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No attribute tables in this project."
-                            detail="Standalone .dbf / .dat tables and sheets that match no drill schema land in silver.attribute_tables — rows kept whole, with the file they came from. Upload one through the Import Wizard and it will appear here."
+                            detail="Standalone .dbf / .dat tables and sheets that match no drill data layout are kept as-is, row by row, with the file they came from. Upload one through the Import Wizard and it will appear here."
                             action={
                                 <Link
                                     href={importWizardHref(project.slug)}

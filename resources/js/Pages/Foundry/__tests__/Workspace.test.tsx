@@ -8,7 +8,7 @@
  *   FE-18 the hole's coordinates are labelled with the project CRS
  *   FE-25 quick prompts follow the project commodity
  */
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
@@ -166,5 +166,27 @@ describe('Foundry/Workspace', () => {
         renderPage(props());
         expect(screen.getByText('Which holes have the best Gold intervals?')).toBeInTheDocument();
         expect(screen.queryByText(/Smith Ranch|U₃O₈/)).toBeNull();
+    });
+
+    it('uses plain language in every empty 3D view (no table names, tiers, pipelines)', () => {
+        window.history.replaceState({}, '', '/projects/red-star/workspace?mode=3d');
+        const { container } = renderPage(props({
+            first_holes_intervals: [], surveys_3d: [], structures_3d: [], assay_composites_3d: [],
+            assay_elements_3d: [], significant_intersections_3d: [], structures_visual_3d: [],
+            commodity_samples_3d: [], commodity_keys_3d: [], survey_holes_downsampled: 0,
+        }));
+        const internal = /silver|gold\.|bronze|§|ADR-|pipeline|derive_|_visual|\bTier\b/i;
+        const expected: Array<[string, RegExp]> = [
+            ['Lithology', /No 3D intervals for this project yet/],
+            ['Assay Grade', /No assay composites yet/],
+            ['Intersections', /No significant intersections yet/],
+            ['Commodity Samples', /No commodity samples for this project yet/],
+            ['Structure Discs', /No structural measurements to display in 3D yet/],
+        ];
+        for (const [label, copy] of expected) {
+            fireEvent.click(screen.getByRole('button', { name: label }));
+            expect(screen.getByText(copy)).toBeInTheDocument();
+            expect(container.textContent ?? '').not.toMatch(internal);
+        }
     });
 });

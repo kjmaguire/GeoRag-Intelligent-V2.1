@@ -56,7 +56,8 @@ describe('<PublicGeoSyncControls />', () => {
         await waitFor(() => expect(pushToast).toHaveBeenCalled());
         const toast = pushToast.mock.calls[0][0];
         expect(toast.title).toBe('Public geo sync queued');
-        expect(toast.detail).toContain('run-42');
+        expect(toast.detail).toContain('Sync started · 36 feeds');
+        expect(toast.detail).not.toMatch(/run-42|Hatchet/);
         const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
         expect(post?.[0]).toBe('/api/v1/public-geoscience/sync');
     });
@@ -74,7 +75,7 @@ describe('<PublicGeoSyncControls />', () => {
         fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
 
         await waitFor(() => expect(pushToast).toHaveBeenCalled());
-        expect(pushToast.mock.calls[0][0]).toMatchObject({ tone: 'warn', detail: 'Run run-first is already queued.' });
+        expect(pushToast.mock.calls[0][0]).toMatchObject({ tone: 'warn', detail: 'A sync is already queued — results will update when it finishes.' });
     });
 
     it('surfaces a server refusal', async () => {

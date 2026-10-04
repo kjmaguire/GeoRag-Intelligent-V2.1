@@ -29,6 +29,7 @@ interface State {
     error: Error | null;
 }
 
+// Class component by necessity: React has no hook equivalent for getDerivedStateFromError / componentDidCatch.
 export class ErrorBoundary extends Component<Props, State> {
     state: State = { error: null };
 
@@ -85,19 +86,19 @@ export class ErrorBoundary extends Component<Props, State> {
             <div
                 role="alert"
                 aria-live="assertive"
-                className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4"
+                className="min-h-screen bg-[var(--bg-0)] text-[var(--fg-0)] flex items-center justify-center px-4"
             >
-                <div className="w-full max-w-md bg-gray-900 border border-red-900/50 rounded-xl p-6 shadow-xl">
+                <div className="w-full max-w-md bg-[var(--bg-1)] border border-[color:var(--danger)] rounded-xl p-6 shadow-xl">
                     <div className="flex items-center gap-3 mb-4">
-                        <div className="w-2 h-8 bg-red-500 rounded-sm" />
+                        <div className="w-2 h-8 bg-[var(--danger)] rounded-sm" />
                         <h1 className="text-lg font-semibold">Something went wrong</h1>
                     </div>
-                    <p className="text-sm text-gray-400 mb-4">
+                    <p className="text-sm text-[var(--fg-2)] mb-4">
                         The page hit an unexpected error. Your session is still active — try
                         recovering the current view or reloading the app.
                     </p>
                     {isDev && (
-                        <pre className="text-xs text-red-300 bg-black/40 border border-red-900/40 rounded-lg p-3 mb-4 overflow-auto max-h-48 whitespace-pre-wrap break-all">
+                        <pre className="text-xs text-[var(--danger)] bg-[var(--bg-0)] border border-[color:var(--line-1)] rounded-lg p-3 mb-4 overflow-auto max-h-48 whitespace-pre-wrap break-all">
                             {this.state.error.message}
                             {this.state.error.stack ? '\n\n' + this.state.error.stack : ''}
                         </pre>
@@ -106,14 +107,14 @@ export class ErrorBoundary extends Component<Props, State> {
                         <button
                             type="button"
                             onClick={this.handleReset}
-                            className="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-medium rounded-lg py-2 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+                            className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-dim)] text-[var(--bg-0)] font-medium rounded-lg py-2 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-[color:var(--accent)] focus:ring-offset-2 focus:ring-offset-[color:var(--bg-1)]"
                         >
                             Try again
                         </button>
                         <button
                             type="button"
                             onClick={this.handleReload}
-                            className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium rounded-lg py-2 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+                            className="flex-1 bg-[var(--bg-2)] hover:bg-[var(--bg-hover)] text-[var(--fg-1)] font-medium rounded-lg py-2 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-[color:var(--line-2)] focus:ring-offset-2 focus:ring-offset-[color:var(--bg-1)]"
                         >
                             Reload
                         </button>

@@ -771,7 +771,7 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                             if (view3d === 'assay_grade') return 'Assay composites · grade-coloured sticks';
                                             if (view3d === 'significant_intersections') return 'Significant cutoff-grade intersections';
                                             if (view3d === 'structure_discs') return 'Structure measurements · oriented discs in space';
-                                            return 'Commodity grade samples (silver.samples)';
+                                            return 'Commodity grade samples';
                                         })()}
                                         actions={(
                                             <Segmented<View3D>
@@ -808,8 +808,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 </>
                                             ) : (
                                                 <EmptyState
-                                                    title="0 rows in gold.drillhole_intervals_visual for this project."
-                                                    detail="3D intervals are built by derive_intervals from the well-log curves. If curves exist but intervals don't, the derivation pipeline hasn't run for this project yet."
+                                                    title="No 3D intervals for this project yet."
+                                                    detail="3D intervals are built from well-log curves. If this project has curves but no intervals, they have not been computed yet — they appear once the curves have been processed."
                                                 />
                                             )
                                         )}
@@ -928,7 +928,7 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                             assay_elements_3d.length > 0 ? (
                                                 <>
                                                     <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Composited assay grades from <span className="font-bold">gold.assay_composites</span>.
+                                                        Composited assay grades for this project.
                                                         Each band on each hole is coloured by the composite's weighted-average grade for the
                                                         selected element. Compare with the Lithology view — Lithology shows derived rock type,
                                                         this shows real assayed grade.
@@ -947,8 +947,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 </>
                                             ) : (
                                                 <EmptyState
-                                                    title="0 rows in gold.assay_composites for this project."
-                                                    detail="Assay composites are derived from this project's assays at common cutoffs per element. Upload assay data via Data → Connect Source; composites appear once the derivation has run for this project."
+                                                    title="No assay composites yet."
+                                                    detail="Assay composites are computed from this project's assays at common cutoff grades. Upload assay data via Data → Connect Source and they will appear once the assays have been processed."
                                                 />
                                             )
                                         )}
@@ -956,7 +956,7 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                             significant_intersections_3d.length > 0 ? (
                                                 <>
                                                     <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Cutoff-grade hits from <span className="font-bold">gold.significant_intersections</span>.
+                                                        Cutoff-grade hits for this project.
                                                         Ghost-rendered hole sticks with each significant interval glowing in heat-palette colour
                                                         by weighted-average grade. White marker = peak grade depth. Use it to spot which holes
                                                         hit ore-grade mineralisation and where.
@@ -974,8 +974,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 </>
                                             ) : (
                                                 <EmptyState
-                                                    title="0 rows in gold.significant_intersections for this project."
-                                                    detail="Significant intersections are derived from this project's assays at cutoff grades. Once assays are ingested and the derivation has run, every cutoff-grade hit per hole shows up here as a highlight ribbon."
+                                                    title="No significant intersections yet."
+                                                    detail="Significant intersections are computed from this project's assays at cutoff grades. Once assays have been imported and processed, every cutoff-grade hit per hole shows up here as a highlight ribbon."
                                                 />
                                             )
                                         )}
@@ -983,7 +983,7 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                             commodity_keys_3d.length > 0 ? (
                                                 <>
                                                     <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Commodity grades per sample interval from <span className="font-bold">silver.samples</span>,
+                                                        Commodity grades per sample interval,
                                                         placed along each hole's desurveyed path. Pick a commodity to see grade variation along every hole.
                                                     </div>
                                                     <div className="flex-1 min-h-0">
@@ -1000,8 +1000,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 </>
                                             ) : (
                                                 <EmptyState
-                                                    title="0 commodity samples in silver.samples for this project."
-                                                    detail="silver.samples stores per-interval commodity grades (e.g. U3O8_pct_e, Au_gpt). Ingest CSV/QGIS assay samples via Data → Connect Source, or wait for downstream composite derivation."
+                                                    title="No commodity samples for this project yet."
+                                                    detail="Commodity samples hold the grade for each sampled interval (for example U3O8 % or Au g/t). Import a CSV or QGIS assay sample file via Data → Connect Source to see them here."
                                                 />
                                             )
                                         )}
@@ -1009,7 +1009,7 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                             structures_visual_3d.length > 0 ? (
                                                 <>
                                                     <div className="text-[11px] font-mono mb-3 shrink-0" style={{ color: 'var(--fg-3)' }}>
-                                                        Each measurement from <span className="font-bold">gold.structure_measurements_visual</span>
+                                                        Each structural measurement is
                                                         rendered as an oriented disc in the plane perpendicular to its pole, positioned at the
                                                         measurement depth on its collar. Different from Stereosphere — that abstracts onto a unit
                                                         sphere; this anchors in real space so spatial clustering is visible.
@@ -1027,8 +1027,8 @@ export default function FoundryWorkspace({ project, project_extent = null, proje
                                                 </>
                                             ) : (
                                                 <EmptyState
-                                                    title="0 rows in gold.structure_measurements_visual for this project."
-                                                    detail="Needs the structure-visual enrichment pipeline to run. Until then, the silver-tier Stereosphere + Project Stereonet sub-views still work from silver.structures."
+                                                    title="No structural measurements to display in 3D yet."
+                                                    detail="Oriented discs need structural measurements that have been processed for 3D. Until then, the Stereosphere and Project Stereonet views still work from the logged structure data."
                                                 />
                                             )
                                         )}

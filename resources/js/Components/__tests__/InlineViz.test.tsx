@@ -353,3 +353,27 @@ describe('InlineViz — data prop propagation', () => {
         expect(node.textContent).toContain('map:1');
     });
 });
+
+
+// ---------------------------------------------------------------------------
+// Theme tokens — no hard-coded gray palette
+// ---------------------------------------------------------------------------
+
+
+describe('InlineViz — Foundry theme tokens', () => {
+    it('styles the card shell with Foundry variables, not bg-gray-*/border-gray-*', async () => {
+        const { container } = render(<InlineViz mapPayload={null} vizPayload={VIZ_STEREONET} />);
+        await screen.findByTestId('mock-stereonet');
+        const html = container.innerHTML;
+        expect(html).not.toMatch(/(?:bg|border|text)-gray-/);
+        expect(html).toContain('var(--bg-1)');
+        expect(html).toContain('var(--line-1)');
+    });
+
+    it('renders no internal table or tier names', async () => {
+        const { container } = render(<InlineViz mapPayload={MAP_PAYLOAD} vizPayload={VIZ_STEREONET} />);
+        await screen.findByTestId('mock-stereonet');
+        expect(container.textContent ?? '').not.toMatch(/silver\.|gold\.|§|ADR-/);
+    });
+});
+

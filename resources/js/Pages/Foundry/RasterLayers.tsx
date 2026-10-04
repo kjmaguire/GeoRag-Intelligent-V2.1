@@ -536,7 +536,7 @@ export default function FoundryRasterLayers({
                                 className="grid grid-cols-2 md:grid-cols-5 gap-px rounded-md overflow-hidden border"
                                 style={{ background: 'var(--line-1)', borderColor: 'var(--line-1)' }}
                             >
-                                <Stat label="Indexed" value={summary.total} title="Rasters with a row in silver.raster_layers for this project." />
+                                <Stat label="Indexed" value={summary.total} title="Rasters recorded for this project." />
                                 <Stat
                                     label="Georeferenced"
                                     value={summary.georeferenced}

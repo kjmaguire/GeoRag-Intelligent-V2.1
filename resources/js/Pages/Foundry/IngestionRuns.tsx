@@ -671,7 +671,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                         so a drill CSV or a shapefile is absent from it by
                         design — they produce no document. The file ledger
                         below is what reconciles against an upload. */}
-                    <Stat label="DOCUMENTS" value={String(runs.totals.completed)} sub="reports in silver" />
+                    <Stat label="DOCUMENTS" value={String(runs.totals.completed)} sub="reports processed" />
                     <Stat
                         label="PASSAGES"
                         value={String(runs.completed.reduce((sum, r) => sum + r.passages, 0))}
@@ -680,7 +680,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     <Stat
                         label="EMBEDDED"
                         value={String(runs.completed.reduce((sum, r) => sum + r.embedded, 0))}
-                        sub="vectors in Qdrant"
+                        sub="ready for search"
                     />
                 </section>
 
@@ -801,7 +801,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
 
                 {runs.completed.length > 0 && (
                     <section className="px-8 py-5 pb-8">
-                        <Card eyebrow={`COMPLETED · ${runs.completed.length}`} title="Ingested into silver" padded={false}>
+                        <Card eyebrow={`COMPLETED · ${runs.completed.length}`} title="Processed documents" padded={false}>
                             {/* Fixed-px columns don't collapse below `lg:` — scroll
                                 horizontally instead of clipping/overlapping on narrow
                                 viewports. */}

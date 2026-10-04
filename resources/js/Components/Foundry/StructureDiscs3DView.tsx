@@ -247,7 +247,7 @@ export default function StructureDiscs3DView({
     if (kindOptions.length === 0) {
         return (
             <div className="text-[11px] font-mono p-6 text-center" style={{ color: 'var(--fg-3)' }}>
-                0 rows in gold.structure_measurements_visual for this project — no enriched stereonet-ready measurements yet.
+                No structural measurements ready to display in 3D yet.
             </div>
         );
     }

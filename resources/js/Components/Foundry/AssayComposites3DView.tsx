@@ -188,7 +188,7 @@ export default function AssayComposites3DView({
     if (elements.length === 0) {
         return (
             <div className="text-[11px] font-mono p-6 text-center" style={{ color: 'var(--fg-3)' }}>
-                0 rows in gold.assay_composites for this project — composite pipeline hasn't run yet.
+                No assay composites yet — they are computed after assays are ingested.
             </div>
         );
     }

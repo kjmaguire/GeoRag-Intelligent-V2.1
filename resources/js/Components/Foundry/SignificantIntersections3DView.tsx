@@ -203,7 +203,7 @@ export default function SignificantIntersections3DView({
     if (elementOptions.length === 0) {
         return (
             <div className="text-[11px] font-mono p-6 text-center" style={{ color: 'var(--fg-3)' }}>
-                0 rows in gold.significant_intersections for this project — composite pipeline hasn't promoted any zones yet.
+                No significant intersections yet — they are computed after assays are ingested.
             </div>
         );
     }

@@ -128,11 +128,11 @@ export default function FoundrySources({
             >
                 <PageHeader
                     eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · DATA`}
-                    title="Corpus, parsers, and ingestion lineage"
+                    title="Project data sources and import history"
                     sub={
                         stats.sections.length > 0
                             ? `PLSS ${stats.sections.join(', ')} · ${stats.total_files_in_project.toLocaleString()} files · ${humanBytes(stats.total_bytes_in_project)} · ${stats.collars_in_project.toLocaleString()} collars`
-                            : 'No bronze data ingested into this project yet.'
+                            : 'No data has been added to this project yet.'
                     }
                     actions={
                         <div className="flex gap-2">
@@ -178,7 +178,7 @@ export default function FoundrySources({
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No data ingested into this workspace yet."
-                            detail="Drop a zip or folder into the Import Wizard and Bronze ingestion will start indexing files. As parsers run, silver rows appear here."
+                            detail="Drop a zip or folder into the Import Wizard and your files will be read and indexed. As each file is processed, its data appears here."
                             action={
                                 <Link
                                     href="/foundry/imports/wizard"
@@ -211,18 +211,18 @@ export default function FoundrySources({
                                 <StatTile
                                     label="Volume"
                                     value={humanBytes(stats.total_bytes_in_project)}
-                                    sub="bronze inventory"
+                                    sub="original files stored"
                                 />
                                 <StatTile
                                     label="Reports"
                                     value={stats.reports_in_project.toLocaleString()}
-                                    sub="silver.reports"
+                                    sub="documents in project"
                                     tone="accent"
                                 />
                                 <StatTile
                                     label="Passages"
                                     value={stats.passages_in_project.toLocaleString()}
-                                    sub="chunked into Qdrant"
+                                    sub="searchable text sections"
                                 />
                                 <StatTile
                                     label="Parsers active"
@@ -301,7 +301,7 @@ function FileInventoryTab({
     totalBytes: number;
 }) {
     return (
-        <Card eyebrow="BRONZE · INGEST_MANIFEST" title="Files in this project, by type">
+        <Card eyebrow="FILE INVENTORY" title="Files in this project, by type">
             {rows.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--fg-3)' }}>
                     No files indexed yet.
@@ -364,15 +364,14 @@ function kindTone(k: string): 'accent' | 'info' | 'warn' | 'neutral' {
 // ── Tab: Parsers & provenance ─────────────────────────────────────────
 function ParsersTab({ rows }: { rows: ParserActivityRow[] }) {
     return (
-        <Card eyebrow="BRONZE · PROVENANCE" title="Parsers active on this project's silver rows">
+        <Card eyebrow="DATA LINEAGE" title="File readers used on this project's data">
             <div className="text-xs mb-3" style={{ color: 'var(--fg-2)' }}>
-                Every row in <code>silver.collars</code> + <code>silver.reports</code> for this project
-                joins back to a row in <code>bronze.provenance</code> tagged with the parser name that
-                wrote it. Use this to see which ingestion paths produced the data you're querying.
+                Every drill collar and report in this project is tagged with the file reader that
+                loaded it. Use this to see which import routes produced the data you're querying.
             </div>
             {rows.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--fg-3)' }}>
-                    No silver rows in this project carry provenance yet.
+                    No collars or reports in this project have a recorded source yet.
                 </div>
             ) : (
                 <Card padded={false}>
@@ -427,12 +426,12 @@ function ReportsTab({
 }) {
     return (
         <Card
-            eyebrow="SILVER · REPORTS"
+            eyebrow="REPORTS"
             title={`${stats.reports_in_project.toLocaleString()} reports linked to ${project.project_name}`}
         >
             <div className="text-xs mb-3" style={{ color: 'var(--fg-2)' }}>
-                Reports that were promoted from bronze into the RAG corpus and tagged with this
-                project's <code>project_id</code>. Showing the {Math.min(rows.length, 30)} most recent.
+                Reports that have been processed and are searchable in this project.
+                Showing the {Math.min(rows.length, 30)} most recent.
             </div>
             {rows.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--fg-3)' }}>
@@ -482,11 +481,11 @@ function ReportsTab({
 // ── Tab: Ingestion runs ───────────────────────────────────────────────
 function RunsTab({ rows }: { rows: IngestRunRow[] }) {
     return (
-        <Card eyebrow="BRONZE · INGEST_RUNS" title="Ingestion jobs that touched this project's sections">
+        <Card eyebrow="IMPORT JOBS" title="Ingestion jobs that touched this project's sections">
             <div className="text-xs mb-3" style={{ color: 'var(--fg-2)' }}>
-                Every Phase B walk through an archive (zip / folder / Hatchet trigger) writes a row
-                here with the file counts and byte totals. Look for non-completed status as a signal
-                that an archive is mid-flight or stalled.
+                Every import of an archive (zip or folder) is listed here with its file counts and
+                sizes. A status other than completed means the archive is still being processed or
+                has stalled.
             </div>
             {rows.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--fg-3)' }}>

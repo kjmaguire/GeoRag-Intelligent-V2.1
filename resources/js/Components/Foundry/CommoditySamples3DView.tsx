@@ -178,7 +178,7 @@ export default function CommoditySamples3DView({
     if (commodityKeys.length === 0) {
         return (
             <div className="text-[11px] font-mono p-6 text-center" style={{ color: 'var(--fg-3)' }}>
-                0 commodity samples in silver.samples for this project.
+                No commodity samples for this project yet.
             </div>
         );
     }

@@ -68,7 +68,7 @@ const META: StereonetMeta = {
 };
 
 describe('StereonetCard — empty state', () => {
-    it('renders the ADR-0007 empty-state message when points: []', () => {
+    it('renders a plain-language empty-state message when points: []', () => {
         render(
             <StereonetCard
                 meta={{
@@ -82,8 +82,9 @@ describe('StereonetCard — empty state', () => {
 
         const empty = screen.getByTestId('stereonet-empty');
         expect(empty).toBeDefined();
-        expect(empty.textContent ?? '').toContain('No structural measurements extracted');
-        expect(empty.textContent ?? '').toContain('ADR-0007 PR-2');
+        expect(empty.textContent ?? '').toContain('No structural measurements have been recorded for this project yet');
+        expect(empty.textContent ?? '').toContain('Import structure data');
+        expect(empty.textContent ?? '').not.toMatch(/ADR-|PR-\d|silver\.|gold\.|§/);
     });
 
     it('still shows header chips in the empty state', () => {

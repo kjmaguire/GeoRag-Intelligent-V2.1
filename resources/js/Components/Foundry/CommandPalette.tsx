@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { router } from '@inertiajs/react';
 
 /**
@@ -32,6 +32,9 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
     const [open, setOpen] = useState(false);
     const [q, setQ] = useState('');
     const [cursor, setCursor] = useState(0);
+    const baseId = useId();
+    const listboxId = `${baseId}-listbox`;
+    const optionId = (idx: number) => `${baseId}-option-${idx}`;
 
     useEffect(() => {
         function onKey(e: KeyboardEvent) {
@@ -51,12 +54,12 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
         return [
             ...ORG_ITEMS,
             { kind: 'nav', title: 'Overview', sub: 'Project overview', href: base, group: 'This project' },
-            { kind: 'nav', title: 'Chat', sub: 'Ask the project corpus', href: `${base}/chat`, group: 'This project' },
+            { kind: 'nav', title: 'Chat', sub: 'Ask questions about this project', href: `${base}/chat`, group: 'This project' },
             { kind: 'nav', title: 'Data', sub: 'Sources + lineage', href: `${base}/sources`, group: 'This project' },
-            { kind: 'nav', title: 'Ingestion runs', sub: 'Live pipeline activity', href: `${base}/ingestion-runs`, group: 'This project' },
+            { kind: 'nav', title: 'Ingestion runs', sub: 'Live import activity', href: `${base}/ingestion-runs`, group: 'This project' },
             // Reader (/corpus) and Quality (/imports/quality) merged into
             // Reports 2026-08-18; both paths still redirect there.
-            { kind: 'nav', title: 'Reports', sub: 'Documents & ingest quality', href: `${base}/reports`, group: 'This project' },
+            { kind: 'nav', title: 'Reports', sub: 'Documents & processing quality', href: `${base}/reports`, group: 'This project' },
             // Restored 2026-08-17 (reader-core trim reversal) — a real
             // page route (/projects/{slug}/workspace), unrelated to the
             // dead chat slash-commands described above.
@@ -82,6 +85,12 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
         if (!qq) return items;
         return items.filter((i) => `${i.title} ${i.sub}`.toLowerCase().includes(qq));
     }, [q, items]);
+
+    // Keep the keyboard-active row visible when the list scrolls.
+    useEffect(() => {
+        if (!open) return;
+        document.getElementById(`${baseId}-option-${cursor}`)?.scrollIntoView?.({ block: 'nearest' });
+    }, [open, cursor, baseId]);
 
     function pick(item: PaletteItem) {
         setOpen(false);
@@ -112,12 +121,17 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
     let runningIdx = 0;
 
     return (
-        <div className="fixed inset-0 z-[200] flex items-start justify-center pt-24 foundry" style={{ background: 'rgba(8,10,14,0.78)', backdropFilter: 'blur(4px)' }} onClick={() => setOpen(false)}>
-            <div className="w-[560px] max-w-[94vw] rounded-md border overflow-hidden flex flex-col" style={{ background: 'var(--bg-0)', borderColor: 'var(--line-2)', boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }} onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[200] flex items-start justify-center pt-24 foundry" role="presentation" style={{ background: 'rgba(8,10,14,0.78)', backdropFilter: 'blur(4px)' }} onClick={() => setOpen(false)}>
+            <div role="dialog" aria-modal="true" aria-label="Command palette" className="w-[560px] max-w-[94vw] rounded-md border overflow-hidden flex flex-col" style={{ background: 'var(--bg-0)', borderColor: 'var(--line-2)', boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }} onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--line-1)' }}>
                     <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>⌘K</span>
                     <input
                         aria-label="Search navigation"
+                        role="combobox"
+                        aria-expanded="true"
+                        aria-controls={listboxId}
+                        aria-autocomplete="list"
+                        aria-activedescendant={filtered.length > 0 ? optionId(cursor) : undefined}
                         type="text"
                         autoFocus
                         value={q}
@@ -128,19 +142,22 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
                         style={{ color: 'var(--fg-0)' }}
                     />
                 </div>
-                <div className="max-h-96 overflow-y-auto">
+                <div id={listboxId} role="listbox" aria-label="Navigation results" className="max-h-96 overflow-y-auto">
                     {Object.entries(grouped).map(([group, groupItems]) => (
-                        <div key={group}>
-                            <div className="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>{group}</div>
+                        <div key={group} role="group" aria-labelledby={`${baseId}-group-${group.replace(/\s+/g, '-')}`}>
+                            <div id={`${baseId}-group-${group.replace(/\s+/g, '-')}`} className="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>{group}</div>
                             {groupItems.map((i) => {
-                                const isActive = runningIdx === cursor;
+                                const idx = runningIdx;
+                                const isActive = idx === cursor;
                                 runningIdx++;
                                 return (
-                                    <button
+                                    <div
                                         key={`${group}-${i.title}`}
-                                        type="button"
+                                        id={optionId(idx)}
+                                        role="option"
+                                        aria-selected={isActive}
                                         onClick={() => pick(i)}
-                                        className="w-full text-left px-3 py-2 flex items-center gap-3"
+                                        className="w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer"
                                         style={{
                                             background: isActive ? 'var(--accent-bg)' : 'transparent',
                                             color: isActive ? 'var(--fg-0)' : 'var(--fg-1)',
@@ -151,7 +168,7 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
                                             <div className="text-xs font-medium">{i.title}</div>
                                             <div className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>{i.sub}</div>
                                         </div>
-                                    </button>
+                                    </div>
                                 );
                             })}
                         </div>

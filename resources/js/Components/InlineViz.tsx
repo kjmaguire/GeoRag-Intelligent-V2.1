@@ -20,8 +20,8 @@ const StereonetCard = lazy(() => import('./StereonetCard'));
 
 function LoadingPanel({ label }: { label: string }) {
     return (
-        <div className="flex items-center justify-center h-full bg-gray-950/60 text-xs text-gray-500">
-            <div className="w-4 h-4 rounded-full border-2 border-gray-700 border-t-amber-400 animate-spin mr-2" />
+        <div className="flex items-center justify-center h-full bg-[var(--bg-0)] text-xs text-[var(--fg-3)]">
+            <div className="w-4 h-4 rounded-full border-2 border-[color:var(--line-2)] border-t-[color:var(--accent)] animate-spin mr-2" />
             {label}
         </div>
     );
@@ -37,20 +37,20 @@ interface VizCardProps {
 
 function VizCard({ title, badge, onClose, children, heightClass = 'h-72' }: VizCardProps) {
     return (
-        <div className="mt-3 border border-gray-700/80 rounded-xl overflow-hidden bg-gray-900/90 shadow-lg">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 bg-gray-900">
+        <div className="mt-3 border border-[color:var(--line-2)] rounded-xl overflow-hidden bg-[var(--bg-1)] shadow-lg">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-[color:var(--line-1)] bg-[var(--bg-1)]">
                 <div className="flex items-center gap-2 min-w-0">
                     {badge && (
-                        <span className="text-[10px] uppercase tracking-wider font-semibold text-amber-400 bg-amber-950/60 border border-amber-800/60 px-1.5 py-0.5 rounded">
+                        <span className="text-[10px] uppercase tracking-wider font-semibold text-[var(--accent)] bg-[var(--accent-bg)] border border-[color:var(--accent-dim)] px-1.5 py-0.5 rounded">
                             {badge}
                         </span>
                     )}
-                    <span className="text-xs text-gray-300 font-medium truncate">{title}</span>
+                    <span className="text-xs text-[var(--fg-1)] font-medium truncate">{title}</span>
                 </div>
                 <button
                     type="button"
                     onClick={onClose}
-                    className="text-gray-500 hover:text-gray-200 focus:outline-none focus:text-gray-200 p-1 rounded"
+                    className="text-[var(--fg-3)] hover:text-[var(--fg-0)] focus:outline-none focus:text-[var(--fg-0)] p-1 rounded"
                     aria-label="Hide visualization"
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5" aria-hidden="true">
@@ -58,7 +58,7 @@ function VizCard({ title, badge, onClose, children, heightClass = 'h-72' }: VizC
                     </svg>
                 </button>
             </div>
-            <div className={`relative ${heightClass} bg-gray-950`}>{children}</div>
+            <div className={`relative ${heightClass} bg-[var(--bg-0)]`}>{children}</div>
         </div>
     );
 }

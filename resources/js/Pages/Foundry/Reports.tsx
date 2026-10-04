@@ -283,7 +283,7 @@ export default function FoundryReports({
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No documents linked to this project yet."
-                            detail="Drop a PDF or XLSX filing into the Import Wizard — once ingested it lands in silver.reports, gets chunked into silver.document_passages, and shows up here with its ingest status."
+                            detail="Upload a PDF or XLSX report through the Import Wizard. Once it has been processed it will appear here with its import status."
                             action={
                                 <Link
                                     href={importWizardHref(project.slug)}
@@ -386,11 +386,11 @@ function ProjectOverviewPane({
             {overview.recent_passages.length === 0 ? (
                 <EmptyState
                     title="No indexed passages in this project yet."
-                    detail="Documents are listed on the left, but none of them has produced passages. Open one and check its Quality tab to see where ingest stopped."
+                    detail="Documents are listed on the left, but none of them has produced passages. Open one and check its Quality tab to see where processing stopped."
                 />
             ) : (
                 <Card
-                    eyebrow="SILVER · DOCUMENT_PASSAGES"
+                    eyebrow="PASSAGES"
                     title={`${overview.recent_passages.length} recent passages across documents`}
                 >
                     <div className="space-y-2">
@@ -475,17 +475,16 @@ function QualityStrip({ quality }: { quality: QualityRollup }) {
                 <Stat
                     label="REJECTED"
                     value={String(totals.rejected)}
-                    title="Pages the ingest pipeline refused outright — unreadable, or no extractable text at all."
+                    title="Pages that could not be used at all — unreadable, or no extractable text."
                 />
                 <Stat
                     label="AWAITING OCR"
                     value={String(totals.awaiting_ocr)}
                     sub={totals.awaiting_ocr > 0 ? 'no triage queue yet' : 'none'}
                     title={
-                        'Pages routed to review rather than indexed. Nothing '
-                        + 'currently drains this queue, so the count only '
-                        + 'grows — it measures how much of the corpus chat '
-                        + 'cannot see, not work in progress.'
+                        'Scanned pages that have not been indexed. Nothing processes them '
+                        + 'automatically yet, so this count shows how much of your '
+                        + 'reports chat cannot see.'
                     }
                 />
             </section>
@@ -511,11 +510,11 @@ function QualityStrip({ quality }: { quality: QualityRollup }) {
                 )}
                 {quality.pass_gate ? (
                     <Pill tone="accent" dot>
-                        Bronze → Silver gate: PASS
+                        Ready for search
                     </Pill>
                 ) : (
                     <Pill tone="warn" dot>
-                        Gate blocked
+                        Not ready for search
                     </Pill>
                 )}
             </section>
@@ -948,10 +947,10 @@ function SectionsTab({
     if (sections.length === 0) {
         return (
             <EmptyState
-                title="No sections_text on this document yet."
+                title="No text sections for this document yet."
                 detail={
                     metadataOnly
-                        ? "This silver.reports row exists as metadata only — the source filing was either not parsed yet, scanned-image (Tier 2 OCR pending), or the §04p PDF stack hasn't run on it. Once it runs, structured sections + chunked passages will populate here."
+                        ? "Only the report's details are on file so far. The document may not have been processed yet, or it may be a scanned image still waiting for text recognition. Once processing finishes, its sections and searchable passages will appear here."
                         : 'Sections are empty but indexed passages exist — switch to the Passages tab.'
                 }
             />
@@ -972,7 +971,7 @@ function SectionsTab({
                         }
                     >
                         <Card
-                            eyebrow={`§ ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
+                            eyebrow={`SECTION ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
                             title={s.heading || 'Untitled section'}
                         >
                             {/* Not `whitespace-pre-wrap` on the raw string:
@@ -1096,7 +1095,7 @@ function OriginalTab({
                 title="No original stored for this document."
                 detail={
                     state.reason === 'presign_failed'
-                        ? 'The bronze object is recorded but a download URL could not be minted. Check the s3-bronze disk credentials.'
+                        ? 'The original file is on record, but a download link could not be created. Ask your administrator to check file storage access.'
                         : 'This document was ingested before the source object key was recorded, so there is no file to show beside the extracted text. Re-ingesting it will populate the link.'
                 }
             />
@@ -1109,7 +1108,7 @@ function OriginalTab({
 
     return (
         <Card
-            eyebrow="BRONZE · ORIGINAL"
+            eyebrow="ORIGINAL FILE"
             title={source.filename ?? report.title}
             className="flex flex-col min-h-0"
             contentClassName="flex flex-col min-h-0"
@@ -1171,7 +1170,7 @@ function PassagesTab({
         return (
             <EmptyState
                 title="No indexed passages for this document."
-                detail="silver.document_passages holds no rows whose document_id is this report. The §04p PDF stack chunks PDFs into passages — re-run ingest or check the Quality tab."
+                detail="This document has not been split into searchable passages yet. Re-import it, or check the Quality tab for processing problems."
             />
         );
     }
@@ -1180,7 +1179,7 @@ function PassagesTab({
             ? `${total} chunked passages (first ${passages.length})`
             : `${total} chunked passages`;
     return (
-        <Card eyebrow="SILVER · DOCUMENT_PASSAGES" title={title}>
+        <Card eyebrow="PASSAGES" title={title}>
             <div className="space-y-2">
                 {passages.map((p) => (
                     <div
@@ -1239,9 +1238,9 @@ function FiguresTab({ figures }: { figures: Figure[] }) {
             <EmptyState
                 title="No figures extracted from this document yet."
                 detail={
-                    'The current §04p ingest pipeline preserves text, tables, page ' +
-                    'coordinates, and OCR provenance. Automated figure-region ' +
-                    'extraction is not currently enabled.'
+                    'Text, tables, and page positions are extracted from reports, ' +
+                    'but figures and maps are not pulled out automatically yet. ' +
+                    'Open the original document to see them.'
                 }
             />
         );
@@ -1313,7 +1312,7 @@ function MetadataTab({ report }: { report: ReportDetail }) {
         ['Last updated', formatWhen(report.updated_at)],
     ];
     return (
-        <Card eyebrow="SILVER · REPORTS" title="Metadata">
+        <Card eyebrow="REPORT" title="Metadata">
             <div className="grid grid-cols-[180px_1fr] gap-y-2 text-[12px]">
                 {rows.map(([k, v]) => (
                     <MetaRow key={k} label={k} value={v} />
