@@ -180,15 +180,18 @@ class TestRecoveryPayloads:
             (f"well_logs/{_PJ}/a.las", "ingest_well_logs"),
             (f"collars/{_PJ}/a.csv", "ingest_tabular"),
             (f"xyz/{_PJ}/a.xyz", "ingest_geophysics"),
+            (f"reports/{_PJ}/a.pdf", "ingest_pdf"),
         ],
     )
     def test_run_id_taking_workflows_receive_the_reserved_recovery_row(
         self, key: str, workflow_name: str,
     ) -> None:
-        """These four upsert their progress row under the id we hand them.
+        """These upsert their progress row under the id we hand them.
 
-        ingest_pdf and tiff_normalize are the other shape: they take no
-        run_id and adopt the row via lookup_active_run_id — asserted below.
+        ingest_pdf joined them on 2026-10-04: its parse and persist now
+        heartbeat and stage-mark the row they were dispatched under, so the
+        recovery row must be the one in the payload. tiff_normalize is the
+        remaining lookup shape — asserted below.
         """
         run_id = "c2000000-0000-0000-0000-000000000042"
         _, payload = srd._build_recovery_payload(
@@ -206,7 +209,7 @@ class TestRecoveryPayloads:
             (f"tiff/{_PJ}/a.tif", "tiff_normalize"),
         ],
     )
-    def test_the_lookup_shaped_workflows_carry_the_correlation_token(
+    def test_the_pdf_shaped_workflows_carry_the_correlation_token(
         self, key: str, workflow_name: str,
     ) -> None:
         _, payload = srd._build_recovery_payload(
@@ -215,11 +218,22 @@ class TestRecoveryPayloads:
             recovery_run_id="c2000000-0000-0000-0000-000000000001",
             correlation_token="stale-sweep-unit",
         )
-        assert not hasattr(payload, "run_id")
         assert payload.correlation_token == "stale-sweep-unit"
         # file_size is informational: preflight re-derives the real size
         # against the 2 GB cap from the bytes it downloads.
         assert payload.file_size == 0
+
+    def test_tiff_normalize_still_adopts_its_row_by_lookup(self) -> None:
+        """The field exists (it mirrors IngestPdfInput for Laravel's one
+        payload) but the sweep leaves it unset: tiff_normalize resolves the
+        row it just reserved through lookup_active_run_id."""
+        _, payload = srd._build_recovery_payload(
+            workflow_name="tiff_normalize",
+            stale_row=_row(f"tiff/{_PJ}/a.tif"),
+            recovery_run_id="c2000000-0000-0000-0000-000000000001",
+            correlation_token="stale-sweep-unit",
+        )
+        assert payload.run_id is None
 
     def test_an_unbuilt_workflow_name_raises_rather_than_silently_skipping(
         self,
