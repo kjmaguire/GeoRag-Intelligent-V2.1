@@ -20,8 +20,8 @@ from __future__ import annotations
 import gzip
 import importlib
 import json
-import pathlib
 import os
+import pathlib
 import secrets
 import sys
 import types
