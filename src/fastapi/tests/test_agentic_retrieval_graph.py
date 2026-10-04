@@ -1004,7 +1004,13 @@ async def test_validate_node_prepends_warning_banner_on_should_retry(monkeypatch
     updated = result["response"]
     assert updated.confidence <= 0.2
     assert "automated fact-checking flagged" in updated.text.lower()
-    assert "fabricated hole id" in updated.text.lower()
+    # The banner says what went wrong in plain terms; the operator wording of
+    # the validator warning (layer numbers, rule references) stays out of the
+    # answer and in validation_warnings only.
+    assert "could not be found in the project's records" in updated.text
+    assert "Layer 4" not in updated.text
+    assert "fabricated hole ID" not in updated.text
+    assert any("Layer 4" in w for w in result["validation_warnings"])
     # The original answer text is still present (appended, not discarded) —
     # this is a caveat banner, not a full refusal/rewrite.
     assert original_text in updated.text

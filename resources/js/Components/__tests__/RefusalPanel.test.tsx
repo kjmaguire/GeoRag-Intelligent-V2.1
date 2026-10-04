@@ -23,7 +23,7 @@ describe('RefusalPanel', () => {
         render(
             <RefusalPanel
                 variant="refusal"
-                message="Terminal repair strategy triggered: REFUSE_OUT_OF_SCOPE."
+                message="This question is outside what the project's data can answer."
                 code="SOURCE_SCOPE_VIOLATION"
                 guardCodes={['SOURCE_SCOPE_VIOLATION', 'UNSUPPORTED_QUERY_TYPE']}
             />
@@ -31,9 +31,22 @@ describe('RefusalPanel', () => {
         expect(
             screen.getByText('Insufficient evidence to answer this question from the current corpus.')
         ).toBeInTheDocument();
-        expect(screen.getByText(/Terminal repair strategy triggered/)).toBeInTheDocument();
+        expect(screen.getByText("This question is outside what the project's data can answer.")).toBeInTheDocument();
         expect(screen.getByText(/Source Scope Violation/)).toBeInTheDocument();
-        expect(screen.getByText(/guards: SOURCE_SCOPE_VIOLATION, UNSUPPORTED_QUERY_TYPE/)).toBeInTheDocument();
+    });
+
+    it('keeps internal guard codes out of the visible text', () => {
+        render(
+            <RefusalPanel
+                variant="refusal"
+                message="The sources disagree on this."
+                code="CONFLICTING_SOURCES"
+                guardCodes={['CONFLICTING_SOURCES', 'UNSUPPORTED_QUERY_TYPE']}
+            />
+        );
+        const panel = screen.getByTestId('refusal-panel');
+        expect(panel.textContent ?? '').not.toMatch(/guards:|UNSUPPORTED_QUERY_TYPE|CONFLICTING_SOURCES/);
+        expect(panel.getAttribute('data-guard-codes')).toBe('CONFLICTING_SOURCES,UNSUPPORTED_QUERY_TYPE');
     });
 
     it('does not show the refusal headline for the failed variant', () => {

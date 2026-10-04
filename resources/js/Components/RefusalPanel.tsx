@@ -31,6 +31,10 @@
  * `refusal_payload.reason_code`, and `silver.answer_runs`'
  * `RefusalReasonCode`) evolve independently, and a hardcoded label table
  * would silently go stale the next time one of them gains a value.
+ *
+ * `guardCodes` are internal guard identifiers. They are not shown to the
+ * user (2026-10-04); they ride on `data-guard-codes` so support can still
+ * read them from the DOM.
  */
 
 export function humanizeCode(code: string): string {
@@ -57,6 +61,7 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
         <div
             data-testid="refusal-panel"
             data-variant={variant}
+            data-guard-codes={guardCodes && guardCodes.length > 0 ? guardCodes.join(',') : undefined}
             role="alert"
             className="mt-2 rounded-md border px-3 py-2.5 text-xs leading-relaxed"
             style={{
@@ -79,7 +84,6 @@ export default function RefusalPanel({ variant, message, code, guardCodes }: Pro
             {code && (
                 <div className="mt-1.5 font-mono text-[10px]" style={{ color: 'var(--fg-3)' }}>
                     Reason: {humanizeCode(code)}
-                    {guardCodes && guardCodes.length > 0 && ` (guards: ${guardCodes.join(', ')})`}
                 </div>
             )}
         </div>

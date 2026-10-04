@@ -2334,6 +2334,31 @@ def _floor_confidence_with_warning_banner(
         return response
 
 
+#: What the banner tells a geologist about each guard, keyed by the layer
+#: number that opens a validator warning ("Layer 3: ...", "Layer 4/6: ...").
+#: The warnings themselves are written for operators — they name rule
+#: numbers, internal layers and design docs — so they stay in
+#: ``validation_warnings`` and the logs, and never reach the answer text.
+_BANNER_REASON_BY_LAYER: dict[str, str] = {
+    "1": "the documents found were only a weak match for the question",
+    "2": "some statements had no supporting source and were removed",
+    "3": "a number in the answer could not be matched to the source documents",
+    "4": "a hole, project or report named in the answer could not be found in the project's records",
+    "5": "a citation did not point to a document found for this question",
+    "6": "a value in the answer failed a geological consistency check",
+}
+_BANNER_REASON_DEFAULT = "part of the answer could not be checked against the sources"
+_LAYER_PREFIX = re.compile(r"^\s*Layer\s+(\d)")
+
+
+def _banner_reason(warning: str | None) -> str:
+    """Plain-language reason for the caveat banner, from a validator warning."""
+    match = _LAYER_PREFIX.match(warning or "")
+    if match is None:
+        return _BANNER_REASON_DEFAULT
+    return _BANNER_REASON_BY_LAYER.get(match.group(1), _BANNER_REASON_DEFAULT)
+
+
 def _extract_conflicts_safely(text: str) -> list[dict[str, Any]] | None:
     """`extract_conflicting_evidence`, but never fatal to an answer.
 
@@ -2554,7 +2579,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         # with the fail-closed exception path above, 2026-08-15) so a
         # genuine guard failure and a validation-couldn't-run exception
         # present identically to the user.
-        _reason = warnings[0] if warnings else "an unverified claim"
+        _reason = _banner_reason(warnings[0] if warnings else None)
         response = _floor_confidence_with_warning_banner(response, _reason)
         logger.error(
             "agentic_retrieval.validate: should_retry=True — confidence "
@@ -3205,6 +3230,35 @@ async def _reissue_retrieval(
             setattr(state, name, asm_update[name])
 
 
+#: The refusal panel shows ``message`` to the geologist, so it says what to
+#: do next in plain terms. Keyed by RepairStrategy value; the strategy and
+#: guard codes travel in their own fields for routing and audit.
+_TERMINAL_REFUSAL_MESSAGES: dict[str, str] = {
+    "ASK_FOR_DISAMBIGUATION": (
+        "The question matches more than one hole, project or report. "
+        "Name the one you mean and ask again."
+    ),
+    "REQUEST_UNIT_CLARIFICATION": (
+        "The assay units are missing or unclear in the sources. Say which "
+        "units you want (for example g/t or %) and ask again."
+    ),
+    "REQUEST_DEPTH_CLARIFICATION": (
+        "The question needs a depth interval. Give the from and to depths "
+        "and ask again."
+    ),
+    "SURFACE_CONFLICT": (
+        "The sources disagree on this. Compare them side by side before "
+        "relying on either."
+    ),
+    "REFUSE_OUT_OF_SCOPE": (
+        "This question is outside what the project's data can answer."
+    ),
+}
+_TERMINAL_REFUSAL_MESSAGE_DEFAULT = (
+    "This question could not be answered from the project's sources."
+)
+
+
 def _build_terminal_refusal_payload(
     state: AgenticRetrievalState,
     strategy: Any,  # RepairStrategy — Any to avoid forward import
@@ -3270,9 +3324,8 @@ def _build_terminal_refusal_payload(
         "type": "refusal",
         "reason_code": primary_code,
         "strategy": strategy.value,
-        "message": (
-            f"Terminal repair strategy triggered: {strategy.value}. "
-            f"See the user-facing surface for next steps."
+        "message": _TERMINAL_REFUSAL_MESSAGES.get(
+            strategy.value, _TERMINAL_REFUSAL_MESSAGE_DEFAULT,
         ),
         "candidates": [],
         "guard_codes": code_values,
