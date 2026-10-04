@@ -208,6 +208,7 @@ def _frame_count(src) -> int:
     try:
         return max(int(getattr(src, "n_frames", 1) or 1), 1)
     except Exception:  # noqa: BLE001 — a damaged IFD chain; the loop reports it
+        log.debug("tiff_to_pdf: n_frames unreadable, assuming one frame", exc_info=True)
         return 1
 
 
@@ -302,6 +303,7 @@ def _to_eight_bit(frame):
         scaled = frame.point(lambda i: i * (1 / 256))
         return scaled.convert("L")
     except Exception:  # noqa: BLE001 — a mode point() cannot scale
+        log.debug("tiff_to_pdf: 16-bit scale failed for mode %s, plain convert", frame.mode, exc_info=True)
         return frame.convert("L")
 
 
@@ -354,6 +356,7 @@ def _effective_dpi(src) -> float:
         try:
             value = float(dpi[0])
         except (TypeError, ValueError):
+            log.debug("tiff_to_pdf: unreadable dpi %r, using %s", dpi, _DEFAULT_DPI, exc_info=True)
             return _DEFAULT_DPI
         if _DPI_RANGE[0] <= value <= _DPI_RANGE[1]:
             return value

@@ -570,6 +570,8 @@ class _CohereEmbedding:
                     timeout=httpx.Timeout(read_timeout, connect=_COHERE_CONNECT_TIMEOUT_S),
                 )
             except (httpx.TransportError, httpx.StreamError) as exc:
+                # Retried below; the final failure is raised with its cause.
+                logger.debug("cohere embed: transport error, will retry if budget allows", exc_info=True)
                 failure: Exception = exc
             else:
                 if resp.status_code < 300:

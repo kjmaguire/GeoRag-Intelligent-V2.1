@@ -159,7 +159,8 @@ def _derived_already_present(
     """
     try:
         head = store.head(Bucket.BRONZE, derived_key)
-    except Exception:
+    except Exception:  # noqa: BLE001 — absent or unreadable both mean "not reusable"
+        log.debug("tiff_normalize: no reusable derived PDF at %s", derived_key, exc_info=True)
         return False
     meta = head.get("metadata") or {}
     return meta.get(_TIFF_DERIVED_TAG) == source_sha256
@@ -500,6 +501,7 @@ async def _normalize_downloaded(
         try:
             page_count = int(meta.get("tiff_frames", "0"))
         except (TypeError, ValueError):
+            log.debug("tiff_normalize: unreadable tiff_frames tag on %s", derived_key, exc_info=True)
             page_count = 0
         truncated = (meta.get("tiff_truncated") == "true")
         # Tags written by this version; a derived PDF from an older run lacks
@@ -507,10 +509,12 @@ async def _normalize_downloaded(
         try:
             total_frames = int(meta["tiff_total_frames"])
         except (KeyError, TypeError, ValueError):
+            log.debug("tiff_normalize: no tiff_total_frames tag on %s (older run)", derived_key, exc_info=True)
             total_frames = None
         try:
             frames_ignored = int(meta.get("tiff_frames_ignored", "0"))
         except (TypeError, ValueError):
+            log.debug("tiff_normalize: unreadable tiff_frames_ignored tag on %s", derived_key, exc_info=True)
             frames_ignored = 0
 
     # 5. Trigger ingest_pdf against the derived key. We pass through

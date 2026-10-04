@@ -2088,6 +2088,8 @@ def _dir_tag(path: Path, root: Path | None) -> str:
     try:
         rel = path.parent.relative_to(root).as_posix()
     except ValueError:
+        # Outside the archive root (a sidecar resolved elsewhere): no tag.
+        log.debug("zip: %s is not under %s; no directory tag", path, root, exc_info=True)
         return ""
     if rel in ("", "."):
         return ""
