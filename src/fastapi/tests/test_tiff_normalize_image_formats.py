@@ -324,3 +324,20 @@ class TestRasterSkippedMessageSaysWhatHappened:
         assert "Recorded as" not in out.ocr_skipped_reason
         assert calls["dispatched"] == []
         assert calls["broadcast"][0]["status"] == "partial"
+
+
+def test_jpeg_encoded_pages_are_an_info_warning_not_a_partial_run() -> None:
+    from app.hatchet_workflows import _progress
+    from app.hatchet_workflows import tiff_normalize as tn
+
+    out = tn._frame_warnings(
+        page_count=12, total_frames=12, truncated=False, frames_ignored=0,
+        pages_jpeg_encoded=5,
+    )
+    (w,) = out
+    assert w["code"] == "raster_pages_jpeg_encoded" and w["severity"] == "info"
+    assert w["pages_jpeg_encoded"] == 5 and "5 page(s)" in w["detail"]
+    assert _progress.terminal_status(rows_written=None, warnings=out) == "completed"
+    assert tn._frame_warnings(
+        page_count=1, total_frames=1, truncated=False, frames_ignored=0,
+    ) == []

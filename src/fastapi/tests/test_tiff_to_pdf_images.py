@@ -243,14 +243,21 @@ class TestMemoryIsBoundedByOneFrame:
         data = _tiff(4)   # built BEFORE the spy: building it also calls save()
         seen: list[dict] = []
         real_save = Image.Image.save
+        written: list[int] = []
+        real_page = mod._frame_to_pdf
 
         def _spy(self, fp, format=None, **params):  # noqa: A002
             seen.append(params)
             return real_save(self, fp, format, **params)
 
+        def _count(page, dpi, *args, **kwargs):
+            written.append(1)
+            return real_page(page, dpi, *args, **kwargs)
+
         monkeypatch.setattr(Image.Image, "save", _spy)
+        monkeypatch.setattr(mod, "_frame_to_pdf", _count)
         tiff_to_pdf(data)
-        assert len(seen) == 4
+        assert len(written) == 4, "one one-page PDF per frame"
         assert all("append_images" not in p and "save_all" not in p for p in seen)
 
 
@@ -263,11 +270,11 @@ class TestFailures:
         real = mod._frame_to_pdf
         calls = {"n": 0}
 
-        def _flaky(page, dpi):
+        def _flaky(page, dpi, *args, **kwargs):
             calls["n"] += 1
             if calls["n"] == 3:
                 raise OSError("disk full")
-            return real(page, dpi)
+            return real(page, dpi, *args, **kwargs)
 
         monkeypatch.setattr(mod, "_frame_to_pdf", _flaky)
         with pytest.raises(TiffNormalizeError, match="frame 2 could not be read or wrapped"):
@@ -283,3 +290,183 @@ class TestFailures:
         img = Image.new("L", (40, 40))
         img.info["dpi"] = (200.0, 200.0)
         assert mod._effective_dpi(img) == 200.0
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-10-04 (F7): bit depth, and what "lossless" really is
+# ---------------------------------------------------------------------------
+
+
+def _page_pil(pdf: bytes, index: int = 0) -> Image.Image:
+    """The decoded pixels of page *index*'s image XObject."""
+    import pikepdf
+    from pikepdf import PdfImage
+
+    with pikepdf.Pdf.open(io.BytesIO(pdf)) as doc:
+        xobj = next(iter(doc.pages[index].Resources.XObject.values()))
+        return PdfImage(xobj).as_pil_image().copy()
+
+
+def _page_filter(pdf: bytes, index: int = 0) -> str:
+    import pikepdf
+
+    with pikepdf.Pdf.open(io.BytesIO(pdf)) as doc:
+        return str(next(iter(doc.pages[index].Resources.XObject.values())).Filter)
+
+
+def _i16_tiff(values: list[int], size=(8, 4)) -> bytes:
+    img = Image.new("I;16", size)
+    img.putdata([values[i % len(values)] for i in range(size[0] * size[1])])
+    buf = io.BytesIO()
+    img.save(buf, "TIFF")
+    return buf.getvalue()
+
+
+class TestBitDepth:
+    def test_a_12_bit_scan_in_16_bit_words_is_not_near_black(self) -> None:
+        data = _i16_tiff([0, 1000, 2000, 3000, 4000])
+        r = tiff_to_pdf(data)
+        px = _page_pil(r.pdf_bytes).convert("L")
+        # /256 would have made the brightest sample 15. Scaled by its own
+        # maximum (4000) it reaches full range.
+        assert px.getextrema()[1] == 255
+        assert px.getpixel((4, 0)) == 255          # the 4000 sample
+        assert 100 <= px.getpixel((2, 0)) <= 130   # 2000/4000 of full scale
+
+    def test_a_true_16_bit_scan_still_divides_by_256(self) -> None:
+        r = tiff_to_pdf(_i16_tiff([0, 32768, 65535]))
+        px = _page_pil(r.pdf_bytes).convert("L")
+        values = {px.getpixel((x, 0)) for x in range(3)}
+        assert values == {0, 128, 255}
+
+    def test_a_scan_that_already_fits_in_eight_bits_is_unchanged(self) -> None:
+        r = tiff_to_pdf(_i16_tiff([0, 100, 200, 255]))
+        px = _page_pil(r.pdf_bytes).convert("L")
+        assert [px.getpixel((x, 0)) for x in range(4)] == [0, 100, 200, 255]
+
+    def test_an_all_zero_frame_stays_black_and_does_not_divide_by_zero(self) -> None:
+        r = tiff_to_pdf(_i16_tiff([0]))
+        assert _page_pil(r.pdf_bytes).convert("L").getextrema() == (0, 0)
+
+    def test_the_scale_boundary_is_the_frames_own_maximum(self) -> None:
+        img = Image.new("I;16", (2, 1))
+        img.putdata([0, 4095])
+        assert mod._to_eight_bit(img).getpixel((1, 0)) == 255   # 12-bit: stretched
+        img.putdata([0, 4096])
+        assert mod._to_eight_bit(img).getpixel((1, 0)) == 16    # 16-bit: / 256
+
+
+class TestWhatTheWrapActuallyPreserves:
+    def _noisy(self, mode: str) -> Image.Image:
+        import random
+
+        rnd = random.Random(7)
+        size = (64, 48)
+        bands = len(mode)
+        img = Image.new(mode, size)
+        data = [
+            tuple(rnd.randrange(256) for _ in range(bands)) if bands > 1 else rnd.randrange(256)
+            for _ in range(size[0] * size[1])
+        ]
+        img.putdata(data)
+        return img
+
+    @pytest.mark.parametrize("mode", ["L", "RGB"])
+    def test_grey_and_colour_pages_round_trip_every_pixel(self, mode: str) -> None:
+        src = self._noisy(mode)
+        buf = io.BytesIO()
+        src.save(buf, "TIFF")
+        r = tiff_to_pdf(buf.getvalue())
+
+        assert "FlateDecode" in _page_filter(r.pdf_bytes)
+        assert _page_pil(r.pdf_bytes).convert(mode).tobytes() == src.tobytes()
+        assert r.pages_jpeg_encoded == 0
+
+    def test_a_bilevel_page_stays_ccitt(self) -> None:
+        img = Image.new("1", (64, 48), 1)
+        for x in range(10, 50):
+            img.putpixel((x, 20), 0)
+        buf = io.BytesIO()
+        img.save(buf, "TIFF", compression="group4")
+        r = tiff_to_pdf(buf.getvalue())
+        assert "CCITTFaxDecode" in _page_filter(r.pdf_bytes)
+
+    def test_the_page_size_follows_pixels_and_dpi(self) -> None:
+        img = Image.new("L", (300, 150), 255)
+        buf = io.BytesIO()
+        img.save(buf, "TIFF", dpi=(300, 300))
+        page = _pdf_pages(tiff_to_pdf(buf.getvalue()).pdf_bytes)[0]
+        assert float(page.mediabox.width) == pytest.approx(72.0, abs=0.01)
+        assert float(page.mediabox.height) == pytest.approx(36.0, abs=0.01)
+
+    def test_past_the_lossless_budget_pages_are_jpeg_and_counted(self, monkeypatch) -> None:
+        monkeypatch.setattr(mod, "_LOSSLESS_BUDGET_FRACTION", 0.0)
+        r = tiff_to_pdf(_tiff(3, mode="L"))
+        assert r.pages_jpeg_encoded == 3 and r.page_count == 3
+        assert "DCTDecode" in _page_filter(r.pdf_bytes, 0)
+        assert len(_pdf_pages(r.pdf_bytes)) == 3
+
+    def test_the_budget_is_spent_page_by_page_not_all_or_nothing(self, monkeypatch) -> None:
+        one_page = len(tiff_to_pdf(_tiff(1, size=(200, 200), mode="RGB")).pdf_bytes)
+        monkeypatch.setattr(mod, "_LOSSLESS_BUDGET_FRACTION", one_page * 2.5 / mod.MAX_TIFF_BYTES)
+        r = tiff_to_pdf(_tiff(4, size=(200, 200), mode="RGB"))
+        assert 0 < r.pages_jpeg_encoded < 4
+
+    def test_a_cmyk_page_past_the_budget_is_still_counted(self, monkeypatch) -> None:
+        monkeypatch.setattr(mod, "_LOSSLESS_BUDGET_FRACTION", 0.0)
+        buf = io.BytesIO()
+        Image.new("CMYK", (40, 30), (0, 0, 0, 255)).save(buf, "TIFF")
+        r = tiff_to_pdf(buf.getvalue())
+        assert r.pages_jpeg_encoded == 1 and r.page_count == 1
+
+    def test_a_failing_pikepdf_writer_falls_back_to_pillows(self, monkeypatch) -> None:
+        def _boom(*_a, **_k):
+            raise RuntimeError("pikepdf broke")
+
+        monkeypatch.setattr(mod, "_image_page_pdf", _boom)
+        r = tiff_to_pdf(_tiff(2, mode="L"))
+        assert r.page_count == 2 and len(_pdf_pages(r.pdf_bytes)) == 2
+        assert r.pages_jpeg_encoded == 2     # Pillow's writer is JPEG for L
+
+    def test_the_spool_is_removed_on_success_and_on_failure(self, monkeypatch) -> None:
+        cleaned: list[str] = []
+        real = mod.tempfile.TemporaryDirectory
+
+        class _Spy(real):  # type: ignore[misc, valid-type]
+            def cleanup(self) -> None:
+                cleaned.append(self.name)
+                super().cleanup()
+
+        monkeypatch.setattr(mod.tempfile, "TemporaryDirectory", _Spy)
+        tiff_to_pdf(_tiff(3))
+        assert len(cleaned) == 1 and not __import__("os").path.exists(cleaned[0])
+
+        real_frame = mod._frame_to_pdf
+        calls = {"n": 0}
+
+        def _flaky(page, dpi, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("disk full")
+            return real_frame(page, dpi, *a, **k)
+
+        monkeypatch.setattr(mod, "_frame_to_pdf", _flaky)
+        with pytest.raises(TiffNormalizeError):
+            tiff_to_pdf(_tiff(3))
+        assert len(cleaned) == 2 and not __import__("os").path.exists(cleaned[1])
+
+
+class TestPageSizeLimits:
+    def test_a_page_wider_than_14400_points_is_still_flate_not_a_silent_fallback(self) -> None:
+        # pikepdf's add_blank_page refuses > 14400 units; a 60,000-px survey
+        # sheet at 300 dpi is 14,400 pt and larger ones exist.
+        img = Image.new("L", (30000, 4), 200)
+        buf = io.BytesIO()
+        img.save(buf, "TIFF", dpi=(72, 72))
+        r = tiff_to_pdf(buf.getvalue())
+        assert "FlateDecode" in _page_filter(r.pdf_bytes)
+        assert r.pages_jpeg_encoded == 0
+
+    def test_a_thumbnail_page_under_three_points_is_still_flate(self) -> None:
+        r = tiff_to_pdf(_tiff(1, size=(8, 4), mode="L"))
+        assert "FlateDecode" in _page_filter(r.pdf_bytes)

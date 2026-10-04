@@ -209,12 +209,24 @@ async def _create_payload_index(
     collection_name: str,
     index: PayloadIndex,
 ) -> None:
-    """Issue a PUT /collections/{name}/index request to create a payload index."""
+    """Issue a PUT /collections/{name}/index request to create a payload index.
+
+    ``wait=false``: Qdrant's default is to hold the response until the index
+    has been built, and on a live collection with real data that outlasts this
+    client's 30 s read timeout - the script then died on a request that
+    Qdrant went on to complete. The request is validated and accepted
+    synchronously (a bad schema is still an immediate 4xx); the build itself
+    proceeds in the background.
+    """
     body = {
         "field_name": index.field_name,
         "field_schema": index_field_schema(index),
     }
-    resp = await client.put(f"/collections/{collection_name}/index", json=body)
+    resp = await client.put(
+        f"/collections/{collection_name}/index",
+        json=body,
+        params={"wait": "false"},
+    )
     _ok(resp, f"Index '{index.field_name}' on '{collection_name}'")
 
 
@@ -227,14 +239,27 @@ def index_field_schema(index: PayloadIndex) -> str | dict:
 
 
 async def _existing_payload_fields(client: httpx.AsyncClient, name: str) -> set[str]:
-    """Fields that already have a payload index on an existing collection."""
+    """Fields that already have a payload index on an existing collection.
+
+    RAISES when the answer cannot be read. It used to return an empty set on a
+    non-200 or an unparseable body, and an empty set means "nothing is
+    indexed": the caller then PUT every index again, including ``workspace_id``
+    with ``is_tenant`` - which REBUILDS that index on a collection that is
+    serving traffic. A collection that vanished or a 5xx between the
+    existence check and this read must stop the bootstrap, not look like an
+    unindexed collection.
+    """
     resp = await client.get(f"/collections/{name}")
     if resp.status_code != 200:
-        return set()
+        raise RuntimeError(
+            f"Read payload schema of '{name}' - HTTP {resp.status_code}: {resp.text}"
+        )
     try:
         schema = resp.json()["result"].get("payload_schema") or {}
-    except (KeyError, ValueError):
-        return set()
+    except (KeyError, ValueError, AttributeError) as exc:
+        raise RuntimeError(
+            f"Read payload schema of '{name}' - unparseable response: {exc!r}"
+        ) from exc
     return set(schema)
 
 
@@ -300,7 +325,7 @@ async def bootstrap() -> None:
                     continue
                 await _create_payload_index(client, spec.name, idx)
                 tenant = ", is_tenant" if idx.is_tenant else ""
-                print(f"  Index OK  '{idx.field_name}' ({idx.field_schema}{tenant})")
+                print(f"  Index accepted  '{idx.field_name}' ({idx.field_schema}{tenant})")
 
             print()
 

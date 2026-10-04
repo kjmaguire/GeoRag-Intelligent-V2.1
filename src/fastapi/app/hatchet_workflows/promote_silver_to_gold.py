@@ -204,6 +204,15 @@ class PromoteSilverToGoldOutput(BaseModel):
     #: Lithology intervals that shared a (collar, from, to) key with another and
     #: were folded into one gold band. The table's unique key is per interval.
     lithology_duplicate_intervals: int = 0
+    #: Sample intervals that shared a (collar, from, to) key with another (the
+    #: Au.csv + Cu.csv case: per-file replacement keeps both) and were folded
+    #: into one gold window, their ``commodity_assays`` merged key by key with
+    #: the later-written row winning a shared key.
+    samples_duplicate_intervals: int = 0
+    #: Holes whose silver.surveys rows come from MORE THAN ONE source file.
+    #: Their trace is built from the most recently written file's stations
+    #: only (merging two files' stations draws a trace through both).
+    survey_sources_mixed_holes: int = 0
     structures_written: int = 0
     projects_seen: int = 0
     lithology_rows_promoted: int = 0
@@ -613,11 +622,35 @@ _TRACE_COLLAR_BATCH = 1000
 #: Every survey station of one batch of collars, in one read. Rows come back
 #: grouped by hole and in depth order — the order the per-hole
 #: ``WHERE collar_id = $1 ORDER BY depth`` query used to return them in.
+#:
+#: Per-file replacement means two differently named survey files for one hole
+#: both stay in silver.surveys, and merging their stations draws a trace
+#: through two surveys' worth of points. So a hole's stations are those of its
+#: MOST RECENTLY WRITTEN source_file only (max(created_at) per file; file name
+#: as a deterministic tie-break; legacy NULL source_file is one group of its
+#: own). ``n_sources`` is how many files the hole has, so the caller can warn
+#: ``survey_sources_mixed`` rather than pick a winner silently.
 _TRACE_SURVEYS_BATCH = """
-SELECT collar_id, depth, azimuth, dip, azimuth_reference
-  FROM silver.surveys
- WHERE collar_id = ANY($1::uuid[])
- ORDER BY collar_id, depth
+WITH src AS (
+    SELECT collar_id, source_file, max(created_at) AS written_at
+      FROM silver.surveys
+     WHERE collar_id = ANY($1::uuid[])
+     GROUP BY collar_id, source_file
+), latest AS (
+    SELECT DISTINCT ON (collar_id) collar_id, source_file
+      FROM src
+     ORDER BY collar_id, written_at DESC NULLS LAST, source_file DESC NULLS LAST
+), n AS (
+    SELECT collar_id, count(*) AS n_sources FROM src GROUP BY collar_id
+)
+SELECT s.collar_id, s.depth, s.azimuth, s.dip, s.azimuth_reference,
+       n.n_sources
+  FROM silver.surveys s
+  JOIN latest l ON l.collar_id = s.collar_id
+               AND s.source_file IS NOT DISTINCT FROM l.source_file
+  JOIN n ON n.collar_id = s.collar_id
+ WHERE s.collar_id = ANY($1::uuid[])
+ ORDER BY s.collar_id, s.depth
 """
 
 #: $4 is a LINESTRING Z of metre OFFSETS about an origin of (0, 0) — not
@@ -737,8 +770,19 @@ async def _promote_traces(
             _TRACE_SURVEYS_BATCH, [c["collar_id"] for c in batch],
         )
         surveys_by_collar: dict[Any, list[Any]] = {}
+        mixed_collars: set[Any] = set()
         for survey_row in survey_rows:
             surveys_by_collar.setdefault(survey_row["collar_id"], []).append(survey_row)
+            if (survey_row.get("n_sources") or 1) > 1:
+                mixed_collars.add(survey_row["collar_id"])
+        if mixed_collars:
+            out.survey_sources_mixed_holes += len(mixed_collars)
+            log.warning(
+                "promote.traces: survey_sources_mixed - %d hole(s) in project %s "
+                "have survey stations from more than one source file; each "
+                "trace uses the most recently written file's stations only",
+                len(mixed_collars), project_id,
+            )
         pending_upserts: list[tuple[Any, ...]] = []
 
         for c in batch:
@@ -1089,6 +1133,29 @@ SELECT gen_random_uuid(), m.collar_id, c.workspace_id, c.project_id,
 #: Sampled windows. `commodity_assays` is already JSONB on silver.samples,
 #: so the payload is carried across rather than re-derived — the strip log
 #: colours by grade and needs the values, not a boolean.
+#:
+#: ONE ROW PER (collar, from, to) IN THE SELECT. Since ingest_tabular scopes
+#: its replace to the uploading file, Au.csv and Cu.csv for the same holes
+#: legitimately leave TWO silver.samples rows per interval, and an
+#: INSERT ... SELECT ... ON CONFLICT DO UPDATE whose SELECT yields the same
+#: key twice raises "cannot affect row a second time" - which, sharing the
+#: lithology transaction, rolled lithology gold back and skipped every later
+#: project. So the group is folded here:
+#:
+#:   * assay_payload = the rows' ``commodity_assays`` objects merged key by
+#:     key. When two files report the SAME key (two Au files for one hole)
+#:     the LATER-WRITTEN row wins (aggregate ordered by created_at, then
+#:     sample_id as a stable tie-break); distinct keys (Au from one file, Cu
+#:     from the other) all survive.
+#:   * label = max(sample_type) - arbitrary but deterministic across the group.
+#:   * the key is the ROUNDED depth pair, because that is what the gold unique
+#:     index sees (two float depths that differ past the 3rd decimal would
+#:     otherwise collide again).
+#:
+#: silver.samples depths are double precision (round(double, int) does not
+#: exist), hence the ::numeric casts.
+#:
+#: The fold is counted by _SAMPLES_DUPLICATES and reported, not silent.
 _INTERVALS_SAMPLES = """
 INSERT INTO gold.drillhole_intervals_visual (
     visual_id, collar_id, workspace_id, project_id,
@@ -1097,22 +1164,57 @@ INSERT INTO gold.drillhole_intervals_visual (
     assay_payload, alteration_payload, structure_payload,
     computed_at, created_at
 )
-SELECT gen_random_uuid(), s.collar_id, c.workspace_id, c.project_id,
-       s.from_depth, s.to_depth, 'sample_window',
-       NULL, LEFT(COALESCE(s.sample_type, 'sample'), 120), NULL,
-       COALESCE(s.commodity_assays, '{}'::jsonb), '{}'::jsonb, '{}'::jsonb,
+SELECT gen_random_uuid(), g.collar_id, c.workspace_id, c.project_id,
+       g.depth_from, g.depth_to, 'sample_window',
+       NULL, LEFT(COALESCE(g.sample_type, 'sample'), 120), NULL,
+       g.assays, '{}'::jsonb, '{}'::jsonb,
        NOW(), NOW()
+  FROM (
+        SELECT s.collar_id,
+               round(s.from_depth::numeric, 3) AS depth_from,
+               round(s.to_depth::numeric, 3) AS depth_to,
+               max(s.sample_type) AS sample_type,
+               COALESCE(
+                   jsonb_object_agg(kv.key, kv.value
+                                    ORDER BY s.created_at, s.sample_id)
+                       FILTER (WHERE kv.key IS NOT NULL),
+                   '{}'::jsonb) AS assays
+          FROM silver.samples s
+          JOIN silver.collars cs ON cs.collar_id = s.collar_id
+          LEFT JOIN LATERAL jsonb_each(
+                   CASE WHEN jsonb_typeof(s.commodity_assays) = 'object'
+                        THEN s.commodity_assays ELSE '{}'::jsonb END
+               ) AS kv(key, value) ON TRUE
+         WHERE cs.project_id = $1::uuid
+           AND s.from_depth IS NOT NULL
+           AND s.to_depth IS NOT NULL
+           AND round(s.to_depth::numeric, 3) > round(s.from_depth::numeric, 3)
+           AND s.from_depth >= 0
+           AND s.to_depth < 10000000
+         GROUP BY s.collar_id, round(s.from_depth::numeric, 3), round(s.to_depth::numeric, 3)
+       ) g
+  JOIN silver.collars c ON c.collar_id = g.collar_id
+ WHERE c.project_id = $1::uuid
+ON CONFLICT (collar_id, depth_from, depth_to, interval_kind) DO UPDATE SET
+    assay_payload   = EXCLUDED.assay_payload,
+    lithology_label = EXCLUDED.lithology_label,
+    computed_at     = EXCLUDED.computed_at
+"""
+
+#: Duplicate (collar, from, to) sample intervals - the Au.csv + Cu.csv case -
+#: counted so the fold into one gold window is reported rather than silent.
+#: Same eligibility filter as _INTERVALS_SAMPLES.
+_SAMPLES_DUPLICATES = """
+SELECT count(*) - count(DISTINCT (s.collar_id, round(s.from_depth::numeric, 3),
+                                  round(s.to_depth::numeric, 3))) AS duplicates
   FROM silver.samples s
   JOIN silver.collars c ON c.collar_id = s.collar_id
  WHERE c.project_id = $1::uuid
    AND s.from_depth IS NOT NULL
    AND s.to_depth IS NOT NULL
-   AND s.to_depth > s.from_depth
+   AND round(s.to_depth::numeric, 3) > round(s.from_depth::numeric, 3)
    AND s.from_depth >= 0
-ON CONFLICT (collar_id, depth_from, depth_to, interval_kind) DO UPDATE SET
-    assay_payload   = EXCLUDED.assay_payload,
-    lithology_label = EXCLUDED.lithology_label,
-    computed_at     = EXCLUDED.computed_at
+   AND s.to_depth < 10000000
 """
 
 #: Stereonet-ready structure. The equal-area (Schmidt) pole projection is
@@ -1256,6 +1358,19 @@ async def promote(
                     "interval(s) sharing a (hole, from, to) with another; "
                     "each set was folded into one gold band",
                     project_id, duplicates,
+                )
+            sample_duplicates = int(
+                await conn.fetchval(_SAMPLES_DUPLICATES, project_id) or 0
+            )
+            if sample_duplicates:
+                out.samples_duplicate_intervals += sample_duplicates
+                log.warning(
+                    "promote_silver_to_gold: project %s has %d sample "
+                    "interval(s) sharing a (hole, from, to) with another "
+                    "(e.g. per-element files for the same holes); each set "
+                    "was folded into one gold window, assays merged key by "
+                    "key with the later-written row winning a shared key",
+                    project_id, sample_duplicates,
                 )
             # Upsert, then drop the bands silver no longer has, in one
             # transaction so the strip log never sees a half-rebuilt hole.

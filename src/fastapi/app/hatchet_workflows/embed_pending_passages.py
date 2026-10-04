@@ -42,8 +42,16 @@ log = logging.getLogger("georag.hatchet.embed_pending_passages")
 # passages with ocr_status 'rejected'/'pending_reocr' are never embedded, so
 # treating them as "still pending" in the completion sweep would leave runs
 # at embed_verify/embedding forever.
+#
+# Page-image passages (modality = 'image') are excluded from "fully embedded":
+# they are best-effort coverage (the Embed 5 image request shape is
+# unverified), and one image passage whose embed fails must not hold a run
+# open - with good text - until stale_run_detector marks it ``timed_out``.
+# Their absence is reported instead (``image_passages_unembedded``, an INFO
+# warning on the run), not hidden.
 _EMBEDDABLE_OCR_PREDICATE = (
-    "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+    "((p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr')) "
+    "AND p.modality IS DISTINCT FROM 'image')"
 )
 
 # HAT-1 (2026-09-29) — every cross-workspace read below runs once per
@@ -707,7 +715,14 @@ async def run(
                 f"""
                 SELECT ip.run_id::text       AS run_id,
                        ip.workspace_id::text AS workspace_id,
-                       ip.project_id::text   AS project_id
+                       ip.project_id::text   AS project_id,
+                       CASE WHEN ip.report_id IS NOT NULL THEN (
+                            SELECT count(*)
+                            FROM silver.document_passages ip_img
+                            WHERE ip_img.document_id = ip.report_id
+                              AND ip_img.modality = 'image'
+                              AND ip_img.embedding_id IS NULL
+                       ) ELSE 0 END          AS image_unembedded
                 FROM silver.ingest_progress ip
                 WHERE ip.status NOT IN ({_ingest_progress.TERMINAL_STATUS_SQL})
                   AND ip.current_step IN ('embed_verify', 'embedding')
@@ -735,6 +750,18 @@ async def run(
             # (_progress.mark_run_diagnostics) and mark_completed_by_run reads
             # it back, so a document whose OCR produced nothing closes as
             # 'partial' here too, not as a bare 'completed'.
+            #
+            # Page-image passages do not gate the close (see
+            # _EMBEDDABLE_OCR_PREDICATE); the ones that never embedded are
+            # added to the stored diagnostics, as an INFO warning, first.
+            _img_unembedded = int(r.get("image_unembedded") or 0)
+            if _img_unembedded:
+                await _ingest_progress.append_run_warning(
+                    run_id=r["run_id"],
+                    warning=_ingest_progress.image_passages_unembedded_warning(
+                        _img_unembedded
+                    ),
+                )
             transitioned = await _ingest_progress.mark_completed_by_run(
                 run_id=r["run_id"],
             )

@@ -71,8 +71,9 @@ contents structure (up to 27 sections; 17 is the typical baseline) which this
 parser exploits for high-confidence section boundary detection.
 
 Primary extraction engine: pypdfium2 (PDFium) for native text + per-page OCR
-routing to Tesseract (default) or Cohere Parse (when `OCR_ENGINE=cohere_parse`)
-for image pages. Fallback engine:
+routing to Cohere Parse 5 (the default `OCR_ENGINE=cohere_parse`; ADR-0023) or,
+as the last-resort fallback, Tesseract (`OCR_ENGINE=tesseract`, or when Cohere
+is unconfigured/unreachable) for image pages. Fallback engine:
 pdfplumber, used when the primary can't extract sufficient structure.
 
 Parse quality is reported as a float 0.0–1.0 representing the fraction of the
@@ -2047,11 +2048,16 @@ def _table_placeholders_for_grids(
 def _engine_reading_chars(text: str | None, tables: Sequence[Any] | None) -> int:
     """Characters in an engine reading: its narrative text plus its table cells.
 
-    Table grids are counted because Parse's markdown for a table is replaced
-    in the narrative by a one-line placeholder (the grid is indexed on its own
-    as a `Table (OCR, ...)` section); comparing narrative alone against a
+    ``text`` MUST be the PLACEHOLDERED narrative (`_table_placeholders_for_grids`
+    already applied), not the engine's raw text. Parse's markdown for a table
+    is replaced in the narrative by a one-line placeholder (the grid is
+    indexed on its own as a `Table (OCR, ...)` section), so the cells are
+    added back here from ``tables``: comparing the narrative alone against a
     native text layer that includes every table cell would flag every table
-    page as under-read.
+    page as under-read. Passing the RAW text instead counts every table
+    twice (markdown in the text, cells again from the grid), which lets a
+    table-heavy page whose prose Parse dropped clear the under-read test
+    and keep only a ``[Table k, page N]`` placeholder as its narrative.
     """
     total = len((text or "").strip())
     for grid in tables or ():
@@ -2065,7 +2071,9 @@ def _parse_under_reads_native(
     text: str | None, tables: Sequence[Any] | None, native_text: str | None,
 ) -> bool:
     """True when the engine's reading is shorter than PARSE_MIN_NATIVE_RATIO
-    of the page's own text layer (see that constant)."""
+    of the page's own text layer (see that constant).
+
+    ``text`` is the placeholdered narrative - see `_engine_reading_chars`."""
     native_chars = len((native_text or "").strip())
     if native_chars == 0:
         return False
@@ -2501,6 +2509,9 @@ def _parse_with_fitz(
                 _native_txt = engine_first_native[n]
                 _accepted = False
                 _under_read = False
+                _e_narrative = ""
+                _e_text = ""
+                _e_tables = None
                 if _ocr_exc is None and _ocr_result is not None:
                     _e_text, _e_conf, _e_assessment, _e_tables = _ocr_result
                     _engine_answered = bool(
@@ -2509,12 +2520,16 @@ def _parse_with_fitz(
                         and _e_text
                         and len(_e_text.strip()) >= PER_PAGE_MIN_CHARS
                     )
+                    # The placeholdered narrative is what would be KEPT, so it
+                    # is what the under-read test measures (cells are added
+                    # back from the grids exactly once). Measuring the raw
+                    # text counted every table twice.
+                    _e_narrative = _table_placeholders_for_grids(_e_text, _e_tables, n)
                     _under_read = _engine_answered and _parse_under_reads_native(
-                        _e_text, _e_tables, _native_txt
+                        _e_narrative, _e_tables, _native_txt
                     )
                     if _engine_answered and not _under_read:
                         _accepted = True
-                        _e_narrative = _table_placeholders_for_grids(_e_text, _e_tables, n)
                         pages_text.append(_e_narrative)
                         per_page_text.append((n, _e_narrative))
                         per_page_method[n] = _engine.OCR_METHOD
@@ -2533,7 +2548,7 @@ def _parse_with_fitz(
                             "code": "page_parse_under_read",
                             "page": n,
                             "native_chars": len(_native_txt.strip()),
-                            "parse_chars": _engine_reading_chars(_e_text, _e_tables),
+                            "parse_chars": _engine_reading_chars(_e_narrative, _e_tables),
                             "min_ratio": PARSE_MIN_NATIVE_RATIO,
                         })
                 continue

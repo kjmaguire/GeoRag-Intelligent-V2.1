@@ -184,11 +184,22 @@ def render_page_png(
 #
 #   all      — every page (code default; Kyle's choice)
 #   figures  — only pages the parser could not read as text, i.e. the maps and
-#              plates that are invisible today. ~2% of pages on the live
-#              corpus, and the highest value-per-call setting.
+#              plates whose meaning is in the picture. The share of pages this
+#              selects is corpus-dependent and has NOT been measured on the
+#              live corpus (an earlier comment here claimed "~2%"; nothing
+#              backs it). It is bounded rather than assumed: the per-document
+#              cap is FIGURES_SCOPE_MAX_PAGES, so a 300-page scan cannot become
+#              300 renders and 300 placeholder passages.
 #   off      — disable image embedding entirely
 _SCOPE_ENV = "IMAGE_EMBED_PAGE_SCOPE"
 _VALID_SCOPES = ("all", "figures", "off")
+
+#: Ceiling on page images per document under scope ``figures``, whatever
+#: IMAGE_EMBED_MAX_PAGES_PER_DOC says (the lower of the two applies). Scope
+#: ``all`` keeps IMAGE_EMBED_MAX_PAGES_PER_DOC alone. A ``figures`` run that
+#: selects more than this is not selecting figures any more, it is selecting a
+#: scan, and each page costs a render, an S3 object and a placeholder passage.
+FIGURES_SCOPE_MAX_PAGES = 50
 
 
 def image_embed_scope() -> str:
@@ -221,30 +232,34 @@ def text_pages_from_sections(
     sections: list[dict],
     engine_text_pages: set[int] | frozenset[int] | None = None,
 ) -> set[int]:
-    """Page numbers the parser read from a real text layer.
+    """Page numbers the parser read as text.
 
-    Used only by scope="figures". A page counts as text if ANY section
-    spanning it came from a native extractor (`fitz_native`,
-    `pdfplumber_native`).
+    Used only by scope="figures". A page counts as text if
 
-    `cohere_parse` and `tesseract` sections do NOT count by themselves,
-    because a page that needed OCR is exactly the kind of page (map, plate,
-    scanned insert) whose picture carries meaning the text does not.
-
-    The exception is PDF_PARSE_MODE=all (2026-10-04): there Cohere Parse also
-    re-reads pages that HAVE a text layer, and replaces their native sections
-    with its own, so counting only native sections made every page look like a
-    figure and `figures` degenerated to `all`. ``engine_text_pages`` is the
-    set pdf_report records in its `pdf_parse_mode_summary` warning: pages the
-    engine read that already had a usable text layer. A `cohere_parse` section
-    counts for exactly those pages and no others, so a scan Parse read (which
-    is NOT in that set) still gets its image. Counting every `cohere_parse`
-    page would have fixed `all` mode and broken `ocr_only`, where Parse reads
-    the scans.
+      * ANY section spanning it came from a native extractor (`fitz_native`,
+        `pdfplumber_native`), or
+      * OCR (`cohere_parse`, `tesseract`) yielded at least PER_PAGE_MIN_CHARS
+        of text for it. A page the OCR engine READ is a text page: counting
+        every OCR'd page as a figure made a 300-page scan 300 renders (hundreds
+        of MB) and 300 placeholder passages. Only an OCR page that came back
+        (nearly) empty - the map, plate or cross-section whose meaning is the
+        picture - stays a figure page. A section's text is attributed to the
+        pages it spans evenly (a chunk window can span several pages and no
+        per-page offsets reach this function) and summed per page, so two
+        short chunks on one page add up; or
+      * PDF_PARSE_MODE=all (2026-10-04): Cohere Parse also re-reads pages that
+        HAVE a text layer and replaces their native sections with its own.
+        ``engine_text_pages`` is the set pdf_report records in its
+        `pdf_parse_mode_summary` warning: pages the engine read that already
+        had a usable text layer. A `cohere_parse` section counts for exactly
+        those pages whatever its length.
     """
+    from app.services.ingest.pdf_report import PER_PAGE_MIN_CHARS  # noqa: PLC0415
+
     native = {"fitz_native", "pdfplumber_native"}
     engine_text = set(engine_text_pages or ())
     pages: set[int] = set()
+    ocr_chars: dict[int, float] = {}
     for section in sections or []:
         method = section.get("ocr_method") or "fitz_native"
         first = section.get("page_first")
@@ -254,8 +269,14 @@ def text_pages_from_sections(
         span = range(int(first), int(last) + 1)
         if method in native:
             pages.update(span)
-        elif method == "cohere_parse" and engine_text:
+            continue
+        if method == "cohere_parse" and engine_text:
             pages.update(p for p in span if p in engine_text)
+        if method in {"cohere_parse", "tesseract"} and len(span) > 0:
+            share = len(str(section.get("text") or "").strip()) / len(span)
+            for p in span:
+                ocr_chars[p] = ocr_chars.get(p, 0.0) + share
+    pages.update(p for p, n in ocr_chars.items() if n >= PER_PAGE_MIN_CHARS)
     return pages
 
 
@@ -365,6 +386,8 @@ def stage_page_images(
     # like full coverage is how "we indexed everything" becomes false.
     if max_pages is None:
         max_pages = int(os.environ.get("IMAGE_EMBED_MAX_PAGES_PER_DOC", "1000"))
+        if scope == "figures":
+            max_pages = min(max_pages, FIGURES_SCOPE_MAX_PAGES)
     if len(targets) > max_pages:
         logger.warning(
             "page_image: %d pages in scope for %s but IMAGE_EMBED_MAX_PAGES_PER_DOC=%d "
@@ -372,14 +395,18 @@ def stage_page_images(
             len(targets), pdf_path, max_pages, max_pages, len(targets) - max_pages,
         )
         if warnings_out is not None:
+            cap_note = (
+                f" (scope=figures never exceeds {FIGURES_SCOPE_MAX_PAGES})"
+                if scope == "figures" else ""
+            )
             warnings_out.append({
                 "code": "page_images_capped",
                 "severity": "warning",
                 "detail": (
-                    f"{len(targets)} pages were in scope for page images but "
-                    f"IMAGE_EMBED_MAX_PAGES_PER_DOC={max_pages}: only the first "
-                    f"{max_pages} were indexed, {len(targets) - max_pages} "
-                    f"were dropped."
+                    f"{len(targets)} pages were in scope for page images "
+                    f"(scope={scope}) but IMAGE_EMBED_MAX_PAGES_PER_DOC={max_pages}"
+                    f"{cap_note}: only the first {max_pages} were indexed, "
+                    f"{len(targets) - max_pages} were dropped."
                 ),
                 "cap": max_pages,
                 "count": len(targets) - max_pages,

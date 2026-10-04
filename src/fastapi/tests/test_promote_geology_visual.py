@@ -289,6 +289,80 @@ class TestMineralizationRows:
         assert "``mineralization`` rows" in doc
 
 
+class TestSampleWindowsFoldPerFileDuplicates:
+    """Au.csv + Cu.csv for the same holes leave two silver.samples rows per interval.
+
+    The statement was run against PostgreSQL 16 with exactly that data (two rows
+    over one interval, one with Au, one with Au+Cu, a NULL-assays row and a
+    non-object assays row): it inserts one window per interval, the merged
+    payload keeps Cu and the later-written Au, and a second run takes the
+    ON CONFLICT path without raising. These keep that shape from regressing.
+    """
+
+    def test_the_select_yields_one_row_per_gold_key(self) -> None:
+        sql = promo._INTERVALS_SAMPLES
+        assert "GROUP BY s.collar_id, round(s.from_depth::numeric, 3), round(s.to_depth::numeric, 3)" in sql
+        # the key is the ROUNDED depth pair - what the gold unique index sees
+        assert "round(s.to_depth::numeric, 3) > round(s.from_depth::numeric, 3)" in sql
+        assert "max(s.sample_type)" in sql
+        # the ON CONFLICT is still there and is now safe
+        assert "ON CONFLICT (collar_id, depth_from, depth_to, interval_kind)" in sql
+
+    def test_assays_are_merged_key_by_key_later_file_wins(self) -> None:
+        sql = promo._INTERVALS_SAMPLES
+        assert "jsonb_object_agg(kv.key, kv.value" in sql
+        assert "ORDER BY s.created_at, s.sample_id" in sql
+        # a NULL / non-object commodity_assays must not raise or poison the group
+        assert "jsonb_typeof(s.commodity_assays) = 'object'" in sql
+        assert "FILTER (WHERE kv.key IS NOT NULL)" in sql
+        assert "COALESCE(" in sql and "'{}'::jsonb) AS assays" in sql
+        # the rule is documented where the statement lives
+        doc = Path(promo.__file__).read_text(encoding="utf-8")
+        assert "LATER-WRITTEN row wins" in doc
+
+    def test_the_fold_is_counted_and_scoped_like_the_insert(self) -> None:
+        assert "samples_duplicate_intervals" in promo.PromoteSilverToGoldOutput.model_fields
+        sql = promo._SAMPLES_DUPLICATES
+        assert "count(DISTINCT" in sql
+        assert "c.project_id = $1::uuid" in sql
+        assert "round(s.to_depth::numeric, 3) > round(s.from_depth::numeric, 3)" in sql
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_does_not_stop_later_projects(self, monkeypatch, caplog) -> None:
+        """Fold counted and warned; both projects reach their sample statement."""
+        conn = _Conn()
+
+        async def _connect(*_a: Any, **_k: Any) -> _Conn:
+            return conn
+
+        async def _noop(*_a: Any, **_k: Any) -> None:
+            return None
+
+        monkeypatch.setattr(promo.asyncpg, "connect", _connect)
+        monkeypatch.setattr(promo, "build_dsn", lambda *a, **k: "postgres://x/y")
+        monkeypatch.setattr(promo, "bind_workspace_scope", _noop)
+        monkeypatch.setattr(promo, "_promote_lithology_canonical", _noop)
+        monkeypatch.setattr(promo, "_promote_traces", _noop)
+
+        async def _fetch(sql: str, *_a: Any) -> list:
+            if "FROM silver.projects" in sql:
+                return [{"project_id": PROJECT}, {"project_id": "p2"}]
+            return []
+
+        monkeypatch.setattr(conn, "fetch", _fetch)
+        with caplog.at_level("WARNING"):
+            out = await promo.promote.fn(
+                promo.PromoteSilverToGoldInput(workspace_id=WS), None,
+            )
+        sample_runs = [
+            1 for verb, sql, _ in conn.calls
+            if verb == "execute" and "'sample_window'" in sql
+        ]
+        assert len(sample_runs) == 2
+        assert out.samples_duplicate_intervals == 4
+        assert any("sample interval(s) sharing" in r.getMessage() for r in caplog.records)
+
+
 class _Conn:
     """Records what the promotion runs, in order."""
 
@@ -380,3 +454,5 @@ class TestThePromotionRun:
         assert out.alteration_intervals_written == 3
         assert out.mineralization_intervals_written == 3
         assert out.lithology_duplicate_intervals == 2
+        # the sample-window fold is counted the same way (the _Conn answers 2)
+        assert out.samples_duplicate_intervals == 2

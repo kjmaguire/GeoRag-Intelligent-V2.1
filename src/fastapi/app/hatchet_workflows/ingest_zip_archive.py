@@ -1780,7 +1780,19 @@ async def _ingest_one(
         # and an explicit hint makes ingest_tabular skip classification
         # entirely.
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
-        safe_name = _safe_filename(file_path.name)
+        # ingest_tabular replaces earlier rows by LOGICAL file name
+        # (source_file, upload stamp stripped), per hole. Au/assays.csv and
+        # Cu/assays.csv share the name "assays.csv", so without a directory tag
+        # they shared one source_file and each upload deleted the other's rows,
+        # whichever ran last winning - the very thing the per-file scoping was
+        # added to stop. The same short, deterministic directory hash the
+        # spatial branch applies keeps them distinct (members at the archive
+        # root keep their plain name, so flat deliveries are unchanged and a
+        # re-upload of the same archive still replaces itself). The tag sits
+        # before the extension: ingest_tabular classifies by extension and the
+        # logical-name stripper only removes the leading upload stamp.
+        tag = _dir_tag(file_path, archive_root)
+        safe_name = _safe_filename(f"{file_path.stem}{tag}{file_path.suffix}")
         tabular_key = f"tabular/{input.project_id}/{ts}_{safe_name}"
         await _put_member(store, tabular_key, file_path)
         tabular_ref, tabular_run_id = await _dispatch_member(
@@ -2113,9 +2125,35 @@ def _has_sibling(path: Path, suffix: str) -> bool:
     )
 
 
+_SAFE_NAME_MAX = 120
+_DIR_TAG_TAIL = re.compile(r"__[0-9a-f]{6}$")
+
+
 def _safe_filename(name: str) -> str:
-    """Collapse characters that are unsafe in S3 keys to underscores."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:120]
+    """Collapse characters that are unsafe in S3 keys to underscores, max 120.
+
+    A name over the limit is shortened in the MIDDLE of its stem: the
+    extension survives (ingest_tabular / ingest_spatial classify by it) and so
+    does the ``__<6 hex>`` directory tag from `_dir_tag` (it is what keeps
+    ``Au/<long name>.csv`` and ``Cu/<long name>.csv`` from sharing one logical
+    source name). Cutting the last characters off, as this used to, removed
+    both for any member with a long name.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    if len(cleaned) <= _SAFE_NAME_MAX:
+        return cleaned
+    stem, dot, ext = cleaned.rpartition(".")
+    if not dot or len(ext) > 12:
+        stem, ext = cleaned, ""
+    else:
+        ext = "." + ext
+    tag = ""
+    tag_match = _DIR_TAG_TAIL.search(stem)
+    if tag_match is not None:
+        tag = tag_match.group(0)
+        stem = stem[: tag_match.start()]
+    room = _SAFE_NAME_MAX - len(tag) - len(ext)
+    return f"{stem[: max(room, 1)]}{tag}{ext}"[:_SAFE_NAME_MAX]
 
 
 def _archive_display_name(input: IngestZipArchiveInput) -> str:

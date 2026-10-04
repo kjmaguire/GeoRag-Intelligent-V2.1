@@ -565,7 +565,16 @@ async def test_nested_zips_gdb_folders_and_txt_all_reach_an_ingester(
     result = await h.run()
 
     dispatched = [name for kind, name in h.events if kind == "dispatch"]
-    assert sorted(dispatched) == ["Site.zip", "collars.csv", "readme.txt"]
+    # Members that sit in a directory carry that directory's short tag
+    # (`collars__<6 hex>.csv`) so same-named files in different folders keep
+    # distinct logical source names; only the stem/extension are asserted here.
+    import re
+
+    assert sorted(re.sub(r"__[0-9a-f]{6}", "", n) for n in dispatched) == [
+        "Site.zip", "collars.csv", "readme.txt",
+    ]
+    assert any(re.fullmatch(r"collars__[0-9a-f]{6}\.csv", n) for n in dispatched)
+    assert any(re.fullmatch(r"readme__[0-9a-f]{6}\.txt", n) for n in dispatched)
     assert result["counts"]["unknown"] == 0 and result["counts"]["errors"] == 0
     assert result["counts"]["spatial"] == 1 and result["counts"]["csv"] == 2
     assert not [w for w in result["warnings"] if w["code"] == "archive_member_unhandled"]

@@ -83,6 +83,20 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: HATCHET_CLIENT_TOKEN
+            # COHERE_API_KEY: chat (LLM_BACKEND=cohere, the default) and Cohere
+            # Parse OCR both read it, and the API process runs the production-
+            # posture check that logs CRITICAL when it is empty. The worker gets
+            # the whole Secret through envFrom; this Deployment lists its keys,
+            # so the key must be named here or an on-prem install that set it
+            # reaches only the worker. optional: true - an air-gapped install
+            # (`ocr.engine: tesseract`, no egress) has no such key, and a
+            # required reference would hold the pod in CreateContainerConfigError.
+            - name: COHERE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: COHERE_API_KEY
+                  optional: true
             # ADR-0025 follow-up: set explicitly. The code default is now
             # "cohere", which an on-prem / air-gapped install cannot reach (no
             # COHERE_API_KEY here, and no egress), so an unset value would take

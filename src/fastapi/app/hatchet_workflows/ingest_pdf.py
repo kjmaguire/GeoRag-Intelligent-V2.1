@@ -555,6 +555,11 @@ def _run_parser_subprocess(
             "text_page_coverage_pct": float(
                 getattr(result, "text_page_coverage_pct", 0.0) or 0.0
             ),
+            # None is "not computed" (the unparseable-document early return)
+            # and stays None: persist writes NULL, not 0.0. It used to be
+            # dropped right here, so silver.reports.extraction_confidence read
+            # NULL on every row although persist's INSERT reads it.
+            "extraction_confidence": getattr(result, "extraction_confidence", None),
             "parser_used": str(getattr(result, "parser_used", "unknown") or "unknown"),
             "skipped_elements": int(getattr(result, "skipped_elements", 0) or 0),
             "warnings": [
@@ -651,6 +656,9 @@ class ParseOut(BaseModel):
     # different questions; carrying only the first is what let a document
     # whose 300 pages OCR'd to nothing report as well parsed.
     text_page_coverage_pct: float = 0.0
+    # Composite 0-1 extraction confidence from the parser; None = not computed.
+    # Without this field pydantic dropped the key between parse and persist.
+    extraction_confidence: float | None = None
     parser_used: str = ""
     skipped_elements: int = 0
     warnings: list[dict] = Field(default_factory=list)
@@ -2098,6 +2106,10 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             _pending_page_keys: list[str] = []
             _image_failed_pages: list[int] = []
             _img_store = None
+            # The run's verdict, built INSIDE the transaction (below) so it
+            # commits with the passages it describes.
+            run_warnings: list[dict] = []
+            _progress_stamped = False
             async with conn.transaction():
                 await bind_workspace_scope(
                     conn, workspace_id=workspace_id_str, site="hatchet.ingest_pdf"
@@ -2219,12 +2231,35 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                                 content_type="image/png",
                             )
                         except Exception as _copy_exc:  # noqa: BLE001
-                            log.warning(
-                                "ingest_pdf: page-image copy failed page=%s "
-                                "key=%s err=%s", page_no, pending, _copy_exc,
+                            # A persist RETRY after a commit finds the pending
+                            # object already deleted (it is removed post-commit),
+                            # so EVERY copy fails even though every page is
+                            # already in place under its final key - which used
+                            # to be reported as page_image_persist_failed for
+                            # the whole document. The destination existing IS
+                            # the copy having happened.
+                            _dest_present = False
+                            try:
+                                _dest_present = bool(await asyncio.to_thread(
+                                    _img_store.exists, Bucket.BRONZE_RASTER, dest,
+                                ))
+                            except Exception as _exists_exc:  # noqa: BLE001
+                                log.warning(
+                                    "ingest_pdf: page-image existence check failed "
+                                    "page=%s key=%s err=%s", page_no, dest, _exists_exc,
+                                )
+                            if not _dest_present:
+                                log.warning(
+                                    "ingest_pdf: page-image copy failed page=%s "
+                                    "key=%s err=%s", page_no, pending, _copy_exc,
+                                )
+                                _image_failed_pages.append(int(page_no))
+                                continue
+                            log.info(
+                                "ingest_pdf: page-image copy failed (%s) but %s "
+                                "already exists - treating page %s as finalised "
+                                "(retry after commit)", _copy_exc, dest, page_no,
                             )
-                            _image_failed_pages.append(int(page_no))
-                            continue
                         # The copy landed: the pending object has done its
                         # job. Deleted post-commit (see _pending_page_keys).
                         _pending_page_keys.append(pending)
@@ -2319,6 +2354,50 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                             len(stale_passage_rows), report_id,
                         )
 
+                # The run's verdict is written IN THIS TRANSACTION. Stamped
+                # after the commit (as it used to be) there was a window in
+                # which the passages were visible, a sweep that found them all
+                # embedded closed the run with no stored diagnostics, and a
+                # document whose OCR had failed finished as a bare
+                # 'completed'. Both helpers write in a savepoint, so a failed
+                # bookkeeping UPDATE cannot abort the document's write; if one
+                # fails the post-commit fallback below retries it.
+                run_warnings = build_run_warnings(
+                    parsed,
+                    passages_written=passages_written,
+                    page_count=int(pre.get("page_count", 0) or 0),
+                )
+                if _image_failed_pages:
+                    _failed = sorted(set(_image_failed_pages))
+                    run_warnings.append({
+                        "code": "page_image_persist_failed",
+                        "severity": "warning",
+                        "detail": (
+                            f"{len(_failed)} page image(s) could not be finalised "
+                            f"(copy or row insert failed): "
+                            f"{', '.join(str(p) for p in _failed[:25])}"
+                            f"{' ...' if len(_failed) > 25 else ''}. Their text is "
+                            f"unaffected."
+                        ),
+                        "count": len(_failed),
+                        "pages": _failed[:25],
+                    })
+                if input.workspace_id:
+                    _report_stamped = await ingest_progress.mark_report_id(
+                        workspace_id=str(input.workspace_id),
+                        minio_key=input.minio_key,
+                        report_id=report_id,
+                        conn=conn,
+                    )
+                    _diagnostics_stamped = await ingest_progress.mark_run_diagnostics(
+                        workspace_id=str(input.workspace_id),
+                        minio_key=input.minio_key,
+                        rows_written=passages_written,
+                        warnings=run_warnings,
+                        conn=conn,
+                    )
+                    _progress_stamped = bool(_report_stamped and _diagnostics_stamped)
+
             # The transaction committed: the finalised page images are the
             # only copy that matters now. Delete the _pending renders, the way
             # the figure path does. Without this every document left one PNG
@@ -2351,26 +2430,6 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             # downstream consumer reading the field.
 
             persist_ms = int((time.monotonic() - t_start) * 1000)
-            run_warnings = build_run_warnings(
-                parsed,
-                passages_written=passages_written,
-                page_count=int(pre.get("page_count", 0) or 0),
-            )
-            if _image_failed_pages:
-                _failed = sorted(set(_image_failed_pages))
-                run_warnings.append({
-                    "code": "page_image_persist_failed",
-                    "severity": "warning",
-                    "detail": (
-                        f"{len(_failed)} page image(s) could not be finalised "
-                        f"(copy or row insert failed): "
-                        f"{', '.join(str(p) for p in _failed[:25])}"
-                        f"{' ...' if len(_failed) > 25 else ''}. Their text is "
-                        f"unaffected."
-                    ),
-                    "count": len(_failed),
-                    "pages": _failed[:25],
-                })
             final = IngestPdfFinalOut(
                 sha256=pre.get("sha256", ""),
                 parser_used=parsed.get("parser_used") or "unknown",
@@ -2503,13 +2562,24 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     # only. Embeds serialize per workspace (embed wf max_runs=1), so on bulk
     # imports the old project-wide predicate timed out runs whose own
     # document had long finished embedding.
-    if input.workspace_id:
+    #
+    # Both writes (and the diagnostics below) already happened INSIDE persist's
+    # transaction; this is only the fallback for when that savepoint write
+    # failed, so the row is never left without them.
+    if input.workspace_id and not _progress_stamped:
         await ingest_progress.mark_report_id(
             workspace_id=str(input.workspace_id),
             minio_key=input.minio_key,
             report_id=report_id,
         )
-        # Leave the verdict on the row for the closers that never see this
+        await ingest_progress.mark_run_diagnostics(
+            workspace_id=str(input.workspace_id),
+            minio_key=input.minio_key,
+            rows_written=final.passages_written,
+            warnings=final.run_warnings,
+        )
+    if input.workspace_id:
+        # The verdict is on the row for the closers that never see this
         # task's output (the embed completion sweep, stale_run_detector's race
         # recovery). rows_written is the narrative passages written, so a
         # document that produced no text is `partial`, not `completed`.
@@ -2521,12 +2591,6 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 input.minio_key, final.passages_written,
                 "; ".join(str(w.get("code")) for w in _blocking) or "no passages",
             )
-        await ingest_progress.mark_run_diagnostics(
-            workspace_id=str(input.workspace_id),
-            minio_key=input.minio_key,
-            rows_written=final.passages_written,
-            warnings=final.run_warnings,
-        )
 
     # Trigger embedding for this project so chunks land in qdrant
     # immediately, instead of waiting for the 20:45 UTC daily cron.
@@ -2567,8 +2631,14 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
 # passages whose OCR text is known-bad ('rejected' / 'pending_reocr') are
 # never embedded, so counting them as "unembedded" here would wedge the run
 # at embed_verify forever.
+# Page-image passages (modality = 'image') are excluded as well: they are
+# best-effort coverage (the Embed 5 image request shape is unverified), and one
+# whose embed fails must not hold a run with good text open until the stale
+# sweep times it out. Their absence is reported as an INFO warning
+# (``image_passages_unembedded``), not hidden.
 _EMBEDDABLE_OCR_PREDICATE = (
-    "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+    "((p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr')) "
+    "AND p.modality IS DISTINCT FROM 'image')"
 )
 
 
@@ -2655,6 +2725,7 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
                 # the very first check) broadcast "all chunks embedded".
                 _run_warnings: list[dict] | None = None
                 _rows_written: int | None = None
+                _persisted_report_id: str | None = None
                 try:
                     _persisted = ctx.task_output(persist)
                     _persisted = (
@@ -2663,12 +2734,39 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
                     )
                     _rows_written = int(_persisted.get("passages_written", 0) or 0)
                     _run_warnings = list(_persisted.get("run_warnings") or [])
+                    _persisted_report_id = _persisted.get("report_id")
                 except Exception as exc:  # noqa: BLE001 -- fall back to the row
                     log.warning(
                         "embed_verify: could not read persist output key=%s "
                         "(%s) -- using the diagnostics stored on the run row",
                         input.minio_key, exc,
                     )
+                # Page-image passages are best-effort and do not gate this
+                # close (see _EMBEDDABLE_OCR_PREDICATE); say so when some
+                # never embedded, as an INFO warning (does not turn it amber).
+                if _persisted_report_id and _run_warnings is not None:
+                    try:
+                        async with pool.acquire() as _img_conn:
+                            _img_row = await _img_conn.fetchrow(
+                                "SELECT count(*) AS n "
+                                "FROM silver.document_passages p "
+                                "WHERE p.document_id = $1::uuid "
+                                "  AND p.modality = 'image' "
+                                "  AND p.embedding_id IS NULL",
+                                str(_persisted_report_id),
+                            )
+                        _img_unembedded = int(_img_row["n"] or 0) if _img_row else 0
+                        if _img_unembedded:
+                            _run_warnings.append(
+                                ingest_progress.image_passages_unembedded_warning(
+                                    _img_unembedded
+                                )
+                            )
+                    except Exception as exc:  # noqa: BLE001 -- diagnostics only
+                        log.warning(
+                            "embed_verify: unembedded page-image count failed "
+                            "key=%s (%s)", input.minio_key, exc,
+                        )
                 try:
                     run_id = await ingest_progress.lookup_active_run_id(
                         workspace_id=str(input.workspace_id),

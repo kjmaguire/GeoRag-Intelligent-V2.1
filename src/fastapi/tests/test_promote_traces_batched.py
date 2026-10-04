@@ -91,7 +91,7 @@ async def test_survey_read_is_a_single_any_array_query() -> None:
     conn, _ = await _run(3)
     sql = conn.survey_calls[0][0]
     assert "ANY($1::uuid[])" in sql
-    assert "ORDER BY collar_id, depth" in sql
+    assert "ORDER BY s.collar_id, s.depth" in sql
     assert "azimuth_reference" in sql
 
 
@@ -139,3 +139,38 @@ async def test_no_collars_issues_no_survey_read_and_no_write() -> None:
     conn, out = await _run(0)
     assert conn.survey_calls == [] and conn.batches == []
     assert out.traces_written == 0
+
+
+async def test_survey_read_prefers_the_most_recently_written_source_file() -> None:
+    """Two survey files for one hole must not be merged into one trace."""
+    conn, _ = await _run(1)
+    sql = conn.survey_calls[0][0]
+    assert "max(created_at) AS written_at" in sql
+    assert "ORDER BY collar_id, written_at DESC" in sql
+    assert "s.source_file IS NOT DISTINCT FROM l.source_file" in sql
+    assert "n_sources" in sql
+
+
+async def test_a_hole_with_stations_from_two_files_is_warned_not_silent(caplog) -> None:
+    class _Mixed(_BatchConn):
+        async def fetch(self, sql: str, *args: object) -> list[dict]:
+            rows = await super().fetch(sql, *args)
+            if "FROM silver.collars" in sql:
+                return rows
+            # c1 has two source files on record; c0 has one.
+            return [{**r, "n_sources": 2 if r["collar_id"] == "c1" else 1} for r in rows]
+
+    conn = _Mixed(2)
+    out = m.PromoteSilverToGoldOutput()
+    with caplog.at_level("WARNING"):
+        await m._promote_traces(conn, workspace_id="w", project_id="p", out=out)  # type: ignore[arg-type]
+    assert out.survey_sources_mixed_holes == 1
+    assert any("survey_sources_mixed" in r.getMessage() for r in caplog.records)
+    assert out.traces_written == 2, "the mixed hole is still traced, from the latest file"
+
+
+async def test_single_source_holes_raise_no_mixed_warning(caplog) -> None:
+    with caplog.at_level("WARNING"):
+        _, out = await _run(3)
+    assert out.survey_sources_mixed_holes == 0
+    assert not any("survey_sources_mixed" in r.getMessage() for r in caplog.records)

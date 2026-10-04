@@ -787,7 +787,8 @@ async def mark_report_id(
     workspace_id: str,
     minio_key: str,
     report_id: str,
-) -> None:
+    conn: asyncpg.Connection | None = None,
+) -> bool:
     """Record the persisted report_id on the active (non-terminal) run row.
 
     Written at the end of ingest_pdf's persist step (F2, 2026-08-11) so the
@@ -796,6 +797,11 @@ async def mark_report_id(
     whole project — bulk imports serialize embeds per workspace, so a
     project-wide predicate timed out rows whose own document had already
     finished. Best-effort like every other helper here.
+
+    ``conn``: when the caller passes its OPEN connection (persist does, from
+    inside its transaction) the UPDATE rides that transaction, in a savepoint,
+    so the report_id is committed WITH the report and its passages and a sweep
+    cannot see the passages without it. Returns True iff the write ran.
     """
     sql = f"""
         UPDATE silver.ingest_progress
@@ -805,14 +811,20 @@ async def mark_report_id(
           AND status NOT IN ({TERMINAL_STATUS_SQL})
     """
     try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(sql, workspace_id, minio_key, report_id)
+        if conn is not None:
+            async with conn.transaction():
+                await conn.execute(sql, workspace_id, minio_key, report_id)
+        else:
+            pool = await get_pool()
+            async with pool.acquire() as pooled:
+                await pooled.execute(sql, workspace_id, minio_key, report_id)
+        return True
     except Exception as e:
         log.warning(
             "progress.mark_report_id failed (key=%s): %s", minio_key, e,
             extra={"workspace_id": workspace_id, "minio_key": minio_key},
         )
+        return False
 
 
 def _decode_warnings(raw: object) -> list[dict]:
@@ -842,6 +854,7 @@ async def mark_run_diagnostics(
     minio_key: str,
     rows_written: int,
     warnings: list[dict],
+    conn: asyncpg.Connection | None = None,
 ) -> bool:
     """Store what a run has produced so far on its NON-terminal row.
 
@@ -855,6 +868,13 @@ async def mark_run_diagnostics(
 
     Idempotent overwrite (a retried persist writes the same values). Returns
     True iff a row was updated; best-effort like every helper here.
+
+    ``conn``: pass the caller's OPEN connection to write inside ITS
+    transaction (in a savepoint, so a failed UPDATE cannot abort it). persist
+    does, so the verdict commits with the passages: written after the commit
+    there was a window in which a sweep that saw every passage embedded could
+    close the run with no stored diagnostics, i.e. a bare ``completed`` over a
+    document whose OCR had failed.
     """
     import json as _json  # noqa: PLC0415
 
@@ -867,17 +887,82 @@ async def mark_run_diagnostics(
           AND status NOT IN ({TERMINAL_STATUS_SQL})
     """
     try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            result = await conn.execute(
-                sql, workspace_id, minio_key, int(rows_written),
-                _json.dumps(warnings),
-            )
+        if conn is not None:
+            async with conn.transaction():
+                result = await conn.execute(
+                    sql, workspace_id, minio_key, int(rows_written),
+                    _json.dumps(warnings),
+                )
+        else:
+            pool = await get_pool()
+            async with pool.acquire() as pooled:
+                result = await pooled.execute(
+                    sql, workspace_id, minio_key, int(rows_written),
+                    _json.dumps(warnings),
+                )
         return not str(result).endswith(" 0")
     except Exception as e:
         log.warning(
             "progress.mark_run_diagnostics failed (key=%s): %s", minio_key, e,
             extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
+        return False
+
+
+def image_passages_unembedded_warning(count: int) -> dict:
+    """The INFO warning a run carries when page-image passages were not embedded.
+
+    Image passages are best-effort: the Embed 5 image request shape is
+    unverified, and a failing image embed must not hold the run open (the
+    "fully embedded?" predicates exclude ``modality = 'image'``) nor turn it
+    amber. It is still said, on the row, so a missing page image is not a
+    silent coverage hole.
+    """
+    return {
+        "code": "image_passages_unembedded",
+        "severity": "info",
+        "detail": (
+            f"{count} page-image passage(s) have no embedding yet (image "
+            f"embedding is best-effort and does not block the run); those "
+            f"pages are searchable by their text only."
+        ),
+        "count": int(count),
+    }
+
+
+async def append_run_warning(*, run_id: str, warning: dict) -> bool:
+    """Append one warning to a NON-terminal run's stored diagnostics.
+
+    Idempotent per ``warning["code"]``: a second call with the same code (a
+    sweep ticking again before the run closes) is a no-op rather than a
+    duplicate entry. Call it BEFORE :func:`mark_completed_by_run`, which reads
+    the stored warnings back. Returns True iff a row was updated; best-effort.
+    """
+    import json as _json  # noqa: PLC0415
+
+    sql = f"""
+        UPDATE silver.ingest_progress
+        SET warnings   = COALESCE(warnings, '[]'::jsonb) || $2::jsonb,
+            updated_at = now()
+        WHERE run_id = $1::uuid
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
+          AND NOT EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(COALESCE(warnings, '[]'::jsonb)) AS w
+                WHERE w ->> 'code' = $3
+          )
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                sql, run_id, _json.dumps([warning]), str(warning.get("code")),
+            )
+        return not str(result).endswith(" 0")
+    except Exception as e:
+        log.warning(
+            "progress.append_run_warning failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
         )
         return False
 

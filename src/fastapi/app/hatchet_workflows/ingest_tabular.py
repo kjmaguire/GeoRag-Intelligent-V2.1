@@ -1383,6 +1383,12 @@ _COMPANION_TYPES: dict[str, tuple[str, ...]] = {
 }
 
 
+#: The tables whose rows are keyed by (collar, from_depth, to_depth) - the ones
+#: where another file's row at the same interval is meaningful to report.
+#: Survey and structure rows are single depths.
+_OVERLAP_CHECKED_TYPES = frozenset({"lithology", "sample", "alteration", "mineralization"})
+
+
 async def _write_intervals(
     conn: asyncpg.Connection, *, workspace_id: str, sheet_type: str,
     records: list[dict], index: dict[str, str],
@@ -1413,7 +1419,9 @@ async def _write_intervals(
     and ``source_file_sha256`` are stamped on every row written, and
     ``source_file`` scopes the replace: only rows from the same file - plus
     pre-migration rows with no source, which cannot be attributed - are
-    deleted, never another file's rows for the same hole. With
+    deleted, never another file's rows for the same hole. The comparison is
+    case-insensitive (``Lith.csv`` re-uploaded as ``lith.csv`` is the same
+    logical file; Windows exports do not preserve case). With
     ``source_file=None`` the replace is the legacy unscoped per-collar one;
     every call site inside ``run_ingest_tabular`` passes it. When it is
     given the stats also carry ``replaced_legacy`` (rows replaced that had
@@ -1607,12 +1615,15 @@ async def _write_intervals(
             await conn.fetchval(
                 f"WITH d AS (DELETE FROM {target} "  # noqa: S608
                 "WHERE collar_id = ANY($1::uuid[]) "
-                "AND (source_file = $2 OR source_file IS NULL) RETURNING 1) "
+                "AND (lower(source_file) = lower($2) OR source_file IS NULL) "
+                "RETURNING 1) "
                 "SELECT count(*) FROM d",
                 collar_ids, source_file,
             ) or 0
         )
         return deleted, min(legacy, deleted)
+
+    overlap_other_source = 0
 
     async with conn.transaction():
         if touched:
@@ -1624,6 +1635,31 @@ async def _write_intervals(
             # tables guard against comes back one table over.
             assay_replaced, assay_replaced_legacy = await _replace(
                 "silver.assays_v2", assay_touched,
+            )
+
+        if scoped and rows and sheet_type in _OVERLAP_CHECKED_TYPES:
+            # After this file's own rows were replaced and BEFORE the insert:
+            # what is left at the same (collar, from, to) was written by a
+            # DIFFERENT file. Per-file replacement keeps both, which is right
+            # for Au.csv + Cu.csv and wrong for two lithology logs of one
+            # hole; either way the geologist is told (_overlap_warning).
+            overlap_other_source = int(
+                await conn.fetchval(
+                    f"SELECT count(*) FROM (SELECT DISTINCT t.collar_id, "  # noqa: S608
+                    "t.from_depth, t.to_depth "
+                    f"FROM {table} t "
+                    "JOIN unnest($1::uuid[], $2::float8[], $3::float8[]) "
+                    "AS n(collar_id, from_depth, to_depth) "
+                    "ON n.collar_id = t.collar_id "
+                    "AND n.from_depth = t.from_depth::float8 "
+                    "AND n.to_depth = t.to_depth::float8 "
+                    "WHERE t.source_file IS NULL "
+                    "OR lower(t.source_file) <> lower($4)) x",
+                    [r[1] for r in rows],
+                    [float(r[2]) for r in rows],
+                    [float(r[3]) for r in rows],
+                    source_file,
+                ) or 0
             )
 
         for start in range(0, len(rows), _INSERT_BATCH):
@@ -1655,6 +1691,11 @@ async def _write_intervals(
     }
     if scoped:
         stats["replaced_legacy"] = replaced_legacy
+        if overlap_other_source:
+            # Only when there is something to say: the stats are the run's
+            # per-table totals and every other key is always present, but this
+            # one is a diagnostic read, not a count of what was written.
+            stats["overlap_other_source"] = overlap_other_source
     if sheet_type == "sample":
         stats["assay_rows"] = len(assay_rows)
         stats["assay_rows_skipped"] = assay_skipped
@@ -1716,7 +1757,7 @@ def _replaced_warning(
             f"their source file, so they may have come from a different "
             f"file; if so, re-upload that file."
         )
-    return {
+    warning: dict[str, Any] = {
         "code": code,
         "message": f"{replaced} {noun} replaced by a re-upload of {label}",
         "detail": detail,
@@ -1725,6 +1766,56 @@ def _replaced_warning(
         "assay_replaced": assay_replaced,
         "replaced_legacy": total_legacy,
     }
+    if total_legacy == 0:
+        # Every replaced row was this same file's: a corrected re-upload, a
+        # same-file re-upload or a Hatchet retry of this very run. That is the
+        # replace working as designed, not a partial outcome, so it is
+        # information (severity "info" does not turn the run amber). Replacing
+        # rows that predate source tracking is different: they may have come
+        # from another file, so that one stays a blocking warning.
+        warning["severity"] = "info"
+    return warning
+
+
+def _overlap_warning(
+    *, sheet_type: str, label: str, stats: dict[str, int],
+) -> dict[str, Any] | None:
+    """Say that another file already holds rows at the same (hole, from, to).
+
+    Per-file replacement leaves both files' rows in place. For samples that is
+    the expected Au.csv + Cu.csv shape (different elements over the same
+    intervals), so it is information; for lithology, alteration and
+    mineralization two logs of one interval are two answers to one question,
+    so it is a blocking warning the geologist has to resolve (the gold layer
+    folds them into one band, and says so).
+    """
+    overlap = int(stats.get("overlap_other_source", 0) or 0)
+    if overlap <= 0:
+        return None
+    is_sample = sheet_type == "sample"
+    noun = "sample" if is_sample else sheet_type
+    detail = (
+        f"{overlap} {noun} interval(s) in {label} cover the same hole and "
+        f"depth range as rows already loaded from a different file."
+        + (
+            " If that file holds other elements for the same samples this is "
+            "expected; the assays are merged per interval downstream."
+            if is_sample else
+            " Both sets are kept (a re-upload only replaces its own file's "
+            "rows) and show as one folded band; if one file supersedes the "
+            "other, remove the older upload."
+        )
+    )
+    warning: dict[str, Any] = {
+        "code": "intervals_overlap_other_source",
+        "message": f"{overlap} {noun} interval(s) overlap rows from another file",
+        "detail": detail,
+        "table": sheet_type,
+        "overlap": overlap,
+    }
+    if is_sample:
+        warning["severity"] = "info"
+    return warning
 
 
 #: Columns named in an assay_unit_ambiguous warning.
@@ -3423,6 +3514,12 @@ async def run_ingest_tabular(
                         )
                         if comp_note is not None:
                             warnings.append(comp_note)
+                        comp_overlap = _overlap_warning(
+                            sheet_type=companion_type, label=label,
+                            stats=comp_stats,
+                        )
+                        if comp_overlap is not None:
+                            warnings.append(comp_overlap)
                         warnings.extend(issue_warnings(
                             comp_issues, label=label, table=companion_type,
                         ))
@@ -3521,6 +3618,11 @@ async def run_ingest_tabular(
                         )
                         if replaced_note is not None:
                             warnings.append(replaced_note)
+                        overlap_note = _overlap_warning(
+                            sheet_type=write_type, label=label, stats=stats,
+                        )
+                        if overlap_note is not None:
+                            warnings.append(overlap_note)
                         if write_type == "sample":
                             ambiguity_note = _unit_ambiguity_warning(
                                 label=label, result=result,

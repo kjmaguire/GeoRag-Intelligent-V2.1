@@ -388,11 +388,19 @@ def _persist_input() -> Any:
 
 async def _run_persist(
     parsed: dict, *, page_count: int, store: MagicMock | None = None,
-    fail_image_insert: bool = False,
+    fail_image_insert: bool = False, diagnostics_ok: bool = True,
 ) -> tuple[Any, AsyncMock, list[str]]:
     events: list[str] = []
     conn = _PersistConn(events, fail_image_insert=fail_image_insert)
-    diagnostics = AsyncMock(return_value=True)
+
+    async def _diagnostics(**kwargs: Any) -> bool:
+        # Recorded in the transaction's event log so a test can say WHERE the
+        # write happened relative to the commit. The in-transaction call is
+        # the one that carries ``conn``; the post-commit fallback has none.
+        events.append("diagnostics_in_txn" if kwargs.get("conn") is not None else "diagnostics")
+        return diagnostics_ok or kwargs.get("conn") is None
+
+    diagnostics = AsyncMock(side_effect=_diagnostics)
     pre = {"sha256": "ab" * 32, "page_count": page_count, "file_size": 10,
            "encrypted": False, "valid": True}
     parsed = {"sha256": "ab" * 32, "parser_used": "ocr_cohere_parse", "title": "Scan",

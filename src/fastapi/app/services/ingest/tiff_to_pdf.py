@@ -1,25 +1,46 @@
-"""Lossless image → PDF normalisation (ADR-0005).
+"""Image -> PDF normalisation (ADR-0005): pixel-exact where it can be.
 
-Wraps the per-frame image data from a TIFF — or a standalone scanned image
-(JPEG, PNG, BMP, GIF, WebP) — into a single PDF container so the standard PDF
+Wraps the per-frame image data from a TIFF - or a standalone scanned image
+(JPEG, PNG, BMP, GIF, WebP) - into a single PDF container so the standard PDF
 parser and OCR provenance path can run on image-sourced documents.
 
-Why PIL not img2pdf:
-  * img2pdf has tighter JPEG-in-TIFF passthrough but isn't installed in
-    the running fastapi image — would need a rebuild.
-  * PIL.Image.save(format="PDF") ships in Pillow which is already in the
-    image. It DOES decode and re-wrap each frame, but the wrap is to
-    PDF/Flate so the pixel data round-trips losslessly for the formats we
-    see in practice (B&W CCITT, grayscale LZW, RGB scans).
-  * Quality budget: the downstream §04p stack is what determines OCR
-    quality; the wrap only needs to preserve every pixel, which PIL does.
+What "lossless" means here (this module used to claim more than it did)
+-----------------------------------------------------------------------
+Every frame is DECODED and re-encoded; nothing is passed through. What the
+re-encode costs depends on the page mode, and Pillow's own PDF writer is NOT
+lossless for most of them:
 
-Memory is bounded by ONE frame, not by the page count. This used to decode
-every frame into a list and hand the list to a single ``save(append_images=)``
-call, so a 500-page RGB scan at 300 dpi (about 26 MB decoded per page) held
-roughly 13 GB at once, on a worker that runs many slots. Now each frame is
-decoded, prepared, written as its own one-page PDF and released; the pages are
-then merged with pikepdf. Two alternatives were measured and rejected:
+  * mode ``1`` (bilevel, the fax / CCITT-G4 scans): written by Pillow as
+    CCITT G4, which is lossless for a bilevel image.
+  * ``L`` / ``RGB`` / ``CMYK``: Pillow's ``save(format="PDF")`` writes these as
+    **JPEG (DCTDecode) at its default quality**, so a clean 300 dpi greyscale
+    scan of 6-pt assay tables came out with JPEG ringing around every glyph -
+    the exact input the OCR engine reads worst. They are therefore written
+    here as **Flate (zlib) image XObjects built with pikepdf** (already a
+    dependency, used for the merge), which round-trips every pixel.
+  * Palette, alpha and 16-bit modes are converted first (see
+    ``_normalise_frame_mode``); that conversion is the one lossy-by-nature step
+    (16 -> 8 bit).
+
+Flate output is much larger than JPEG for photographic colour pages, and the
+derived PDF goes to ingest_pdf, which refuses anything over the upload ceiling
+(GEORAG_MAX_UPLOAD_BYTES). So the lossless budget is bounded
+(``_LOSSLESS_BUDGET_FRACTION`` of that ceiling): once the Flate pages written
+so far reach it, the remaining L / RGB pages are JPEG-encoded at quality 92
+with no chroma subsampling, and the result says how many
+(``pages_jpeg_encoded``) so the workflow can warn. That is a degraded page the
+operator is told about, not a silent one. If the Flate writer itself fails for
+a page, Pillow's writer is the fallback.
+
+Memory: one decoded frame at a time, plus the finished PDF. Each page is
+written to a temp file as its own one-page PDF and released, and the pages
+are then merged with pikepdf from those files. This used to decode every
+frame into a list and hand it to one ``save(append_images=)`` call, so a
+500-page RGB scan at 300 dpi (about 26 MB decoded per page) held roughly 13 GB
+at once on a worker that runs many slots. Holding the one-page PDFs in memory
+instead would still cost ~2x the compressed output (the pages plus the merged
+copy), which with Flate pages is hundreds of MB, hence the spool. Two
+alternatives were measured and rejected:
 
   * ``save(..., append=True)`` page by page (Pillow's own incremental
     append) is quadratic: 100 pages took 2.3 s and 500 pages ran past two
@@ -27,6 +48,10 @@ then merged with pikepdf. Two alternatives were measured and rejected:
   * appending in chunks of seven pages still took ~25 s for 500 bilevel A4
     pages and produced a 4.7 MB file against 0.7 MB for the pikepdf merge
     (8 s end to end, including generating the test images).
+
+Why not img2pdf: it is not installed in the fastapi image (it would need a
+rebuild), and it only passes JPEG-in-TIFF through untouched; it does not
+change the answer for the greyscale / LZW / bilevel scans that dominate.
 
 Which formats are page sequences: only TIFF. A GIF or WebP "frame" is an
 animation frame and an APNG's are too — turning a 300-frame animated GIF into
@@ -47,7 +72,10 @@ from __future__ import annotations
 
 import io
 import logging
+import tempfile
+import zlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.services.ingest.upload_limits import max_upload_bytes
 
@@ -68,6 +96,21 @@ MAX_TIFF_BYTES = max_upload_bytes()
 #: Image formats (``PIL.Image.format``) whose frames are PAGES. Every other
 #: format contributes its first frame only.
 _PAGE_SEQUENCE_FORMATS = frozenset({"TIFF"})
+
+#: Fraction of the upload ceiling the Flate (lossless) pages may add up to
+#: before the remaining L / RGB pages are JPEG-encoded instead. The derived
+#: PDF must itself pass ingest_pdf's size check, so the lossless pages cannot
+#: be allowed all of it.
+_LOSSLESS_BUDGET_FRACTION = 0.75
+
+#: JPEG quality for pages past the lossless budget. High, and 4:4:4 (no chroma
+#: subsampling), because thin coloured linework and small print are what the
+#: default settings smear.
+_FALLBACK_JPEG_QUALITY = 92
+
+#: Below this a 16-bit frame is treated as a 12-bit (or lower) scan stored in
+#: 16-bit words, and scaled by its own maximum. See ``_to_eight_bit``.
+_TWELVE_BIT_LIMIT = 4096
 
 #: EXIF Orientation tag id.
 _EXIF_ORIENTATION = 0x0112
@@ -93,6 +136,10 @@ class TiffNormalizeResult:
     frames_ignored: int = 0
     #: Pages that carried an EXIF orientation and were rotated upright.
     pages_reoriented: int = 0
+    #: L / RGB pages written as JPEG because the lossless (Flate) budget was
+    #: spent. 0 for any normal-sized scan; > 0 means those pages carry JPEG
+    #: artefacts the OCR engine may read worse.
+    pages_jpeg_encoded: int = 0
 
 
 class TiffNormalizeError(Exception):
@@ -146,8 +193,11 @@ def tiff_to_pdf(source_bytes: bytes) -> TiffNormalizeResult:
 
     from .trusted_image import trusted_pillow_image_limit
 
-    page_pdfs: list[bytes] = []
+    # One-page PDFs are spooled to disk (see the module docstring, "Memory").
+    spool = tempfile.TemporaryDirectory(prefix="tiff_to_pdf_")
+    page_paths: list[Path] = []
     reoriented = 0
+    budget = _LosslessBudget(int(MAX_TIFF_BYTES * _LOSSLESS_BUDGET_FRACTION))
 
     # WSGS / NI 43-101 scans routinely exceed Pillow's default threshold.
     # Raise it to a finite, explicit ceiling only while decoding this trusted
@@ -171,38 +221,53 @@ def tiff_to_pdf(source_bytes: bytes) -> TiffNormalizeResult:
                 page, rotated = _prepare_frame(frame)
                 reoriented += int(rotated)
                 try:
-                    page_pdfs.append(_frame_to_pdf(page, dpi))
+                    page_pdf = _frame_to_pdf(page, dpi, budget)
                 finally:
                     page.close()
+                page_path = Path(spool.name) / f"p{len(page_paths):05d}.pdf"
+                page_path.write_bytes(page_pdf)
+                del page_pdf
+                page_paths.append(page_path)
         except Exception as exc:
+            spool.cleanup()
             # Includes a frame that fails to DECODE part-way through the
             # sequence: a PDF silently missing its tail pages is worse than
             # no PDF, so the whole wrap is refused and names the frame.
             raise TiffNormalizeError(
-                f"frame {len(page_pdfs)} could not be read or wrapped: {exc}"
+                f"frame {len(page_paths)} could not be read or wrapped: {exc}"
             ) from exc
 
-    if not page_pdfs:
-        raise TiffNormalizeError("no frames in TIFF")
+    try:
+        if not page_paths:
+            raise TiffNormalizeError("no frames in TIFF")
 
-    truncated = is_sequence and total_frames > MAX_FRAMES
-    ignored = 0 if is_sequence else max(total_frames - 1, 0)
+        truncated = is_sequence and total_frames > MAX_FRAMES
+        ignored = 0 if is_sequence else max(total_frames - 1, 0)
 
-    pdf_bytes = _merge_pages(page_pdfs)
+        pdf_bytes = _merge_pages(page_paths, Path(spool.name) / "merged.pdf")
+    finally:
+        spool.cleanup()
     log.info(
         "tiff_to_pdf.ok frames=%d total=%d truncated=%s ignored=%d "
-        "reoriented=%d in_bytes=%d out_bytes=%d",
-        len(page_pdfs), total_frames, truncated, ignored, reoriented,
-        len(source_bytes), len(pdf_bytes),
+        "reoriented=%d jpeg_pages=%d in_bytes=%d out_bytes=%d",
+        len(page_paths), total_frames, truncated, ignored, reoriented,
+        budget.jpeg_pages, len(source_bytes), len(pdf_bytes),
     )
+    if budget.jpeg_pages:
+        log.warning(
+            "tiff_to_pdf: %d page(s) JPEG-encoded - the lossless budget (%d "
+            "bytes) was spent; the OCR engine may read them worse",
+            budget.jpeg_pages, budget.limit,
+        )
     return TiffNormalizeResult(
         pdf_bytes=pdf_bytes,
-        page_count=len(page_pdfs),
+        page_count=len(page_paths),
         source_bytes=len(source_bytes),
         truncated_at_cap=truncated,
         total_frames=total_frames,
         frames_ignored=ignored,
         pages_reoriented=reoriented,
+        pages_jpeg_encoded=budget.jpeg_pages,
     )
 
 
@@ -215,36 +280,141 @@ def _frame_count(src) -> int:
         return 1
 
 
-def _frame_to_pdf(page, dpi: float) -> bytes:
-    """One prepared frame as a one-page PDF."""
+class _LosslessBudget:
+    """Running total of Flate page bytes against the lossless ceiling."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.spent = 0
+        self.jpeg_pages = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.spent >= self.limit
+
+
+#: PDF colour space per PIL mode, for the modes written by ``_image_page_pdf``.
+_COLOR_SPACES = {"L": "/DeviceGray", "RGB": "/DeviceRGB", "CMYK": "/DeviceCMYK"}
+
+
+def _frame_to_pdf(page, dpi: float, budget: _LosslessBudget | None = None) -> bytes:
+    """One prepared frame as a one-page PDF (see the module docstring).
+
+    ``1`` -> Pillow's CCITT G4 (lossless). ``L`` / ``RGB`` / ``CMYK`` -> a Flate
+    image XObject built with pikepdf (lossless) while the lossless budget
+    lasts, then JPEG q92 4:4:4 for L / RGB (CMYK falls to Pillow's writer).
+    Any failure of the pikepdf path falls back to Pillow's writer, so a page
+    is never lost to the better encoder.
+    """
+    budget = budget if budget is not None else _LosslessBudget(1 << 62)
+    if page.mode in _COLOR_SPACES:
+        lossless = not budget.exhausted
+        if lossless or page.mode != "CMYK":
+            try:
+                pdf = _image_page_pdf(page, dpi, lossless=lossless)
+            except Exception as exc:  # noqa: BLE001 - the Pillow writer is the fallback
+                log.warning(
+                    "tiff_to_pdf: pikepdf page writer failed (%s); using Pillow's "
+                    "PDF writer for this page", exc,
+                )
+            else:
+                if lossless:
+                    budget.spent += len(pdf)
+                else:
+                    budget.jpeg_pages += 1
+                return pdf
     buf = io.BytesIO()
-    # Resolution metadata — best-effort from the source; the §04p stack uses
+    # Resolution metadata - best-effort from the source; the §04p stack uses
     # pdf2image at fixed DPI so this is informational.
     page.save(buf, format="PDF", resolution=dpi)
+    if page.mode in _COLOR_SPACES:
+        # Pillow wrote this L / RGB / CMYK page as JPEG.
+        budget.jpeg_pages += 1
     return buf.getvalue()
 
 
-def _merge_pages(page_pdfs: list[bytes]) -> bytes:
-    """Join one-page PDFs into one document (the single page is returned as-is)."""
-    if len(page_pdfs) == 1:
-        return page_pdfs[0]
+def _image_page_pdf(page, dpi: float, *, lossless: bool) -> bytes:
+    """A one-page PDF whose single image XObject is Flate (lossless) or JPEG."""
+    import pikepdf  # noqa: PLC0415
+    from pikepdf import Name  # noqa: PLC0415
+
+    width, height = page.size
+    if lossless:
+        data = zlib.compress(page.tobytes(), 6)
+        filter_name = Name.FlateDecode
+    else:
+        jpeg = io.BytesIO()
+        page.save(
+            jpeg, format="JPEG", quality=_FALLBACK_JPEG_QUALITY,
+            subsampling=0, optimize=True,
+        )
+        data = jpeg.getvalue()
+        filter_name = Name.DCTDecode
+
+    pdf = pikepdf.Pdf.new()
+    image = pikepdf.Stream(pdf, b"")
+    image.write(data, filter=filter_name)
+    image.Type = Name.XObject
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.ColorSpace = Name(_COLOR_SPACES[page.mode])
+    image.BitsPerComponent = 8
+
+    # Page size in points from the pixel size and the resolution. Built as a
+    # plain page dictionary rather than with ``add_blank_page``, which refuses
+    # a page outside 3..14400 units (a thumbnail, or a 60,000-px survey sheet at
+    # 300 dpi - both legitimate here).
+    width_pt = width * 72.0 / dpi
+    height_pt = height * 72.0 / dpi
+    content = pdf.make_stream(
+        f"q {width_pt:.4f} 0 0 {height_pt:.4f} 0 0 cm /Im0 Do Q".encode("ascii")
+    )
+    page_obj = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=Name.Page,
+            MediaBox=[0, 0, width_pt, height_pt],
+            Resources=pikepdf.Dictionary(XObject=pikepdf.Dictionary(Im0=image)),
+            Contents=content,
+        )
+    )
+    pdf.pages.append(pikepdf.Page(page_obj))
+    out = io.BytesIO()
+    pdf.save(out)
+    return out.getvalue()
+
+
+def _merge_pages(page_paths: list[Path], merged_path: Path) -> bytes:
+    """Join the one-page PDFs (spooled on disk) into one document.
+
+    A single page is returned as it is. The sources are opened from their
+    paths, so pikepdf reads page content lazily from disk rather than holding
+    every page in memory, and the merged document is saved to disk before it is
+    read back as the result.
+    """
+    if len(page_paths) == 1:
+        return page_paths[0].read_bytes()
 
     try:
         import pikepdf  # noqa: PLC0415
-    except ImportError as exc:  # pragma: no cover — pikepdf is in the image
+    except ImportError as exc:  # pragma: no cover - pikepdf is in the image
         raise TiffNormalizeError(f"pikepdf not available: {exc}") from exc
 
+    sources = []
     try:
         merged = pikepdf.Pdf.new()
         # The sources must stay open until the merged document is saved.
-        sources = [pikepdf.Pdf.open(io.BytesIO(b)) for b in page_pdfs]
-        for s in sources:
-            merged.pages.extend(s.pages)
-        out = io.BytesIO()
-        merged.save(out)
+        sources = [pikepdf.Pdf.open(path) for path in page_paths]
+        for src_pdf in sources:
+            merged.pages.extend(src_pdf.pages)
+        merged.save(merged_path)
+        merged.close()
     except Exception as exc:
         raise TiffNormalizeError(f"PDF page merge failed: {exc}") from exc
-    return out.getvalue()
+    finally:
+        for src_pdf in sources:
+            src_pdf.close()
+    return merged_path.read_bytes()
 
 
 def _prepare_frame(frame):
@@ -299,13 +469,29 @@ def _to_eight_bit(frame):
     ``convert("L")`` on an ``I;16`` image saturates: every sample above 255
     becomes 255, so a normal 16-bit grey scan (values up to 65535) comes out
     as a solid white page.
+
+    The scale depends on the data, not on the container. A true 16-bit scan
+    uses the whole 0..65535 range, so dividing by 256 is right. A 12-bit scan
+    stored in 16-bit words (common from document scanners and medical-style
+    capture; every value <= 4095) divided by 256 comes out at 0..15 - a
+    near-black page that OCR reads as nothing. So when the frame's actual
+    maximum is below ``_TWELVE_BIT_LIMIT`` the frame is scaled by that maximum
+    (the darkest-to-brightest range maps to 0..255); otherwise by 1/256.
+    A constant frame (maximum 0) stays black.
     """
+    try:
+        _low, high = frame.getextrema()
+        high = float(high)
+    except Exception:  # noqa: BLE001 - an unreadable extrema: fall back to the container scale
+        log.debug("tiff_to_pdf: no extrema for mode %s, scaling by 1/256", frame.mode, exc_info=True)
+        high = float(_TWELVE_BIT_LIMIT)
+    scale = 255.0 / high if 0 < high < _TWELVE_BIT_LIMIT else 1.0 / 256.0
     try:
         # point() on I / I;16 applies the scale but KEEPS the 16/32-bit mode
         # whatever the mode argument says, so the narrowing is a second step.
-        scaled = frame.point(lambda i: i * (1 / 256))
+        scaled = frame.point(lambda i: i * scale)
         return scaled.convert("L")
-    except Exception:  # noqa: BLE001 — a mode point() cannot scale
+    except Exception:  # noqa: BLE001 - a mode point() cannot scale
         log.debug("tiff_to_pdf: 16-bit scale failed for mode %s, plain convert", frame.mode, exc_info=True)
         return frame.convert("L")
 

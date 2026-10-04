@@ -49,6 +49,7 @@ secrets:
   fastapiServiceKey: ""          # 32+ char shared HMAC for /internal/*
   laravelAppKey: ""              # `php artisan key:generate --show`
   hatchetClientToken: ""         # output of `hatchet token create`
+  cohereApiKey: ""               # optional; chat + Cohere Parse OCR. Empty = no key (air-gapped / tesseract)
 
 # ─────────────────────────────────────────────────────────────────────
 # PostgreSQL 18.3 + PostGIS 3.6.3 — owned image (per ADR-0002).

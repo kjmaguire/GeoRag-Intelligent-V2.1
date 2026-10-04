@@ -295,8 +295,14 @@ async def _workflow_run_is_alive(workflow_run_id: str | None) -> bool:
 # app/services/ingest/passage_embedder.py (embed_pending_passages SELECT):
 # passages with ocr_status 'rejected'/'pending_reocr' are never embedded,
 # so counting them as "unembedded" would keep runs un-completable forever.
+# Page-image passages (modality = 'image') are excluded as well: they are
+# best-effort coverage (the Embed 5 image request shape is unverified), and one
+# whose embed fails must not hold a run with good text open until the stale
+# sweep times it out. Their absence is reported as an INFO warning
+# (``image_passages_unembedded``), not hidden.
 _EMBEDDABLE_OCR_PREDICATE = (
-    "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+    "((p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr')) "
+    "AND p.modality IS DISTINCT FROM 'image')"
 )
 
 
@@ -369,6 +375,42 @@ async def _project_is_fully_embedded(
             project_id, exc,
         )
         return False
+
+
+async def _unembedded_image_count(
+    pool, report_id: str | None, *, workspace_id: str | None,
+) -> int:
+    """Page-image passages of one document that have no embedding.
+
+    They do not gate "fully embedded" (see _EMBEDDABLE_OCR_PREDICATE); the run
+    that closes without them says so with an ``image_passages_unembedded`` INFO
+    warning. 0 when the row has no report_id or the read fails: a diagnostics
+    read must never be the reason a recovered run cannot be closed.
+    """
+    if not report_id or not workspace_id:
+        return 0
+    try:
+        async with scoped_connection(
+            pool, workspace_id=workspace_id,
+            site="stale_run_detector.unembedded_images",
+        ) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT count(*) AS n
+                FROM silver.document_passages p
+                WHERE p.document_id = $1::uuid
+                  AND p.modality = 'image'
+                  AND p.embedding_id IS NULL
+                """,
+                report_id,
+            )
+        return int(row["n"] or 0) if row else 0
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        log.warning(
+            "stale_run_detector: unembedded-image count failed for report=%s: %s",
+            report_id, exc,
+        )
+        return 0
 
 
 def _build_recovery_payload(
@@ -671,6 +713,16 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                 ):
             # Stored diagnostics (ingest_pdf persist) decide completed vs
             # partial; see _progress.mark_completed_by_run.
+            _img_unembedded = await _unembedded_image_count(
+                pool, row["report_id"], workspace_id=row["workspace_id"],
+            )
+            if _img_unembedded:
+                await ingest_progress.append_run_warning(
+                    run_id=run_id,
+                    warning=ingest_progress.image_passages_unembedded_warning(
+                        _img_unembedded
+                    ),
+                )
             transitioned = await ingest_progress.mark_completed_by_run(run_id=run_id)
             if transitioned:
                 runs_marked_completed += 1

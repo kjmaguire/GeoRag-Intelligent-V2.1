@@ -76,9 +76,9 @@ Oversized plan sheets are DOWNSCALED to ``COHERE_PARSE_MAX_PIXELS`` rather
 than tiled — there are no polygons to stitch tiles back together with —
 and a warning is logged when that costs resolution.
 
-Gated by ``OCR_ENGINE`` (default ``"tesseract"``), reading ``os.environ``
-at call time like the adapter it replaces, so importing this module never
-requires credentials. The key IS required to make a call now, which is a
+Gated by ``OCR_ENGINE`` (default ``"cohere_parse"`` since 2026-10-04;
+``"tesseract"`` must be asked for), reading ``os.environ`` at call time like
+the adapter it replaces, so importing this module never requires credentials. The key IS required to make a call now, which is a
 step back from the Bedrock task-role arrangement and the price of the cost
 shape — see ADR-0023 "Negative".
 """
@@ -193,7 +193,11 @@ class CohereParseNotConfigured(RuntimeError):
 
 
 def is_engine_selected() -> bool:
-    """True when OCR_ENGINE opts into Cohere Parse (strict opt-in)."""
+    """True when OCR_ENGINE selects Cohere Parse (the default; unset or blank selects it).
+
+    Selection is not configuration: a keyless worker is "selected" here and
+    falls back to Tesseract loudly (see `is_configured`).
+    """
     return ocr_engine.selected_engine() == ENGINE_VALUE
 
 

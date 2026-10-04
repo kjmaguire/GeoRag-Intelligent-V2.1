@@ -137,6 +137,46 @@ class TestParseUnderRead:
         assert method == {1: "cohere_parse"}
         assert tables == {1: [big_grid]}
 
+    def test_a_table_only_reading_of_a_prose_page_is_under_read(
+        self, monkeypatch
+    ) -> None:
+        """Parse returned the table and dropped the page's prose.
+
+        The raw engine text still carries the table's markdown, so measuring it
+        counted the table twice (markdown + the grid's cells) and let the page
+        clear the ratio: the narrative kept only ``[Table 1, page 1]`` and the
+        prose was gone. The test measures the PLACEHOLDERED narrative.
+        """
+        grid = [["Hole", "From", "To", "Au g/t"]] + [
+            [f"DDH-{n:03d}", f"{n}.2", f"{n}.9", "1.31"] for n in range(20)
+        ]
+        markdown = _rendered(grid)
+        cells = pdf_report._engine_reading_chars("", [grid])
+        native = (_BASE_PROSE * 10)[:1500 - cells].strip() + " " + " ".join(
+            c for row in grid for c in row
+        )
+        assert len(native) >= 1400
+        threshold = pdf_report.PARSE_MIN_NATIVE_RATIO * len(native.strip())
+        # the precondition: the OLD measure (raw text + cells) would accept it
+        assert len(markdown.strip()) + cells >= threshold
+        # ... and the placeholdered one does not
+        narrative = pdf_report._table_placeholders_for_grids(markdown, [grid], 1)
+        assert pdf_report._engine_reading_chars(narrative, [grid]) < threshold
+
+        _install_engine(
+            monkeypatch, FakeEngine({1: _result(1, text=markdown, tables=[grid])})
+        )
+        _install_fake_pypdfium2(monkeypatch, [native])
+
+        out = pdf_report._parse_with_fitz("/data/tbl.pdf")
+        _text, _t, _skip, warnings, _langs, per_page, _img, method, _conf, tables = out
+
+        assert method == {1: "fitz_native"}
+        assert dict(per_page)[1] == native  # the prose survives
+        assert tables == {}
+        (w,) = [x for x in warnings if x.get("code") == "page_parse_under_read"]
+        assert w["parse_chars"] == pdf_report._engine_reading_chars(narrative, [grid])
+
     def test_the_summary_message_names_the_under_read_cause(self, monkeypatch) -> None:
         _install_engine(monkeypatch, FakeEngine({1: _result(1, text=_FIGURE_TITLE_BLOCK)}))
         _install_fake_pypdfium2(monkeypatch, [_CROSS_SECTION_NATIVE])

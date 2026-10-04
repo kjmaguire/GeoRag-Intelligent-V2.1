@@ -1,9 +1,15 @@
 """Hatchet workflow: TIFF → PDF normalise + trigger ingest_pdf (ADR-0005).
 
 Stream a multi-page TIFF (or a standalone scanned image: JPEG, PNG, BMP, GIF,
-WebP) from MinIO, wrap losslessly to PDF via ``tiff_to_pdf``, land the derived
-PDF under ``bronze/reports/...`` with provenance metadata, and trigger the
-existing ``ingest_pdf`` workflow.
+WebP) from MinIO, wrap it to PDF via ``tiff_to_pdf``, land the derived PDF
+under ``bronze/reports/...`` with provenance metadata, and trigger the existing
+``ingest_pdf`` workflow.
+
+The wrap decodes and re-encodes every frame; it is pixel-exact for bilevel
+(CCITT G4) and for greyscale / RGB / CMYK pages (Flate) up to a size budget,
+and past that budget JPEG-encodes the remaining pages and says so
+(``raster_pages_jpeg_encoded``). 16-bit scans are scaled to 8 bits. It is not
+an unconditional "lossless" wrap - see ``app.services.ingest.tiff_to_pdf``.
 
 The standard PDF parser, OCR provenance capture, figure linking, and
 inline embedding dispatch run unchanged on the derived PDF.
@@ -117,7 +123,8 @@ class TiffNormalizeOutput(BaseModel):
     total_frames: int | None = None
     #: Animation frames of a GIF / WebP / APNG that were not made pages.
     frames_ignored: int = 0
-    #: Warnings attached to the run; any of them makes the run ``partial``.
+    #: Warnings attached to the run; any that is not ``severity: info`` makes
+    #: the run ``partial``.
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     #: Set when the raster was recorded and deliberately NOT sent through
     #: the OCR stack. Distinct from ``normalize_skipped``, which means the
@@ -172,6 +179,7 @@ def _frame_warnings(
     total_frames: int | None,
     truncated: bool,
     frames_ignored: int,
+    pages_jpeg_encoded: int = 0,
 ) -> list[dict[str, Any]]:
     """Warnings for pages that did not make it into the derived PDF.
 
@@ -206,6 +214,21 @@ def _frame_warnings(
                 f"in the index. Upload them as separate images if they matter."
             ),
             "frames_ignored": frames_ignored,
+        })
+    if pages_jpeg_encoded:
+        # INFORMATION, not a gap: every page is in the index. Severity "info"
+        # keeps the run from turning partial over a page that merely carries
+        # JPEG artefacts.
+        out.append({
+            "code": "raster_pages_jpeg_encoded",
+            "severity": "info",
+            "detail": (
+                f"{pages_jpeg_encoded} page(s) of this scan were JPEG-encoded "
+                f"when it was wrapped to PDF because the lossless size budget "
+                f"was spent; the OCR engine may read them less well. Upload a "
+                f"smaller or bilevel/greyscale scan if those pages matter."
+            ),
+            "pages_jpeg_encoded": pages_jpeg_encoded,
         })
     return out
 
@@ -337,10 +360,12 @@ async def _normalize_downloaded(
     truncated = False
     total_frames: int | None = None
     frames_ignored = 0
+    pages_jpeg_encoded = 0
 
     # 2b. Capture georeferencing before the wrap throws it away. The PDF
-    # container preserves every pixel and no coordinates, so a scanned map
-    # sheet would otherwise arrive as a picture with no idea where it is.
+    # container keeps the pixels (see tiff_to_pdf for the exceptions) and no
+    # coordinates, so a scanned map sheet would otherwise arrive as a picture
+    # with no idea where it is.
     # Additive and non-fatal by construction — see raster_metadata's
     # docstring for why it lives outside this module.
     capture = await persist_raster_metadata(
@@ -444,8 +469,9 @@ async def _normalize_downloaded(
         )
 
     if not normalize_skipped:
-        # 3. Wrap to PDF (lossless, in-memory). The size cap is checked on
-        # the file first so an oversized scan is refused without loading it.
+        # 3. Wrap to PDF (pixel-exact within a size budget; see tiff_to_pdf).
+        # The size cap is checked on the file first so an oversized scan is
+        # refused without loading it.
         if source_bytes is None:
             size = (await asyncio.to_thread(os.stat, source_path)).st_size
             if size > MAX_TIFF_BYTES:
@@ -468,6 +494,7 @@ async def _normalize_downloaded(
         truncated = result.truncated_at_cap
         total_frames = getattr(result, "total_frames", None)
         frames_ignored = getattr(result, "frames_ignored", 0)
+        pages_jpeg_encoded = int(getattr(result, "pages_jpeg_encoded", 0) or 0)
 
         # 4. Upload derived PDF with provenance metadata.
         await asyncio.to_thread(
@@ -483,6 +510,7 @@ async def _normalize_downloaded(
                 "tiff_truncated": "true" if truncated else "false",
                 "tiff_total_frames": str(total_frames or page_count),
                 "tiff_frames_ignored": str(frames_ignored),
+                "tiff_pages_jpeg_encoded": str(pages_jpeg_encoded),
             },
         )
 
@@ -516,6 +544,11 @@ async def _normalize_downloaded(
         except (TypeError, ValueError):
             log.debug("tiff_normalize: unreadable tiff_frames_ignored tag on %s", derived_key, exc_info=True)
             frames_ignored = 0
+        try:
+            pages_jpeg_encoded = int(meta.get("tiff_pages_jpeg_encoded", "0"))
+        except (TypeError, ValueError):
+            log.debug("tiff_normalize: unreadable tiff_pages_jpeg_encoded tag on %s", derived_key, exc_info=True)
+            pages_jpeg_encoded = 0
 
     # 5. Trigger ingest_pdf against the derived key. We pass through
     # workspace_id / project_id / vendor_profile_id / actor_id /
@@ -553,6 +586,7 @@ async def _normalize_downloaded(
         total_frames=total_frames,
         truncated=truncated,
         frames_ignored=frames_ignored,
+        pages_jpeg_encoded=pages_jpeg_encoded,
     )
     closed_with_warnings = False
     if frame_warnings:

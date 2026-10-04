@@ -46,6 +46,8 @@ class _StatefulConn:
     def __init__(self) -> None:
         #: (table, collar_id, source_file, source_sha)
         self.rows: list[tuple[str, str, str | None, str | None]] = []
+        #: id(row) -> (from, to) for the interval tables, for the overlap read
+        self._depths: dict[int, tuple[Any, Any]] = {}
 
     def seed_legacy(self, table: str, collar_id: str, n: int = 1) -> None:
         self.rows.extend((table, collar_id, None, None) for _ in range(n))
@@ -60,9 +62,24 @@ class _StatefulConn:
         table = re.search(r"INSERT INTO (silver\.\w+)", sql).group(1)
         at = self._COLLAR_AT.get(table, 1)
         for params in rows:
-            self.rows.append((table, params[at], params[-2], params[-1]))
+            row = (table, params[at], params[-2], params[-1])
+            self.rows.append(row)
+            if table != "silver.assays_v2":
+                self._depths[id(row)] = (params[2], params[3])
 
     async def fetchval(self, sql: str, *args: Any) -> int:
+        if "unnest(" in sql:
+            # The overlap read: rows another file already wrote at one of this
+            # file's (collar, from, to) intervals, after its own were replaced.
+            table = re.search(r"FROM (silver\.\w+) t", sql).group(1)
+            incoming = set(zip(args[0], args[1], args[2], strict=True))
+            mine = (args[3] or "").lower()
+            return len({
+                (r[1], *self._depths[id(r)]) for r in self.rows
+                if r[0] == table
+                and (r[1], *self._depths[id(r)]) in incoming
+                and (r[2] is None or r[2].lower() != mine)
+            })
         table = re.search(r"FROM (silver\.\w+)", sql).group(1)
         collars = set(args[0])
         if sql.startswith("SELECT count(*)"):
@@ -72,8 +89,10 @@ class _StatefulConn:
                 if r[0] == table and r[1] in collars and r[2] is None
             )
         assert sql.startswith("WITH d AS (DELETE FROM")
-        if "source_file = $2" in sql:
-            deletes = lambda r: r[2] == args[1] or r[2] is None  # noqa: E731
+        if "lower(source_file) = lower($2)" in sql:
+            deletes = lambda r: (  # noqa: E731
+                r[2] is None or r[2].lower() == args[1].lower()
+            )
         else:
             assert len(args) == 1, "an unscoped delete takes no source argument"
             deletes = lambda r: True  # noqa: E731
@@ -279,7 +298,7 @@ class TestRunLevel:
         deletes = [(s, a) for s, a in calls if s.startswith("WITH d AS (DELETE")]
         assert deletes, "the writer never replaced"
         sql, args = deletes[0]
-        assert "source_file = $2" in sql and args[1] == "lith.csv"
+        assert "lower(source_file) = lower($2)" in sql and args[1] == "lith.csv"
         warning = env.warning("intervals_replaced")
         assert warning["replaced"] == 5 and warning["replaced_legacy"] == 2
         assert out.written["lithology"]["replaced"] == 5
@@ -322,3 +341,110 @@ class TestRunLevel:
         ))
         await env.run("clean.csv")
         assert "assay_unit_ambiguous" not in env.codes()
+
+
+class TestReplaceSeverityCaseAndOverlap:
+    """Audit 2026-10-04 (F5)."""
+
+    @pytest.mark.asyncio
+    async def test_the_source_name_comparison_ignores_case(self) -> None:
+        conn = _StatefulConn()
+        await _write(conn, [_lith("D1", 0, 5), _lith("D1", 5, 10)], source_file="Lith.csv")
+        again = await _write(conn, [_lith("D1", 0, 5)], source_file="lith.csv", sha="b" * 64)
+
+        assert again["replaced"] == 2, "Lith.csv and lith.csv are one logical file"
+        assert len(conn.of("silver.lithology_logs")) == 1
+
+    def test_a_same_file_replace_is_information_not_a_partial_outcome(self) -> None:
+        w = it._replaced_warning(
+            sheet_type="lithology", label="lith.csv",
+            stats={"replaced": 7, "replaced_legacy": 0},
+        )
+        assert w["severity"] == "info"
+        s = it._replaced_warning(
+            sheet_type="sample", label="Au.csv",
+            stats={"replaced": 3, "assay_replaced": 9, "replaced_legacy": 0,
+                   "assay_replaced_legacy": 0},
+        )
+        assert s["severity"] == "info"
+
+    def test_replacing_rows_of_unknown_origin_stays_a_blocking_warning(self) -> None:
+        w = it._replaced_warning(
+            sheet_type="lithology", label="lith.csv",
+            stats={"replaced": 7, "replaced_legacy": 2},
+        )
+        assert "severity" not in w
+        # a legacy ASSAY row alone also counts
+        s = it._replaced_warning(
+            sheet_type="sample", label="Au.csv",
+            stats={"replaced": 1, "assay_replaced": 1, "replaced_legacy": 0,
+                   "assay_replaced_legacy": 1},
+        )
+        assert "severity" not in s
+
+    @pytest.mark.asyncio
+    async def test_the_info_replace_does_not_make_the_run_partial(self) -> None:
+        from app.hatchet_workflows import _progress
+
+        w = it._replaced_warning(
+            sheet_type="lithology", label="lith.csv",
+            stats={"replaced": 7, "replaced_legacy": 0},
+        )
+        assert _progress.terminal_status(rows_written=7, warnings=[w]) == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_different_file_at_the_same_interval_is_reported(self) -> None:
+        conn = _StatefulConn()
+        await _write(conn, [_lith("D1", 0, 5), _lith("D1", 5, 10)], source_file="a.csv")
+        second = await _write(
+            conn, [_lith("D1", 0, 5), _lith("D1", 10, 15)], source_file="b.csv", sha="b" * 64,
+        )
+
+        assert second["overlap_other_source"] == 1     # only (D1, 0, 5) is shared
+        w = it._overlap_warning(sheet_type="lithology", label="b.csv", stats=second)
+        assert w["code"] == "intervals_overlap_other_source"
+        assert w["overlap"] == 1 and "severity" not in w   # blocking: two logs, one interval
+        assert "b.csv" in w["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_sample_overlap_is_information(self) -> None:
+        conn = _StatefulConn()
+        rec = {"hole_id": "D1", "from_depth": 0.0, "to_depth": 1.0,
+               "commodity_assays": {"Au_ppm": 1.0}}
+        await _write(conn, [rec], source_file="Au.csv", sheet_type="sample")
+        cu = await _write(
+            conn, [{**rec, "commodity_assays": {"Cu_ppm": 5.0}}],
+            source_file="Cu.csv", sha="b" * 64, sheet_type="sample",
+        )
+        w = it._overlap_warning(sheet_type="sample", label="Cu.csv", stats=cu)
+        assert cu["overlap_other_source"] == 1
+        assert w["severity"] == "info" and "expected" in w["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_reupload_of_the_same_file_does_not_overlap_itself(self) -> None:
+        conn = _StatefulConn()
+        await _write(conn, [_lith("D1", 0, 5)], source_file="a.csv")
+        again = await _write(conn, [_lith("D1", 0, 5)], source_file="A.csv", sha="b" * 64)
+        assert "overlap_other_source" not in again
+        assert it._overlap_warning(sheet_type="lithology", label="A.csv", stats=again) is None
+
+    @pytest.mark.asyncio
+    async def test_no_overlap_read_for_single_depth_tables_or_without_a_source(self) -> None:
+        conn = _StatefulConn()
+        seen: list[str] = []
+        real = conn.fetchval
+
+        async def spy(sql: str, *a: Any) -> int:
+            seen.append(sql)
+            return await real(sql, *a)
+
+        conn.fetchval = spy  # type: ignore[method-assign]
+        await _write(
+            conn, [{"hole_id": "D1", "depth": 10.0, "azimuth": 1.0, "dip": -60.0}],
+            source_file="s.csv", sheet_type="survey",
+        )
+        await it._write_intervals(
+            conn, workspace_id=WS, sheet_type="lithology", records=[_lith("D1", 0, 5)],
+            index=dict(INDEX),
+        )
+        assert not [q for q in seen if "unnest(" in q]

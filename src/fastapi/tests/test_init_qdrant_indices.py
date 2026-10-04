@@ -66,6 +66,7 @@ class _Client:
     def __init__(self, existing: dict[str, set[str]]) -> None:
         self.existing = existing
         self.puts: list[tuple[str, dict]] = []
+        self.put_params: list[tuple[str, dict | None]] = []
 
     async def get(self, url: str):
         if url == "/healthz":
@@ -81,8 +82,9 @@ class _Client:
             }}})
         return _Resp(404)
 
-    async def put(self, url: str, json: dict | None = None):
+    async def put(self, url: str, json: dict | None = None, params: dict | None = None):
         self.puts.append((url, json or {}))
+        self.put_params.append((url, params))
         return _Resp()
 
 
@@ -153,3 +155,63 @@ async def test_running_twice_is_idempotent(init_qdrant, monkeypatch) -> None:
         },
     )
     assert second.puts == []
+
+
+@pytest.mark.asyncio
+async def test_index_puts_do_not_wait_for_the_build(init_qdrant, monkeypatch) -> None:
+    """The default (wait=true) holds the response until the index is built,
+    which on a live collection outlasts the client's 30 s read timeout."""
+    client = await _run_bootstrap(init_qdrant, monkeypatch, existing={})
+    index_calls = [(u, p) for u, p in client.put_params if u.endswith("/index")]
+    assert index_calls, "a fresh bootstrap creates indices"
+    assert all(p == {"wait": "false"} for _, p in index_calls)
+
+
+class _FailingGet:
+    """An existing collection whose schema read fails (5xx, or gone mid-run)."""
+
+    def __init__(self, status: int = 503, body: object = None, bad_json: bool = False) -> None:
+        self.status, self.body, self.bad_json = status, body, bad_json
+        self.puts: list[str] = []
+
+    async def get(self, url: str):
+        if url == "/healthz":
+            return _Resp()
+        if url.startswith("/collections/georag_chunks"):
+            # the existence check sees 200, the schema read sees the failure
+            self.calls = getattr(self, "calls", 0) + 1
+            if self.calls == 1:
+                return _Resp(200, {"result": {"payload_schema": {}}})
+            if self.bad_json:
+                r = _Resp(200)
+                r.json = lambda: (_ for _ in ()).throw(ValueError("not json"))  # type: ignore[method-assign]
+                return r
+            r = _Resp(self.status)
+            r.text = "service unavailable"
+            return r
+        return _Resp(404)
+
+    async def put(self, url: str, json: dict | None = None, params: dict | None = None):
+        self.puts.append(url)
+        return _Resp()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{"status": 503}, {"status": 404}, {"bad_json": True}])
+async def test_an_unreadable_schema_stops_the_bootstrap_instead_of_reindexing(
+    init_qdrant, monkeypatch, kwargs,
+) -> None:
+    """An empty set would have re-PUT workspace_id with is_tenant on a live collection."""
+    client = _FailingGet(**kwargs)
+    monkeypatch.setattr(init_qdrant.httpx, "AsyncClient", lambda **kw: _ClientCM(client))  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="payload schema of 'georag_chunks'"):
+        await init_qdrant.bootstrap()
+    assert [u for u in client.puts if u.endswith("/index")] == []
+
+
+@pytest.mark.asyncio
+async def test_existing_payload_fields_reads_the_schema_when_it_can(init_qdrant) -> None:
+    client = _Client({"georag_chunks": {"workspace_id", "chunk_kind"}})
+    assert await init_qdrant._existing_payload_fields(client, "georag_chunks") == {
+        "workspace_id", "chunk_kind",
+    }
