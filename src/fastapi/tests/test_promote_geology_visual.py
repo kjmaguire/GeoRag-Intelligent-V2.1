@@ -369,13 +369,14 @@ class TestThePromotionRun:
         assert [k for k, _ in kinds][:7] == [
             "lithology", "stale", "sample", "alt-clear", "alt", "min-clear", "min",
         ]
-        # lithology + cleanup share a transaction; so do the alteration clear + rebuild,
-        # and the mineralization clear + rebuild.
+        # lithology + cleanup + sample windows share a transaction (the sample
+        # statement used to run bare, at depth 0); so do the alteration clear +
+        # rebuild, and the mineralization clear + rebuild.
         depth_of = dict(kinds)
         assert depth_of["lithology"] == 1 and depth_of["stale"] == 1
         assert depth_of["alt-clear"] == 1 and depth_of["alt"] == 1
         assert depth_of["min-clear"] == 1 and depth_of["min"] == 1
-        assert depth_of["sample"] == 0
+        assert depth_of["sample"] == 1
         assert out.alteration_intervals_written == 3
         assert out.mineralization_intervals_written == 3
         assert out.lithology_duplicate_intervals == 2

@@ -98,6 +98,53 @@ resource "aws_db_parameter_group" "this" {
     name  = "auto_explain.log_analyze"
     value = "0"
   }
+
+  # Guards docker-compose.yml has carried since the 2026-04 tuning pass
+  # (lines ~169-201) and this group lacked, found by the 2026-10 database
+  # audit. Every one of the five is a DYNAMIC parameter on RDS for
+  # PostgreSQL, so none forces a reboot: `apply_method = "immediate"` is the
+  # provider default and is stated nowhere below on purpose. (Contrast the
+  # two `pending-reboot` parameters above, which are static.)
+  #
+  # idle_in_transaction_session_timeout: Laravel/Octane workers are resident
+  # and a leaked transaction otherwise lives as long as the worker, pinning
+  # the xmin horizon (vacuum cannot clean anything newer) and holding row
+  # locks. Compose uses 60 s; 120 s here because the ECS tasks reach RDS
+  # directly with no pooler to absorb a slow client.
+  parameter {
+    name  = "idle_in_transaction_session_timeout"
+    value = "120000"
+  }
+
+  # JIT compilation costs 50-500 ms of planning on the analytical queries
+  # this schema runs (the MVT functions, mv_collar_summary, the gold
+  # promotion) and helps none of them. Off, as in compose.
+  parameter {
+    name  = "jit"
+    value = "0"
+  }
+
+  # gp3 is SSD-class; the default 4.0 steers the planner away from the
+  # GIST and partial indexes the migrations add.
+  parameter {
+    name  = "random_page_cost"
+    value = "1.1"
+  }
+
+  # A lock wait longer than deadlock_timeout (1 s) is logged, which is the
+  # only evidence available for an ingestion-vs-chat stall after the fact.
+  parameter {
+    name  = "log_lock_waits"
+    value = "1"
+  }
+
+  # Per-statement I/O time in EXPLAIN (BUFFERS) and pg_stat_statements. On
+  # a burstable db.t4g.small, telling an I/O-bound query from a CPU-bound
+  # one is what decides whether the answer is an index or an instance class.
+  parameter {
+    name  = "track_io_timing"
+    value = "1"
+  }
 }
 
 resource "aws_db_instance" "this" {

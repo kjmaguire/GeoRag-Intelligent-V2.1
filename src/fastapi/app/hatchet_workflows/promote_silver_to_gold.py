@@ -605,6 +605,21 @@ def _clean_stations(
     return [by_depth[d] for d in sorted(by_depth)]
 
 
+#: Collars desurveyed per survey read / upsert batch. Bounds memory (a hole
+#: carries tens of stations; 40k holes would otherwise be one multi-million
+#: row fetch) while still cutting the per-hole round trips by this factor.
+_TRACE_COLLAR_BATCH = 1000
+
+#: Every survey station of one batch of collars, in one read. Rows come back
+#: grouped by hole and in depth order — the order the per-hole
+#: ``WHERE collar_id = $1 ORDER BY depth`` query used to return them in.
+_TRACE_SURVEYS_BATCH = """
+SELECT collar_id, depth, azimuth, dip, azimuth_reference
+  FROM silver.surveys
+ WHERE collar_id = ANY($1::uuid[])
+ ORDER BY collar_id, depth
+"""
+
 #: $4 is a LINESTRING Z of metre OFFSETS about an origin of (0, 0) — not
 #: absolute coordinates. $5 is the collar's own UTM zone, $6/$7 its true
 #: lon/lat out of geom_4326.
@@ -712,136 +727,150 @@ async def _promote_traces(
         project_id,
     )
 
-    for c in collars:
-        lon = float(c["lon"])
-        lat = float(c["lat"])
-        collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
-        local_epsg = _collar_local_utm(lon, lat)
-
-        surveys = await conn.fetch(
-            "SELECT depth, azimuth, dip, azimuth_reference FROM silver.surveys "
-            "WHERE collar_id = $1::uuid ORDER BY depth",
-            c["collar_id"],
+    for batch_start in range(0, len(collars), _TRACE_COLLAR_BATCH):
+        batch = collars[batch_start:batch_start + _TRACE_COLLAR_BATCH]
+        # One read for the whole batch instead of one per hole: a project of
+        # 10-40k collars used to cost that many round trips before a single
+        # trace was computed. Grouped in Python; ORDER BY keeps each hole's
+        # stations in depth order, exactly as the per-hole query returned.
+        survey_rows = await conn.fetch(
+            _TRACE_SURVEYS_BATCH, [c["collar_id"] for c in batch],
         )
-        # Declared reference -> the local zone's grid, per STATION. Applied
-        # BEFORE cleaning and hashing, so declaring (or changing) a reference
-        # rebuilds the trace; with none declared the stations, and the hash,
-        # are unchanged.
-        corrected = correct_survey_rows(
-            surveys,
-            project_reference=orientation_reference,
-            magnetic_declination=magnetic_declination,
-            project_epsg=project_epsg,
-            local_epsg=local_epsg,
-            lon=lon, lat=lat,
-        )
-        stations = _clean_stations(corrected.rows)
-        azimuth_corrected = corrected.corrected
-        unapplied = list(corrected.unapplied_notes)
+        surveys_by_collar: dict[Any, list[Any]] = {}
+        for survey_row in survey_rows:
+            surveys_by_collar.setdefault(survey_row["collar_id"], []).append(survey_row)
+        pending_upserts: list[tuple[Any, ...]] = []
 
-        quality = "ok"
-        if len(stations) < 2:
-            # 0- or 1-survey hole. Both fall back to the collar's own
-            # orientation; a single station at depth 0 carries no more
-            # information than the collar row already does.
-            fallback = _straight_line_stations(
-                float(c["azimuth"]) if c["azimuth"] is not None else None,
-                float(c["dip"]) if c["dip"] is not None else None,
-                float(c["total_depth"]) if c["total_depth"] is not None else None,
-            )
-            if fallback is None:
-                out.traces_skipped_no_geometry += 1
-                continue
-            quality = "single_survey_vertical"
-            # The collar azimuth comes from the collar table, not a survey
-            # file, so only the project's declaration applies to it.
-            correction = azimuth_correction(
-                orientation_reference=orientation_reference,
+        for c in batch:
+            lon = float(c["lon"])
+            lat = float(c["lat"])
+            collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
+            local_epsg = _collar_local_utm(lon, lat)
+
+            surveys = surveys_by_collar.get(c["collar_id"], [])
+            # Declared reference -> the local zone's grid, per STATION. Applied
+            # BEFORE cleaning and hashing, so declaring (or changing) a reference
+            # rebuilds the trace; with none declared the stations, and the hash,
+            # are unchanged.
+            corrected = correct_survey_rows(
+                surveys,
+                project_reference=orientation_reference,
                 magnetic_declination=magnetic_declination,
                 project_epsg=project_epsg,
                 local_epsg=local_epsg,
                 lon=lon, lat=lat,
             )
-            azimuth_corrected = bool(correction.degrees)
-            unapplied = [correction.note] if correction.note else []
-            stations = [
-                (d, apply_azimuth_correction(a, correction), p) for d, a, p in fallback
-            ]
+            stations = _clean_stations(corrected.rows)
+            azimuth_corrected = corrected.corrected
+            unapplied = list(corrected.unapplied_notes)
 
-        if azimuth_corrected:
-            out.traces_azimuth_corrected += 1
-        if unapplied:
-            # Declared but not applied (magnetic with no project declination):
-            # the trace is still built, uncorrected, and the gap is counted
-            # so it reaches the run report instead of being smoothed away.
-            out.traces_azimuth_reference_unapplied += 1
-            log.warning(
-                "promote.traces: azimuth reference not applied collar=%s (%s)",
-                c["collar_id"], "; ".join(unapplied),
+            quality = "ok"
+            if len(stations) < 2:
+                # 0- or 1-survey hole. Both fall back to the collar's own
+                # orientation; a single station at depth 0 carries no more
+                # information than the collar row already does.
+                fallback = _straight_line_stations(
+                    float(c["azimuth"]) if c["azimuth"] is not None else None,
+                    float(c["dip"]) if c["dip"] is not None else None,
+                    float(c["total_depth"]) if c["total_depth"] is not None else None,
+                )
+                if fallback is None:
+                    out.traces_skipped_no_geometry += 1
+                    continue
+                quality = "single_survey_vertical"
+                # The collar azimuth comes from the collar table, not a survey
+                # file, so only the project's declaration applies to it.
+                correction = azimuth_correction(
+                    orientation_reference=orientation_reference,
+                    magnetic_declination=magnetic_declination,
+                    project_epsg=project_epsg,
+                    local_epsg=local_epsg,
+                    lon=lon, lat=lat,
+                )
+                azimuth_corrected = bool(correction.degrees)
+                unapplied = [correction.note] if correction.note else []
+                stations = [
+                    (d, apply_azimuth_correction(a, correction), p) for d, a, p in fallback
+                ]
+
+            if azimuth_corrected:
+                out.traces_azimuth_corrected += 1
+            if unapplied:
+                # Declared but not applied (magnetic with no project declination):
+                # the trace is still built, uncorrected, and the gap is counted
+                # so it reaches the run report instead of being smoothed away.
+                out.traces_azimuth_reference_unapplied += 1
+                log.warning(
+                    "promote.traces: azimuth reference not applied collar=%s (%s)",
+                    c["collar_id"], "; ".join(unapplied),
+                )
+
+            # Hashed BEFORE the skip test, and over the collar origin as well as
+            # the stations — a collar that moves must invalidate its own trace.
+            digest = _survey_hash(
+                [(d, a, p) for d, a, p in stations],
+                origin=(lon, lat, collar_elev),
             )
+            if c["existing_hash"] == digest:
+                out.traces_unchanged += 1
+                continue
 
-        # Hashed BEFORE the skip test, and over the collar origin as well as
-        # the stations — a collar that moves must invalidate its own trace.
-        digest = _survey_hash(
-            [(d, a, p) for d, a, p in stations],
-            origin=(lon, lat, collar_elev),
-        )
-        if c["existing_hash"] == digest:
-            out.traces_unchanged += 1
-            continue
+            # Origin (0, 0): the interpolator returns collar + offset for east and
+            # north, so zeroing the collar makes it return the OFFSETS directly.
+            # That is what the SQL translates onto the collar's real position, and
+            # it is why no source CRS is needed.
+            positions = minimum_curvature(
+                collar_easting=0.0,
+                collar_northing=0.0,
+                collar_elevation=collar_elev,
+                stations=[
+                    SurveyStation(depth_m=d, azimuth_deg=a, dip_deg=p)
+                    for d, a, p in stations
+                ],
+            )
+            if len(positions) < 2:
+                out.traces_skipped_no_geometry += 1
+                continue
 
-        # Origin (0, 0): the interpolator returns collar + offset for east and
-        # north, so zeroing the collar makes it return the OFFSETS directly.
-        # That is what the SQL translates onto the collar's real position, and
-        # it is why no source CRS is needed.
-        positions = minimum_curvature(
-            collar_easting=0.0,
-            collar_northing=0.0,
-            collar_elevation=collar_elev,
-            stations=[
-                SurveyStation(depth_m=d, azimuth_deg=a, dip_deg=p)
-                for d, a, p in stations
-            ],
-        )
-        if len(positions) < 2:
-            out.traces_skipped_no_geometry += 1
-            continue
+            dogleg_max = 0.0
+            for i in range(len(stations) - 1):
+                dogleg_max = max(dogleg_max, _dogleg_deg_per_30m(stations[i], stations[i + 1]))
+            if quality == "ok" and dogleg_max > _HIGH_DOGLEG_DEG_PER_30M:
+                quality = "high_dogleg_warning"
 
-        dogleg_max = 0.0
-        for i in range(len(stations) - 1):
-            dogleg_max = max(dogleg_max, _dogleg_deg_per_30m(stations[i], stations[i + 1]))
-        if quality == "ok" and dogleg_max > _HIGH_DOGLEG_DEG_PER_30M:
-            quality = "high_dogleg_warning"
+            # `collar_elev` is added back HERE, not left to the interpolator.
+            #
+            # minimum_curvature() takes `collar_elevation` and does not apply it:
+            # XYZ.elev_m is documented as "Elevation offset from collar: 0 at the
+            # collar, negative downhole", and measured, a hole from a collar at
+            # 100 m RL ends at elev_m = -100.0 for a 100 m vertical hole. East and
+            # north ARE absolute in the same return value, so the tuple mixes two
+            # frames.
+            #
+            # The retired Dagster asset wrote `xyz.elev_m` straight into the WKT
+            # and inherited that: every trace it produced started at Z = 0
+            # regardless of topography, which flattens a whole camp onto one
+            # datum in the 3-D view. Fixing the shared interpolator would change
+            # behaviour under callers and tests that are not ours, so the offset
+            # is resolved at the one place that needs an absolute elevation.
+            #
+            # X and Y here are metre OFFSETS about (0, 0) — the SQL translates
+            # them onto the collar. Z is already absolute and is not translated.
+            wkt = "LINESTRING Z (" + ", ".join(
+                f"{p.east_m} {p.north_m} {collar_elev + p.elev_m}" for _, p in positions
+            ) + ")"
 
-        # `collar_elev` is added back HERE, not left to the interpolator.
-        #
-        # minimum_curvature() takes `collar_elevation` and does not apply it:
-        # XYZ.elev_m is documented as "Elevation offset from collar: 0 at the
-        # collar, negative downhole", and measured, a hole from a collar at
-        # 100 m RL ends at elev_m = -100.0 for a 100 m vertical hole. East and
-        # north ARE absolute in the same return value, so the tuple mixes two
-        # frames.
-        #
-        # The retired Dagster asset wrote `xyz.elev_m` straight into the WKT
-        # and inherited that: every trace it produced started at Z = 0
-        # regardless of topography, which flattens a whole camp onto one
-        # datum in the 3-D view. Fixing the shared interpolator would change
-        # behaviour under callers and tests that are not ours, so the offset
-        # is resolved at the one place that needs an absolute elevation.
-        #
-        # X and Y here are metre OFFSETS about (0, 0) — the SQL translates
-        # them onto the collar. Z is already absolute and is not translated.
-        wkt = "LINESTRING Z (" + ", ".join(
-            f"{p.east_m} {p.north_m} {collar_elev + p.elev_m}" for _, p in positions
-        ) + ")"
+            pending_upserts.append((
+                c["collar_id"], workspace_id, project_id,
+                wkt, local_epsg, lon, lat,
+                digest, dogleg_max, quality,
+            ))
+            out.traces_written += 1
 
-        await conn.execute(
-            _TRACE_UPSERT,
-            c["collar_id"], workspace_id, project_id,
-            wkt, _collar_local_utm(lon, lat), lon, lat,
-            digest, dogleg_max, quality,
-        )
-        out.traces_written += 1
+        # One pipelined round trip per batch instead of one execute per hole.
+        # Same statement, same arguments, same per-collar ON CONFLICT upsert.
+        if pending_upserts:
+            await conn.executemany(_TRACE_UPSERT, pending_upserts)
 
 
 # ---------------------------------------------------------------------------
@@ -1230,12 +1259,16 @@ async def promote(
                 )
             # Upsert, then drop the bands silver no longer has, in one
             # transaction so the strip log never sees a half-rebuilt hole.
+            # The sample windows are the same table's other interval kind and
+            # were the one statement here that ran outside the transaction
+            # its siblings use; they belong to the same strip-log picture, so
+            # a reader sees lithology bands and sample windows from one run.
             async with conn.transaction():
                 status = await conn.execute(_INTERVALS_LITHOLOGY, project_id)
                 out.intervals_written += _affected(status)
                 await conn.execute(_INTERVALS_LITHOLOGY_STALE, project_id)
-            status = await conn.execute(_INTERVALS_SAMPLES, project_id)
-            out.intervals_written += _affected(status)
+                status = await conn.execute(_INTERVALS_SAMPLES, project_id)
+                out.intervals_written += _affected(status)
             # Alteration: a pure function of silver.alteration, rebuilt.
             async with conn.transaction():
                 await conn.execute(_INTERVALS_ALTERATION_CLEAR, project_id)

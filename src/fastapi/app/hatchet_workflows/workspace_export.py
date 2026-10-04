@@ -33,6 +33,32 @@ Neo4j / Qdrant / Redis exports are not in v1 — adding them needs:
 Each is its own engineering pass; v1 ships PG to give operators
 the biggest win (most workspace state is PG-stored).
 
+Memory and format (database audit 2026-10)
+==========================================
+
+The export used to ``SELECT *`` every table into one Python list, hold every
+Qdrant vector in another, and gzip the lot into a ``BytesIO`` before one
+``put_object`` -- peak memory was roughly the uncompressed archive, several
+times over. It now streams:
+
+  * each table is read through a server-side cursor (``conn.cursor``,
+    ``prefetch=_PG_CURSOR_PREFETCH``) under ONE ``REPEATABLE READ, READ ONLY``
+    transaction, so the tables are a consistent snapshot of each other (the
+    old autocommit reads were each a different instant) -- with a savepoint
+    per table so one unreadable table is skipped, as before;
+  * the column list is explicit: read from ``pg_attribute`` at run time and
+    quoted into the SELECT, so the SQL no longer says ``SELECT *`` and a
+    dropped column can never be selected, while a column added later is still
+    exported (a hard-coded list would silently stop exporting it);
+  * Qdrant is scrolled page by page straight into the archive;
+  * rows are gzipped as they arrive into temp files (one gzip member per
+    section), the manifest -- which must be line 1 and needs the final row
+    counts -- is written last as its own member and placed FIRST, and the
+    result is handed to ``upload_file``, which is a multipart upload past
+    8 MiB. The archive is several concatenated gzip members; every reader in
+    this repo (``gzip.GzipFile``, ``zcat``) decodes that as one stream and
+    the decoded JSONL is byte-for-byte the format below.
+
 Triggering
 ==========
 
@@ -47,10 +73,15 @@ run_id is logged + audit-row anchored.
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import io
 import json
 import logging
+import os
+import shutil
+import tempfile
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -186,41 +217,169 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     return out
 
 
-async def _export_one_table(
+#: Rows the server hands back per cursor round trip. Bounds the client-side
+#: buffer to this many rows; 1000 passages is a few MB.
+_PG_CURSOR_PREFETCH = 1000
+
+
+class _GzipSpool:
+    """One gzip member of JSONL lines, written to a temp file as it arrives.
+
+    The archive is assembled from these (see ``_assemble_archive``), so no
+    section is ever held in memory. ``lines`` is the count the manifest needs.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.lines = 0
+        self._open()
+
+    def _open(self) -> None:
+        self._raw = open(self.path, "wb")  # noqa: SIM115 - closed in close()
+        self._gz = gzip.GzipFile(fileobj=self._raw, mode="wb", compresslevel=6)
+
+    def write_json(self, obj: dict[str, Any]) -> None:
+        # Same serialisation as _serialise_jsonl_gz, line for line.
+        self._gz.write(json.dumps(obj, sort_keys=True, default=str).encode("utf-8"))
+        self._gz.write(b"\n")
+        self.lines += 1
+
+    def reset(self) -> None:
+        """Discard everything written (a section that failed part-way)."""
+        self.close()
+        self.lines = 0
+        self._open()
+
+    def close(self) -> None:
+        if not self._gz.closed:
+            self._gz.close()
+        if not self._raw.closed:
+            self._raw.close()
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+async def _table_columns(conn: asyncpg.Connection, qualified_table: str) -> list[str]:
+    """Live column names of a table, in attnum order; [] if it does not exist.
+
+    ``qualified_table`` comes from the static ``_WORKSPACE_TABLES`` allowlist,
+    and is passed to ``to_regclass`` as a bound value regardless.
+    """
+    rows = await conn.fetch(
+        "SELECT a.attname AS column_name"
+        "  FROM pg_catalog.pg_attribute a"
+        " WHERE a.attrelid = pg_catalog.to_regclass($1)"
+        "   AND a.attnum > 0"
+        "   AND NOT a.attisdropped"
+        " ORDER BY a.attnum",
+        qualified_table,
+    )
+    return [r["column_name"] for r in rows]
+
+
+async def _stream_table(
     conn: asyncpg.Connection, qualified_table: str, workspace_id: str,
-) -> list[dict[str, Any]]:
-    """Walk one tenant table for the target workspace + return list of dicts.
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield one tenant table's rows for the target workspace, a page at a time.
 
     The caller has already bound ``app.workspace_id`` for this workspace on
     ``conn`` (session scope, dedicated direct connection — see run_export),
     so RLS scopes every read here; the explicit ``WHERE workspace_id`` is
     belt and braces. Tables without that column fall back to the RLS-scoped
-    read alone.
+    read alone. Must run inside a transaction (server-side cursor).
     """
-    if qualified_table == "silver.workspaces":
-        # Special case — the workspace row keyed on workspace_id PK.
-        rows = await conn.fetch(
-            "SELECT * FROM silver.workspaces WHERE workspace_id = $1::uuid",
-            workspace_id,
-        )
+    columns = await _table_columns(conn, qualified_table)
+    if not columns:
+        raise LookupError(f"{qualified_table} does not exist")
+    select_list = ", ".join(_quote_ident(c) for c in columns)
+
+    if qualified_table == "silver.workspaces" or "workspace_id" in columns:
+        # silver.workspaces is keyed on workspace_id (its PK).
+        query = f"SELECT {select_list} FROM {qualified_table} WHERE workspace_id = $1::uuid"
+        args: tuple[Any, ...] = (workspace_id,)
     else:
-        # Try the simple WHERE workspace_id = $1 first; fall back to
-        # RLS-scoped SELECT * if the column doesn't exist.
-        try:
-            rows = await conn.fetch(
-                f"SELECT * FROM {qualified_table} WHERE workspace_id = $1::uuid",
-                workspace_id,
-            )
-        except asyncpg.exceptions.UndefinedColumnError:
-            # Already bound by run_export(); RLS alone scopes this read.
-            rows = await conn.fetch(f"SELECT * FROM {qualified_table}")
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "workspace_export: skipping %s (err=%r)",
-                qualified_table, exc,
-            )
-            return []
-    return [_row_to_dict(r) for r in rows]
+        query = f"SELECT {select_list} FROM {qualified_table}"
+        args = ()
+
+    async for record in conn.cursor(query, *args, prefetch=_PG_CURSOR_PREFETCH):
+        yield _row_to_dict(record)
+
+
+async def _export_one_table(
+    conn: asyncpg.Connection,
+    qualified_table: str,
+    workspace_id: str,
+    output_key: str,
+    spool: _GzipSpool,
+) -> int:
+    """Stream one table into ``spool`` as ``{"table": key, "row": ...}`` lines.
+
+    Returns the rows written. A table that cannot be read AT ALL (missing,
+    no privilege) is skipped with a warning and counts 0, as before; the
+    savepoint keeps that failure from aborting the surrounding snapshot
+    transaction. A failure after rows have already been written re-raises:
+    the old fetch-then-serialise path could only fail before any row existed,
+    and silently shipping a truncated table would be worse than failing.
+    """
+    written = 0
+    try:
+        async with conn.transaction():  # savepoint inside run_export's snapshot
+            async for row in _stream_table(conn, qualified_table, workspace_id):
+                spool.write_json({"table": output_key, "row": row})
+                written += 1
+    except Exception as exc:  # noqa: BLE001
+        if written:
+            raise
+        log.warning(
+            "workspace_export: skipping %s (err=%r)",
+            qualified_table, exc,
+        )
+        return 0
+    return written
+
+
+def _build_manifest_from_counts(
+    workspace_id: str,
+    run_id: str,
+    table_row_counts: dict[str, int],
+    *,
+    neo4j_node_count: int = 0,
+    neo4j_rel_count: int = 0,
+    qdrant_point_count: int = 0,
+    redis_key_count: int = 0,
+    partial_stores: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """The manifest is the first JSONL line; subsequent lines are
+    `{"table": <output_key>, "row": <row_dict>}` for PG tables and
+    `{"section": <neo4j_nodes|neo4j_rels|qdrant_points|redis_keys>,
+       "row": <dict>}` for the §11.3-v2 extra stores.
+
+    restore_workspace reads the manifest line first to validate target
+    workspace + section list, then streams rows.
+
+    Manifest version bumped from 1.0 to 2.0 with §11.3-v2.
+
+    Built from COUNTS rather than the rows themselves, because the rows are
+    streamed to disk and never held; ``_build_manifest`` is the same thing
+    over in-memory lists.
+    """
+    return {
+        "manifest_version":   "2.0",
+        "format":             "workspace_export",
+        "workspace_id":       workspace_id,
+        "run_id":             run_id,
+        "captured_at":        datetime.now(tz=UTC).isoformat(),
+        "table_row_counts":   dict(table_row_counts),
+        "tables":             list(table_row_counts.keys()),
+        # §11.3-v2 extras
+        "neo4j_node_count":   neo4j_node_count,
+        "neo4j_rel_count":    neo4j_rel_count,
+        "qdrant_point_count": qdrant_point_count,
+        "redis_key_count":    redis_key_count,
+        "partial_stores":     dict(partial_stores or {}),
+    }
 
 
 def _build_manifest(
@@ -234,31 +393,15 @@ def _build_manifest(
     redis_keys: list[dict[str, Any]] | None = None,
     partial_stores: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The manifest is the first JSONL line; subsequent lines are
-    `{"table": <output_key>, "row": <row_dict>}` for PG tables and
-    `{"section": <neo4j_nodes|neo4j_rels|qdrant_points|redis_keys>,
-       "row": <dict>}` for the §11.3-v2 extra stores.
-
-    restore_workspace reads the manifest line first to validate target
-    workspace + section list, then streams rows.
-
-    Manifest version bumped from 1.0 to 2.0 with §11.3-v2.
-    """
-    return {
-        "manifest_version":   "2.0",
-        "format":             "workspace_export",
-        "workspace_id":       workspace_id,
-        "run_id":             run_id,
-        "captured_at":        datetime.now(tz=UTC).isoformat(),
-        "table_row_counts":   {k: len(v) for k, v in per_table_rows.items()},
-        "tables":             list(per_table_rows.keys()),
-        # §11.3-v2 extras
-        "neo4j_node_count":   len(neo4j_nodes or []),
-        "neo4j_rel_count":    len(neo4j_rels or []),
-        "qdrant_point_count": len(qdrant_points or []),
-        "redis_key_count":    len(redis_keys or []),
-        "partial_stores":     dict(partial_stores or {}),
-    }
+    return _build_manifest_from_counts(
+        workspace_id, run_id,
+        {k: len(v) for k, v in per_table_rows.items()},
+        neo4j_node_count=len(neo4j_nodes or []),
+        neo4j_rel_count=len(neo4j_rels or []),
+        qdrant_point_count=len(qdrant_points or []),
+        redis_key_count=len(redis_keys or []),
+        partial_stores=partial_stores,
+    )
 
 
 def _serialise_jsonl_gz(
@@ -272,7 +415,13 @@ def _serialise_jsonl_gz(
 ) -> bytes:
     """Manifest as line 1, then PG rows (table-tagged), then §11.3-v2
     extra-store rows (section-tagged: neo4j_nodes / neo4j_rels /
-    qdrant_points / redis_keys)."""
+    qdrant_points / redis_keys).
+
+    The in-memory REFERENCE serialiser. ``run_export`` no longer calls it --
+    it streams through ``_GzipSpool`` / ``_assemble_archive`` -- but the
+    streamed archive must decode to exactly this, and the tests hold it to
+    that.
+    """
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6) as gz:
         gz.write(json.dumps(manifest, sort_keys=True, default=str).encode("utf-8"))
@@ -302,15 +451,42 @@ def _serialise_jsonl_gz(
     return buf.getvalue()
 
 
-async def _put_s3(bucket: str, key: str, body: bytes) -> None:
+def _assemble_archive(
+    path: str, manifest: dict[str, Any], spools: list[_GzipSpool],
+) -> int:
+    """Write the final archive: the manifest member, then each spool's member.
+
+    Blocking file I/O -- call through ``asyncio.to_thread``. Each spool file
+    is deleted as soon as it has been copied so peak disk is the archive plus
+    the spools still waiting, not twice the whole export. Returns the
+    archive's size in bytes.
+    """
+    with open(path, "wb") as out:
+        with gzip.GzipFile(fileobj=out, mode="wb", compresslevel=6) as gz:
+            gz.write(json.dumps(manifest, sort_keys=True, default=str).encode("utf-8"))
+            gz.write(b"\n")
+        for spool in spools:
+            spool.close()
+            if spool.lines:
+                with open(spool.path, "rb") as src:
+                    shutil.copyfileobj(src, out, 1024 * 1024)
+            os.unlink(spool.path)
+    return os.path.getsize(path)
+
+
+async def _upload_file_s3(bucket: str, key: str, path: str) -> None:
     # bucket is a caller-supplied string (see run_export below —
     # "workspace-exports" today, but not one of georag_object_storage's
     # four fixed logical Bucket members), so this uses the raw-client
     # escape hatch (async_client_kwargs) rather than the higher-level
     # AsyncObjectStorage interface.
+    #
+    # upload_file, not put_object: it streams from disk and switches to a
+    # multipart upload past 8 MiB, so the archive is never in memory (and is
+    # not subject to put_object's 5 GiB single-request ceiling).
     session = aioboto3.Session()
     async with session.client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
-        await s3.put_object(Bucket=bucket, Key=key, Body=body)
+        await s3.upload_file(Filename=path, Bucket=bucket, Key=key)
 
 
 @workspace_export.task(execution_timeout="30m")
@@ -347,59 +523,89 @@ async def run_export(
         if ws_row is None:
             raise RuntimeError(f"workspace_id {workspace_id} not found in silver.workspaces")
 
-        # Walk each tenant table.
-        per_table_rows: dict[str, list[dict[str, Any]]] = {}
-        for output_key, qualified_table in _WORKSPACE_TABLES:
-            per_table_rows[output_key] = await _export_one_table(
-                conn, qualified_table, workspace_id,
-            )
-
-        # §11.3-v2 — walk the 3 extra stores. Each failure is recorded
-        # in partial_stores but does NOT fail the export (PG already
-        # ran successfully + that's the must-preserve store).
-        neo4j_nodes: list[dict[str, Any]] = []
-        neo4j_rels: list[dict[str, Any]] = []
-        qdrant_points: list[dict[str, Any]] = []
-        redis_keys: list[dict[str, Any]] = []
-        partial_stores: dict[str, str] = {}
-
-        if input.include_neo4j:
-            from app.hatchet_workflows._export_extras import export_neo4j_workspace
-            neo4j_nodes, neo4j_rels, n4_err = await export_neo4j_workspace(workspace_id)
-            if n4_err:
-                partial_stores["neo4j"] = n4_err
-        if input.include_qdrant:
-            from app.hatchet_workflows._export_extras import export_qdrant_workspace
-            qdrant_points, q_err = await export_qdrant_workspace(workspace_id)
-            if q_err:
-                partial_stores["qdrant"] = q_err
-        if input.include_redis:
-            from app.hatchet_workflows._export_extras import export_redis_workspace
-            redis_keys, r_err = await export_redis_workspace(workspace_id)
-            if r_err:
-                partial_stores["redis"] = r_err
-
-        # Manifest + serialise.
         from uuid import uuid4
         run_id = str(uuid4())
-        manifest = _build_manifest(
-            workspace_id, run_id, per_table_rows,
-            neo4j_nodes=neo4j_nodes, neo4j_rels=neo4j_rels,
-            qdrant_points=qdrant_points, redis_keys=redis_keys,
-            partial_stores=partial_stores,
-        )
-        body = _serialise_jsonl_gz(
-            manifest, per_table_rows,
-            neo4j_nodes=neo4j_nodes, neo4j_rels=neo4j_rels,
-            qdrant_points=qdrant_points, redis_keys=redis_keys,
-        )
         object_key = _build_object_key(workspace_id, run_id, started_at)
+        partial_stores: dict[str, str] = {}
 
-        # Upload.
-        await _put_s3(input.bucket, object_key, body)
+        # Everything below is spooled to disk, never held: see the module
+        # docstring. The directory (and any spool a failure leaves behind) is
+        # removed on the way out.
+        with tempfile.TemporaryDirectory(prefix="ws-export-") as tmp:
+            pg_spool = _GzipSpool(os.path.join(tmp, "pg.jsonl.gz"))
+            neo4j_spool = _GzipSpool(os.path.join(tmp, "neo4j.jsonl.gz"))
+            qdrant_spool = _GzipSpool(os.path.join(tmp, "qdrant.jsonl.gz"))
+            redis_spool = _GzipSpool(os.path.join(tmp, "redis.jsonl.gz"))
+            spools = [pg_spool, neo4j_spool, qdrant_spool, redis_spool]
+            try:
+                # Walk each tenant table, as one consistent snapshot. Opened
+                # and closed here so it does not pin the xmin horizon while
+                # the (slow, non-transactional) extra stores are read.
+                table_row_counts: dict[str, int] = {}
+                async with conn.transaction(isolation="repeatable_read", readonly=True):
+                    for output_key, qualified_table in _WORKSPACE_TABLES:
+                        table_row_counts[output_key] = await _export_one_table(
+                            conn, qualified_table, workspace_id, output_key, pg_spool,
+                        )
+
+                # §11.3-v2 — walk the 3 extra stores. Each failure is
+                # recorded in partial_stores but does NOT fail the export (PG
+                # already ran successfully + that's the must-preserve store).
+                if input.include_neo4j:
+                    from app.hatchet_workflows._export_extras import export_neo4j_workspace
+                    neo4j_nodes, neo4j_rels, n4_err = await export_neo4j_workspace(workspace_id)
+                    if n4_err:
+                        partial_stores["neo4j"] = n4_err
+                    for row in neo4j_nodes:
+                        neo4j_spool.write_json({"section": "neo4j_nodes", "row": row})
+                    node_count = len(neo4j_nodes)
+                    for row in neo4j_rels:
+                        neo4j_spool.write_json({"section": "neo4j_rels", "row": row})
+                    rel_count = len(neo4j_rels)
+                else:
+                    node_count = rel_count = 0
+                if input.include_qdrant:
+                    from app.hatchet_workflows._export_extras import stream_qdrant_workspace
+                    _, q_err = await stream_qdrant_workspace(
+                        workspace_id,
+                        lambda point: qdrant_spool.write_json(
+                            {"section": "qdrant_points", "row": point},
+                        ),
+                    )
+                    if q_err:
+                        # A half-scrolled section is not a usable section.
+                        partial_stores["qdrant"] = q_err
+                        qdrant_spool.reset()
+                if input.include_redis:
+                    from app.hatchet_workflows._export_extras import export_redis_workspace
+                    redis_keys, r_err = await export_redis_workspace(workspace_id)
+                    if r_err:
+                        partial_stores["redis"] = r_err
+                    for row in redis_keys:
+                        redis_spool.write_json({"section": "redis_keys", "row": row})
+
+                # Manifest (needs the final counts) + assemble + upload.
+                manifest = _build_manifest_from_counts(
+                    workspace_id, run_id, table_row_counts,
+                    neo4j_node_count=node_count, neo4j_rel_count=rel_count,
+                    qdrant_point_count=qdrant_spool.lines,
+                    redis_key_count=redis_spool.lines,
+                    partial_stores=partial_stores,
+                )
+                archive_path = os.path.join(tmp, "archive.jsonl.gz")
+                archive_bytes = await asyncio.to_thread(
+                    _assemble_archive, archive_path, manifest, spools,
+                )
+                await _upload_file_s3(input.bucket, object_key, archive_path)
+            finally:
+                for spool in spools:
+                    spool.close()
+
+        qdrant_point_count = manifest["qdrant_point_count"]
+        redis_key_count = manifest["redis_key_count"]
 
         completed_at = datetime.now(tz=UTC)
-        rows_exported = sum(len(v) for v in per_table_rows.values())
+        rows_exported = sum(table_row_counts.values())
         per_table_counts = manifest["table_row_counts"]
 
         # Audit anchor.
@@ -416,7 +622,7 @@ async def run_export(
                 "run_id":            run_id,
                 "bucket":            input.bucket,
                 "object_key":        object_key,
-                "bytes":             len(body),
+                "bytes":             archive_bytes,
                 "rows_exported":     rows_exported,
                 "table_row_counts":  per_table_counts,
                 "duration_s":        (completed_at - started_at).total_seconds(),
@@ -425,7 +631,7 @@ async def run_export(
 
         log.info(
             "workspace_export OK ws=%s rows=%d bytes=%s key=%s",
-            workspace_id, rows_exported, len(body), object_key,
+            workspace_id, rows_exported, archive_bytes, object_key,
         )
 
         # Phase 5 admin surface push — drives Admin/ExportGate.
@@ -436,7 +642,7 @@ async def run_export(
                 "run_id": str(run_id),
                 "workspace_id": str(workspace_id),
                 "rows_exported": rows_exported,
-                "bytes": len(body),
+                "bytes": archive_bytes,
                 "status": "success",
             }
             await post_admin_surface_updated(
@@ -460,13 +666,13 @@ async def run_export(
             workspace_id=workspace_id,
             bucket=input.bucket,
             object_key=object_key,
-            bytes=len(body),
+            bytes=archive_bytes,
             rows_exported=rows_exported,
             per_table=per_table_counts,
-            neo4j_node_count=len(neo4j_nodes),
-            neo4j_rel_count=len(neo4j_rels),
-            qdrant_point_count=len(qdrant_points),
-            redis_key_count=len(redis_keys),
+            neo4j_node_count=node_count,
+            neo4j_rel_count=rel_count,
+            qdrant_point_count=qdrant_point_count,
+            redis_key_count=redis_key_count,
             partial_stores=partial_stores,
             started_at=started_at,
             completed_at=completed_at,

@@ -21,6 +21,7 @@ checks pending" rather than silently hiding the gap.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -29,6 +30,9 @@ from typing import Any, Literal
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+#: "Is this coordinate within the project AOI" tolerance for coords_unmappable.
+_COORD_TOLERANCE_M = 2000.0
 
 
 FindingKind = Literal[
@@ -292,18 +296,47 @@ class CompletenessAudit:
         # For each coordinate mentioned, check whether any silver.collars
         # or silver.spatial_features row exists within a 2 km tolerance.
         # 2 km is a forgiving "is this even in the project AOI" threshold.
+        #
+        # `geom::geography` cannot use the geometry GIST index, so the exact
+        # ST_DWithin on its own is a sequential scan of the project's
+        # features per coordinate. An index-assisted bounding-box prefilter
+        # (`&&`) goes first, exactly as agent/geospatial_planner.py does
+        # (GIS-16). The box must never exclude a row the exact geography
+        # test would keep, so it is conservative in both axes: a degree of
+        # latitude is taken as 110 km (below its true ~110.6-111.7 km), and
+        # the longitude span is taken at the highest latitude the box
+        # reaches, where a degree of longitude is shortest. A flat 0.03 deg
+        # would NOT do: at 58 N (Athabasca) it is only ~1.8 km east-west,
+        # short of the 2 km tolerance.
         findings: list[CompletenessFinding] = []
         async with self._pool.acquire() as conn:
             for row in coords:
                 page = int(row["page"])
                 lat = float(row["lat"])
                 lon = float(row["lon"])
+                dlat = _COORD_TOLERANCE_M / 110_000.0
+                if abs(lat) + dlat >= 89.0:
+                    # Meridians converge: 2 km east-west can span any
+                    # longitude. No sensible box exists, so take them all and
+                    # let the exact test decide.
+                    dlon = 360.0
+                else:
+                    dlon = _COORD_TOLERANCE_M / (
+                        111_320.0 * math.cos(math.radians(abs(lat) + dlat))
+                    )
                 near = await conn.fetchval(
                     """
                     SELECT EXISTS (
                         SELECT 1 FROM silver.collars
                          WHERE project_id = $1
                            AND geom_4326 IS NOT NULL
+                           AND geom_4326 && ST_MakeEnvelope(
+                                 $2::double precision - $4::double precision,
+                                 $3::double precision - $5::double precision,
+                                 $2::double precision + $4::double precision,
+                                 $3::double precision + $5::double precision,
+                                 4326
+                               )
                            AND ST_DWithin(
                                  geom_4326::geography,
                                  ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
@@ -313,6 +346,13 @@ class CompletenessAudit:
                         SELECT 1 FROM silver.spatial_features
                          WHERE project_id = $1
                            AND geom IS NOT NULL
+                           AND geom && ST_MakeEnvelope(
+                                 $2::double precision - $4::double precision,
+                                 $3::double precision - $5::double precision,
+                                 $2::double precision + $4::double precision,
+                                 $3::double precision + $5::double precision,
+                                 4326
+                               )
                            AND ST_DWithin(
                                  geom::geography,
                                  ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
@@ -321,7 +361,7 @@ class CompletenessAudit:
                         LIMIT 1
                     )
                     """,
-                    project_id, lon, lat,
+                    project_id, lon, lat, dlon, dlat,
                 )
                 if not near:
                     findings.append(CompletenessFinding(
@@ -333,7 +373,7 @@ class CompletenessAudit:
                             "or silver.spatial_features for this project."
                         ),
                         source_page=page,
-                        evidence={"lat": lat, "lon": lon, "tolerance_m": 2000},
+                        evidence={"lat": lat, "lon": lon, "tolerance_m": int(_COORD_TOLERANCE_M)},
                     ))
         return findings
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from typing import Any
 
 from app.services.qdrant_conn import qdrant_client_kwargs
@@ -58,23 +59,34 @@ async def export_neo4j_workspace(
 # ---------------------------------------------------------------------------
 # Qdrant
 # ---------------------------------------------------------------------------
-async def export_qdrant_workspace(
-    workspace_id: str,
-    collection_name: str = "georag_reports",
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Export Qdrant points (id + vector + payload) for one workspace.
+#: Points per scroll page. Each carries a 1024-dim vector (~4 KB as floats,
+#: more as Python objects), so a page is a few MB.
+_QDRANT_SCROLL_PAGE = 200
 
-    Returns ``(points, error)``. Each point dict:
-        ``{id, vector: [float], payload: {...}}``
+
+async def stream_qdrant_workspace(
+    workspace_id: str,
+    emit: Callable[[dict[str, Any]], None],
+    collection_name: str = "georag_reports",
+) -> tuple[int, str | None]:
+    """Scroll one workspace's Qdrant points page by page into ``emit``.
+
+    ``emit`` receives each point dict -- ``{id, vector: [float], payload:
+    {...}}`` -- as its page arrives and nothing is retained here, so memory
+    is one page rather than every vector in the workspace.
+
+    Returns ``(points_emitted, error)``. On failure ``error`` is the reason
+    and ``points_emitted`` is however many had been emitted before it; the
+    CALLER owns what to do with that partial output (``run_export`` discards
+    it, which is what the list-returning version always did).
     """
     try:
         from qdrant_client import AsyncQdrantClient
         from qdrant_client.models import FieldCondition, Filter, MatchValue
     except ImportError:
-        return [], "qdrant client not available"
+        return 0, "qdrant client not available"
 
-
-    points: list[dict[str, Any]] = []
+    emitted = 0
     try:
         client = AsyncQdrantClient(**qdrant_client_kwargs())
         try:
@@ -90,16 +102,17 @@ async def export_qdrant_workspace(
                     collection_name=collection_name,
                     scroll_filter=scroll_filter,
                     with_vectors=True, with_payload=True,
-                    limit=200, offset=next_page,
+                    limit=_QDRANT_SCROLL_PAGE, offset=next_page,
                 )
                 if not batch:
                     break
                 for p in batch:
-                    points.append({
+                    emit({
                         "id":      p.id if isinstance(p.id, (int, str)) else str(p.id),
                         "vector":  list(p.vector) if p.vector is not None else None,
                         "payload": dict(p.payload or {}),
                     })
+                    emitted += 1
                 if next_page is None:
                     break
         finally:
@@ -109,9 +122,29 @@ async def export_qdrant_workspace(
         # reports). Treat it as 0 points, not an error.
         msg = f"{type(exc).__name__}: {exc}"
         if "not found" in msg.lower() or "doesn't exist" in msg.lower():
-            return [], None
-        return [], f"qdrant_export_failed: {msg}"
+            return 0, None
+        return emitted, f"qdrant_export_failed: {msg}"
 
+    return emitted, None
+
+
+async def export_qdrant_workspace(
+    workspace_id: str,
+    collection_name: str = "georag_reports",
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Export Qdrant points (id + vector + payload) for one workspace.
+
+    Returns ``(points, error)``. Each point dict:
+        ``{id, vector: [float], payload: {...}}``
+
+    Holds every point in memory; ``run_export`` uses ``stream_qdrant_workspace``
+    instead. Kept for callers that want the list, with the old contract: on
+    error the points are discarded and ``([], reason)`` comes back.
+    """
+    points: list[dict[str, Any]] = []
+    _, error = await stream_qdrant_workspace(workspace_id, points.append, collection_name)
+    if error:
+        return [], error
     return points, None
 
 
@@ -178,5 +211,6 @@ async def export_redis_workspace(
 __all__ = [
     "export_neo4j_workspace",
     "export_qdrant_workspace",
+    "stream_qdrant_workspace",
     "export_redis_workspace",
 ]
