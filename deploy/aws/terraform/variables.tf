@@ -284,6 +284,9 @@ variable "db_maintenance_window" {
 # value that stops the plan.
 
 variable "bedrock_embed_model_id" {
+  # The EMBEDDING_BACKEND=bedrock rollback only. ADR-0025 moved the default to
+  # Cohere's own API (var.cohere_embed_model); remove this variable and its
+  # iam.tf grant after the 14-day rollback window.
   type    = string
   default = "cohere.embed-v4:0"
 }
@@ -342,6 +345,42 @@ variable "cohere_parse_model" {
   EOT
   type        = string
   default     = "parse-v5.0"
+}
+
+variable "embedding_backend" {
+  description = <<-EOT
+    Which host embeds, on fastapi (queries) AND hatchet-worker (ingest)
+    together: "bedrock" (Cohere Embed v4, the pre-ADR-0025 production state
+    and the rollback) or "cohere" (Embed 5 Pro on Cohere's own API).
+
+    This is the ADR-0025 cutover switch, and it is deliberately NOT flipped
+    by the code change. Setting it to "cohere" and applying IS migration
+    step 4: every stored vector is in the v4 space and must be rewritten in
+    the same sitting (`scripts/reset_embeddings_for_reencode.py --all`, then
+    the embed sweep), after the credentialed probe run (step 1) and the
+    Qdrant snapshot (step 3). Until then it stays "bedrock" so an apply for
+    any other reason cannot move production into a mixed vector space.
+  EOT
+  type        = string
+  default     = "bedrock"
+
+  validation {
+    condition     = contains(["bedrock", "cohere"], var.embedding_backend)
+    error_message = "embedding_backend must be \"bedrock\" or \"cohere\"."
+  }
+}
+
+variable "cohere_embed_model" {
+  description = <<-EOT
+    Cohere Embed 5 Pro, the dense embedding model (EMBEDDING_BACKEND=cohere,
+    ADR-0025). Used for ingest and, until the probe's cross-model measurement
+    passes, for queries too. Output dimension is local.embed_dimension (1024).
+    Changing it changes the vector space: it needs the full re-embed, not
+    just an apply. The model name is Cohere's 2026-09-30 publication and has
+    not been observed from this account (cohere_probe.py probe_embed).
+  EOT
+  type        = string
+  default     = "embed-v5.0-pro"
 }
 
 # ---------------------------------------------------------------------------

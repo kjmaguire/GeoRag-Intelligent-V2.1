@@ -308,9 +308,11 @@ class Settings(BaseSettings):
     # FastAPI task that fails on the first query. aws-preflight.sh A-08 is
     # what actually catches it, and only from a shell with AWS access.
     #
-    # Bedrock has NOT left the system: embeddings (Cohere Embed v4) and
-    # reranking (Cohere Rerank 3.5) still go there under EMBEDDING_BACKEND
-    # and RERANKER_BACKEND, which are separate variables from this one.
+    # Bedrock has NOT left the system: reranking (Cohere Rerank 3.5) still
+    # goes there under RERANKER_BACKEND, a separate variable from this one.
+    # Embeddings left it on 2026-10-04 (ADR-0025): EMBEDDING_BACKEND defaults
+    # to "cohere" now (Cohere Embed 5 on Cohere's own API, same key as this
+    # backend); "bedrock" (Embed v4) stays selectable as the rollback.
     #
     # "azure" is no longer accepted: `_reject_retired_azure_config` below
     # turns it into a startup error naming the replacement, rather than
@@ -1087,15 +1089,21 @@ class Settings(BaseSettings):
 
         nested: dict[str, float] = {}
 
-        # The Bedrock budget bites only on the hosted path — which is
-        # production, and is where this was found.
+        # The hosted-embedder budget bites only on the hosted path — which is
+        # production, and is where this was found. Exactly one of the two is
+        # in the code path, chosen by EMBEDDING_BACKEND.
         # Read from the environment with the same default services/embedding.py
-        # uses -- it is not a Settings field, and an unset value selects the
-        # hosted backend rather than a model host that does not exist in
-        # production.
-        if (
-            _os.environ.get("EMBEDDING_BACKEND") or "bedrock"
-        ).strip().lower() == "bedrock":
+        # uses -- neither is a Settings field, and an unset value selects the
+        # hosted backend (Cohere since ADR-0025, Bedrock before it) rather than
+        # a model host that does not exist in production.
+        _embedding_backend = (
+            _os.environ.get("EMBEDDING_BACKEND") or "cohere"
+        ).strip().lower()
+        if _embedding_backend == "cohere":
+            nested["COHERE_EMBED_TIMEOUT_S"] = float(
+                _os.environ.get("COHERE_EMBED_TIMEOUT_S", "30") or "30"
+            )
+        elif _embedding_backend == "bedrock":
             nested["BEDROCK_EMBED_TIMEOUT_S"] = float(
                 _os.environ.get("BEDROCK_EMBED_TIMEOUT_S", "30") or "30"
             )
@@ -1124,6 +1132,40 @@ class Settings(BaseSettings):
                 f"loudly. Raise TIMEOUT_QDRANT_S or lower the inner budget."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cohere_embed_dimension(self) -> Settings:
+        """COHERE_EMBED_DIMENSION must equal EMBEDDING_DIMENSION (ADR-0025).
+
+        Same invariant the Bedrock path gets from main.py's startup check of
+        ``get_sentence_embedding_dimension()`` against EMBEDDING_DIMENSION,
+        enforced one step earlier here because a wrong value on the INGEST
+        side would not be caught by the query-path check at all: the worker
+        would write wrong-sized vectors into georag_chunks and every upsert
+        would 400. Read from the environment like the other adapter-owned
+        knobs (see _validate_timeout_ordering); checked only when the Cohere
+        backend is the one selected.
+        """
+        import os as _os  # noqa: PLC0415
+
+        if (_os.environ.get("EMBEDDING_BACKEND") or "cohere").strip().lower() != "cohere":
+            return self
+        raw = (_os.environ.get("COHERE_EMBED_DIMENSION") or "1024").strip()
+        try:
+            dimension = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"COHERE_EMBED_DIMENSION={raw!r} is not an integer") from exc
+        if dimension != self.EMBEDDING_DIMENSION:
+            raise ValueError(
+                f"COHERE_EMBED_DIMENSION={dimension} but EMBEDDING_DIMENSION="
+                f"{self.EMBEDDING_DIMENSION}. georag_chunks is sized from one "
+                "and written by the other, so a difference is a 400 on every "
+                "upsert (or, worse, a query vector that cannot match the "
+                "collection). Embed 5 Pro offers 256/512/768/1024/1536/2048; "
+                "changing the dimension needs the collection recreated and a "
+                "full re-embed, not just this variable."
+            )
         return self
 
     @property
@@ -1204,8 +1246,10 @@ class Settings(BaseSettings):
     # call and the sparse encode FIRST and queries Qdrant with their results,
     # and on AWS neither of those is local:
     #
-    #   BEDROCK_EMBED_TIMEOUT_S   30  (services/embedding.py) — a Bedrock
-    #                                 round trip to Cohere Embed v4
+    #   COHERE_EMBED_TIMEOUT_S    30  (services/embedding.py) — a round trip to
+    #                                 Cohere Embed 5 on Cohere's own API since
+    #                                 ADR-0025 (BEDROCK_EMBED_TIMEOUT_S, same
+    #                                 30, when EMBEDDING_BACKEND=bedrock)
     #   SPARSE_SERVICE_TIMEOUT_S  30  (services/sparse_encoder.py) — an HTTP
     #                                 call to the sparse sidecar, which runs
     #                                 SPLADE++ on 0.5 vCPU with no GPU

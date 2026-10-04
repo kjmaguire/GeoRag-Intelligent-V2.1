@@ -255,9 +255,10 @@ def _model_stack_fingerprint() -> dict[str, str]:
     def _env(name: str, fallback: str = "") -> str:
         return ((os.environ.get(name) or fallback).strip()) or "unset"
 
-    # Fallbacks mirror the module defaults in services/embedding.py and
-    # services/reranker.py (both "foundry" since 2026-09-06).
-    embedding_backend = _env("EMBEDDING_BACKEND", "foundry")
+    # Fallbacks mirror the module defaults in services/embedding.py ("cohere"
+    # since ADR-0025) and services/reranker.py (stale "foundry" here; its real
+    # default is "bedrock").
+    embedding_backend = _env("EMBEDDING_BACKEND", "cohere")
     reranker_backend = _env("RERANKER_BACKEND", "foundry")
 
     return {

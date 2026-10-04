@@ -50,7 +50,7 @@ Sixteen compose services and ten ECS services. Profiles and images are in
 | `laravel-reverb` | Live | `laravel-reverb` | 60 s channel-drop bug fixed 2026-05-21. The **second** ALB-reachable service — a listener rule routes to it — with target-group stickiness on, because a WebSocket lives on one task for its whole life |
 | `fastapi` | Live | `fastapi` | internal only; reached over Cloud Map service discovery, never the ALB |
 | `reranker` | Live (dev-only) | not deployed | Qwen3-Reranker-0.6B on the one GPU; production uses Cohere Rerank **3.5** on Bedrock (v4 is not offered — see §"Known" below) |
-| `embedding` | Live (dev-only) | not deployed | Qwen3-Embedding-0.6B on CPU; production uses Cohere Embed v4 on Bedrock at 1024-dim |
+| `embedding` | Live (dev-only) | not deployed | Qwen3-Embedding-0.6B on CPU; production uses Cohere Embed 5 on Cohere's own API at 1024-dim (ADR-0025; Embed v4 on Bedrock is the rollback) |
 | `sparse` | Live (dev-only) | **`sparse` (task)** | SPLADE++; **no managed equivalent on any cloud**, so it is self-hosted on Fargate or the sparse leg of hybrid retrieval does not exist. ADR-0022 chose self-hosted |
 | `qdrant` | Live | `qdrant` (task, EFS) | auth off in dev by design (Ch 02 §2). Azure had an Azure Files share with a fixed quota and a key-based mount; EFS is elastic and IAM-authorised |
 | `minio` (SeaweedFS) | Live | not deployed | production uses S3 via `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset, so boto3 resolves the region endpoint and the task role |

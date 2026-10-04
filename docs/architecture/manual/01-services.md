@@ -47,7 +47,7 @@ each store, [Ch 07](07-orchestration.md) for the two orchestrators,
 | Application | `laravel-reverb` | `dev-light`, `dev-full` | `georag/laravel:latest` | `8085` → 8080 | `laravel-reverb` — behind an ALB listener rule with target-group stickiness |
 | Domain service | `fastapi` | `dev-data`, `dev-full` | `georag/fastapi:latest` (local build) | `8000` | `fastapi` — Cloud Map only, never the ALB |
 | Model sidecars | `reranker` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Rerank on Bedrock (**3.5**, not the v4 Foundry served) |
-| Model sidecars | `embedding` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Embed v4 on Bedrock |
+| Model sidecars | `embedding` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | none — Cohere Embed 5 on Cohere's own API (ADR-0025; Embed v4 on Bedrock before 2026-10-04) |
 | Model sidecars | `sparse` | `dev-data`, `dev-full` | `georag/fastapi:latest` | none (internal 8000) | **`sparse`** — SPLADE++ has no managed equivalent on any cloud, so it is a Fargate task (ADR-0022 decision 4) |
 | Data (profile) | `qdrant` | `dev-data`, `dev-full` | `qdrant/qdrant:v1.19.1` | `6333`, `6334` | `qdrant` (EFS — elastic and IAM-authorised, unlike the fixed-quota key-mounted Azure Files share) |
 | Data (profile) | `minio` (SeaweedFS) | `dev-data`, `dev-full` | `chrislusf/seaweedfs:4.35` | `8333` (S3), `8888` (filer) | none — S3, `STORAGE_BACKEND=s3_compatible` with endpoint and credentials unset so boto3 resolves the region and the task role (ADR-0022) |
@@ -306,9 +306,13 @@ and carry the same `REVERB_*`, `LANGFUSE_*` and `AWS_*` blocks.
     applies — SPLADE++ has no hosted equivalent anywhere.
   - `EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B` at a pinned revision,
     `EMBEDDING_DIMENSION=1024`; must match `embedding` and
-    `hatchet-worker` exactly. Cohere Embed v4 is asked for 1024 dims so the
-    `georag_chunks` collection is unchanged, but switching still requires
-    a full re-embed.
+    `hatchet-worker` exactly. Cohere Embed 5 (and v4 before it) is asked for
+    1024 dims so the `georag_chunks` collection is unchanged, but switching
+    still requires a full re-embed. `EMBEDDING_BACKEND` defaults to `cohere`
+    on both services (ADR-0025) and must be set identically on both;
+    `COHERE_EMBED_MODEL` / `COHERE_EMBED_DIMENSION` / `COHERE_EMBED_TIMEOUT_S`
+    are passed through, and `COHERE_EMBED_QUERY_MODEL` is left to default to
+    the document model.
 - **Retrieval budgets and flags** `TIMEOUT_POSTGIS_S=5`,
   `TIMEOUT_QDRANT_S=2`, `TIMEOUT_REDIS_MS=500`, `TIMEOUT_GATHER_S=180`,
   `RETRIEVAL_QUALITY_THRESHOLD=0.5`, `RETRIEVAL_USE_DOCUMENT_PASSAGES=true`.

@@ -13,18 +13,22 @@ For every passage row in `silver.document_passages` where
 `embedding_id IS NULL`:
 
   1. Encode the text (dense, 1024-dim, normalized), branching inline on
-     EMBEDDING_BACKEND: "foundry" -> Cohere Embed v4
-     (input_type="search_document"), else the self-hosted
+     EMBEDDING_BACKEND: "cohere" -> Cohere Embed 5 on Cohere's own API
+     (input_type="search_document"; ADR-0025), "bedrock" -> Cohere Embed v4
+     on Bedrock (the rollback), else the self-hosted
      Qwen/Qwen3-Embedding-0.6B fallback. Documents are encoded RAW — the
      query-side "Instruct: ...\nQuery: ..." template (self-hosted path) /
-     input_type="search_query" (foundry path) is asymmetric and applied only
+     input_type="search_query" (hosted paths) is asymmetric and applied only
      on retrieval (see tools.search_documents). Documents must NOT carry the
      query-side treatment or the query/document vectors live in different
      subspaces.
   2. Encode via SPLADE++ (sparse, named "text")
   3. Upsert to Qdrant `georag_chunks` with payload:
        { report_id, project_id, workspace_id,
-         section_number, section_title, text }
+         section_number, section_title, text, embed_model, ... }
+     ``embed_model`` names the model that produced the dense vector, so a
+     collection holding two vector spaces can be detected from the data
+     (ADR-0025 migration step 6).
   4. Update `silver.document_passages.embedding_id` with the Qdrant point ID
 
 Collection schema (post 2026-06-03 Qwen3-Embedding swap):
@@ -125,11 +129,17 @@ def _is_request_rejection(exc: BaseException) -> bool:
     """True when the embedding host refused the REQUEST as invalid.
 
     Bedrock answers a body it will not take (an over-long or otherwise
-    unacceptable text) with ``ValidationException``; the self-hosted sidecar
-    answers 400/422. Everything else -- throttling, 5xx, auth, a network
+    unacceptable text) with ``ValidationException``; Cohere's own API and the
+    self-hosted sidecar answer 400/422. Everything else -- throttling, 5xx, auth, a network
     error -- is about the call, not the texts, and bisecting would only
     multiply it.
     """
+    from app.services.embedding import CohereEmbeddingHttpError
+
+    if isinstance(exc, CohereEmbeddingHttpError):
+        # Cohere's own API: _CohereEmbedding raises this for any non-retryable
+        # non-2xx, so the status is all there is to classify on.
+        return exc.status_code in (400, 422)
     response = getattr(exc, "response", None)
     if isinstance(response, dict):
         error = response.get("Error")
@@ -171,6 +181,21 @@ def encode_isolating_rejections(encode, texts: list[str]) -> list[list[float] | 
 _dsn = build_dsn
 
 
+def embed_model_tag(model) -> str:
+    """The ``embed_model`` payload value for points ``model`` writes.
+
+    The hosted adapters expose ``model_name`` (``embed-v5.0-pro``,
+    ``cohere.embed-v4:0``). The local SentenceTransformer and the sidecar proxy
+    do not, and they only ever serve ``settings.EMBEDDING_MODEL_NAME``.
+    """
+    name = getattr(model, "model_name", None)
+    if isinstance(name, str) and name:
+        return name
+    from app.config import settings
+
+    return settings.EMBEDDING_MODEL_NAME
+
+
 def load_embedding_model():
     """Construct the backend-aware embedding model (F28, 2026-08-11).
 
@@ -190,6 +215,13 @@ def load_embedding_model():
 
     reject_retired_backend(EMBEDDING_BACKEND, setting="EMBEDDING_BACKEND")
 
+    if EMBEDDING_BACKEND == "cohere":
+        # The SAME object get_embedding_model() builds on the query path: both
+        # go through build_cohere_embedding(), so model, dimension and key
+        # cannot drift between the two (ADR-0025 gotcha 1).
+        from app.services.embedding import build_cohere_embedding
+
+        return build_cohere_embedding()
     if EMBEDDING_BACKEND == "bedrock":
         # No local model load at all — Cohere Embed v4 on Amazon Bedrock.
         # .encode(texts, normalize_embeddings=True, show_progress_bar=False)
@@ -403,13 +435,15 @@ async def embed_pending_passages(
 
         from app.services.sparse_encoder import encode_sparse
 
+        _embed_model_tag = embed_model_tag(embedding_model)
+
         def _encode_dense_sync(texts: list[str]):
             return embedding_model.encode(
                 texts, normalize_embeddings=True, show_progress_bar=False,
             ).tolist()
 
         def _encode_image_sync(rows: list) -> list[list[float] | None]:
-            """Dense-encode page-image passages, one Embed v4 call per page.
+            """Dense-encode page-image passages, one embed call per page.
 
             Returns None in a slot whose image could not be embedded (missing
             object, unreadable render, model rejection). The caller SKIPS
@@ -437,13 +471,14 @@ async def embed_pending_passages(
                     png = storage.get_bytes(Bucket.BRONZE_RASTER, key)
                     out.append(embedding_model.embed_image(png).tolist())
                 except AttributeError:
-                    # The active embedding backend is not Embed v4 (local
-                    # SentenceTransformer or the sidecar proxy — neither has
-                    # embed_image). This is a configuration error, not a data
+                    # The active embedding backend is not a hosted Cohere one
+                    # (local SentenceTransformer or the sidecar proxy — neither
+                    # has embed_image). This is a configuration error, not a data
                     # error, and it would otherwise repeat per row per sweep.
                     log.error(
                         "embed_pending.image_backend_unsupported — image passages "
-                        "require EMBEDDING_BACKEND=foundry (Cohere Embed v4); "
+                        "require EMBEDDING_BACKEND=cohere (Cohere Embed 5) or "
+                        "bedrock (Cohere Embed v4); "
                         "skipping %d image passage(s) in this batch", len(rows),
                     )
                     out.extend([None] * (len(rows) - len(out)))
@@ -609,6 +644,13 @@ async def embed_pending_passages(
                     "modality": row["modality"] or "text",
                     "page_number": row["page_number"],
                     "image_object_key": row["image_object_key"],
+                    # The model that produced THIS point's dense vector — text
+                    # and image points alike (ADR-0025). A collection holding
+                    # two vector spaces still returns results, ranked by
+                    # meaningless cosines; this tag is what makes "zero points
+                    # lack embed_model = <new model>" a count rather than an
+                    # inference.
+                    "embed_model": _embed_model_tag,
                 }
                 # Pre-upsert payload contract assertion. Failing here is a
                 # programmer error (the writer dropped a key it shouldn't have);

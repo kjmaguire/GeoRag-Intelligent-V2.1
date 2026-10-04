@@ -3382,6 +3382,47 @@ def _reranker_version_for_run(state: AgenticRetrievalState) -> str | None:
         return None
 
 
+# answer_runs.embedding_model, the record of which vector space retrieved a run
+# (ADR-0025). The column has existed since 2026-04-21 and nothing wrote it.
+# With the Embed v4 -> Embed 5 re-embed in flight, "which space did this
+# answer's candidates come from" is the question a before/after comparison of
+# refusal rates needs answered per row. embedding_model_version stays NULL:
+# Cohere publishes no version beyond the model name, which already pins it.
+#
+# What was USED: only a run whose document search actually ran records a
+# model. One that failed before or during the embed (model not loaded, timeout,
+# error) records NULL rather than a model that never produced a vector.
+_EMBEDDING_MODEL_MAX_LEN = 128  # answer_runs.embedding_model is VARCHAR(128)
+
+
+def _embedding_model_for_run(state: AgenticRetrievalState) -> str | None:
+    """The model that embedded this run's document-search query, or None."""
+    try:
+        from app.agent.tools import DocumentSearchResult  # noqa: PLC0415
+
+        searched = any(
+            isinstance(result, DocumentSearchResult) and result.retrieval_failure is None
+            for _name, result in state.tool_results or []
+        )
+        if not searched:
+            return None
+        model = getattr(state.deps, "embedding_model", None)
+        if model is None:
+            return None
+        name = getattr(model, "query_model_name", None) or getattr(model, "model_name", None)
+        if not isinstance(name, str) or not name:
+            # The local SentenceTransformer / sidecar proxy name nothing; they
+            # only ever serve the configured model.
+            from app.config import settings  # noqa: PLC0415
+
+            name = settings.EMBEDDING_MODEL_NAME
+        return name[:_EMBEDDING_MODEL_MAX_LEN]
+    except Exception:  # noqa: BLE001
+        # Observability must never fail the persist.
+        logger.debug("agentic_retrieval.persist: embedding_model unavailable", exc_info=True)
+        return None
+
+
 def _classify_persist_guards(
     state: AgenticRetrievalState, citation_state: str,
 ) -> list[Any]:
@@ -3827,6 +3868,7 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 _rejection_reason,
                 _guard_results_json,
                 _reranker_version_for_run(state),
+                _embedding_model_for_run(state),
             )
     except TimeoutError:
         _report_persist_failure(
@@ -3953,11 +3995,12 @@ _ANSWER_RUN_INSERT_SQL = """
         rejection_reason,
         hallucination_guard_results,
         reranker_version,
+        embedding_model,
         citation_mode
     ) VALUES (
         $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
         $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
-        $17, $18::jsonb, $19,
+        $17, $18::jsonb, $19, $20,
         -- Audit RAG-22: never written before, so always NULL. CLAUDE.md
         -- rule 4: citation_mode is always posthoc_span_resolution.
         'posthoc_span_resolution'

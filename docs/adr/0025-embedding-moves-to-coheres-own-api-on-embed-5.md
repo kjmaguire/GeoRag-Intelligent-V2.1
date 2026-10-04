@@ -1,7 +1,21 @@
 # ADR 0025: Embedding moves to Cohere's own API, on Embed 5
 
 - **Date**: 2026-10-01
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-04)
+- **Implemented (code half)**: 2026-10-04. The adapter, the probe's `embed`
+  section, the `--all` reset, the `embed_model` tag, `answer_runs.embedding_model`,
+  Terraform, compose, the chart and the docs are in the tree; migration steps
+  1 and 3-7 (the credentialed probe run, the Qdrant snapshot, the cutover,
+  the verification and the 14-day rollback hold) remain operator actions.
+  Production is NOT moved by this tree: `config.tf` reads
+  `var.embedding_backend`, which defaults to `bedrock`, so a deploy or an
+  unrelated `terraform apply` leaves the v4 space in place. **The cutover
+  (step 4) is setting `embedding_backend = "cohere"` in the production
+  tfvars and applying**, after steps 1 and 3, with the collection reset
+  (`scripts/reset_embeddings_for_reencode.py --all`) and the embed sweep in
+  the same sitting. The code default is `cohere` (an unset value selects the
+  target hosted backend), so compose and any environment that sets nothing
+  already embed on Embed 5.
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: ADR-0023 "What stays the same", the bullet beginning
   "**Embeddings do not move.**" Everything else in ADR-0023 stands. That

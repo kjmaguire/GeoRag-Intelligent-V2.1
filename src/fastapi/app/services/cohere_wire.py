@@ -1,9 +1,11 @@
 """The Cohere API wire contract, as data (ADR-0023).
 
-The sibling of ``bedrock_wire.py``, for the two capabilities that left
-Bedrock on 2026-09-15: chat (Command A+) and OCR (Parse 5). Both are AWS
-Marketplace SageMaker packages rather than Bedrock models, on instance
-classes that bill while idle, so they moved to Cohere's own API.
+The sibling of ``bedrock_wire.py``, for the capabilities that left
+Bedrock: chat (Command A+) and OCR (Parse 5) on 2026-09-15, and dense
+embedding (Embed 5) on 2026-10-04. The first two are AWS Marketplace
+SageMaker packages rather than Bedrock models, on instance classes that bill
+while idle, so they moved to Cohere's own API; Embed 5 is not on Bedrock at
+all (ADR-0025). Rerank stays on Bedrock and stays in ``bedrock_wire``.
 
 Everything ``bedrock_wire``'s docstring says about WHY a contract-as-data is
 worth having applies here unchanged, and is not repeated: read that module
@@ -27,6 +29,13 @@ tesseract -- have NEVER been exercised on any host, and every field
 describing them stays assumed or tolerated. The diff reports them as
 ``not_exercised``, not ``contradicted``: a text page cannot show a table.
 
+``EMBED`` has NO observed fields at all: Embed 5 shipped on 2026-09-30 and no
+probe run has called it. Its fields are carried from the Embed v4 contract
+(``bedrock_wire.EMBED_TEXT`` / ``EMBED_IMAGE``, where the TEXT half was
+observed on Bedrock on 2026-09-16) and from Cohere's published API, which is
+a better guess than none and not a measurement. ``cohere_probe.probe_embed``
+is what turns it into a diff.
+
 For chat, the three Foundry observations are recorded on ``CHAT_CONVERSE``
 in ``bedrock_wire`` and they do not carry a second time: a different host is
 a second chance to be wrong in the same way. ``CHAT_V2`` below re-asks all
@@ -39,7 +48,7 @@ from typing import Any
 
 from app.services.bedrock_wire import Field, Status, WireContract, diff_section
 
-__all__ = ["CHAT_V2", "CONTRACTS", "COHERE_REPORT", "PARSE", "diff_report"]
+__all__ = ["CHAT_V2", "CONTRACTS", "COHERE_REPORT", "EMBED", "PARSE", "diff_report"]
 
 #: The committed Cohere probe report the OBSERVED_COHERE fields below cite.
 COHERE_REPORT = "cohere_probe_20260924T060435Z.json"
@@ -453,8 +462,136 @@ CHAT_V2 = WireContract(
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Embed — POST {COHERE_BASE_URL}/v2/embed (ADR-0025)
+# ---------------------------------------------------------------------------
+# Embed 5 (`embed-v5.0-pro`, and `embed-v5.0-fast` for the later query-side
+# move) on Cohere's own API. One contract for text AND image: the request is
+# the same endpoint and the same response key, and the probe's ``embed``
+# section records top-level keys for each variant under one evidence path
+# list. NOTHING here has been observed -- every field is ASSUMED, including
+# the ones the v4 text path confirmed on Bedrock, because a new model on a new
+# host is a new chance to be wrong in the same way (the Foundry lesson).
+#
+# What the adapter would get wrong silently if an assumption fails:
+#   * `output_dimension` ignored -> wrong-width vectors into a 1024-dim
+#     collection (a 400 on every upsert, or a query that cannot match).
+#   * `input_type` accepted but not honoured -> query and document vectors in
+#     one subspace; retrieval degrades with every guard still passing.
+#   * the per-request text limit below 96 -> every ingest batch is refused.
+#   * which image shape is accepted -> every page image is skipped (and
+#     retried every sweep) while text embeds fine.
 
-CONTRACTS: tuple[WireContract, ...] = (CHAT_V2, PARSE)
+EMBED = WireContract(
+    name="embed",
+    service="cohere-api",
+    method="POST /v2/embed",
+    probe_section="embed",
+    # The probe records the reply's top-level keys per variant. The text
+    # document call sits at the section root so a report is read by the same
+    # path whichever variant ran; `query` and `image` are nested.
+    evidence_paths=("top_level_keys", "query.top_level_keys", "image.top_level_keys"),
+    request=(
+        Field(
+            "model",
+            Status.ASSUMED,
+            True,
+            "COHERE_EMBED_MODEL ('embed-v5.0-pro') for ingest; "
+            "COHERE_EMBED_QUERY_MODEL for questions, which defaults to the "
+            "same model. 'embed-v5.0-fast' is the later, measured query-side "
+            "move: Cohere says Pro and Fast share an embedding space and the "
+            "probe's cross_model section measures it. Names are Cohere's "
+            "2026-09-30 publication, not observed from this account.",
+        ),
+        Field(
+            "texts[]",
+            Status.ASSUMED,
+            True,
+            "The inputs, at most COHERE_EMBED_MAX_TEXTS_PER_CALL (96, carried "
+            "over from v4) per request; _CohereEmbedding._post chunks to it. "
+            "The probe's input_limit ladder sends 96 and 97.",
+        ),
+        Field(
+            "input_type",
+            Status.ASSUMED,
+            True,
+            "'search_document' for corpus chunks, 'search_query' for "
+            "questions, 'image' for page renders. The query value is the "
+            "one a missing `embed_query` method would silently lose "
+            "(tools.py's hasattr fallback); test_embedding_cohere.py drives "
+            "the real call site.",
+        ),
+        Field("embedding_types[]", Status.ASSUMED, True, "Always ['float']."),
+        Field(
+            "output_dimension",
+            Status.ASSUMED,
+            True,
+            "COHERE_EMBED_DIMENSION, 1024, matching georag_chunks. Embed 5 Pro "
+            "is documented at 2048/1536/1024/768/512/256. Whether 'fast' "
+            "honours the same set is unobserved. A SILENTLY IGNORED dimension "
+            "is the worst outcome in this contract; the adapter rejects a "
+            "reply whose width differs, and the probe records "
+            "dimension_honoured.",
+        ),
+        Field(
+            "images[]",
+            Status.ASSUMED,
+            False,
+            "PRIMARY image shape: a single data: URI, one image per call. "
+            "Text and image inputs cannot be combined in one request.",
+        ),
+        Field(
+            "inputs[].content[].type",
+            Status.ASSUMED,
+            False,
+            "FALLBACK image shape ('inputs' with an image_url content part). "
+            "Tried once, only on an HTTP 400/422, as the Bedrock adapter did "
+            "on ValidationException. Which shape Embed 5 accepts is "
+            "unobserved (ADR-0025 gotcha 4); collapse to the winner once a "
+            "run says.",
+        ),
+        Field("inputs[].content[].image_url.url", Status.ASSUMED, False, "Same fallback."),
+    ),
+    response=(
+        Field(
+            "embeddings.float[][]",
+            Status.ASSUMED,
+            True,
+            "Row-per-input float vectors, read straight into np.float32. The "
+            "top-level `embeddings` key was seen on Embed v4 (Bedrock, "
+            "2026-09-16) with ['float'] beneath it; not on Embed 5.",
+            evidence_key="embeddings",
+        ),
+        Field(
+            "id",
+            Status.ASSUMED,
+            False,
+            "Request id. Nothing reads it; declared so a field seen on v4 is "
+            "not reported as a fresh discovery.",
+            evidence_key="id",
+        ),
+        Field("texts[] (echo)", Status.ASSUMED, False, "The inputs echoed back on a text call. Nothing reads it.", evidence_key="texts"),
+        Field("images[] (echo)", Status.ASSUMED, False, "Likely on an image call. Nothing reads it.", evidence_key="images"),
+        Field("response_type", Status.ASSUMED, False, "'embeddings_by_type' on v4. Nothing reads it.", evidence_key="response_type"),
+        Field("meta", Status.ASSUMED, False, "api_version / billed_units. Nothing reads it.", evidence_key="meta"),
+    ),
+    notes=(
+        "Authentication is `Authorization: bearer $COHERE_API_KEY`, the same "
+        "key as chat and Parse (ADR-0023). A key that covers chat does not "
+        "prove it covers embed; the probe's embed section is the check.",
+        "A refused call produces NO AWS metric -- CloudWatch cannot see a "
+        "request that never went to AWS -- so the adapter's own warning log "
+        "is the whole signal. 429s are retried with Retry-After honoured "
+        "(llm_common.parse_retry_after); the limit is per KEY, shared with "
+        "chat and Parse (ADR-0025 gotcha 5).",
+        "Vectors are ASSUMED pre-normalised (as on Bedrock v4), so "
+        "normalize_embeddings is ignored. Qdrant's Cosine distance does not "
+        "depend on it, but the probe records the L2 norm.",
+    ),
+)
+
+
+CONTRACTS: tuple[WireContract, ...] = (CHAT_V2, PARSE, EMBED)
 
 
 def diff_report(report: dict[str, Any]) -> dict[str, Any]:

@@ -48,6 +48,7 @@ class _Client:
         self._vectors_cfg = vectors_cfg
         self.updates: list[Any] = []
         self.upserts: list[Any] = []
+        self.payload_writes: list[dict[str, Any]] = []
 
     def get_collection(self, _name: str) -> Any:
         return SimpleNamespace(
@@ -60,6 +61,9 @@ class _Client:
 
     def update_vectors(self, *, collection_name: str, points: list[Any], wait: bool) -> None:
         self.updates.extend(points)
+
+    def set_payload(self, *, collection_name: str, payload: dict[str, Any], points: list[Any], wait: bool) -> None:
+        self.payload_writes.append({"payload": payload, "points": list(points)})
 
     def upsert(self, **kw: Any) -> None:  # pragma: no cover -- must not be called
         self.upserts.append(kw)
@@ -98,3 +102,38 @@ def test_an_unnamed_legacy_collection_gets_a_plain_vector(reembed) -> None:
     client = _Client(_points(), SimpleNamespace(size=1024))
     reembed._reembed_collection(client, _Model(), "georag_reports")
     assert all(isinstance(p.vector, list) for p in client.updates)
+
+
+def _load_script(name: str):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, _SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_re_embedded_point_is_tagged_with_the_model_that_produced_its_vector() -> None:
+    """ADR-0025 migration step 6 counts points lacking the new ``embed_model``.
+    update_vectors leaves the payload alone, so without an explicit write a
+    re-embedded point would keep the old model's tag beside the new vector."""
+    reembed = _load_script("reembed_qdrant_tagging")
+
+    class _Hosted(_Model):
+        model_name = "embed-v5.0-pro"
+
+    client = _Client(_points(), {"": SimpleNamespace(size=1024)})
+    reembed._reembed_collection(client, _Hosted(), "georag_chunks")
+
+    assert client.payload_writes == [{"payload": {"embed_model": "embed-v5.0-pro"}, "points": [1, 3]}]
+
+
+def test_the_local_model_is_tagged_with_the_configured_name() -> None:
+    from app.config import settings
+
+    reembed = _load_script("reembed_qdrant_tagging_local")
+    client = _Client(_points(), {"": SimpleNamespace(size=1024)})
+    reembed._reembed_collection(client, _Model(), "georag_chunks")  # no model_name attribute
+
+    assert {w["payload"]["embed_model"] for w in client.payload_writes} == {settings.EMBEDDING_MODEL_NAME}

@@ -103,6 +103,12 @@ data "aws_iam_policy_document" "task" {
     # here would let a compromised task invoke any model in the account,
     # which is a cost problem before it is a security one.
     #
+    # 2026-10-04 (ADR-0025): Embed v4 is the rollback route only now. Dense
+    # embedding runs on Cohere's own API (Embed 5, not on Bedrock), so this
+    # model's ARN is kept solely for EMBEDDING_BACKEND=bedrock during the
+    # 14-day rollback window after cutover. Remove the embed line below and
+    # var.bedrock_embed_model_id when the window closes; Rerank stays.
+    #
     # Two, not four. Command A+ and Parse 5 were never Bedrock models —
     # they are AWS Marketplace SageMaker packages, and ADR-0023 moved both
     # to Cohere's own API rather than pay for endpoints that bill idle. The

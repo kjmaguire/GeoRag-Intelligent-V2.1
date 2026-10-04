@@ -51,10 +51,11 @@ resource "aws_secretsmanager_secret" "app" {
 #                            REVERB_APP_KEY is public by design
 #                            (config/reverb.php) and is a variable below,
 #                            not a secret — the browser receives it.
-#   COHERE_API_KEY           ONE key for two capabilities: Command A+ chat
-#                            (LLM_BACKEND=cohere) and Parse 5 OCR
-#                            (OCR_ENGINE=cohere_parse). Added by ADR-0023,
-#                            which makes this eleven keys, not ten.
+#   COHERE_API_KEY           ONE key for three capabilities: Command A+ chat
+#                            (LLM_BACKEND=cohere), Parse 5 OCR
+#                            (OCR_ENGINE=cohere_parse) and, since ADR-0025,
+#                            Embed 5 (EMBEDDING_BACKEND=cohere). Added by
+#                            ADR-0023, which makes this eleven keys, not ten.
 #
 # FLOW_JWT_SECRET was absent from this file until 2026-09-14, while
 # docker-compose.yml marked it `${VAR:?}` required — so dev could not start
@@ -68,7 +69,9 @@ resource "aws_secretsmanager_secret" "app" {
 # Bedrock and S3 authenticate with the task role. COHERE_API_KEY is the one
 # long-lived credential in the model tier, and ADR-0023 records that as a
 # named cost of the route rather than an oversight — chat and OCR are the
-# two capabilities AWS could not serve at a workable price.
+# two capabilities AWS could not serve at a workable price. ADR-0025 added
+# embedding to it (Embed 5 is not on Bedrock), so rotating it now interrupts
+# all three.
 resource "aws_secretsmanager_secret_version" "app_placeholder" {
   secret_id     = aws_secretsmanager_secret.app.id
   secret_string = jsonencode({ PLACEHOLDER = "set-these-out-of-band" })
@@ -112,10 +115,13 @@ locals {
   # named reader instead of a general one.
   _extra_secret_ref = {
     # COHERE_API_KEY has exactly two readers and they are these. fastapi
-    # calls Command A+ for chat; hatchet-worker calls Parse 5 for OCR, and
-    # it needs its OWN copy — the parser runs in the worker, not behind an
-    # API call to fastapi. A worker without it logs one CRITICAL and runs
-    # tesseract on every page, which extracts no tables and raises nothing.
+    # calls Command A+ for chat and embeds every question (Embed 5, ADR-0025);
+    # hatchet-worker calls Parse 5 for OCR and embeds every passage, and it
+    # needs its OWN copy — the parser and the embedder run in the worker, not
+    # behind an API call to fastapi. A worker without it logs one CRITICAL and
+    # runs tesseract on every page, which extracts no tables and raises
+    # nothing; with EMBEDDING_BACKEND=cohere it also cannot build its
+    # embedder, and the sweep fails loudly rather than skipping.
     #
     # Not in _secret_ref because the laravel services have no use for it;
     # they never reach a model directly.
@@ -217,8 +223,8 @@ locals {
   # regardless, so it has to survive the database not existing.
   db_host = try(local.db.address, "")
 
-  # One number, three consumers — see EMBEDDING_DIMENSION below. 1024 is what
-  # georag_chunks is built at and what Cohere Embed v4 is asked for; changing
+  # One number, several consumers — see EMBEDDING_DIMENSION below. 1024 is what
+  # georag_chunks is built at and what Cohere Embed 5 (and v4) is asked for; changing
   # it means re-embedding the corpus (scripts/reset_embeddings_for_reencode.py),
   # not just editing this line.
   embed_dimension = 1024
@@ -398,35 +404,52 @@ locals {
     # ADR-0021's migration step 2 and the reason it is stated rather than
     # inherited.
     #
-    # The three backends no longer agree, and that is deliberate (ADR-0023).
-    # Embeddings and reranking stay on Bedrock, where IAM authenticates them
-    # and AWS credits pay for them. Chat and OCR moved to Cohere's own API,
-    # because Command A+ and Parse 5 are AWS *Marketplace* SageMaker
-    # packages — A100/H100 and ~$2.50/h respectively, billing whether or not
-    # anything calls them. BEDROCK_REGION still matters: two of the four
-    # capabilities are still Bedrock calls.
-    BEDROCK_REGION          = local.bedrock_region
-    LLM_BACKEND             = "cohere"
-    EMBEDDING_BACKEND       = "bedrock"
-    RERANKER_BACKEND        = "bedrock"
+    # The backends no longer agree, and that is deliberate (ADR-0023,
+    # ADR-0025). Reranking stays on Bedrock, where IAM authenticates it and
+    # AWS credits pay for it. Chat, OCR and (since 2026-10-04) embedding are
+    # on Cohere's own API: Command A+ and Parse 5 are AWS *Marketplace*
+    # SageMaker packages — A100/H100 and ~$2.50/h respectively, billing
+    # whether or not anything calls them — and Embed 5 is not on Bedrock at
+    # all. BEDROCK_REGION still matters: Rerank is still a Bedrock call.
+    #
+    # EMBEDDING_BACKEND goes to BOTH fastapi and hatchet-worker through this
+    # one map, so one apply moves them together (ADR-0025 gotcha 1). It is
+    # var.embedding_backend, default "bedrock": the code and the chart carry
+    # the Embed 5 adapter, but production moves only when the operator sets
+    # embedding_backend = "cohere" as the ADR-0025 cutover (after the probe
+    # and the snapshot, with the full re-embed in the same sitting). The
+    # COHERE_EMBED_* settings below are harmless while it is "bedrock".
+    BEDROCK_REGION    = local.bedrock_region
+    LLM_BACKEND       = "cohere"
+    EMBEDDING_BACKEND = var.embedding_backend
+    RERANKER_BACKEND  = "bedrock"
+
+    # 2026-10-04 (ADR-0025): the Embed v4 rollback (EMBEDDING_BACKEND=bedrock)
+    # keeps its settings AND its bedrock:InvokeModel grant in iam.tf for the
+    # 14-day rollback window that starts at the cutover (migration step 7).
+    # Afterwards delete BEDROCK_EMBED_MODEL_ID, BEDROCK_EMBED_DIMENSION, the
+    # bedrock_embed_model_id variable and the iam.tf resource together.
     BEDROCK_EMBED_MODEL_ID  = var.bedrock_embed_model_id
     BEDROCK_EMBED_DIMENSION = local.embed_dimension
+    BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
 
-    # The same number, under the name the OTHER two readers use, so all
-    # three agree by construction rather than by all defaulting to 1024:
+    # The same number, under the name the OTHER readers use, so all of them
+    # agree by construction rather than by all defaulting to 1024:
     #
-    #   services/embedding.py:69   sizes the vectors it writes, from
-    #                              BEDROCK_EMBED_DIMENSION
+    #   services/embedding.py      sizes the vectors it writes, from
+    #                              COHERE_EMBED_DIMENSION (BEDROCK_EMBED_DIMENSION
+    #                              under the rollback backend)
     #   scripts/init_qdrant.py     sizes the collection it creates
-    #   main.py:592                refuses to serve when the live collection
+    #   config.py                  fails startup when COHERE_EMBED_DIMENSION
+    #                              differs from EMBEDDING_DIMENSION
+    #   main.py                    refuses to serve when the live collection
     #                              disagrees with EMBEDDING_DIMENSION
     #
-    # Cohere Embed v4 is Matryoshka — 256/512/1024/1536 are all selectable —
-    # so this is a knob someone can reach for. Left split, moving it would
-    # have moved the writer while the guard went on comparing against a
-    # hardcoded 1024 and passing.
-    EMBEDDING_DIMENSION     = local.embed_dimension
-    BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
+    # Embed 5 Pro is Matryoshka — 256/512/768/1024/1536/2048 are all
+    # selectable — so this is a knob someone can reach for. Left split, moving
+    # it would have moved the writer while the guard went on comparing against
+    # a hardcoded 1024 and passing.
+    EMBEDDING_DIMENSION = local.embed_dimension
 
     # Chat and OCR, on Cohere's own API. Plain model names, not endpoint
     # ARNs: there is no endpoint indirection on this host, which is most of
@@ -439,6 +462,13 @@ locals {
     COHERE_CHAT_MODEL  = var.cohere_chat_model
     COHERE_PARSE_MODEL = var.cohere_parse_model
     OCR_ENGINE         = "cohere_parse"
+    # Dense embedding, ADR-0025: ingest AND queries use the Pro model at
+    # cutover (COHERE_EMBED_QUERY_MODEL is left unset, so it follows
+    # COHERE_EMBED_MODEL). Moving queries to embed-v5.0-fast is a later,
+    # measured step — do not set it here before the probe's cross-model
+    # cosine says it is safe.
+    COHERE_EMBED_MODEL     = var.cohere_embed_model
+    COHERE_EMBED_DIMENSION = local.embed_dimension
     # Every page through Parse; the PDF's own text layer is the fallback
     # (request failed, over OCR_MAX_PAGES_PER_DOC, short/empty output).
     # Kyle's call, 2026-09-29, after the parse-comparison run matched native

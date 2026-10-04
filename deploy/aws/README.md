@@ -1038,8 +1038,10 @@ as a one-off task after every deploy (`cd.yml`), and its check 4 fails when
 Qdrant is up but the collections the query path needs are absent. If you skip
 this step the deploy gate tells you.
 
-The collection is sized from `BEDROCK_EMBED_DIMENSION`, the same variable the
-writer uses, so it cannot drift from what Cohere Embed v4 is asked to return.
+The collection is sized from the dimension variable of the backend that writes
+into it — `COHERE_EMBED_DIMENSION` under the default `EMBEDDING_BACKEND=cohere`
+(ADR-0025), `BEDROCK_EMBED_DIMENSION` under the `bedrock` rollback — so it
+cannot drift from what the embedder is asked to return.
 
 ## One posture decision left open: X-Forwarded-For
 

@@ -1014,12 +1014,12 @@ jobs:
         env:
           QDRANT_HOST: localhost
           QDRANT_PORT: "6333"
-          # Mirror production, which runs EMBEDDING_BACKEND=bedrock. The
-          # script picks the dimension variable by backend, so an
-          # EMBEDDING_DIMENSION set without a backend — which is what this
-          # job used to do — is read by nobody.
-          EMBEDDING_BACKEND: bedrock
-          BEDROCK_EMBED_DIMENSION: "1024"
+          # Mirror production, which runs EMBEDDING_BACKEND=cohere (ADR-0025;
+          # bedrock before it). The script picks the dimension variable by
+          # backend, so an EMBEDDING_DIMENSION set without a backend — which
+          # is what this job used to do — is read by nobody.
+          EMBEDDING_BACKEND: cohere
+          COHERE_EMBED_DIMENSION: "1024"
 
   # ─── E2E money-path smoke (BLOCKING since 2026-08-21) ─────────────────
   # 2026-08-15 testing audit: the money path (upload -> parse -> OCR/native

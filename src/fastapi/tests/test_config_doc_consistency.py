@@ -85,3 +85,52 @@ def test_no_comment_claims_the_opposite_default() -> None:
     assert not violations, "settings documented with the wrong default:\n" + "\n".join(
         violations
     )
+
+
+# ---------------------------------------------------------------------------
+# EMBEDDING_BACKEND's default, stated in code
+# ---------------------------------------------------------------------------
+# The default is not a Settings field, so the boolean check above cannot see
+# it. It is written out in several places that must agree: the module that
+# reads it, config.py's validators, and the Qdrant bootstrap. Until ADR-0025
+# (2026-10-04) they all said "bedrock"; a site that kept saying it would
+# select a different backend from the one the module that reads it does, and
+# the symptom is a startup validator or a collection sized for the wrong
+# model, not an error.
+
+_BACKEND_DEFAULT = re.compile(r'os(?:\.environ)?\.get\("EMBEDDING_BACKEND"\)\s*or\s*"([a-z_]+)"')
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def test_every_embedding_backend_default_in_code_is_cohere() -> None:
+    sites = [
+        _APP / "services" / "embedding.py",
+        _APP / "config.py",
+        _REPO / "src" / "fastapi" / "scripts" / "init_qdrant.py",
+    ]
+    found: dict[str, list[str]] = {}
+    for path in sites:
+        found[path.name] = _BACKEND_DEFAULT.findall(path.read_text(encoding="utf-8"))
+        assert found[path.name], f"{path.name}: no EMBEDDING_BACKEND default found -- the pattern is stale"
+    wrong = {name: values for name, values in found.items() if set(values) != {"cohere"}}
+    assert not wrong, f"EMBEDDING_BACKEND defaults other than 'cohere' (ADR-0025): {wrong}"
+
+
+def test_the_compose_and_terraform_defaults_agree_with_the_code() -> None:
+    compose = (_REPO / "docker-compose.yml").read_text(encoding="utf-8")
+    sites = re.findall(r"EMBEDDING_BACKEND:\s*\$\{EMBEDDING_BACKEND:-([a-z_]+)\}", compose)
+    assert len(sites) == 2, "expected the fastapi and hatchet-worker services"
+    assert set(sites) == {"cohere"}, sites
+
+    # Terraform does NOT hard-code the backend: production moves to Embed 5
+    # only when the operator sets var.embedding_backend = "cohere" (the
+    # ADR-0025 cutover, after the probe and the snapshot). The variable's
+    # default is the rollback, bedrock, so an unrelated apply cannot flip the
+    # vector space; its validation names cohere as the other value.
+    terraform = (_REPO / "deploy" / "aws" / "terraform" / "config.tf").read_text(encoding="utf-8")
+    assert re.search(r"EMBEDDING_BACKEND\s*=\s*var\.embedding_backend", terraform)
+    variables = (_REPO / "deploy" / "aws" / "terraform" / "variables.tf").read_text(encoding="utf-8")
+    block = re.search(r'variable "embedding_backend" \{.*?\n\}', variables, re.S)
+    assert block is not None
+    assert re.search(r'default\s*=\s*"bedrock"', block.group(0))
+    assert re.search(r'contains\(\["bedrock", "cohere"\]', block.group(0))

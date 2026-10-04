@@ -508,10 +508,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # -------------------------------------------------------------------------
     # 5. Query-time embedding model
     # -------------------------------------------------------------------------
-    # get_embedding_model() branches on EMBEDDING_BACKEND: "foundry" returns a
-    # lightweight Cohere Embed v4 proxy (no local model, no download) — the
-    # live default (config.py's Qwen/Qwen3-Embedding-0.6B, 1024-dim, is the
-    # self-hosted fallback for operators without a Foundry backend). Batch
+    # get_embedding_model() branches on EMBEDDING_BACKEND: "cohere" (the
+    # default since ADR-0025) returns a lightweight Cohere Embed 5 client on
+    # Cohere's own API (no local model, no download); "bedrock" is the Embed v4
+    # rollback (config.py's Qwen/Qwen3-Embedding-0.6B, 1024-dim, is the
+    # self-hosted fallback for dev and on-prem, EMBEDDING_BACKEND=local). Batch
     # document indexing runs through the Hatchet ingest_pdf workflow's
     # passage_embedder, which reads the same EMBEDDING_BACKEND flag — Dagster
     # dropped from this deployment entirely in Phase B2.

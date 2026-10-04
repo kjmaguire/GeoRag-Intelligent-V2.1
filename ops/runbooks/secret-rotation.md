@@ -174,7 +174,7 @@ share one Pydantic `Settings` class with the two Python readers that do.
 | `QDRANT_API_KEY` | `georag/app` (injected into qdrant as `QDRANT__SERVICE__API_KEY`) | laravel-octane, laravel-horizon, laravel-reverb, fastapi, hatchet-worker, sparse, qdrant | No — Qdrant holds one read-write key | §6 |
 | ~~`AZURE_FOUNDRY_API_KEY`~~ | retired, ADR-0022 | — | — | §7 |
 | ~~storage account key~~ | retired, ADR-0022 | — | — | §7 |
-| `COHERE_API_KEY` | `georag/app` | fastapi, hatchet-worker | Not fully — see §8 | §8 |
+| `COHERE_API_KEY` | `georag/app` | fastapi, hatchet-worker (chat, OCR **and embedding**, ADR-0025) | Not fully — see §8 | §8 |
 | `HATCHET_CLIENT_TOKEN` | minted by the hatchet engine, stored in `georag/app` | fastapi, hatchet-worker, laravel-octane, laravel-horizon, laravel-reverb | Yes — old token stays valid until its own 90-day expiry (not revoked) | §9 |
 | `HATCHET_ADMIN_PASSWORD` | `georag/app` (injected into hatchet as `ADMIN_PASSWORD`) | hatchet (only at first-boot seed time) | n/a — only applies when the seed *creates* the account | §10 |
 | CloudFront origin secret (`X-Origin-Verify`) | operator-chosen Terraform input; mirrored into its own secret, `georag/cloudfront-origin-secret` | the ALB listener rules (not an ECS task) | Yes, scripted — see §11 | §11 |
@@ -789,13 +789,21 @@ there is nothing to check.
 The one long-lived model-tier credential left, per ADR-0023: Command A+
 chat (`LLM_BACKEND=cohere`) and Parse 5 OCR (`OCR_ENGINE=cohere_parse`)
 both authenticate with it, against Cohere's own API rather than through
-Bedrock. `config.tf`'s `_extra_secret_ref` hands it to exactly two
+Bedrock — and, since ADR-0025 (2026-10-04), so does dense embedding
+(`EMBEDDING_BACKEND=cohere`, Embed 5). **Rotating it now interrupts three
+capabilities, and one of them is retrieval itself:** with the query-path
+embedder failing, `search_documents` returns nothing and any answer that needs documents refuses,
+and the Anthropic chat fallback cannot help because it does not embed.
+`docs/RUNBOOK.md` ("COHERE_API_KEY rotation") has the effect table.
+`config.tf`'s `_extra_secret_ref` hands it to exactly two
 services — `fastapi` and `hatchet-worker`, each its own copy, because the
-worker runs the parser in-process rather than calling out to FastAPI for
-it. A worker without the key logs one `CRITICAL` and silently runs
-`tesseract` on every scanned page instead, which extracts no tables and
-raises nothing — check for `ocr_method='tesseract'` on newly ingested
-pages if a rotation is suspected of having missed the worker.
+worker runs the parser and the passage embedder in-process rather than
+calling out to FastAPI for them. A worker without the key logs one
+`CRITICAL` and silently runs `tesseract` on every scanned page instead,
+which extracts no tables and raises nothing — check for
+`ocr_method='tesseract'` on newly ingested pages if a rotation is suspected
+of having missed the worker. (Its embedder, by contrast, fails loudly: a
+blank key raises when the sweep builds the model.)
 
 Rotate in Cohere's dashboard first (issue the new key there — this is not
 an AWS-generated value), then merge it in with the same read-modify-write
@@ -824,11 +832,13 @@ rollout, not a whole maintenance cycle, but it is real — plan the Cohere
 console's revocation for *after* both services report `stable`, not
 before.
 
-Confirm the new key covers **both** models before revoking the old one —
-a key entitled to chat but not Parse deploys cleanly and then sends every
+Confirm the new key covers **all three** models (`command-a-plus`,
+`parse-v5.0` and `embed-v5.0-pro`) before revoking the old one — a key
+entitled to chat but not Parse deploys cleanly and then sends every
 scanned page to tesseract, which is exactly the failure mode with the
-weakest signal (`aws-preflight.sh` A-11 wants a fresh report from each
-probe):
+weakest signal, and one not entitled to Embed cannot build the query
+path's embedder (`aws-preflight.sh` A-11 wants a fresh report from each
+probe; the probe's `embed` section is the Embed check):
 
 ```bash
 COHERE_API_KEY="$NEW_FOR_VERIFICATION" bash ops/validation/cohere_probe.sh

@@ -40,7 +40,7 @@ from app.services.bedrock_wire import (
     diff_report,
     diff_section,
 )
-from app.services.cohere_wire import CHAT_V2, PARSE
+from app.services.cohere_wire import CHAT_V2, EMBED, PARSE
 
 # ---------------------------------------------------------------------------
 # Turning a declaration into a set of concrete paths
@@ -566,7 +566,7 @@ def test_an_unrecognised_cohere_chat_payload_raises_rather_than_returning_empty(
 
 
 _REPORTS_DIR = Path(__file__).resolve().parents[3] / "ops" / "validation" / "reports"
-_ALL_CONTRACTS = (*CONTRACTS, PARSE, CHAT_V2)
+_ALL_CONTRACTS = (*CONTRACTS, PARSE, CHAT_V2, EMBED)
 
 
 def _observed_paths() -> dict[str, set[str]]:
@@ -611,6 +611,9 @@ def test_the_promotions_are_exactly_what_the_committed_reports_show() -> None:
     assert observed["chat_converse"] == set()
     assert observed["chat_converse_stream"] == set()
     assert observed["embed_image"] == set(), "no probe run has ever sent an image"
+    # ADR-0025: Embed 5 shipped 2026-09-30 and no run has called it. Every
+    # field is carried from v4 / Cohere's docs, so none may claim a report.
+    assert observed["embed"] == set(), "no probe run has ever called /v2/embed"
     assert observed["embed_text"] == {
         "modelId",
         "body.texts[]",

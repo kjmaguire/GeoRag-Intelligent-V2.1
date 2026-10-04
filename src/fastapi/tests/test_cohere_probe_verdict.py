@@ -336,11 +336,13 @@ class TestAParseLadderRungIsJudgedByWhyItWasRefused:
                 },
                 chat={"error": {"code": "AuthenticationError"}},
                 chat_stream={"error": {"code": "AuthenticationError"}},
+                embed={"error": {"code": "AuthenticationError", "status": 401}},
                 latency={"error": {"code": "AuthenticationError"}},
             )
         )
         assert v["verified_anything"] is False, v["summary"]
         assert "parse" in v["sections_failed"]
+        assert "embed" in v["sections_failed"]
 
     def test_a_rung_refused_for_size_is_still_an_observation(self) -> None:
         v = verdict(
@@ -375,3 +377,45 @@ class TestAParseLadderRungIsJudgedByWhyItWasRefused:
             )
         )
         assert "parse" in v["sections_failed"], v["summary"]
+
+
+class TestTheEmbedSectionIsJudgedByWhatItObserved:
+    """ADR-0025: `embed` is an evidence section. Its variants (document,
+    query, input_limit, image, cross_model) are nested, so the verdict has to
+    look through them -- the same absence-as-success shape the other sections
+    were once wrong about."""
+
+    _OK = {"top_level_keys": ["embeddings"], "latency_s": 0.1}
+    _AUTH = {"error": {"code": "AuthenticationError", "status": 401}}
+
+    def test_every_variant_refused_is_a_failed_section_not_a_pass(self) -> None:
+        v = verdict(
+            _report(
+                embed={
+                    "model": "embed-v5.0-pro",
+                    "document": self._AUTH,
+                    "query": self._AUTH,
+                    "image": self._AUTH,
+                }
+            )
+        )
+        assert "embed" in v["sections_failed"]
+        assert "embed" not in v["sections_ok"]
+
+    def test_one_served_variant_is_enough_to_be_ok(self) -> None:
+        v = verdict(
+            _report(embed={"model": "embed-v5.0-pro", "document": self._OK, "image": {"error": {"status": 400}}})
+        )
+        assert "embed" in v["sections_ok"]
+
+    def test_an_input_limit_of_only_refusals_observes_nothing(self) -> None:
+        refused = {"error": {"code": "AuthenticationError", "status": 401}}
+        v = verdict(_report(embed={"input_limit": {"sent": {"96": refused, "97": refused}}}))
+        assert "embed" in v["sections_failed"]
+
+    def test_a_missing_embed_section_is_reported_missing(self) -> None:
+        report = _report()
+        del report["embed"]
+        v = verdict(report)
+        assert "embed" in v["sections_missing"]
+        assert "MISSING" in v["summary"]

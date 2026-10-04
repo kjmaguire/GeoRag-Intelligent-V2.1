@@ -245,9 +245,18 @@ nothing in the live tree creates it; the boost is therefore held inert and
 | Audit | `qdrant_payload_audit` (hourly), `store_reconciliation_run` agent | Payload shape and cross-store counts |
 
 Switching embedding models (bge → Qwen3 in June, Qwen3 → Cohere Embed v4
-on Foundry) keeps the 1024-dim schema but still requires a full re-embed:
-`scripts/reset_embeddings_for_reencode.py` clears `embedding_id` so the
-embed workflow re-processes everything. Per-store wait budgets on the
+on Foundry, Embed v4 on Bedrock → Embed 5 on Cohere's own API per
+[ADR-0025](../../adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md))
+keeps the 1024-dim schema but still requires a full re-embed:
+`scripts/reset_embeddings_for_reencode.py --all` deletes every point and
+clears `embedding_id` on every passage, text and `modality='image'` alike,
+so the embed workflow re-processes everything (the default mode, without
+`--all`, only touches enriched rows and would leave a mixed collection). A
+partial re-embed is worse than none: both spaces answer, ranked by
+meaningless cosines. Every dense point carries an `embed_model` payload
+field naming the model that produced it, so "zero points lack the new
+model" is a count, not an inference, and `silver.answer_runs.embedding_model`
+records the query-side model per answer. Per-store wait budgets on the
 query path are `TIMEOUT_QDRANT_S` (2 s in compose, 6 s code default) and
 the separate reranker timeout.
 

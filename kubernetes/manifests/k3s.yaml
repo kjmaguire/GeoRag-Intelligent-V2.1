@@ -1278,6 +1278,14 @@ spec:
                 secretKeyRef:
                   name: georag-secrets
                   key: HATCHET_CLIENT_TOKEN
+            # ADR-0025 follow-up: set explicitly. The code default is now
+            # "cohere", which an on-prem / air-gapped install cannot reach (no
+            # COHERE_API_KEY here, and no egress), so an unset value would take
+            # the hosted default instead of the self-hosted model. MUST be
+            # identical on the fastapi (query) and hatchet-worker (ingest)
+            # Deployments or one vector space is written and another queried.
+            - name: EMBEDDING_BACKEND
+              value: "local"
           resources:
             limits:
               cpu: "2"
@@ -1374,6 +1382,14 @@ spec:
               value: georag-redis
             - name: QDRANT_HOST
               value: georag-qdrant
+            # ADR-0025 follow-up: set explicitly. The code default is now
+            # "cohere", which an on-prem / air-gapped install cannot reach (no
+            # COHERE_API_KEY here, and no egress), so an unset value would take
+            # the hosted default instead of the self-hosted model. MUST be
+            # identical on the fastapi (query) and hatchet-worker (ingest)
+            # Deployments or one vector space is written and another queried.
+            - name: EMBEDDING_BACKEND
+              value: "local"
           resources:
             limits:
               cpu: "2"

@@ -34,7 +34,7 @@ row carefully.
 | Role | Dev (compose) | Production (AWS, since 2026-09-08) |
 |---|---|---|
 | LLM | Cohere Command A+ on **Cohere's own API** | ADR-0022 routed it through a Bedrock **Marketplace** endpoint; ADR-0023 found that is an AWS Marketplace SageMaker package on A100/H100 that bills while idle, and moved it |
-| Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | Bedrock, Cohere Embed v4 (1024-dim) |
+| Embeddings | `embedding` sidecar, Qwen3-Embedding-0.6B (CPU) | **Cohere's own API**, Cohere Embed 5 Pro (`embed-v5.0-pro`, 1024-dim) since ADR-0025 (2026-10-04) — Embed v4 on Bedrock before, and still the rollback |
 | Reranker | `reranker` sidecar, Qwen3-Reranker-0.6B (GPU) | Bedrock, Cohere **Rerank 3.5** — NOT v4, which Bedrock does not serve |
 | Sparse | `sparse` sidecar, SPLADE++ (CPU) | **the `sparse` service — no hosted equivalent anywhere, on Bedrock or Cohere's own API** |
 | Scanned-page OCR | Cohere Parse 5 on **Cohere's own API**, Tesseract fallback | moved with chat for the same reason (~$2.50/h for a Marketplace endpoint that has no idle state) |
@@ -101,10 +101,13 @@ bills for as long as it exists. Nothing was ever deployed, so `bedrock`
 addresses an endpoint that does not exist in this account. It stays
 selectable for an operator who does stand one up.
 
-Bedrock has **not** left the stack. Embeddings (Cohere Embed v4) and
-reranking (Cohere Rerank 3.5) still run there under `EMBEDDING_BACKEND` and
-`RERANKER_BACKEND`, which are separate variables from this one, and that is
-where the AWS credits are spent.
+Bedrock has **not** left the stack: reranking (Cohere Rerank 3.5) still
+runs there under `RERANKER_BACKEND`, a separate variable from this one, and
+that is where the AWS credits are spent. Embeddings left it on 2026-10-04
+([ADR-0025](../../adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md)):
+Embed 5 is not in Bedrock's catalogue, and its SageMaker listing is a
+Marketplace endpoint that bills while idle, so it runs on Cohere's own API
+under `EMBEDDING_BACKEND=cohere` with the same `COHERE_API_KEY`.
 
 *As built (2026-09-15):* `app/agent/llm_cohere.py` exists with the same
 contract as `llm_bedrock.call_bedrock_llm` and is dispatched from
@@ -115,8 +118,9 @@ against a mock transport, which proves the code and the description agree
 and proves nothing about Cohere.
 
 Closing that is `ops/validation/cohere_probe.sh` — the sibling of the
-Bedrock probe, and the two do not overlap: Embed v4 and Rerank 3.5 on one
-side, Command A+ and Parse 5 on the other. `aws-preflight.sh` A-11 requires
+Bedrock probe, and the two do not overlap: Rerank 3.5 (and Embed v4, as the
+rollback) on one side, Command A+, Parse 5 and Embed 5 (its `embed` section,
+ADR-0025) on the other. `aws-preflight.sh` A-11 requires
 a committed report from **each**. The probe runs the real
 `_extract_content`, `_delta_text` and `_page_from_payload` against live
 bodies, so what it reports is about the shipped adapters rather than a
@@ -239,17 +243,21 @@ immediately otherwise. See [Ch 05](05-pdf-stack.md).
 **Classification:** ML model (one forward pass per chunk). 1024-dim, cosine,
 matching the `georag_chunks` collection ([Ch 02 §2.2](02-data-stores.md)).
 
-`EMBEDDING_BACKEND` is **`bedrock` by default in code and in compose** since
-2026-09-08, so an unset value on a production task selects Cohere Embed v4
-rather than a model host that does not exist there. `.env.example` sets
-`local` explicitly to use the dev sidecar. `foundry` — the default between
-2026-09-06 and 2026-09-08 — now RAISES rather than falling through to the
-sidecar branch, because on a host with no sidecar that fall-through means a
-query path that retrieves nothing while reporting success.
+`EMBEDDING_BACKEND` is **`cohere` by default in code, in compose and in
+Terraform** since 2026-10-04 ([ADR-0025](../../adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md)),
+so an unset value on a production task selects Cohere Embed 5 rather than a
+model host that does not exist there (it was `bedrock` from 2026-09-08).
+`.env.example` sets `local` explicitly to use the dev sidecar, and
+`charts/georag/` sets `local` for the same reason on-prem. `foundry` — the
+default between 2026-09-06 and 2026-09-08 — now RAISES rather than falling
+through to the sidecar branch, because on a host with no sidecar that
+fall-through means a query path that retrieves nothing while reporting
+success.
 
 | Backend | Path |
 |---|---|
-| `bedrock` | `bedrock-runtime.invoke_model`, Cohere Embed v4 asked for 1024-dim output ([`services/embedding.py`](../../../src/fastapi/app/services/embedding.py)). **Wire shape unverified** — the Foundry path was confirmed live on 2026-07-30, this one has not been; run `ops/validation/bedrock_probe.py` |
+| `cohere` | `POST {COHERE_BASE_URL}/v2/embed` with `COHERE_API_KEY`, `_CohereEmbedding` in [`services/embedding.py`](../../../src/fastapi/app/services/embedding.py): `embed-v5.0-pro` at 1024-dim for ingest (documents and page images), `COHERE_EMBED_QUERY_MODEL` (default: the same model) for questions with `input_type: "search_query"`. Sync httpx on the executor threads; `Retry-After` honoured on 429; the query path stays inside `COHERE_EMBED_TIMEOUT_S` (validated under `TIMEOUT_QDRANT_S`). Moving queries to `embed-v5.0-fast` waits for the probe's Pro-vs-Fast measurement. **Wire shape unverified** — every field is `Status.ASSUMED` in `cohere_wire.EMBED`; run `ops/validation/cohere_probe.py` |
+| `bedrock` | `bedrock-runtime.invoke_model`, Cohere Embed v4 asked for 1024-dim output (the **rollback** since ADR-0025) ([`services/embedding.py`](../../../src/fastapi/app/services/embedding.py)). **Wire shape unverified** — the Foundry path was confirmed live on 2026-07-30, this one has not been; run `ops/validation/bedrock_probe.py` |
 | `local` | the `embedding` sidecar, `Qwen/Qwen3-Embedding-0.6B` pinned at revision `97b0c614`, reached over `EMBEDDING_SERVICE_URL` |
 
 The sidecar exists because six uvicorn workers each loaded their own
@@ -260,7 +268,10 @@ Invocation: [`embed_pending_passages`](../../../src/fastapi/app/hatchet_workflow
 plus `services/passage_embedder.py`.
 
 **Switching backends requires a full re-embed** — dimensions match, but the
-vector spaces do not. `scripts/reset_embeddings_for_reencode.py` is the tool.
+vector spaces do not. `scripts/reset_embeddings_for_reencode.py --all` is the
+tool (it clears every point and every passage, image passages included).
+Every dense point is tagged with `embed_model`, and the query path writes the
+model that embedded the question to `silver.answer_runs.embedding_model`.
 
 ## 3. Reranker
 
@@ -427,7 +438,8 @@ model locally except Tesseract.
 | `Qwen/Qwen3-Reranker-0.6B` | `reranker` sidecar (GPU) | `/tmp/hf_cache` | ~1.2 GB |
 | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | `sparse` sidecar (CPU) | `/tmp/hf_cache` | ~440 MB |
 | Tesseract 5.5.2 | `fastapi` and `hatchet-worker` images, built from source | system path | ~30 MB lang data |
-| Cohere Command A+, Embed v4, Rerank 3.5, Parse | Amazon Bedrock (external managed service; Command A+ and Parse on Marketplace endpoints) | n/a | n/a |
+| Cohere Command A+, Embed 5, Parse | Cohere's own API (external managed service, `COHERE_API_KEY`; ADR-0023, ADR-0025) | n/a | n/a |
+| Cohere Rerank 3.5 (and Embed v4, the rollback) | Amazon Bedrock (external managed service, serverless) | n/a | n/a |
 
 The `vllm_hf_cache` volume and the Qwen3-14B / Qwen2.5-VL weights went with
 the vLLM service on 2026-07-30. `bge-small-en` and `bge-reranker-base` were

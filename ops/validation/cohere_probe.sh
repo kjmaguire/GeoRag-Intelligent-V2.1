@@ -2,13 +2,16 @@
 # Run the Cohere API wire-contract probe with the FastAPI service's venv.
 #
 # The sibling of bedrock_probe.sh, which still covers the half that stayed on
-# AWS (Embed v4, Rerank 3.5). Chat and Parse moved to Cohere's own API on
-# 2026-09-15 (ADR-0023). RUN BOTH — neither covers the other's models, and
+# AWS (Rerank 3.5, and Embed v4 as the rollback backend). Chat and Parse moved
+# to Cohere's own API on 2026-09-15 (ADR-0023) and dense embedding (Embed 5)
+# on 2026-10-04 (ADR-0025). RUN BOTH — neither covers the other's models, and
 # aws-preflight.sh A-11 wants a report from each.
 #
-# Needs COHERE_API_KEY, and a key whose plan covers BOTH command-a-plus and
-# parse-v5.0. A key entitled to chat but not Parse deploys cleanly and then
-# sends every scanned page to tesseract, which extracts no tables.
+# Needs COHERE_API_KEY, and a key whose plan covers command-a-plus, parse-v5.0
+# AND embed-v5.0-pro (the probe's `embed` section checks the last). A key
+# entitled to chat but not Parse deploys cleanly and then sends every scanned
+# page to tesseract, which extracts no tables; one not entitled to Embed
+# cannot build the query path's embedder at all.
 #
 # Writes ops/validation/reports/cohere_probe_<timestamp>.json. COMMIT THE
 # REPORT: both adapters carry [UNVERIFIED] at the top until one exists. The

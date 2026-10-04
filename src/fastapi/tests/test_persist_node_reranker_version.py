@@ -156,3 +156,54 @@ async def test_an_empty_search_does_not_count_as_reranked() -> None:
 
 def test_the_value_fits_the_column() -> None:
     assert len(nodes_mod._RERANK_DEGRADED_VERSION) <= 64
+
+
+# ---------------------------------------------------------------------------
+# answer_runs.embedding_model (ADR-0025) -- the sibling column, same row
+# ---------------------------------------------------------------------------
+# The query path writes the model that embedded the question, so an answer can
+# be traced to the vector space that retrieved it. With the Embed v4 -> Embed 5
+# re-embed in flight that is the only per-row way to tell which space a refusal
+# or a citation came from.
+
+_EMBEDDING_MODEL_ARG = 20  # sql is args[0]; reranker_version is 19
+
+
+class _NamedModel:
+    """The surface the persist step reads off ``deps.embedding_model``."""
+
+    model_name = "embed-v5.0-pro"
+    query_model_name = "embed-v5.0-fast"
+
+
+async def _written_embedding_model(tool_results: list[tuple[str, Any]], model: Any) -> Any:
+    pool = _pool()
+    state = _state(tool_results, pool)
+    state.deps.embedding_model = model
+    await persist_node(state)
+    for call in pool._conn.fetchrow.call_args_list:
+        if "INSERT INTO silver.answer_runs" in call.args[0]:
+            assert "embedding_model," in call.args[0]
+            return call.args[_EMBEDDING_MODEL_ARG]
+    raise AssertionError("persist_node never issued the answer_runs INSERT")
+
+
+@pytest.mark.asyncio
+async def test_a_document_search_run_records_the_query_model() -> None:
+    written = await _written_embedding_model(
+        [("search_documents", _search(degraded=False))], _NamedModel()
+    )
+    assert written == "embed-v5.0-fast"
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_document_search_records_no_embedding_model() -> None:
+    assert await _written_embedding_model([], _NamedModel()) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_search_records_no_embedding_model() -> None:
+    failed = DocumentSearchResult(
+        chunks=[], count=0, data_source="Qdrant (timeout)", retrieval_failure="timeout",
+    )
+    assert await _written_embedding_model([("search_documents", failed)], _NamedModel()) is None

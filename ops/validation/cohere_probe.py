@@ -1,12 +1,15 @@
-"""Wire-contract probe for Cohere's own API — chat and Parse (ADR-0023).
+"""Wire-contract probe for Cohere's own API — chat, Parse (ADR-0023), Embed 5 (ADR-0025).
 
-**Neither Cohere adapter has been verified against a live call from this
-codebase.** Both say so at the top. This is the gate ADR-0023 migration step
-6 names: run it, read the report, correct the adapters from evidence before
-either carries real traffic.
+**No Cohere adapter has been fully verified against a live call from this
+codebase.** Each says so at the top (chat and Parse's text path were observed
+on 2026-09-24; Parse's tables and figures, and all of Embed 5, never). This is
+the gate ADR-0023 migration step 6 and ADR-0025 migration step 1 name: run it,
+read the report, correct the adapters from evidence before any of them carries
+real traffic.
 
 The sibling of `bedrock_probe.py`, which still covers the half that stayed on
-AWS — Embed v4 and Rerank 3.5. Chat and Parse left Bedrock on 2026-09-15
+AWS — Rerank 3.5, and Embed v4 as the rollback backend. Embed 5 is not on
+Bedrock; it is section 8 below. Chat and Parse left Bedrock on 2026-09-15
 because Command A+ and Parse 5 turned out to be AWS *Marketplace* SageMaker
 packages rather than Bedrock models, on A100/H100 and ~$2.50/hour with no
 idle state. Run both probes; neither covers the other's models.
@@ -49,6 +52,15 @@ What it records
      what turns `COHERE_PARSE_MAX_PIXELS` from a guess into a measurement.
   7. Error shapes and latency, so the retry ladder in `_invoke` is tuned
      against something real rather than against Bedrock's behaviour.
+  8. **Embed 5** (ADR-0025), ``probe_embed``: `POST /v2/embed` with
+     `search_document`, `search_query` and one image (a page of --pdf if
+     given, else a generated PNG); whether `output_dimension: 1024` is
+     honoured; which image request shape is accepted; the image pixel cap
+     (needs --pdf); the per-request text limit (96 vs 97 inputs); any rate-
+     limit header the host volunteers; and the Pro-vs-Fast cross-model
+     cosine and ranking agreement that gate moving queries to
+     `embed-v5.0-fast`. It sends no more than ~200 short texts and a few
+     images: pennies.
 
 On secrets
 ----------
@@ -157,6 +169,18 @@ def _chat_model() -> str:
 
 def _parse_model() -> str:
     return (os.environ.get("COHERE_PARSE_MODEL") or "").strip() or "parse-v5.0"
+
+
+def _embed_model() -> str:
+    return (os.environ.get("COHERE_EMBED_MODEL") or "").strip() or "embed-v5.0-pro"
+
+
+def _embed_fast_model() -> str:
+    return (os.environ.get("COHERE_EMBED_FAST_MODEL") or "").strip() or "embed-v5.0-fast"
+
+
+def _embed_dimension() -> int:
+    return int((os.environ.get("COHERE_EMBED_DIMENSION") or "").strip() or "1024")
 
 
 def _client(timeout: float = 180.0):
@@ -930,10 +954,393 @@ def probe_latency(samples: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 8. Embed 5 — POST /v2/embed (ADR-0025)
+# ---------------------------------------------------------------------------
+
+#: The adapter's chunk size (embedding.COHERE_EMBED_MAX_TEXTS_PER_CALL), the
+#: v4 figure carried over. The probe sends exactly this many texts and one
+#: more: if 97 is refused the limit is 96 and the chunking is right; if 97 is
+#: accepted the limit is higher and the adapter is merely conservative.
+EMBED_ADAPTER_CHUNK = 96
+
+#: Image pixel ladder for Embed. Embed v4's ceiling was 2M px and
+#: page_image.render_page_png downscales to that; whether Embed 5 raises it is
+#: unobserved. Kept short (three rungs): each rung is a multi-MB request.
+EMBED_IMAGE_PIXEL_LADDER = (1_900_000, 4_000_000, 8_000_000)
+
+_EMBED_QUERIES = (
+    "What is the indicated gold grade at the Madison deposit?",
+    "Which drill holes intersected quartz-carbonate veining?",
+    "Describe the structural controls on mineralization.",
+    "What QA/QC samples were inserted with the assay batches?",
+    "Summarize the 2023 diamond drilling program.",
+)
+_EMBED_DOCUMENTS = (
+    "Indicated resources at Madison total 3.1 Mt at 1.9 g/t Au using a 0.5 g/t cutoff.",
+    "Drill hole MAD-21-003 intersected 12 m of quartz-carbonate veining with visible gold.",
+    "Mineralization is controlled by a northeast-trending shear zone dipping 60 degrees southeast.",
+    "Certified reference materials and blanks were inserted at a rate of one in twenty samples.",
+    "The property is accessible by a gravel road from the highway; weather was wet in 2024.",
+)
+
+
+class _EmbedRefused(Exception):
+    """A non-2xx from /v2/embed, carrying the probe's redacted error record."""
+
+    def __init__(self, detail: dict[str, Any]) -> None:
+        super().__init__(f"HTTP {detail.get('status')}")
+        self.detail = detail
+
+
+def _embed_error(exc: BaseException) -> dict[str, Any]:
+    return exc.detail if isinstance(exc, _EmbedRefused) else _err(exc)
+
+
+def _embed_call(client: Any, body: dict[str, Any]) -> tuple[dict[str, Any], float, Any]:
+    """One embed request -> (payload, seconds, response). Raises _EmbedRefused on non-2xx."""
+    started = time.monotonic()
+    response = client.post(f"{_base_url()}/v2/embed", content=json.dumps(body).encode())
+    elapsed = time.monotonic() - started
+    if response.status_code >= 300:
+        raise _EmbedRefused(_http_err(response))
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("embed reply is not a JSON object")
+    return payload, elapsed, response
+
+
+def _embed_body(model: str, input_type: str, **inputs: Any) -> dict[str, Any]:
+    return {
+        "model": model,
+        "input_type": input_type,
+        "embedding_types": ["float"],
+        "output_dimension": _embed_dimension(),
+        **inputs,
+    }
+
+
+def _float_rows(payload: dict[str, Any]) -> list[list[float]]:
+    return payload["embeddings"]["float"]
+
+
+def _l2(vector: list[float]) -> float:
+    return sum(x * x for x in vector) ** 0.5
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    denominator = _l2(a) * _l2(b)
+    return sum(x * y for x, y in zip(a, b, strict=True)) / denominator if denominator else 0.0
+
+
+def _rate_limit_headers(response: Any) -> dict[str, str]:
+    """Any rate-limit-looking header the host volunteers, verbatim.
+
+    Cohere documents limits per key and plan but not, as far as the adapter
+    knows, in response headers -- so an empty dict is the likely answer and is
+    itself the finding: the real limit is only observable by hitting it, which
+    this probe deliberately does not do on a production key.
+    """
+    seen: dict[str, str] = {}
+    for name, value in response.headers.items():
+        lowered = name.lower()
+        if "ratelimit" in lowered or "rate-limit" in lowered or lowered == "retry-after":
+            seen[lowered] = _redact(str(value))[:80]
+    return seen
+
+
+def _generated_png(width: int = 256, height: int = 256) -> bytes:
+    """A small non-blank grayscale PNG with no dependency beyond the stdlib."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    rows = b"".join(
+        b"\x00" + bytes(((x * 3) ^ (y * 5)) & 0xFF for x in range(width)) for y in range(height)
+    )
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+def _embed_image_source(pdf: Path | None, page: int) -> tuple[bytes, str, int]:
+    """(png, where it came from, pixels): a real page if possible, else generated."""
+    if pdf is not None and pdf.exists():
+        rendered = _render_sized(pdf, page, 1_900_000)
+        if rendered is not None:
+            return rendered[0], f"{pdf.name} p{page}", rendered[1]
+    return _generated_png(), "generated 256x256 grayscale", 256 * 256
+
+
+def _image_shape_bodies(model: str, uri: str) -> tuple[tuple[str, dict[str, Any]], ...]:
+    """The two shapes, in the order _CohereEmbedding.embed_image tries them."""
+    return (
+        ("images", _embed_body(model, "image", images=[uri])),
+        (
+            "inputs",
+            _embed_body(
+                model,
+                "image",
+                inputs=[{"content": [{"type": "image_url", "image_url": {"url": uri}}]}],
+            ),
+        ),
+    )
+
+
+def _probe_embed_image(client: Any, model: str, pdf: Path | None, page: int) -> dict[str, Any]:
+    png, source, pixels = _embed_image_source(pdf, page)
+    uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    attempts: dict[str, Any] = {}
+    accepted_shape: str | None = None
+    out: dict[str, Any] = {"source": source, "png_bytes": len(png), "pixels": pixels}
+    for name, body in _image_shape_bodies(model, uri):
+        try:
+            payload, elapsed, _ = _embed_call(client, body)
+            rows = _float_rows(payload)
+        except Exception as exc:  # noqa: BLE001
+            attempts[name] = _embed_error(exc)
+            # Re-shape only on a schema rejection, exactly as the adapter does.
+            if attempts[name].get("status") in (400, 422):
+                continue
+            break
+        accepted_shape = name
+        out.update(
+            shape_accepted=name,
+            rejected_first=attempts or None,
+            latency_s=round(elapsed, 3),
+            top_level_keys=sorted(payload),
+            dimension=len(rows[0]),
+            dimension_honoured=len(rows[0]) == _embed_dimension(),
+        )
+        break
+    if accepted_shape is None:
+        out["error"] = {
+            "type": "NoImageShapeAccepted",
+            "message": "neither images[] nor inputs[] was accepted; see attempts",
+            "attempts": attempts,
+        }
+        return out
+
+    # The pixel cap needs a real page to scale; a generated 256x256 cannot
+    # climb. Same shape as Parse's ladder, and for the same reason: stop at
+    # the first refusal rather than guessing under it.
+    if pdf is None or not pdf.exists():
+        out["pixel_ladder"] = {"skipped": "no --pdf: a generated image cannot be scaled"}
+        return out
+    ladder: dict[str, Any] = {}
+    out["pixel_ladder"] = ladder
+    for target in EMBED_IMAGE_PIXEL_LADDER:
+        rendered = _render_sized(pdf, page, target)
+        if rendered is None:
+            break
+        rung_png, actual = rendered
+        rung_uri = "data:image/png;base64," + base64.b64encode(rung_png).decode("ascii")
+        body = dict(_image_shape_bodies(model, rung_uri))[accepted_shape]
+        try:
+            _embed_call(client, body)
+        except _EmbedRefused as exc:
+            status = exc.detail.get("status")
+            if status in _SIZE_REJECTION_STATUS:
+                ladder[str(target)] = {
+                    "png_bytes": len(rung_png),
+                    "pixels": actual,
+                    "status": status,
+                    "accepted": False,
+                    "code": exc.detail.get("code"),
+                    "message": exc.detail.get("message"),
+                }
+            else:
+                ladder[str(target)] = {"error": exc.detail}
+            break
+        except Exception as exc:  # noqa: BLE001
+            ladder[str(target)] = {"error": _err(exc)}
+            break
+        ladder[str(target)] = {
+            "png_bytes": len(rung_png),
+            "pixels": actual,
+            "status": 200,
+            "accepted": True,
+        }
+    return out
+
+
+def _probe_input_limit(client: Any, model: str) -> dict[str, Any]:
+    """Send the adapter's chunk size and one more, to see which side 96 is on."""
+    sent: dict[str, Any] = {}
+    for count in (EMBED_ADAPTER_CHUNK, EMBED_ADAPTER_CHUNK + 1):
+        texts = [f"assay interval {i}: {0.1 * i:.1f} g/t Au over 1.5 m" for i in range(count)]
+        try:
+            payload, elapsed, _ = _embed_call(
+                client, _embed_body(model, "search_document", texts=texts)
+            )
+            sent[str(count)] = {
+                "status": 200,
+                "accepted": True,
+                "vectors_back": len(_float_rows(payload)),
+                "latency_s": round(elapsed, 3),
+            }
+        except _EmbedRefused as exc:
+            status = exc.detail.get("status")
+            if status in _SIZE_REJECTION_STATUS:
+                sent[str(count)] = {
+                    "status": status,
+                    "accepted": False,
+                    "message": exc.detail.get("message"),
+                }
+            else:
+                sent[str(count)] = {"error": exc.detail}
+        except Exception as exc:  # noqa: BLE001
+            sent[str(count)] = {"error": _err(exc)}
+
+    at_chunk = sent[str(EMBED_ADAPTER_CHUNK)].get("accepted")
+    over = sent[str(EMBED_ADAPTER_CHUNK + 1)].get("accepted")
+    if at_chunk is True and over is False:
+        limit = f"{EMBED_ADAPTER_CHUNK} (one more is refused): the adapter's chunking is exact"
+        chunk_ok: bool | None = True
+    elif at_chunk is True and over is True:
+        limit = f">= {EMBED_ADAPTER_CHUNK + 1}: the adapter is conservative; probe higher before raising it"
+        chunk_ok = True
+    elif at_chunk is False:
+        limit = f"< {EMBED_ADAPTER_CHUNK}: the adapter's chunk size is TOO LARGE and every full batch is refused"
+        chunk_ok = False
+    else:
+        limit = "undetermined (a call failed for a reason unrelated to size)"
+        chunk_ok = None
+    return {"adapter_chunk_size": EMBED_ADAPTER_CHUNK, "adapter_chunk_size_ok": chunk_ok, "limit": limit, "sent": sent}
+
+
+def _probe_cross_model(client: Any, pro: str) -> dict[str, Any]:
+    """ADR-0025's sub-decision: is Fast queryable against a Pro-indexed corpus?
+
+    Cohere says the two share an embedding space. That is a vendor claim about
+    the one property that fails silently when false, so this measures it on
+    five queries: (a) the cosine between the Pro and Fast embedding of the
+    SAME query, and (b) whether ranking five documents (embedded once, by Pro)
+    gives the same order for the Pro query vector as for the Fast one. It does
+    NOT decide anything -- there is no threshold here on purpose. The ADR's
+    second measurement, top-k overlap against the re-embedded corpus, needs
+    the corpus and is run after the cutover.
+    """
+    fast = _embed_fast_model()
+    if fast == pro:
+        return {"skipped": f"COHERE_EMBED_FAST_MODEL equals COHERE_EMBED_MODEL ({pro})"}
+    try:
+        docs_payload, _, _ = _embed_call(
+            client, _embed_body(pro, "search_document", texts=list(_EMBED_DOCUMENTS))
+        )
+        pro_payload, pro_s, _ = _embed_call(
+            client, _embed_body(pro, "search_query", texts=list(_EMBED_QUERIES))
+        )
+        fast_payload, fast_s, _ = _embed_call(
+            client, _embed_body(fast, "search_query", texts=list(_EMBED_QUERIES))
+        )
+        docs = _float_rows(docs_payload)
+        pro_q = _float_rows(pro_payload)
+        fast_q = _float_rows(fast_payload)
+    except Exception as exc:  # noqa: BLE001
+        return {"pro_model": pro, "fast_model": fast, "error": _embed_error(exc)}
+
+    def order(query: list[float]) -> list[int]:
+        return sorted(range(len(docs)), key=lambda i: -_cosine(query, docs[i]))
+
+    cosines = [_cosine(p, f) for p, f in zip(pro_q, fast_q, strict=True)]
+    pro_orders = [order(q) for q in pro_q]
+    fast_orders = [order(q) for q in fast_q]
+    return {
+        "pro_model": pro,
+        "fast_model": fast,
+        "queries": len(cosines),
+        "same_query_cosine": {
+            "values": [round(c, 4) for c in cosines],
+            "min": round(min(cosines), 4),
+            "median": round(statistics.median(cosines), 4),
+        },
+        "top1_agrees": sum(p[0] == f[0] for p, f in zip(pro_orders, fast_orders, strict=True)),
+        "order_agrees": sum(p == f for p, f in zip(pro_orders, fast_orders, strict=True)),
+        "latency_s": round(fast_s, 3),
+        "pro_latency_s": round(pro_s, 3),
+        "note": (
+            "No threshold: a person reads this. Cosine near 1.0 between the "
+            "same text under two models is necessary, not sufficient, for a "
+            "shared space. Do NOT set COHERE_EMBED_QUERY_MODEL to the Fast "
+            "model on this alone -- the ADR also wants top-k overlap against "
+            "the re-embedded corpus."
+        ),
+    }
+
+
+def probe_embed(pdf: Path | None = None, page: int = 1) -> dict[str, Any]:
+    """Embed 5 on Cohere's own API: the document call, then the variants.
+
+    The top-level keys stay those of the single ``search_document`` call, and
+    each variant is its own nested result so one refused variant does not hide
+    the others -- the same layout as ``bedrock_probe.probe_embed``, so the
+    ``embed`` contract in cohere_wire reads either with one evidence path.
+    """
+    if not _api_key():
+        return {"skipped": "COHERE_API_KEY unset"}
+
+    model = _embed_model()
+    dimension = _embed_dimension()
+    out: dict[str, Any] = {"model": model, "output_dimension_requested": dimension}
+
+    with _client(timeout=120.0) as client:
+        try:
+            payload, elapsed, response = _embed_call(
+                client,
+                _embed_body(model, "search_document", texts=["quartz-carbonate vein hosted gold"]),
+            )
+            rows = _float_rows(payload)
+        except Exception as exc:  # noqa: BLE001
+            return {**out, "error": _embed_error(exc)}
+        out.update(
+            latency_s=round(elapsed, 3),
+            top_level_keys=sorted(payload),
+            dimension=len(rows[0]),
+            # A silently ignored output_dimension writes the wrong width into
+            # a 1024-dim collection, and retrieval refuses every question.
+            dimension_honoured=len(rows[0]) == dimension,
+            l2_norm=round(_l2(rows[0]), 4),
+            # Not a result: metadata, so it carries no result-like key.
+            rate_limit_headers=_rate_limit_headers(response),
+        )
+        out["document"] = {"top_level_keys": out["top_level_keys"], "latency_s": out["latency_s"]}
+
+        # The query path: same endpoint, the other input_type. tools.py sends
+        # it on every question.
+        try:
+            payload, elapsed, _ = _embed_call(
+                client,
+                _embed_body(
+                    (os.environ.get("COHERE_EMBED_QUERY_MODEL") or "").strip() or model,
+                    "search_query",
+                    texts=[_EMBED_QUERIES[0]],
+                ),
+            )
+            out["query"] = {
+                "latency_s": round(elapsed, 3),
+                "top_level_keys": sorted(payload),
+                "dimension": len(_float_rows(payload)[0]),
+            }
+        except Exception as exc:  # noqa: BLE001
+            out["query"] = {"error": _embed_error(exc)}
+
+        out["input_limit"] = _probe_input_limit(client, model)
+        out["image"] = _probe_embed_image(client, model, pdf, page)
+        out["cross_model"] = _probe_cross_model(client, model)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Verdict
 # ---------------------------------------------------------------------------
 
-_EVIDENCE_SECTIONS = ("chat", "chat_stream", "parse", "latency")
+_EVIDENCE_SECTIONS = ("chat", "chat_stream", "parse", "embed", "latency")
 
 
 def _is_auth_failure(section: dict) -> bool:
@@ -990,6 +1397,7 @@ def main() -> int:
         "chat": probe_chat(),
         "chat_stream": probe_chat_stream(),
         "parse": probe_parse(args.pdf, pages),
+        "embed": probe_embed(args.pdf, pages[0]),
         "latency": probe_latency(args.latency_samples),
     }
 
@@ -1139,6 +1547,36 @@ def _report_headlines(report: dict) -> None:
         ok = (section.get("adapter_page_ok") or {}).get("ok")
         if ok is not None:
             lines.append(f"  parse[{fmt}] adapter reads:  {ok}")
+
+    embed = report.get("embed") or {}
+    if "dimension_honoured" in embed:
+        honoured = embed["dimension_honoured"]
+        lines.append(
+            f"  embed output_dimension:    {embed.get('dimension')} "
+            f"(honoured: {honoured})"
+            + ("" if honoured else "   <-- wrong-width vectors into georag_chunks")
+        )
+    embed_image = embed.get("image") or {}
+    if "shape_accepted" in embed_image:
+        lines.append(f"  embed image shape:         {embed_image['shape_accepted']}")
+    elif "error" in embed_image:
+        lines.append("  embed image shape:         NEITHER ACCEPTED   <-- image passages will not embed")
+    ladder = embed_image.get("pixel_ladder") or {}
+    accepted_px = [
+        rung["pixels"] for rung in ladder.values() if isinstance(rung, dict) and rung.get("accepted")
+    ]
+    if accepted_px:
+        lines.append(f"  embed image pixel cap:     accepted up to {max(accepted_px):,} px (ladder ends at first refusal)")
+    limit = embed.get("input_limit") or {}
+    if "limit" in limit:
+        lines.append(f"  embed texts per request:   {limit['limit']}")
+    cross = embed.get("cross_model") or {}
+    if "same_query_cosine" in cross:
+        cosine = cross["same_query_cosine"]
+        lines.append(
+            f"  Pro vs Fast, same query:   cosine min {cosine['min']} / median {cosine['median']}; "
+            f"top-1 agrees {cross['top1_agrees']}/{cross['queries']}   (no threshold: read it)"
+        )
 
     if lines:
         print(
