@@ -129,7 +129,7 @@ jobs:
           terraform_wrapper: false
 
       - name: Configure AWS credentials (plan role)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -238,7 +238,7 @@ jobs:
           terraform_wrapper: false
 
       - name: Configure AWS credentials (apply role)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
