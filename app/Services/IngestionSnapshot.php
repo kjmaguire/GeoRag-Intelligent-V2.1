@@ -8,8 +8,11 @@ use App\Http\Controllers\Api\V1\UploadController;
 use App\Support\ExtractionMethods;
 use App\Support\SetsWorkspaceRlsContext;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use League\Flysystem\StorageAttributes;
 
 /**
  * Per-project ingestion snapshot — the ONE place that decides which uploaded
@@ -57,6 +60,28 @@ final class IngestionSnapshot
     private const UPLOAD_LISTING_TTL_SECONDS = 8;
 
     /**
+     * How long the last good listing is kept past its TTL, to answer callers
+     * that lose the rebuild race and time out waiting for the lock.
+     */
+    private const UPLOAD_LISTING_STALE_SECONDS = 300;
+
+    /** Lifetime of the rebuild lock; longer than any sane listing so a crashed worker cannot wedge it for long. */
+    private const UPLOAD_LISTING_LOCK_SECONDS = 20;
+
+    /** How long a caller that lost the lock waits for the winner before serving stale data. */
+    private const UPLOAD_LISTING_LOCK_WAIT_SECONDS = 5;
+
+    /**
+     * Rows kept per section (reports, progress rows, bronze uploads), newest
+     * first. build() runs on every 5 s poll of every open Ingestion Runs tab
+     * and on each Overview load; unbounded it read every report, every
+     * progress row and every bronze object of a project that has been fed
+     * for years. The payload says when a section was cut (`truncated`).
+     * Totals are computed over the rows kept.
+     */
+    public const MAX_ROWS_PER_SECTION = 500;
+
+    /**
      * How long a NON-terminal progress row must have been quiet (no step
      * transition, no heartbeat — mark_heartbeat bumps updated_at every 30 s
      * while a task runs) before a report existing for its file overrides it.
@@ -76,8 +101,17 @@ final class IngestionSnapshot
 
     private const SETTLED_STEPS = ['completed', 'failed', 'cancelled', 'timed_out'];
 
+    /**
+     * @param int $listingLockWaitSeconds How long a caller that finds the
+     *                                    upload listing being rebuilt waits for
+     *                                    the rebuild before serving the stale
+     *                                    copy. A constructor argument so a test
+     *                                    can make it zero; the container uses
+     *                                    the default.
+     */
     public function __construct(
         private readonly StorageService $storage,
+        private readonly int $listingLockWaitSeconds = self::UPLOAD_LISTING_LOCK_WAIT_SECONDS,
     ) {}
 
     /**
@@ -117,6 +151,8 @@ final class IngestionSnapshot
      *     in_flight: list<array<string, mixed>>,
      *     completed: list<array<string, mixed>>,
      *     latest_in_flight: ?string,
+     *     truncated: bool,
+     *     truncated_sections: array{reports: bool, progress: bool, uploads: bool},
      *     totals: array{
      *         in_flight: int, completed: int, files: int,
      *         files_completed: int, files_partial: int, files_failed: int,
@@ -128,10 +164,21 @@ final class IngestionSnapshot
     {
         // Both callers (page load and the JSON poll) take the same path, and
         // so does the Overview tile. The listing is cached, see listUploads().
+        $reports = $this->loadReports($projectId, $workspaceId);
+        $progress = $this->loadProgressRows($projectId, $workspaceId);
+        $uploads = $this->listUploads($projectId);
+
+        $truncated = [
+            'reports' => count($reports) > self::MAX_ROWS_PER_SECTION,
+            'progress' => count($progress) > self::MAX_ROWS_PER_SECTION,
+            'uploads' => count($uploads) > self::MAX_ROWS_PER_SECTION,
+        ];
+
         return $this->assemble(
-            $this->loadReports($projectId, $workspaceId),
-            $this->loadProgressRows($projectId, $workspaceId),
-            $this->listUploads($projectId),
+            array_slice($reports, 0, self::MAX_ROWS_PER_SECTION),
+            array_slice($progress, 0, self::MAX_ROWS_PER_SECTION),
+            array_slice($uploads, 0, self::MAX_ROWS_PER_SECTION),
+            $truncated,
         );
     }
 
@@ -142,11 +189,14 @@ final class IngestionSnapshot
      * @param list<array{report_id: string, title: string, source_object_key: ?string, parser_used: ?string, parse_quality_pct: ?float, text_page_coverage_pct: ?float, is_scanned: bool, passages: int, embedded: int}> $reports
      * @param list<array{minio_key: string, filename: string, current_step: string, step_index: int, total_steps: int, stage_pct: ?float, stage_detail: ?string, started_at: ?string, updated_at: ?string, failed_at: ?string, error_text: ?string, report_id: ?string, status: string, rows_written: ?int, warnings: list<array<string, mixed>>}> $progress
      * @param list<array{key: string, filename: string, size_bytes: ?int, uploaded_at: ?string}> $uploads
+     * @param array{reports?: bool, progress?: bool, uploads?: bool} $truncated Sections build() cut to MAX_ROWS_PER_SECTION.
      *
      * @return array{
      *     in_flight: list<array<string, mixed>>,
      *     completed: list<array<string, mixed>>,
      *     latest_in_flight: ?string,
+     *     truncated: bool,
+     *     truncated_sections: array{reports: bool, progress: bool, uploads: bool},
      *     totals: array{
      *         in_flight: int, completed: int, files: int,
      *         files_completed: int, files_partial: int, files_failed: int,
@@ -154,7 +204,7 @@ final class IngestionSnapshot
      *     },
      * }
      */
-    public function assemble(array $reports, array $progress, array $uploads): array
+    public function assemble(array $reports, array $progress, array $uploads, array $truncated = []): array
     {
         $index = $this->indexReports($reports);
 
@@ -411,6 +461,15 @@ final class IngestionSnapshot
             // The newest row that is actually still moving — not simply
             // in_flight[0], which may be a settled row in its 24 h window.
             'latest_in_flight' => isset($moving[0]) ? (string) $moving[0]['filename'] : null,
+            // True when any section was cut to MAX_ROWS_PER_SECTION: older
+            // rows exist that this payload does not show, and the totals
+            // below cover only what it does.
+            'truncated' => in_array(true, $truncated, true),
+            'truncated_sections' => [
+                'reports' => (bool) ($truncated['reports'] ?? false),
+                'progress' => (bool) ($truncated['progress'] ?? false),
+                'uploads' => (bool) ($truncated['uploads'] ?? false),
+            ],
             'totals' => [
                 'in_flight' => count($moving),
                 'completed' => count($completedRows),
@@ -607,8 +666,20 @@ final class IngestionSnapshot
         // RLS fix 2026-08-15 (third pass): silver.document_passages was
         // converted to fail-closed, so the LEFT JOIN subquery above also
         // needs app.workspace_id bound or it silently contributes zero rows.
+        //
+        // Capped (2026-10-04): only the newest MAX_ROWS_PER_SECTION + 1 reports
+        // are read (the extra row is how build() knows it cut something), and
+        // the passage aggregate is restricted to exactly those reports.
         $rows = $this->withWorkspaceRls($workspaceId, fn () => DB::select(
             <<<'SQL'
+            WITH recent AS (
+                SELECT r.report_id, r.title, r.source_object_key, r.parser_used,
+                       r.parse_quality_pct, r.text_page_coverage_pct, r.is_scanned
+                FROM silver.reports r
+                WHERE r.project_id = ?
+                ORDER BY r.created_at DESC NULLS LAST, r.report_id
+                LIMIT ?
+            )
             SELECT
                 r.report_id::text AS report_id,
                 r.title,
@@ -619,19 +690,17 @@ final class IngestionSnapshot
                 r.is_scanned,
                 COALESCE(p.passages, 0) AS passages,
                 COALESCE(p.embedded, 0) AS embedded
-            FROM silver.reports r
+            FROM recent r
             LEFT JOIN (
                 SELECT dp.document_id,
                        COUNT(*) AS passages,
                        COUNT(*) FILTER (WHERE dp.embedding_id IS NOT NULL) AS embedded
                 FROM silver.document_passages dp
-                JOIN silver.reports r2 ON r2.report_id = dp.document_id
-                WHERE r2.project_id = ?
+                WHERE dp.document_id IN (SELECT report_id FROM recent)
                 GROUP BY dp.document_id
             ) p ON p.document_id = r.report_id
-            WHERE r.project_id = ?
             SQL,
-            [$projectId, $projectId],
+            [$projectId, self::MAX_ROWS_PER_SECTION + 1],
         ));
 
         return array_map(static fn ($r) => [
@@ -682,28 +751,38 @@ final class IngestionSnapshot
                 -- per minio_key (attempt N + recovery rows); rendering every
                 -- non-terminal one duplicated the same filename 3-10x in the
                 -- in-flight list. Latest attempt wins.
-                SELECT DISTINCT ON (minio_key)
-                       minio_key, filename, current_step,
-                       step_index, total_steps,
-                       stage_pct, stage_detail,
-                       to_char(started_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS started_at,
-                       to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS updated_at,
-                       to_char(failed_at,  'YYYY-MM-DD"T"HH24:MI:SSOF') AS failed_at,
-                       error_text,
-                       report_id::text AS report_id,
-                       -- Added 2026-08-21. A run that reached the end having
-                       -- written nothing used to render as an unqualified
-                       -- green "Completed" while the warning explaining why
-                       -- ("upload the collar file first") lived only inside
-                       -- the Hatchet run object.
-                       status,
-                       rows_written,
-                       warnings::text AS warnings
-                FROM silver.ingest_progress
-                WHERE project_id = ?
-                ORDER BY minio_key, attempt_number DESC, started_at DESC
+                -- Capped: the outer query keeps the newest MAX_ROWS_PER_SECTION + 1
+                -- runs (the extra row is how build() knows it cut something).
+                SELECT minio_key, filename, current_step, step_index, total_steps,
+                       stage_pct, stage_detail, started_at, updated_at, failed_at,
+                       error_text, report_id, status, rows_written, warnings
+                FROM (
+                    SELECT DISTINCT ON (minio_key)
+                           minio_key, filename, current_step,
+                           step_index, total_steps,
+                           stage_pct, stage_detail,
+                           to_char(started_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS started_at,
+                           to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS updated_at,
+                           to_char(failed_at,  'YYYY-MM-DD"T"HH24:MI:SSOF') AS failed_at,
+                           started_at AS sort_at,
+                           error_text,
+                           report_id::text AS report_id,
+                           -- Added 2026-08-21. A run that reached the end having
+                           -- written nothing used to render as an unqualified
+                           -- green "Completed" while the warning explaining why
+                           -- ("upload the collar file first") lived only inside
+                           -- the Hatchet run object.
+                           status,
+                           rows_written,
+                           warnings::text AS warnings
+                    FROM silver.ingest_progress
+                    WHERE project_id = ?
+                    ORDER BY minio_key, attempt_number DESC, started_at DESC
+                ) latest
+                ORDER BY sort_at DESC NULLS LAST, minio_key
+                LIMIT ?
                 SQL,
-                [$projectId],
+                [$projectId, self::MAX_ROWS_PER_SECTION + 1],
             ));
         } catch (\Throwable $e) {
             return [];  // table absent in test envs that didn't run the migration
@@ -761,9 +840,7 @@ final class IngestionSnapshot
      */
     private function listUploads(string $projectId): array
     {
-        // Cached because this is the expensive part of the snapshot: ~2 S3
-        // round-trips (size + lastModified) per object, so a 200-report
-        // project costs ~400 calls per uncached build.
+        // Cached because this is the expensive part of the snapshot.
         //
         // That cost is why 2f332f2 (2026-08-11) dropped the listing from the
         // 5-second poll entirely — but doing so broke the page. The fallback
@@ -779,21 +856,70 @@ final class IngestionSnapshot
         // "I have to reload it myself" symptom.
         //
         // A short shared TTL fixes both: correctness is restored, and the S3
-        // cost drops from (400 calls x every open tab / 5s) to 400 calls per
-        // TTL window TOTAL, since the cache is shared across tabs, requests
-        // and — since 2026-09-29 — the Overview tile. Keyed by project so
-        // nothing leaks across tenants.
+        // cost drops from (one listing x every open tab / 5s) to one listing
+        // per TTL window TOTAL, since the cache is shared across tabs,
+        // requests and — since 2026-09-29 — the Overview tile. Keyed by
+        // project so nothing leaks across tenants.
         //
         // TTL is deliberately shorter than the 5s poll x 2 so a new upload
         // surfaces within roughly one poll cycle of landing in bronze.
-        return Cache::remember(
-            "ingestion-runs:uploads:{$projectId}",
-            now()->addSeconds(self::UPLOAD_LISTING_TTL_SECONDS),
-            fn (): array => $this->listUploadsUncached($projectId),
-        );
+        //
+        // Cache::remember() alone has no stampede protection: when the entry
+        // expires, every request in flight at that moment misses together and
+        // each runs the whole S3 listing. A lock lets one caller rebuild
+        // while the rest wait for its result; a caller that times out waiting
+        // is served the previous listing (kept STALE_SECONDS longer) rather
+        // than starting a listing of its own.
+        $key = "ingestion-runs:uploads:{$projectId}";
+        $cached = Cache::get($key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $lock = Cache::lock($key.':lock', self::UPLOAD_LISTING_LOCK_SECONDS);
+
+        try {
+            $lock->block($this->listingLockWaitSeconds);
+        } catch (LockTimeoutException) {
+            $stale = Cache::get($key.':stale');
+            if (is_array($stale)) {
+                return $stale;
+            }
+
+            // Nothing to serve: list once ourselves, uncached.
+            return $this->listUploadsUncached($projectId);
+        }
+
+        try {
+            // The caller that held the lock has probably just filled it.
+            $cached = Cache::get($key);
+            if (is_array($cached)) {
+                return $cached;
+            }
+
+            $uploads = $this->listUploadsUncached($projectId);
+            Cache::put($key, $uploads, now()->addSeconds(self::UPLOAD_LISTING_TTL_SECONDS));
+            Cache::put($key.':stale', $uploads, now()->addSeconds(self::UPLOAD_LISTING_STALE_SECONDS));
+
+            return $uploads;
+        } finally {
+            $lock->release();
+        }
     }
 
     /**
+     * One directory listing per upload prefix, newest first, capped.
+     *
+     * This used to call files() and then size() and lastModified() on every
+     * object — ~16 prefix listings plus two HEAD requests per object, so a
+     * 200-report project cost ~400 S3 calls per rebuild. listContents()
+     * returns each object's size and last-modified time in the listing
+     * response itself, so the cost is one request per prefix however many
+     * objects it holds.
+     *
+     * The cap is MAX_ROWS_PER_SECTION + 1 (the extra row is how build()
+     * knows the listing was cut), applied after sorting by upload time.
+     *
      * @return list<array{key: string, filename: string, size_bytes: ?int, uploaded_at: ?string}>
      */
     private function listUploadsUncached(string $projectId): array
@@ -808,36 +934,37 @@ final class IngestionSnapshot
         // this page in both directions, success and failure alike.
         foreach (UploadController::bronzePrefixes() as $prefix) {
             try {
-                $keys = $disk->files("{$prefix}/{$projectId}");
+                /** @var iterable<StorageAttributes> $listing */
+                $listing = $disk->getDriver()->listContents("{$prefix}/{$projectId}", false);
+
+                foreach ($listing as $item) {
+                    if (! $item->isFile()) {
+                        continue;
+                    }
+
+                    $modified = $item->lastModified();
+                    $size = method_exists($item, 'fileSize') ? $item->fileSize() : null;
+
+                    $out[] = [
+                        'key' => (string) $item->path(),
+                        'filename' => basename((string) $item->path()),
+                        'size_bytes' => $size === null ? null : (int) $size,
+                        'uploaded_at' => $modified !== null
+                            ? CarbonImmutable::createFromTimestamp($modified)->toIso8601String()
+                            : null,
+                    ];
+                }
             } catch (\Throwable $e) {
-                $keys = [];
-            }
-
-            foreach ($keys as $key) {
-                try {
-                    $size = $disk->size($key);
-                } catch (\Throwable $e) {
-                    $size = null;
-                }
-                try {
-                    $modified = $disk->lastModified($key);
-                    $uploadedAt = $modified
-                        ? CarbonImmutable::createFromTimestamp($modified)->toIso8601String()
-                        : null;
-                } catch (\Throwable $e) {
-                    $uploadedAt = null;
-                }
-
-                $out[] = [
-                    'key' => (string) $key,
-                    'filename' => basename((string) $key),
-                    'size_bytes' => $size === null ? null : (int) $size,
-                    'uploaded_at' => $uploadedAt,
-                ];
+                Log::debug('ingestion snapshot: bronze prefix listing failed', [
+                    'prefix' => $prefix,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 
-        return $out;
+        usort($out, fn (array $a, array $b): int => strcmp((string) ($b['uploaded_at'] ?? ''), (string) ($a['uploaded_at'] ?? '')));
+
+        return array_slice($out, 0, self::MAX_ROWS_PER_SECTION + 1);
     }
 
     /**

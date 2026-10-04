@@ -49,17 +49,20 @@ final class CitationResolverRegistry
      * handler converts null into the structured `unknown` payload.
      *
      * $workspaceId is the caller-verified tenant scope; tenant-scoped
-     * resolvers filter on it explicitly (see CitationResolver contract).
+     * resolvers filter on it explicitly (see CitationResolver contract), and
+     * $projectIds narrows that to the projects the request authorises.
+     *
+     * @param list<string>|null $projectIds
      *
      * Order of evaluation: registration order. Each resolver's prefix is
      * conventionally globally unique within the GeoRAG corpus, so the
      * first-match rule is also the only-match rule in practice.
      */
-    public function resolve(string $sourceId, ?string $workspaceId = null): ?JsonResponse
+    public function resolve(string $sourceId, ?string $workspaceId = null, ?array $projectIds = null): ?JsonResponse
     {
         foreach ($this->resolvers as $prefix => $resolver) {
             if (str_starts_with($sourceId, $prefix)) {
-                return $resolver->resolve($sourceId, $workspaceId);
+                return $resolver->resolve($sourceId, $workspaceId, $projectIds);
             }
         }
 

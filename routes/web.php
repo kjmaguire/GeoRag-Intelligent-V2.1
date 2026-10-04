@@ -214,15 +214,15 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // next to the page it came from. Membership-gated in the controller;
     // 404s rather than 403s across project boundaries.
     Route::get('/projects/{slug}/reports/{report_id}/source', [ReportController::class, 'source'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.report.source');
+        ->where('slug', '[a-z0-9\-]+')->whereUuid('report_id')->name('foundry.report.source');
     Route::get('/projects/{slug}/reports/{report_id}', [ReportController::class, 'view'])
-        ->where(['slug' => '[a-z0-9\-]+', 'report_id' => '[0-9a-f-]{36}'])
+        ->where('slug', '[a-z0-9\-]+')->whereUuid('report_id')
         ->name('foundry.reports.view');
     // Figure manifest w/ presigned MinIO URLs (1-hour TTL). Lives behind
     // the Foundry auth shell so RLS scopes by workspace via Sanctum.
     Route::get('/projects/{slug}/reports/{report_id}/figures',
         [ReportController::class, 'figures'])
-        ->where(['slug' => '[a-z0-9\-]+', 'report_id' => '[0-9a-f-]{36}'])
+        ->where('slug', '[a-z0-9\-]+')->whereUuid('report_id')
         ->name('foundry.reports.figures');
     Route::get('/foundry/imports/wizard', function () {
         return Inertia::render('Foundry/DataImportWizard');
@@ -275,7 +275,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::middleware(RequireConfigFlag::class.':services.admin_integrations.enabled')->group(function () {
         // Phase 4 Step 5 — per-sender HMAC registry enable/disable toggle.
         Route::patch('/admin/integrations/senders/{id}/{action}', [IntegrationsController::class, 'toggleSender'])
-            ->where('id', '[0-9a-fA-F-]{36}')
+            ->whereUuid('id')
             ->where('action', '(disable|enable)')
             ->name('admin.integrations.sender-toggle');
 
@@ -289,7 +289,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
         // Phase 12 Step 4 (R-P10-1) — rotate a sender's HMAC.
         Route::post('/admin/integrations/senders/{id}/rotate-hmac', [IntegrationsController::class, 'rotateSenderHmac'])
-            ->where('id', '[0-9a-fA-F-]{36}')
+            ->whereUuid('id')
             ->name('admin.integrations.senders.rotate-hmac');
     });
 });

@@ -6,6 +6,7 @@ namespace App\Http\Controllers\PublicGeoscience;
 
 use App\Http\Controllers\Controller;
 use App\Support\Http\PooledHttpClient;
+use App\Support\Tiles\SilverTileContextEpoch;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Auth;
@@ -49,7 +50,9 @@ use Throwable;
  *      reverse-proxy + If-None-Match passthrough.
  * Tracked as a follow-up; not blocking.
  *
- * Silver ETag (index scan on silver.projects, < 1 ms):
+ * Silver ETag (data_version comes from the same cached (user, project)
+ * context as the access check and workspace_id — one query on a miss, none
+ * on a hit; see silverTileContext()):
  *   md5(data_version::text || '|' || z || '|' || x || '|' || y || '|' || project_id)
  *
  * PGEO ETag (MAX aggregate on jurisdictions, cached 60 s):
@@ -326,28 +329,39 @@ class TileProxyController extends Controller
 
         $projectId = (string) $projectId;
 
-        // ── Workspace / project access check ─────────────────────────────────
-        if (! $this->userHasProjectAccess($projectId)) {
+        // ── Access + tenant scope + data version: ONE lookup ─────────────────
+        // A silver tile used to cost three round-trips before Martin was even
+        // asked: project membership (project_user), the project's workspace_id,
+        // and its data_version for the ETag. A pan/zoom burst is 40-80 tiles,
+        // so that was ~200 queries per gesture for values that change on
+        // ingest, not per tile. They now come from one query, cached 60 s per
+        // (user, project) — see silverTileContext().
+        //
+        // The workspace comes from silver.projects, never from the client:
+        // a client-supplied workspace_id would let a member of workspace A
+        // pass workspace B's id against a project_id they can reach.
+        //
+        // Martin connects to Postgres directly, as its own role, never through
+        // this authenticated session, so it never sees an app.workspace_id GUC
+        // unless we hand it one. Every silver.pg_*_by_project function REQUIRES
+        // workspace_id in its query_params
+        // (2026_09_16_120000_scope_silver_mvt_functions_to_workspace_id.php)
+        // and raises rather than silently returning an empty tile when it is
+        // missing, so it is forwarded on every request.
+        $dbStart = microtime(true);
+        $context = $this->silverTileContext($projectId);
+        $dbMs = round((microtime(true) - $dbStart) * 1000, 2);
+
+        if ($context === null) {
+            // Not a member, or the project does not exist: the same answer for
+            // both, and never cached, so a newly added member is not locked out.
             return response()->json(
                 ['message' => 'Access denied to this project.'],
                 403,
             );
         }
 
-        // ── Resolve tenant scope for Martin ───────────────────────────────────
-        // Martin connects to Postgres directly, as its own role, never through
-        // this (or any) authenticated session — so it never sees an
-        // app.workspace_id GUC unless we hand it one explicitly. Every
-        // silver.pg_*_by_project function now REQUIRES workspace_id in its
-        // query_params (2026_09_16_120000_scope_silver_mvt_functions_to_workspace_id.php)
-        // and raises rather than silently returning an empty tile when it is
-        // missing, so this must be resolved and forwarded on every request.
-        // Sourced from silver.projects rather than trusted from the client:
-        // the access check above only proves the user belongs to SOME
-        // workspace that can see this project, not which one, and a
-        // client-supplied workspace_id would let a member of workspace A pass
-        // workspace B's id against a project_id they happen to have access to.
-        $workspaceId = $this->resolveWorkspaceIdForProject($projectId);
+        $workspaceId = $context['workspace_id'];
         if ($workspaceId === null) {
             return response()->json(
                 ['message' => 'Unable to resolve a workspace for this project.'],
@@ -355,15 +369,13 @@ class TileProxyController extends Controller
             );
         }
 
-        // ── ETag derivation (cheap index scan on silver.projects) ────────────
-        $dbStart = microtime(true);
-        $etag = $this->computeSilverEtag($projectId, $z, $x, $y);
-        $dbMs = round((microtime(true) - $dbStart) * 1000, 2);
+        // ── ETag derivation (from the version read above, no extra query) ────
+        $etag = md5("{$context['data_version']}|{$z}|{$x}|{$y}|{$projectId}");
         $maxAge = $this->maxAgeForSource($source, self::SILVER_DEFAULT_MAX_AGE);
 
         // ── 304 short-circuit ────────────────────────────────────────────────
         $inm = $request->header('If-None-Match');
-        if ($inm !== null && $inm !== '' && $etag !== null && $this->etagMatches($inm, $etag)) {
+        if ($inm !== null && $inm !== '' && $this->etagMatches($inm, $etag)) {
             return response('', 304)
                 ->header('ETag', "\"{$etag}\"")
                 ->header('Cache-Control', "public, max-age={$maxAge}, must-revalidate")
@@ -561,32 +573,6 @@ class TileProxyController extends Controller
     }
 
     /**
-     * Compute the ETag for a Silver tile.
-     *
-     * Executes a single-row index scan on silver.projects to fetch
-     * data_version. This is a microsecond-range operation against the PK
-     * index — it does NOT re-execute the heavy MVT function.
-     *
-     * ETag = md5(data_version || '|' || z || '|' || x || '|' || y || '|' || project_id)
-     *
-     * Returns null when the project row is absent; in that case the proxy
-     * continues without an ETag (Martin will return an empty 204 tile).
-     */
-    private function computeSilverEtag(string $projectId, int $z, int $x, int $y): ?string
-    {
-        $row = DB::selectOne(
-            'SELECT data_version FROM silver.projects WHERE project_id = :pid',
-            ['pid' => $projectId],
-        );
-
-        if ($row === null) {
-            return null;
-        }
-
-        return md5("{$row->data_version}|{$z}|{$x}|{$y}|{$projectId}");
-    }
-
-    /**
      * Compare an inbound If-None-Match header value to a computed ETag.
      *
      * Handles strong ("hash") and weak (W/"hash") ETags in the inbound
@@ -620,50 +606,75 @@ class TileProxyController extends Controller
     }
 
     /**
-     * Verify that the authenticated user has access to the given project.
-     *
-     * Delegates to User::hasProjectAccess() which checks the project_user
-     * pivot. That method gracefully degrades when the pivot table is absent
-     * (fails open with a warning log) — see User::hasProjectAccess().
+     * Cache lifetime (seconds) of a user's silver tile context for a project.
+     * Bounds how long a revoked member keeps tile access and how long a
+     * data_version bump that does not go through
+     * {@see SilverTileContextEpoch::advance()} stays invisible to the ETag.
      */
-    private function userHasProjectAccess(string $projectId): bool
+    private const SILVER_CONTEXT_TTL = 60;
+
+    /**
+     * What a silver tile request needs to know about (user, project): that
+     * the user may read the project, which workspace owns it, and its current
+     * data_version. One query joining the membership pivot to silver.projects
+     * (the same relation User::hasProjectAccess() checks), cached for
+     * SILVER_CONTEXT_TTL seconds per user and project.
+     *
+     * Only a positive answer is cached. A denial is re-evaluated every time,
+     * so a user added to a project is not locked out for a minute, and a
+     * lookup that fails (pivot table missing, DB down) fails CLOSED exactly
+     * as hasProjectAccess() does.
+     *
+     * Octane: nothing is held in the process. The cache key carries the user
+     * id explicitly, so one worker serving two users cannot cross them.
+     *
+     * @return array{workspace_id: ?string, data_version: int}|null null = deny
+     */
+    private function silverTileContext(string $projectId): ?array
     {
         $user = Auth::user();
         if ($user === null) {
-            return false;
-        }
-
-        return $user->hasProjectAccess($projectId);
-    }
-
-    /**
-     * Resolve the workspace a project belongs to, for forwarding to Martin
-     * as the tenant-scope query_params key every silver.pg_*_by_project
-     * function now requires.
-     *
-     * Deliberately a direct silver.projects lookup rather than trusting a
-     * client-supplied value or reusing the authenticated user's "current"
-     * workspace: the project is the source of truth for which tenant its
-     * rows belong to, and userHasProjectAccess() only proves membership in
-     * some workspace that can reach this project, not which one.
-     *
-     * Returns null when the project row cannot be found (e.g. deleted
-     * between the access check and this lookup) so the caller can respond
-     * with 404 rather than forwarding an unscoped or wrong-tenant request
-     * to Martin.
-     */
-    private function resolveWorkspaceIdForProject(string $projectId): ?string
-    {
-        $row = DB::selectOne(
-            'SELECT workspace_id FROM silver.projects WHERE project_id = :pid',
-            ['pid' => $projectId],
-        );
-
-        if ($row === null || $row->workspace_id === null) {
             return null;
         }
 
-        return (string) $row->workspace_id;
+        $userId = $user->getAuthIdentifier();
+        $epoch = SilverTileContextEpoch::current($projectId);
+        $cacheKey = "silver-tile-ctx:{$projectId}:{$epoch}:{$userId}";
+
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached) && array_key_exists('data_version', $cached)) {
+            return $cached;
+        }
+
+        try {
+            $row = DB::selectOne(
+                'SELECT p.workspace_id, p.data_version
+                 FROM silver.projects p
+                 JOIN project_user pu ON pu.project_id = p.project_id
+                 WHERE p.project_id = :pid AND pu.user_id = :uid',
+                ['pid' => $projectId, 'uid' => $userId],
+            );
+        } catch (Throwable $e) {
+            Log::critical('Silver tile access lookup failed — denying (fail-CLOSED)', [
+                'project_id' => $projectId,
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        if ($row === null) {
+            return null;
+        }
+
+        $context = [
+            'workspace_id' => $row->workspace_id !== null ? (string) $row->workspace_id : null,
+            'data_version' => (int) $row->data_version,
+        ];
+        Cache::put($cacheKey, $context, self::SILVER_CONTEXT_TTL);
+
+        return $context;
     }
 
     /**

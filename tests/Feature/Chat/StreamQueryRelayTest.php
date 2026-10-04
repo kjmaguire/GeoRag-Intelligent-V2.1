@@ -50,7 +50,7 @@ final class StreamQueryRelayTest extends TestCase
     private function auditRow(array $overrides = []): QueryAuditLog
     {
         return QueryAuditLog::create(array_merge([
-            'user_id' => null,
+            'user_id' => User::factory()->create()->id,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
             'query_text' => 'what about its grades?',
@@ -71,6 +71,7 @@ final class StreamQueryRelayTest extends TestCase
             $conversationId,
         );
         $job->fakeSseBody = $sse;
+        $job->useRealAuditLookup = true;
 
         return $job;
     }

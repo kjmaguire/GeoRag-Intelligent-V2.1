@@ -24,7 +24,10 @@ final class CollarsResolver extends AbstractCitationResolver
         return 'silver.collars:';
     }
 
-    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
+    /**
+     * @param list<string>|null $projectIds
+     */
+    public function resolve(string $sourceId, ?string $workspaceId = null, ?array $projectIds = null): JsonResponse
     {
         preg_match('/first=([^:]+)/', $sourceId, $matches);
         $collarId = $matches[1] ?? null;
@@ -38,13 +41,14 @@ final class CollarsResolver extends AbstractCitationResolver
 
         // Belt and braces (security fix 2026-08-14): explicit tenant filter
         // on top of the controller-bound RLS GUC; null scope fails CLOSED.
-        if ($workspaceId === null) {
+        if ($workspaceId === null || $projectIds === null || $projectIds === []) {
             return $this->notFound($sourceId);
         }
 
         $collar = DB::table('silver.collars')
             ->where('collar_id', $collarId)
             ->where('workspace_id', $workspaceId)
+            ->whereIn('project_id', $projectIds)
             ->first(['collar_id', 'hole_id', 'total_depth', 'hole_type', 'status', 'drill_date']);
 
         if (! $collar) {

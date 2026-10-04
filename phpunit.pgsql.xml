@@ -193,6 +193,12 @@
                  mechanism as BrokenChrZeroRlsPoliciesRoleTest above — it
                  must run here, because under the SQLite suite it skips. -->
             <file>tests/Feature/Tenancy/FailClosedRlsPolicyTest.php</file>
+            <!-- 2026-10-04: IngestionSnapshot::build() caps reports and progress
+                 rows (SQL LIMIT over silver.reports / silver.ingest_progress). -->
+            <file>tests/Feature/Foundry/IngestionSnapshotCapTest.php</file>
+            <!-- 2026-10-04: silver tile membership + workspace + data_version is
+                 one cached query; the data_version bump advances its epoch. -->
+            <file>tests/Feature/TileProxySilverContextTest.php</file>
             <!-- 2026-10-04: audit.compute_audit_hash() previous-hash lookup is two
                  index probes; the chain it writes is unchanged. -->
             <file>tests/Feature/Tenancy/AuditChainTriggerLookupTest.php</file>

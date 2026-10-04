@@ -6,6 +6,7 @@ use App\Models\Collar;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -188,6 +189,28 @@ class ProjectControllerTest extends TestCase
             ->assertJsonPath('data.collar_count', 0);
 
         $this->assertDatabaseHas('projects', ['project_name' => 'Goldfields North']);
+    }
+
+    public function test_store_leaves_no_orphan_project_when_the_owner_row_cannot_be_written(): void
+    {
+        // save() then attach(owner) were two separate writes: when the second
+        // failed, a project existed that nobody could see (membership is the
+        // access rule) and the 500 left it behind. Both writes are one
+        // transaction now.
+        $this->actingAsAdmin();
+
+        DB::listen(function ($query): void {
+            if (str_contains($query->sql, 'insert into "project_user"')) {
+                throw new \RuntimeException('simulated failure after the owner row was inserted');
+            }
+        });
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Orphan Candidate',
+            'orientation_reference' => 'BOH',
+        ])->assertStatus(500);
+
+        $this->assertDatabaseMissing('projects', ['project_name' => 'Orphan Candidate']);
     }
 
     public function test_store_returns_422_when_project_name_is_missing(): void

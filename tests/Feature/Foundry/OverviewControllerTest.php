@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Tests\Feature\Foundry;
 
 use App\Models\Project;
+use App\Models\QueryAuditLog;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
@@ -501,5 +503,96 @@ final class OverviewControllerTest extends TestCase
         $this->assertSame(2, $summary['in_flight']);
         $this->assertSame(1, $summary['completed']);
         $this->assertSame('20260929_040000_Parsing.pdf', $summary['latest_in_flight']);
+    }
+
+    public function test_recent_activity_ids_are_the_audit_ids_and_unique(): void
+    {
+        // QueryAuditLog's key is audit_id. The mapper read `$r->id`, which does
+        // not exist, so every row got '' and React keyed all of them the same.
+        $project = $this->makeProject();
+        $first = QueryAuditLog::create([
+            'user_id' => $this->user->id,
+            'project_id' => $project->project_id,
+            'query_id' => (string) Str::uuid(),
+            'query_text' => 'first question',
+            'response_text' => 'an answer',
+            'ip_address' => '127.0.0.1',
+            'llm_model' => 'command-a-plus-05-2026',
+        ]);
+        $second = QueryAuditLog::create([
+            'user_id' => $this->user->id,
+            'project_id' => $project->project_id,
+            'query_id' => (string) Str::uuid(),
+            'query_text' => 'second question',
+            'ip_address' => '127.0.0.1',
+            'llm_model' => 'command-a-plus-05-2026',
+        ]);
+
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertOk()
+            ->assertInertia(function (AssertableInertia $page) use ($first, $second) {
+                $ids = array_column($page->toArray()['props']['recent_activity'], 'id');
+                $this->assertCount(2, $ids);
+                $this->assertNotContains('', $ids);
+                $this->assertEqualsCanonicalizing([(string) $first->audit_id, (string) $second->audit_id], $ids);
+            });
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function nonCollarNonReportData(): array
+    {
+        return [
+            'spatial features' => ['spatial_features'],
+            'attribute tables' => ['attribute_tables'],
+        ];
+    }
+
+    #[DataProvider('nonCollarNonReportData')]
+    public function test_a_project_holding_only_other_data_is_not_told_to_connect_a_first_source(string $kind): void
+    {
+        $project = $this->makeProject();
+
+        if ($kind === 'spatial_features') {
+            DB::table('silver.spatial_features')->insert([
+                'feature_id' => (string) Str::uuid(),
+                'workspace_id' => $this->workspaceId,
+                'project_id' => $project->project_id,
+                'feature_type' => 'fault',
+                'properties' => '{}',
+            ]);
+        } else {
+            DB::table('silver.attribute_tables')->insert([
+                'workspace_id' => $this->workspaceId,
+                'project_id' => $project->project_id,
+                'source_file_sha256' => str_repeat('a', 64),
+                'source_layer' => 'claims',
+                'row_index' => 0,
+                'attributes' => '{}',
+            ]);
+        }
+
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertOk()
+            ->assertInertia(function (AssertableInertia $page) {
+                $props = $page->toArray()['props'];
+                $this->assertNotSame('Connect your first data source', $props['next_action']['title']);
+                $this->assertFalse($props['empty']);
+            });
+    }
+
+    public function test_a_genuinely_empty_project_is_still_empty(): void
+    {
+        $project = $this->makeProject();
+
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $page
+                ->where('empty', true)
+                ->where('next_action.title', 'Connect your first data source'));
     }
 }

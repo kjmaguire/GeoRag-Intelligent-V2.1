@@ -181,59 +181,89 @@ class StreamQueryFromFastApi implements ShouldQueue
         $serviceKey = config('services.fastapi.service_key');
         $streamTimeout = (int) config('services.fastapi.stream_timeout', 270);
 
-        // B7 — mint a short-TTL JWT that carries the acting user identity so
-        // FastAPI can enforce document-level RBAC. The user_id isn't on the
-        // job constructor (queries are dispatched from QueryController without
-        // it), so look it up on the audit row we're about to finalise. The
-        // static X-Service-Key header stays for one release for a graceful
-        // rollout; FastAPI will flip to JWT-required in a follow-up change.
+        // B7 — mint a short-TTL JWT that carries the acting user identity AND
+        // the workspace so FastAPI can enforce document-level RBAC and the
+        // workspace lifecycle/RLS guard on the main RAG path. The user_id isn't
+        // on the job constructor (queries are dispatched from QueryController
+        // without it), so it is read off the audit row we're about to finalise.
         //
-        // Defensive: a missing audit row OR a briefly-unavailable DB must not
-        // crash the stream. Fall back to user_id='unknown' and let FastAPI
-        // treat the request as unscoped (it already does under graceful
-        // rollout). This also makes unit tests that exercise the stream
-        // plumbing independent of DB fixtures.
+        // Fail closed. This used to fall back to sub='unknown' / no
+        // workspace_id ("continuing unscoped") when either lookup failed, which
+        // ran the RAG pipeline WITHOUT the tenant guard -- a tenant-isolation
+        // defect that only shows up when the DB blips. An unresolved identity
+        // now ends the job with a terminal `failed` frame; FastAPI is never
+        // called. The job does not throw: tries=1, and failed() would only
+        // broadcast a second terminal.
         try {
-            $auditRow = QueryAuditLog::where('query_id', $this->queryId)->first();
+            $auditRow = $this->lookupAuditRow();
         } catch (\Throwable $e) {
-            Log::warning('StreamQueryFromFastApi: audit row lookup failed (continuing with unknown user)', [
+            Log::error('StreamQueryFromFastApi: audit row lookup failed — refusing to run unscoped', [
                 'query_id' => $this->queryId,
                 'exception' => $e->getMessage(),
             ]);
-            $auditRow = null;
+            $this->failBeforeStream('AUDIT_LOOKUP_FAILED', null);
+
+            return;
+        }
+
+        if ($auditRow === null) {
+            Log::error('StreamQueryFromFastApi: audit row not found — refusing to run unscoped', [
+                'query_id' => $this->queryId,
+            ]);
+            $this->failBeforeStream('IDENTITY_UNRESOLVED', null);
+
+            return;
         }
 
         // CHAT-14 — a job picked up long after /start streams to nobody:
         // the browser's idle watchdog has already given up, so calling
         // FastAPI only bills an LLM run no one will see. Happens when the
         // llm supervisor was down, backlogged, or restarted mid-queue.
-        if ($auditRow !== null && $this->isStale($auditRow)) {
+        if ($this->isStale($auditRow)) {
             $this->abandonStaleJob($auditRow);
 
             return;
         }
 
-        $userId = $auditRow?->user_id ?? 'unknown';
+        $userId = $auditRow->user_id;
+        if ($userId === null || $userId === '') {
+            Log::error('StreamQueryFromFastApi: audit row has no user_id — refusing to run unscoped', [
+                'query_id' => $this->queryId,
+            ]);
+            $this->failBeforeStream('IDENTITY_UNRESOLVED', $auditRow);
+
+            return;
+        }
+
         // Audit 2026-06-27: carry workspace_id in the JWT so the FastAPI
         // lifecycle/RLS guard on the MAIN query path is actually enforced.
-        // Previously this mint omitted workspace_id, so the guard was silently
-        // skipped on every chat/RAG query. Derived from the project row.
+        // Derived from the project row.
         try {
-            $workspaceId = DB::table('silver.projects')
-                ->where('project_id', $this->projectId)
-                ->value('workspace_id');
+            $workspaceId = $this->lookupWorkspaceId();
         } catch (\Throwable $e) {
-            Log::warning('StreamQueryFromFastApi: workspace lookup failed (continuing unscoped)', [
+            Log::error('StreamQueryFromFastApi: workspace lookup failed — refusing to run unscoped', [
                 'project_id' => $this->projectId,
                 'exception' => $e->getMessage(),
             ]);
-            $workspaceId = null;
+            $this->failBeforeStream('WORKSPACE_LOOKUP_FAILED', $auditRow);
+
+            return;
         }
+
+        if ($workspaceId === null || $workspaceId === '') {
+            Log::error('StreamQueryFromFastApi: project has no workspace — refusing to run unscoped', [
+                'project_id' => $this->projectId,
+            ]);
+            $this->failBeforeStream('WORKSPACE_UNRESOLVED', $auditRow);
+
+            return;
+        }
+
         $jwt = app(FastApiJwtMinter::class)->mint(
-            $userId,
+            (string) $userId,
             $this->projectId,
             [], // roles — no role system yet (see B7 follow-up)
-            $workspaceId !== null ? (string) $workspaceId : null,
+            $workspaceId,
         );
 
         // Note: the previous 600 ms subscription-race guard is no longer
@@ -284,8 +314,11 @@ class StreamQueryFromFastApi implements ShouldQueue
                         'Content-Type: application/json',
                         'Accept: text/event-stream',
                         'Authorization: Bearer '.$jwt,
-                        // Kept for one release to give FastAPI a graceful
-                        // cutover window; B7 follow-up drops it on that side.
+                        // Still REQUIRED by FastAPI: POST /internal/queries
+                        // declares verify_service_key (Header(...), no
+                        // default) as a router dependency alongside the JWT
+                        // (app/services/auth.py, routers/queries.py). Do not
+                        // drop it until that dependency is removed there.
                         'X-Service-Key: '.$serviceKey,
                         // W3C trace context. Without this FastAPI's
                         // StructuredAccessLogMiddleware mints an unrelated
@@ -699,6 +732,62 @@ class StreamQueryFromFastApi implements ShouldQueue
     }
 
     /**
+     * The audit row for this query. A seam so tests can run the stream
+     * plumbing without DB fixtures; throws when the DB is unavailable.
+     */
+    protected function lookupAuditRow(): ?QueryAuditLog
+    {
+        return QueryAuditLog::where('query_id', $this->queryId)->first();
+    }
+
+    /**
+     * The workspace that owns this job's project, or null when the project
+     * does not exist. Throws when the DB is unavailable.
+     */
+    protected function lookupWorkspaceId(): ?string
+    {
+        $workspaceId = DB::table('silver.projects')
+            ->where('project_id', $this->projectId)
+            ->value('workspace_id');
+
+        return $workspaceId !== null ? (string) $workspaceId : null;
+    }
+
+    /**
+     * End the job with a terminal `failed` frame BEFORE FastAPI is called,
+     * because the caller's identity or workspace could not be established.
+     *
+     * Goes through dispatchSseEvent() so the terminal-delivery fallback
+     * applies, then records the failure on the audit row when there is one.
+     * The user-facing text is deliberately generic; the cause is in the log.
+     */
+    private function failBeforeStream(string $code, ?QueryAuditLog $row): void
+    {
+        $payload = [
+            'event' => 'failed',
+            'query_id' => $this->queryId,
+            'code' => $code,
+            'error' => 'We could not verify your access to this project, so the query was not run. Please try again.',
+        ];
+        $this->dispatchSseEvent('failed', (string) json_encode($payload));
+
+        if ($row === null) {
+            return;
+        }
+
+        try {
+            $row->response_text = $this->formatFailureMarker($payload);
+            $row->response_time_ms = (int) ((microtime(true) - $this->startTime) * 1000);
+            $row->save();
+        } catch (\Throwable $e) {
+            Log::warning('StreamQueryFromFastApi: pre-stream failure audit write skipped', [
+                'query_id' => $this->queryId,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * Cache key the cancel endpoint sets and handle() polls (CHAT-18).
      *
      * A pure function of the id — no state is held on the class.
@@ -858,6 +947,17 @@ class StreamQueryFromFastApi implements ShouldQueue
     private float $startTime = 0;
 
     /**
+     * Consecutive failed frame broadcasts in this run, after which per-token
+     * deltas are no longer sent. Instance state on a queue job (one instance
+     * per attempt), not static — nothing outlives the job.
+     */
+    private const BROADCAST_FAILURE_CUTOFF = 5;
+
+    private int $consecutiveBroadcastFailures = 0;
+
+    private bool $deltaCutoffLogged = false;
+
+    /**
      * Parse and broadcast a single SSE event.
      *
      * FastAPI event vocabulary (authoritative — see class docblock):
@@ -909,12 +1009,36 @@ class StreamQueryFromFastApi implements ShouldQueue
         // GET /api/v1/queries/{id}/result instead of waiting.
         $wirePayload = $eventType === 'completed' ? $this->fitCompletedFrame($payload) : $payload;
 
+        // Circuit breaker for per-token deltas. Every broadcast is inline
+        // (ShouldBroadcastNow) and a dead Reverb costs up to the client
+        // timeout per frame, so a few hundred deltas against a broken
+        // channel would hold this llm slot for minutes and still deliver
+        // nothing. After BROADCAST_FAILURE_CUTOFF consecutive failures the
+        // deltas stop; non-delta frames (status, bind, citation, and above
+        // all the terminal) are still attempted, a success resets the run,
+        // and the terminal `completed` carries the full text anyway.
+        if ($eventType === 'delta' && $this->consecutiveBroadcastFailures >= self::BROADCAST_FAILURE_CUTOFF) {
+            if (! $this->deltaCutoffLogged) {
+                $this->deltaCutoffLogged = true;
+                Log::warning('StreamQueryFromFastApi: delta broadcasting suspended after consecutive failures', [
+                    'query_id' => $this->queryId,
+                    'consecutive_failures' => $this->consecutiveBroadcastFailures,
+                ]);
+            }
+
+            return;
+        }
+
         try {
             broadcast(new QueryStreamEvent($this->channel, $eventType, $wirePayload));
+            $this->consecutiveBroadcastFailures = 0;
+            $this->deltaCutoffLogged = false;
         } catch (\Throwable $broadcastError) {
+            $this->consecutiveBroadcastFailures++;
             Log::warning('StreamQueryFromFastApi: SSE frame broadcast failed', [
                 'query_id' => $this->queryId,
                 'event_type' => $eventType,
+                'consecutive_failures' => $this->consecutiveBroadcastFailures,
                 'broadcast_exception' => $broadcastError->getMessage(),
             ]);
 

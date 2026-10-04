@@ -72,9 +72,12 @@ use RuntimeException;
  * /internal/v1/mv-refresh/run endpoint, which performs the actual
  * REFRESH under per-view advisory locks + logs to gold.mv_refresh_log.
  *
- * On successful refresh, the job dispatches a
- * {@see WorkspaceDataUpdated} event so the frontend pages
- * (Overview/Lakehouse/Drillhole/Map) know to re-fetch their data.
+ * After the refresh the job dispatches a {@see WorkspaceDataUpdated} event so
+ * the frontend pages (Overview/Lakehouse/Drillhole/Map) know to re-fetch their
+ * data. It does so even when a view FAILED to refresh (the non-MV tables have
+ * new rows regardless; the failed view's own types are left out of the
+ * payload) and then throws, so the queue retries the MV part under $tries /
+ * $backoff instead of dropping it.
  *
  * Octane: nothing here is resident — the job is constructed per dispatch and
  * debounce() is a static function with no static state.
@@ -214,86 +217,107 @@ class DebounceWorkspaceMvRefresh implements ShouldQueue
             'any_failed' => $anyFailed,
         ]);
 
-        // Emit workspace.data_updated unless a view FAILED to refresh. A
-        // failed refresh means the data is not in a queryable state, and
-        // telling the frontend to re-fetch would surface stale rows as
-        // fresh ones.
+        // Emit workspace.data_updated whether or not a view failed. A failed
+        // MV refresh used to suppress the event entirely and the job did not
+        // retry, so open pages never reloaded after an ingest even though the
+        // non-MV tables (reports, quality, review_queue, structures, curves,
+        // ...) had new rows. affectedTypesFromResults() only names the
+        // MV-derived types (collars/assays) for views that COMPLETED, so a
+        // failed view's types are simply absent from the payload: the pages
+        // reload what is queryable and do not present a stale MV as fresh.
         //
-        // `$anyCompleted` is logged, not gated on, and the comment here used
-        // to claim otherwise ("at least one view actually refreshed ... AND
-        // nothing failed"). The distinction only bites on an empty results
-        // array, where the honest reading is "nothing to refresh" and one
-        // redundant partial reload costs less than suppressing a real
-        // update — but the code should say which of the two it does.
-        if (! $anyFailed) {
-            // Phase 4 — read the post-bump silver.projects.data_version
-            // so the broadcast carries the version MapView's MVT tile URL
-            // cache-bust uses. Done at dispatch time (not job-construction
-            // time) so multiple completions that coalesce into one debounced
-            // run all surface the same final version.
-            //
-            // Microsecond-range index scan on the PK; same query the
-            // TileProxyController pays for every silver tile request.
-            // Falls back to null when the row is unexpectedly absent — the
-            // MapView listener treats null as "no new tile-version info".
-            $projectDataVersion = $this->fetchProjectDataVersion();
+        // `$anyCompleted` is logged, not gated on: on an empty results array
+        // the honest reading is "nothing to refresh" and one redundant partial
+        // reload costs less than suppressing a real update.
+        $this->emitDataUpdated($results);
 
-            WorkspaceDataUpdated::dispatch(
-                $this->workspaceId,
-                $this->projectId,
-                $this->pipelineRunId,
-                $this->affectedTypesFromResults($results),
-                $projectDataVersion,
+        if ($anyFailed) {
+            // Throw AFTER emitting so the queue retries the MV part ($tries /
+            // $backoff). The retry either finds the view refreshed or skips it
+            // under FastAPI's per-view advisory lock; once the attempts are
+            // exhausted the job lands in failed_jobs for an operator, which is
+            // louder than the silent success this used to be. The 18:00 UTC
+            // mv_refresh_silver Hatchet cron remains the final backstop.
+            throw new RuntimeException(
+                'mv_refresh: one or more views failed to refresh for workspace '.$this->workspaceId
+                .'; non-MV data update was broadcast, retrying the refresh.',
             );
+        }
 
-            // Phase 3 — also fire workspace-level activity for
-            // Foundry/Portfolio + Foundry/Projects. The project-scoped
-            // WorkspaceDataUpdated above drives the per-project pages;
-            // this workspace-scoped event drives the cross-project rollups.
-            // Best-effort; failure must not cascade.
-            try {
-                WorkspaceActivityBroadcast::dispatch(
-                    $this->workspaceId,
-                    ['projects', 'kpis', 'activity'],
-                    [
-                        'project_id' => $this->projectId,
-                        'pipeline_run_id' => $this->pipelineRunId,
-                        'source' => 'ingestion',
-                    ],
-                );
-            } catch (\Throwable $e) {
-                Log::warning('mv_refresh.debounce.workspace_activity_failed', [
+        // Phase 6 — Dashboards/VisualReadiness reads MV-derived viz_coverage
+        // rollups, so it is only told to refresh when every view refreshed.
+        try {
+            AdminSurfaceUpdated::dispatch(
+                'dashboards-visual-readiness',
+                null,
+                ['viz_coverage', 'total_projects'],
+                [
                     'workspace_id' => $this->workspaceId,
-                    'error' => $e->getMessage(),
-                ]);
-            }
+                    'project_id' => $this->projectId,
+                    'pipeline_run_id' => $this->pipelineRunId,
+                ],
+            );
+        } catch (\Throwable $e) {
+            Log::warning('mv_refresh.debounce.visual_readiness_failed', [
+                'workspace_id' => $this->workspaceId,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
-            // Phase 6 — Dashboards/VisualReadiness reads MV-derived
-            // viz_coverage rollups. Every successful workspace MV refresh
-            // is the natural refresh point for this admin dashboard.
-            try {
-                AdminSurfaceUpdated::dispatch(
-                    'dashboards-visual-readiness',
-                    null,
-                    ['viz_coverage', 'total_projects'],
-                    [
-                        'workspace_id' => $this->workspaceId,
-                        'project_id' => $this->projectId,
-                        'pipeline_run_id' => $this->pipelineRunId,
-                    ],
-                );
-            } catch (\Throwable $e) {
-                Log::warning('mv_refresh.debounce.visual_readiness_failed', [
-                    'workspace_id' => $this->workspaceId,
-                    'error' => $e->getMessage(),
-                ]);
-            }
+        // Phase 6 — record the emission latency (controller dispatch
+        // timestamp → broadcast moment) on the FastAPI Prometheus
+        // registry via the metric-bridge endpoint. Best-effort.
+        $latencySeconds = max(0, time() - $this->dispatchedAtUnix);
+        $this->recordEmissionLatency($latencySeconds);
+    }
 
-            // Phase 6 — record the emission latency (controller dispatch
-            // timestamp → broadcast moment) on the FastAPI Prometheus
-            // registry via the metric-bridge endpoint. Best-effort.
-            $latencySeconds = max(0, time() - $this->dispatchedAtUnix);
-            $this->recordEmissionLatency($latencySeconds);
+    /**
+     * Broadcast the project-scoped and workspace-scoped "data updated" events.
+     *
+     * @param array<int, array<string, mixed>> $results
+     */
+    private function emitDataUpdated(array $results): void
+    {
+        // Phase 4 — read the post-bump silver.projects.data_version
+        // so the broadcast carries the version MapView's MVT tile URL
+        // cache-bust uses. Done at dispatch time (not job-construction
+        // time) so multiple completions that coalesce into one debounced
+        // run all surface the same final version.
+        //
+        // Microsecond-range index scan on the PK; same query the
+        // TileProxyController pays for every silver tile request.
+        // Falls back to null when the row is unexpectedly absent — the
+        // MapView listener treats null as "no new tile-version info".
+        $projectDataVersion = $this->fetchProjectDataVersion();
+
+        WorkspaceDataUpdated::dispatch(
+            $this->workspaceId,
+            $this->projectId,
+            $this->pipelineRunId,
+            $this->affectedTypesFromResults($results),
+            $projectDataVersion,
+        );
+
+        // Phase 3 — also fire workspace-level activity for
+        // Foundry/Portfolio + Foundry/Projects. The project-scoped
+        // WorkspaceDataUpdated above drives the per-project pages;
+        // this workspace-scoped event drives the cross-project rollups.
+        // Best-effort; failure must not cascade.
+        try {
+            WorkspaceActivityBroadcast::dispatch(
+                $this->workspaceId,
+                ['projects', 'kpis', 'activity'],
+                [
+                    'project_id' => $this->projectId,
+                    'pipeline_run_id' => $this->pipelineRunId,
+                    'source' => 'ingestion',
+                ],
+            );
+        } catch (\Throwable $e) {
+            Log::warning('mv_refresh.debounce.workspace_activity_failed', [
+                'workspace_id' => $this->workspaceId,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

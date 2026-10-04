@@ -36,6 +36,11 @@ class AppServiceProvider extends ServiceProvider
         // sockets stay open to FastAPI and other internal services. State is bounded
         // (≤16 base URLs, LRU eviction); no per-request data is retained.
         // See app/Support/Http/PooledHttpClient.php for the Octane-safety note.
+        //
+        // It survives only because config/octane.php lists it under `warm`:
+        // Octane discards container instances first resolved inside a request,
+        // so an unwarmed singleton is rebuilt (empty) on every request. Keep
+        // the two in step.
         $this->app->singleton(PooledHttpClient::class, fn ($app) => new PooledHttpClient(
             $app->make(HttpFactory::class),
         ));

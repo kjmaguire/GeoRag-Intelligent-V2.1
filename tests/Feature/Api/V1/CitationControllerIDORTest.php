@@ -56,6 +56,10 @@ class CitationControllerIDORTest extends TestCase
 
     private string $reportBId;
 
+    private string $projectAId;
+
+    private string $projectBId;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -97,6 +101,7 @@ class CitationControllerIDORTest extends TestCase
             'project_name' => 'Workspace A Project '.uniqid(),
             'orientation_reference' => 'BOH',
         ]);
+        $this->projectAId = (string) $projectA->project_id;
         $this->userA->projects()->attach($projectA->project_id, ['role' => 'owner']);
         DB::table('silver.projects')
             ->where('project_id', $projectA->project_id)
@@ -107,6 +112,7 @@ class CitationControllerIDORTest extends TestCase
             'project_name' => 'Workspace B Project '.uniqid(),
             'orientation_reference' => 'BOH',
         ]);
+        $this->projectBId = (string) $projectB->project_id;
         $this->userB->projects()->attach($projectB->project_id, ['role' => 'owner']);
         DB::table('silver.projects')
             ->where('project_id', $projectB->project_id)
@@ -121,6 +127,7 @@ class CitationControllerIDORTest extends TestCase
             'commodity' => 'uranium',
             'sections_text' => json_encode(['1' => 'Section 1 — summary text.']),
             'workspace_id' => $this->workspaceB,
+            'project_id' => $this->projectBId,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -265,5 +272,157 @@ class CitationControllerIDORTest extends TestCase
         );
 
         $response->assertNotFound();
+    }
+
+    // -------------------------------------------------------------------------
+    // Project scope: workspace membership is not enough
+    // -------------------------------------------------------------------------
+
+    /**
+     * A second user in workspace B whose only project is a DIFFERENT project.
+     */
+    private function sameWorkspaceOtherProjectUser(): User
+    {
+        $user = User::factory()->create();
+        $other = Project::create([
+            'project_name' => 'Workspace B Other Project '.uniqid(),
+            'orientation_reference' => 'BOH',
+        ]);
+        $user->projects()->attach($other->project_id, ['role' => 'owner']);
+        DB::table('silver.projects')
+            ->where('project_id', $other->project_id)
+            ->update(['workspace_id' => $this->workspaceB]);
+
+        return $user;
+    }
+
+    public function test_a_member_of_another_project_in_the_same_workspace_cannot_resolve_the_report(): void
+    {
+        $this->actingAs($this->sameWorkspaceOtherProjectUser(), 'sanctum');
+
+        $response = $this->getJson($this->resolveUrl("georag_reports:{$this->reportBId}:section=1"));
+
+        $response->assertNotFound();
+        $this->assertStringNotContainsString('Confidential NI 43-101', json_encode($response->json()));
+    }
+
+    public function test_an_explicit_project_id_narrows_resolution_to_that_project(): void
+    {
+        // userB owns project B, so the report resolves with project B named...
+        $this->actingAs($this->userB, 'sanctum');
+        $this->getJson($this->resolveUrl("georag_reports:{$this->reportBId}:section=1").'&project_id='.$this->projectBId)
+            ->assertOk();
+
+        // ...and an explicit project the caller is NOT a member of matches nothing.
+        $this->getJson($this->resolveUrl("georag_reports:{$this->reportBId}:section=1").'&project_id='.$this->projectAId)
+            ->assertNotFound();
+    }
+
+    private function insertCollar(string $workspaceId, string $projectId, string $holeId): string
+    {
+        // The SQLite compatibility shim creates silver.collars without
+        // workspace_id (and has no assays_v2); these tests need the real schema.
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('Requires the PostgreSQL silver schema (phpunit.pgsql.xml).');
+        }
+
+        $collarId = (string) Str::uuid();
+        DB::table('silver.collars')->insert([
+            'collar_id' => $collarId,
+            'workspace_id' => $workspaceId,
+            'project_id' => $projectId,
+            'hole_id' => $holeId,
+            'easting' => 500000,
+            'northing' => 6000000,
+            'hole_type' => 'DDH',
+            'status' => 'completed',
+        ]);
+
+        return $collarId;
+    }
+
+    public function test_collar_citation_is_scoped_to_the_project(): void
+    {
+        $collarB = $this->insertCollar($this->workspaceB, $this->projectBId, 'PLS-B-01');
+        $id = "silver.collars:count=1:first={$collarB}";
+
+        $this->actingAs($this->sameWorkspaceOtherProjectUser(), 'sanctum');
+        $this->getJson($this->resolveUrl($id))->assertNotFound();
+
+        $this->actingAs($this->userB, 'sanctum');
+        $this->getJson($this->resolveUrl($id))->assertOk()->assertJsonPath('metadata.hole_id', 'PLS-B-01');
+    }
+
+    public function test_lithology_citation_checks_the_collar_and_ignores_the_echoed_hole_name(): void
+    {
+        $collarB = $this->insertCollar($this->workspaceB, $this->projectBId, 'PLS-B-02');
+
+        // Member of the owning project: resolves, and the title comes from the DB row.
+        $this->actingAs($this->userB, 'sanctum');
+        $this->getJson($this->resolveUrl("silver.lithology_logs:hole=SPOOFED:collar={$collarB}:intervals=3"))
+            ->assertOk()
+            ->assertJsonPath('title', 'Lithology Log: PLS-B-02');
+
+        // Another project in the same workspace: 404.
+        $this->actingAs($this->sameWorkspaceOtherProjectUser(), 'sanctum');
+        $this->getJson($this->resolveUrl("silver.lithology_logs:hole=PLS-B-02:collar={$collarB}:intervals=3"))
+            ->assertNotFound();
+
+        // A collar that does not exist: 404, the supplied hole name is never echoed.
+        $this->actingAs($this->userB, 'sanctum');
+        $response = $this->getJson($this->resolveUrl('silver.lithology_logs:hole=MADE-UP-99:collar='.Str::uuid().':intervals=3'));
+        $response->assertNotFound();
+        $this->assertStringNotContainsString('MADE-UP-99', json_encode($response->json()['text'] ?? ''));
+    }
+
+    public function test_samples_citation_requires_the_element_to_exist_in_scope(): void
+    {
+        $collarB = $this->insertCollar($this->workspaceB, $this->projectBId, 'PLS-B-03');
+        DB::table('silver.assays_v2')->insert([
+            'id' => (string) Str::uuid(),
+            'workspace_id' => $this->workspaceB,
+            'collar_id' => $collarB,
+            'sample_id' => 'S-1',
+            'from_depth' => 1,
+            'to_depth' => 2,
+            'element' => 'U3O8',
+            'unit' => 'ppm',
+        ]);
+
+        $this->actingAs($this->userB, 'sanctum');
+        $this->getJson($this->resolveUrl('silver.samples:element=U3O8:count=4'))
+            ->assertOk()
+            ->assertJsonPath('metadata.element', 'U3O8');
+        // An element no authorised data carries is not echoed back as fact.
+        $this->getJson($this->resolveUrl('silver.samples:element=Unobtainium:count=4'))->assertNotFound();
+        // Not an element at all.
+        $this->getJson($this->resolveUrl('silver.samples:element=<script>:count=4'))->assertNotFound();
+
+        // Same workspace, other project: the element is not in ITS data.
+        $this->actingAs($this->sameWorkspaceOtherProjectUser(), 'sanctum');
+        $this->getJson($this->resolveUrl('silver.samples:element=U3O8:count=4'))->assertNotFound();
+    }
+
+    public function test_assay_citation_is_scoped_to_the_project(): void
+    {
+        $collarB = $this->insertCollar($this->workspaceB, $this->projectBId, 'PLS-B-04');
+        $assayId = (string) Str::uuid();
+        DB::table('silver.assays_v2')->insert([
+            'id' => $assayId,
+            'workspace_id' => $this->workspaceB,
+            'collar_id' => $collarB,
+            'sample_id' => 'S-2',
+            'from_depth' => 1,
+            'to_depth' => 2,
+            'element' => 'Au',
+            'value' => 3.2,
+            'unit' => 'g/t',
+        ]);
+
+        $this->actingAs($this->sameWorkspaceOtherProjectUser(), 'sanctum');
+        $this->getJson($this->resolveUrl("silver.assays_v2:assay_id={$assayId}"))->assertNotFound();
+
+        $this->actingAs($this->userB, 'sanctum');
+        $this->getJson($this->resolveUrl("silver.assays_v2:assay_id={$assayId}"))->assertOk();
     }
 }
