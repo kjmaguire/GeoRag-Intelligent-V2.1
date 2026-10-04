@@ -141,9 +141,20 @@ export interface ProjectOverview {
     >;
 }
 
+interface ReportsPagination {
+    total: number;
+    page: number;
+    per_page: number;
+    last_page: number;
+}
+
 interface ReportsProps {
     project: { project_id: string; project_name: string; slug: string };
     reports: ReportListRow[];
+    // The list is one page (2026-10): `reports_pagination` carries the
+    // project-wide total and the page position; `quality.documents` is also
+    // the project total, not the page size.
+    reports_pagination?: ReportsPagination | null;
     quality: QualityRollup;
     empty: boolean;
 
@@ -186,6 +197,7 @@ const DETAIL_PROPS = [
 export default function FoundryReports({
     project,
     reports,
+    reports_pagination = null,
     quality,
     empty,
     selected_id,
@@ -203,7 +215,7 @@ export default function FoundryReports({
     // only moves the rollup.
     useWorkspaceDataUpdated(project.project_id, (event) => {
         if (event.affected_types.includes('reports')) {
-            router.reload({ only: ['reports', 'quality', 'empty', ...DETAIL_PROPS] });
+            router.reload({ only: ['reports', 'reports_pagination', 'quality', 'empty', ...DETAIL_PROPS] });
         } else if (event.affected_types.includes('quality')) {
             router.reload({ only: ['quality'] });
         }
@@ -304,6 +316,7 @@ export default function FoundryReports({
                                 reports={reports}
                                 slug={project.slug}
                                 selectedId={selected_id}
+                                pagination={reports_pagination}
                             />
 
                             <section className="flex-1 min-w-0 overflow-y-auto">
@@ -530,11 +543,23 @@ function DocumentList({
     reports,
     slug,
     selectedId,
+    pagination,
 }: {
     reports: ReportListRow[];
     slug: string;
     selectedId: string | null;
+    pagination: ReportsPagination | null;
 }) {
+    const paged = pagination !== null && pagination.last_page > 1;
+    const goToPage = (page: number) => {
+        router.get(
+            `/projects/${slug}/reports`,
+            { page, per_page: pagination?.per_page },
+            { preserveState: true, preserveScroll: true, only: ['reports', 'reports_pagination'] }
+        );
+    };
+    const first = paged ? (pagination.page - 1) * pagination.per_page + 1 : 1;
+    const last = paged ? Math.min(pagination.page * pagination.per_page, pagination.total) : reports.length;
     return (
         <nav
             className="w-[320px] shrink-0 overflow-y-auto border-r"
@@ -549,8 +574,39 @@ function DocumentList({
                     background: 'var(--bg-0)',
                 }}
             >
-                {reports.length} document{reports.length === 1 ? '' : 's'}
+                {paged
+                    ? `${first}–${last} of ${pagination.total} documents`
+                    : `${reports.length} document${reports.length === 1 ? '' : 's'}`}
             </div>
+            {paged && (
+                <div
+                    className="flex items-center justify-between px-4 py-1.5 text-[11px] border-b"
+                    style={{ borderColor: 'var(--line-1)', color: 'var(--fg-2)' }}
+                    data-testid="reports-pager"
+                >
+                    <button
+                        type="button"
+                        className="font-mono uppercase tracking-wider disabled:opacity-40"
+                        disabled={pagination.page <= 1}
+                        onClick={() => goToPage(pagination.page - 1)}
+                        aria-label="Previous page of documents"
+                    >
+                        ← Prev
+                    </button>
+                    <span>
+                        Page {pagination.page} of {pagination.last_page}
+                    </span>
+                    <button
+                        type="button"
+                        className="font-mono uppercase tracking-wider disabled:opacity-40"
+                        disabled={pagination.page >= pagination.last_page}
+                        onClick={() => goToPage(pagination.page + 1)}
+                        aria-label="Next page of documents"
+                    >
+                        Next →
+                    </button>
+                </div>
+            )}
 
             {reports.map((r) => {
                 const active = r.report_id === selectedId;

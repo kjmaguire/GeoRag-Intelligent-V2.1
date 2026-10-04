@@ -12,7 +12,9 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 
 /**
  * §3.3 Public REST API — surface that was audit-flagged as "largely missing".
@@ -40,6 +42,11 @@ class PublicApiController extends Controller
 
     /** Ceiling for GET /audit/{workspace_id}?limit= (unchanged from before LAR-16). */
     private const AUDIT_LIMIT_MAX = 500;
+
+    /** Default and ceiling of the usage rollup window, in days. */
+    private const USAGE_DAYS_DEFAULT = 30;
+
+    private const USAGE_DAYS_MAX = 365;
 
     public function answer(Request $request, string $answerRunId): JsonResponse
     {
@@ -230,18 +237,15 @@ class PublicApiController extends Controller
 
     public function audit(Request $request, string $workspaceId): JsonResponse
     {
-        // Tenancy gate — audit ledger leaks workspace operational
-        // activity (action types, actors, target tables). User must
-        // have at least one project in the workspace to read its audit
-        // trail. Mirrors the Reverb workspace.{}.activity scoping fix
-        // (Theme F). See AUDIT_AND_FIX_REPORT.md Theme H.
-        $user = $request->user();
-        if ($user === null
-            || ! $user->projects()
-                ->where('silver.projects.workspace_id', $workspaceId)
-                ->exists()
-        ) {
-            return response()->json(['error' => 'not_found'], 404);
+        // Tenancy + role gate — the audit ledger exposes workspace
+        // operational activity (action types, actors, target tables), so
+        // membership alone is not enough: a read-only project member used to
+        // be able to page through every actor's activity. Requires a
+        // workspace admin or a project owner in this workspace; a member
+        // without either gets 403, a non-member 404 (no existence leak).
+        $denied = $this->denyUnlessWorkspaceAdmin($request, $workspaceId);
+        if ($denied !== null) {
+            return $denied;
         }
         // LAR-16 (2026-09-29): `min($limit, 500)` had no floor, so
         // `?limit=-1` reached Postgres as `LIMIT -1` and 500'd.
@@ -282,19 +286,51 @@ class PublicApiController extends Controller
         ]);
     }
 
-    public function usage(Request $request, string $workspaceId): JsonResponse
+    /**
+     * 404 for a non-member, 403 for a member who is neither a workspace admin
+     * nor a project owner here, null when access is granted.
+     *
+     * "Workspace admin" is the platform `admin` gate (users.is_admin) AND
+     * membership of the workspace, mirroring WorkflowTriggerPolicy: a global
+     * admin flag does not reach into a tenant the admin has no part in. The
+     * workspace has no role table of its own, so "owner" is the project_user
+     * pivot role on any project of the workspace.
+     */
+    private function denyUnlessWorkspaceAdmin(Request $request, string $workspaceId): ?JsonResponse
     {
-        // Tenancy gate — usage rollups expose billing-grade workspace
-        // cost data. Same scoping as ::audit() above.
         $user = $request->user();
         if ($user === null
-            || ! $user->projects()
-                ->where('silver.projects.workspace_id', $workspaceId)
-                ->exists()
+            || ! Str::isUuid($workspaceId)
+            || ! $user->hasWorkspaceAccess($workspaceId)
         ) {
             return response()->json(['error' => 'not_found'], 404);
         }
-        $sinceDays = (int) $request->query('days', 30);
+
+        $isOwner = $user->projects()
+            ->where('silver.projects.workspace_id', $workspaceId)
+            ->wherePivot('role', 'owner')
+            ->exists();
+
+        if (! $isOwner && ! Gate::forUser($user)->allows('admin')) {
+            return response()->json(['error' => 'forbidden'], 403);
+        }
+
+        return null;
+    }
+
+    public function usage(Request $request, string $workspaceId): JsonResponse
+    {
+        // Tenancy + role gate — usage rollups expose billing-grade workspace
+        // cost data. Same gate as ::audit() above.
+        $denied = $this->denyUnlessWorkspaceAdmin($request, $workspaceId);
+        if ($denied !== null) {
+            return $denied;
+        }
+        // `days` reaches Postgres as `current_date - ?::int`: unbounded, a
+        // value past int4 (or a non-number) 500'd, and a negative window
+        // reads the future. Clamped to 1..365; anything below 1 or
+        // non-numeric falls back to the 30-day default (same rule as LAR-16).
+        $sinceDays = PaginationLimit::clamp($request, self::USAGE_DAYS_DEFAULT, 'days', self::USAGE_DAYS_MAX);
         $byDay = DB::select(
             'SELECT rollup_date::text,
                     sum(invocations_total)::int AS invocations,

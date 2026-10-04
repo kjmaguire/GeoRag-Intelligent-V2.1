@@ -420,4 +420,119 @@ final class ReportControllerTest extends TestCase
             route('foundry.corpus', ['slug' => $this->project->slug], false),
         );
     }
+
+    // -----------------------------------------------------------------
+    // Pagination + project-wide quality totals (2026-10)
+    // -----------------------------------------------------------------
+
+    /**
+     * @return array<int, string> report ids, oldest first
+     */
+    private function seedReports(int $count, int $passagesEach, ?Project $project = null): array
+    {
+        $project ??= $this->project;
+        $ids = [];
+        for ($i = 0; $i < $count; $i++) {
+            $reportId = (string) Str::uuid();
+            DB::table('silver.reports')->insert([
+                'report_id' => $reportId,
+                'workspace_id' => $this->workspaceId,
+                'project_id' => $project->project_id,
+                'title' => "Filing {$i}",
+                'parser_used' => 'fitz',
+                'version' => 1,
+                'qp_name' => '{}',
+                'updated_at' => now()->subMinutes($count - $i),
+            ]);
+            for ($p = 0; $p < $passagesEach; $p++) {
+                $this->insertPassage($reportId, ordinal: $p, chunkKind: 'narrative', text: "f{$i} p{$p}");
+            }
+            $ids[] = $reportId;
+        }
+
+        return $ids;
+    }
+
+    public function test_the_list_is_paginated_and_exposes_total_page_and_per_page(): void
+    {
+        $this->seedReports(5, passagesEach: 2);
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/reports?per_page=2&page=2")
+            ->assertOk()
+            ->assertInertia(
+                fn (AssertableInertia $page) => $page
+                    ->component('Foundry/Reports')
+                    ->has('reports', 2)
+                    // newest first: page 2 of 2-per-page is the 3rd/4th newest
+                    ->where('reports.0.title', 'Filing 2')
+                    ->where('reports.1.title', 'Filing 1')
+                    ->where('reports_pagination.total', 5)
+                    ->where('reports_pagination.page', 2)
+                    ->where('reports_pagination.per_page', 2)
+                    ->where('reports_pagination.last_page', 3)
+                    ->where('empty', false),
+            );
+    }
+
+    public function test_the_default_page_size_is_unchanged_and_garbage_params_fall_back(): void
+    {
+        $this->seedReports(3, passagesEach: 1);
+
+        foreach (['', '?page=abc&per_page=-4', '?page=0', '?per_page=99999999999'] as $query) {
+            $this->actingAs($this->user)
+                ->get("/projects/{$this->project->slug}/reports".$query)
+                ->assertOk()
+                ->assertInertia(
+                    fn (AssertableInertia $page) => $page
+                        ->has('reports', 3)
+                        ->where('reports_pagination.page', 1)
+                        ->where('reports_pagination.total', 3),
+                );
+        }
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/reports")
+            ->assertInertia(fn (AssertableInertia $page) => $page->where('reports_pagination.per_page', 60));
+    }
+
+    public function test_quality_totals_cover_the_whole_project_not_the_visible_page(): void
+    {
+        $this->seedReports(5, passagesEach: 3);
+        // A sibling project in the SAME workspace must not leak into totals.
+        $sibling = Project::factory()->create();
+        DB::statement(
+            'UPDATE silver.projects SET workspace_id = ?::uuid WHERE project_id = ?::uuid',
+            [$this->workspaceId, $sibling->project_id],
+        );
+        $this->seedReports(4, passagesEach: 7, project: $sibling);
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/reports?per_page=2")
+            ->assertOk()
+            ->assertInertia(
+                fn (AssertableInertia $page) => $page
+                    ->has('reports', 2)
+                    ->where('quality.documents', 5)
+                    ->where('quality.passages_total', 15)
+                    // embedding_id is NULL on every seeded passage: all five
+                    // documents have passages and none are retrievable.
+                    ->where('quality.embedded_total', 0)
+                    ->where('quality.documents_not_retrievable', 5),
+            );
+    }
+
+    public function test_an_empty_project_reports_empty_and_a_zero_total(): void
+    {
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/reports")
+            ->assertOk()
+            ->assertInertia(
+                fn (AssertableInertia $page) => $page
+                    ->where('empty', true)
+                    ->where('reports_pagination.total', 0)
+                    ->where('reports_pagination.last_page', 1)
+                    ->where('quality.documents', 0),
+            );
+    }
 }

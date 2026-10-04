@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 
 /**
  * POST /api/v1/answer-runs/{answerRunId}/feedback — Laravel proxy for
@@ -55,6 +56,9 @@ class AnswerRunFeedbackController extends Controller
         // CitationFeedbackController::submit() — resolve the parent row's
         // true project_id/workspace_id from the DB rather than trusting a
         // client-supplied value, then verify project access).
+        if (! Str::isUuid($answerRunId)) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
         $answerRun = DB::table('silver.answer_runs')
             ->where('answer_run_id', $answerRunId)
             ->select('project_id', 'workspace_id')
@@ -108,6 +112,16 @@ class AnswerRunFeedbackController extends Controller
         // successful(), not ok(): FastAPI answers this POST with 201, and
         // ok() is true for exactly 200.
         if (! $resp->successful()) {
+            // FastAPI's 401/403/419 describe the Laravel->FastAPI service
+            // credential, not the browser's session; passed through, the
+            // SPA's global fetch wrapper logs the user out. Neutral 502.
+            if (in_array($resp->status(), [401, 403, 419], true)) {
+                return response()->json([
+                    'error' => 'upstream_unavailable',
+                    'message' => 'The feedback service could not complete this request.',
+                ], 502);
+            }
+
             return response()->json(
                 ['error' => 'fastapi non-2xx', 'status' => $resp->status(), 'body' => $resp->json() ?? $resp->body()],
                 $resp->status() >= 400 && $resp->status() < 600 ? $resp->status() : 502,

@@ -76,9 +76,19 @@ class QueryController extends Controller
         // /queries/{id}/start (not here) to avoid a new audit column. The
         // store() validator still runs the envelope through its rules so
         // a malformed envelope is rejected before the query_id is reserved.
+        //
+        // workspace_id is set on the INSERT, not left NULL: the audit-log
+        // surfaces, the retention sweep and the RLS policy on this table all
+        // filter on it, so a NULL row was invisible to its own workspace
+        // (the 2026-04-22 backfill only covered rows that already existed).
+        $workspaceId = DB::table('silver.projects')
+            ->where('project_id', $projectId)
+            ->value('workspace_id');
+
         QueryAuditLog::create([
             'user_id' => $request->user()?->id,
             'project_id' => $projectId,
+            'workspace_id' => $workspaceId !== null ? (string) $workspaceId : null,
             'query_id' => $queryId,
             'query_text' => $queryText,
             'ip_address' => $request->ip(),
@@ -99,19 +109,14 @@ class QueryController extends Controller
         // trailing debounce so high-frequency query bursts collapse into one
         // partial reload. Best-effort — broadcast failure must not fail the
         // reservation (the QueryAuditLog row is already committed).
-        if ($projectId !== null) {
+        if ($workspaceId !== null) {
             try {
-                $workspaceId = DB::table('silver.projects')
-                    ->where('project_id', $projectId)
-                    ->value('workspace_id');
-                if ($workspaceId !== null) {
-                    WorkspaceDataUpdated::dispatch(
-                        (string) $workspaceId,
-                        $projectId,
-                        $queryId,
-                        ['audit_log'],
-                    );
-                }
+                WorkspaceDataUpdated::dispatch(
+                    (string) $workspaceId,
+                    $projectId,
+                    $queryId,
+                    ['audit_log'],
+                );
             } catch (\Throwable $e) {
                 Log::warning('QueryController: audit_log broadcast failed', [
                     'query_id' => $queryId,
@@ -138,11 +143,16 @@ class QueryController extends Controller
      */
     public function start(string $queryId, Request $request): JsonResponse
     {
-        $row = QueryAuditLog::where('query_id', $queryId)
-            ->where('user_id', $request->user()?->id)
+        $user = $request->user();
+        $row = $user === null ? null : QueryAuditLog::where('query_id', $queryId)
+            ->where('user_id', $user->id)
             ->first();
 
-        if (! $row) {
+        // Row ownership alone is not enough: membership can be revoked
+        // between reserve and start. The broadcast channel and result() both
+        // re-check live project access; start() must too, or a removed member
+        // could still launch a RAG run against the project.
+        if (! $row || ($row->project_id !== null && ! $user->hasProjectAccess($row->project_id))) {
             return response()->json([
                 'error' => 'query_not_found',
                 'message' => 'Unknown query_id, or it was reserved by a different user.',

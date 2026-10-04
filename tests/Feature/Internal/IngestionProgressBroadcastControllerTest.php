@@ -9,11 +9,13 @@ use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
 use App\Jobs\DebounceWorkspaceMvRefresh;
 use App\Models\Project;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
@@ -233,5 +235,42 @@ final class IngestionProgressBroadcastControllerTest extends TestCase
         $this->withHeaders(['X-Service-Key' => $this->serviceKey])
             ->postJson('/api/internal/v1/ingest-progress/broadcast', $this->payload('finished'))
             ->assertStatus(422);
+    }
+
+    /**
+     * IngestionProgressBroadcast is ShouldBroadcastNow, so a Reverb outage
+     * throws out of dispatch(). It used to run FIRST, so the outage returned
+     * 500 to FastAPI and skipped both the data_version bump and the MV
+     * refresh for a run whose rows had already landed.
+     */
+    public function test_a_broadcast_failure_still_bumps_the_version_and_returns_200(): void
+    {
+        Queue::fake();
+        Broadcast::shouldReceive('queue')->andThrow(new RuntimeException('reverb is down'));
+
+        $this->withHeaders(['X-Service-Key' => $this->serviceKey])
+            ->postJson('/api/internal/v1/ingest-progress/broadcast', $this->payload('completed'))
+            ->assertOk()
+            ->assertJsonPath('side_effects.data_version_bumped', true)
+            ->assertJsonPath('side_effects.mv_refresh_dispatched', true)
+            ->assertJsonPath('side_effects.broadcast_dispatched', false);
+
+        $wsv = DB::scalar(
+            'SELECT data_version FROM silver.workspaces WHERE workspace_id = ?::uuid',
+            [$this->workspaceId],
+        );
+        $this->assertSame(1, (int) $wsv, 'the bump must not depend on Reverb being up');
+        Queue::assertPushed(DebounceWorkspaceMvRefresh::class);
+    }
+
+    public function test_a_broadcast_failure_on_a_non_terminal_status_is_also_a_200(): void
+    {
+        Queue::fake();
+        Broadcast::shouldReceive('queue')->andThrow(new RuntimeException('reverb is down'));
+
+        $this->withHeaders(['X-Service-Key' => $this->serviceKey])
+            ->postJson('/api/internal/v1/ingest-progress/broadcast', $this->payload('started'))
+            ->assertOk()
+            ->assertJsonPath('side_effects.broadcast_dispatched', false);
     }
 }

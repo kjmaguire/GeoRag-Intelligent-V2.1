@@ -7,7 +7,9 @@ namespace Tests\Feature\Chat;
 use App\Models\ChatConversation;
 use App\Models\ChatMessage;
 use App\Models\User;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use Tests\Concerns\CreatesChatTablesOnSqlite;
@@ -112,5 +114,78 @@ final class ChatConversationSyncTest extends TestCase
         $this->sync($id, [['role' => 'user', 'content' => str_repeat('x', 100_001)]])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['messages.0.content']);
+    }
+
+    public function test_a_messages_metadata_is_capped_at_32_kb(): void
+    {
+        $id = (string) Str::uuid();
+        $huge = ['citations' => [str_repeat('x', 33_000)]];
+
+        $this->sync($id, [['role' => 'assistant', 'content' => 'a', 'metadata' => $huge]])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['messages.0.metadata']);
+
+        $this->assertNull(ChatConversation::find($id), 'a rejected sync must not create the thread');
+
+        $ok = ['citations' => [str_repeat('x', 30_000)]];
+        $this->sync($id, [['role' => 'assistant', 'content' => 'a', 'metadata' => $ok]])->assertOk();
+        $this->assertSame($ok, ChatMessage::where('conversation_id', $id)->first()->metadata);
+    }
+
+    public function test_a_sync_of_500_messages_is_accepted_and_ordered(): void
+    {
+        $id = (string) Str::uuid();
+        $messages = [];
+        for ($i = 0; $i < 500; $i++) {
+            $messages[] = ['role' => $i % 2 === 0 ? 'user' : 'assistant', 'content' => "m{$i}", 'metadata' => ['i' => $i]];
+        }
+
+        $this->sync($id, $messages)->assertOk();
+
+        $stored = ChatConversation::with('messages')->find($id)->messages;
+        $this->assertCount(500, $stored);
+        $this->assertSame('m0', $stored->first()->content);
+        $this->assertSame('m499', $stored->last()->content);
+        $this->assertSame(499, $stored->last()->position);
+    }
+
+    public function test_a_row_created_by_a_concurrent_first_sync_is_synced_into_not_a_500(): void
+    {
+        // The loser of a concurrent first sync finds the winner's row
+        // already there. The old SELECT ... FOR UPDATE locked nothing for a
+        // row that did not exist yet, both inserted, and one PK-violated.
+        // Create-if-absent (ON CONFLICT DO NOTHING) must now fall through to
+        // the locked read and a normal full replace.
+        $id = (string) Str::uuid();
+        DB::table('chat_conversations')->insert([
+            'conversation_id' => $id,
+            'user_id' => $this->user->id,
+            'title' => 'winner',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->sync($id, [['role' => 'user', 'content' => 'loser sync']])->assertOk();
+
+        $this->assertSame(1, ChatConversation::where('conversation_id', $id)->count());
+        $this->assertSame('PLS grades', ChatConversation::find($id)->title);
+        $this->assertSame(['loser sync'], ChatMessage::where('conversation_id', $id)->pluck('content')->all());
+    }
+
+    public function test_contention_that_survives_the_retries_is_a_409_not_a_500(): void
+    {
+        $id = (string) Str::uuid();
+        DB::connection()->beforeExecuting(function (string $query, array $bindings, $connection): void {
+            if (str_contains($query, 'chat_messages') && str_starts_with(strtolower(ltrim($query)), 'insert')) {
+                $pdo = new \PDOException('duplicate key value violates unique constraint');
+                $pdo->errorInfo = ['23505', 7, 'duplicate key'];
+
+                throw new UniqueConstraintViolationException($connection->getName(), $query, $bindings, $pdo);
+            }
+        });
+
+        $this->sync($id, [['role' => 'user', 'content' => 'q']])
+            ->assertStatus(409)
+            ->assertJsonPath('error', 'sync_conflict');
     }
 }

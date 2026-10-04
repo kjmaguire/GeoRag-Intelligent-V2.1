@@ -117,6 +117,15 @@
             <file>tests/Feature/Api/V1/PublicApiControllerWebhooksTest.php</file>
             <!-- 2026-09-29 (LAR-16): ?limit=-1 reached Postgres as LIMIT -1. -->
             <file>tests/Feature/Api/V1/PublicApiControllerAuditLimitTest.php</file>
+            <!-- 2026-10-04: /audit and /usage require a workspace admin or
+                 project owner, and `days` is bounded. -->
+            <file>tests/Feature/Api/V1/PublicApiControllerAdminGateTest.php</file>
+            <!-- 2026-10-04: trust-summary authorises against the answer run's
+                 own project, not ?project_id=; silver.answer_runs is raw SQL. -->
+            <file>tests/Feature/Api/V1/TrustControllerTest.php</file>
+            <!-- 2026-10-04: ?thread= is scoped to the user's own thread in the
+                 project (IDOR) and the page keeps the newest 200 messages. -->
+            <file>tests/Feature/Foundry/ChatControllerThreadAccessTest.php</file>
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>

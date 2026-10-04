@@ -10,6 +10,7 @@ use App\Services\Figures\FigureResolver;
 use App\Services\StorageService;
 use App\Support\ExtractionMethods;
 use App\Support\SetsWorkspaceRlsContext;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -61,8 +62,11 @@ class ReportController extends Controller
     /** How many passages the reader's "Passages" tab previews. */
     private const PASSAGE_PREVIEW_LIMIT = 30;
 
-    /** How many documents the master list shows. */
+    /** Default page size of the master list. */
     private const REPORT_LIST_LIMIT = 60;
+
+    /** Largest `per_page` a client may ask for. */
+    private const REPORT_LIST_MAX_PER_PAGE = 100;
 
     /**
      * Lifetime of a presigned original-document URL. An hour matches
@@ -84,7 +88,7 @@ class ReportController extends Controller
         $project = $this->resolveProject($request, $slug);
 
         return Inertia::render('Foundry/Reports', array_merge(
-            $this->listPayload($project),
+            $this->listPayload($project, $request),
             $this->emptyDetailPayload(),
             // Only when nothing is selected — this is what fills the right
             // pane in place of a document, and it is the whole of what the
@@ -111,7 +115,7 @@ class ReportController extends Controller
         }
 
         return Inertia::render('Foundry/Reports', array_merge(
-            $this->listPayload($project),
+            $this->listPayload($project, $request),
             $this->detailPayload($project, $report_id, $row),
             // Deep-linking straight to a document shows the detail pane, so
             // the overview would be computed and thrown away.
@@ -136,20 +140,34 @@ class ReportController extends Controller
      * Master list + project-level quality rollup — the props that stay put
      * while the user clicks between documents.
      *
+     * Additive props (2026-10): `reports_pagination` carries `total`, `page`,
+     * `per_page` and `last_page` of the master list. `quality.documents` is
+     * now the project's TOTAL document count, not the size of the page.
+     *
      * @return array<string, mixed>
      */
-    private function listPayload(Project $project): array
+    private function listPayload(Project $project, Request $request): array
     {
-        // Computed once, shared by the two closures below, but only if one
-        // of them is actually evaluated (i.e. not on a detail-only partial
+        [$page, $perPage] = $this->pageParams($request);
+
+        // Computed once, shared by the closures below, but only if one of
+        // them is actually evaluated (i.e. not on a detail-only partial
         // reload). Memoised because Inertia resolves each closure separately.
         $rows = null;
-        $resolve = function () use ($project, &$rows) {
+        $resolve = function () use ($project, $page, $perPage, &$rows) {
             if ($rows === null) {
-                $rows = $this->reportRows($project);
+                $rows = $this->reportRows($project, $page, $perPage);
             }
 
             return $rows;
+        };
+        $aggregate = null;
+        $resolveAggregate = function () use ($project, &$aggregate) {
+            if ($aggregate === null) {
+                $aggregate = $this->qualityAggregate($project);
+            }
+
+            return $aggregate;
         };
 
         return [
@@ -159,8 +177,78 @@ class ReportController extends Controller
                 'slug' => $project->slug,
             ],
             'reports' => fn () => $resolve()->all(),
-            'quality' => fn () => $this->qualityRollup($project, $resolve()),
-            'empty' => fn () => $resolve()->isEmpty(),
+            'reports_pagination' => fn () => [
+                'total' => $resolveAggregate()['documents'],
+                'page' => $page,
+                'per_page' => $perPage,
+                'last_page' => max(1, (int) ceil($resolveAggregate()['documents'] / $perPage)),
+            ],
+            'quality' => fn () => $this->qualityRollup($project, $resolveAggregate()),
+            'empty' => fn () => $resolveAggregate()['documents'] === 0,
+        ];
+    }
+
+    /**
+     * `page` and `per_page` from the query string, clamped. Garbage falls
+     * back to the defaults rather than 422-ing a page load.
+     *
+     * @return array{0: int, 1: int}
+     */
+    private function pageParams(Request $request): array
+    {
+        $page = filter_var($request->query('page'), FILTER_VALIDATE_INT);
+        $perPage = filter_var($request->query('per_page'), FILTER_VALIDATE_INT);
+
+        return [
+            ($page === false || $page < 1) ? 1 : min($page, 100_000),
+            ($perPage === false || $perPage < 1)
+                ? self::REPORT_LIST_LIMIT
+                : min($perPage, self::REPORT_LIST_MAX_PER_PAGE),
+        ];
+    }
+
+    /**
+     * Per-report passage counts, scoped to the project through silver.reports
+     * BEFORE aggregating. document_passages has no project_id of its own, and
+     * an unscoped GROUP BY document_id aggregated every passage in the
+     * workspace on each page load (IngestionSnapshot::loadReports fixed the
+     * same defect on 2026-08-15). Must run inside withWorkspaceRls().
+     */
+    private function passageCountsSubquery(Project $project): Builder
+    {
+        return DB::table('silver.document_passages AS dp')
+            ->join('silver.reports AS r2', 'r2.report_id', '=', 'dp.document_id')
+            ->where('r2.project_id', $project->project_id)
+            ->selectRaw('dp.document_id, COUNT(*) AS passages, COUNT(*) FILTER (WHERE dp.embedding_id IS NOT NULL) AS embedded')
+            ->groupBy('dp.document_id');
+    }
+
+    /**
+     * Project-wide document and passage totals, independent of the page.
+     *
+     * @return array{documents: int, passages: int, embedded: int, not_retrievable: int}
+     */
+    private function qualityAggregate(Project $project): array
+    {
+        $row = $this->withWorkspaceRls(
+            (string) $project->workspace_id,
+            fn () => DB::table('silver.reports AS r')
+                ->leftJoinSub($this->passageCountsSubquery($project), 'p', 'p.document_id', '=', 'r.report_id')
+                ->where('r.project_id', $project->project_id)
+                ->selectRaw('
+                    COUNT(*) AS documents,
+                    COALESCE(SUM(COALESCE(p.passages, 0)), 0) AS passages,
+                    COALESCE(SUM(COALESCE(p.embedded, 0)), 0) AS embedded,
+                    COUNT(*) FILTER (WHERE COALESCE(p.passages, 0) > 0 AND COALESCE(p.embedded, 0) = 0) AS not_retrievable
+                ')
+                ->first(),
+        );
+
+        return [
+            'documents' => (int) ($row->documents ?? 0),
+            'passages' => (int) ($row->passages ?? 0),
+            'embedded' => (int) ($row->embedded ?? 0),
+            'not_retrievable' => (int) ($row->not_retrievable ?? 0),
         ];
     }
 
@@ -236,23 +324,17 @@ class ReportController extends Controller
      *
      * @return Collection<int, array<string, mixed>>
      */
-    private function reportRows(Project $project): Collection
+    private function reportRows(Project $project, int $page, int $perPage): Collection
     {
         $rows = $this->withWorkspaceRls(
             (string) $project->workspace_id,
             fn () => DB::table('silver.reports AS r')
-                ->leftJoinSub(
-                    DB::table('silver.document_passages')
-                        ->selectRaw('document_id, COUNT(*) AS passages, COUNT(*) FILTER (WHERE embedding_id IS NOT NULL) AS embedded')
-                        ->groupBy('document_id'),
-                    'p',
-                    'p.document_id',
-                    '=',
-                    'r.report_id',
-                )
+                ->leftJoinSub($this->passageCountsSubquery($project), 'p', 'p.document_id', '=', 'r.report_id')
                 ->where('r.project_id', $project->project_id)
                 ->orderByDesc('r.updated_at')
-                ->limit(self::REPORT_LIST_LIMIT)
+                ->orderBy('r.report_id')
+                ->offset(($page - 1) * $perPage)
+                ->limit($perPage)
                 ->select(
                     'r.report_id',
                     'r.title',
@@ -336,11 +418,14 @@ class ReportController extends Controller
      * per-document breakdown. That is why the document rows below expose
      * passages/embedded (which ARE per-document) and not flagged/rejected.
      *
-     * @param Collection<int, array<string, mixed>> $rows
+     * Computed from {@see qualityAggregate()} — project-wide, never from the
+     * visible page of the master list.
+     *
+     * @param array{documents: int, passages: int, embedded: int, not_retrievable: int} $aggregate
      *
      * @return array<string, mixed>
      */
-    private function qualityRollup(Project $project, $rows): array
+    private function qualityRollup(Project $project, array $aggregate): array
     {
         $review = DB::table('silver.review_queue')
             ->where('project_id', $project->project_id)
@@ -351,7 +436,7 @@ class ReportController extends Controller
                 ")
             ->first();
 
-        $passagesTotal = (int) $rows->sum('passages');
+        $passagesTotal = $aggregate['passages'];
         $flagged = (int) ($review->flagged ?? 0);
         $rejected = (int) ($review->rejected ?? 0);
         $awaiting = (int) ($review->awaiting_ocr ?? 0);
@@ -370,9 +455,9 @@ class ReportController extends Controller
                 'awaiting_ocr' => $awaiting,
             ],
             'passages_total' => $passagesTotal,
-            'embedded_total' => (int) $rows->sum('embedded'),
-            'documents' => $rows->count(),
-            'documents_not_retrievable' => $rows->where('status', 'error')->count(),
+            'embedded_total' => $aggregate['embedded'],
+            'documents' => $aggregate['documents'],
+            'documents_not_retrievable' => $aggregate['not_retrievable'],
             // Promotion gate: passes when acceptance >= 95% AND nothing rejected.
             'pass_gate' => $rowsTotal === 0
                 ? false

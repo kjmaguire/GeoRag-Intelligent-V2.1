@@ -262,12 +262,65 @@ class DrillUploadControllerTest extends TestCase
         });
     }
 
+    /**
+     * What FastAPI's trigger endpoint writes at dispatch time. The fake HTTP
+     * layer in these tests never reaches FastAPI, so a "the first attempt
+     * really started" scenario has to seed the row itself.
+     */
+    private function seedIngestProgress(string $projectId, string $minioKey, string $status = 'started'): void
+    {
+        $runId = (string) Str::uuid();
+        DB::table('silver.ingest_progress')->insert([
+            'progress_id' => $runId,
+            'run_id' => $runId,
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $projectId,
+            'minio_key' => $minioKey,
+            'filename' => basename($minioKey),
+            'current_step' => 'parse',
+            'current_stage' => 'parse',
+            'step_index' => 1,
+            'total_steps' => 5,
+            'status' => $status,
+            'attempt_number' => 1,
+            'triggered_by' => 'upload',
+            'started_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function secondProject(): Project
+    {
+        $project = Project::create([
+            'project_name' => 'Drill Upload Sibling '.uniqid(),
+            'crs_datum' => 'EPSG:32613',
+            'orientation_reference' => 'BOH',
+        ]);
+        DB::table('silver.projects')
+            ->where('project_id', $project->project_id)
+            ->update(['workspace_id' => $this->workspaceId]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        return $project;
+    }
+
+    private function triggerCount(): int
+    {
+        return Http::recorded(
+            fn ($request) => str_contains($request->url(), '/trigger'),
+        )->count();
+    }
+
     public function test_duplicate_sha256_returns_existing_row_without_re_uploading(): void
     {
         $payload = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
         $first = $this->actingAs($this->user)
             ->postJson($this->url(), ['file' => $this->pdf('report_a.pdf', $payload)])
             ->assertCreated();
+
+        // FastAPI inserts the ingest_progress row at dispatch time; the fake
+        // HTTP layer does not, so seed what the real trigger would have.
+        $this->seedIngestProgress($this->project->project_id, (string) $first->json('seaweedfs_key'));
 
         // Same content under a different filename — SHA matches, so we
         // expect a 200 + duplicate=true pointing at the original row.
@@ -280,6 +333,78 @@ class DrillUploadControllerTest extends TestCase
         $this->assertCount(1, DB::table('bronze.source_files')
             ->where('workspace_id', $this->workspaceId)
             ->get(), 'a duplicate SHA must not create a second row');
+        $this->assertSame(1, $this->triggerCount(), 'a true duplicate must not dispatch again');
+    }
+
+    public function test_the_same_file_into_a_second_project_is_ingested_not_short_circuited(): void
+    {
+        $sibling = $this->secondProject();
+
+        $first = $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertCreated();
+        $this->seedIngestProgress($this->project->project_id, (string) $first->json('seaweedfs_key'));
+
+        $second = $this->actingAs($this->user)
+            ->postJson("/api/v1/projects/{$sibling->slug}/drill-uploads", ['file' => $this->csv('collars_2024.csv')])
+            ->assertCreated()
+            ->assertJsonPath('dispatch.dispatched', true)
+            ->assertJsonMissingPath('duplicate');
+
+        // The first project's run owns the first key (ingest_progress is
+        // unique per workspace + key), so the sibling gets its own object.
+        $this->assertNotSame($first->json('seaweedfs_key'), $second->json('seaweedfs_key'));
+        $this->assertSame($first->json('source_file_id'), $second->json('source_file_id'));
+        $this->assertSame(2, $this->triggerCount());
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/trigger')
+            && ($request['project_id'] ?? null) === $sibling->project_id
+            && ($request['minio_key'] ?? null) === $second->json('seaweedfs_key'));
+        $this->assertCount(1, DB::table('bronze.source_files')->where('workspace_id', $this->workspaceId)->get());
+
+        // And once the sibling's run exists, a re-upload THERE is a duplicate.
+        $this->seedIngestProgress($sibling->project_id, (string) $second->json('seaweedfs_key'));
+        $this->actingAs($this->user)
+            ->postJson("/api/v1/projects/{$sibling->slug}/drill-uploads", ['file' => $this->csv('collars_2024.csv')])
+            ->assertOk()
+            ->assertJsonPath('duplicate', true);
+        $this->assertSame(2, $this->triggerCount());
+    }
+
+    public function test_a_retry_after_a_failed_dispatch_ingests_instead_of_reporting_a_duplicate(): void
+    {
+        $this->httpOverrides = [
+            '*ingest_tabular*' => Http::response(['detail' => 'nope'], 500),
+        ];
+        $first = $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertStatus(502);
+
+        // FastAPI is back. The bronze row exists but no run ever started.
+        $this->httpOverrides = [];
+        $retry = $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertCreated()
+            ->assertJsonPath('dispatch.dispatched', true)
+            ->assertJsonMissingPath('duplicate');
+
+        // Nothing ran on the stored object, so it is reused, not re-uploaded.
+        $this->assertSame($first->json('seaweedfs_key'), $retry->json('seaweedfs_key'));
+        $this->assertSame($first->json('source_file_id'), $retry->json('source_file_id'));
+        $this->assertCount(1, DB::table('bronze.source_files')->where('workspace_id', $this->workspaceId)->get());
+    }
+
+    public function test_a_failed_run_does_not_make_a_reupload_a_duplicate(): void
+    {
+        $first = $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertCreated();
+        $this->seedIngestProgress($this->project->project_id, (string) $first->json('seaweedfs_key'), 'failed');
+
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertStatus(201)
+            ->assertJsonMissingPath('duplicate');
+        $this->assertSame(2, $this->triggerCount());
     }
 
     public function test_persisted_mime_type_is_server_sniffed_not_client_declared(): void
