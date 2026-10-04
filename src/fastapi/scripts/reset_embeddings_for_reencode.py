@@ -48,8 +48,16 @@ Options via env:
     BATCH_SIZE=1000   — rows per DELETE/UPDATE batch (default 1000)
 
 Connects as POSTGRES_USER (default ``georag``, the owner). Under row-level
-security a role without the workspace GUC sees no rows, so run this as the
-owner, as the existing mode always has.
+security a role without the workspace GUC sees no rows: ``--all`` therefore
+walks ``silver.workspaces`` (a bootstrap table, readable unscoped) and binds
+``app.workspace_id`` to each in turn whenever the unscoped session sees
+nothing, which is what happens as ``georag_app`` (NOBYPASSRLS) on ECS, where
+this runs as a one-off task (`.github/workflows/embed5-cutover.yml`). The
+owner sees everything unscoped and takes the single pass it always did.
+
+Moved from the repository root on 2026-10-04: cd.yml builds the fastapi image
+with ``context: ./src`` and ``COPY fastapi/ .``, so only ``src/fastapi/`` lands
+in ``/app`` and the ``/app/scripts/...`` usage above was false until then.
 """
 from __future__ import annotations
 
@@ -59,8 +67,15 @@ import logging
 import os
 import sys
 import time
+from typing import Any
 
 import asyncpg
+
+# Run as `python3 /app/scripts/<this file>`: Python puts the SCRIPT'S directory
+# on sys.path, not /app, and `import app` needs /app.
+_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _APP_ROOT not in sys.path:
+    sys.path.insert(0, _APP_ROOT)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -185,14 +200,66 @@ async def _delete_every_point(batch_size: int) -> int:
     return deleted
 
 
+async def _bind_scope(pg: asyncpg.Connection, workspace_id: str | None) -> None:
+    """Session-level ``app.workspace_id`` (``None`` clears it).
+
+    Uses the platform's own binder when ``app`` is importable (it validates
+    the id and uses the parameter-bound set_config form); the clear is the
+    same statement project_data_diagnostics.py uses.
+    """
+    if workspace_id is None:
+        await pg.execute("SELECT set_config('app.workspace_id', '', false)")
+        return
+    from app.db import bind_workspace_scope
+
+    await bind_workspace_scope(pg, workspace_id=workspace_id, site="reset_embeddings", is_local=False)
+
+
+async def visible_scopes(pg: asyncpg.Connection) -> list[str | None]:
+    """The scopes under which this session can see passages.
+
+    ``[None]`` (one unscoped pass) when the role sees rows with no GUC bound:
+    the owner, or any BYPASSRLS role. Otherwise every ``silver.workspaces``
+    id, each bound in turn - the RLS-restricted ``georag_app`` on ECS. A
+    role that sees nothing either way gets ``[]`` and the caller stops.
+    """
+    await _bind_scope(pg, None)
+    if await pg.fetchval("SELECT COUNT(*) FROM silver.document_passages"):
+        return [None]
+    rows = await pg.fetch(
+        "SELECT workspace_id::text AS workspace_id FROM silver.workspaces ORDER BY workspace_id"
+    )
+    return [r["workspace_id"] for r in rows]
+
+
+async def _count_over_scopes(pg: asyncpg.Connection, scopes: list[str | None], sql: str) -> int:
+    total = 0
+    for scope in scopes:
+        await _bind_scope(pg, scope)
+        total += int(await pg.fetchval(sql) or 0)
+    return total
+
+
 async def reset_all(pg: asyncpg.Connection, *, assume_yes: bool) -> None:
     """The ``--all`` mode: every point, every passage (ADR-0025 step 4)."""
-    passages = await pg.fetchval("SELECT COUNT(*) FROM silver.document_passages")
-    with_id = await pg.fetchval(
-        "SELECT COUNT(*) FROM silver.document_passages WHERE embedding_id IS NOT NULL"
+    scopes = await visible_scopes(pg)
+    if not scopes:
+        log.error(
+            "this session sees no passages unscoped and silver.workspaces is empty - "
+            "nothing to reset, or the role cannot see the table"
+        )
+        await pg.close()
+        sys.exit(1)
+    log.info(
+        "scopes: %s",
+        "unscoped (role bypasses RLS)" if scopes == [None] else f"{len(scopes)} workspace(s) under RLS",
     )
-    images = await pg.fetchval(
-        "SELECT COUNT(*) FROM silver.document_passages WHERE modality = 'image'"
+    passages = await _count_over_scopes(pg, scopes, "SELECT COUNT(*) FROM silver.document_passages")
+    with_id = await _count_over_scopes(
+        pg, scopes, "SELECT COUNT(*) FROM silver.document_passages WHERE embedding_id IS NOT NULL"
+    )
+    images = await _count_over_scopes(
+        pg, scopes, "SELECT COUNT(*) FROM silver.document_passages WHERE modality = 'image'"
     )
     log.info(
         "Passages: %d total, %d with an embedding_id, %d modality='image'",
@@ -214,17 +281,20 @@ async def reset_all(pg: asyncpg.Connection, *, assume_yes: bool) -> None:
     log.info("Qdrant: deleted %d point(s) from %s", deleted, QDRANT_COLLECTION)
 
     t1 = time.time()
-    result = await pg.execute(
-        """
-        UPDATE silver.document_passages
-           SET embedding_id = NULL,
-               updated_at   = NOW()
-         WHERE embedding_id IS NOT NULL
-        """
-    )
-    rows_updated = int(result.split()[-1]) if result else 0
-    left = await pg.fetchval(
-        "SELECT COUNT(*) FROM silver.document_passages WHERE embedding_id IS NOT NULL"
+    rows_updated = 0
+    for scope in scopes:
+        await _bind_scope(pg, scope)
+        result = await pg.execute(
+            """
+            UPDATE silver.document_passages
+               SET embedding_id = NULL,
+                   updated_at   = NOW()
+             WHERE embedding_id IS NOT NULL
+            """
+        )
+        rows_updated += int(result.split()[-1]) if result else 0
+    left = await _count_over_scopes(
+        pg, scopes, "SELECT COUNT(*) FROM silver.document_passages WHERE embedding_id IS NOT NULL"
     )
     log.info(
         "Reset complete. embedding_id cleared on %d rows in %.1fs; %d still set.",
@@ -277,7 +347,6 @@ async def main(*, reset_everything: bool = False, assume_yes: bool = False) -> N
     if QDRANT_DELETE:
         try:
             from qdrant_client import AsyncQdrantClient
-            from qdrant_client.models import FilterSelector, Filter, FieldCondition, MatchValue
 
             qc = AsyncQdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
@@ -300,7 +369,7 @@ async def main(*, reset_everything: bool = False, assume_yes: bool = False) -> N
                 if not rows:
                     break
 
-                point_ids = [str(r["embedding_id"]) for r in rows]
+                point_ids: list[Any] = [str(r["embedding_id"]) for r in rows]
                 try:
                     await qc.delete(
                         collection_name=QDRANT_COLLECTION,

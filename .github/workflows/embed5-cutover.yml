@@ -1,0 +1,329 @@
+# ADR-0025 Embed 5 cutover, one migration step per run, from inside AWS.
+#
+# Production RDS and Qdrant are in private subnets, ECS Exec is disabled and
+# there is no bastion, so every step of the cutover that touches a store runs
+# as a one-off ECS task on the Hatchet worker's task definition (the Python
+# image, the DB and Qdrant settings, COHERE_API_KEY, the backups bucket) and
+# prints its report to stdout; this workflow starts it, waits, reads the task's
+# CloudWatch stream and puts the report in the job log and the step summary.
+# The script is src/fastapi/scripts/ops/embed5_cutover.py; its docstring is the
+# step-by-step runbook. In order:
+#
+#   1. probe      read-only; Embed 5 with the production key, both image shapes,
+#                 the real adapter. Commit the report (ops/validation/reports/).
+#   2. questions  label=before: the fixed question set, counts only.
+#   3. snapshot   every Qdrant collection to the backups bucket; note the prefix.
+#   4. terraform.yml action=apply embedding_backend=cohere (approval on the
+#                 `production` environment), then cd.yml (sha = main) so fastapi
+#                 AND hatchet-worker pick up the new task definition revision.
+#   5. reset      destructive: refuses unless the running task definitions of
+#                 BOTH services say EMBEDDING_BACKEND=cohere (checked here) AND
+#                 the task's own environment says so (checked in the script) AND
+#                 the snapshot prefix names objects AND confirm is typed.
+#   6. verify     re-run until it exits 0 (3 = sweep still running).
+#   7. questions  label=after; compare with step 2.
+#
+# Same derived-task-definition shape as project-diagnostics.yml, for the same
+# reason (the worker's container health check would kill a one-off command).
+# Same deploy role (AWS_DEPLOY_ROLE_ARN): ci.tf grants RegisterTaskDefinition,
+# RunTask, DescribeServices/Tasks/TaskDefinition and logs:GetLogEvents. The
+# snapshot upload and the S3 existence check run with the TASK role, which
+# already writes the backups bucket for upgrade-qdrant.sh.
+
+name: Embed 5 cutover (ADR-0025)
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: "Which migration step to run"
+        required: true
+        type: choice
+        options:
+          - probe
+          - questions
+          - snapshot
+          - reset
+          - verify
+      label:
+        description: "questions only: before or after"
+        required: false
+        type: choice
+        default: before
+        options:
+          - before
+          - after
+      project_slugs:
+        description: "questions only: comma-separated project slugs (name part is enough, e.g. red-star)"
+        required: false
+        type: string
+        default: red-star
+      snapshot_prefix:
+        description: "reset only: the prefix the snapshot step printed (_ops/qdrant-snapshots/<ts>-before-embed5)"
+        required: false
+        type: string
+        default: ""
+      confirm:
+        description: "reset only: type reset-all-embeddings"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: embed5-cutover
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: georag
+  DB_IDENTIFIER: georag-pg
+  SOURCE_TASK_FAMILY: georag-hatchet-worker
+  CUTOVER_TASK_FAMILY: georag-embed5-cutover
+  CONTAINER_NAME: hatchet-worker
+  FASTAPI_SERVICE: georag-fastapi
+  WORKER_SERVICE: georag-hatchet-worker
+
+permissions:
+  contents: read
+
+jobs:
+  step:
+    name: ${{ inputs.step }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Inputs reach the shell as environment variables and are shape-checked
+      # here; the container command is built with jq --arg below, so no input
+      # can become shell syntax or an extra argv element.
+      - name: Validate inputs
+        id: inputs
+        env:
+          STEP: ${{ inputs.step }}
+          LABEL: ${{ inputs.label }}
+          SLUGS: ${{ inputs.project_slugs }}
+          SNAPSHOT_PREFIX: ${{ inputs.snapshot_prefix }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          case "$STEP" in
+            questions)
+              if ! [[ "$SLUGS" =~ ^[a-z0-9-]{1,64}(,[a-z0-9-]{1,64})*$ ]]; then
+                echo "::error::project_slugs must be comma-separated slugs (lowercase letters, digits, hyphen)"; exit 1
+              fi ;;
+            reset)
+              if ! [[ "$SNAPSHOT_PREFIX" =~ ^_ops/qdrant-snapshots/[0-9]{8}T[0-9]{6}Z-before-embed5$ ]]; then
+                echo "::error::snapshot_prefix must be the prefix the snapshot step printed (_ops/qdrant-snapshots/<ts>-before-embed5)"; exit 1
+              fi
+              if [ "$CONFIRM" != "reset-all-embeddings" ]; then
+                echo "::error::confirm must be exactly 'reset-all-embeddings'"; exit 1
+              fi ;;
+          esac
+          echo "ok"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Postgres gate (nightly stop window / power flag)
+        run: |
+          set -uo pipefail
+          STATE=$(aws rds describe-db-instances \
+            --db-instance-identifier "$DB_IDENTIFIER" \
+            --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "absent")
+          echo "postgres state: $STATE"
+          if [ "$STATE" != "available" ]; then
+            echo "::error::$DB_IDENTIFIER is '$STATE' (absent = powered off; the nightly sweep stops it 23:00-06:00 America/Los_Angeles). Re-run when it is 'available'."
+            exit 1
+          fi
+
+      # ADR-0025 gotcha 1: query and ingest must switch together. The reset is
+      # refused unless the task definition each service is RUNNING carries
+      # EMBEDDING_BACKEND=cohere - a registered-but-not-deployed revision (an
+      # apply without the CD run that follows it) does not count.
+      - name: Both services must be running EMBEDDING_BACKEND=cohere (reset only)
+        if: inputs.step == 'reset'
+        run: |
+          set -euo pipefail
+          bad=0
+          for svc in "$FASTAPI_SERVICE" "$WORKER_SERVICE"; do
+            td=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$svc" \
+                   --query 'services[0].deployments[?status==`PRIMARY`] | [0].taskDefinition' --output text)
+            val=$(aws ecs describe-task-definition --task-definition "$td" \
+                   --query "taskDefinition.containerDefinitions[0].environment[?name=='EMBEDDING_BACKEND'].value | [0]" --output text)
+            echo "$svc -> $td : EMBEDDING_BACKEND=$val"
+            if [ "$val" != "cohere" ]; then bad=1; fi
+          done
+          if [ "$bad" = "1" ]; then
+            echo "::error::a service is not running EMBEDDING_BACKEND=cohere. Run terraform.yml (action=apply, embedding_backend=cohere), then cd.yml, then come back."
+            exit 1
+          fi
+
+      - name: Register the cutover task definition (worker's latest revision, health check removed)
+        id: taskdef
+        run: |
+          set -euo pipefail
+          def=$(aws ecs describe-task-definition --task-definition "$SOURCE_TASK_FAMILY" --query taskDefinition)
+          new=$(echo "$def" | jq --arg family "$CUTOVER_TASK_FAMILY" --arg c "$CONTAINER_NAME" '
+            .family = $family
+            | del(.containerDefinitions[] | select(.name == $c) | .healthCheck)
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)')
+          if [ "$(echo "$new" | jq --arg c "$CONTAINER_NAME" '[.containerDefinitions[] | select(.name == $c)] | length')" != "1" ]; then
+            echo "::error::$SOURCE_TASK_FAMILY has no container named $CONTAINER_NAME"; exit 1
+          fi
+          REV=$(aws ecs register-task-definition --cli-input-json "$new" \
+                  --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task definition: $REV"
+          echo "arn=$REV" >> "$GITHUB_OUTPUT"
+          GROUP=$(echo "$new" | jq -r --arg c "$CONTAINER_NAME" '.containerDefinitions[] | select(.name == $c) | .logConfiguration.options["awslogs-group"]')
+          PREFIX=$(echo "$new" | jq -r --arg c "$CONTAINER_NAME" '.containerDefinitions[] | select(.name == $c) | .logConfiguration.options["awslogs-stream-prefix"]')
+          if [ -z "$GROUP" ] || [ "$GROUP" = "null" ] || [ -z "$PREFIX" ] || [ "$PREFIX" = "null" ]; then
+            echo "::error::could not read awslogs-group / awslogs-stream-prefix from $SOURCE_TASK_FAMILY"; exit 1
+          fi
+          echo "log_group=$GROUP" >> "$GITHUB_OUTPUT"
+          echo "log_prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+
+      - name: Run the step as a one-off ECS task
+        id: run
+        env:
+          STEP: ${{ inputs.step }}
+          LABEL: ${{ inputs.label }}
+          SLUGS: ${{ inputs.project_slugs }}
+          SNAPSHOT_PREFIX: ${{ inputs.snapshot_prefix }}
+          CONFIRM: ${{ inputs.confirm }}
+          TASK_DEF_ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          set -euo pipefail
+          # The probe exercises the Cohere adapter BEFORE the apply flips the
+          # services, so that one step runs with EMBEDDING_BACKEND=cohere in
+          # its own environment. Every other step inherits the worker's.
+          OVERRIDES=$(jq -nc \
+            --arg c "$CONTAINER_NAME" --arg step "$STEP" --arg label "$LABEL" \
+            --arg slugs "$SLUGS" --arg prefix "$SNAPSHOT_PREFIX" --arg confirm "$CONFIRM" '
+            {
+              containerOverrides: [{
+                name: $c,
+                command: (["python3", "/app/scripts/ops/embed5_cutover.py", "--step", $step]
+                  + (if $step == "questions" then ["--label", $label, "--project-slugs", $slugs] else [] end)
+                  + (if $step == "reset" then ["--snapshot-prefix", $prefix, "--confirm", $confirm] else [] end)),
+                environment: (if $step == "probe" then [{name: "EMBEDDING_BACKEND", value: "cohere"}] else [] end)
+              }]
+            }')
+          echo "override: $(echo "$OVERRIDES" | jq -c '.containerOverrides[0] | {command, environment}')"
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$TASK_DEF_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.AWS_PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.AWS_TASK_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
+            --overrides "$OVERRIDES" \
+            --query 'tasks[0].taskArn' --output text)
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::run-task returned no task ARN (capacity, network configuration or a bad task definition)"; exit 1
+          fi
+          echo "cutover task: $TASK_ARN"
+          echo "arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+          # The snapshot and the reset can take a while on a big collection;
+          # the questions step runs a dozen real queries. 80 minutes.
+          DEADLINE=$(( $(date +%s) + 80 * 60 ))
+          while :; do
+            STATUS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" --query 'tasks[0].lastStatus' --output text)
+            [ "$STATUS" = "STOPPED" ] && break
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::task still $STATUS after 80 minutes (ci.tf does not grant ecs:StopTask; it ends on its own)"
+              aws ecs stop-task --cluster "$ECS_CLUSTER" --task "$TASK_ARN" --reason "embed5-cutover timeout" >/dev/null || true
+              exit 1
+            fi
+            sleep 15
+          done
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query "tasks[0].containers[?name=='${CONTAINER_NAME}'] | [0].exitCode" --output text)
+          REASON=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" --query 'tasks[0].stoppedReason' --output text)
+          echo "exit code: ${EXIT_CODE} (${REASON})"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the task's CloudWatch log and print the report
+        id: report
+        if: always() && steps.run.outputs.arn != ''
+        env:
+          TASK_ARN: ${{ steps.run.outputs.arn }}
+          LOG_GROUP: ${{ steps.taskdef.outputs.log_group }}
+          LOG_PREFIX: ${{ steps.taskdef.outputs.log_prefix }}
+          EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+          STEP: ${{ inputs.step }}
+        run: |
+          set -uo pipefail
+          TASK_ID="${TASK_ARN##*/}"
+          STREAM="${LOG_PREFIX}/${CONTAINER_NAME}/${TASK_ID}"
+          echo "log stream: ${LOG_GROUP} :: ${STREAM}"
+          RAW=/tmp/task.log; SUMMARY=/tmp/summary.md; JSON=/tmp/report.json
+          BEGIN_SUM='=====BEGIN EMBED5_CUTOVER_SUMMARY_MD====='; END_SUM='=====END EMBED5_CUTOVER_SUMMARY_MD====='
+          BEGIN_JSON='=====BEGIN EMBED5_CUTOVER_JSON====='; END_JSON='=====END EMBED5_CUTOVER_JSON====='
+          fetch_log() {
+            : > "$RAW"
+            local token="" resp next
+            for _ in $(seq 1 400); do
+              if [ -z "$token" ]; then
+                resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --start-from-head --limit 10000 --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+              else
+                resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --start-from-head --limit 10000 --next-token "$token" --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+              fi
+              echo "$resp" | jq -r '.events[].message' >> "$RAW"
+              next=$(echo "$resp" | jq -r '.nextForwardToken')
+              [ "$next" = "$token" ] && return 0
+              token="$next"
+            done
+            return 0
+          }
+          for attempt in 1 2 3 4 5 6; do
+            fetch_log || true
+            if grep -qF "$END_JSON" "$RAW" 2>/dev/null; then break; fi
+            sleep 15
+          done
+          echo "::group::Full task log"; cat "$RAW" || true; echo "::endgroup::"
+          awk -v b="$BEGIN_SUM" -v e="$END_SUM" '$0==b{f=1;next} $0==e{f=0} f' "$RAW" > "$SUMMARY"
+          awk -v b="$BEGIN_JSON" -v e="$END_JSON" '$0==b{f=1;next} $0==e{f=0} f' "$RAW" > "$JSON"
+          { echo "## Embed 5 cutover: \`${STEP}\`"; echo ""; echo "Task \`${TASK_ID}\`, exit code \`${EXIT_CODE:-unknown}\`."; echo ""; } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$SUMMARY" ]; then
+            cat "$SUMMARY"; cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::no report between the markers - the task failed before producing one. See the log above."
+            { echo "**No report was produced.** Tail of the task log:"; echo ""; echo '```text'; tail -n 60 "$RAW" || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -s "$JSON" ]; then
+            echo "════ Full JSON ═══════════════════════════════════════════════"; cat "$JSON"
+            { echo ""; echo "<details><summary>Full JSON</summary>"; echo ""; echo '```json'; cat "$JSON"; echo '```'; echo ""; echo "</details>"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report
+        if: always() && steps.report.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: embed5-cutover-${{ inputs.step }}-${{ inputs.label }}-${{ github.run_id }}
+          path: |
+            /tmp/summary.md
+            /tmp/report.json
+          if-no-files-found: ignore
+          retention-days: 90
+
+      # Exit codes are the script's contract: 0 done, 3 verify-not-yet (the
+      # sweep is still re-encoding; re-run later), anything else failed.
+      - name: Check the task's exit code
+        if: always() && steps.run.outputs.arn != ''
+        env:
+          EXIT_CODE: ${{ steps.run.outputs.exit_code }}
+          REASON: ${{ steps.run.outputs.reason }}
+          STEP: ${{ inputs.step }}
+        run: |
+          case "${EXIT_CODE:-}" in
+            0) echo "${STEP}: done" ;;
+            3) echo "::warning::${STEP}: not yet - the embed sweep is still running (every 10 minutes). Re-run verify later."; exit 3 ;;
+            *) echo "::error::${STEP} failed (exit ${EXIT_CODE:-none}: ${REASON:-unknown}). The report above says why."; exit 1 ;;
+          esac

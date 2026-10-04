@@ -68,6 +68,15 @@ on:
         required: false
         default: true
         type: boolean
+      embedding_backend:
+        description: "ADR-0025 cutover switch: override var.embedding_backend for this plan/apply (keep = whatever production.tfvars says). cohere moves fastapi AND hatchet-worker to Embed 5 together; follow with CD, then embed5-cutover.yml reset + verify in the same sitting."
+        required: false
+        default: keep
+        type: choice
+        options:
+          - keep
+          - bedrock
+          - cohere
 
 concurrency:
   group: terraform-production
@@ -168,10 +177,20 @@ jobs:
         id: plan
         env:
           IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+          EMBEDDING_BACKEND_OVERRIDE: ${{ inputs.embedding_backend }}
         run: |
+          # The ADR-0025 switch rides the command line rather than the tfvars
+          # secret, so the cutover is a recorded dispatch with an approval
+          # rather than an invisible edit to a repository secret. The apply job
+          # passes the identical value, so its re-plan compares like with like.
+          EXTRA=()
+          if [ -n "${EMBEDDING_BACKEND_OVERRIDE:-}" ] && [ "$EMBEDDING_BACKEND_OVERRIDE" != "keep" ]; then
+            EXTRA=(-var "embedding_backend=${EMBEDDING_BACKEND_OVERRIDE}")
+            echo "embedding_backend override: ${EMBEDDING_BACKEND_OVERRIDE}"
+          fi
           set +e
           terraform -chdir="$TF_DIR" plan -input=false -lock-timeout=5m \
-            -var-file=production.tfvars -var "image_tag=${IMAGE_TAG}" \
+            -var-file=production.tfvars -var "image_tag=${IMAGE_TAG}" "${EXTRA[@]}" \
             -detailed-exitcode -out=tfplan
           rc=$?
           set -e
@@ -248,10 +267,15 @@ jobs:
       - name: Re-plan and compare with what was approved
         env:
           IMAGE_TAG: ${{ needs.plan.outputs.image_tag }}
+          EMBEDDING_BACKEND_OVERRIDE: ${{ inputs.embedding_backend }}
         run: |
           set -euo pipefail
+          EXTRA=()
+          if [ -n "${EMBEDDING_BACKEND_OVERRIDE:-}" ] && [ "$EMBEDDING_BACKEND_OVERRIDE" != "keep" ]; then
+            EXTRA=(-var "embedding_backend=${EMBEDDING_BACKEND_OVERRIDE}")
+          fi
           terraform -chdir="$TF_DIR" plan -input=false -lock-timeout=5m \
-            -var-file=production.tfvars -var "image_tag=${IMAGE_TAG}" -out=tfplan
+            -var-file=production.tfvars -var "image_tag=${IMAGE_TAG}" "${EXTRA[@]}" -out=tfplan
           terraform -chdir="$TF_DIR" show -json tfplan \
             | jq -S '[.resource_changes[]? | select(.change.actions != ["no-op"])
                       | {address, actions: .change.actions}] | sort_by(.address)' > changes.json

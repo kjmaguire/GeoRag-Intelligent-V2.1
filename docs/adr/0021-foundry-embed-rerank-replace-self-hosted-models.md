@@ -18,7 +18,7 @@
   `src/fastapi/app/services/_foundry_retry.py`,
   `src/fastapi/app/services/ingest/passage_embedder.py`,
   `src/fastapi/app/agent/tools.py` (`search_documents`),
-  `scripts/reset_embeddings_for_reencode.py`, `src/fastapi/scripts/reembed_qdrant.py`.
+  `src/fastapi/scripts/reset_embeddings_for_reencode.py`, `src/fastapi/scripts/reembed_qdrant.py`.
 
 ## Context
 
@@ -127,7 +127,7 @@ from the LLM's chat-completions surface:
    on `fastapi-cc`, with the `AZURE_FOUNDRY_*_DEPLOYMENT` names. A mismatch
    between the two embedding apps writes one vector space and queries
    another. Reversible.
-3. Run `scripts/reset_embeddings_for_reencode.py` to NULL `embedding_id`
+3. Run `src/fastapi/scripts/reset_embeddings_for_reencode.py` to NULL `embedding_id`
    on every passage, then let `embed_pending_passages` (every 10 minutes)
    re-embed; watch the `EMBED_PENDING_PASSAGES` gauge drain. Point of no
    return for the old vectors is the first upsert into `georag_chunks`;

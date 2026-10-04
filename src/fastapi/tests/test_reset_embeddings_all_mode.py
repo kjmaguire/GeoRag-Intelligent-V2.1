@@ -1,4 +1,4 @@
-"""scripts/reset_embeddings_for_reencode.py ``--all`` (ADR-0025 migration step 4).
+"""src/fastapi/scripts/reset_embeddings_for_reencode.py ``--all`` (ADR-0025 migration step 4).
 
 The default mode only touches rows with ``contextualized_content IS NOT NULL``
 and the other re-embed tool skips page-image points by design, so after a
@@ -20,9 +20,10 @@ from typing import Any
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "reset_embeddings_for_reencode.py"
+# In the image since 2026-10-04 (src/fastapi/scripts/, so /app/scripts/ is true).
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "reset_embeddings_for_reencode.py"
 pytestmark = pytest.mark.skipif(
-    not _SCRIPT.exists(), reason="repo-root scripts/ is not mounted in this test container"
+    not _SCRIPT.exists(), reason="src/fastapi/scripts/ is not mounted in this test container"
 )
 
 
@@ -54,9 +55,16 @@ class _Pg:
         return self.total
 
     async def execute(self, sql: str, *args: Any) -> str:
+        if "set_config" in sql:
+            # The scope binder clearing app.workspace_id: this fake is the OWNER
+            # (sees every row unscoped), so the walk takes its single pass.
+            return "SELECT 1"
         self.executed.append(sql)
         self.events.append("pg_update")
         return f"UPDATE {self.with_id}"
+
+    async def fetch(self, sql: str, *args: Any) -> list:
+        return []
 
     async def close(self) -> None:
         self.closed = True
@@ -198,3 +206,62 @@ async def test_a_point_that_survives_the_delete_is_an_error(reset, monkeypatch) 
     with pytest.raises(RuntimeError, match="only 3 existed"):
         await reset.reset_all(pg, assume_yes=True)
     assert pg.executed == [], "Postgres must not be touched while old-space points remain"
+
+
+class _RlsPg(_Pg):
+    """georag_app on ECS: nothing visible unscoped, rows only under a bound workspace."""
+
+    def __init__(self) -> None:
+        super().__init__(total=3, with_id=3, images=0, left_after=0)
+        self.bound: str | None = None
+        self.binds: list[str | None] = []
+        self.workspaces = ["aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"]
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        if "set_config" in sql:
+            self.bound = None
+            self.binds.append(None)
+            return "SELECT 1"
+        return await super().execute(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> int:
+        if self.bound is None:
+            return 0
+        if "embedding_id IS NOT NULL" in sql and len(self.executed) >= len(self.workspaces):
+            return 0  # after the walk: nothing left under any scope
+        return await super().fetchval(sql, *args)
+
+    async def fetch(self, sql: str, *args: Any) -> list:
+        assert "silver.workspaces" in sql
+        return [{"workspace_id": w} for w in self.workspaces]
+
+
+async def test_under_rls_the_reset_walks_every_workspace(reset, monkeypatch) -> None:
+    """As georag_app (NOBYPASSRLS) an unscoped UPDATE matches no row and the
+    script would report success over an untouched table. It must bind each
+    workspace in turn and clear under every one."""
+    pg = _RlsPg()
+
+    async def _bind(conn, workspace_id):
+        conn.bound = workspace_id
+        conn.binds.append(workspace_id)
+        if workspace_id is None:
+            return
+    monkeypatch.setattr(reset, "_bind_scope", _bind)
+    _wire(reset, monkeypatch, pg, [1, 2, 3])
+
+    await reset.reset_all(pg, assume_yes=True)
+
+    assert len(pg.executed) == 2, "one UPDATE per workspace"
+    assert set(pg.workspaces) <= set(pg.binds), "every workspace was bound in turn"
+
+
+async def test_visible_scopes_is_one_pass_for_the_owner_and_a_walk_under_rls(reset, monkeypatch) -> None:
+    assert await reset.visible_scopes(_Pg()) == [None]
+
+    pg = _RlsPg()
+
+    async def _bind(conn, workspace_id):
+        conn.bound = workspace_id
+    monkeypatch.setattr(reset, "_bind_scope", _bind)
+    assert await reset.visible_scopes(pg) == pg.workspaces

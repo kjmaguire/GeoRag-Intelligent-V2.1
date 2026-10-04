@@ -12,7 +12,7 @@
   unrelated `terraform apply` leaves the v4 space in place. **The cutover
   (step 4) is setting `embedding_backend = "cohere"` in the production
   tfvars and applying**, after steps 1 and 3, with the collection reset
-  (`scripts/reset_embeddings_for_reencode.py --all`) and the embed sweep in
+  (`src/fastapi/scripts/reset_embeddings_for_reencode.py --all`) and the embed sweep in
   the same sitting. The code default is `cohere` (an unset value selects the
   target hosted backend), so compose and any environment that sets nothing
   already embed on Embed 5.
@@ -97,7 +97,7 @@ measured step (see sub-decision).**
   plus SPLADE++ sparse. Embed 5 Pro supports output dimensions 2048, 1536,
   1024, 768, 512 and 256, so no collection schema migration and no
   drop-and-recreate of the collection is required (`init_qdrant.py` has no
-  such mode; `scripts/reset_embeddings_for_reencode.py --all` is the
+  such mode; `src/fastapi/scripts/reset_embeddings_for_reencode.py --all` is the
   mechanism). **Every vector still has to be
   rewritten** (see Migration mechanics).
 - **Rerank stays on Bedrock, Rerank 3.5.** ADR-0023's sub-decision and its
@@ -194,6 +194,21 @@ Rolling it back is the same.
 
 ## Migration mechanics (for future reference)
 
+> **As run (2026-10-04).** Every step below that touches a store runs from
+> `.github/workflows/embed5-cutover.yml`, one step per dispatch, as a one-off
+> ECS task on the worker's task definition
+> (`src/fastapi/scripts/ops/embed5_cutover.py`): `probe` (step 1, inside the
+> VPC with the production key, both image shapes, the real adapter),
+> `questions label=before` (step 6's baseline), `snapshot` (step 3, to the
+> backups bucket), then `terraform.yml action=apply embedding_backend=cohere`
+> (step 4's switch, approved on the `production` environment) followed by
+> `cd.yml` so both services actually run the new revision, then `reset`
+> (step 4's clear: refused unless both running services and the task itself
+> say `cohere`, the snapshot prefix names objects, and the phrase is typed),
+> `verify` until it exits 0 (3 = sweep still running), `questions
+> label=after`. The reset walks `silver.workspaces` under RLS because the
+> task runs as `georag_app`, which sees nothing unscoped.
+
 1. **Probe first.** Run the extended `cohere_probe.py` with the production
    key. It must observe:
    - `POST /v2/embed` accepting `embed-v5.0-pro`;
@@ -221,7 +236,7 @@ Rolling it back is the same.
    - Let `embed_pending_passages` re-encode everything.
 
    Neither existing tool does this as written:
-   - `scripts/reset_embeddings_for_reencode.py` touches only rows with
+   - `src/fastapi/scripts/reset_embeddings_for_reencode.py` touches only rows with
      `contextualized_content IS NOT NULL`;
    - `src/fastapi/scripts/reembed_qdrant.py` skips page-image points by
      design, because it can only re-embed from payload text.

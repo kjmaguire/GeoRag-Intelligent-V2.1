@@ -225,7 +225,7 @@ locals {
 
   # One number, several consumers — see EMBEDDING_DIMENSION below. 1024 is what
   # georag_chunks is built at and what Cohere Embed 5 (and v4) is asked for; changing
-  # it means re-embedding the corpus (scripts/reset_embeddings_for_reencode.py),
+  # it means re-embedding the corpus (src/fastapi/scripts/reset_embeddings_for_reencode.py),
   # not just editing this line.
   embed_dimension = 1024
 

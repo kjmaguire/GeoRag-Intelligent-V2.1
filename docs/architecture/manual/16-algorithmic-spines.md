@@ -109,7 +109,7 @@ introduces a two-level chunk hierarchy on `silver.document_passages`:
 
 ### Backfill
 
-`src/dagster/scripts/_backfill_document_passages_to_qdrant.py` (deleted 2026-08-28; [`scripts/reset_embeddings_for_reencode.py`](../../../scripts/reset_embeddings_for_reencode.py) is the surviving re-embed tool)
+`src/dagster/scripts/_backfill_document_passages_to_qdrant.py` (deleted 2026-08-28; [`src/fastapi/scripts/reset_embeddings_for_reencode.py`](../../../scripts/reset_embeddings_for_reencode.py) is the surviving re-embed tool)
 is the one-shot used to seed `georag_chunks` from the existing
 `silver.document_passages` rows. Re-runs are idempotent on `passage_id`.
 

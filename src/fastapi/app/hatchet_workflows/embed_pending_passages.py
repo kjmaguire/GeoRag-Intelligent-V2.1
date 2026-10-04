@@ -513,7 +513,7 @@ async def run(
                                         "%s project=%s pg_embedded=%d qdrant=%d "
                                         "(%.1f%% missing) — Qdrant dropped points "
                                         "PG still believes are embedded; run "
-                                        "scripts/reset_embeddings_for_reencode.py "
+                                        "src/fastapi/scripts/reset_embeddings_for_reencode.py "
                                         "for the project or investigate the "
                                         "collection.",
                                         QDRANT_PARTIAL_LOSS_MARKER,
