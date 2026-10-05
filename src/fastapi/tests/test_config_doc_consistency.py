@@ -122,15 +122,16 @@ def test_the_compose_and_terraform_defaults_agree_with_the_code() -> None:
     assert len(sites) == 2, "expected the fastapi and hatchet-worker services"
     assert set(sites) == {"cohere"}, sites
 
-    # Terraform does NOT hard-code the backend: production moves to Embed 5
-    # only when the operator sets var.embedding_backend = "cohere" (the
-    # ADR-0025 cutover, after the probe and the snapshot). The variable's
-    # default is the rollback, bedrock, so an unrelated apply cannot flip the
-    # vector space; its validation names cohere as the other value.
+    # Terraform reads the backend from var.embedding_backend. Production cut
+    # over on 2026-10-05 and production.tfvars has no line for it (the
+    # cutover passed it on the command line), so the variable's DEFAULT is
+    # what production runs: it must be cohere, or an unrelated apply plus
+    # the next CD puts v4 queries against the v5 collection. Its validation
+    # still names bedrock, the rollback.
     terraform = (_REPO / "deploy" / "aws" / "terraform" / "config.tf").read_text(encoding="utf-8")
     assert re.search(r"EMBEDDING_BACKEND\s*=\s*var\.embedding_backend", terraform)
     variables = (_REPO / "deploy" / "aws" / "terraform" / "variables.tf").read_text(encoding="utf-8")
     block = re.search(r'variable "embedding_backend" \{.*?\n\}', variables, re.S)
     assert block is not None
-    assert re.search(r'default\s*=\s*"bedrock"', block.group(0))
+    assert re.search(r'default\s*=\s*"cohere"', block.group(0))
     assert re.search(r'contains\(\["bedrock", "cohere"\]', block.group(0))

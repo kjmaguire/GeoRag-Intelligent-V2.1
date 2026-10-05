@@ -353,16 +353,22 @@ variable "embedding_backend" {
     together: "bedrock" (Cohere Embed v4, the pre-ADR-0025 production state
     and the rollback) or "cohere" (Embed 5 Pro on Cohere's own API).
 
-    This is the ADR-0025 cutover switch, and it is deliberately NOT flipped
-    by the code change. Setting it to "cohere" and applying IS migration
-    step 4: every stored vector is in the v4 space and must be rewritten in
-    the same sitting (`src/fastapi/scripts/reset_embeddings_for_reencode.py --all`, then
-    the embed sweep), after the credentialed probe run (step 1) and the
-    Qdrant snapshot (step 3). Until then it stays "bedrock" so an apply for
-    any other reason cannot move production into a mixed vector space.
+    Production cut over to "cohere" on 2026-10-05 (ADR-0025): every stored
+    vector is in the Embed 5 space now. The default follows production, so
+    an apply that does not mention this variable keeps it there. Before
+    the cutover the default was "bedrock", for the mirror-image reason; the
+    cutover itself passed "cohere" on the command line rather than through
+    production.tfvars, so the tfvars has no line for this variable and the
+    default IS what production gets.
+
+    Setting it to "bedrock" is the rollback, and it is a vector-space change,
+    not a config tweak: apply, CD, then restore the pre-cutover Qdrant
+    snapshot (deploy/aws/README.md, "Embed 5 cutover"). Applying "bedrock"
+    without the restore queries the v5 collection with v4 vectors and every
+    guard still passes.
   EOT
   type        = string
-  default     = "bedrock"
+  default     = "cohere"
 
   validation {
     condition     = contains(["bedrock", "cohere"], var.embedding_backend)

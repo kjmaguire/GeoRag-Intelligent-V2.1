@@ -416,11 +416,9 @@ locals {
     #
     # EMBEDDING_BACKEND goes to BOTH fastapi and hatchet-worker through this
     # one map, so one apply moves them together (ADR-0025 gotcha 1). It is
-    # var.embedding_backend, default "bedrock": the code and the chart carry
-    # the Embed 5 adapter, but production moves only when the operator sets
-    # embedding_backend = "cohere" as the ADR-0025 cutover (after the probe
-    # and the snapshot, with the full re-embed in the same sitting). The
-    # COHERE_EMBED_* settings below are harmless while it is "bedrock".
+    # var.embedding_backend, default "cohere" since the ADR-0025 cutover
+    # (2026-10-05). "bedrock" is the rollback and needs the snapshot restore
+    # with it; the COHERE_EMBED_* settings below are harmless under it.
     BEDROCK_REGION    = local.bedrock_region
     LLM_BACKEND       = "cohere"
     EMBEDDING_BACKEND = var.embedding_backend
