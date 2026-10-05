@@ -1,7 +1,7 @@
 # ADR 0025: Embedding moves to Cohere's own API, on Embed 5
 
 - **Date**: 2026-10-01
-- **Status**: Accepted (2026-10-04)
+- **Status**: Accepted (2026-10-04); **cutover in progress (2026-10-04/05)** — see "Cutover record" below
 - **Implemented (code half)**: 2026-10-04. The adapter, the probe's `embed`
   section, the `--all` reset, the `embed_model` tag, `answer_runs.embedding_model`,
   Terraform, compose, the chart and the docs are in the tree; migration steps
@@ -339,6 +339,31 @@ Rolling it back is the same.
   another hot path.** The key already exists, so the exposure is not new,
   but rotating it now interrupts three capabilities at once.
   `docs/RUNBOOK.md`'s rotation procedure must say so.
+
+## Cutover record (as run, 2026-10-04/05)
+
+Every step ran from `.github/workflows/embed5-cutover.yml` as a one-off ECS
+task on the worker's task definition inside the production VPC
+(`src/fastapi/scripts/ops/embed5_cutover.py`); nothing needed a shell in AWS.
+
+| step | run | result |
+|---|---|---|
+| 1 probe | Actions run 37240689368, 22:38Z | **OK** with the production key: `embed-v5.0-pro` returns 1024 dims for `search_document`, `search_query` and image; the `images=[data-uri]` request shape is accepted first (the `inputs[]` fallback was never needed); the per-request limit is **exactly 96 texts** (97 → HTTP 400 "total number of texts must be at most 96"), so the adapter's chunking is exact; `build_cohere_embedding()` works end to end. Cohere volunteers no rate-limit headers. Report: `ops/validation/reports/embed5_cutover_probe_20261004T223815Z.json`, every field OBSERVED_COHERE. |
+| 6 before | run 37241019726, 22:43Z | Red Star, six fixed questions on Embed v4: Q2/Q3/Q4 answered with 10, 11, 10 citations; Q0, Q1, Q5 refused (one citation each). The rehearsal project needs its exact slug (`rehearsal-meridian-kesler`). |
+| 3 snapshot | run 37240738166, 22:40Z | `s3://<backups>/_ops/qdrant-snapshots/20261004T224003Z-before-embed5/` — `georag_chunks` 2,785 points (336 MB), `georag_reports` 0 points. Qdrant 1.19.1. |
+| census | run 37241344256, 22:49Z | **2,785 points vs 176 passages in Postgres** (4 workspaces, all 176 embedded, 0 image passages). The other 2,609 points have no passage row: leftovers of earlier re-ingests whose rows were replaced (the post-re-ingest stale-point delete is best-effort, `wait=False`). Postgres is the source of truth and nothing but the passage embedder writes points (structured summaries are `document_passages` rows too; the outbox `qdrant` target has no enqueuer), so the reset clears them and the sweep rebuilds exactly the live passages. The snapshot keeps them for the rollback window. |
+| 4 switch | Terraform run 37241083536 (`terraform.yml action=apply embedding_backend=cohere`); CD run 37265225910 | plan green 22:43Z; Kyle approved the `production` environment by hand (the session's GitHub credential gets a 403 on the pending-deployment review API); **apply complete 04:49Z**: 12 task definitions replaced (`container_definitions` is sensitive in the plan, so the gate on the reset step is what proves the value landed), the DB parameter group and one bucket lifecycle updated in place. `cd.yml` dispatched 04:50Z so fastapi AND hatchet-worker run the new revision (the seven first-party services pick up a changed task definition only on a CD run). The reset was deliberately NOT started in the same sitting: it would have begun inside the hour before the 23:00 PT stack stop, and the sweep would have been cut off mid-flight. It runs after the 06:00 PT start, gated on both services RUNNING `cohere`, the snapshot prefix, and the typed phrase, then `verify` until exit 0, then `questions label=after`. |
+| 5 reset | run 37317549465, 13:32Z (refused) | CD run 37265225910 had rolled fastapi:51 and hatchet-worker:50 (both built from the Terraform revisions that carry `cohere`) at 04:53Z and the post-deploy smoke passed. The reset's own pre-check then **refused for the wrong reason**: the workflow named the ECS services `georag-fastapi` / `georag-hatchet-worker`, but `services.tf` names them by bare key (`fastapi`, `hatchet-worker`; only task-definition families carry the prefix), so `describe-services` returned nothing and `describe-task-definition None` failed. Nothing was touched. Fixed in the workflow (correct names, and an explicit error when a service has no PRIMARY deployment). The OIDC role trusts `refs/heads/main` only, so the fix must be on `main` before the reset can run. |
+
+What the census changes in step 6's expectation: the final point count will be
+**176** (plus whatever is ingested meanwhile), not 2,785, and `verify`'s
+"points == embedded passages" check is exact rather than approximate. Some of
+the "before" answers may have leaned on stale duplicate points; the "after"
+comparison is read with that in mind.
+
+Still to confirm at cutover time (Negative consequences above): the account's
+data-retention and training settings on Cohere's API. Not checked by the
+tooling; recorded here as open.
 
 ## Verification (this commit)
 

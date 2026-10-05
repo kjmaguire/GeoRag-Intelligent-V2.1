@@ -1,0 +1,67 @@
+{
+  "probe": "embed5_cutover --step probe (src/fastapi/scripts/ops/embed5_cutover.py), run inside the production VPC as a one-off ECS task on the hatchet-worker task definition with the production COHERE_API_KEY; GitHub Actions run 37240689368 (embed5-cutover.yml), task 477366b3c63b4127b01ff35e6d278fbf",
+  "host": "COHERE_OWN_API",
+  "at": "20261004T223815Z",
+  "model": "embed-v5.0-pro",
+  "query_model": "embed-v5.0-pro",
+  "output_dimension_requested": 1024,
+  "key_present": true,
+  "key_length": 53,
+  "embedding_backend_in_task": "cohere",
+  "status_legend": "every value below is OBSERVED_COHERE (a live call with the production key)",
+  "raw": {
+    "document": {
+      "dimension": 1024,
+      "dimension_honoured": true,
+      "latency_s": 0.113,
+      "rate_limit_headers": {},
+      "top_level_keys": [
+        "embeddings",
+        "id",
+        "meta",
+        "response_type",
+        "texts"
+      ]
+    },
+    "query": {
+      "dimension": 1024,
+      "latency_s": 0.098
+    },
+    "image": {
+      "attempts": {},
+      "dimension": 1024,
+      "latency_s": 0.138,
+      "shape_accepted": "images",
+      "note": "the first shape the adapter tries (images=[data-uri]) was accepted; inputs[] was never needed"
+    },
+    "input_limit": {
+      "96": {
+        "accepted": true,
+        "vectors_back": 96
+      },
+      "97": {
+        "accepted": false,
+        "status": 400,
+        "body": "{\"id\":\"701fea69-b14d-4db2-881b-2007b4f5cbc6\",\"message\":\"invalid request: total number of texts must be at most 96 - received 97\"}"
+      },
+      "adapter_chunk_size": 96,
+      "adapter_chunk_size_ok": true,
+      "reading": "exact"
+    }
+  },
+  "adapter": {
+    "ok": true,
+    "model_name": "embed-v5.0-pro",
+    "query_model_name": "embed-v5.0-pro",
+    "document_dimension": 1024,
+    "query_dimension": 1024,
+    "image_dimension": 1024,
+    "reported_dimension": 1024
+  },
+  "not_measured": [
+    "image pixel cap (a generated 256x256 PNG cannot climb the ladder)",
+    "Pro-vs-Fast agreement (ADR-0025 sub-decision; cohere_probe.py --embed covers it)",
+    "rate limit (Cohere volunteers no rate-limit headers; only observable by hitting it)"
+  ],
+  "verdict": "PROBE OK"
+}

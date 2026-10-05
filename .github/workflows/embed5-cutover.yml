@@ -80,8 +80,10 @@ env:
   SOURCE_TASK_FAMILY: georag-hatchet-worker
   CUTOVER_TASK_FAMILY: georag-embed5-cutover
   CONTAINER_NAME: hatchet-worker
-  FASTAPI_SERVICE: georag-fastapi
-  WORKER_SERVICE: georag-hatchet-worker
+  # ECS service names are the bare keys of services.tf (`name = each.key`);
+  # only task-definition FAMILIES carry the georag- prefix.
+  FASTAPI_SERVICE: fastapi
+  WORKER_SERVICE: hatchet-worker
 
 permissions:
   contents: read
@@ -153,6 +155,10 @@ jobs:
           for svc in "$FASTAPI_SERVICE" "$WORKER_SERVICE"; do
             td=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$svc" \
                    --query 'services[0].deployments[?status==`PRIMARY`] | [0].taskDefinition' --output text)
+            if [ -z "$td" ] || [ "$td" = "None" ]; then
+              echo "::error::service '$svc' has no PRIMARY deployment in cluster '$ECS_CLUSTER' (wrong service name, or the service does not exist)"
+              exit 1
+            fi
             val=$(aws ecs describe-task-definition --task-definition "$td" \
                    --query "taskDefinition.containerDefinitions[0].environment[?name=='EMBEDDING_BACKEND'].value | [0]" --output text)
             echo "$svc -> $td : EMBEDDING_BACKEND=$val"
