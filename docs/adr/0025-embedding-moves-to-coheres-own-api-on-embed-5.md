@@ -14,9 +14,11 @@
   04:49Z, via `terraform.yml` with the `production` approval), after steps
   1 and 3, with the collection reset
   (`src/fastapi/scripts/reset_embeddings_for_reencode.py --all`) and the embed sweep in
-  one sitting (16:36-16:50Z). The production tfvars must keep
-  `embedding_backend = "cohere"` from here on, or the next apply flips the
-  services back to v4 against a v5 collection. The code default is `cohere` (an unset value selects the
+  one sitting (16:36-16:50Z). The cutover passed `cohere` on the command
+  line, so `production.tfvars` has no `embedding_backend` line; the
+  variable's default was flipped to `cohere` the same day so that an
+  unrelated apply plus the next CD cannot move the services back to v4
+  against the v5 collection. The code default is `cohere` (an unset value selects the
   target hosted backend), so compose and any environment that sets nothing
   already embed on Embed 5.
 - **Deciders**: Kyle Maguire (SME)

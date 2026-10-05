@@ -69,7 +69,7 @@ on:
         default: true
         type: boolean
       embedding_backend:
-        description: "ADR-0025 cutover switch: override var.embedding_backend for this plan/apply (keep = whatever production.tfvars says). cohere moves fastapi AND hatchet-worker to Embed 5 together; follow with CD, then embed5-cutover.yml reset + verify in the same sitting."
+        description: "ADR-0025 cutover switch: override var.embedding_backend for this plan/apply (keep = production.tfvars, else the variable default, cohere since 2026-10-05; bedrock = the rollback, needs the snapshot restore). cohere moves fastapi AND hatchet-worker to Embed 5 together; follow with CD, then embed5-cutover.yml reset + verify in the same sitting."
         required: false
         default: keep
         type: choice
