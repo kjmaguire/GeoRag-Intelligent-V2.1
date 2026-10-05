@@ -1,19 +1,22 @@
 # ADR 0025: Embedding moves to Cohere's own API, on Embed 5
 
 - **Date**: 2026-10-01
-- **Status**: Accepted (2026-10-04); **cutover in progress (2026-10-04/05)** — see "Cutover record" below
+- **Status**: Accepted (2026-10-04); **implemented in production 2026-10-05** (steps 1-6 as run below; step 7, the 14-day rollback hold, ends 2026-10-19) — see "Cutover record"
 - **Implemented (code half)**: 2026-10-04. The adapter, the probe's `embed`
   section, the `--all` reset, the `embed_model` tag, `answer_runs.embedding_model`,
   Terraform, compose, the chart and the docs are in the tree; migration steps
   1 and 3-7 (the credentialed probe run, the Qdrant snapshot, the cutover,
   the verification and the 14-day rollback hold) remain operator actions.
-  Production is NOT moved by this tree: `config.tf` reads
+  Production was NOT moved by this tree: `config.tf` reads
   `var.embedding_backend`, which defaults to `bedrock`, so a deploy or an
   unrelated `terraform apply` leaves the v4 space in place. **The cutover
-  (step 4) is setting `embedding_backend = "cohere"` in the production
-  tfvars and applying**, after steps 1 and 3, with the collection reset
+  (step 4) was applying `embedding_backend = "cohere"`** (done 2026-10-05,
+  04:49Z, via `terraform.yml` with the `production` approval), after steps
+  1 and 3, with the collection reset
   (`src/fastapi/scripts/reset_embeddings_for_reencode.py --all`) and the embed sweep in
-  the same sitting. The code default is `cohere` (an unset value selects the
+  one sitting (16:36-16:50Z). The production tfvars must keep
+  `embedding_backend = "cohere"` from here on, or the next apply flips the
+  services back to v4 against a v5 collection. The code default is `cohere` (an unset value selects the
   target hosted backend), so compose and any environment that sets nothing
   already embed on Embed 5.
 - **Deciders**: Kyle Maguire (SME)
@@ -355,6 +358,7 @@ task on the worker's task definition inside the production VPC
 | 4 switch | Terraform run 37241083536 (`terraform.yml action=apply embedding_backend=cohere`); CD run 37265225910 | plan green 22:43Z; Kyle approved the `production` environment by hand (the session's GitHub credential gets a 403 on the pending-deployment review API); **apply complete 04:49Z**: 12 task definitions replaced (`container_definitions` is sensitive in the plan, so the gate on the reset step is what proves the value landed), the DB parameter group and one bucket lifecycle updated in place. `cd.yml` dispatched 04:50Z so fastapi AND hatchet-worker run the new revision (the seven first-party services pick up a changed task definition only on a CD run). The reset was deliberately NOT started in the same sitting: it would have begun inside the hour before the 23:00 PT stack stop, and the sweep would have been cut off mid-flight. It runs after the 06:00 PT start, gated on both services RUNNING `cohere`, the snapshot prefix, and the typed phrase, then `verify` until exit 0, then `questions label=after`. |
 | 5 reset | run 37317549465, 13:32Z (refused) | CD run 37265225910 had rolled fastapi:51 and hatchet-worker:50 (both built from the Terraform revisions that carry `cohere`) at 04:53Z and the post-deploy smoke passed. The reset's own pre-check then **refused for the wrong reason**: the workflow named the ECS services `georag-fastapi` / `georag-hatchet-worker`, but `services.tf` names them by bare key (`fastapi`, `hatchet-worker`; only task-definition families carry the prefix), so `describe-services` returned nothing and `describe-task-definition None` failed. Nothing was touched. Fixed in the workflow (correct names, and an explicit error when a service has no PRIMARY deployment). The OIDC role trusts `refs/heads/main` only, so the fix must be on `main` before the reset can run. |
 | 5 reset | run 37341906103, 16:36Z | Gate passed (`fastapi` and `hatchet-worker` PRIMARY task definitions both `cohere`); snapshot object present; passages 176/176 embedded before. **Deleted all 2,785 points** from `georag_chunks` (three 1,000-point scroll/delete rounds, 2 s) and cleared `embedding_id` on all 176 rows across the 4 workspaces (18 + 158 + 0 + 0). Report artifact `embed5-cutover-reset-before-37341906103`. The 10-minute `embed_pending_passages` cron re-encodes from here. |
+| 6 verify | runs 37342248189 (16:39Z, exit 3: sweep not yet run) and 37343665149 (16:50Z, **exit 0**) | **Complete 14 minutes after the reset**: 176 points in `georag_chunks`, 176 tagged `embed_model=embed-v5.0-pro`, 0 lacking the tag, 0 image points; 176 passages, 176 embedded, 0 left (18 + 158 across the 4 workspaces, same as before). Point count equals embedded passages exactly, as the census predicted. Report artifact `embed5-cutover-verify-before-37343665149`. |
 
 What the census changes in step 6's expectation: the final point count will be
 **176** (plus whatever is ingested meanwhile), not 2,785, and `verify`'s
