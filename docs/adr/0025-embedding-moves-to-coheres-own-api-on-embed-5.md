@@ -359,6 +359,35 @@ task on the worker's task definition inside the production VPC
 | 5 reset | run 37317549465, 13:32Z (refused) | CD run 37265225910 had rolled fastapi:51 and hatchet-worker:50 (both built from the Terraform revisions that carry `cohere`) at 04:53Z and the post-deploy smoke passed. The reset's own pre-check then **refused for the wrong reason**: the workflow named the ECS services `georag-fastapi` / `georag-hatchet-worker`, but `services.tf` names them by bare key (`fastapi`, `hatchet-worker`; only task-definition families carry the prefix), so `describe-services` returned nothing and `describe-task-definition None` failed. Nothing was touched. Fixed in the workflow (correct names, and an explicit error when a service has no PRIMARY deployment). The OIDC role trusts `refs/heads/main` only, so the fix must be on `main` before the reset can run. |
 | 5 reset | run 37341906103, 16:36Z | Gate passed (`fastapi` and `hatchet-worker` PRIMARY task definitions both `cohere`); snapshot object present; passages 176/176 embedded before. **Deleted all 2,785 points** from `georag_chunks` (three 1,000-point scroll/delete rounds, 2 s) and cleared `embedding_id` on all 176 rows across the 4 workspaces (18 + 158 + 0 + 0). Report artifact `embed5-cutover-reset-before-37341906103`. The 10-minute `embed_pending_passages` cron re-encodes from here. |
 | 6 verify | runs 37342248189 (16:39Z, exit 3: sweep not yet run) and 37343665149 (16:50Z, **exit 0**) | **Complete 14 minutes after the reset**: 176 points in `georag_chunks`, 176 tagged `embed_model=embed-v5.0-pro`, 0 lacking the tag, 0 image points; 176 passages, 176 embedded, 0 left (18 + 158 across the 4 workspaces, same as before). Point count equals embedded passages exactly, as the census predicted. Report artifact `embed5-cutover-verify-before-37343665149`. |
+| 6 after | run 37344023714, 16:52Z | Same six questions, Embed 5 Pro on Cohere's API, counts only (artifact `embed5-cutover-questions-after-37344023714`). Comparison below. |
+
+Before/after on Red Star (the only project with a baseline; `rehearsal-meridian-kesler`
+had no "before" because the slug was wrong on that run):
+
+| question | before (v4, 2026-10-04) | after (v5 Pro, 2026-10-05) |
+|---|---|---|
+| Q0 commodities | refused, 1 citation, 29.9 s | **answered, 9 citations**, 13.1 s |
+| Q1 highest Au grades | refused, 1 citation, 39.5 s | **answered, 13 citations**, 9.2 s |
+| Q2 recent drilling program | answered, 10 citations, 20.4 s | **refused**, 1 citation, 7.0 s |
+| Q3 dominant lithology | answered, 11 citations, 36.7 s | **refused**, 1 citation, 8.5 s |
+| Q4 structural controls | answered, 10 citations, 23.6 s | answered, 9 citations, 13.1 s |
+| Q5 QA/QC | refused, 1 citation, 35.0 s | refused, 1 citation, 4.5 s |
+
+Rehearsal Meridian after: Q0 refused; Q1-Q5 answered with 3, 6, 3, 3 and 2
+citations, 2-6 s each.
+
+Reading: three answered and three refused on each side, but not the same
+three. Q0 and Q1 (commodities, highest grades) now answer with 9-13
+citations; Q2 and Q3 (drilling program, dominant lithology) now refuse. The
+"before" collection carried 2,609 stale duplicate points (census row), so
+those two answers may have been propped up by duplicates that no longer
+exist; equally, Embed 5 may rank the relevant passages below the reranker
+floor for those two phrasings. Counts alone cannot tell which. **Open item
+for Kyle**: ask Q2 and Q3 on Red Star in the UI and judge the refusals;
+if the passages are there and relevant, the retrieval floor
+(`RERANKER_SCORE_THRESHOLD_HOSTED`, carried over unvalidated) is the first
+suspect, not the embedding. Every query is also 2-4x faster end to end
+(Bedrock round trips gone from the query path).
 
 What the census changes in step 6's expectation: the final point count will be
 **176** (plus whatever is ingested meanwhile), not 2,785, and `verify`'s
