@@ -88,7 +88,7 @@ cffi==2.1.1
     #   brotlicffi
     #   cryptography
     #   weasyprint
-charset-normalizer==3.5.1
+charset-normalizer==3.5.2
     # via
     #   georag-geoparsers
     #   pdfminer-six
@@ -108,7 +108,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   typer
 contourpy==1.4.0
     # via matplotlib
-cryptography==50.0.1
+cryptography==50.0.2
     # via
     #   authlib
     #   georag-fastapi
@@ -150,13 +150,13 @@ fsspec==2026.7.0
     # via
     #   huggingface-hub
     #   torch
-genai-prices==0.1.7
+genai-prices==0.1.9
     # via pydantic-ai-slim
 geopandas==1.1.4
     # via
     #   georag-fastapi
     #   georag-geoparsers
-googleapis-common-protos==1.75.3
+googleapis-common-protos==1.75.5
     # via
     #   grpcio-status
     #   opentelemetry-exporter-otlp-proto-http
@@ -187,7 +187,7 @@ hpack==4.2.0
     # via h2
 httpcore==1.0.9
     # via httpx
-httpcore2==2.13.0 ; sys_platform != 'emscripten'
+httpcore2==2.13.1 ; sys_platform != 'emscripten'
     # via httpx2
 httptools==0.8.0
     # via uvicorn
@@ -203,7 +203,7 @@ httpx==0.28.1
     #   pydantic-ai-slim
     #   pydantic-graph
     #   qdrant-client
-httpx2==2.13.0
+httpx2==2.13.1
     # via
     #   genai-prices
     #   langsmith
@@ -244,7 +244,7 @@ jsonpointer==3.1.1
     # via jsonpatch
 kiwisolver==1.5.1
     # via matplotlib
-langchain-core==1.6.3
+langchain-core==1.6.6
     # via
     #   georag-fastapi
     #   langgraph
@@ -259,7 +259,7 @@ langdetect==1.0.9
     # via georag-fastapi
 langfuse==3.15.0
     # via georag-fastapi
-langgraph==1.2.11
+langgraph==1.2.12
     # via georag-fastapi
 langgraph-checkpoint==4.2.0
     # via
@@ -268,7 +268,7 @@ langgraph-checkpoint==4.2.0
     #   langgraph-prebuilt
 langgraph-prebuilt==1.1.0
     # via langgraph
-langgraph-sdk==0.4.4
+langgraph-sdk==0.4.5
     # via langgraph
 langsmith==0.12.5
     # via langchain-core
@@ -386,7 +386,7 @@ packaging==25.0
     #   pytesseract
     #   shap
     #   transformers
-pandas==3.0.5
+pandas==3.0.6
     # via
     #   geopandas
     #   shap
@@ -473,7 +473,7 @@ pyogrio==0.13.0
     # via
     #   geopandas
     #   georag-geoparsers
-pyparsing==3.3.2
+pyparsing==3.3.3
     # via
     #   ezdxf
     #   matplotlib
@@ -501,7 +501,7 @@ python-dateutil==2.9.0.post0
     #   pandas
 python-docx==1.2.0
     # via georag-fastapi
-python-dotenv==1.2.3
+python-dotenv==1.2.4
     # via
     #   pydantic-settings
     #   uvicorn
@@ -521,13 +521,13 @@ rapidfuzz==3.14.6
     # via
     #   georag-fastapi
     #   georag-geoparsers
-rasterio==1.5.1
+rasterio==1.5.2
     # via
     #   georag-fastapi
     #   georag-geoparsers
 redis==7.4.1
     # via georag-fastapi
-regex==2026.9.10
+regex==2026.9.29
     # via
     #   tiktoken
     #   transformers
