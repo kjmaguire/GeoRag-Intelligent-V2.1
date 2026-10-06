@@ -214,9 +214,8 @@ class StructuredAccessLogMiddleware(BaseHTTPMiddleware):
         # `traceparent` if it matches the v00 spec; mint otherwise.
         # Stored on request.state so handlers + outbound clients can
         # forward the same trace-id.
-        traceparent = request.headers.get("traceparent")
-        if not _is_valid_traceparent(traceparent):
-            traceparent = _mint_traceparent()
+        inbound = request.headers.get("traceparent")
+        traceparent = inbound if inbound and _is_valid_traceparent(inbound) else _mint_traceparent()
         request.state.traceparent = traceparent
         request.state.trace_id = traceparent[3:35]  # 32-hex trace-id slice
 
