@@ -22,3 +22,8 @@ ingress:
 # No egress, so no Cohere Parse: OCR runs Tesseract in-container.
 ocr:
   engine: tesseract
+
+# No egress: the collar terrain lookup is off (collars with no elevation in
+# the file stay at z = 0). Point it at a local Copernicus mirror to enable.
+terrain:
+  demUrlTemplate: ""

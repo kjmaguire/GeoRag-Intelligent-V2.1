@@ -166,6 +166,18 @@ ocr:
   engine: cohere_parse   # cohere_parse | tesseract
 
 # ─────────────────────────────────────────────────────────────────────
+# Terrain model for collars whose file carried no elevation
+# (COLLAR_DEM_URL_TEMPLATE on hatchet-worker; promote_silver_to_gold fills
+# silver.collars.elevation_dem_m so the hole is not drawn at sea level).
+# Default: Copernicus GLO-30 in the public AWS Open Data bucket — needs
+# egress. An AIR-GAPPED site sets "" to turn the lookup off
+# (values-airgap.yaml does) or points it at a local mirror; `{tile}` is the
+# Copernicus tile name. See src/fastapi/app/services/dem_elevation.py.
+# ─────────────────────────────────────────────────────────────────────
+terrain:
+  demUrlTemplate: "https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif"
+
+# ─────────────────────────────────────────────────────────────────────
 # FastAPI domain service — Pydantic AI + asyncpg + 6-layer §04i.
 # Deployment with HPA (2-8 replicas).
 # ─────────────────────────────────────────────────────────────────────

@@ -64,6 +64,8 @@ interface Collar {
     azimuth?: number | null;
     dip?: number | null;
     elevation?: number | null;
+    /** 'terrain' = no elevation in the file; `elevation` is the terrain model's. */
+    elevation_source?: 'file' | 'terrain' | null;
     hole_type?: string | null;
     status?: string | null;
 }
@@ -549,8 +551,15 @@ export default function FoundryWorkspace({
         }
     }
 
+    const terrainElevationHoles = collars.filter((c) => c.elevation_source === 'terrain').length;
     const truncationNotices = describeTruncation(
-        truncation ? { ...truncation, survey_holes_downsampled: survey_holes_downsampled ?? 0 } : truncation,
+        truncation
+            ? {
+                  ...truncation,
+                  survey_holes_downsampled: survey_holes_downsampled ?? 0,
+                  terrain_elevation_holes: terrainElevationHoles,
+              }
+            : truncation,
     );
 
     // FE-3: the canvas is shown when the project has ANY map data. It used to

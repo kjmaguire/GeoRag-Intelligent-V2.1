@@ -17,6 +17,11 @@ export interface WorkspaceTruncation {
     interval_holes: CountLimit;
     /** Sent in the deferred 3D group since FE-11; absent until it loads. */
     survey_holes_downsampled?: number;
+    /**
+     * Holes whose file had no elevation, drawn at the terrain model's ground
+     * height (silver.collars.elevation_dem_m) instead of z = 0.
+     */
+    terrain_elevation_holes?: number;
 }
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
@@ -37,6 +42,12 @@ export function describeTruncation(t: WorkspaceTruncation | null | undefined): s
     if ((t.survey_holes_downsampled ?? 0) > 0) {
         notices.push(
             `Survey stations thinned for ${fmt(t.survey_holes_downsampled ?? 0)} holes (first and last kept).`,
+        );
+    }
+    if ((t.terrain_elevation_holes ?? 0) > 0) {
+        const n = t.terrain_elevation_holes ?? 0;
+        notices.push(
+            `${fmt(n)} ${n === 1 ? 'hole has' : 'holes have'} no elevation in the file; drawn at terrain-model ground height (Copernicus 30 m).`,
         );
     }
     return notices;

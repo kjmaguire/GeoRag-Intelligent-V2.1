@@ -1441,6 +1441,10 @@ spec:
             # air-gapped site sets `ocr.engine: tesseract` in values.
             - name: OCR_ENGINE
               value: "cohere_parse"
+            # Terrain-model elevation for collars with none in the file.
+            # "" turns it off (air-gapped: values-airgap.yaml).
+            - name: COLLAR_DEM_URL_TEMPLATE
+              value: "https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif"
           resources:
             limits:
               cpu: "2"

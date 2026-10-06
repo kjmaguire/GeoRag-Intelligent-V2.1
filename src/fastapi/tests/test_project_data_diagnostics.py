@@ -946,7 +946,8 @@ def _placement_rules(**over: Any) -> list[tuple[Any, Any]]:
     rules: dict[str, tuple[Any, Any]] = {
         "null_en": ("c.easting IS NULL OR c.northing IS NULL", _holes("N1")),
         "degree": ("abs(c.easting) <= 180", _holes("D1", "D2")),
-        "null_elev": ("c.elevation IS NULL", _holes("E1", "E2", "E3")),
+        "null_elev": ("c.elevation_dem_m IS NULL", _holes("E1", "E2", "E3")),
+        "terrain_elev": ("c.elevation_dem_m IS NOT NULL", _holes("G1")),
         "orientation": ("c.azimuth IS NULL OR c.dip IS NULL", _holes("O1")),
         "crs": ("FROM silver.projects pr", {"crs_epsg": 32613, "metre_unit": True, "projected": True}),
         "offset_list": (
@@ -1060,6 +1061,7 @@ class TestPlacement:
         assert out["null_easting_or_northing"] == {"status": "ok", "count": 1, "hole_ids": ["N1"], "limit": 50}
         assert out["degree_looking_easting_northing"]["hole_ids"] == ["D1", "D2"]
         assert out["null_elevation"]["count"] == 3
+        assert out["terrain_elevation"]["hole_ids"] == ["G1"]
         assert out["no_orientation_and_no_surveys"]["hole_ids"] == ["O1"]
         off = out["easting_northing_vs_geom_4326"]
         assert (off["project_crs_epsg"], off["compared"], off["over_threshold"], off["max_m"]) == (32613, 10, 2, 812.346)
@@ -1169,7 +1171,7 @@ class TestPlacement:
     def test_render_reports_a_failed_or_absent_sub_check_in_place(self) -> None:
         conn = FakeConn(
             tables=ALL_TABLES - {"silver.surveys"},
-            rules=_placement_rules(null_elev=("c.elevation IS NULL", RuntimeError("column c.elevation does not exist"))),
+            rules=_placement_rules(null_elev=("c.elevation_dem_m IS NULL", RuntimeError("column c.elevation does not exist"))),
         )
         md = "\n".join(pdd._render_placement(_run(pdd.check_placement(conn, _project()))))
         assert "**check failed:** `RuntimeError: column c.elevation does not exist`" in md
