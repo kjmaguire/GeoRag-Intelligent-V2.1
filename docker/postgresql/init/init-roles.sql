@@ -4,7 +4,6 @@
 -- Creates separate roles for application security (least-privilege principle):
 --   georag_read   — SELECT only on silver schema (reports, dashboards)
 --   georag_write  — SELECT + INSERT + UPDATE on silver (application layer)
---   georag_admin  — Full DDL + TRUNCATE (migrations, maintenance)
 --   georag_audit  — INSERT only on query_audit_log (audit trail)
 --
 -- Lives in /docker-entrypoint-initdb.d/ and runs automatically on first
@@ -37,7 +36,7 @@ GRANT USAGE ON SCHEMA bronze TO georag_read, georag_write;
 -- read the GOLD analytics layer + PUBLIC_GEO reference data, which were never
 -- granted (read could only see silver/bronze). Add USAGE here + SELECT below.
 -- gold rows still carry RLS, so georag_read remains tenant-filtered. gold is
--- Dagster-materialised (not app-written), so no INSERT/UPDATE for georag_write.
+-- written by promote_silver_to_gold (not by this role), so no INSERT/UPDATE for georag_write.
 GRANT USAGE ON SCHEMA gold TO georag_read, georag_write;
 -- Guard: public_geo is created by Laravel migration
 -- 2026_04_14_000000_create_public_geoscience_schema and does NOT exist at
