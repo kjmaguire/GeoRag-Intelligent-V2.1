@@ -141,6 +141,10 @@ spec:
             # air-gapped site sets `ocr.engine: tesseract` in values.
             - name: OCR_ENGINE
               value: {{ .Values.ocr.engine | quote }}
+            # Terrain-model elevation for collars with none in the file.
+            # "" turns it off (air-gapped: values-airgap.yaml).
+            - name: COLLAR_DEM_URL_TEMPLATE
+              value: {{ .Values.terrain.demUrlTemplate | quote }}
           resources: {{- toYaml .Values.hatchet.worker.resources | nindent 12 }}
 {{- end }}
 {{- end }}

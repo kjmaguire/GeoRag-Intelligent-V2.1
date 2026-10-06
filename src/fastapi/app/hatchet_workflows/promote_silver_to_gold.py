@@ -135,6 +135,7 @@ from pydantic import BaseModel, Field
 from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
+from app.services import dem_elevation
 from app.services.collar_depth import EFFECTIVE_TOTAL_DEPTH_SQL
 
 log = logging.getLogger("georag.promote_silver_to_gold")
@@ -213,6 +214,15 @@ class PromoteSilverToGoldOutput(BaseModel):
     #: Their trace is built from the most recently written file's stations
     #: only (merging two files' stations draws a trace through both).
     survey_sources_mixed_holes: int = 0
+    #: Collars with no file elevation that got a terrain-model height this
+    #: run (silver.collars.elevation_dem_m; app/services/dem_elevation.py).
+    collars_terrain_elevation_filled: int = 0
+    #: Collars looked up where the terrain model has no ground (open sea).
+    collars_terrain_no_ground: int = 0
+    #: Collars NOT filled because the project's surveyed collars disagree
+    #: with the terrain model by more than MAX_DATUM_OFFSET_M — a local-grid
+    #: RL, which a sea-level height would silently contradict.
+    collars_terrain_datum_mismatch: int = 0
     structures_written: int = 0
     projects_seen: int = 0
     lithology_rows_promoted: int = 0
@@ -690,6 +700,151 @@ ON CONFLICT (collar_id) DO UPDATE SET
 """
 
 
+# ---------------------------------------------------------------------------
+# Terrain-model elevation for collars whose file had none
+# ---------------------------------------------------------------------------
+
+#: Collars looked up per project per run. A 40k-collar project with no RL
+#: column fills over two nightly runs instead of spending the whole
+#: execution timeout on one; the remainder is logged, not dropped.
+_TERRAIN_LOOKUP_CAP = 20000
+
+#: Lookup targets: no file elevation, a position, and no current lookup —
+#: never looked up, looked up with another model, or looked up at a position
+#: the collar has since moved away from.
+_TERRAIN_TARGETS = f"""
+SELECT c.collar_id, ST_X(c.geom_4326) AS lon, ST_Y(c.geom_4326) AS lat
+  FROM silver.collars c
+ WHERE c.project_id = $1::uuid
+   AND c.elevation IS NULL
+   AND c.geom_4326 IS NOT NULL
+   AND (c.elevation_dem_geom IS NULL
+        OR c.elevation_dem_source IS DISTINCT FROM $2::varchar
+        OR NOT ST_Equals(c.elevation_dem_geom, c.geom_4326))
+ ORDER BY c.collar_id
+ LIMIT {_TERRAIN_LOOKUP_CAP}
+"""
+
+#: The project's surveyed collars, for the datum check.
+_TERRAIN_REFERENCES = f"""
+SELECT ST_X(c.geom_4326) AS lon, ST_Y(c.geom_4326) AS lat, c.elevation
+  FROM silver.collars c
+ WHERE c.project_id = $1::uuid
+   AND c.elevation IS NOT NULL
+   AND c.geom_4326 IS NOT NULL
+ ORDER BY c.collar_id
+ LIMIT {dem_elevation.DATUM_CHECK_SAMPLE}
+"""
+
+#: The position written is the one looked up, not geom_4326 at write time,
+#: so a collar moved by a concurrent re-upload is seen as stale next run.
+#: ``elevation IS NULL`` again here: a file elevation that landed meanwhile
+#: makes the terrain value moot, and it is not written.
+_TERRAIN_WRITE = """
+UPDATE silver.collars c
+   SET elevation_dem_m      = v.elev,
+       elevation_dem_source = $5::varchar,
+       elevation_dem_geom   = ST_SetSRID(ST_MakePoint(v.lon, v.lat), 4326)
+  FROM unnest($1::uuid[], $2::float8[], $3::float8[], $4::float8[])
+       AS v(collar_id, lon, lat, elev)
+ WHERE c.collar_id = v.collar_id
+   AND c.elevation IS NULL
+"""
+
+#: chk_collars_elevation_dem_range. A value outside it is a decoding fault,
+#: and one bad row must not fail the UPDATE for the rest.
+_TERRAIN_MIN_M = -500.0
+_TERRAIN_MAX_M = 9000.0
+
+
+async def _fill_terrain_elevations(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    out: PromoteSilverToGoldOutput,
+) -> None:
+    """Give collars with no file elevation a terrain-model height.
+
+    Writes ``silver.collars.elevation_dem_m``, never ``elevation`` — see
+    ``app/services/dem_elevation.py`` for the model, the configuration and
+    why the file's value always wins. Never raises: the lookup is an
+    enrichment, and a terrain host being down must not stop the trace,
+    interval and structure promotions after it.
+    """
+    config = dem_elevation.config_from_env()
+    if not config.enabled:
+        return
+    try:
+        targets = await conn.fetch(_TERRAIN_TARGETS, project_id, config.source)
+        if not targets:
+            return
+        if len(targets) >= _TERRAIN_LOOKUP_CAP:
+            log.info(
+                "promote.terrain: project %s has more than %d collars to look "
+                "up; the rest are taken by the next promotion",
+                project_id, _TERRAIN_LOOKUP_CAP,
+            )
+        references = await conn.fetch(_TERRAIN_REFERENCES, project_id)
+
+        points = [(float(r["lon"]), float(r["lat"])) for r in targets]
+        points += [(float(r["lon"]), float(r["lat"])) for r in references]
+        heights = await dem_elevation.lookup_elevations(points, config)
+
+        # Datum check: only when the project HAS surveyed collars.
+        n = len(targets)
+        offsets: list[float] = []
+        for i, ref in enumerate(references):
+            ref_height = heights.get(n + i)
+            if ref_height is not None:
+                offsets.append(float(ref["elevation"]) - ref_height)
+        offset = dem_elevation.datum_offset_m(offsets)
+        if offset is not None and abs(offset) > dem_elevation.MAX_DATUM_OFFSET_M:
+            out.collars_terrain_datum_mismatch += n
+            log.warning(
+                "promote.terrain: project %s - its %d surveyed collar(s) sit a "
+                "median %.0f m from the terrain model (%s), so their RLs are "
+                "not heights above sea level (a local grid?). %d collar(s) "
+                "without an elevation were NOT given a terrain height; they "
+                "stay at z = 0 until the file supplies one",
+                project_id, len(offsets), offset, config.source, n,
+            )
+            return
+
+        ids: list[Any] = []
+        lons: list[float] = []
+        lats: list[float] = []
+        elevs: list[float | None] = []
+        for i, row in enumerate(targets):
+            if i not in heights:
+                continue  # transient read failure: retried next run
+            height = heights[i]
+            if height is not None and not (_TERRAIN_MIN_M <= height <= _TERRAIN_MAX_M):
+                log.warning(
+                    "promote.terrain: collar %s read %.1f m from %s, outside "
+                    "[%g, %g]; recorded as no ground",
+                    row["collar_id"], height, config.source,
+                    _TERRAIN_MIN_M, _TERRAIN_MAX_M,
+                )
+                height = None
+            ids.append(row["collar_id"])
+            lons.append(points[i][0])
+            lats.append(points[i][1])
+            elevs.append(height)
+        if not ids:
+            return
+        await conn.execute(_TERRAIN_WRITE, ids, lons, lats, elevs, config.source)
+        filled = sum(1 for e in elevs if e is not None)
+        out.collars_terrain_elevation_filled += filled
+        out.collars_terrain_no_ground += len(elevs) - filled
+        log.info(
+            "promote.terrain: project %s - %d collar(s) given a %s height, "
+            "%d with no ground in the model, %d left for the next run",
+            project_id, filled, config.source, len(elevs) - filled, n - len(ids),
+        )
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        log.warning("promote.terrain: project %s skipped (%s)", project_id, exc)
+
+
 async def _promote_traces(
     conn: asyncpg.Connection,
     *,
@@ -747,7 +902,8 @@ async def _promote_traces(
     # to nothing.
     collars = await conn.fetch(
         f"""
-        SELECT c.collar_id, c.elevation,
+        SELECT c.collar_id,
+               COALESCE(c.elevation, c.elevation_dem_m) AS elevation,
                {EFFECTIVE_TOTAL_DEPTH_SQL} AS total_depth, c.azimuth, c.dip,
                ST_X(c.geom_4326) AS lon,
                ST_Y(c.geom_4326) AS lat,
@@ -1342,6 +1498,10 @@ async def promote(
                 code_lookup=code_lookup,
                 out=out,
             )
+            # Before the traces: a terrain height changes a trace's origin,
+            # and the trace digest includes the origin, so the trace is
+            # rebuilt at the new z in this same run.
+            await _fill_terrain_elevations(conn, project_id=project_id, out=out)
             await _promote_traces(
                 conn,
                 workspace_id=input.workspace_id,

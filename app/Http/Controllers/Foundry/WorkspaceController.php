@@ -112,7 +112,11 @@ class WorkspaceController extends Controller
                 // so WorkspaceMap can render the uncertainty-rings layer per row.
                 // Orientation triple (azimuth/dip/elevation) + hole_type/status
                 // feed the 3D Trajectories sub-view (MultiHole3DTrace).
-                ->selectRaw('collar_id, hole_id, hole_id_canonical, easting, northing, total_depth, ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat, spatial_uncertainty_m, crs_confidence, georef_method, azimuth, dip, elevation, hole_type, status')
+                // `elevation` falls back to the terrain model's ground height
+                // when the file had none (silver.collars.elevation_dem_m,
+                // written by promote_silver_to_gold) so a hole is not drawn
+                // at sea level; `elevation_from_terrain` says which it is.
+                ->selectRaw('collar_id, hole_id, hole_id_canonical, easting, northing, total_depth, ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat, spatial_uncertainty_m, crs_confidence, georef_method, azimuth, dip, COALESCE(elevation, elevation_dem_m) AS elevation, (elevation IS NULL AND elevation_dem_m IS NOT NULL) AS elevation_from_terrain, hole_type, status')
                 ->orderBy('hole_id')
                 ->orderBy('collar_id')
                 ->limit(self::MAX_WORKSPACE_COLLARS)
@@ -689,6 +693,9 @@ class WorkspaceController extends Controller
                         'azimuth' => isset($c->azimuth) ? (float) $c->azimuth : null,
                         'dip' => isset($c->dip) ? (float) $c->dip : null,
                         'elevation' => isset($c->elevation) ? (float) $c->elevation : null,
+                        'elevation_source' => isset($c->elevation)
+                            ? ((bool) ($c->elevation_from_terrain ?? false) ? 'terrain' : 'file')
+                            : null,
                         'hole_type' => $c->hole_type ?? null,
                         'status' => $c->status ?? null,
                     ];

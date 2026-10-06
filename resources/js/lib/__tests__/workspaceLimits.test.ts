@@ -38,6 +38,14 @@ describe('describeTruncation', () => {
             'Survey stations thinned for 3 holes (first and last kept).',
         ]);
     });
+
+    it('says when holes are drawn at terrain-model height', () => {
+        expect(describeTruncation({ ...none, terrain_elevation_holes: 5 })).toEqual([
+            '5 holes have no elevation in the file; drawn at terrain-model ground height (Copernicus 30 m).',
+        ]);
+        expect(describeTruncation({ ...none, terrain_elevation_holes: 1 })[0]).toMatch(/^1 hole has /);
+        expect(describeTruncation({ ...none, terrain_elevation_holes: 0 })).toEqual([]);
+    });
 });
 
 describe('toggleCurveSelection', () => {

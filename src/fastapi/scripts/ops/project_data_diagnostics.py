@@ -1315,7 +1315,11 @@ async def check_placement(conn: Any, project: Project) -> dict[str, Any]:
         # The 3D view reads easting/northing as metres: a longitude/latitude pair lands the
         # hole a few metres from the scene origin.
         ("degree_looking_easting_northing", "(abs(c.easting) <= 180 AND abs(c.northing) <= 90)", []),
-        ("null_elevation", "c.elevation IS NULL", []),
+        # No elevation from the file AND none from the terrain model
+        # (promote_silver_to_gold; app/services/dem_elevation.py): z = 0 in 3D.
+        ("null_elevation", "c.elevation IS NULL AND c.elevation_dem_m IS NULL", []),
+        # Informational: drawn at the terrain model's ground height, not an RL.
+        ("terrain_elevation", "c.elevation IS NULL AND c.elevation_dem_m IS NOT NULL", []),
         (
             "no_orientation_and_no_surveys",
             f"(c.azimuth IS NULL OR c.dip IS NULL) AND NOT {_HAS_SURVEYS}",
@@ -1621,7 +1625,7 @@ def placement_findings(r: dict[str, Any]) -> list[str]:
             "collar(s) have degree-looking easting/northing (|easting|<=180, |northing|<=90): the 3D view reads "
             "them as metres and puts them at the scene origin",
         ),
-        ("null_elevation", "collar(s) have NULL elevation (3D plots them at z=0)"),
+        ("null_elevation", "collar(s) have no elevation from the file or the terrain model (3D plots them at z=0)"),
         ("no_orientation_and_no_surveys", "hole(s) have no surveys and no collar azimuth/dip (no trace, drawn vertical in 3D)"),
     ):
         if _count_of(r.get(key)) > 0:
@@ -2172,11 +2176,12 @@ def _render_distances(res: dict[str, Any]) -> list[str]:
 
 
 def _render_placement(r: dict[str, Any]) -> list[str]:
-    lines = ["**Collar placement inputs** (the 3D view uses raw easting/northing as metres, elevation NULL = z 0)", ""]
+    lines = ["**Collar placement inputs** (the 3D view uses raw easting/northing as metres; elevation falls back to the terrain model, then to z 0)", ""]
     for key, label in (
         ("null_easting_or_northing", "collars with NULL easting or northing"),
         ("degree_looking_easting_northing", "collars with degree-looking easting/northing (|e|<=180, |n|<=90)"),
-        ("null_elevation", "collars with NULL elevation"),
+        ("null_elevation", "collars with no elevation from the file or the terrain model"),
+        ("terrain_elevation", "collars at the terrain model's ground height (no elevation in the file)"),
         ("no_orientation_and_no_surveys", "holes with NULL collar azimuth or dip AND no silver.surveys rows"),
     ):
         lines += _render_hole_list(label, r[key])

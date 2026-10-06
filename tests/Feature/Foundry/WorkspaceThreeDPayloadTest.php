@@ -101,6 +101,44 @@ final class WorkspaceThreeDPayloadTest extends TestCase
         return ['user' => $user, 'project' => $project];
     }
 
+    /**
+     * A collar whose file had no elevation is drawn at the terrain model's
+     * ground height (silver.collars.elevation_dem_m, written by
+     * promote_silver_to_gold) instead of z = 0, and says so; a surveyed
+     * elevation always wins over the terrain value.
+     */
+    public function test_collar_elevation_falls_back_to_the_terrain_model(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
+        DB::statement(
+            "UPDATE silver.collars
+                SET elevation = NULL, elevation_dem_m = 53.5, elevation_dem_source = 'copernicus_glo30',
+                    elevation_dem_geom = geom_4326
+              WHERE project_id = ?::uuid AND hole_id = 'W3D-1'",
+            [$project->project_id],
+        );
+        // W3D-2 keeps its surveyed 1000 m; a stale terrain value must not show.
+        DB::statement(
+            "UPDATE silver.collars SET elevation_dem_m = 12.0 WHERE project_id = ?::uuid AND hole_id = 'W3D-2'",
+            [$project->project_id],
+        );
+
+        $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
+
+        $response->assertStatus(200);
+        $response->assertInertia(
+            fn (AssertableInertia $page) => $page
+                ->component('Foundry/Workspace')
+                ->where('collars.0.hole_id', 'W3D-1')
+                ->where('collars.0.elevation', 53.5)
+                ->where('collars.0.elevation_source', 'terrain')
+                ->where('collars.1.hole_id', 'W3D-2')
+                ->where('collars.1.elevation', 1000)
+                ->where('collars.1.elevation_source', 'file')
+                ->etc(),
+        );
+    }
+
     public function test_workspace_emits_every_3d_subview_prop_key(): void
     {
         ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
