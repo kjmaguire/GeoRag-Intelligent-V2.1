@@ -28,6 +28,15 @@ that check and never stops the others)
                      engine produced them (ocr_method), low-confidence OCR, and the legacy
                      silver.ingest_ocr_results count — i.e. "does every scanned file have
                      rows, and are they all in the vector index?"
+10. placement        "Where the data lands": collar placement inputs (NULL / degree-looking
+                     easting+northing, NULL elevation, no orientation and no surveys), easting/northing
+                     vs geom_4326 re-projected into the project CRS, the lng/lat extent of every map
+                     layer and its distance from the collars, drill-trace start vs collar, and survey
+                     quality (NULL/out-of-range angles, up-holes, station counts, mixed source files)
+11. visibility       "Will the UI show it": the Workspace caps (1000 collars, 200 holes / 80 bands in 3D,
+                     5000 structures and samples), gold interval bands vs silver logs, the lithology
+                     rows promotion drops, structures, samples, the gold tables with no writer, and
+                     the holes the LOGS / SECTION picker cannot list
 
 ``--all-projects`` runs the same checks for EVERY silver.projects row and prefixes the
 report with a one-table corpus overview; ``--only documents,row_counts`` limits the
@@ -933,6 +942,796 @@ async def check_documents(conn: Any, project: Project) -> dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------
+# Checks 10 and 11: does the data land in the right place, and will the UI show it
+# --------------------------------------------------------------------------
+#
+# Every number below is a count, an extent, a distance or a hole id. No free text.
+# Table and column names were checked against database/migrations (2026-10-06):
+#   silver.collars        project_id, hole_id, easting, northing, elevation, azimuth, dip,
+#                         geom_4326 (geometry(Point,4326); `geom` was dropped 2026-09-30)
+#   silver.surveys        collar_id, depth, azimuth, dip, source_file (2026-10-04)
+#   silver.drill_traces   project_id, collar_id, geom (LINESTRINGZ,4326), trace_quality
+#   silver.spatial_features, project_boundaries, geological_formations, historic_workings,
+#   silver.geochemistry   project_id + geom (geochemistry's project_id was added and
+#                         back-filled by 2026_04_22_140000; surface samples written
+#                         without one are invisible to a project-scoped query)
+#   silver.seismic_surveys project_id (nullable) + bbox (POLYGON,4326)
+#   silver.lithology_logs, lithology, alteration, mineralization, structure, samples,
+#   gold.assay_composites, gold.significant_intersections: collar_id only -> through silver.collars
+#   gold.drillhole_intervals_visual, gold.structure_measurements_visual: project_id and collar_id
+
+#: Where the Workspace controller (WorkspaceController::buildThreeDPayload / show) cuts off.
+MAX_WORKSPACE_COLLARS = 1000
+MAX_INTERVAL_HOLES = 200
+MAX_INTERVAL_BANDS_PER_HOLE = 80
+MAX_SURVEY_STATIONS_PER_HOLE = 100
+#: Strip-log band count per hole and kind past which the LOGS panel is a wall of ticks.
+STRIP_BANDS_PER_KIND_LIMIT = 1500
+#: LIMIT 5000 on the 3D structure and sample payloads.
+THREE_D_ROW_CAP = 5000
+#: gold.drillhole_intervals_visual kinds the LOGS hole picker lists a hole for.
+PICKER_INTERVAL_KINDS = ("lithology", "alteration", "mineralization")
+
+#: easting/northing (as metres) vs geom_4326 re-projected into the project CRS.
+COLLAR_OFFSET_THRESHOLD_M = 25.0
+#: trace start vs its collar.
+TRACE_START_THRESHOLD_M = 5.0
+#: a map layer whose centroid is this far from the collars is probably in the wrong place.
+FAR_FROM_COLLARS_KM = 100.0
+
+#: The sign convention for survey / collar dip, from the code that desurveys and from §04e.
+DIP_CONVENTION = (
+    "negative = below horizontal (-90 = straight down), positive = up-hole (0 < dip <= 90); "
+    "valid range -90..90 (promote_silver_to_gold._clean_stations, georag_geoparsers._survey_interp, "
+    "chk_dip_range 2026-09-29)"
+)
+
+#: (key, table, geometry column). Each is scoped by its own project_id.
+EXTENT_TABLES: tuple[tuple[str, str, str], ...] = (
+    ("collars", "silver.collars", "geom_4326"),
+    ("drill_traces", "silver.drill_traces", "geom"),
+    ("spatial_features", "silver.spatial_features", "geom"),
+    ("geochemistry", "silver.geochemistry", "geom"),
+    ("project_boundaries", "silver.project_boundaries", "geom"),
+    ("geological_formations", "silver.geological_formations", "geom"),
+    ("historic_workings", "silver.historic_workings", "geom"),
+    ("seismic_surveys", "silver.seismic_surveys", "bbox"),
+)
+
+
+def haversine_km(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
+    """Great-circle distance in km between two lng/lat points (spherical earth, 6371.0088 km)."""
+    from math import asin, cos, radians, sin, sqrt  # noqa: PLC0415
+
+    p1, p2 = radians(lat1), radians(lat2)
+    a = sin((p2 - p1) / 2) ** 2 + cos(p1) * cos(p2) * sin(radians(lng2 - lng1) / 2) ** 2
+    return 2 * 6371.0088 * asin(min(1.0, sqrt(a)))
+
+
+def _num(row: Any, key: str) -> float | None:
+    value = row.get(key) if row is not None else None
+    return None if value is None else float(value)
+
+
+def _int(row: Any, key: str) -> int:
+    value = row.get(key) if row is not None else None
+    return 0 if value is None else int(value)
+
+
+def _r(value: float | None, digits: int = 3) -> float | None:
+    return None if value is None else round(value, digits)
+
+
+async def _grouped_holes(
+    conn: Any,
+    project: Project,
+    *,
+    from_sql: str,
+    having: str,
+    kind_expr: str | None = None,
+    n_expr: str = "count(*)",
+) -> dict[str, Any]:
+    """Holes (worst-first, capped) whose grouped rows satisfy ``having``; every fragment is a
+    constant. ``kind_expr`` adds a column to the grouping (e.g. interval_kind)."""
+    group = "c.collar_id, c.hole_id" + (f", {kind_expr}" if kind_expr else "")
+    kind_col = f", {kind_expr} AS kind" if kind_expr else ""
+    rows = await conn.fetch(
+        f"""
+        SELECT c.hole_id{kind_col}, {n_expr} AS n, count(*) OVER () AS total
+          FROM {from_sql}
+         WHERE c.project_id = $1::uuid
+         GROUP BY {group}
+        HAVING {having}
+         ORDER BY n DESC, c.hole_id
+         LIMIT {ID_LIST_LIMIT}
+        """,  # noqa: S608 — constants
+        project.project_id,
+    )
+    holes = []
+    for r in rows:
+        item: dict[str, Any] = {"hole_id": r["hole_id"], "n": int(r["n"])}
+        if kind_expr:
+            item["kind"] = r["kind"]
+        holes.append(item)
+    return {"count": int(rows[0]["total"]) if rows else 0, "holes": holes, "limit": ID_LIST_LIMIT}
+
+
+# --- check 10: placement ----------------------------------------------------------------------
+
+# Spatial reference of the project CRS, and whether it is projected / in metres. A
+# geographic or unknown crs_epsg cannot be compared against easting/northing in metres.
+_PROJECT_CRS_SQL = r"""
+SELECT pr.crs_epsg AS crs_epsg,
+       (SELECT srs.srtext ~* 'UNIT\["(metre|meter)"' FROM spatial_ref_sys srs WHERE srs.srid = pr.crs_epsg) AS metre_unit,
+       (SELECT srs.srtext ~ '^PROJCS' FROM spatial_ref_sys srs WHERE srs.srid = pr.crs_epsg) AS projected
+  FROM silver.projects pr
+ WHERE pr.project_id = $1::uuid
+"""
+
+# $2 = project crs_epsg. What the 3D view does with easting/northing is "treat them as
+# metres"; geom_4326 re-projected into the project CRS is where the map says the hole is.
+_OFFSET_DIST = (
+    "ST_Distance(ST_Transform(c.geom_4326, $2::int), ST_SetSRID(ST_MakePoint(c.easting, c.northing), $2::int))"
+)
+_OFFSET_FROM = (
+    "FROM silver.collars c WHERE c.project_id = $1::uuid AND c.geom_4326 IS NOT NULL "
+    "AND c.easting IS NOT NULL AND c.northing IS NOT NULL"
+)
+_OFFSET_AGG_SQL = f"""
+SELECT count(*) AS compared,
+       count(*) FILTER (WHERE d.dist_m > {COLLAR_OFFSET_THRESHOLD_M}) AS over_threshold,
+       max(d.dist_m) AS max_m
+  FROM (SELECT {_OFFSET_DIST} AS dist_m {_OFFSET_FROM}) d
+"""  # noqa: S608 — constants
+_OFFSET_LIST_SQL = f"""
+SELECT d.hole_id, d.dist_m
+  FROM (SELECT c.hole_id, {_OFFSET_DIST} AS dist_m {_OFFSET_FROM}) d
+ WHERE d.dist_m > {COLLAR_OFFSET_THRESHOLD_M}
+ ORDER BY d.dist_m DESC, d.hole_id
+ LIMIT {ID_LIST_LIMIT}
+"""  # noqa: S608 — constants
+
+
+async def _placement_offset(conn: Any, project: Project) -> dict[str, Any]:
+    pr = await conn.fetchrow(_PROJECT_CRS_SQL, project.project_id)
+    crs = pr.get("crs_epsg") if pr is not None else None
+    out: dict[str, Any] = {
+        "project_crs_epsg": crs,
+        "threshold_m": COLLAR_OFFSET_THRESHOLD_M,
+        "limit": ID_LIST_LIMIT,
+    }
+    if crs is None:
+        return {**out, "skipped": "silver.projects.crs_epsg is not set"}
+    if pr.get("metre_unit") is None:
+        return {**out, "skipped": f"EPSG:{crs} is not in spatial_ref_sys"}
+    if not pr.get("projected"):
+        return {**out, "skipped": f"EPSG:{crs} is a geographic CRS: easting/northing are not metres in it"}
+    out["linear_unit_is_metre"] = bool(pr.get("metre_unit"))
+    agg = await conn.fetchrow(_OFFSET_AGG_SQL, project.project_id, int(crs))
+    rows = await conn.fetch(_OFFSET_LIST_SQL, project.project_id, int(crs))
+    return {
+        **out,
+        "compared": _int(agg, "compared"),
+        "over_threshold": _int(agg, "over_threshold"),
+        "max_m": _r(_num(agg, "max_m")),
+        "holes": [{"hole_id": r["hole_id"], "distance_m": _r(float(r["dist_m"]))} for r in rows],
+    }
+
+
+def _extent_sql(table: str, col: str) -> str:
+    """One row: rows, NULL-or-empty geometries, rows outside valid WGS84, the lng/lat bbox and
+    mean feature centroid of the in-range rows, and the SRIDs seen. A geometry whose SRID is
+    neither 0 nor 4326 is transformed to 4326 first; SRID 0 is read as 4326 (and shows in
+    ``srids``)."""
+    return f"""
+    SELECT count(*) AS n_rows,
+           count(*) FILTER (WHERE x.g IS NULL) AS null_geom,
+           count(*) FILTER (WHERE x.g IS NOT NULL AND NOT x.in_range) AS outside_wgs84,
+           ST_XMin(ST_Extent(x.g) FILTER (WHERE x.in_range)) AS min_lng,
+           ST_YMin(ST_Extent(x.g) FILTER (WHERE x.in_range)) AS min_lat,
+           ST_XMax(ST_Extent(x.g) FILTER (WHERE x.in_range)) AS max_lng,
+           ST_YMax(ST_Extent(x.g) FILTER (WHERE x.in_range)) AS max_lat,
+           avg(ST_X(ST_Centroid(x.g))) FILTER (WHERE x.in_range) AS centroid_lng,
+           avg(ST_Y(ST_Centroid(x.g))) FILTER (WHERE x.in_range) AS centroid_lat,
+           array_agg(DISTINCT x.srid) AS srids
+      FROM (
+            SELECT y.g, y.srid,
+                   COALESCE(ST_XMin(y.g) >= -180 AND ST_XMax(y.g) <= 180
+                            AND ST_YMin(y.g) >= -90 AND ST_YMax(y.g) <= 90, false) AS in_range
+              FROM (
+                    SELECT CASE WHEN t.{col} IS NULL OR ST_IsEmpty(t.{col}) THEN NULL
+                                WHEN ST_SRID(t.{col}) IN (0, 4326) THEN ST_SetSRID(t.{col}, 4326)
+                                ELSE ST_Transform(t.{col}, 4326) END AS g,
+                           ST_SRID(t.{col}) AS srid
+                      FROM {table} t
+                     WHERE t.project_id = $1::uuid
+                   ) y
+           ) x
+    """  # noqa: S608 — constants
+
+
+async def _placement_extents(conn: Any, project: Project) -> dict[str, Any]:
+    tables: dict[str, Any] = {}
+    for key, table, col in EXTENT_TABLES:
+
+        async def _one(table: str = table, col: str = col) -> dict[str, Any]:
+            row = await conn.fetchrow(_extent_sql(table, col), project.project_id)
+            lng, lat = _num(row, "centroid_lng"), _num(row, "centroid_lat")
+            bbox = [_num(row, k) for k in ("min_lng", "min_lat", "max_lng", "max_lat")]
+            return {
+                "table": table,
+                "geometry_column": col,
+                "rows": _int(row, "n_rows"),
+                "null_or_empty_geometry": _int(row, "null_geom"),
+                "outside_wgs84": _int(row, "outside_wgs84"),
+                "srids": sorted({int(s) for s in (row.get("srids") if row is not None else None) or [] if s is not None}),
+                "bbox_lng_lat": [_r(v, 5) for v in bbox] if all(v is not None for v in bbox) else None,
+                "centroid_lng_lat": [_r(lng, 5), _r(lat, 5)] if lng is not None and lat is not None else None,
+                "km_from_collar_centroid": None,
+                "far_from_collars": False,
+            }
+
+        tables[key] = await guarded(conn, [table], _one, what=f"placement:extents:{key}")
+
+    collars = tables.get("collars", {})
+    anchor = collars.get("centroid_lng_lat") if collars.get("status") == "ok" else None
+    if anchor:
+        for key, res in tables.items():
+            if key == "collars" or res.get("status") != "ok" or not res["centroid_lng_lat"]:
+                continue
+            km = haversine_km(anchor[0], anchor[1], res["centroid_lng_lat"][0], res["centroid_lng_lat"][1])
+            res["km_from_collar_centroid"] = round(km, 1)
+            res["far_from_collars"] = km > FAR_FROM_COLLARS_KM
+    return {
+        "tables": tables,
+        "far_km_threshold": FAR_FROM_COLLARS_KM,
+        "collar_centroid_lng_lat": anchor,
+        "note": "centroid = mean of the per-feature centroids of the rows inside valid WGS84; scoped by each "
+        "table's own project_id (rows with a NULL project_id are not counted)",
+    }
+
+
+# Start of each trace vs its collar, in metres on the spheroid. The promotion builds a trace
+# by translating metre offsets onto the collar, so the first vertex IS the collar.
+_TRACE_DIST = "ST_Distance(ST_StartPoint(t.geom)::geography, c.geom_4326::geography)"
+_TRACE_FROM = (
+    "FROM silver.drill_traces t JOIN silver.collars c ON c.collar_id = t.collar_id "
+    "WHERE t.project_id = $1::uuid AND c.project_id = $1::uuid"
+)
+_TRACE_AGG_SQL = f"""
+SELECT count(*) AS traces,
+       count(*) FILTER (WHERE d.dist_m IS NULL) AS no_collar_position,
+       count(*) FILTER (WHERE d.dist_m > {TRACE_START_THRESHOLD_M}) AS over_threshold,
+       max(d.dist_m) AS max_m
+  FROM (SELECT CASE WHEN c.geom_4326 IS NULL THEN NULL ELSE {_TRACE_DIST} END AS dist_m {_TRACE_FROM}) d
+"""  # noqa: S608 — constants
+_TRACE_LIST_SQL = f"""
+SELECT d.hole_id, d.dist_m
+  FROM (SELECT c.hole_id, CASE WHEN c.geom_4326 IS NULL THEN NULL ELSE {_TRACE_DIST} END AS dist_m {_TRACE_FROM}) d
+ WHERE d.dist_m > {TRACE_START_THRESHOLD_M}
+ ORDER BY d.dist_m DESC, d.hole_id
+ LIMIT {ID_LIST_LIMIT}
+"""  # noqa: S608 — constants
+
+
+async def _placement_traces(conn: Any, project: Project) -> dict[str, Any]:
+    agg = await conn.fetchrow(_TRACE_AGG_SQL, project.project_id)
+    rows = await conn.fetch(_TRACE_LIST_SQL, project.project_id)
+    return {
+        "traces": _int(agg, "traces"),
+        "no_collar_position": _int(agg, "no_collar_position"),
+        "threshold_m": TRACE_START_THRESHOLD_M,
+        "over_threshold": _int(agg, "over_threshold"),
+        "max_m": _r(_num(agg, "max_m")),
+        "holes": [{"hole_id": r["hole_id"], "distance_m": _r(float(r["dist_m"]))} for r in rows],
+        "limit": ID_LIST_LIMIT,
+        "note": "trace_quality buckets are reported under check 5 (coverage), not repeated here",
+    }
+
+
+_SURVEY_FROM = "silver.surveys s JOIN silver.collars c ON c.collar_id = s.collar_id"
+
+_SURVEY_STATS_SQL = f"""
+SELECT count(*) AS stations,
+       count(DISTINCT s.collar_id) AS holes,
+       count(*) FILTER (WHERE s.azimuth IS NULL) AS null_azimuth,
+       count(*) FILTER (WHERE s.dip IS NULL) AS null_dip,
+       count(*) FILTER (WHERE s.azimuth IS NULL OR s.dip IS NULL) AS dropped_by_desurvey,
+       count(*) FILTER (WHERE s.dip < -90 OR s.dip > 90) AS dip_out_of_range,
+       count(*) FILTER (WHERE s.azimuth < 0 OR s.azimuth > 360) AS azimuth_out_of_range,
+       count(*) FILTER (WHERE s.dip > 0 AND s.dip <= 90) AS up_hole_stations,
+       count(DISTINCT s.collar_id) FILTER (WHERE s.dip > 0 AND s.dip <= 90) AS up_hole_holes
+  FROM {_SURVEY_FROM}
+ WHERE c.project_id = $1::uuid
+"""  # noqa: S608 — constants
+
+
+async def _placement_surveys(conn: Any, project: Project) -> dict[str, Any]:
+    out: dict[str, Any] = {"dip_convention": DIP_CONVENTION, "station_cap_in_3d": MAX_SURVEY_STATIONS_PER_HOLE}
+
+    async def _stats() -> dict[str, Any]:
+        row = await conn.fetchrow(_SURVEY_STATS_SQL, project.project_id)
+        keys = (
+            "stations",
+            "holes",
+            "null_azimuth",
+            "null_dip",
+            "dropped_by_desurvey",
+            "dip_out_of_range",
+            "azimuth_out_of_range",
+            "up_hole_stations",
+            "up_hole_holes",
+        )
+        return {k: _int(row, k) for k in keys}
+
+    async def _over_cap() -> dict[str, Any]:
+        return await _grouped_holes(
+            conn, project, from_sql=_SURVEY_FROM, having=f"count(*) > {MAX_SURVEY_STATIONS_PER_HOLE}"
+        )
+
+    async def _mixed() -> dict[str, Any]:
+        # A NULL source_file is a group of its own, as in the desurvey's per-file pick.
+        return await _grouped_holes(
+            conn,
+            project,
+            from_sql=_SURVEY_FROM,
+            having="count(DISTINCT COALESCE(s.source_file, '(none)')) > 1",
+            n_expr="count(DISTINCT COALESCE(s.source_file, '(none)'))",
+        )
+
+    async def _all_positive() -> dict[str, Any]:
+        # Every dipped station of the hole is above horizontal: the usual signature of a
+        # file that logs dip positive-down, which this platform would draw as an up-hole.
+        return await _grouped_holes(
+            conn, project, from_sql=_SURVEY_FROM, having="min(s.dip) > 0 AND max(s.dip) <= 90"
+        )
+
+    requires = ["silver.surveys", "silver.collars"]
+    out["stations"] = await guarded(conn, requires, _stats, what="placement:surveys:stations")
+    out["over_station_cap"] = await guarded(conn, requires, _over_cap, what="placement:surveys:over_cap")
+    out["multiple_source_files"] = await guarded(conn, requires, _mixed, what="placement:surveys:mixed")
+    out["all_dips_positive"] = await guarded(conn, requires, _all_positive, what="placement:surveys:positive")
+    return out
+
+
+async def check_placement(conn: Any, project: Project) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+
+    where_by_key: tuple[tuple[str, str, list[str]], ...] = (
+        ("null_easting_or_northing", "(c.easting IS NULL OR c.northing IS NULL)", []),
+        # The 3D view reads easting/northing as metres: a longitude/latitude pair lands the
+        # hole a few metres from the scene origin.
+        ("degree_looking_easting_northing", "(abs(c.easting) <= 180 AND abs(c.northing) <= 90)", []),
+        ("null_elevation", "c.elevation IS NULL", []),
+        (
+            "no_orientation_and_no_surveys",
+            f"(c.azimuth IS NULL OR c.dip IS NULL) AND NOT {_HAS_SURVEYS}",
+            ["silver.surveys"],
+        ),
+    )
+    for key, where, extra in where_by_key:
+
+        async def _run(where: str = where) -> dict[str, Any]:
+            return await _hole_list(conn, where, project)
+
+        out[key] = await guarded(conn, ["silver.collars", *extra], _run, what=f"placement:{key}")
+
+    out["easting_northing_vs_geom_4326"] = await guarded(
+        conn,
+        ["silver.collars", "silver.projects", "spatial_ref_sys"],
+        lambda: _placement_offset(conn, project),
+        what="placement:offset",
+    )
+    out["extents"] = await _placement_extents(conn, project)
+    out["trace_start_vs_collar"] = await guarded(
+        conn,
+        ["silver.drill_traces", "silver.collars"],
+        lambda: _placement_traces(conn, project),
+        what="placement:traces",
+    )
+    out["surveys"] = await _placement_surveys(conn, project)
+    return out
+
+
+# --- check 11: visibility ---------------------------------------------------------------------
+
+_GOLD_VIS = "gold.drillhole_intervals_visual"
+_HAS_LITHOLOGY_BANDS = (
+    f"EXISTS (SELECT 1 FROM {_GOLD_VIS} gb WHERE gb.collar_id = c.collar_id AND gb.interval_kind = 'lithology')"
+)
+_PICKER_KINDS_SQL = ", ".join(f"'{k}'" for k in PICKER_INTERVAL_KINDS)
+_HAS_PICKER_BANDS = (
+    f"EXISTS (SELECT 1 FROM {_GOLD_VIS} gp WHERE gp.collar_id = c.collar_id AND gp.interval_kind IN ({_PICKER_KINDS_SQL}))"
+)
+_NO_CURVES_AT_ALL = "NOT EXISTS (SELECT 1 FROM silver.well_log_curves wc WHERE wc.collar_id = c.collar_id)"
+
+_FIRST_HOLES_SQL = f"""
+SELECT count(*) AS holes_considered,
+       count(*) FILTER (WHERE EXISTS (
+            SELECT 1 FROM {_GOLD_VIS} g1 WHERE g1.collar_id = f.collar_id AND g1.interval_kind = 'lithology'
+       )) AS with_bands,
+       (SELECT count(DISTINCT g2.collar_id)
+          FROM {_GOLD_VIS} g2 JOIN silver.collars c2 ON c2.collar_id = g2.collar_id
+         WHERE c2.project_id = $1::uuid AND g2.interval_kind = 'lithology') AS project_holes_with_bands
+  FROM (SELECT c.collar_id FROM silver.collars c WHERE c.project_id = $1::uuid
+         ORDER BY c.hole_id, c.collar_id LIMIT {MAX_INTERVAL_HOLES}) f
+"""  # noqa: S608 — constants
+
+_GOLD_KINDS_SQL = f"""
+SELECT g.interval_kind AS kind, count(*) AS n_rows, count(DISTINCT g.collar_id) AS holes
+  FROM {_GOLD_VIS} g
+ WHERE g.project_id = $1::uuid
+ GROUP BY g.interval_kind
+ ORDER BY n_rows DESC, g.interval_kind
+"""  # noqa: S608 — constant
+
+_PICKER_HIDDEN_SQL = f"""
+SELECT count(*) AS n
+  FROM (SELECT c.collar_id, row_number() OVER (ORDER BY c.hole_id, c.collar_id) AS rn
+          FROM silver.collars c WHERE c.project_id = $1::uuid) r
+  JOIN silver.collars c ON c.collar_id = r.collar_id
+ WHERE r.rn > {MAX_WORKSPACE_COLLARS} AND {_HAS_PICKER_BANDS} AND {_NO_CURVES_AT_ALL}
+"""  # noqa: S608 — constants
+
+#: (key, table, scope). Counted through silver.collars.
+_SILVER_LOG_TABLES: tuple[tuple[str, str], ...] = (
+    ("lithology_logs", "silver.lithology_logs"),
+    ("lithology", "silver.lithology"),
+    ("alteration", "silver.alteration"),
+    ("mineralization", "silver.mineralization"),
+)
+
+
+def _dropped_rows_sql(table: str) -> str:
+    # What _INTERVALS_LITHOLOGY (promote_silver_to_gold) filters out of silver.lithology:
+    # NULL depth, to <= from, from < 0, to >= 10,000,000. silver.lithology_logs is checked
+    # on the same terms because it is what the canonical table is derived from.
+    return f"""
+    SELECT count(*) AS n_rows,
+           count(*) FILTER (WHERE t.from_depth IS NULL OR t.to_depth IS NULL) AS null_depth,
+           count(*) FILTER (WHERE t.to_depth <= t.from_depth) AS to_not_after_from,
+           count(*) FILTER (WHERE t.from_depth < 0) AS negative_from,
+           count(*) FILTER (WHERE t.to_depth >= 10000000) AS to_depth_overflow,
+           count(*) FILTER (WHERE t.from_depth IS NULL OR t.to_depth IS NULL OR t.to_depth <= t.from_depth
+                              OR t.from_depth < 0 OR t.to_depth >= 10000000) AS dropped_any
+      FROM {table} t JOIN silver.collars c ON c.collar_id = t.collar_id
+     WHERE c.project_id = $1::uuid
+    """  # noqa: S608 — constant
+
+
+_STRUCTURE_SQL = """
+SELECT count(*) AS n_rows,
+       count(*) FILTER (WHERE t.true_dip IS NULL) AS null_true_dip,
+       count(*) FILTER (WHERE t.true_dip_dir IS NULL) AS null_true_dip_dir,
+       count(*) FILTER (WHERE t.true_dip IS NULL OR t.true_dip_dir IS NULL) AS unusable_in_3d,
+       count(*) FILTER (WHERE t.depth IS NULL) AS null_depth
+  FROM silver.structure t JOIN silver.collars c ON c.collar_id = t.collar_id
+ WHERE c.project_id = $1::uuid
+"""
+
+_STRUCTURE_VISUAL_SQL = """
+SELECT count(*) AS n_rows,
+       count(*) FILTER (WHERE t.depth IS NULL) AS null_depth
+  FROM gold.structure_measurements_visual t
+ WHERE t.project_id = $1::uuid
+"""
+
+_SAMPLES_SQL = """
+SELECT count(*) AS n_rows,
+       count(*) FILTER (WHERE t.commodity_assays IS NULL) AS null_assays,
+       count(*) FILTER (WHERE t.commodity_assays = '{}'::jsonb) AS empty_object,
+       count(*) FILTER (WHERE t.commodity_assays IS NOT NULL AND t.commodity_assays <> '{}'::jsonb) AS non_empty
+  FROM silver.samples t JOIN silver.collars c ON c.collar_id = t.collar_id
+ WHERE c.project_id = $1::uuid
+"""
+
+
+def _gold_rowcount_sql(table: str) -> str:
+    return (
+        f"SELECT count(*) AS n_rows FROM {table} t JOIN silver.collars c ON c.collar_id = t.collar_id "  # noqa: S608
+        "WHERE c.project_id = $1::uuid"
+    )
+
+
+async def check_visibility(conn: Any, project: Project) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    collars, vis = "silver.collars", _GOLD_VIS
+
+    # 1. The caps -----------------------------------------------------------------------------
+    async def _collar_cap() -> dict[str, Any]:
+        total = int(await conn.fetchval("SELECT count(*) AS n FROM silver.collars c WHERE c.project_id = $1::uuid", project.project_id) or 0)
+        return {"total": total, "cap": MAX_WORKSPACE_COLLARS, "beyond_cap": max(0, total - MAX_WORKSPACE_COLLARS)}
+
+    async def _first_holes() -> dict[str, Any]:
+        row = await conn.fetchrow(_FIRST_HOLES_SQL, project.project_id)
+        first, project_wide = _int(row, "with_bands"), _int(row, "project_holes_with_bands")
+        return {
+            "holes_considered": _int(row, "holes_considered"),
+            "first_n": MAX_INTERVAL_HOLES,
+            "first_n_with_lithology_bands": first,
+            "project_holes_with_lithology_bands": project_wide,
+            "three_d_empty_trap": first == 0 and project_wide > 0,
+            "order": "hole_id, collar_id (as WorkspaceController::show)",
+        }
+
+    async def _over_band_cap() -> dict[str, Any]:
+        return await _grouped_holes(
+            conn,
+            project,
+            from_sql=f"{vis} g JOIN silver.collars c ON c.collar_id = g.collar_id",
+            having=f"count(*) FILTER (WHERE g.interval_kind = 'lithology') > {MAX_INTERVAL_BANDS_PER_HOLE}",
+            n_expr="count(*) FILTER (WHERE g.interval_kind = 'lithology')",
+        )
+
+    async def _over_strip_cap() -> dict[str, Any]:
+        return await _grouped_holes(
+            conn,
+            project,
+            from_sql=f"{vis} g JOIN silver.collars c ON c.collar_id = g.collar_id",
+            kind_expr="g.interval_kind",
+            having=f"count(*) > {STRIP_BANDS_PER_KIND_LIMIT}",
+        )
+
+    out["collar_cap"] = await guarded(conn, [collars], _collar_cap, what="visibility:collar_cap")
+    out["first_holes_lithology"] = await guarded(conn, [collars, vis], _first_holes, what="visibility:first_holes")
+    out["holes_over_3d_band_cap"] = await guarded(
+        conn, [collars, vis], _over_band_cap, what="visibility:over_band_cap"
+    )
+    out["holes_over_strip_band_limit"] = await guarded(
+        conn, [collars, vis], _over_strip_cap, what="visibility:over_strip_cap"
+    )
+    out["band_caps"] = {
+        "three_d_bands_per_hole": MAX_INTERVAL_BANDS_PER_HOLE,
+        "strip_bands_per_hole_and_kind": STRIP_BANDS_PER_KIND_LIMIT,
+    }
+
+    # 2. Gold bands vs silver logs --------------------------------------------------------------
+    async def _kinds() -> dict[str, Any]:
+        rows = await conn.fetch(_GOLD_KINDS_SQL, project.project_id)
+        return {"kinds": {str(r["kind"]): {"rows": int(r["n_rows"]), "holes": int(r["holes"])} for r in rows}}
+
+    out["gold_intervals_by_kind"] = await guarded(conn, [vis], _kinds, what="visibility:gold_kinds")
+
+    silver: dict[str, Any] = {}
+    for key, table in _SILVER_LOG_TABLES:
+
+        async def _count(table: str = table) -> dict[str, Any]:
+            row = await conn.fetchrow(
+                f"SELECT count(*) AS n_rows, count(DISTINCT t.collar_id) AS holes "  # noqa: S608
+                f"FROM {table} t JOIN silver.collars c ON c.collar_id = t.collar_id WHERE c.project_id = $1::uuid",
+                project.project_id,
+            )
+            return {"rows": _int(row, "n_rows"), "holes": _int(row, "holes")}
+
+        silver[key] = await guarded(conn, [table, collars], _count, what=f"visibility:silver:{key}")
+    out["silver_logs"] = silver
+
+    for key, table, alias in (
+        ("lithology_logs_without_gold_bands", "silver.lithology_logs", "lg"),
+        ("canonical_lithology_without_gold_bands", "silver.lithology", "lc"),
+    ):
+
+        async def _missing(table: str = table, alias: str = alias) -> dict[str, Any]:
+            where = (
+                f"EXISTS (SELECT 1 FROM {table} {alias} WHERE {alias}.collar_id = c.collar_id) "  # noqa: S608
+                f"AND NOT {_HAS_LITHOLOGY_BANDS}"
+            )
+            return await _hole_list(conn, where, project)
+
+        out[key] = await guarded(conn, [table, collars, vis], _missing, what=f"visibility:{key}")
+
+    dropped: dict[str, Any] = {}
+    for key, table in _SILVER_LOG_TABLES[:2]:
+
+        async def _drop(table: str = table) -> dict[str, Any]:
+            row = await conn.fetchrow(_dropped_rows_sql(table), project.project_id)
+            keys = ("n_rows", "null_depth", "to_not_after_from", "negative_from", "to_depth_overflow", "dropped_any")
+            return {("rows" if k == "n_rows" else k): _int(row, k) for k in keys}
+
+        dropped[key] = await guarded(conn, [table, collars], _drop, what=f"visibility:dropped:{key}")
+    out["lithology_rows_promotion_drops"] = dropped
+
+    # 3. Structures -----------------------------------------------------------------------------
+    async def _structure() -> dict[str, Any]:
+        row = await conn.fetchrow(_STRUCTURE_SQL, project.project_id)
+        keys = ("n_rows", "null_true_dip", "null_true_dip_dir", "unusable_in_3d", "null_depth")
+        res = {("rows" if k == "n_rows" else k): _int(row, k) for k in keys}
+        return {**res, "over_3d_cap": res["rows"] > THREE_D_ROW_CAP, "cap": THREE_D_ROW_CAP}
+
+    async def _structure_visual() -> dict[str, Any]:
+        row = await conn.fetchrow(_STRUCTURE_VISUAL_SQL, project.project_id)
+        n = _int(row, "n_rows")
+        return {"rows": n, "null_depth": _int(row, "null_depth"), "over_3d_cap": n > THREE_D_ROW_CAP, "cap": THREE_D_ROW_CAP}
+
+    out["structure"] = await guarded(conn, ["silver.structure", collars], _structure, what="visibility:structure")
+    out["structure_measurements_visual"] = await guarded(
+        conn, ["gold.structure_measurements_visual"], _structure_visual, what="visibility:structure_visual"
+    )
+
+    # 4. Samples and the gold tables with no writer --------------------------------------------
+    async def _samples() -> dict[str, Any]:
+        row = await conn.fetchrow(_SAMPLES_SQL, project.project_id)
+        res = {
+            "rows": _int(row, "n_rows"),
+            "null_assays": _int(row, "null_assays"),
+            "empty_object": _int(row, "empty_object"),
+            "non_empty": _int(row, "non_empty"),
+        }
+        # The 3D payload takes WHERE commodity_assays IS NOT NULL ... LIMIT 5000.
+        loaded = res["empty_object"] + res["non_empty"]
+        return {**res, "non_null": loaded, "cap": THREE_D_ROW_CAP, "over_3d_cap": loaded > THREE_D_ROW_CAP}
+
+    out["samples"] = await guarded(conn, ["silver.samples", collars], _samples, what="visibility:samples")
+
+    writerless: dict[str, Any] = {}
+    for key, table in (
+        ("assay_composites", "gold.assay_composites"),
+        ("significant_intersections", "gold.significant_intersections"),
+    ):
+
+        async def _rows(table: str = table) -> dict[str, Any]:
+            n = _int(await conn.fetchrow(_gold_rowcount_sql(table), project.project_id), "n_rows")
+            return {"rows": n, "note": "no writer in the codebase" if n == 0 else None}
+
+        writerless[key] = await guarded(conn, [table, collars], _rows, what=f"visibility:{key}")
+    out["gold_tables_without_writer"] = writerless
+
+    # 5. The LOGS / SECTION hole picker ---------------------------------------------------------
+    async def _absent_from_picker() -> dict[str, Any]:
+        return await _hole_list(conn, f"{_NO_CURVES_AT_ALL} AND NOT {_HAS_PICKER_BANDS}", project)
+
+    async def _hidden_by_cap() -> dict[str, Any]:
+        return {
+            "count": int(await conn.fetchval(_PICKER_HIDDEN_SQL, project.project_id) or 0),
+            "cap": MAX_WORKSPACE_COLLARS,
+        }
+
+    picker = ["silver.well_log_curves", collars, vis]
+    out["absent_from_logs_picker"] = await guarded(conn, picker, _absent_from_picker, what="visibility:picker")
+    out["picker_hidden_by_collar_cap"] = await guarded(conn, picker, _hidden_by_cap, what="visibility:picker_cap")
+    return out
+
+
+# --- findings: facts only, shared by the headlines and the corpus overview ----------------------
+
+
+def _count_of(res: Any) -> int:
+    return int(res["count"]) if _sub_ok(res) else 0
+
+
+def placement_findings(r: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for key, text in (
+        ("null_easting_or_northing", "collar(s) have NULL easting or northing (the 3D view cannot place them)"),
+        (
+            "degree_looking_easting_northing",
+            "collar(s) have degree-looking easting/northing (|easting|<=180, |northing|<=90): the 3D view reads "
+            "them as metres and puts them at the scene origin",
+        ),
+        ("null_elevation", "collar(s) have NULL elevation (3D plots them at z=0)"),
+        ("no_orientation_and_no_surveys", "hole(s) have no surveys and no collar azimuth/dip (no trace, drawn vertical in 3D)"),
+    ):
+        if _count_of(r.get(key)) > 0:
+            out.append(f"{r[key]['count']} {text}.")
+    off = r.get("easting_northing_vs_geom_4326", {})
+    if _sub_ok(off) and off.get("over_threshold"):
+        out.append(
+            f"{off['over_threshold']} of {off['compared']} collar(s) have easting/northing more than "
+            f"{off['threshold_m']:g} m from geom_4326 in EPSG:{off['project_crs_epsg']} (max {off['max_m']} m): "
+            "the 2D map and the 3D view disagree about where they are."
+        )
+    ext = r.get("extents", {}).get("tables", {})
+    far = [k for k, v in ext.items() if _sub_ok(v) and v.get("far_from_collars")]
+    if far:
+        out.append(
+            f"Map layer(s) more than {r['extents']['far_km_threshold']:g} km from the collar centroid: "
+            + ", ".join(f"`{k}` ({ext[k]['km_from_collar_centroid']} km)" for k in far)
+        )
+    outside = [k for k, v in ext.items() if _sub_ok(v) and v.get("outside_wgs84")]
+    if outside:
+        out.append(
+            "Geometry outside valid WGS84 (lng -180..180, lat -90..90): "
+            + ", ".join(f"`{k}` x{ext[k]['outside_wgs84']}" for k in outside)
+        )
+    null_geom = [k for k, v in ext.items() if _sub_ok(v) and v.get("null_or_empty_geometry")]
+    if null_geom:
+        out.append(
+            "NULL or empty geometry rows: " + ", ".join(f"`{k}` x{ext[k]['null_or_empty_geometry']}" for k in null_geom)
+        )
+    tr = r.get("trace_start_vs_collar", {})
+    if _sub_ok(tr) and tr.get("over_threshold"):
+        out.append(
+            f"{tr['over_threshold']} of {tr['traces']} drill trace(s) start more than {tr['threshold_m']:g} m from "
+            f"their collar (max {tr['max_m']} m)."
+        )
+    sv = r.get("surveys", {})
+    st = sv.get("stations", {})
+    if _sub_ok(st):
+        if st["dropped_by_desurvey"]:
+            out.append(f"{st['dropped_by_desurvey']} survey station(s) have a NULL azimuth or dip (skipped by the desurvey).")
+        if st["dip_out_of_range"]:
+            out.append(f"{st['dip_out_of_range']} survey station(s) have a dip outside -90..90 (skipped by the desurvey).")
+    if _count_of(sv.get("all_dips_positive")) > 0:
+        out.append(
+            f"{sv['all_dips_positive']['count']} hole(s) have ONLY positive dips: drawn as up-holes "
+            "(dip is negative-down here) — a sign-convention suspect."
+        )
+    if _count_of(sv.get("over_station_cap")) > 0:
+        out.append(
+            f"{sv['over_station_cap']['count']} hole(s) have more than {MAX_SURVEY_STATIONS_PER_HOLE} survey "
+            "stations (thinned in 3D)."
+        )
+    if _count_of(sv.get("multiple_source_files")) > 0:
+        out.append(
+            f"{sv['multiple_source_files']['count']} hole(s) have survey stations from more than one source file "
+            "(each trace uses the most recently written file only)."
+        )
+    return out
+
+
+def visibility_findings(r: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    cap = r.get("collar_cap", {})
+    if _sub_ok(cap) and cap["beyond_cap"]:
+        out.append(
+            f"{cap['total']} collars: {cap['beyond_cap']} are beyond the Workspace cap of {cap['cap']} and are not "
+            "on the page."
+        )
+    first = r.get("first_holes_lithology", {})
+    if _sub_ok(first) and first["three_d_empty_trap"]:
+        out.append(
+            f"3D lithology will be EMPTY: none of the first {first['first_n']} collars by hole_id has a gold "
+            f"lithology band, but {first['project_holes_with_lithology_bands']} hole(s) in the project do."
+        )
+    if _count_of(r.get("holes_over_3d_band_cap")) > 0:
+        out.append(
+            f"{r['holes_over_3d_band_cap']['count']} hole(s) have more than {MAX_INTERVAL_BANDS_PER_HOLE} "
+            "lithology bands (3D shows the first 80)."
+        )
+    if _count_of(r.get("holes_over_strip_band_limit")) > 0:
+        out.append(
+            f"{r['holes_over_strip_band_limit']['count']} hole/kind pair(s) have more than "
+            f"{STRIP_BANDS_PER_KIND_LIMIT} bands."
+        )
+    for key in ("lithology_logs_without_gold_bands", "canonical_lithology_without_gold_bands"):
+        if _count_of(r.get(key)) > 0:
+            label = "silver.lithology_logs" if key.startswith("lithology_logs") else "silver.lithology"
+            out.append(f"{r[key]['count']} hole(s) have `{label}` rows but no gold lithology band.")
+    for key, res in r.get("lithology_rows_promotion_drops", {}).items():
+        if _sub_ok(res) and res["dropped_any"]:
+            out.append(
+                f"{res['dropped_any']} of {res['rows']} `silver.{key}` row(s) are dropped by the promotion "
+                "(NULL depth, to<=from, from<0 or to>=10,000,000)."
+            )
+    st = r.get("structure", {})
+    if _sub_ok(st):
+        if st["unusable_in_3d"]:
+            out.append(f"{st['unusable_in_3d']} of {st['rows']} `silver.structure` row(s) lack true_dip or true_dip_dir (not in 3D).")
+        if st["over_3d_cap"]:
+            out.append(f"`silver.structure` has {st['rows']} rows: 3D loads {st['cap']}.")
+    sv = r.get("structure_measurements_visual", {})
+    if _sub_ok(sv) and sv["over_3d_cap"]:
+        out.append(f"`gold.structure_measurements_visual` has {sv['rows']} rows: 3D loads {sv['cap']}.")
+    sm = r.get("samples", {})
+    if _sub_ok(sm) and sm["over_3d_cap"]:
+        out.append(f"`silver.samples` has {sm['non_null']} rows with commodity_assays: 3D loads {sm['cap']}.")
+    for key, res in r.get("gold_tables_without_writer", {}).items():
+        if _sub_ok(res) and res["rows"] == 0:
+            out.append(f"`gold.{key}` is empty for this project (no writer in the codebase).")
+    if _count_of(r.get("absent_from_logs_picker")) > 0:
+        out.append(
+            f"{r['absent_from_logs_picker']['count']} hole(s) are absent from the LOGS picker (no curves and no "
+            "gold lithology/alteration/mineralization bands)."
+        )
+    if _sub_ok(r.get("picker_hidden_by_collar_cap")) and r["picker_hidden_by_collar_cap"]["count"]:
+        out.append(
+            f"{r['picker_hidden_by_collar_cap']['count']} hole(s) with bands but no curves sit beyond the "
+            f"{MAX_WORKSPACE_COLLARS}-collar cap, so the picker does not list them."
+        )
+    return out
+
+
 @dataclass(frozen=True)
 class CheckSpec:
     key: str
@@ -962,6 +1761,8 @@ CHECKS: tuple[CheckSpec, ...] = (
         ("silver.reports", "silver.document_passages"),
         check_documents,
     ),
+    CheckSpec("placement", "Where the data lands (placement, extents, traces, surveys)", ("silver.collars",), check_placement),
+    CheckSpec("visibility", "Will the UI show it (caps, gold bands, picker)", ("silver.collars",), check_visibility),
 )
 CHECK_KEYS: tuple[str, ...] = tuple(c.key for c in CHECKS)
 
@@ -1067,6 +1868,10 @@ def headlines(checks: dict[str, dict[str, Any]]) -> list[str]:
                 + ", ".join(f"`{f}`" for f in docs["scanned_reports_without_cohere_parse"][:10])
                 + (" …" if len(docs["scanned_reports_without_cohere_parse"]) > 10 else "")
             )
+    if checks.get("placement", {}).get("status") == "ok":
+        out += [f"[placement] {f}" for f in placement_findings(checks["placement"])]
+    if checks.get("visibility", {}).get("status") == "ok":
+        out += [f"[visibility] {f}" for f in visibility_findings(checks["visibility"])]
     errored = errored_paths(checks)
     if errored:
         out.append("Checks that ERRORED (see below): " + ", ".join(f"`{k}`" for k in errored))
@@ -1332,6 +2137,195 @@ def _render_documents(r: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_hole_list(label: str, res: dict[str, Any]) -> list[str]:
+    failure = _render_sub(label, res)
+    if failure:
+        return failure
+    return [f"- {label}: **{res['count']}** (showing up to {res['limit']}): {_ids(res['hole_ids'])}"]
+
+
+def _render_grouped(label: str, res: dict[str, Any]) -> list[str]:
+    failure = _render_sub(label, res)
+    if failure:
+        return failure
+    shown = ", ".join(
+        f"`{h['hole_id']}`" + (f" ({h['kind']})" if "kind" in h else "") + f" x{h['n']}" for h in res["holes"]
+    )
+    return [f"- {label}: **{res['count']}** (showing up to {res['limit']}): {shown or '-'}"]
+
+
+def _render_distances(res: dict[str, Any]) -> list[str]:
+    shown = ", ".join(f"`{h['hole_id']}` {h['distance_m']} m" for h in res["holes"])
+    return [f"  - worst first (up to {res['limit']}): {shown or '-'}"]
+
+
+def _render_placement(r: dict[str, Any]) -> list[str]:
+    lines = ["**Collar placement inputs** (the 3D view uses raw easting/northing as metres, elevation NULL = z 0)", ""]
+    for key, label in (
+        ("null_easting_or_northing", "collars with NULL easting or northing"),
+        ("degree_looking_easting_northing", "collars with degree-looking easting/northing (|e|<=180, |n|<=90)"),
+        ("null_elevation", "collars with NULL elevation"),
+        ("no_orientation_and_no_surveys", "holes with NULL collar azimuth or dip AND no silver.surveys rows"),
+    ):
+        lines += _render_hole_list(label, r[key])
+    off = r["easting_northing_vs_geom_4326"]
+    failure = _render_sub("easting/northing vs geom_4326", off)
+    if failure:
+        lines += failure
+    elif "skipped" in off:
+        lines.append(f"- easting/northing vs geom_4326: not compared ({off['skipped']})")
+    else:
+        lines.append(
+            f"- easting/northing vs geom_4326 re-projected to EPSG:{off['project_crs_epsg']}: "
+            f"{off['compared']} collar(s) compared, **{off['over_threshold']}** more than {off['threshold_m']:g} m apart, "
+            f"max {off['max_m']} m"
+            + ("" if off.get("linear_unit_is_metre", True) else " (the CRS's linear unit is NOT the metre)")
+        )
+        if off["holes"]:
+            lines += _render_distances(off)
+
+    ext = r["extents"]
+    lines += ["", "**Map extents** (WGS84; each table scoped by its own project_id)", ""]
+    rows = []
+    for key, res in ext["tables"].items():
+        if res["status"] != "ok":
+            rows.append((f"`{key}`", "", "", "", "", "", "", _status_line(res)))
+            continue
+        bbox = res["bbox_lng_lat"]
+        rows.append(
+            (
+                f"`{key}`",
+                res["rows"],
+                res["null_or_empty_geometry"],
+                res["outside_wgs84"],
+                ",".join(str(s) for s in res["srids"]),
+                "" if bbox is None else "{} {} .. {} {}".format(*bbox),
+                "" if res["centroid_lng_lat"] is None else "{} {}".format(*res["centroid_lng_lat"]),
+                "" if res["km_from_collar_centroid"] is None else f"{res['km_from_collar_centroid']} km"
+                + (f" **> {ext['far_km_threshold']:g} km**" if res["far_from_collars"] else ""),
+            )
+        )
+    lines += md_table(
+        ["layer", "rows", "NULL/empty geom", "outside WGS84", "SRID", "bbox (min lng lat .. max lng lat)", "centroid lng lat", "from collar centroid"],
+        rows,
+    )
+    lines += ["", f"_{ext['note']}_", "", "**Drill traces vs collars**", ""]
+
+    tr = r["trace_start_vs_collar"]
+    failure = _render_sub("trace start vs collar", tr)
+    if failure:
+        lines += failure
+    else:
+        lines.append(
+            f"- {tr['traces']} trace(s); start more than {tr['threshold_m']:g} m from the collar's geom_4326: "
+            f"**{tr['over_threshold']}**, max {tr['max_m']} m; {tr['no_collar_position']} with a collar that has no geom_4326"
+        )
+        if tr["holes"]:
+            lines += _render_distances(tr)
+        lines.append(f"- {tr['note']}")
+
+    sv = r["surveys"]
+    lines += ["", "**Surveys quality**", "", f"- dip convention used: {sv['dip_convention']}"]
+    st = sv["stations"]
+    lines += _render_sub("survey stations", st) or [
+        f"- {st['stations']} station(s) on {st['holes']} hole(s): NULL azimuth {st['null_azimuth']}, NULL dip "
+        f"{st['null_dip']} ({st['dropped_by_desurvey']} skipped by the desurvey), dip outside -90..90: "
+        f"**{st['dip_out_of_range']}**, azimuth outside 0..360: {st['azimuth_out_of_range']}, "
+        f"up-hole (0 < dip <= 90): {st['up_hole_stations']} station(s) on {st['up_hole_holes']} hole(s)"
+    ]
+    lines += _render_grouped(
+        "holes whose every dip is positive (suspect positive-down file; stations)", sv["all_dips_positive"]
+    )
+    lines += _render_grouped(f"holes with more than {sv['station_cap_in_3d']} stations (stations)", sv["over_station_cap"])
+    lines += _render_grouped("holes whose surveys come from more than one source_file (files)", sv["multiple_source_files"])
+    return lines
+
+
+def _render_visibility(r: dict[str, Any]) -> list[str]:
+    lines: list[str] = ["**The caps**", ""]
+    cap = r["collar_cap"]
+    lines += _render_sub("collars", cap) or [
+        f"- collars: **{cap['total']}**, Workspace cap {cap['cap']}, beyond the cap: **{cap['beyond_cap']}**"
+    ]
+    first = r["first_holes_lithology"]
+    lines += _render_sub("first holes", first) or [
+        f"- of the first {first['first_n']} collars by hole_id ({first['holes_considered']} found): "
+        f"**{first['first_n_with_lithology_bands']}** have gold lithology bands; project-wide "
+        f"**{first['project_holes_with_lithology_bands']}** hole(s) do"
+        + (" — **the 3D lithology view will be EMPTY**" if first["three_d_empty_trap"] else "")
+    ]
+    bands = r["band_caps"]
+    lines += _render_grouped(
+        f"holes with more than {bands['three_d_bands_per_hole']} lithology bands (bands)", r["holes_over_3d_band_cap"]
+    )
+    lines += _render_grouped(
+        f"holes with more than {bands['strip_bands_per_hole_and_kind']} bands of one kind (bands)",
+        r["holes_over_strip_band_limit"],
+    )
+
+    lines += ["", "**gold.drillhole_intervals_visual by interval_kind**", ""]
+    kinds = r["gold_intervals_by_kind"]
+    lines += _render_sub("gold.drillhole_intervals_visual", kinds) or (
+        md_table(["interval_kind", "rows", "holes"], [(k, v["rows"], v["holes"]) for k, v in kinds["kinds"].items()])
+        if kinds["kinds"]
+        else ["- no rows for this project"]
+    )
+
+    lines += ["", "**Silver logs** (rows / holes)", ""]
+    silver_rows = []
+    for key, res in r["silver_logs"].items():
+        silver_rows.append(
+            (f"`silver.{key}`", "", "", _status_line(res)) if res["status"] != "ok" else (f"`silver.{key}`", res["rows"], res["holes"], "")
+        )
+    lines += md_table(["table", "rows", "holes", "note"], silver_rows)
+    lines.append("")
+    lines += _render_hole_list("holes with silver.lithology_logs but ZERO gold lithology bands", r["lithology_logs_without_gold_bands"])
+    lines += _render_hole_list("holes with silver.lithology but ZERO gold lithology bands", r["canonical_lithology_without_gold_bands"])
+    for key, res in r["lithology_rows_promotion_drops"].items():
+        failure = _render_sub(f"silver.{key} rows the promotion drops", res)
+        lines += failure or [
+            f"- `silver.{key}` rows the promotion drops: **{res['dropped_any']}** of {res['rows']} "
+            f"(NULL depth {res['null_depth']}, to<=from {res['to_not_after_from']}, from<0 {res['negative_from']}, "
+            f"to>=10,000,000 {res['to_depth_overflow']})"
+        ]
+
+    lines += ["", "**Structures**", ""]
+    st = r["structure"]
+    lines += _render_sub("silver.structure", st) or [
+        f"- `silver.structure`: {st['rows']} row(s); NULL true_dip {st['null_true_dip']}, NULL true_dip_dir "
+        f"{st['null_true_dip_dir']} ({st['unusable_in_3d']} not drawn in 3D), NULL depth {st['null_depth']}"
+        + (f"; **over the 3D cap of {st['cap']}**" if st["over_3d_cap"] else "")
+    ]
+    sv = r["structure_measurements_visual"]
+    lines += _render_sub("gold.structure_measurements_visual", sv) or [
+        f"- `gold.structure_measurements_visual`: {sv['rows']} row(s), NULL depth {sv['null_depth']}"
+        + (f"; **over the 3D cap of {sv['cap']}**" if sv["over_3d_cap"] else "")
+    ]
+
+    lines += ["", "**Samples and assay tables**", ""]
+    sm = r["samples"]
+    lines += _render_sub("silver.samples", sm) or [
+        f"- `silver.samples`: {sm['rows']} row(s); commodity_assays NULL {sm['null_assays']}, '{{}}' "
+        f"{sm['empty_object']}, non-empty {sm['non_empty']}"
+        + (f"; **{sm['non_null']} non-NULL, over the 3D cap of {sm['cap']}**" if sm["over_3d_cap"] else "")
+    ]
+    for key, res in r["gold_tables_without_writer"].items():
+        lines += _render_sub(f"gold.{key}", res) or [
+            f"- `gold.{key}`: {res['rows']} row(s)" + (f" ({res['note']})" if res["note"] else "")
+        ]
+
+    lines += ["", "**LOGS / SECTION hole picker**", ""]
+    lines += _render_hole_list(
+        "holes absent from the picker (no well_log_curves and no gold lithology/alteration/mineralization bands)",
+        r["absent_from_logs_picker"],
+    )
+    hid = r["picker_hidden_by_collar_cap"]
+    lines += _render_sub("picker cap", hid) or [
+        f"- holes with bands but no curves beyond the {hid['cap']}-collar cap (not listed): **{hid['count']}**"
+    ]
+    return lines
+
+
 _RENDERERS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
     "ingest_progress": _render_ingest_progress,
     "row_counts": _render_row_counts,
@@ -1342,6 +2336,8 @@ _RENDERERS: dict[str, Callable[[dict[str, Any]], list[str]]] = {
     "derived": _render_derived,
     "archive_runs": _render_archive_runs,
     "documents": _render_documents,
+    "placement": _render_placement,
+    "visibility": _render_visibility,
 }
 
 
@@ -1548,6 +2544,8 @@ def _overview_row(result: dict[str, Any]) -> tuple[Any, ...]:
         _n(prog, "runs_total"),
         bad,
         len(result["headlines"]),
+        len(placement_findings(checks["placement"])) if checks.get("placement", {}).get("status") == "ok" else "?",
+        len(visibility_findings(checks["visibility"])) if checks.get("visibility", {}).get("status") == "ok" else "?",
     )
 
 
@@ -1575,6 +2573,8 @@ def render_corpus_markdown(corpus: dict[str, Any]) -> str:
             "ingest runs",
             "runs failed/partial",
             "headlines",
+            "placement findings",
+            "visibility findings",
         ],
         [_overview_row(r) for r in corpus["projects"]],
     )

@@ -58,7 +58,7 @@ on:
         type: boolean
         default: false
       only:
-        description: "Comma-separated check keys to run (empty = all): ingest_progress,row_counts,attribute_tables,collars,coverage,curves,derived,archive_runs,documents"
+        description: "Comma-separated check keys to run (empty = all): ingest_progress,row_counts,attribute_tables,collars,coverage,curves,derived,archive_runs,documents,placement,visibility"
         required: false
         type: string
         default: ""

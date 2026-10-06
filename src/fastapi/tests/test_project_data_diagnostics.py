@@ -49,6 +49,16 @@ ALL_TABLES = {
     "silver.reports",
     "silver.document_passages",
     "silver.ingest_ocr_results",
+    "spatial_ref_sys",
+    "silver.geochemistry",
+    "silver.project_boundaries",
+    "silver.geological_formations",
+    "silver.historic_workings",
+    "silver.seismic_surveys",
+    "silver.alteration",
+    "silver.mineralization",
+    "gold.assay_composites",
+    "gold.significant_intersections",
 }
 
 
@@ -904,6 +914,494 @@ class TestDocuments:
         assert "| image | page_image | (none) | 120 | 120 |" in md
 
 
+# ---------------------------------------------------------------------------
+# Checks 10 and 11: placement and visibility
+# ---------------------------------------------------------------------------
+
+_COLLAR_CENTROID = [-104.0, 58.0]
+
+
+def _extent_row(**kw: Any) -> dict:
+    row: dict[str, Any] = {
+        "n_rows": 12,
+        "null_geom": 0,
+        "outside_wgs84": 0,
+        "min_lng": -104.2,
+        "min_lat": 57.9,
+        "max_lng": -103.8,
+        "max_lat": 58.1,
+        "centroid_lng": _COLLAR_CENTROID[0],
+        "centroid_lat": _COLLAR_CENTROID[1],
+        "srids": [4326],
+    }
+    row.update(kw)
+    return row
+
+
+def _on_table(table: str) -> Callable[[str], bool]:
+    return lambda s: f"FROM {table} t WHERE t.project_id = $1::uuid" in s and "AS srids" in s
+
+
+def _placement_rules(**over: Any) -> list[tuple[Any, Any]]:
+    rules: dict[str, tuple[Any, Any]] = {
+        "null_en": ("c.easting IS NULL OR c.northing IS NULL", _holes("N1")),
+        "degree": ("abs(c.easting) <= 180", _holes("D1", "D2")),
+        "null_elev": ("c.elevation IS NULL", _holes("E1", "E2", "E3")),
+        "orientation": ("c.azimuth IS NULL OR c.dip IS NULL", _holes("O1")),
+        "crs": ("FROM silver.projects pr", {"crs_epsg": 32613, "metre_unit": True, "projected": True}),
+        "offset_list": (
+            _has("ST_MakePoint", "ORDER BY d.dist_m DESC"),
+            [{"hole_id": "FAR1", "dist_m": 812.34567}, {"hole_id": "FAR2", "dist_m": 40.0}],
+        ),
+        "offset_agg": ("count(*) AS compared", {"compared": 10, "over_threshold": 2, "max_m": 812.34567}),
+        "trace_list": (_has("ST_StartPoint", "ORDER BY d.dist_m DESC"), [{"hole_id": "T1", "dist_m": 9.5}]),
+        "trace_agg": (
+            "count(*) AS traces",
+            {"traces": 8, "no_collar_position": 1, "over_threshold": 1, "max_m": 9.5},
+        ),
+        "ext_collars": (_on_table("silver.collars"), _extent_row()),
+        "ext_traces": (_on_table("silver.drill_traces"), _extent_row(n_rows=8)),
+        "ext_features": (
+            _on_table("silver.spatial_features"),
+            _extent_row(n_rows=40, null_geom=2, outside_wgs84=1, centroid_lat=59.0, srids=[4326, 0]),
+        ),
+        "ext_geochem": (_on_table("silver.geochemistry"), _extent_row(n_rows=5, centroid_lat=58.5)),
+        "ext_seismic": (_on_table("silver.seismic_surveys"), _extent_row(n_rows=0, min_lng=None, centroid_lng=None)),
+        "stations": (
+            "count(*) AS stations",
+            {
+                "stations": 300,
+                "holes": 6,
+                "null_azimuth": 4,
+                "null_dip": 3,
+                "dropped_by_desurvey": 6,
+                "dip_out_of_range": 2,
+                "azimuth_out_of_range": 1,
+                "up_hole_stations": 20,
+                "up_hole_holes": 2,
+            },
+        ),
+        "over_cap": ("HAVING count(*) > 100", [{"hole_id": "DEEP", "n": 140, "total": 1}]),
+        "mixed": (
+            "HAVING count(DISTINCT COALESCE(s.source_file",
+            [{"hole_id": "MIX1", "n": 2, "total": 2}, {"hole_id": "MIX2", "n": 3, "total": 2}],
+        ),
+        "positive": ("HAVING min(s.dip) > 0", [{"hole_id": "POS1", "n": 12, "total": 1}]),
+    }
+    rules.update(over)
+    return list(rules.values())
+
+
+def _visibility_rules(**over: Any) -> list[tuple[Any, Any]]:
+    def _silver_count(sql: str, args: tuple) -> dict:
+        table = re.search(r"FROM (\S+) t JOIN", _norm(sql)).group(1)  # type: ignore[union-attr]
+        return {
+            "silver.lithology_logs": {"n_rows": 500, "holes": 20},
+            "silver.lithology": {"n_rows": 480, "holes": 19},
+            "silver.alteration": {"n_rows": 30, "holes": 5},
+        }.get(table, {"n_rows": 0, "holes": 0})
+
+    def _dropped(sql: str, args: tuple) -> dict:
+        base = {"n_rows": 500, "null_depth": 0, "to_not_after_from": 0, "negative_from": 0, "to_depth_overflow": 0}
+        if "silver.lithology_logs t" in _norm(sql):
+            return {**base, "null_depth": 3, "to_not_after_from": 4, "negative_from": 1, "dropped_any": 7}
+        return {**base, "n_rows": 480, "dropped_any": 0}
+
+    rules: dict[str, tuple[Any, Any]] = {
+        "cap": ("SELECT count(*) AS n FROM silver.collars c WHERE", 1250),
+        "first": (
+            "AS project_holes_with_bands",
+            {"holes_considered": 200, "with_bands": 0, "project_holes_with_bands": 14},
+        ),
+        "over_80": (
+            "HAVING count(*) FILTER (WHERE g.interval_kind = 'lithology') > 80",
+            [{"hole_id": "BANDY", "n": 95, "total": 1}],
+        ),
+        "over_1500": (
+            "HAVING count(*) > 1500",
+            [{"hole_id": "HUGE", "kind": "alteration", "n": 1600, "total": 1}],
+        ),
+        "kinds": (
+            "GROUP BY g.interval_kind ORDER BY n_rows",
+            [{"kind": "lithology", "n_rows": 400, "holes": 14}, {"kind": "sample_window", "n_rows": 90, "holes": 8}],
+        ),
+        "silver_counts": ("count(DISTINCT t.collar_id) AS holes", _silver_count),
+        "logs_no_gold": ("FROM silver.lithology_logs lg", _holes("NOGOLD1", "NOGOLD2")),
+        "canon_no_gold": ("FROM silver.lithology lc", []),
+        "dropped": ("AS dropped_any", _dropped),
+        "structure": (
+            "AS unusable_in_3d",
+            {"n_rows": 6000, "null_true_dip": 10, "null_true_dip_dir": 12, "unusable_in_3d": 15, "null_depth": 0},
+        ),
+        "structure_visual": ("AS null_depth FROM gold.structure_measurements_visual t", {"n_rows": 40, "null_depth": 0}),
+        "samples": ("AS empty_object", {"n_rows": 7000, "null_assays": 100, "empty_object": 900, "non_empty": 6000}),
+        "composites": ("FROM gold.assay_composites t", {"n_rows": 0}),
+        "intersections": ("FROM gold.significant_intersections t", {"n_rows": 12}),
+        "picker": (
+            _has("NOT EXISTS (SELECT 1 FROM silver.well_log_curves wc", "count(*) OVER () AS total"),
+            _holes("LOST1", "LOST2", "LOST3"),
+        ),
+        "picker_hidden": ("r.rn > 1000", 4),
+    }
+    rules.update(over)
+    return list(rules.values())
+
+
+class TestHaversine:
+    def test_known_distances(self) -> None:
+        assert pdd.haversine_km(-104.0, 58.0, -104.0, 58.0) == 0.0
+        assert pdd.haversine_km(-104.0, 58.0, -104.0, 59.0) == pytest.approx(111.2, abs=0.3)
+        assert pdd.haversine_km(0.0, 0.0, 180.0, 0.0) == pytest.approx(20015.1, abs=1.0)
+
+
+class TestPlacement:
+    def test_the_full_picture(self) -> None:
+        out = _run(pdd.check_placement(FakeConn(rules=_placement_rules()), _project()))
+        assert out["null_easting_or_northing"] == {"status": "ok", "count": 1, "hole_ids": ["N1"], "limit": 50}
+        assert out["degree_looking_easting_northing"]["hole_ids"] == ["D1", "D2"]
+        assert out["null_elevation"]["count"] == 3
+        assert out["no_orientation_and_no_surveys"]["hole_ids"] == ["O1"]
+        off = out["easting_northing_vs_geom_4326"]
+        assert (off["project_crs_epsg"], off["compared"], off["over_threshold"], off["max_m"]) == (32613, 10, 2, 812.346)
+        assert off["holes"][0] == {"hole_id": "FAR1", "distance_m": 812.346}
+        tr = out["trace_start_vs_collar"]
+        assert (tr["traces"], tr["over_threshold"], tr["max_m"], tr["no_collar_position"]) == (8, 1, 9.5, 1)
+        assert tr["holes"] == [{"hole_id": "T1", "distance_m": 9.5}]
+        st = out["surveys"]["stations"]
+        assert st["dropped_by_desurvey"] == 6 and st["dip_out_of_range"] == 2 and st["up_hole_holes"] == 2
+        assert out["surveys"]["over_station_cap"]["holes"] == [{"hole_id": "DEEP", "n": 140}]
+        assert out["surveys"]["multiple_source_files"]["count"] == 2
+        assert out["surveys"]["all_dips_positive"]["holes"][0]["hole_id"] == "POS1"
+        assert "negative = below horizontal" in out["surveys"]["dip_convention"]
+
+    def test_extents_distance_from_the_collar_centroid_and_the_100_km_flag(self) -> None:
+        tables = _run(pdd.check_placement(FakeConn(rules=_placement_rules()), _project()))["extents"]["tables"]
+        assert tables["collars"]["km_from_collar_centroid"] is None  # the anchor itself
+        assert tables["drill_traces"]["km_from_collar_centroid"] == 0.0
+        assert tables["drill_traces"]["far_from_collars"] is False
+        feats = tables["spatial_features"]
+        assert feats["km_from_collar_centroid"] == pytest.approx(111.2, abs=0.3) and feats["far_from_collars"] is True
+        assert (feats["rows"], feats["null_or_empty_geometry"], feats["outside_wgs84"]) == (40, 2, 1)
+        assert feats["srids"] == [0, 4326]
+        assert tables["geochemistry"]["far_from_collars"] is False
+        assert tables["geochemistry"]["km_from_collar_centroid"] == pytest.approx(55.6, abs=0.3)
+        assert tables["collars"]["bbox_lng_lat"] == [-104.2, 57.9, -103.8, 58.1]
+        # an empty table has no bbox and no centroid, and is neither far nor near
+        seismic = tables["seismic_surveys"]
+        assert seismic["bbox_lng_lat"] is None and seismic["centroid_lng_lat"] is None
+        assert seismic["km_from_collar_centroid"] is None and seismic["far_from_collars"] is False
+
+    def test_a_table_that_does_not_exist_is_reported_per_layer(self) -> None:
+        conn = FakeConn(tables=ALL_TABLES - {"silver.geochemistry", "silver.historic_workings"}, rules=_placement_rules())
+        out = _run(pdd.check_placement(conn, _project()))
+        tables = out["extents"]["tables"]
+        assert tables["geochemistry"] == {"status": "table_absent", "missing_tables": ["silver.geochemistry"]}
+        assert tables["historic_workings"]["status"] == "table_absent"
+        assert tables["collars"]["status"] == "ok" and tables["spatial_features"]["status"] == "ok"
+
+    def test_without_surveys_or_traces_only_those_sub_checks_are_absent(self) -> None:
+        conn = FakeConn(tables=ALL_TABLES - {"silver.surveys", "silver.drill_traces"}, rules=_placement_rules())
+        out = _run(pdd.check_placement(conn, _project()))
+        assert out["no_orientation_and_no_surveys"]["status"] == "table_absent"
+        assert out["trace_start_vs_collar"] == {"status": "table_absent", "missing_tables": ["silver.drill_traces"]}
+        for key in ("stations", "over_station_cap", "multiple_source_files", "all_dips_positive"):
+            assert out["surveys"][key]["status"] == "table_absent", key
+        assert out["null_elevation"]["status"] == "ok" and out["extents"]["tables"]["collars"]["status"] == "ok"
+
+    def test_a_bad_srid_fails_only_the_offset_sub_check(self) -> None:
+        bad = (_has("ST_MakePoint", "count(*) AS compared"), RuntimeError("Invalid SRID: 99999"))
+        conn = FakeConn(rules=[bad, *_placement_rules()])
+        out = _run(pdd.check_placement(conn, _project()))
+        assert out["easting_northing_vs_geom_4326"]["status"] == "error"
+        assert "99999" in out["easting_northing_vs_geom_4326"]["error"]
+        assert out["null_elevation"]["status"] == "ok" and out["trace_start_vs_collar"]["status"] == "ok"
+        assert pdd.errored_paths({"placement": out}) == ["placement.easting_northing_vs_geom_4326"]
+
+    @pytest.mark.parametrize(
+        ("crs_row", "why"),
+        [
+            ({"crs_epsg": None, "metre_unit": None, "projected": None}, "crs_epsg is not set"),
+            ({"crs_epsg": 99999, "metre_unit": None, "projected": None}, "not in spatial_ref_sys"),
+            ({"crs_epsg": 4326, "metre_unit": False, "projected": False}, "geographic CRS"),
+        ],
+    )
+    def test_the_offset_is_skipped_when_the_project_crs_cannot_carry_metres(self, crs_row, why) -> None:
+        conn = FakeConn(rules=_placement_rules(crs=("FROM silver.projects pr", crs_row)))
+        off = _run(pdd.check_placement(conn, _project()))["easting_northing_vs_geom_4326"]
+        assert off["status"] == "ok" and why in off["skipped"] and "compared" not in off
+        assert not any("ST_MakePoint" in s for s in conn.sql)  # no transform was attempted
+        assert "skipped" in "\n".join(pdd._render_placement(_run(pdd.check_placement(conn, _project()))))  # noqa: SIM300
+
+    def test_the_sql_is_scoped_capped_and_reads_the_right_columns(self) -> None:
+        conn = FakeConn(rules=_placement_rules())
+        _run(pdd.check_placement(conn, _project()))
+        norm = [_norm(s) for s in conn.sql]
+        offset = next(s for s in norm if "count(*) AS compared" in s)
+        assert "ST_Transform(c.geom_4326, $2::int)" in offset and "ST_MakePoint(c.easting, c.northing)" in offset
+        assert "d.dist_m > 25.0" in offset and "c.project_id = $1::uuid" in offset
+        offset_args = conn.args[conn.sql.index(next(s for s in conn.sql if "count(*) AS compared" in s))]
+        assert offset_args == (_PID, 32613)
+        trace = next(s for s in norm if "count(*) AS traces" in s)
+        assert "ST_StartPoint(t.geom)::geography" in trace and "c.geom_4326::geography" in trace
+        assert "d.dist_m > 5.0" in trace and "t.project_id = $1::uuid AND c.project_id = $1::uuid" in trace
+        for s in norm:
+            if "ORDER BY d.dist_m DESC" in s:
+                assert s.endswith("LIMIT 50")
+        seismic = next(s for s in norm if "FROM silver.seismic_surveys t" in s)
+        assert "ST_Transform(t.bbox, 4326)" in seismic and "ST_SRID(t.bbox) IN (0, 4326)" in seismic
+        assert "t.project_id = $1::uuid" in seismic
+        # collar-keyed survey queries go through silver.collars
+        stats = next(s for s in norm if "count(*) AS stations" in s)
+        assert "JOIN silver.collars c ON c.collar_id = s.collar_id" in stats and "c.project_id = $1::uuid" in stats
+
+    def test_render_shows_ids_distances_extents_and_the_dip_convention(self) -> None:
+        out = _run(pdd.check_placement(FakeConn(rules=_placement_rules()), _project()))
+        md = "\n".join(pdd._render_placement(out))
+        assert "`D1`, `D2`" in md and "`N1`" in md
+        assert "`FAR1` 812.346 m, `FAR2` 40.0 m" in md
+        assert "**2** more than 25 m apart, max 812.346 m" in md
+        assert "| `spatial_features` | 40 | 2 | 1 | 0,4326 |" in md and "**> 100 km**" in md
+        assert "| `seismic_surveys` | 0 | 0 | 0 | 4326 |" in md
+        assert "`T1` 9.5 m" in md and "trace_quality buckets are reported under check 5" in md
+        assert "dip convention used: negative = below horizontal" in md
+        assert "`DEEP` x140" in md and "`MIX2` x3" in md and "`POS1` x12" in md
+
+    def test_render_reports_a_failed_or_absent_sub_check_in_place(self) -> None:
+        conn = FakeConn(
+            tables=ALL_TABLES - {"silver.surveys"},
+            rules=_placement_rules(null_elev=("c.elevation IS NULL", RuntimeError("column c.elevation does not exist"))),
+        )
+        md = "\n".join(pdd._render_placement(_run(pdd.check_placement(conn, _project()))))
+        assert "**check failed:** `RuntimeError: column c.elevation does not exist`" in md
+        assert "**table absent:** `silver.surveys`" in md
+
+    def test_findings_are_facts_only(self) -> None:
+        out = _run(pdd.check_placement(FakeConn(rules=_placement_rules()), _project()))
+        text = "\n".join(pdd.placement_findings(out))
+        assert "1 collar(s) have NULL easting or northing" in text
+        assert "degree-looking" in text and "2 collar(s)" in text
+        assert "2 of 10 collar(s) have easting/northing more than 25 m from geom_4326 in EPSG:32613 (max 812.346 m)" in text
+        assert "`spatial_features` (111.2 km)" in text
+        assert "`spatial_features` x1" in text  # outside WGS84
+        assert "1 of 8 drill trace(s) start more than 5 m from their collar (max 9.5 m)" in text
+        assert "6 survey station(s) have a NULL azimuth or dip" in text and "outside -90..90" in text
+        assert "ONLY positive dips" in text and "more than one source file" in text
+
+    def test_nothing_to_report_gives_no_findings(self) -> None:
+        out = _run(pdd.check_placement(FakeConn(), _project()))  # every query answers empty / 0 / None
+        assert pdd.placement_findings(out) == []
+        assert out["easting_northing_vs_geom_4326"]["skipped"] == "silver.projects.crs_epsg is not set"
+        assert out["extents"]["tables"]["collars"]["rows"] == 0
+
+
+class TestVisibility:
+    def test_the_full_picture(self) -> None:
+        out = _run(pdd.check_visibility(FakeConn(rules=_visibility_rules()), _project()))
+        assert out["collar_cap"] == {"status": "ok", "total": 1250, "cap": 1000, "beyond_cap": 250}
+        first = out["first_holes_lithology"]
+        assert (first["first_n_with_lithology_bands"], first["project_holes_with_lithology_bands"]) == (0, 14)
+        assert first["three_d_empty_trap"] is True and first["first_n"] == 200
+        assert out["holes_over_3d_band_cap"]["holes"] == [{"hole_id": "BANDY", "n": 95}]
+        assert out["holes_over_strip_band_limit"]["holes"] == [{"hole_id": "HUGE", "n": 1600, "kind": "alteration"}]
+        assert out["gold_intervals_by_kind"]["kinds"]["lithology"] == {"rows": 400, "holes": 14}
+        assert out["silver_logs"]["lithology_logs"] == {"status": "ok", "rows": 500, "holes": 20}
+        assert out["silver_logs"]["mineralization"] == {"status": "ok", "rows": 0, "holes": 0}
+        assert out["lithology_logs_without_gold_bands"]["hole_ids"] == ["NOGOLD1", "NOGOLD2"]
+        assert out["canonical_lithology_without_gold_bands"]["count"] == 0
+        drops = out["lithology_rows_promotion_drops"]
+        assert drops["lithology_logs"]["dropped_any"] == 7 and drops["lithology"]["dropped_any"] == 0
+        assert drops["lithology_logs"]["rows"] == 500 and drops["lithology_logs"]["null_depth"] == 3
+        assert out["structure"]["unusable_in_3d"] == 15 and out["structure"]["over_3d_cap"] is True
+        assert out["structure_measurements_visual"] == {
+            "status": "ok",
+            "rows": 40,
+            "null_depth": 0,
+            "over_3d_cap": False,
+            "cap": 5000,
+        }
+        smp = out["samples"]
+        assert (smp["null_assays"], smp["empty_object"], smp["non_empty"], smp["non_null"]) == (100, 900, 6000, 6900)
+        assert smp["over_3d_cap"] is True
+        assert out["gold_tables_without_writer"]["assay_composites"]["note"] == "no writer in the codebase"
+        assert out["gold_tables_without_writer"]["significant_intersections"] == {"status": "ok", "rows": 12, "note": None}
+        assert out["absent_from_logs_picker"]["hole_ids"] == ["LOST1", "LOST2", "LOST3"]
+        assert out["picker_hidden_by_collar_cap"] == {"status": "ok", "count": 4, "cap": 1000}
+
+    def test_no_trap_when_the_first_200_have_bands_or_nothing_has(self) -> None:
+        ok = {"holes_considered": 200, "with_bands": 12, "project_holes_with_bands": 14}
+        empty = {"holes_considered": 200, "with_bands": 0, "project_holes_with_bands": 0}
+        for row in (ok, empty):
+            rules = _visibility_rules(first=("AS project_holes_with_bands", row))
+            out = _run(pdd.check_visibility(FakeConn(rules=rules), _project()))
+            assert out["first_holes_lithology"]["three_d_empty_trap"] is False
+
+    def test_the_first_200_are_taken_in_the_controllers_order(self) -> None:
+        conn = FakeConn(rules=_visibility_rules())
+        _run(pdd.check_visibility(conn, _project()))
+        sql = next(_norm(s) for s in conn.sql if "AS project_holes_with_bands" in s)
+        assert "ORDER BY c.hole_id, c.collar_id LIMIT 200" in sql and "g1.interval_kind = 'lithology'" in sql
+        hidden = next(_norm(s) for s in conn.sql if "r.rn > 1000" in s)
+        assert "row_number() OVER (ORDER BY c.hole_id, c.collar_id)" in hidden
+
+    def test_the_sql_is_scoped_and_lists_are_capped(self) -> None:
+        conn = FakeConn(rules=_visibility_rules())
+        _run(pdd.check_visibility(conn, _project()))
+        for sql, args in zip(conn.sql, conn.args, strict=True):
+            if "to_regclass" in sql:
+                continue
+            norm = _norm(sql)
+            assert "$1::uuid" in norm and args == (_PID,), norm
+            if "HAVING" in norm or "count(*) OVER () AS total" in norm:
+                assert norm.endswith("LIMIT 50"), norm
+            if "gold.drillhole_intervals_visual" in norm or "FROM silver." in norm:
+                assert "c.project_id = $1::uuid" in norm or "g.project_id = $1::uuid" in norm or "pr.project_id" in norm, norm
+        dropped = next(_norm(s) for s in conn.sql if "FROM silver.lithology t" in s and "AS dropped_any" in s)
+        for fragment in ("t.to_depth <= t.from_depth", "t.from_depth < 0", "t.to_depth >= 10000000", "IS NULL"):
+            assert fragment in dropped
+
+    def test_gold_tables_without_a_writer_say_so_only_when_empty(self) -> None:
+        out = _run(pdd.check_visibility(FakeConn(rules=_visibility_rules()), _project()))
+        findings = "\n".join(pdd.visibility_findings(out))
+        assert "`gold.assay_composites` is empty for this project (no writer in the codebase)" in findings
+        assert "significant_intersections" not in findings
+
+    def test_missing_gold_table_leaves_the_silver_counts(self) -> None:
+        conn = FakeConn(tables=ALL_TABLES - {"gold.drillhole_intervals_visual"}, rules=_visibility_rules())
+        out = _run(pdd.check_visibility(conn, _project()))
+        absent = {"status": "table_absent", "missing_tables": ["gold.drillhole_intervals_visual"]}
+        for key in (
+            "first_holes_lithology",
+            "holes_over_3d_band_cap",
+            "holes_over_strip_band_limit",
+            "gold_intervals_by_kind",
+            "lithology_logs_without_gold_bands",
+            "absent_from_logs_picker",
+        ):
+            assert out[key] == absent, key
+        assert out["silver_logs"]["lithology_logs"]["rows"] == 500
+        assert out["collar_cap"]["status"] == "ok" and out["samples"]["status"] == "ok"
+
+    def test_a_missing_optional_table_is_absent_not_fatal(self) -> None:
+        conn = FakeConn(
+            tables=ALL_TABLES - {"silver.alteration", "silver.lithology", "gold.assay_composites"},
+            rules=_visibility_rules(),
+        )
+        out = _run(pdd.check_visibility(conn, _project()))
+        assert out["silver_logs"]["alteration"]["status"] == "table_absent"
+        assert out["canonical_lithology_without_gold_bands"]["status"] == "table_absent"
+        assert out["lithology_rows_promotion_drops"]["lithology"]["status"] == "table_absent"
+        assert out["lithology_rows_promotion_drops"]["lithology_logs"]["status"] == "ok"
+        assert out["gold_tables_without_writer"]["assay_composites"]["status"] == "table_absent"
+        assert out["gold_tables_without_writer"]["significant_intersections"]["status"] == "ok"
+
+    def test_a_failing_query_fails_only_its_own_sub_check(self) -> None:
+        rules = _visibility_rules(structure=("AS unusable_in_3d", RuntimeError("column t.true_dip does not exist")))
+        out = _run(pdd.check_visibility(FakeConn(rules=rules), _project()))
+        assert out["structure"]["status"] == "error" and "true_dip" in out["structure"]["error"]
+        assert out["structure_measurements_visual"]["status"] == "ok" and out["samples"]["status"] == "ok"
+        assert pdd.errored_paths({"visibility": out}) == ["visibility.structure"]
+
+    def test_render_covers_every_section(self) -> None:
+        out = _run(pdd.check_visibility(FakeConn(rules=_visibility_rules()), _project()))
+        md = "\n".join(pdd._render_visibility(out))
+        assert "collars: **1250**, Workspace cap 1000, beyond the cap: **250**" in md
+        assert "**0** have gold lithology bands; project-wide **14** hole(s) do" in md and "will be EMPTY" in md
+        assert "`BANDY` x95" in md and "`HUGE` (alteration) x1600" in md
+        assert "| lithology | 400 | 14 |" in md and "| `silver.lithology_logs` | 500 | 20 |" in md
+        assert "`NOGOLD1`, `NOGOLD2`" in md
+        assert "`silver.lithology_logs` rows the promotion drops: **7** of 500 (NULL depth 3, to<=from 4, from<0 1" in md
+        assert "6000 row(s); NULL true_dip 10" in md and "over the 3D cap of 5000" in md
+        assert "'{}' 900, non-empty 6000" in md
+        assert "`gold.assay_composites`: 0 row(s) (no writer in the codebase)" in md
+        assert "`LOST1`, `LOST2`, `LOST3`" in md and "not listed): **4**" in md
+
+    def test_render_shows_absent_and_failed_sub_checks_in_place(self) -> None:
+        conn = FakeConn(
+            tables=ALL_TABLES - {"silver.samples"},
+            rules=_visibility_rules(kinds=("GROUP BY g.interval_kind ORDER BY n_rows", RuntimeError("boom"))),
+        )
+        md = "\n".join(pdd._render_visibility(_run(pdd.check_visibility(conn, _project()))))
+        assert "**table absent:** `silver.samples`" in md and "**check failed:** `RuntimeError: boom`" in md
+
+    def test_findings_are_facts_only(self) -> None:
+        out = _run(pdd.check_visibility(FakeConn(rules=_visibility_rules()), _project()))
+        text = "\n".join(pdd.visibility_findings(out))
+        assert "1250 collars: 250 are beyond the Workspace cap of 1000" in text
+        assert "3D lithology will be EMPTY: none of the first 200 collars" in text and "14 hole(s)" in text
+        assert "1 hole(s) have more than 80 lithology bands" in text
+        assert "2 hole(s) have `silver.lithology_logs` rows but no gold lithology band" in text
+        assert "7 of 500 `silver.lithology_logs` row(s) are dropped by the promotion" in text
+        assert "15 of 6000 `silver.structure` row(s) lack true_dip or true_dip_dir" in text
+        assert "`silver.structure` has 6000 rows: 3D loads 5000" in text
+        assert "6900 rows with commodity_assays: 3D loads 5000" in text
+        assert "3 hole(s) are absent from the LOGS picker" in text
+        assert "4 hole(s) with bands but no curves sit beyond the 1000-collar cap" in text
+
+    def test_nothing_to_report_gives_no_free_text_findings(self) -> None:
+        out = _run(pdd.check_visibility(FakeConn(), _project()))
+        findings = pdd.visibility_findings(out)
+        # an empty project: the only facts are the two gold tables with no rows
+        assert findings == [
+            "`gold.assay_composites` is empty for this project (no writer in the codebase).",
+            "`gold.significant_intersections` is empty for this project (no writer in the codebase).",
+        ]
+
+
+class TestPlacementAndVisibilityRun:
+    ARGS = argparse.Namespace(project_slug="red-star", only=["placement", "visibility"])
+
+    def test_only_selects_both_new_checks_and_they_render_and_serialise(self, capsys) -> None:
+        conn = _full_conn()
+        rc = _run(pdd.run(self.ARGS, conn))
+        md, js = _parse(capsys.readouterr().out)
+        assert rc == 0 and list(js["checks"]) == ["placement", "visibility"]
+        assert js["meta"]["checks_errored"] == 0
+        assert "## 10. Where the data lands" in md and "## 11. Will the UI show it" in md
+        assert js["checks"]["placement"]["extents"]["tables"]["spatial_features"]["far_from_collars"] is True
+        assert js["checks"]["visibility"]["first_holes_lithology"]["three_d_empty_trap"] is True
+        heads = "\n".join(js["headlines"])
+        assert "[placement] " in heads and "[visibility] " in heads and "3D lithology will be EMPTY" in heads
+
+    def test_every_new_statement_is_a_select(self) -> None:
+        conn = _full_conn()
+        _run(pdd.run(self.ARGS, conn))
+        assert any("count(*) AS compared" in s for s in conn.sql) and any("AS project_holes_with_bands" in s for s in conn.sql)
+
+    def test_the_corpus_overview_counts_findings_per_project(self, capsys) -> None:
+        conn = _full_conn()
+        conn.rules.insert(0, ("FROM silver.projects p ORDER BY p.slug", [_project_row(slug="alpha-aaaaaaaa")]))
+        _run(pdd.run(argparse.Namespace(all_projects=True, project_slug=None, only=None), conn))
+        md, js = _parse(capsys.readouterr().out)
+        assert "| placement findings | visibility findings |" in md
+        row = next(line for line in md.splitlines() if line.startswith("| alpha-aaaaaaaa |"))
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        place = pdd.placement_findings(js["projects"][0]["checks"]["placement"])
+        visib = pdd.visibility_findings(js["projects"][0]["checks"]["visibility"])
+        assert cells[-2:] == [str(len(place)), str(len(visib))] and len(place) > 0 and len(visib) > 0
+
+    def test_the_overview_shows_a_question_mark_when_the_checks_were_not_run(self, capsys) -> None:
+        conn = _full_conn()
+        conn.rules.insert(0, ("FROM silver.projects p ORDER BY p.slug", [_project_row(slug="alpha-aaaaaaaa")]))
+        _run(pdd.run(argparse.Namespace(all_projects=True, project_slug=None, only=["documents"]), conn))
+        md, _ = _parse(capsys.readouterr().out)
+        row = next(line for line in md.splitlines() if line.startswith("| alpha-aaaaaaaa |"))
+        assert row.rstrip(" |").endswith("| ? | ?")
+
+    def test_the_new_keys_are_accepted_by_only(self) -> None:
+        assert pdd._only("placement,visibility") == ["placement", "visibility"]
+        assert pdd.CHECK_KEYS[-2:] == ("placement", "visibility")
+
+    def test_a_missing_collars_table_marks_both_checks_absent(self) -> None:
+        conn = FakeConn(tables=ALL_TABLES - {"silver.collars"})
+        res = _run(pdd.run_checks(conn, _project(), ["placement", "visibility"]))
+        for key in ("placement", "visibility"):
+            assert res[key] == {
+                "status": "table_absent",
+                "missing_tables": ["silver.collars"],
+                "title": pdd.CHECKS[pdd.CHECK_KEYS.index(key)].title,
+            }
+
+
 class TestOnly:
     def test_only_accepts_known_keys(self) -> None:
         assert pdd._only("documents,row_counts") == ["documents", "row_counts"]
@@ -947,6 +1445,8 @@ def _full_conn(**kw) -> FakeConn:
         ("count(DISTINCT w.collar_id)", [{"curve_name": "GAMMA", "curves": 2, "holes": 2, "total_names": 1}]),
         ("total_groups", []),
         *_document_rules(),
+        *_placement_rules(),
+        *_visibility_rules(),
         ("SELECT count(*) FROM", lambda sql, args: 0 if "silver.surveys t" in sql else 4),
     ]
     return FakeConn(projects_by_scope={None: _project_row()}, rules=rules, **kw)
@@ -983,6 +1483,8 @@ class TestRun:
             "derived",
             "archive_runs",
             "documents",
+            "placement",
+            "visibility",
         }
         assert js["meta"]["checks_errored"] == 0
         for heading in (
@@ -996,6 +1498,8 @@ class TestRun:
             "## 7. Derived",
             "## 8. Archive runs",
             "## 9. Documents, passages and embeddings",
+            "## 10. Where the data lands",
+            "## 11. Will the UI show it",
         ):
             assert heading in md
         assert "Empty for this project" in md and "`silver.surveys`" in md  # surveys count was scripted as 0
