@@ -601,7 +601,6 @@ module = [
     "app.agent.multi_turn_resolver",
     "app.agent.orchestrator",
     "app.agent.project_geometry",
-    "app.agent.query_classification",
     "app.agent.response_assembler",
     "app.agent.schemas.geo_answer",
     "app.agent.tools",

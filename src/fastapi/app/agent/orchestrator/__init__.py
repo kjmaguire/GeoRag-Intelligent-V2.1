@@ -60,17 +60,6 @@ from app.agent.llm_calls import (  # noqa: E402, F401
     _llm_call_counter,
 )
 
-# ---------------------------------------------------------------------------
-# Phase F.6 — query classification + text helpers extracted to a sibling
-# module. The orchestrator re-exports them here so external callers that
-# import `from app.agent.orchestrator import _classify_query` (etc.) keep
-# working. See docs/master_plan_orchestrator_refactor.md.
-# ---------------------------------------------------------------------------
-from app.agent.query_classification import (  # noqa: E402, F401
-    _classify_query,
-    _extract_public_geoscience_hints,
-)
-
 # System-prompt text extracted to a module constant so it can be sent as the
 # cacheable block when LLM_BACKEND=anthropic (Anthropic prompt caching requires
 # stable, large, identical prefixes across requests). See _call_anthropic_llm.

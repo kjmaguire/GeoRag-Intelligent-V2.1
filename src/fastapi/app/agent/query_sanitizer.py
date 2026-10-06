@@ -5,7 +5,7 @@ placed in the user message. It is defence in depth: the system prompt also
 tells the model to ignore override attempts, and retrieved text is fenced
 separately.
 
-This used to live in ``query_classification.py`` beside the keyword
+This used to live in ``query_classification.py`` (deleted 2026-10-06) beside the keyword
 classifier of the retired deterministic orchestrator; that classifier had no
 caller after the 2026-08-04 trim and was deleted in the 2026 full code review.
 """
