@@ -116,37 +116,42 @@ _HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
 def _provider_error_code(exc: Exception) -> ErrorCode | None:
     """Model-provider failures that carry a meaning the user can act on.
 
-    Audit AGT-14: CoherePreStreamError / CohereResponseShapeError (and the
-    Bedrock pre-stream error) are RuntimeErrors whose text matched no
-    branch below, so a provider throttle told the user "An unexpected error
-    occurred. The team has been notified."
+    Audit AGT-14: CoherePreStreamError / CohereResponseShapeError were
+    RuntimeErrors whose text matched no branch below, so a provider throttle
+    told the user "An unexpected error occurred. The team has been notified."
+
+    Bedrock is classified by the botocore ``ClientError`` it re-raises once its
+    pre-stream retries are spent (``llm_bedrock._is_transient``): the adapter
+    never raised a wrapper type, so the ``BedrockPreStreamError`` this used to
+    look for could never match, and a Bedrock 5xx/model-timeout reported as
+    INTERNAL_ERROR.
     """
-    provider_types: list[type] = []
     try:
         from app.agent.llm_cohere import (  # noqa: PLC0415
             CoherePreStreamError,
             CohereResponseShapeError,
         )
 
-        provider_types += [CoherePreStreamError, CohereResponseShapeError]
+        if isinstance(exc, (CoherePreStreamError, CohereResponseShapeError)):
+            status = getattr(exc, "status_code", None)
+            if status is None:
+                m = _HTTP_STATUS_RE.search(str(exc))
+                status = int(m.group(1)) if m else None
+            if status == 429 or "throttl" in str(exc).lower():
+                return ErrorCode.RATE_LIMITED
+            return ErrorCode.LLM_UNAVAILABLE
     except ImportError:  # pragma: no cover — adapter always importable in app
         logger.debug("classify_error: llm_cohere unavailable", exc_info=True)
     try:
-        from app.agent.llm_bedrock import BedrockPreStreamError  # noqa: PLC0415
+        from app.agent.llm_bedrock import _error_code, _is_transient  # noqa: PLC0415
 
-        provider_types.append(BedrockPreStreamError)
+        if _is_transient(exc):
+            if _error_code(exc) == "ThrottlingException":
+                return ErrorCode.RATE_LIMITED
+            return ErrorCode.LLM_UNAVAILABLE
     except ImportError:  # pragma: no cover
         logger.debug("classify_error: llm_bedrock unavailable", exc_info=True)
-
-    if not provider_types or not isinstance(exc, tuple(provider_types)):
-        return None
-    status = getattr(exc, "status_code", None)
-    if status is None:
-        m = _HTTP_STATUS_RE.search(str(exc))
-        status = int(m.group(1)) if m else None
-    if status == 429 or "throttl" in str(exc).lower():
-        return ErrorCode.RATE_LIMITED
-    return ErrorCode.LLM_UNAVAILABLE
+    return None
 
 
 def classify_error(exc: Exception) -> tuple[ErrorCode, str]:

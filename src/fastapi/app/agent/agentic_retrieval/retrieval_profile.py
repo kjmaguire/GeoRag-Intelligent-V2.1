@@ -132,13 +132,6 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
         secondary_tools=["search_public_geoscience"],
         answer_emphasis="exact_citation",
     ),
-    # NOTE (audit 2026-08-14, finding 7): "traverse_knowledge_graph" was
-    # removed from every profile below. Neo4j was removed from the stack
-    # (B1, 2026-07-28) — the tool early-returns an empty
-    # GraphTraversalResult unconditionally, so listing it as a primary tool
-    # only burned an execute-node dispatch and injected a guaranteed-empty
-    # "Neo4j knowledge graph (unavailable)" block into telemetry. Re-add it
-    # here if a graph store ever returns.
     "synthesis": RetrievalProfile(
         intent="synthesis",
         # Broad multi-source — every live retrieval store contributes.

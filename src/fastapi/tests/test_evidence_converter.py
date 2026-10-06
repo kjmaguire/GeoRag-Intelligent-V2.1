@@ -6,7 +6,6 @@ from app.agent.evidence import (
     AssayEvidence,
     CollarEvidence,
     DocumentEvidence,
-    GraphEvidence,
     SpatialEvidence,
 )
 from app.agent.evidence_converter import (
@@ -15,7 +14,6 @@ from app.agent.evidence_converter import (
     extract_assay_evidence,
     extract_collar_evidence,
     extract_document_evidence,
-    extract_graph_evidence,
     extract_spatial_evidence,
 )
 
@@ -246,24 +244,6 @@ def test_spatial_extractor_clamps_unknown_operation_to_within():
 
 
 # ---------------------------------------------------------------------------
-# extract_graph_evidence
-# ---------------------------------------------------------------------------
-
-
-def test_graph_extractor_minimal():
-    payload = [{
-        "node_ids": ["n-1", "n-2"],
-        "relationship_ids": ["r-1"],
-        "path": "(:Project)-[:HAS_DEPOSIT]->(:Deposit)",
-        "relationship_types": ["HAS_DEPOSIT"],
-    }]
-    out = extract_graph_evidence(payload)
-    assert len(out) == 1
-    assert isinstance(out[0], GraphEvidence)
-    assert out[0].path.startswith("(:Project)")
-
-
-# ---------------------------------------------------------------------------
 # Token estimation
 # ---------------------------------------------------------------------------
 
@@ -306,9 +286,6 @@ def test_build_packet_routes_each_tool_to_its_extractor():
              "interval_length_m": 10.0, "commodity": "Au", "value": 1.0,
              "unit": "g/t", "project_id": "p"},
         ]),
-        ("traverse_knowledge_graph", [
-            {"node_ids": ["n"], "path": "(:n)"},
-        ]),
     ]
     packet = build_evidence_packet(
         query_id="q-1",
@@ -319,9 +296,8 @@ def test_build_packet_routes_each_tool_to_its_extractor():
     kinds = [e.kind for e in packet.evidence]
     assert "document" in kinds
     assert "assay" in kinds
-    assert "graph" in kinds
     assert packet.query_id == "q-1"
-    assert packet.tool_plan == "search_documents, query_assay_data, traverse_knowledge_graph"
+    assert packet.tool_plan == "search_documents, query_assay_data"
 
 
 def test_build_packet_computes_remaining_budget():

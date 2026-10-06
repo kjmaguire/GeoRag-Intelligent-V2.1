@@ -116,15 +116,6 @@ def test_decision_profile_carries_evidence_for_all_options() -> None:
     assert "query_assay_data" in p.primary_tools
 
 
-@pytest.mark.parametrize("intent", list(INTENT_LABELS))
-def test_no_profile_lists_dead_graph_tool(intent: Intent) -> None:
-    """Audit 2026-08-14 finding 7: traverse_knowledge_graph early-returns
-    empty (Neo4j removed, B1 2026-07-28) — no profile may list it."""
-    p = profile_for_intent(intent)
-    assert "traverse_knowledge_graph" not in p.primary_tools
-    assert "traverse_knowledge_graph" not in p.secondary_tools
-
-
 # ---------------------------------------------------------------------------
 # Adversarial query rewrite
 # ---------------------------------------------------------------------------
@@ -203,9 +194,8 @@ async def test_execute_node_dispatches_primary_tools(monkeypatch) -> None:
       * ``query_assay_data(ctx, project_id, ...)``
       * ``query_project_overview(ctx, project_id)``
 
-    ``query_downhole_logs`` and ``traverse_knowledge_graph`` require NER
-    (hole_id / entity_name) and are skipped by the dispatcher until the
-    entity-extraction step lands.
+    ``query_downhole_logs`` requires a hole_id and is skipped by the
+    dispatcher when the query names none.
     """
     calls: list[tuple[str, tuple]] = []
 
@@ -233,8 +223,8 @@ async def test_execute_node_dispatches_primary_tools(monkeypatch) -> None:
     monkeypatch.setattr(_tools_mod, "query_spatial_collars", fake_project_id_only, raising=False)
     monkeypatch.setattr(_tools_mod, "query_assay_data", fake_project_id_only, raising=False)
     monkeypatch.setattr(_tools_mod, "query_project_overview", fake_project_id_only, raising=False)
-    # query_downhole_logs and traverse_knowledge_graph are intentionally
-    # skipped by the dispatcher (NER unwired). They must NOT be called.
+    # query_downhole_logs is skipped by the dispatcher (no hole_id in the
+    # query). It must NOT be called.
 
     state = AgenticRetrievalState(query="integrate across the wells", deps=_FakeDeps())
     state = state.model_copy(
@@ -245,17 +235,15 @@ async def test_execute_node_dispatches_primary_tools(monkeypatch) -> None:
     )
     update = await execute_node(state)
     # search_documents + spatial + assay tools should fire (3 of 4 primaries
-    # from the synthesis profile — downhole is skipped pending NER; the dead
-    # graph tool was dropped from the profile entirely, audit 2026-08-14).
+    # from the synthesis profile — downhole is skipped, no hole_id named).
     # query_project_overview from secondary_tools fires too when primary
     # yielded < 3 results (it didn't, so secondary may or may not run).
     tool_names = [name for name, _ in update["tool_results"]]
     assert "search_documents" in tool_names
     assert "query_spatial_collars" in tool_names
     assert "query_assay_data" in tool_names
-    # NER-gated tools are not called.
+    # hole_id-gated tools are not called.
     assert "query_downhole_logs" not in tool_names
-    assert "traverse_knowledge_graph" not in tool_names
 
 
 @pytest.mark.asyncio
@@ -277,7 +265,6 @@ async def test_execute_node_runs_adversarial_pass_for_hypothesis(monkeypatch) ->
     monkeypatch.setattr(_tools_mod, "search_documents", fake_search_documents, raising=False)
     monkeypatch.setattr(_tools_mod, "query_assay_data", fake_project_id_only, raising=False)
     monkeypatch.setattr(_tools_mod, "query_spatial_collars", fake_project_id_only, raising=False)
-    # traverse_knowledge_graph is NER-gated; the dispatcher skips it.
 
     state = AgenticRetrievalState(
         query="What geological models could explain the Cu-Au anomaly?",
@@ -1549,14 +1536,14 @@ async def test_call_tool_safely_matches_real_tool_signatures(monkeypatch) -> Non
     # Per the dispatcher's contract:
     #   * legacy 6 tools get a ``ToolContext(deps)`` as first arg
     #   * search_documents additionally gets the query string
-    #   * downhole / graph traversal are intentionally SKIPPED pending NER
+    #   * downhole logs are SKIPPED when the query names no hole_id
     legacy_tools_invoked = (
         "search_documents",
         "query_spatial_collars",
         "query_assay_data",
         "query_project_overview",
     )
-    legacy_tools_skipped = ("query_downhole_logs", "traverse_knowledge_graph")
+    legacy_tools_skipped = ("query_downhole_logs",)
 
     deps = _FakeDeps(project_id="00000000-0000-0000-0000-000000000001")
 
@@ -1613,16 +1600,15 @@ async def test_call_tool_safely_matches_real_tool_signatures(monkeypatch) -> Non
     for name in legacy_tools_skipped:
         mock = AsyncMock()
         monkeypatch.setattr(_tools_mod, name, mock, raising=False)
-        # "anything" carries no hole_id and no TitleCase/quoted entity, so both
-        # query_downhole_logs (needs hole_id) and traverse_knowledge_graph
-        # (needs entity_name) correctly skip on this input.
+        # "anything" carries no hole_id, so query_downhole_logs correctly
+        # skips on this input.
         result = await _call_tool_safely(name, "anything", deps)
-        assert result is None, f"{name} should be skipped (no entity in query)"
+        assert result is None, f"{name} should be skipped (no hole_id in query)"
         assert mock.await_count == 0, f"{name} must not be invoked"
 
 
 def test_entity_names_from_query_extracts_titlecase_and_quoted() -> None:
-    """Audit 2026-06-28: lightweight entity extraction for the graph tool."""
+    """Audit 2026-06-28: lightweight entity extraction for the public-geoscience search."""
     from app.agent.agentic_retrieval.nodes import _entity_names_from_query
 
     # TitleCase run — leading stopwords ("Tell", "the") dropped.
@@ -1635,32 +1621,6 @@ def test_entity_names_from_query_extracts_titlecase_and_quoted() -> None:
     )
     # Pure-lowercase question → no entity.
     assert _entity_names_from_query("what is the average grade here") == []
-
-
-@pytest.mark.asyncio
-async def test_call_tool_safely_fires_traverse_when_entity_named(monkeypatch) -> None:
-    """Audit 2026-06-28: traverse_knowledge_graph now fires when the query
-    names an entity (previously skipped unconditionally → Neo4j never consulted
-    in agentic chat despite three intent profiles listing it as primary)."""
-    import inspect
-    from unittest.mock import AsyncMock
-
-    import app.agent.tools as _tools_mod
-    from app.agent.agentic_retrieval.nodes import _call_tool_safely
-
-    real_sig = inspect.signature(_tools_mod.traverse_knowledge_graph)
-    mock = AsyncMock(return_value={"entities": [], "count": 0})
-    mock.__signature__ = real_sig  # type: ignore[attr-defined]
-    monkeypatch.setattr(_tools_mod, "traverse_knowledge_graph", mock, raising=False)
-
-    deps = _FakeDeps(project_id="00000000-0000-0000-0000-000000000001")
-    await _call_tool_safely(
-        "traverse_knowledge_graph", "Tell me about the Triple R Deposit", deps
-    )
-    assert mock.await_count == 1, "traverse must fire when an entity is named"
-    call_args, _ = mock.await_args
-    # Dispatch is fn(ctx, entity_name, project_id) — entity_name is 2nd positional.
-    assert call_args[1] == "Triple R Deposit"
 
 
 # ---------------------------------------------------------------------------

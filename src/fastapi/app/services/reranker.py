@@ -56,23 +56,11 @@ Used by the orchestrator to populate answer_runs.reranker_version.
 Operators querying the audit trail can diff the pre-swap rows
 (`bge-reranker-base@*`) against post-swap rows for the same query.
 
-Top-k per query class (spec B6)
---------------------------------
-RERANKER_TOP_K_BY_CLASS maps each spec query class to the number of candidates
-to keep after reranking.  These are intentional defaults -- tweak via Phase C
-benchmarking when golden query numbers are available.
-
-    factual:     20  (moderate depth for factual lookups)
-    spatial:     30  (wider pool -- many collars can be relevant)
-    document:    15  (higher precision for report-section synthesis)
-    computation: 10  (tight -- computation needs the top few exact matches)
-    viz:         30  (spatial visualisation needs a wide candidate pool)
-    unknown:     20  (safe default)
-
 Timeout
 -------
-RERANKER_TIMEOUT_S = 2.0 seconds for a batch of up to 50 candidates on CPU.
-If the reranker exceeds this budget (after one retry) ``search_documents``
+The per-batch budget is ``settings.TIMEOUT_RERANKER_S`` (app/config.py),
+enforced by ``search_documents``. If the reranker exceeds it (after one
+retry) ``search_documents``
 returns ``retrieval_failure="reranker_unavailable"`` and the query fails with
 RETRIEVAL_UNAVAILABLE: an unfiltered RRF answer would bypass the Layer 1
 relevance floor. Only a missing reranker on an explicitly local/dev backend
@@ -139,7 +127,7 @@ _ACTIVE_VERSION: str | None = None
 #
 # ⚠️ NOT DEPLOYED: a 0.6B causal LM doing one forward pass per pair is far
 # slower than the cross_encoder default on CPU and will blow
-# RERANKER_TIMEOUT_S. Run on GPU (RERANKER_DEVICE=cuda, needs VRAM headroom)
+# TIMEOUT_RERANKER_S. Run on GPU (RERANKER_DEVICE=cuda, needs VRAM headroom)
 # and validate against the golden eval before enabling. See manual Ch18 §2
 # reranker note.
 # Default was "cross_encoder" until 2026-09-06, "foundry" until the AWS move
@@ -327,29 +315,6 @@ def active_reranker_version() -> str:
     return RERANKER_VERSION
 
 # ---------------------------------------------------------------------------
-# Per-query-class top-k defaults (spec B6)
-# ---------------------------------------------------------------------------
-
-RERANKER_TOP_K_BY_CLASS: dict[str, int] = {
-    "factual":     20,
-    "spatial":     30,
-    "document":    15,
-    "computation": 10,
-    "viz":         30,
-    "unknown":     20,
-}
-
-# Default for callers that do not supply a query class.
-RERANKER_TOP_K_DEFAULT = 20
-
-# ---------------------------------------------------------------------------
-# Timeout budget for a single reranker batch (seconds, CPU-bound)
-# ---------------------------------------------------------------------------
-
-RERANKER_TIMEOUT_S = 2.0
-
-
-# ---------------------------------------------------------------------------
 # Shared reranker sidecar (2026-06-24)
 # ---------------------------------------------------------------------------
 # Each uvicorn worker used to load its OWN CrossEncoder copy (6 workers → 6×
@@ -358,11 +323,6 @@ RERANKER_TIMEOUT_S = 2.0
 # HTTP proxy to the dedicated single-process `reranker` sidecar that hosts ONE
 # model copy — the workers share it. Unset (the default) keeps the in-process
 # load, so tests and the sidecar itself behave exactly as before.
-RERANKER_SERVICE_URL = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
-# Outer budget for the sidecar HTTP round-trip. Generous on purpose: the
-# orchestrator already wraps the predict() call in its own RERANKER_TIMEOUT_S
-# wait_for, so that fires first and this only guards a wedged sidecar.
-RERANKER_SERVICE_TIMEOUT_S = float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
 
 
 class _RemoteReranker:
@@ -845,19 +805,3 @@ def get_reranker_or_none() -> (
             RERANKER_MODEL_NAME,
         )
         return None
-
-
-def top_k_for_class(query_class: str | None) -> int:
-    """Return the per-query-class reranker top-k.
-
-    Args:
-        query_class: One of the spec query classes ("factual", "spatial",
-                     "document", "computation", "viz", "unknown"), or None
-                     to use the global default.
-
-    Returns:
-        Integer top-k (number of candidates to keep post-rerank).
-    """
-    if query_class is None:
-        return RERANKER_TOP_K_DEFAULT
-    return RERANKER_TOP_K_BY_CLASS.get(query_class, RERANKER_TOP_K_DEFAULT)

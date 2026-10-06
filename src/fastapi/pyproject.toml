@@ -125,8 +125,9 @@ dependencies = [
     "anthropic>=0.100",
     # Phase H4 (2026-05-15) — explicit pins forcing the resolver past the
     # 6 GHSAs surfaced by osv-scanner against the prior transitive
-    # versions. All three are transitive (urllib3 via requests, authlib via
-    # langfuse, python-multipart via fastapi) but we name them directly so
+    # versions. Transitive at the time (urllib3 via requests, python-multipart
+    # via fastapi; authlib via langfuse was dropped 2026-10-06 once nothing
+    # required it) but we name them directly so
     # `uv lock` picks the patched versions:
     #
     #   urllib3            GHSA-mf9v-mfxr-j63j (8.9, HTTP smuggling)        fix 2.7.0
@@ -154,7 +155,6 @@ dependencies = [
     # ceiling was just this file's usual "pin to current major" habit,
     # not a real compatibility constraint — nothing here found needing it.
     "cryptography>=50.0,<51",
-    "authlib>=1.6.12",
     # §04p Phase 1.A — PDF Ingestion Subsystem
     # pikepdf: MPL-2.0 (weak copyleft scoped to pikepdf itself only; does not
     #   affect GeoRAG's proprietary code per §04p license-posture note).
@@ -308,7 +308,6 @@ dependencies = [
     # Master-plan §7 (doc-phase 122) — Reporting + report bundle generation.
     # weasyprint → PDF rendering from HTML+CSS (§7.9 primary). Needs Pango /
     # Cairo system libs (added in docker/fastapi.Dockerfile).
-    # python-docx → DOCX generator. Pure-Python.
     # openpyxl → XLSX generator. Pure-Python.
     # Phase H — bumped from >=63.0,<64.0 to >=68.0,<69.0 to close
     # GHSA-983w-rhvv-gwmv (SSRF protection bypass via HTTP redirect,
@@ -322,7 +321,6 @@ dependencies = [
     # in 70.0 (Kyle approved clearing the open security alerts). The
     # renderer uses only HTML(string=...).write_pdf(stylesheets=[CSS]).
     "weasyprint>=70.0,<71.0",
-    "python-docx>=1.1,<2.0",
     "openpyxl>=3.1,<4.0",
 
     # Doc-phase 179 — LAS file parsing for §04b drillhole ingestion.
@@ -349,19 +347,9 @@ dependencies = [
     # reports 3.4.1 with zero nvidia/nccl/cuda packages installed.
     "xgboost-cpu>=2.1,<4.0; sys_platform == 'linux'",
     "xgboost>=2.1,<4.0; sys_platform != 'linux'",
-    "shap>=0.46,<1.0",
     "scikit-learn>=1.5,<2.0",
-    # 2026-06-23 deps-rot fix: shap transitively depends on numba ->
-    # llvmlite. Without these top-level pins uv backtracks to
-    # `llvmlite==0.36.0` (a 2021 release that doesn't build on Python
-    # 3.13) — observed in the failed --no-cache fastapi build of 2026-06.
-    # llvmlite 0.43 + numba 0.60 are the first versions with Py 3.13
-    # binary wheels on PyPI. Pinning them at the top level overrides
-    # the transitive-constraint backtracking and keeps the resolver
-    # on a wheel-installable path. Bump these when Py 3.14 cutover
-    # forces another floor raise.
-    "llvmlite>=0.43",
-    "numba>=0.60",
+    # shap (and the numba/llvmlite pins it needed) removed 2026-10-06:
+    # nothing imported it.
 ]
 
 [project.optional-dependencies]

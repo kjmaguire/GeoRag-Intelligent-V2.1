@@ -26,7 +26,6 @@ from app.agent.tools import (
     DrillTraceCollar,
     DrillTraceInterval,
     DrillTraceStructure,
-    _downsample_trace_points,
     _parse_linestring_z_points,
     query_drill_traces_3d,
 )
@@ -174,21 +173,6 @@ class TestParseLinestringZPoints:
 
     def test_malformed_returns_empty(self) -> None:
         assert _parse_linestring_z_points("not a linestring") == []
-
-
-class TestDownsampleTracePoints:
-    def test_below_cap_is_noop(self) -> None:
-        pts = [(float(i), float(i), float(i)) for i in range(10)]
-        out = _downsample_trace_points(pts, max_points=20)
-        assert out == pts
-
-    def test_preserves_toe(self) -> None:
-        pts = [(float(i), 0.0, 0.0) for i in range(100)]
-        out = _downsample_trace_points(pts, max_points=5)
-        assert len(out) == 5
-        # First and last must be preserved.
-        assert out[0] == pts[0]
-        assert out[-1] == pts[-1]
 
 
 # ---------------------------------------------------------------------------

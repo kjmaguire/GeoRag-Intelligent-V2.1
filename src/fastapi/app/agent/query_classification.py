@@ -17,8 +17,7 @@ Module contents (all pure, synchronous, no I/O):
   ``_extract_graph_entities``, ``_extract_label_from_query``,
   ``_detect_assay_element``)
 * Temperature selection (``_select_temperature``)
-* Query expansion (``_expand_query``) and sanitization
-  (``_sanitize_query``)
+* Query expansion (``_expand_query``)
 
 This module is intentionally underscore-prefixed for every public symbol
 — that matches the orchestrator's existing convention. The
@@ -641,79 +640,6 @@ def _expand_query(query: str) -> str:
     return expanded
 
 
-_INJECTION_PATTERNS = [
-    r"ignore\s+(all\s+)?(previous|above|prior)\s+(instructions?|rules?|prompts?)",
-    r"(system|admin|root)\s*:\s*",
-    r"you\s+are\s+now\s+",
-    r"forget\s+(everything|all)",
-    r"override\s+(mode|safety|rules?)",
-    r"<\s*/?\s*system\s*>",
-    r"\[\s*INST\s*\]",
-    r"```\s*(system|prompt)",
-    # Eval 13 R3 additions — Markdown image / link exfiltration and
-    # role-redirection attempts that the previous list missed.
-    r"!\[[^\]]*\]\([^)]*\)",
-    r"jailbreak",
-    r"DAN\s+mode",
-    r"pretend\s+(you|to\s+be)",
-    r"act\s+as\s+(a\s+)?(system|developer|admin)",
-]
-
-
-def _sanitize_query(query: str) -> str:
-    """Sanitize user query to mitigate prompt injection attacks.
-
-    Strips known injection patterns while preserving legitimate geological
-    questions. This is defense-in-depth — the system prompt also instructs
-    the LLM to ignore override attempts.
-
-    Eval 13 R3 — also fires a Prometheus counter when ANY pattern
-    matches so the OPS dashboard surfaces the attempt rate.
-    """
-    cleaned = query
-    matches = 0
-    for pattern in _INJECTION_PATTERNS:
-        new_cleaned, n = re.subn(pattern, "", cleaned, flags=re.IGNORECASE)
-        if n > 0:
-            matches += n
-        cleaned = new_cleaned
-
-    # Cap query length (geological questions rarely exceed 500 chars)
-    cleaned = cleaned[:1000].strip()
-
-    if matches:
-        try:
-            from prometheus_client import Counter  # noqa: PLC0415
-
-            global _PROMPT_INJECTION_ATTEMPTS
-            try:
-                _PROMPT_INJECTION_ATTEMPTS  # type: ignore[name-defined]  # noqa: B018
-            except NameError:
-                _PROMPT_INJECTION_ATTEMPTS = Counter(  # type: ignore[assignment]
-                    "georag_prompt_injection_attempts_total",
-                    "Count of queries where the sanitiser stripped at "
-                    "least one known prompt-injection pattern. High "
-                    "rate from one workspace = either user education "
-                    "issue or active probing.",
-                    labelnames=("count_bucket",),
-                )
-            # Bucket so cardinality is bounded: 1, 2-4, 5+
-            bucket = "1" if matches == 1 else "2-4" if matches < 5 else "5+"
-            _PROMPT_INJECTION_ATTEMPTS.labels(count_bucket=bucket).inc()
-        except ImportError:
-            pass
-        logger.warning(
-            "_sanitize_query: stripped %d injection pattern(s) from "
-            "inbound query (length=%d)",
-            matches, len(query),
-        )
-
-    return cleaned if cleaned else query[:500]
-
-
-_PROMPT_INJECTION_ATTEMPTS = None  # type: ignore[assignment]
-
-
 __all__ = [
     # Keyword sets
     "_SPATIAL_KEYWORDS",
@@ -737,5 +663,4 @@ __all__ = [
     "_detect_assay_element",
     "_select_temperature",
     "_expand_query",
-    "_sanitize_query",
 ]

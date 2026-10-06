@@ -10,8 +10,8 @@ ADR-0022 routed all four Cohere capabilities through Bedrock. On 2026-09-15
 that was found not to hold: Command A+ and Parse 5 are **AWS Marketplace
 SageMaker packages**, not Bedrock models, and their instance classes (A100 /
 H100 for Command A+, ~$2.50/h for Parse) bill continuously because a
-Marketplace endpoint has no idle state. ADR-0023 moves chat and parse to
-Cohere's own API and leaves embeddings on Bedrock.
+Marketplace endpoint has no idle state. ADR-0023 moved chat and parse to
+Cohere's own API (embeddings followed under ADR-0025).
 
 Async-native (hard rule 2): httpx's ``AsyncClient``, already a direct
 dependency, so no new package. The streaming path yields to the event loop
@@ -104,7 +104,7 @@ _NON_STREAM_RETRYABLE_EXCEPTIONS = tuple(
 class CoherePreStreamError(RuntimeError):
     """A Cohere failure that happened before any token reached the user.
 
-    Mirrors ``BedrockPreStreamError`` and ``llm_calls._PreStreamTransientError``:
+    Mirrors ``llm_calls._PreStreamTransientError``:
     retrying is safe only while nothing has been streamed. Once a delta has
     been forwarded, a failure propagates as itself so the caller degrades
     rather than emitting a second partial answer on top of the first.

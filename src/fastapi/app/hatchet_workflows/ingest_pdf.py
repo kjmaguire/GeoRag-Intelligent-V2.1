@@ -148,6 +148,9 @@ def _read_stat_bytes(path: str, key: str) -> int:
                 if name == key:
                     return int(value.strip())
     except (OSError, ValueError):
+        # No stat file (not in a cgroup) or an unparsable line: treat the
+        # counter as 0, i.e. fall back to the raw usage figure.
+        log.debug("cgroup memory.stat unreadable: %s (%s)", path, key, exc_info=True)
         return 0
     return 0
 

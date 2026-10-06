@@ -336,7 +336,7 @@ class GeoRAGResponse(BaseModel):
         default=None,
         description=(
             "Model that generated this answer (e.g. "
-            "'Cohere-command-a-plus-05-2026'). Null when no answer-producing "
+            "'command-a-plus-05-2026'). Null when no answer-producing "
             "LLM call ran — refusals and early failures."
         ),
     )

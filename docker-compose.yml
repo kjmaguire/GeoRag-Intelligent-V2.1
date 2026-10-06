@@ -1028,12 +1028,7 @@ services:
       HF_HOME: /tmp/hf_cache
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
-      # Additional caches needed once unstructured[pdf] is in the image.
-      # numba JIT cache + matplotlib config + fontconfig — all default to
-      # $HOME (/var/www) which is read-only for www-data. Without these,
-      # `from unstructured.partition.pdf import partition_pdf` raises
-      # RuntimeError at import time (numba can't write its cache).
-      NUMBA_CACHE_DIR: /tmp/numba_cache
+      # matplotlib config defaults to $HOME (/var/www), read-only for www-data.
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
       # 2026-06-23 sweep — several import-time cache mkdirs (numba,
@@ -1169,7 +1164,6 @@ services:
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       OMP_NUM_THREADS: "10"
       TOKENIZERS_PARALLELISM: "false"
@@ -1241,7 +1235,6 @@ services:
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       OMP_NUM_THREADS: "10"
       TOKENIZERS_PARALLELISM: "false"
@@ -1304,7 +1297,6 @@ services:
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       OMP_NUM_THREADS: "10"
       TOKENIZERS_PARALLELISM: "false"
@@ -1721,7 +1713,6 @@ services:
       HF_HOME: /tmp/hf_cache
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
       # 2026-06-23 sweep — several import-time cache mkdirs (numba,

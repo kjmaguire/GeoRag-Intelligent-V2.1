@@ -30,7 +30,7 @@ class AgenticRetrievalState(BaseModel):
     deps: Any = Field(
         ...,
         description=(
-            "Caller's AgentDeps bundle (pg_pool, neo4j_driver, redis_client, "
+            "Caller's AgentDeps bundle (pg_pool, redis_client, "
             "anthropic_client, openai_http_client, project_id, …). Typed as "
             "Any to avoid a circular import on the orchestrator module."
         ),

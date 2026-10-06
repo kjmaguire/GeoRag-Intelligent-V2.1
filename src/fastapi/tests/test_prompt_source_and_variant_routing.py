@@ -19,7 +19,7 @@ Three defects, one prompt:
 
 3. ``_select_system_prompt`` was called with ``categories=None`` at both
    production call sites, and returns DEFAULT before any branch runs on a falsy
-   ``categories``. NUMERIC, NARRATIVE, GRAPH and ``SYSTEM_PROMPT_ROUTING_ENABLED``
+   ``categories``. NUMERIC, NARRATIVE and ``SYSTEM_PROMPT_ROUTING_ENABLED``
    were dead outside two test modules.
 """
 
@@ -31,8 +31,6 @@ from app.agent.agentic_retrieval.nodes import _categories_from_tool_results
 from app.agent.orchestrator import (
     _SYSTEM_PROMPT_DEFAULT,
     _SYSTEM_PROMPT_DEFAULT_COLON,
-    _SYSTEM_PROMPT_GRAPH,
-    _SYSTEM_PROMPT_GRAPH_COLON,
     _SYSTEM_PROMPT_NARRATIVE,
     _SYSTEM_PROMPT_NARRATIVE_COLON,
     _SYSTEM_PROMPT_NUMERIC,
@@ -55,7 +53,6 @@ from app.agent.tools import (
     DocumentSearchResult,
     DownholeLogsResult,
     DrillTrace3DResult,
-    GraphTraversalResult,
     ProjectOverviewResult,
     ProjectSummaryResult,
     SpatialQueryResult,
@@ -66,13 +63,11 @@ DASH_VARIANTS = (
     _SYSTEM_PROMPT_DEFAULT,
     _SYSTEM_PROMPT_NUMERIC,
     _SYSTEM_PROMPT_NARRATIVE,
-    _SYSTEM_PROMPT_GRAPH,
 )
 COLON_VARIANTS = (
     _SYSTEM_PROMPT_DEFAULT_COLON,
     _SYSTEM_PROMPT_NUMERIC_COLON,
     _SYSTEM_PROMPT_NARRATIVE_COLON,
-    _SYSTEM_PROMPT_GRAPH_COLON,
 )
 
 
@@ -187,7 +182,6 @@ class TestCategoriesComeFromEvidence:
         [
             (DocumentSearchResult, "documents"),
             (PublicGeoscienceSearchResult, "public_geo"),
-            (GraphTraversalResult, "graph"),
             (SpatialQueryResult, "spatial"),
             (CollarDetailsResult, "spatial"),
             (AssayDataResult, "assay"),
@@ -224,12 +218,11 @@ class TestCategoriesComeFromEvidence:
         assert cats == {"documents": True, "assay": True}
 
 
-class TestAllFourVariantsAreReachable:
+class TestAllThreeVariantsAreReachable:
     def _name(self, prompt: str) -> str:
         for name, variant in (
             ("NUMERIC", _SYSTEM_PROMPT_NUMERIC),
             ("NARRATIVE", _SYSTEM_PROMPT_NARRATIVE),
-            ("GRAPH", _SYSTEM_PROMPT_GRAPH),
             ("DEFAULT", _SYSTEM_PROMPT_DEFAULT),
         ):
             if prompt == variant:
@@ -246,16 +239,8 @@ class TestAllFourVariantsAreReachable:
             ({"overview": True}, "NUMERIC"),
             ({"documents": True}, "NARRATIVE"),
             ({"public_geo": True}, "NARRATIVE"),
-            ({"graph": True}, "GRAPH"),
             ({"documents": True, "assay": True}, "DEFAULT"),
-            ({"graph": True, "assay": True}, "DEFAULT"),
             ({"documents": True, "overview": True}, "DEFAULT"),
-            # NOT DEFAULT, deliberately: NARRATIVE's citation discipline wins
-            # when document chunks corroborate graph entities, and GRAPH is
-            # reserved for pure traversal (P1 wave 4). The routing comment in
-            # _select_system_prompt claimed this case fell through to DEFAULT;
-            # it never did.
-            ({"graph": True, "documents": True}, "NARRATIVE"),
         ],
     )
     def test_routing(self, categories: dict, expected: str) -> None:

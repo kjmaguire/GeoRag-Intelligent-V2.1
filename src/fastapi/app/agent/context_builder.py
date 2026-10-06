@@ -36,7 +36,6 @@ from app.agent.tools import (
     AssayDataResult,
     DocumentSearchResult,
     DownholeLogsResult,
-    GraphTraversalResult,
     ProjectOverviewResult,
     SpatialQueryResult,
 )
@@ -92,16 +91,12 @@ def _build_context(
       2. RAW RECORDS — per-tool record listings (collars, intervals, doc
          chunks, PG records). Document chunks pass through _mmr_select_chunks
          so near-duplicate passages are pruned.
-      3. GRAPH CONTEXT — least-trust, narrative relationships. Put last
-         because truncation drops from the tail and graph is the cheapest
-         context to lose; also keeps numeric summaries in the attended zone.
     """
     if not tool_results:
         return "(no data retrieved)"
 
     summary_lines: list[str] = []
     record_lines: list[str] = []
-    graph_lines: list[str] = []
     for idx, (tool_name, result) in enumerate(tool_results):
         bundle = citation_id_bundles[idx] if citation_id_bundles and idx < len(citation_id_bundles) else []
         if isinstance(result, SpatialQueryResult):
@@ -163,37 +158,6 @@ def _build_context(
                 if result.count > doc_cap:
                     record_lines.append(f"  ... ({result.count - doc_cap} additional sections not shown)")
                 record_lines.append("")
-        elif isinstance(result, GraphTraversalResult):
-            if result.count == 0:
-                graph_lines.append("Knowledge graph query returned no matching entities.")
-            else:
-                graph_lines.append(
-                    "[SOURCE: Neo4j Knowledge Graph — extracted entities, confidence=MEDIUM]"
-                )
-                graph_lines.append(
-                    f"Knowledge graph returned {result.count} related entities:"
-                )
-                graph_cap = settings.MAX_CONTEXT_GRAPH_ENTITIES
-                for ent in result.entities[:graph_cap]:
-                    props_str = ", ".join(
-                        f"{k}={v}"
-                        for k, v in ent.properties.items()
-                        if k not in ("project_id", "collar_id", "report_id")
-                        and v not in ("None",)
-                    )
-                    direction_arrow = (
-                        "→" if ent.relationship_direction == "OUTBOUND" else "←"
-                    )
-                    graph_lines.append(
-                        f"  {direction_arrow} [{ent.relationship_type}] "
-                        f"{ent.entity_type}: {ent.name}"
-                        + (f" ({props_str})" if props_str else "")
-                    )
-                if result.count > graph_cap:
-                    graph_lines.append(
-                        f"  ... ({result.count - graph_cap} more entities not shown)"
-                    )
-                graph_lines.append("")
         elif isinstance(result, DownholeLogsResult):
             if result.count == 0:
                 # No lithology intervals on file, but the collar itself may
@@ -431,8 +395,6 @@ def _build_context(
         out.append("")
     if record_lines:
         out.extend(record_lines)
-    if graph_lines:
-        out.extend(graph_lines)
     return "\n".join(out) if out else "(no data retrieved)"
 
 

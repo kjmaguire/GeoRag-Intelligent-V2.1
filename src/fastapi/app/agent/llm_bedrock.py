@@ -97,16 +97,6 @@ _TRANSIENT_ERROR_CODES = frozenset(
 )
 
 
-class BedrockPreStreamError(RuntimeError):
-    """A Bedrock failure that happened before any token reached the user.
-
-    Mirrors ``llm_calls._PreStreamTransientError``: retrying is safe only
-    while nothing has been streamed. Once ``sent_any_token`` flips, a failure
-    propagates as itself so the caller degrades rather than emitting a second
-    partial answer on top of the first.
-    """
-
-
 def _error_code(exc: BaseException) -> str | None:
     response = getattr(exc, "response", None)
     if not isinstance(response, dict):
@@ -367,7 +357,6 @@ async def call_bedrock_llm(
 # re-exported here because tests/test_bedrock_output_cap.py imports them from
 # this module by name, and the extraction is a move, not a behaviour change.
 __all__ = [
-    "BedrockPreStreamError",
     "_MIN_OUTPUT_TOKENS",
     "_SAFETY_MARGIN_TOKENS",
     "call_bedrock_llm",

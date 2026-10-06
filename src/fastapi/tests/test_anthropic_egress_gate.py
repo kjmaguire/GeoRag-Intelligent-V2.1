@@ -88,7 +88,22 @@ def _make_pool(
             raise RuntimeError("simulated asyncpg failure")
         return rows.get(workspace_id)
 
-    conn = SimpleNamespace(fetchrow=_fetchrow)
+    class _TxCM:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *a):
+            return False
+
+    # The gate reads through scoped_connection(), which opens a transaction
+    # and binds the workspace GUC; `executed` records the set_config calls.
+    executed: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def _execute(sql: str, *args: Any):
+        executed.append((sql, args))
+        return "OK"
+
+    conn = SimpleNamespace(fetchrow=_fetchrow, execute=_execute, transaction=lambda: _TxCM())
 
     class _AcquireCM:
         async def __aenter__(self):
@@ -97,7 +112,7 @@ def _make_pool(
         async def __aexit__(self, *a):
             return False
 
-    pool = SimpleNamespace(acquire=MagicMock(return_value=_AcquireCM()))
+    pool = SimpleNamespace(acquire=MagicMock(return_value=_AcquireCM()), executed=executed)
     return pool
 
 
@@ -113,6 +128,18 @@ def _row(extra_payload: dict | str | None) -> dict[str, Any]:
 
 class TestEvaluatePolicy:
     """Direct unit tests on :func:`evaluate_external_llm_policy`."""
+
+    @pytest.mark.asyncio
+    async def test_settings_are_read_under_the_workspace_rls_scope(self):
+        """silver.workspace_settings is FORCE RLS and fail-closed, and the
+        runtime role does not bypass RLS: a read with no ``app.workspace_id``
+        GUC sees no row, so the flag could never be seen as set. The gate must
+        bind the GUC to the workspace it is deciding for."""
+        pool = _make_pool(rows={_WORKSPACE_ALLOWED: _row({"allow_external_llm": True})})
+        await evaluate_external_llm_policy(workspace_id=_WORKSPACE_ALLOWED, pg_pool=pool)
+        assert any(
+            "set_config('app.workspace_id'" in sql and args == (_WORKSPACE_ALLOWED,) for sql, args in pool.executed
+        ), pool.executed
 
     @pytest.mark.asyncio
     async def test_flag_true_is_allowed(self):

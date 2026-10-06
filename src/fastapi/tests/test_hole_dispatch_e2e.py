@@ -171,7 +171,6 @@ async def test_no_collar_details_call_for_non_hole_query(monkeypatch) -> None:
     monkeypatch.setattr(_tools_mod, "query_spatial_collars", noop)
     monkeypatch.setattr(_tools_mod, "query_assay_data", noop)
     monkeypatch.setattr(_tools_mod, "query_downhole_logs", noop)
-    monkeypatch.setattr(_tools_mod, "traverse_knowledge_graph", noop)
     monkeypatch.setattr(_tools_mod, "query_project_overview", noop)
 
     state = AgenticRetrievalState(

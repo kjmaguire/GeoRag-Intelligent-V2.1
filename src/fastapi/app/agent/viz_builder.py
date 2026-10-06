@@ -1,37 +1,24 @@
-"""Viz payload builders — turn tool results into MapPayload.
+"""Drill-hole-ID extraction for the query path.
 
-MapPayload is always populated when a spatial tool call returned collars.
-Carries a WGS84 GeoJSON FeatureCollection (Point per collar) + bounding box
-for auto-zoom. The frontend CollarMap reads this directly without issuing
-any extra API calls.
+Home to extract_hole_ids(), the drill-hole-ID regex extractor used by the
+agentic-retrieval intent classifier, the query classifier and the multi-turn
+resolver. The MapPayload is built in
+``app.agent.agentic_retrieval.nodes._build_chat_card_payloads``.
 
-Also home to extract_hole_ids(), the drill-hole-ID regex extractor used by
-the agentic-retrieval intent classifier and multi-turn resolver.
-
-This module used to also build VizPayload chart hints (build_viz_payload,
-including a graph_viz branch keyed on a Neo4j GraphTraversalResult), but
-that function had zero callers anywhere in the live pipeline — the real
-chart types (coverage_table, assay_histogram, cross_section, etc.) are
-built by app.services.visualizations instead. Removed 2026-07-31 rather
-than left to bit-rot alongside the Neo4j-backed frontend KnowledgeGraph
-component it was the only possible source for.
+This module used to also build MapPayload (``build_map_payload``) and
+VizPayload chart hints (``build_viz_payload``, including a graph_viz branch
+keyed on a Neo4j GraphTraversalResult). Neither had a caller anywhere in the
+live pipeline, so both were removed (build_viz_payload 2026-07-31,
+build_map_payload in the 2026 full code review).
 """
 
 from __future__ import annotations
-
-import logging
-from typing import Any
 
 from app.agent.hole_id_patterns import (
     HOLE_CONTEXT_RE,
     HOLE_ID_RE,
     NUMERIC_HOLE_ID_RE,
 )
-from app.agent.tools import SpatialQueryResult
-from app.models.rag import MapPayload
-
-logger = logging.getLogger(__name__)
-
 
 # Drill-hole ID patterns seen so far in the GeoRAG corpus:
 #   PLS-20-01, PLS-22-08       (Patterson Lake South — letters + 2-group digits)
@@ -53,95 +40,6 @@ logger = logging.getLogger(__name__)
 _HOLE_ID_RE = HOLE_ID_RE
 _NUMERIC_HOLE_ID_RE = NUMERIC_HOLE_ID_RE
 _HOLE_CONTEXT_RE = HOLE_CONTEXT_RE
-
-
-# ---------------------------------------------------------------------------
-# MapPayload builder
-# ---------------------------------------------------------------------------
-
-
-def build_map_payload(spatial_result: SpatialQueryResult | None) -> MapPayload | None:
-    """Build a MapPayload from a SpatialQueryResult.
-
-    Returns None when:
-      - spatial_result is None (spatial tool was not called)
-      - spatial_result has zero collars
-      - No collars have valid longitude/latitude (fallback would crash the map)
-
-    All valid rows are emitted as Point features. Collars without WGS84 coords
-    are dropped from the feature collection — they cannot be rendered on
-    MapLibre without a projection fallback and the frontend does not currently
-    handle UTM. Future work: add an EPSG hint + client-side proj4 conversion.
-    """
-    if spatial_result is None or spatial_result.count == 0:
-        return None
-
-    features: list[dict[str, Any]] = []
-    lons: list[float] = []
-    lats: list[float] = []
-
-    for collar in spatial_result.collars:
-        if collar.longitude is None or collar.latitude is None:
-            continue
-
-        lons.append(collar.longitude)
-        lats.append(collar.latitude)
-
-        features.append(
-            {
-                "type": "Feature",
-                "id": collar.collar_id,
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [collar.longitude, collar.latitude],
-                },
-                "properties": {
-                    "collar_id": collar.collar_id,
-                    "hole_id": collar.hole_id,
-                    "easting": collar.easting,
-                    "northing": collar.northing,
-                    "elevation": collar.elevation,
-                    "total_depth": collar.total_depth,
-                    "hole_type": collar.hole_type,
-                    "azimuth": collar.azimuth,
-                    "dip": collar.dip,
-                    "status": collar.status,
-                    "drill_date": collar.drill_date,
-                },
-            }
-        )
-
-    if not features:
-        logger.info(
-            "build_map_payload: %d collars had no WGS84 coords, returning None",
-            spatial_result.count,
-        )
-        return None
-
-    # Pad the bbox very slightly so points on the edge are not clipped.
-    pad = 0.002
-    bbox = (
-        min(lons) - pad,
-        min(lats) - pad,
-        max(lons) + pad,
-        max(lats) + pad,
-    )
-
-    return MapPayload(
-        layer_id="spatial_collars",
-        layer_type="collar",
-        geojson={
-            "type": "FeatureCollection",
-            "features": features,
-        },
-        bbox=bbox,
-        label=f"Drill collars ({len(features)})",
-    )
-
-
-# ---------------------------------------------------------------------------
-# VizPayload builder
-# ---------------------------------------------------------------------------
 
 
 def extract_hole_ids(query: str) -> list[str]:
@@ -178,4 +76,3 @@ def extract_hole_ids(query: str) -> list[str]:
                 ordered.append(normalised)
 
     return ordered
-

@@ -1,33 +1,22 @@
-"""Deterministic RAG orchestrator — manual tool calls + LLM summarization.
+"""Query-path entry point and system-prompt selection.
 
-Instead of relying on Pydantic AI's tool-routing (which is unreliable with
-Ollama-hosted models like qwen2.5), this orchestrator:
+``run_deterministic_rag`` is the single entry the queries router (and the eval
+harness) call. It parses the request-scoped conversation history, serves or
+fills the short-TTL exact-match Redis response cache, and dispatches to the
+agentic-retrieval LangGraph (``app.agent.agentic_retrieval``), which does the
+classification, tool dispatch, LLM synthesis and the six hallucination guards.
+The legacy hand-rolled tool-dispatch body that gave this module its name was
+deleted 2026-08-04; the name stays because routers and tests import it.
 
-  1. Analyzes the user query with a lightweight keyword classifier to decide
-     which tools to call (usually query_spatial_collars for Milestone 1).
-  2. Calls the tools directly against the real database pools.
-  3. Builds a compact context string from the tool results.
-  4. Makes a SINGLE LLM call with the context and query, asking for a plain
-     English summary.
-  5. Assembles the final GeoRAGResponse from the tool results + LLM text.
-
-This approach is much more reliable than letting the LLM decide when to call
-tools, because small local models consistently struggle with:
-  - Structured tool-call JSON generation
-  - Extracting actual values from tool result dataclasses
-  - Avoiding placeholder fields like "<valid-source-id>"
-
-The trade-off is less flexibility — complex multi-tool queries need explicit
-orchestrator logic — but for Milestone 1 this is the right call.
+This module also owns the system-prompt text (DEFAULT / NUMERIC / NARRATIVE,
+dash and colon citation forms) and ``_select_system_prompt``, and re-exports a
+few helpers that tests import from here.
 """
 
-import asyncio
 import contextlib
 import contextvars
 import logging
-import os  # noqa: F401
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timezone  # noqa: F401
 from typing import Any
 
 from app.agent.deps import AgentDeps
@@ -65,16 +54,10 @@ logger = logging.getLogger(__name__)
 # LLM helpers remain re-exported for existing live callers and tests.
 from app.agent.llm_calls import (  # noqa: E402, F401
     LLMCallBudgetExceeded,
-    WorkspaceQuotaExceeded,  # noqa: F401
-    _build_user_message,
     _call_anthropic_llm,
     _call_llm,
     _call_openai_compatible_llm,
     _llm_call_counter,
-    _resolve_local_llm_fallback_target,
-    assert_workspace_not_suspended,
-    get_run_token_usage,
-    reset_run_token_usage,
 )
 
 # ---------------------------------------------------------------------------
@@ -84,135 +67,9 @@ from app.agent.llm_calls import (  # noqa: E402, F401
 # working. See docs/master_plan_orchestrator_refactor.md.
 # ---------------------------------------------------------------------------
 from app.agent.query_classification import (  # noqa: E402, F401
-    _ASSAY_KEYWORDS,  # noqa: F401
-    _CANONICAL_TYPE_HINTS,  # noqa: F401
-    _COMMODITY_TOKENS_TO_CODE,  # noqa: F401
-    _DOCUMENT_KEYWORDS,  # noqa: F401
-    _DOWNHOLE_KEYWORDS,  # noqa: F401
-    _ELEMENT_KEYWORDS,  # noqa: F401
-    _GEO_SYNONYMS,  # noqa: F401
-    _GRAPH_KEYWORDS,  # noqa: F401
-    _JURISDICTION_ALIASES,  # noqa: F401
-    _LABEL_KEYWORDS,  # noqa: F401
-    _PUBLIC_GEOSCIENCE_KEYWORDS,  # noqa: F401
-    _SPATIAL_KEYWORDS,  # noqa: F401
     _classify_query,
-    _detect_assay_element,
-    _expand_query,
-    _extract_graph_entities,
-    _extract_label_from_query,
-    _extract_public_geoscience_hints,  # noqa: F401
-    _sanitize_query,
-    _select_temperature,
+    _extract_public_geoscience_hints,
 )
-
-# ---------------------------------------------------------------------------
-# Async graph-entity fetch — stays in orchestrator for Phase F.6, scheduled
-# for extraction to `app/agent/graph_entities.py` in Phase F.8 alongside its
-# Neo4j and Redis touch-points. See docs/master_plan_orchestrator_refactor.md.
-# ---------------------------------------------------------------------------
-
-# Always-match lithology codes. These are 3-4 letter geological symbols that
-# appear in queries across all projects and are rare enough in English that
-# false-positives are acceptable. Project-specific entities (deposit names,
-# formation names, QP names) come from Neo4j via fetch_project_graph_entities.
-_UNIVERSAL_GRAPH_ENTITIES: list[str] = ["SST", "CGL", "PGN", "GPT"]
-
-
-async def fetch_project_graph_entities(
-    project_id: str,
-    neo4j_driver: Any,
-    redis_client: Any | None = None,
-    limit: int = 50,
-) -> list[str]:
-    """Return the top-N named entities in this project's subgraph, by in-degree.
-
-    Replaces the previous hardcoded ``_KNOWN_GRAPH_ENTITIES`` list which was
-    scoped to one project (Lazy Edward Bay). Cached in Redis for 15 min so
-    the per-request cost is one GET on the warm path. On cold path the
-    Neo4j round-trip is bounded by ``settings.TIMEOUT_NEO4J_S``.
-
-    On any failure (Redis down, Neo4j timeout, empty graph) the function
-    returns the universal lithology codes so the classifier still produces
-    something — the graph branch degrades gracefully rather than failing.
-    """
-    cache_key = f"georag:graph_entities:v1:{project_id}"
-
-    # ── Redis cache lookup ────────────────────────────────────────────────
-    if redis_client is not None:
-        try:
-            cached = await redis_client.get(cache_key)
-            if cached:
-                import json as _json
-                names = _json.loads(cached)
-                if isinstance(names, list):
-                    return list(names) + _UNIVERSAL_GRAPH_ENTITIES
-        except Exception:
-            logger.debug("fetch_project_graph_entities: redis read failed", exc_info=True)
-
-    # ── Neo4j query ───────────────────────────────────────────────────────
-    # Rank by in-degree. Entities with many relationships are the ones the
-    # user is most likely referring to when they say "the deposit" or "the
-    # formation". Limit is a safeguard against very dense graphs.
-    # Neo4j 2026: length() only accepts PATH; use size() on strings/lists.
-    # Secondary sort by name length (descending) so longer/more-specific
-    # names are tried first by the substring matcher — "Triple R Deposit"
-    # before "Triple R" before "Deposit".
-    #
-    # Doc-phase 188 (Phase F.3) — INVESTIGATED, fully REVERTED.
-    # Hypothesis: 1,100+ Report nodes from OCR ingest were pushing
-    # Formation/Deposit entities past the limit cutoff. Tested two fixes:
-    #   - Report/Publication exclusion: 6/10 → 5/10 (regression — Report
-    #     title tokens were contributing to entity-grounding for location
-    #     queries; removing them hurt "What county and state" which had
-    #     previously been passing).
-    #   - Limit bump (50 → 200): also 6/10 → 5/10 (more entities in
-    #     prompt diluted the entity-grounding signal).
-    # Conclusion: the current entity-resolution surface is well-tuned
-    # for the existing eval question set. Reports ARE useful even as
-    # document references. The real fix for the deposit-type question
-    # is structured-tool wiring (Phase F.4), not entity-list shaping.
-    cypher = (
-        "MATCH (n) "
-        "WHERE n.project_id = $project_id AND n.name IS NOT NULL "
-        "OPTIONAL MATCH (n)-[r]-() "
-        "WITH n.name AS name, count(r) AS degree "
-        "WHERE degree >= 1 "
-        "RETURN DISTINCT name, degree "
-        "ORDER BY degree DESC, size(name) DESC "
-        "LIMIT $limit"
-    )
-
-    names: list[str] = []
-    try:
-        async def _run() -> list[str]:
-            async with neo4j_driver.session() as session:
-                result = await session.run(cypher, project_id=project_id, limit=limit)
-                records = await result.data()
-            return [str(r["name"]) for r in records if r.get("name")]
-
-        names = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_NEO4J_S)
-    except TimeoutError:
-        logger.warning(
-            "fetch_project_graph_entities: timed out after %.1fs project=%s",
-            settings.TIMEOUT_NEO4J_S,
-            project_id,
-        )
-    except Exception:
-        logger.exception("fetch_project_graph_entities: neo4j query failed project=%s", project_id)
-
-    # ── Redis cache write (15 min TTL) ────────────────────────────────────
-    if redis_client is not None and names:
-        try:
-            import json as _json
-            await redis_client.setex(cache_key, 900, _json.dumps(names))
-        except Exception:
-            logger.debug("fetch_project_graph_entities: redis write failed", exc_info=True)
-
-    return names + _UNIVERSAL_GRAPH_ENTITIES
-
-
-
 
 # System-prompt text extracted to a module constant so it can be sent as the
 # cacheable block when LLM_BACKEND=anthropic (Anthropic prompt caching requires
@@ -276,10 +133,6 @@ _SYSTEM_PROMPT_VERSION = 11
 #               for count/aggregate/metadata queries.
 #   NARRATIVE — emphasises citation discipline and paraphrase fidelity
 #               for document-heavy / PGEO queries.
-#   GRAPH     — P1 #18. Used when the classifier flags a graph-traversal
-#               query (deposit → host formation → operator chain queries).
-#               Encourages "name the entities and their relationships
-#               explicitly" answers backed by [GRAPH-X] citations.
 
 _SYSTEM_PROMPT_SHARED_PREAMBLE = _SHARED_PREAMBLE_DASH
 
@@ -408,58 +261,6 @@ about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
 nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
 Give the user something actionable, not a dead end.
 """
-
-_SYSTEM_PROMPT_GRAPH = _SYSTEM_PROMPT_SHARED_PREAMBLE + """
-TASK PROFILE: knowledge-graph traversal.
-The user named a specific entity (deposit, formation, company, qualified person, \
-commodity) and is asking about its relationships. Your answer must:
-  - Lead with the named entity by its canonical name from the graph.
-  - Enumerate the relationships explicitly: direction, type, and the related \
-entity's name. Don't summarise — name the connections.
-  - Cite every relationship claim with [DATA-X] (graph results land in the \
-DATA citation bucket because the node IDs come from PostGIS-backed entity \
-resolution).
-  - When document chunks corroborate a graph relationship, cite both: \
-[DATA-X] for the relationship, [NI43-X] for the supporting prose.
-  - If the named entity is NOT in the graph (no rows returned), say so \
-explicitly — do not infer a non-existent entity from documents alone.
-
-EXAMPLES:
-Q: "What formations does the Triple R deposit sit in?"
-A: "The Triple R deposit hosts at the contact between two formations: the \
-Athabasca Group sandstone (HOSTS_IN) and the underlying basement pelitic gneiss \
-(BASEMENT_OF) [DATA-1]. The Patterson Lake shear zone CROSSES_THROUGH both \
-[DATA-1], a relationship corroborated in Section 7 of the technical report [NI43-1]."
-
-Q: "Which qualified persons signed off on resource estimates for this project?"
-A: "Two QPs signed resource estimates: J. Smith, P.Geo. (SIGNED_OFF on the 2023 \
-estimate) and M. Johnson, P.Eng. (SIGNED_OFF on the 2024 update) [DATA-1]. Both \
-are independent of the issuer per Section 25.3 of the report [NI43-1]."
-
-Q: "What companies have explored the Patterson Lake property?"
-A: "Three companies appear in the operator chain: Fission Uranium Corp. \
-(CURRENT_OPERATOR), Alpha Minerals (ACQUIRED_BY Fission in 2013), and Cameco \
-(EARLIER_HOLDER, divested 2008) [DATA-1]."
-
-Q: "Tell me about the McArthur River deposit."
-A: "I don't have McArthur River in this project's knowledge graph — the entity \
-node isn't present. If you need McArthur as an analog, ask for published \
-descriptions in the technical reports."
-
-Q: "Who's your favourite NHL team?"
-A: "I can only answer geological questions about this project's exploration data."
-
-If retrieval returned no passages, or the passages are genuinely unrelated to \
-the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
-list what topics the retrieved passages DO cover (e.g. "I found passages \
-about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
-nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
-Give the user something actionable, not a dead end.
-"""
-
-# Back-compat alias — existing references throughout the codebase resolve to
-# DEFAULT until they're updated to call select_system_prompt() explicitly.
-_SYSTEM_PROMPT_STATIC = _SYSTEM_PROMPT_DEFAULT
 
 # ---------------------------------------------------------------------------
 # Module 6 Phase B Chunk 2 — Colon-form prompt variants (DRAFT, flag-gated)
@@ -600,55 +401,6 @@ nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
 Give the user something actionable, not a dead end.
 """
 
-_SYSTEM_PROMPT_GRAPH_COLON = _SYSTEM_PROMPT_SHARED_PREAMBLE_COLON + """
-TASK PROFILE: knowledge-graph traversal.
-The user named a specific entity (deposit, formation, company, qualified person, \
-commodity) and is asking about its relationships. Your answer must:
-  - Lead with the named entity by its canonical name from the graph.
-  - Enumerate the relationships explicitly: direction, type, and the related \
-entity's name. Don't summarise — name the connections.
-  - Cite every relationship claim with [DATA:X] (graph results land in the \
-DATA citation bucket because the node IDs come from PostGIS-backed entity \
-resolution).
-  - When document chunks corroborate a graph relationship, cite both: \
-[DATA:X] for the relationship, [NI43:X] for the supporting prose.
-  - If the named entity is NOT in the graph (no rows returned), say so \
-explicitly — do not infer a non-existent entity from documents alone.
-
-EXAMPLES:
-Q: "What formations does the Triple R deposit sit in?"
-A: "The Triple R deposit hosts at the contact between two formations: the \
-Athabasca Group sandstone (HOSTS_IN) and the underlying basement pelitic gneiss \
-(BASEMENT_OF) [DATA:1]. The Patterson Lake shear zone CROSSES_THROUGH both \
-[DATA:1], a relationship corroborated in Section 7 of the technical report [NI43:1]."
-
-Q: "Which qualified persons signed off on resource estimates for this project?"
-A: "Two QPs signed resource estimates: J. Smith, P.Geo. (SIGNED_OFF on the 2023 \
-estimate) and M. Johnson, P.Eng. (SIGNED_OFF on the 2024 update) [DATA:1]. Both \
-are independent of the issuer per Section 25.3 of the report [NI43:1]."
-
-Q: "What companies have explored the Patterson Lake property?"
-A: "Three companies appear in the operator chain: Fission Uranium Corp. \
-(CURRENT_OPERATOR), Alpha Minerals (ACQUIRED_BY Fission in 2013), and Cameco \
-(EARLIER_HOLDER, divested 2008) [DATA:1]."
-
-Q: "Tell me about the McArthur River deposit."
-A: "I don't have McArthur River in this project's knowledge graph — the entity \
-node isn't present. If you need McArthur as an analog, ask for published \
-descriptions in the technical reports."
-
-Q: "Who's your favourite NHL team?"
-A: "I can only answer geological questions about this project's exploration data."
-
-If retrieval returned no passages, or the passages are genuinely unrelated to \
-the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
-list what topics the retrieved passages DO cover (e.g. "I found passages \
-about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
-nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
-Give the user something actionable, not a dead end.
-"""
-
-
 def _select_system_prompt(
     categories: dict[str, Any] | None,
     query: str | None = None,
@@ -660,12 +412,8 @@ def _select_system_prompt(
     not affect the cache hit rate because each variant is a stable text
     constant — Anthropic caches each separately at ~zero extra cost.
 
-    P1 #18 — added GRAPH variant. Picked when the classifier flagged the
-    `graph` bucket AND the query is not also doing heavy document or
-    structured retrieval (those benefit more from the NARRATIVE / NUMERIC
-    citation discipline). When graph appears alongside other signals, the
-    DEFAULT preamble is the safer pick because it doesn't tell the model
-    to lead with the graph entity (which would suppress numeric leads).
+    The GRAPH variant (P1 #18) was removed with the knowledge graph: no
+    tool can produce a graph result any more, so nothing could select it.
 
     Module 6 Phase B Chunk 2 — when CITATION_SPAN_RESOLVER_ENABLED=True,
     select the colon-form prompt variants ([DATA:N] instead of [DATA-N]).
@@ -695,45 +443,24 @@ def _select_system_prompt(
         or categories.get("downhole")
         or categories.get("overview")
     )
-    graph = bool(categories.get("graph"))
-
-    # P1 #18 — pure graph-traversal query: pick GRAPH.
-    if graph and not structured and not doc_heavy:
-        return _maybe_append_oiur(
-            _SYSTEM_PROMPT_GRAPH_COLON if use_colon else _SYSTEM_PROMPT_GRAPH,
-            use_oiur,
-            query=query,
-        )
     # If the query is pure structured-lookup, pick NUMERIC.
-    if structured and not doc_heavy and not graph:
+    if structured and not doc_heavy:
         return _maybe_append_oiur(
             _SYSTEM_PROMPT_NUMERIC_COLON if use_colon else _SYSTEM_PROMPT_NUMERIC,
             use_oiur,
             query=query,
         )
     # If the query is document-heavy (and not also a count-style lookup), pick
-    # NARRATIVE. Deliberately NOT gated on `not graph`: per P1 wave 4, when
-    # document chunks corroborate graph entities NARRATIVE's citation
-    # discipline is what the answer needs, and GRAPH is reserved for pure
-    # traversal questions. See test_wave4_prompt_ux.py::
-    # test_graph_plus_documents_routes_to_narrative — the asymmetry with the
-    # two branches above is the design, not an oversight.
+    # NARRATIVE.
     if doc_heavy and not structured:
         return _maybe_append_oiur(
             _SYSTEM_PROMPT_NARRATIVE_COLON if use_colon else _SYSTEM_PROMPT_NARRATIVE,
             use_oiur,
             query=query,
         )
-    # What actually reaches here: graph + structured, structured + docs, and
-    # anything with all three. DEFAULT — the model's own judgement on the
-    # preamble rules handles these best.
-    #
-    # This comment used to list "graph + docs" here too. It never reached
-    # DEFAULT: the NARRATIVE branch above catches it first, deliberately (P1
-    # wave 4). The claim went unchallenged for months because every
-    # production call site passed categories=None and short-circuited before
-    # any of these branches ran — a comment describing dead code cannot be
-    # contradicted by anything.
+    # What actually reaches here: structured + docs, and nothing recognised.
+    # DEFAULT — the model's own judgement on the preamble rules handles these
+    # best.
     return _maybe_append_oiur(
         _SYSTEM_PROMPT_DEFAULT_COLON if use_colon else _SYSTEM_PROMPT_DEFAULT,
         use_oiur,
@@ -808,115 +535,23 @@ def _maybe_append_oiur(
     return out
 
 
-async def _build_project_facts(
-    project_id: str,
-    pg_pool: Any,
-) -> str | None:
-    """P1 #20 — stable per-project HIGH-CONFIDENCE SUMMARIES.
-
-    Pulls a small set of project-wide aggregates from
-    `silver.mv_collar_summary` (a materialized view refreshed after
-    ingestion by Laravel's DebounceWorkspaceMvRefresh ->
-    /internal/v1/mv-refresh/run, and nightly by the `mv_refresh_silver`
-    Hatchet cron; Dagster is gone). The view pre-aggregates samples and
-    lithology per collar — until 2026-09-29 it joined both straight onto
-    collars and every count here was inflated by the cross product
-    (migration 2026_09_29_210300). These numbers change at most once per
-    day in normal operations, so they earn their own cache_control
-    ephemeral block.
-
-    Why split this from `_build_project_preamble`?
-      - preamble holds NAMES (project, commodity, CRS, top entities)
-        — text properties of the project. Changes only when ingestion
-        adds new entities or the operator renames the project.
-      - facts hold COUNTS (total holes, sample counts, depth aggregates,
-        date range) — numeric properties. Changes after every ingestion.
-    Putting them on separate cache blocks means a daily-ingestion update
-    only invalidates the facts block; the preamble cache stays warm for
-    the full ~5-min ephemeral TTL across multiple user queries.
-
-    Block format mirrors what the system prompt's NUMERIC variant tells
-    the model to "quote verbatim". The model can lift counts directly
-    out of the cached block without re-fetching from PostGIS — which is
-    what makes this a real prompt-cache win and not just a structural one.
-
-    Returns None when the materialized view has no row for this project —
-    the caller omits the block entirely so we don't ship an empty header.
-    """
-    try:
-        async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT
-                    total_collars,
-                    avg_depth,
-                    min_depth,
-                    max_depth,
-                    hole_type_count,
-                    earliest_drill::text   AS earliest_drill,
-                    latest_drill::text     AS latest_drill,
-                    total_samples,
-                    total_litho_intervals
-                FROM silver.mv_collar_summary
-                WHERE project_id = $1::uuid
-                """,
-                project_id,
-            )
-    except Exception:
-        logger.debug("_build_project_facts: mv lookup failed", exc_info=True)
-        return None
-
-    if row is None:
-        return None
-
-    parts: list[str] = [
-        "=== HIGH-CONFIDENCE SUMMARIES (stable per-project; quote verbatim) ===",
-    ]
-    if row.get("total_collars") is not None:
-        parts.append(f"Total drill holes in project: {int(row['total_collars'])}")
-    if row.get("hole_type_count") is not None:
-        parts.append(f"Distinct hole types in programme: {int(row['hole_type_count'])}")
-    if row.get("avg_depth") is not None:
-        parts.append(f"Mean total depth across all holes: {float(row['avg_depth']):.1f} m")
-    if row.get("min_depth") is not None and row.get("max_depth") is not None:
-        parts.append(
-            f"Total-depth range: {float(row['min_depth']):.1f} m to "
-            f"{float(row['max_depth']):.1f} m"
-        )
-    if row.get("earliest_drill") and row.get("latest_drill"):
-        parts.append(
-            f"Drill programme date range: {row['earliest_drill']} to {row['latest_drill']}"
-        )
-    if row.get("total_samples") is not None:
-        parts.append(f"Total assay samples in project: {int(row['total_samples'])}")
-    if row.get("total_litho_intervals") is not None:
-        parts.append(
-            f"Total lithology intervals logged: {int(row['total_litho_intervals'])}"
-        )
-    parts.append("=== END HIGH-CONFIDENCE SUMMARIES ===")
-
-    # If we got here with only the header + footer (every column was NULL),
-    # don't emit an empty block.
-    if len(parts) <= 2:
-        return None
-    return "\n".join(parts)
-
-
 async def _build_project_preamble(
     project_id: str,
     pg_pool: Any,
-    known_entities: list[str] | None = None,
 ) -> str | None:
     """C6 — stable per-project metadata, cached independently of the turn.
 
-    The preamble lists project name, commodity focus, CRS, and up to 20 of
-    the highest-in-degree graph entities. All of these change rarely (new
-    collars / new reports) so putting them behind their own cache_control
-    ephemeral block gives us a near-100% cache hit rate per project, cutting
-    input cost on the second-and-later queries in any session.
+    The preamble lists project name, commodity focus, CRS and region. All of
+    these change rarely, so putting them behind their own cache_control
+    ephemeral block (``project_preamble`` on the LLM call helpers) gives a
+    near-100% cache hit rate per project.
 
     Returns None if the project metadata can't be resolved — the caller
     then omits the preamble block entirely.
+
+    NOTE: no production call site builds this today — the agentic-retrieval
+    nodes pass no ``project_preamble`` to ``_call_llm``. It is kept, with its
+    CRS regression test, as the producer for that parameter.
     """
     try:
         async with pg_pool.acquire() as conn:
@@ -932,31 +567,24 @@ async def _build_project_preamble(
         logger.debug("_build_project_preamble: project lookup failed", exc_info=True)
         row = None
 
-    if row is None and not known_entities:
+    if row is None:
         return None
 
     parts: list[str] = ["=== PROJECT CONTEXT (stable per-project metadata) ==="]
-    if row is not None:
-        name = row.get("project_name") or "unknown"
-        parts.append(f"Project: {name}")
-        if row.get("commodity"):
-            parts.append(f"Commodity focus: {row['commodity']}")
-        # crs_epsg first: crs_datum is free text every project is created
-        # with as "EPSG:32613" (Project::$attributes) whatever EPSG the
-        # geologist chose, so it told the model an Alaska project (Red Star,
-        # EPSG:26904) was in UTM zone 13N (2026-09-30).
-        if row.get("crs_epsg"):
-            parts.append(f"CRS: EPSG:{row['crs_epsg']}")
-        elif row.get("crs_datum"):
-            parts.append(f"CRS: {row['crs_datum']}")
-        if row.get("region"):
-            parts.append(f"Region: {row['region']}")
-    if known_entities:
-        # Top 20 is enough to ground entity resolution without flooding the
-        # preamble. fetch_project_graph_entities already sorts by in-degree
-        # DESC so the caller passes its output through unmodified.
-        top = ", ".join(known_entities[:20])
-        parts.append(f"Top project entities (by relationship count): {top}")
+    name = row.get("project_name") or "unknown"
+    parts.append(f"Project: {name}")
+    if row.get("commodity"):
+        parts.append(f"Commodity focus: {row['commodity']}")
+    # crs_epsg first: crs_datum is free text every project is created
+    # with as "EPSG:32613" (Project::$attributes) whatever EPSG the
+    # geologist chose, so it told the model an Alaska project (Red Star,
+    # EPSG:26904) was in UTM zone 13N (2026-09-30).
+    if row.get("crs_epsg"):
+        parts.append(f"CRS: EPSG:{row['crs_epsg']}")
+    elif row.get("crs_datum"):
+        parts.append(f"CRS: {row['crs_datum']}")
+    if row.get("region"):
+        parts.append(f"Region: {row['region']}")
     parts.append("=== END PROJECT CONTEXT ===")
     return "\n".join(parts)
 
@@ -973,7 +601,6 @@ async def _build_project_preamble(
 from app.agent.context_builder import _build_context  # noqa: E402, F401
 from app.agent.tool_result_helpers import (  # noqa: E402, F401
     _build_collar_aggregates,  # noqa: F401
-    _build_retrieval_summary,
     _is_empty_tool_result,
     _mmr_select_chunks,  # noqa: F401
 )
@@ -1104,7 +731,7 @@ async def run_deterministic_rag(
     If `status_callback` is provided it's awaited with a human-readable
     progress string at each major phase so the SSE stream can keep the
     frontend informed ("Classifying query…" → "Querying PostGIS + Qdrant
-    + Neo4j…" → "Synthesizing answer…"). The callback is optional — pass
+    …" → "Synthesizing answer…"). The callback is optional — pass
     None or omit it when no stream exists (e.g. unit tests).
     """
     # Phase 2 / Step 2.3 — flag-gated entry into the new agentic-retrieval

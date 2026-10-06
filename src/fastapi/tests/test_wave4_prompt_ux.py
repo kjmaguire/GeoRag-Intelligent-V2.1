@@ -1,9 +1,8 @@
 """Wave-4 prompt + UX tests.
 
-Pins four behaviours added in P1 wave 4:
+Pins the behaviours added in P1 wave 4 (the #18 GRAPH variant was removed
+with the knowledge graph):
 
-  * #18 GRAPH variant — _select_system_prompt routes graph-only queries
-        to the new GRAPH prompt; mixed queries fall back to DEFAULT.
   * #19 Refusal example baked into each variant — verified by string
         presence in the constants (cheap canary).
   * #20 Third cache block — _call_anthropic_llm wires supplied project
@@ -11,12 +10,12 @@ Pins four behaviours added in P1 wave 4:
 
 Drift fix (10.1, 2026-04-26): Module 6 Chunk 3.6 introduced a colon-form
 citation variant (CITATION_SPAN_RESOLVER_ENABLED=True). The orchestrator now
-ships both dash-form (_SYSTEM_PROMPT_GRAPH etc.) and colon-form
-(_SYSTEM_PROMPT_GRAPH_COLON etc.) constants and _select_system_prompt returns
+ships both dash-form (_SYSTEM_PROMPT_NUMERIC etc.) and colon-form
+(_SYSTEM_PROMPT_NUMERIC_COLON etc.) constants and _select_system_prompt returns
 the colon form when CITATION_SPAN_RESOLVER_ENABLED=True. The production
 FastAPI container has this flag enabled.
 
-The routing tests previously asserted `_select_system_prompt(cats) == _SYSTEM_PROMPT_GRAPH`
+The routing tests previously asserted `_select_system_prompt(cats) == _SYSTEM_PROMPT_NUMERIC`
 which fails when colon mode is active because a different object is returned
 (same task profile, different citation syntax). Fixed: routing tests now assert
 the correct TASK PROFILE: substring is present, not the exact object identity.
@@ -33,8 +32,6 @@ import pytest
 from app.agent.orchestrator import (
     _SYSTEM_PROMPT_DEFAULT,
     _SYSTEM_PROMPT_DEFAULT_COLON,
-    _SYSTEM_PROMPT_GRAPH,
-    _SYSTEM_PROMPT_GRAPH_COLON,
     _SYSTEM_PROMPT_NARRATIVE,
     _SYSTEM_PROMPT_NARRATIVE_COLON,
     _SYSTEM_PROMPT_NUMERIC,
@@ -45,62 +42,39 @@ from app.agent.orchestrator import (
 
 # Task profile substrings unique to each prompt variant (present in both
 # dash and colon forms — these lines are identical in both variants).
-_TASK_PROFILE_GRAPH = "TASK PROFILE: knowledge-graph traversal."
 _TASK_PROFILE_NUMERIC = "TASK PROFILE: numerical / factoid."
 _TASK_PROFILE_NARRATIVE = "TASK PROFILE: document-anchored narrative."
 
 # DEFAULT prompt has no TASK PROFILE line (it's the generic fallback).
 # We identify it by absence of any named task profile.
 _NAMED_TASK_PROFILES = (
-    _TASK_PROFILE_GRAPH,
     _TASK_PROFILE_NUMERIC,
     _TASK_PROFILE_NARRATIVE,
 )
 
 
 # ---------------------------------------------------------------------------
-# #18 — GRAPH variant routing
+# Variant routing
 # Drift fix (10.1): assert TASK PROFILE substring, not prompt object identity,
 # because _select_system_prompt returns the colon form when
 # CITATION_SPAN_RESOLVER_ENABLED=True.
 # ---------------------------------------------------------------------------
 
 
-def test_graph_only_query_picks_graph_variant():
-    """Pure graph-traversal query — no docs, no spatial — should go to GRAPH."""
-    cats = {"graph": True, "documents": False, "spatial": False, "assay": False, "downhole": False, "public_geoscience": False}
-    result = _select_system_prompt(cats)
-    assert _TASK_PROFILE_GRAPH in result, (
-        f"Expected GRAPH task profile in selected prompt, got a prompt without it. "
-        f"Prompt starts with: {result[:120]!r}"
-    )
-
-
-def test_graph_plus_documents_routes_to_narrative():
-    """Graph + docs → NARRATIVE: citation discipline of NARRATIVE wins when
-    document chunks corroborate graph entities. GRAPH fires only for pure
-    graph-traversal questions."""
-    cats = {"graph": True, "documents": True, "spatial": False, "assay": False, "downhole": False, "public_geoscience": False}
-    result = _select_system_prompt(cats)
-    assert _TASK_PROFILE_NARRATIVE in result, (
-        f"Expected NARRATIVE task profile for graph+docs query, prompt starts with: {result[:120]!r}"
-    )
-
-
-def test_graph_plus_spatial_falls_back_to_default():
-    """Graph + structured numeric — DEFAULT (no named task profile)."""
-    cats = {"graph": True, "spatial": True, "documents": False, "assay": False, "downhole": False, "public_geoscience": False}
+def test_structured_plus_documents_falls_back_to_default():
+    """Structured numeric + documents — DEFAULT (no named task profile)."""
+    cats = {"spatial": True, "documents": True, "assay": False, "downhole": False, "public_geoscience": False}
     result = _select_system_prompt(cats)
     for named in _NAMED_TASK_PROFILES:
         assert named not in result, (
-            f"graph+spatial should fall through to DEFAULT (no named task profile). "
+            f"structured+documents should fall through to DEFAULT (no named task profile). "
             f"Found {named!r} in selected prompt."
         )
 
 
 def test_pure_numeric_still_routes_to_numeric():
-    """Regression — adding GRAPH must not steal NUMERIC routing."""
-    cats = {"spatial": True, "graph": False, "documents": False, "assay": False, "downhole": False, "public_geoscience": False}
+    """Spatial-only evidence routes to NUMERIC."""
+    cats = {"spatial": True, "documents": False, "assay": False, "downhole": False, "public_geoscience": False}
     result = _select_system_prompt(cats)
     assert _TASK_PROFILE_NUMERIC in result, (
         f"Expected NUMERIC task profile for spatial-only query, prompt starts with: {result[:120]!r}"
@@ -108,8 +82,8 @@ def test_pure_numeric_still_routes_to_numeric():
 
 
 def test_pure_documents_still_routes_to_narrative():
-    """Regression — adding GRAPH must not steal NARRATIVE routing."""
-    cats = {"documents": True, "graph": False, "spatial": False, "assay": False, "downhole": False, "public_geoscience": False}
+    """Document-only evidence routes to NARRATIVE."""
+    cats = {"documents": True, "spatial": False, "assay": False, "downhole": False, "public_geoscience": False}
     result = _select_system_prompt(cats)
     assert _TASK_PROFILE_NARRATIVE in result, (
         f"Expected NARRATIVE task profile for document-only query, prompt starts with: {result[:120]!r}"
@@ -118,7 +92,7 @@ def test_pure_documents_still_routes_to_narrative():
 
 # ---------------------------------------------------------------------------
 # #19 — refusal example present in every variant (both dash + colon forms)
-# Drift fix (10.1): parametrize over all 8 constants (4 dash + 4 colon).
+# Drift fix (10.1): parametrize over all 6 constants (3 dash + 3 colon).
 # ---------------------------------------------------------------------------
 
 
@@ -128,15 +102,13 @@ def test_pure_documents_still_routes_to_narrative():
         _SYSTEM_PROMPT_DEFAULT,
         _SYSTEM_PROMPT_NUMERIC,
         _SYSTEM_PROMPT_NARRATIVE,
-        _SYSTEM_PROMPT_GRAPH,
         _SYSTEM_PROMPT_DEFAULT_COLON,
         _SYSTEM_PROMPT_NUMERIC_COLON,
         _SYSTEM_PROMPT_NARRATIVE_COLON,
-        _SYSTEM_PROMPT_GRAPH_COLON,
     ],
     ids=[
-        "default-dash", "numeric-dash", "narrative-dash", "graph-dash",
-        "default-colon", "numeric-colon", "narrative-colon", "graph-colon",
+        "default-dash", "numeric-dash", "narrative-dash",
+        "default-colon", "numeric-colon", "narrative-colon",
     ],
 )
 def test_every_variant_has_refusal_example(variant: str):
