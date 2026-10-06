@@ -6,7 +6,7 @@
  * The map.getSource interface is mocked where needed.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { buildSilverTileUrl, buildAllSilverTileUrls } from '../../lib/tileUrl';
+import { buildSilverTileUrl } from '../../lib/tileUrl';
 import { MVT_LAYERS } from '../../lib/mvtLayers';
 
 // ─── URL builder shape ─────────────────────────────────────────────────────
@@ -50,31 +50,6 @@ describe('buildSilverTileUrl', () => {
         expect(url).not.toMatch(new RegExp(`/tiles/${PROJECT_UUID}/`));
         // Absolute origin-prefixed URL — match anywhere, not just at start.
         expect(url).toMatch(/\/tiles\/silver\//);
-    });
-});
-
-// ─── All-layers builder ────────────────────────────────────────────────────
-
-describe('buildAllSilverTileUrls', () => {
-    const PROJECT_UUID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
-
-    it('returns one URL per layer in the provided array', () => {
-        const urls = buildAllSilverTileUrls(MVT_LAYERS, PROJECT_UUID, 5);
-        expect(urls.size).toBe(MVT_LAYERS.length);
-    });
-
-    it('keys are the layer id fields', () => {
-        const urls = buildAllSilverTileUrls(MVT_LAYERS, PROJECT_UUID, 0);
-        for (const layer of MVT_LAYERS) {
-            expect(urls.has(layer.id)).toBe(true);
-        }
-    });
-
-    it('all URLs contain the project_id query param', () => {
-        const urls = buildAllSilverTileUrls(MVT_LAYERS, PROJECT_UUID, 0);
-        for (const [, url] of urls) {
-            expect(url).toContain(`project_id=${PROJECT_UUID}`);
-        }
     });
 });
 

@@ -120,15 +120,29 @@ export default function EvidenceInspector({
     answerRunId,
     onReportIssue,
 }: Props) {
-    const [resolved, setResolved] = useState<ResolvedEvidence | 'loading' | 'error' | null>(null);
+    // The outcome is keyed by the chunk it was fetched for, so reopening the
+    // sheet on a different citation never shows the previous citation's text
+    // under the new citation's title while the effect below catches up.
+    const [outcome, setOutcome] = useState<{
+        key: string;
+        value: ResolvedEvidence | 'loading' | 'error';
+    } | null>(null);
+    const chunkId = citation?.source_chunk_id ?? null;
+    const resolved: ResolvedEvidence | 'loading' | 'error' | null = !chunkId
+        ? null
+        : outcome?.key === chunkId
+          ? outcome.value
+          : open
+            ? 'loading'
+            : null;
 
     useEffect(() => {
-        if (!open || !citation?.source_chunk_id) {
+        if (!open || !chunkId) {
             return;
         }
         let cancelled = false;
-        setResolved('loading');
-        fetch(`/api/v1/citations/resolve?source_chunk_id=${encodeURIComponent(citation.source_chunk_id)}`, {
+        setOutcome({ key: chunkId, value: 'loading' });
+        fetch(`/api/v1/citations/resolve?source_chunk_id=${encodeURIComponent(chunkId)}`, {
             credentials: 'same-origin',
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         })
@@ -137,15 +151,15 @@ export default function EvidenceInspector({
                 return resp.json();
             })
             .then((data: ResolvedEvidence) => {
-                if (!cancelled) setResolved(data);
+                if (!cancelled) setOutcome({ key: chunkId, value: data });
             })
             .catch(() => {
-                if (!cancelled) setResolved('error');
+                if (!cancelled) setOutcome({ key: chunkId, value: 'error' });
             });
         return () => {
             cancelled = true;
         };
-    }, [open, citation?.source_chunk_id]);
+    }, [open, chunkId]);
 
     const facts = resolved && resolved !== 'loading' && resolved !== 'error' ? evidenceFacts(resolved.metadata) : [];
 

@@ -22,8 +22,8 @@ import { resolvePageLayout } from './Layouts/persistentLayout';
  *
  * Code splitting: pages are resolved via `import.meta.glob` WITHOUT
  * `eager: true` so each page ships as its own Vite chunk. The login page no
- * longer pulls in Plotly / MapLibre / React Flow / the 1350-line Chat.tsx —
- * they're only fetched once the user navigates to Chat or Explorer.
+ * longer pulls in Plotly / MapLibre / the Chat.tsx page —
+ * they're only fetched once the user navigates to a page that needs them.
  *
  * Error boundary: the whole tree is wrapped in a root-scope ErrorBoundary so
  * an unexpected render throw in any page yields a recovery UI instead of a

@@ -1,11 +1,5 @@
 /// <reference types="vite/client" />
 
-declare module 'react-plotly.js/factory' {
-    import { ComponentType } from 'react';
-    function createPlotlyComponent(plotly: unknown): ComponentType<Record<string, unknown>>;
-    export default createPlotlyComponent;
-}
-
 declare module 'plotly.js-dist-min' {
     const Plotly: unknown;
     export default Plotly;

@@ -49,9 +49,6 @@ export const WORKSPACE_MODES: ReadonlyArray<{
     { value: 'compare', label: 'Compare' },
 ];
 
-/** Modes Workspace itself renders as panels. */
-export const IN_PAGE_MODES = WORKSPACE_MODES.filter((m) => m.page === undefined).map((m) => m.value);
-
 export default function WorkspaceModeBar({
     slug,
     active,

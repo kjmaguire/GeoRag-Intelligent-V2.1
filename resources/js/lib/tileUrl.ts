@@ -28,27 +28,3 @@ export function buildSilverTileUrl(functionName: string, projectId: string, data
     const origin = typeof window !== 'undefined' && window.location ? window.location.origin : '';
     return `${origin}/tiles/silver/${functionName}/{z}/{x}/{y}.pbf?project_id=${projectId}&v=${dataVersion}`;
 }
-
-/**
- * Build the full set of tile URL templates for all silver MVT sources,
- * keyed by the layer's `id` field from MVT_LAYERS.
- *
- * Convenience wrapper used by the data_version change effect in MapView
- * to swap all sources in one pass.
- *
- * @param layers        Array of MVT layer definitions (from mvtLayers.ts)
- * @param projectId     UUID of the active project
- * @param dataVersion   Workspace data_version (0 fallback)
- * @returns             Map of layerId → tile URL template string
- */
-export function buildAllSilverTileUrls(
-    layers: Array<{ id: string; functionName: string }>,
-    projectId: string,
-    dataVersion: number,
-): Map<string, string> {
-    const urls = new Map<string, string>();
-    for (const layer of layers) {
-        urls.set(layer.id, buildSilverTileUrl(layer.functionName, projectId, dataVersion));
-    }
-    return urls;
-}
