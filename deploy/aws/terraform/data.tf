@@ -101,10 +101,16 @@ resource "aws_db_parameter_group" "this" {
 
   # Guards docker-compose.yml has carried since the 2026-04 tuning pass
   # (lines ~169-201) and this group lacked, found by the 2026-10 database
-  # audit. Every one of the five is a DYNAMIC parameter on RDS for
-  # PostgreSQL, so none forces a reboot: `apply_method = "immediate"` is the
-  # provider default and is stated nowhere below on purpose. (Contrast the
-  # two `pending-reboot` parameters above, which are static.)
+  # audit. Three of the five (idle_in_transaction_session_timeout,
+  # random_page_cost, log_lock_waits) take `apply_method = "immediate"`, the
+  # provider default, and state nothing. The other two, jit and
+  # track_io_timing, say `pending-reboot` because that is what RDS stored:
+  # the 2026-10-05 04:36Z apply that added all five sent `immediate`, and
+  # every plan since (the 17:20Z and 22:15Z runs that day) showed both
+  # flipping pending-reboot -> immediate again, a perpetual diff. Stating
+  # what RDS stores ends it and changes nothing live — same values — and
+  # the nightly RDS stop/start (iam.tf, rds:StopDBInstance) is the restart
+  # that puts a pending-reboot value into effect.
   #
   # idle_in_transaction_session_timeout: Laravel/Octane workers are resident
   # and a leaked transaction otherwise lives as long as the worker, pinning
@@ -126,8 +132,9 @@ resource "aws_db_parameter_group" "this" {
   # this schema runs (the MVT functions, mv_collar_summary, the gold
   # promotion) and helps none of them. Off, as in compose.
   parameter {
-    name  = "jit"
-    value = "0"
+    name         = "jit"
+    value        = "0"
+    apply_method = "pending-reboot"
   }
 
   # gp3 is SSD-class; the default 4.0 steers the planner away from the
@@ -148,8 +155,9 @@ resource "aws_db_parameter_group" "this" {
   # a burstable db.t4g.small, telling an I/O-bound query from a CPU-bound
   # one is what decides whether the answer is an index or an instance class.
   parameter {
-    name  = "track_io_timing"
-    value = "1"
+    name         = "track_io_timing"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 }
 
