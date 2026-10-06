@@ -101,6 +101,17 @@ CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
 -- created and none of the configured retention actually drops old ones.
 -- Not a boot-time failure -- an inserts-start-failing-months-later one,
 -- the day the last pre-created partition runs out.
+--
+-- CHECK THIS BEFORE RELYING ON IT (database review 2026-10): those three
+-- raw files are NOT in database/raw/manifest.json, so on a cluster built the
+-- way CD builds one (`migrate` + `db:apply-raw`) the tables come from the
+-- provision_*_for_test_db migrations as PLAIN, un-partitioned tables and
+-- partman.create_parent() is never called (no migration and no manifest file
+-- calls it; on a migrate-built database no relkind 'p' relation exists in
+-- audit/workflow/usage). The job below is then a harmless no-op, and the
+-- failure mode above (a default partition) cannot occur -- but neither does
+-- any partition-drop retention happen for those tables. Confirm on the live
+-- instance with: SELECT parent_table FROM partman.part_config;
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 
 -- Idempotent: cron.schedule() upserts by job name as of pg_cron 1.4+, but
@@ -211,25 +222,25 @@ END $$;
 -- Compose hid it. docker-compose.yml:1993 connects martin as georag_app, so
 -- dev worked and only production would have broken.
 --
--- THIS IS NECESSARY AND NOT SUFFICIENT, and the second half is not fixed
--- here because it is a decision rather than a defect. The tile functions are
--- SECURITY INVOKER and set no GUC, so once this role CAN connect it runs as
--- itself: non-superuser, NOBYPASSRLS, with app.workspace_id unset. The
--- tenant policy is
+-- LOGIN is only the first half, and the tenant fence is NOT left to the policy.
+-- This role connects directly and never sees the session that authorised the
+-- request, so app.workspace_id is unset on its connection; most tenant policies
+-- are the fail-open shape (an unset GUC admits every row). Two migrations close
+-- that, and neither depends on this file:
 --
---   USING (workspace_id = current_setting('app.workspace_id', true)::uuid)
+--   * 2026_09_16_120000 -- every workspace-scoped tile function now REQUIRES
+--     `workspace_id` in query_params (it RAISEs without one), arms
+--     app.workspace_id itself with a transaction-local set_config, and adds an
+--     explicit `workspace_id = <param>` predicate, so the fence holds whichever
+--     policy shape a cluster carries.
+--   * 2026_10_06_100200 -- martin_readonly's table privileges are cut back to the
+--     relations the tile sources read (it used to inherit SELECT on every silver
+--     table through default privileges, which with an unset GUC was a
+--     cross-tenant read of chat history and evidence). A new tile source must
+--     GRANT SELECT on its relation to this role explicitly.
 --
--- and against an unset GUC that predicate is NULL, so it filters every row.
--- Verified on PostgreSQL 16: same role, same table, 0 rows with the GUC
--- unset and the correct rows with it set. So the map is blank either way --
--- this changes WHICH failure, from "cannot connect" to "connects and is
--- shown nothing", and the second one is at least diagnosable.
---
--- Closing it needs a call on how workspace context reaches Martin, which
--- connects to Postgres directly and never sees the session that authorised
--- the request. docs/architecture/appendix/C-security-posture.md already
--- records that fence as Open. Do not resolve it by granting BYPASSRLS here:
--- that turns a blank map into a cross-tenant one.
+-- Do not resolve a "blank map" by granting BYPASSRLS here: that turns a blank
+-- map into a cross-tenant one.
 --
 -- Created here, BEFORE the migration chain runs, so the migration's
 -- IF NOT EXISTS guard finds it present and leaves it alone. The ALTER also

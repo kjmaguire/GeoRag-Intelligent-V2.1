@@ -25,9 +25,6 @@ use App\Http\Controllers\Api\V1\VendorProfileController;
 use App\Http\Controllers\Api\V1\WorkflowTriggerController;
 use App\Http\Controllers\Internal\AdminSurfaceUpdatedBridgeController;
 use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
-use App\Http\Controllers\Internal\ReportBuildProgressController;
-use App\Http\Controllers\Internal\UserInboxBridgeController;
-use App\Http\Controllers\Internal\WorkspaceActivityBridgeController;
 use App\Http\Controllers\Internal\WorkspaceDataUpdatedBridgeController;
 use Illuminate\Support\Facades\Route;
 
@@ -159,13 +156,13 @@ Route::prefix('v1')->group(function () {
             ->where('export', $uuid)
             ->name('exports.download');
 
-        // File upload — uploads to MinIO bronze bucket (triggers Dagster sensor)
+        // File upload — writes to the bronze bucket and dispatches the Hatchet ingest workflow
         Route::post('projects/{project}/upload', [UploadController::class, 'store'])
             ->where('project', $uuid);
         Route::get('upload/categories', [UploadController::class, 'categories']);
 
         // CC-01 Item 1 — drill-data upload: slug-routed, bronze.source_files
-        // anchored, synchronous Dagster GraphQL dispatch. Distinct from the
+        // anchored, dispatches Hatchet ingest_tabular. Distinct from the
         // generic /upload above by design — see DrillUploadController docblock.
         Route::post('projects/{slug}/drill-uploads', [DrillUploadController::class, 'store']);
 
@@ -266,12 +263,6 @@ Route::prefix('v1')->group(function () {
 | progress without long polling).
 */
 Route::middleware('service.key')->prefix('internal')->group(function () {
-    Route::post('admin/reports/{build_id}/progress',
-        [ReportBuildProgressController::class, 'broadcast'])
-        ->middleware('throttle:bridge:report-progress')
-        ->whereUuid('build_id')
-        ->name('internal.reports.progress');
-
     // Reliability spec Phase 1 — FastAPI on_failure_task / stale_run_sweep /
     // embed_verify post here so Laravel can broadcast ingestion.progress
     // events on project.{projectId}.ingestion private channels.
@@ -297,21 +288,4 @@ Route::middleware('service.key')->prefix('internal')->group(function () {
     Route::post('v1/admin-surface-updated',
         [AdminSurfaceUpdatedBridgeController::class, 'broadcast'])
         ->name('internal.admin_surface_updated.broadcast');
-
-    // Phase 3 — workspace-level activity push for Foundry/Portfolio +
-    // Foundry/Projects. Caller POSTs {workspace_id, affected_types[],
-    // payload?}; dispatches App\Events\Workspace\WorkspaceActivityBroadcast
-    // on workspace.{workspace_id}.activity (channel was registered for
-    // dashboard spec §6 but never used by a writer before Phase 3).
-    Route::post('v1/workspace-activity',
-        [WorkspaceActivityBridgeController::class, 'broadcast'])
-        ->name('internal.workspace_activity.broadcast');
-
-    // Phase 3 — per-user inbox push for Foundry/Inbox + nav-bar badge.
-    // Caller POSTs {user_id, kind in (mention|review|refusal), count_delta?,
-    // payload?}; dispatches App\Events\User\UserInboxUpdated on the
-    // Laravel-default App.Models.User.{user_id} private channel.
-    Route::post('v1/user-inbox-updated',
-        [UserInboxBridgeController::class, 'broadcast'])
-        ->name('internal.user_inbox_updated.broadcast');
 });

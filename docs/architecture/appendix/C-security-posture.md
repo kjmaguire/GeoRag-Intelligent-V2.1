@@ -110,7 +110,7 @@ the migration that has to accompany it.
 | Risk | State | Mitigation |
 |---|---|---|
 | `/admin/integrations/hatchet`, `/admin/integrations/kestra` | Live | Gate via `Gate::define('viewAdmin', …)` (Sanctum auth + role check) |
-| `/pulse` | Live | `Gate::define('viewPulse', …)` |
+| `/pulse` | Local-only | No `viewPulse` gate is defined; Pulse's default `Authorize` middleware (`config/pulse.php`) uses Pulse's default gate, which allows access only when `APP_ENV=local` |
 | Horizon `/horizon` | Live | `Gate::define('viewHorizon', …)` |
 
 ## 9. Secret rotation

@@ -2,7 +2,7 @@
 
 Pure-function tests of the manifest verifier + an asyncio-based test
 that exercises the three count helpers against the live container
-stack (postgres, neo4j, qdrant, redis) when their env is available.
+stack (postgres, qdrant, redis) when their env is available.
 """
 from __future__ import annotations
 
@@ -68,7 +68,6 @@ def test_manifest_matches_live_counts_zero_mismatches() -> None:
                 "silver_workspaces": 1,
                 "silver_decision_records": 5,
             }},
-            "neo4j": {"node_count": 100},
             "qdrant": {"point_count": 50},
         },
     }
@@ -86,7 +85,6 @@ def test_manifest_matches_live_counts_zero_mismatches() -> None:
                     "silver_workspaces": 1,
                     "silver_decision_records": 5,
                 },
-                "neo4j_nodes": 100,
                 "qdrant_points": 50,
             },
         )
@@ -107,7 +105,6 @@ def test_manifest_surfaces_mismatches_per_store() -> None:
                 "silver_workspaces": 1,
                 "silver_decision_records": 5,
             }},
-            "neo4j": {"node_count": 100},
             "qdrant": {"point_count": 50},
         },
     }
@@ -125,8 +122,7 @@ def test_manifest_surfaces_mismatches_per_store() -> None:
                     "silver_workspaces": 1,
                     "silver_decision_records": 8,  # +3 mismatch
                 },
-                "neo4j_nodes": 95,                  # −5 mismatch
-                "qdrant_points": 50,                # match
+                "qdrant_points": 80,                # +30 mismatch
             },
         )
         assert result["loaded"] is True
@@ -135,8 +131,8 @@ def test_manifest_surfaces_mismatches_per_store() -> None:
         assert by_store["postgres"]["key"] == "silver_decision_records"
         assert by_store["postgres"]["expected"] == 5
         assert by_store["postgres"]["actual"] == 8
-        assert by_store["neo4j"]["expected"] == 100
-        assert by_store["neo4j"]["actual"] == 95
+        assert by_store["qdrant"]["expected"] == 50
+        assert by_store["qdrant"]["actual"] == 80
     finally:
         Path(path).unlink(missing_ok=True)
 
@@ -147,7 +143,6 @@ def test_manifest_skips_unknown_live_counts_gracefully() -> None:
     manifest = {
         "workspace_id": workspace_id,
         "stores": {
-            "neo4j": {"node_count": 100},
             "qdrant": {"point_count": 50},
         },
     }
@@ -161,12 +156,11 @@ def test_manifest_skips_unknown_live_counts_gracefully() -> None:
             f"file://{path}",
             live_counts={
                 "workspace_id": workspace_id,
-                "neo4j_nodes": -1,    # collector failed
                 "qdrant_points": -1,  # collector failed
             },
         )
         assert result["loaded"] is True
-        # Both -1 — no mismatches (couldn't verify, not "wrong")
+        # -1 — no mismatches (couldn't verify, not "wrong")
         assert result["mismatches"] == []
     finally:
         Path(path).unlink(missing_ok=True)

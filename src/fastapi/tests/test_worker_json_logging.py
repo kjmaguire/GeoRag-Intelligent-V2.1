@@ -61,7 +61,7 @@ def restored_root_logging():
     saved_level = root.level
     saved_levels = {
         name: logging.getLogger(name).level
-        for name in ("pdfminer", "azure.core", "grpc", "PIL")
+        for name in ("pdfminer", "botocore", "grpc", "PIL")
     }
     try:
         yield
@@ -115,16 +115,16 @@ def test_a_worker_log_line_parses_as_json_and_keeps_its_extras(restored_root_log
 
 def test_the_noisy_logger_suppression_survives_the_new_formatter(restored_root_logging):
     # The suppression loop sets levels, and dictConfig rebuilds handlers.
-    # If the two were ever reordered, azure.core's http_logging_policy
-    # would go back to ~9.6k INFO lines a day on this worker.
+    # If the two were ever reordered, the suppressed SDK loggers would go
+    # back to flooding the worker's log at INFO.
     from app.hatchet_workflows.worker import configure_worker_logging
 
-    logging.getLogger("azure.core").setLevel(logging.NOTSET)
+    logging.getLogger("botocore").setLevel(logging.NOTSET)
     logging.getLogger("pdfminer").setLevel(logging.NOTSET)
 
     configure_worker_logging()
 
-    assert logging.getLogger("azure.core").level == logging.WARNING
+    assert logging.getLogger("botocore").level == logging.WARNING
     assert logging.getLogger("pdfminer").level == logging.WARNING
 
 

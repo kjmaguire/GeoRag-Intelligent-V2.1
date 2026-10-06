@@ -291,17 +291,13 @@ _QUOTED_ENTITY_RE = re.compile(r"""['"]([^'"]{2,80})['"]""")
 
 
 def _entity_names_from_query(query: str) -> list[str]:
-    """Best-effort entity-name extraction for ``traverse_knowledge_graph``.
+    """Best-effort entity-name extraction for the public-geoscience search.
 
     Lightweight (no NER model): quoted strings first, then runs of TitleCase
-    words minus question/stopwords. ``traverse_knowledge_graph`` fuzzy-matches
-    (exact → CONTAINS) and returns an empty result gracefully on a miss, so a
-    noisy extraction is harmless — it yields an empty graph result, never a
-    wrong one. Returns up to 3 candidates, longest (most specific) first.
-
-    Audit 2026-06-28: before this, the dispatcher unconditionally skipped
-    traverse_knowledge_graph ("NER unwired"), so Neo4j was never consulted in
-    agentic chat even though three intent profiles list it as a primary tool.
+    words minus question/stopwords. ``search_public_geoscience`` is a
+    contains-match that returns an empty result gracefully on a miss, so a
+    noisy extraction is harmless. Returns up to 3 candidates, longest (most
+    specific) first.
     """
     if not query:
         return []
@@ -335,12 +331,11 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
       - ``query_spatial_collars(ctx, project_id, ...)``
       - ``query_assay_data(ctx, project_id, ...)``
       - ``query_downhole_logs(ctx, project_id, hole_id)``  — hole_id required
-      - ``traverse_knowledge_graph(ctx, entity_name, project_id, ...)``
       - ``query_project_overview(ctx, project_id)``
 
     We build the same ``ToolContext`` shim the deterministic orchestrator
     uses (``app.agent.deps.ToolContext``) so the tools can read their
-    asyncpg / Qdrant / Neo4j clients off ``ctx.deps`` without involving
+    asyncpg / Qdrant clients off ``ctx.deps`` without involving
     Pydantic-AI's runtime.
 
     The ADR-0007 PR-1 chat-card tools (``query_project_summary`` /
@@ -348,10 +343,8 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
     ``(deps, workspace_id, project_id)`` directly and have their own
     dispatch branch below.
 
-    ``query_downhole_logs`` and ``traverse_knowledge_graph`` need NER
-    extraction of a hole_id / entity_name from the user query, which is
-    Phase 2.3's "secondary" complexity we punted on. We skip them
-    cleanly until the entity-extraction step lands.
+    ``query_downhole_logs`` needs a hole_id extracted from the user query;
+    it is skipped cleanly when the query names none.
 
     Failures (incl. skipped tools) return None so one bad tool doesn't
     sink the whole graph.
@@ -499,25 +492,6 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
                 )
                 return None
             return await fn(deps, workspace_id, project_id, hole_ids[0])
-        if real_name == "traverse_knowledge_graph":
-            # Audit 2026-06-28: wire lightweight entity extraction so the
-            # graph store is actually consulted when the query names an entity
-            # (three intent profiles list this as a primary tool). The tool
-            # fuzzy-matches and returns empty gracefully, so a missed/noisy
-            # extraction is a clean no-op rather than a wrong answer.
-            entity_names = _entity_names_from_query(query)
-            if not entity_names:
-                logger.info(
-                    "agentic_retrieval.execute: %s no entity name extracted from "
-                    "query — graph traversal skipped (no entity)",
-                    real_name,
-                )
-                return None
-            logger.info(
-                "agentic_retrieval.execute: %s firing for entity=%r",
-                real_name, entity_names[0],
-            )
-            return await fn(ctx, entity_names[0], project_id)
         if real_name == "query_spatial_geometry":
             # Plan §2g — wired call. Needs caller to supply geometry
             # via the spatial intent system (or future spec extractor).
@@ -778,7 +752,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     # Primary pass — every primary tool is invoked once with the user query.
     # Perf audit 2026-08-15: primary tools are mutually independent (each
-    # hits its own PostGIS/Qdrant/Neo4j path) and _call_tool_safely already
+    # hits its own PostGIS/Qdrant path) and _call_tool_safely already
     # exception-guards every call, so gathering them is safe — no tool's
     # failure or slowness can affect another's result, and the appended
     # order below still matches profile.primary_tools regardless of
@@ -1066,11 +1040,11 @@ def _categories_from_tool_results(
     """Which shapes of evidence actually made it into the context block.
 
     Feeds ``orchestrator._select_system_prompt``, which picks between the
-    DEFAULT / NUMERIC / NARRATIVE / GRAPH system-prompt variants.
+    DEFAULT / NUMERIC / NARRATIVE system-prompt variants.
 
     Until 2026-08-21 both production call sites passed ``categories=None``,
     and ``_select_system_prompt`` short-circuits to DEFAULT on a falsy
-    ``categories`` before any branch runs. NUMERIC, NARRATIVE, GRAPH and the
+    ``categories`` before any branch runs. NUMERIC, NARRATIVE and the
     ``SYSTEM_PROMPT_ROUTING_ENABLED`` flag were therefore dead on the live
     path: the only callers that ever reached the routing logic were two test
     modules. A count query ("how many holes exceeded 500 m?") never received
@@ -1105,7 +1079,6 @@ def _categories_from_tool_results(
         CoverageGapResult,
         DocumentSearchResult,
         DownholeLogsResult,
-        GraphTraversalResult,
         ProjectOverviewResult,
         ProjectSummaryResult,
         SpatialQueryResult,
@@ -1114,7 +1087,6 @@ def _categories_from_tool_results(
     buckets: dict[str, tuple[type, ...]] = {
         "documents": (DocumentSearchResult,),
         "public_geo": (PublicGeoscienceSearchResult,),
-        "graph": (GraphTraversalResult,),
         "spatial": (SpatialQueryResult, CollarDetailsResult),
         "assay": (AssayDataResult,),
         "downhole": (DownholeLogsResult,),
@@ -1525,8 +1497,8 @@ def _render_tool_results_context(
     just the abandoned one. Fencing is applied to the two
     externally-sourced free-text surfaces the model sees — retrieved
     document-chunk text and public-geoscience record dumps — mirroring
-    exactly what ``_build_context`` fences (structured PostGIS/Neo4j/
-    collar/graph blocks stay unfenced, same as there).
+    exactly what ``_build_context`` fences (structured PostGIS/
+    collar blocks stay unfenced, same as there).
 
 
     Budget (RAG-18, 2026-09-29): ``_TOTAL_BUDGET`` caps this block. Which
@@ -3851,7 +3823,7 @@ async def _write_chat_usage_event(
     summed to $0 and neither branch could ever run.
 
     On `projected_cost_usd`: it is 0 unless the model has a published rate
-    in `agent/pricing.py`. Production runs `Cohere-command-a-plus-05-2026`,
+    in `agent/pricing.py`. Production runs `command-a-plus-05-2026`,
     which has no entry, so `estimate_cost_usd` would have returned
     STANDARD-tier Sonnet pricing — a number with no relationship to the
     invoice. Recording 0 keeps the token counts (which ARE facts) while
@@ -3987,10 +3959,9 @@ async def _insert_answer_run_with_retry(
 async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Write the answer-run row + lineage payload.
 
-    The legacy ``run_deterministic_rag`` has its own (much larger) answer-run
-    persistence path. When the agentic flag is on, ``run_deterministic_rag``
-    returns early and that path is skipped — so the agentic graph must
-    persist independently or Phase 1.5 lineage stays dark.
+    This is the only answer-run persistence path: the legacy orchestrator body
+    that had its own (much larger) one was deleted 2026-08-04, and
+    ``run_deterministic_rag`` just dispatches to this graph.
 
     This node does the minimum required:
 
@@ -4009,9 +3980,7 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
          write is non-fatal — but we escalate: ``logger.error`` with
          ``extra={"alert": True}`` for Loki/Alertmanager, AND increment
          :data:`metrics.AGENTIC_PERSIST_FAILURES` so Prometheus can page
-         on a sustained > 0 rate. Plan Step 1.5's fail-closed contract
-         still applies to the legacy path (which retains the original
-         strict-fail behaviour).
+         on a sustained > 0 rate.
 
     The pg_pool comes from ``state.deps`` (whatever the FastAPI lifespan
     handed in); missing pool → no-op + log.
@@ -4703,9 +4672,8 @@ def _citation_source_store(citation_type: str | None) -> str | None:
     t = citation_type.upper()
     if t in ("DATA", "NI43", "PUB", "PGEO"):
         # All four citation types currently come from the Qdrant document
-        # store via search_documents. neo4j / postgis citations would only
-        # appear if a future tool returned graph or spatial provenance as
-        # an inline citation.
+        # store via search_documents. postgis citations would only appear if
+        # a future tool returned spatial provenance as an inline citation.
         return "qdrant"
     return None
 

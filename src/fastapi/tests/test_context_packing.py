@@ -69,56 +69,36 @@ def test_mmr_runs_on_small_result_sets():
 # ── _build_context ordering ──────────────────────────────────────────────
 
 
-def test_summaries_precede_records_which_precede_graph():
+def test_summaries_precede_records():
     """
-    B4 invariant — SUMMARY zone first, RECORDS zone middle, GRAPH zone last.
-    Even when tool dispatch order would naturally put graph ahead of docs,
-    the final packed prompt keeps graph at the tail.
+    B4 invariant — the HIGH-CONFIDENCE SUMMARIES zone is emitted before the
+    RAW RECORDS zone, even though the spatial tool's own record listing is
+    appended first in dispatch order.
     """
-    from app.agent.tools import (
-        DocumentSearchResult,
-        GraphEntity,
-        GraphTraversalResult,
-    )
+    from app.agent.tools import CollarRecord, SpatialQueryResult
 
-    # Construct a minimal DocumentSearchResult with real chunk shape.
-    doc_result = DocumentSearchResult(
-        chunks=[],  # type: ignore[arg-type]
-        count=0,
-        data_source="test",
+    collar = CollarRecord(
+        hole_id="PLS-22-08",
+        collar_id="c1",
+        easting=1.0,
+        northing=2.0,
+        elevation=3.0,
+        total_depth=510.0,
+        hole_type="DD",
+        azimuth=0.0,
+        dip=-90.0,
+        status="completed",
+        drill_date=None,
     )
+    spatial = SpatialQueryResult(collars=[collar, collar], count=2, data_source="test")
 
-    # A graph result dispatched FIRST in the tool order.
-    graph_result = GraphTraversalResult(
-        entities=[
-            GraphEntity(
-                entity_id="e1",
-                entity_type="Formation",
-                name="Athabasca SST",
-                properties={"age": "Proterozoic"},
-                relationship_type="HOSTS",
-                relationship_direction="OUTBOUND",
-            ),
-        ],
-        count=1,
-        data_source="Neo4j",
-    )
+    packed = _build_context([("query_spatial_collars", spatial)])
 
-    tool_results = [
-        ("traverse_knowledge_graph", graph_result),  # dispatched first
-        ("search_documents", doc_result),
-    ]
-
-    packed = _build_context(tool_results)
-    # Document-search record block must appear BEFORE the graph block,
-    # regardless of tool_results order.
-    doc_pos = packed.find("Document search returned")
-    graph_pos = packed.find("Knowledge graph returned")
-    assert doc_pos >= 0, "document section missing"
-    assert graph_pos >= 0, "graph section missing"
-    assert doc_pos < graph_pos, (
-        "B4 invariant violated: graph section appeared before records"
-    )
+    summary_pos = packed.find("=== HIGH-CONFIDENCE SUMMARIES")
+    records_pos = packed.find("Spatial query returned")
+    assert summary_pos >= 0, "summary zone missing"
+    assert records_pos >= 0, "records zone missing"
+    assert summary_pos < records_pos, "B4 invariant violated: records appeared before summaries"
 
 
 def test_empty_tool_results_returns_noop_marker():

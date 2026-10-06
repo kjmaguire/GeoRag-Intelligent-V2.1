@@ -65,7 +65,6 @@ __all__ = [
     "extract_assay_evidence",
     "extract_collar_evidence",
     "extract_spatial_evidence",
-    "extract_graph_evidence",
     "estimate_evidence_tokens",
 ]
 
@@ -473,50 +472,6 @@ def extract_spatial_evidence(payload: Any) -> list[SpatialEvidence]:
     return out
 
 
-def extract_graph_evidence(payload: Any) -> list[GraphEvidence]:
-    """``traverse_knowledge_graph`` → list[GraphEvidence].
-
-    Accepts a raw list OR a typed wrapper exposing ``.paths`` /
-    ``.rows`` / ``.results``. See :func:`_unwrap_rows`.
-    """
-    rows = _unwrap_rows(payload, "paths", "rows", "results", "items")
-    if not rows:
-        return []
-    out: list[GraphEvidence] = []
-    for entry in rows:
-        try:
-            out.append(
-                GraphEvidence(
-                    node_ids=_as_list_of_str(
-                        _field(entry, "node_ids", "nodes"),
-                    ),
-                    relationship_ids=_as_list_of_str(
-                        _field(entry, "relationship_ids", "relationships"),
-                    ),
-                    path=_as_str(_field(entry, "path", "path_str")),
-                    relationship_types=_as_list_of_str(
-                        _field(entry, "relationship_types", "rel_types"),
-                    ),
-                    entities=(
-                        _field(entry, "entities", default=[])
-                        if isinstance(_field(entry, "entities"), list)
-                        else []
-                    ),
-                    vocab_concept_uris=_as_list_of_str(
-                        _field(entry, "vocab_concept_uris"),
-                    ),
-                    source=_as_str(_field(entry, "source"), default="neo4j"),
-                )
-            )
-        except Exception:
-            logger.warning(
-                "extract_graph_evidence: skipping malformed row",
-                exc_info=True,
-            )
-            continue
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Dispatcher + packet assembly
 # ---------------------------------------------------------------------------
@@ -527,7 +482,6 @@ _TOOL_DISPATCH = {
     "query_assay_data": ("assay", extract_assay_evidence),
     "query_downhole_logs": ("document", extract_document_evidence),
     "query_spatial_collars": ("collar", extract_collar_evidence),
-    "traverse_knowledge_graph": ("graph", extract_graph_evidence),
     "query_project_overview": ("document", extract_document_evidence),
 }
 

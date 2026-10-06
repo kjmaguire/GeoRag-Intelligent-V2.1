@@ -1,19 +1,17 @@
 """Hatchet worker entrypoint.
 
-The demo compose stack runs the merged ``all`` pool. The narrower pool
-selectors remain available for deployments that still split workers:
+Compose, the Helm chart and the AWS ECS service all run ONE merged worker
+(``WORKER_POOL=all``, the default). The narrower pool selectors are kept for
+an operator who wants to split workers; no deployment in this repo does:
 
-  ``ingestion``  — registers ``outbox_dispatcher`` + ingestion-class agent
-                   workflows (storage tiering, index health, store
-                   reconciliation). Subscribes to PDF + secondary-store
-                   propagation work.
+  ``ingestion``  — registers ``outbox_dispatcher`` + the ingest workflows +
+                   ingestion-class agent workflows (storage tiering, index
+                   health, store reconciliation).
   ``ai``         — registers ``audit_ledger_verify`` + AI-class agent
                    workflows (tenant isolation, lineage, model watch,
                    vLLM security, cost summary, LLM incident diagnosis,
-                   support packet).
-  ``all``        — DEFAULT for back-compat — registers every workflow.
-                   Used by the legacy single-worker container during the
-                   transition. Will be removed after Step 2 lands cleanly.
+                   support packet) + the crons and admin-triggered flows.
+  ``all``        — DEFAULT — registers every workflow.
 
 CLI flags:
   ``--list``   — print registered workflow names + exit (no engine connect).
@@ -178,8 +176,8 @@ POOLS = {
         # sync_silver_to_kg (doc-phase 183, silver → Neo4j sync) removed
         # 2026-07-28 (B1) along with Neo4j itself.
         # Doc-phase 183 — silver.document_passages → Qdrant embedding
-        # sync. Runs BGE + SPLADE++ embeddings + upserts to the
-        # georag_reports collection.
+        # sync. Dense (EMBEDDING_BACKEND) + SPLADE++ sparse vectors,
+        # upserted to the georag_chunks collection.
         embed_pending_passages_wf,
         # 2026-08-18 — hourly page-image verbalization. Inert unless
         # IMAGE_VERBALIZATION_ENABLED is set (the task returns before
@@ -231,25 +229,11 @@ POOLS = {
         # (HAT-13); it had no on_crons before and never fired. No model
         # call, so it passes the unattended-spend bar.
         continuous_learning_loop,
-        # Master-plan §11.1 nightly backup crons -- backup_postgres,
-        # backup_qdrant, backup_redis and backup_seaweedfs -- DELETED
-        # 2026-08-23 at Kyle's direction. They wrote to a SeaweedFS
-        # substrate that does not exist on Azure, so all four had been a
-        # guaranteed nightly failure since the migration: ~35 log lines a
-        # day of a capability nobody had.
-        #
-        # Not a gap. Postgres carries 35-day point-in-time restore from
-        # Azure's own automated backups, which these never added to;
-        # Qdrant is derived data rebuildable by re-embedding from
-        # silver.document_passages; Redis is cache plus Horizon queues.
-        # Blob storage is the one irreplaceable copy and is LRS -- three
-        # replicas in one datacentre, which covers hardware failure and
-        # not deletion. That trade was made deliberately.
-        #
-        # backup_neo4j went earlier, 2026-08-19, for the same shape of
-        # reason: Neo4j was dropped in B1 and the workflow shelled out via
-        # `docker exec` to a container that could never exist on Container
-        # Apps.
+        # Master-plan §11.1 per-store backup_* crons (postgres, qdrant, redis,
+        # seaweedfs, neo4j) are DELETED, not missing: Postgres has 35-day RDS
+        # point-in-time restore, object storage has S3 versioning, Qdrant is
+        # derived data rebuildable by re-embedding from
+        # silver.document_passages, and Redis is cache plus Horizon queues.
         # 2026-06-27 audit T5 — advance the three monthly-partitioned
         # ledgers before their p_premake=3 window expires. 19:15 UTC.
         pg_partman_maintenance,
@@ -321,18 +305,9 @@ def configure_worker_logging() -> None:
         "pdfminer.cmapdb", "pdfminer.pdfdocument", "pdfminer.pdfpage",
         "pdfplumber", "pdf2image",
         "PIL", "PIL.Image", "PIL.PngImagePlugin", "PIL.TiffImagePlugin",
-        "unstructured", "unstructured.partition",
         "matplotlib", "matplotlib.font_manager",
         "urllib3.connectionpool", "botocore", "boto3", "s3transfer",
-        # Azure Blob replaced S3 as the storage backend but this list did not
-        # follow. azure.core's http_logging_policy logs a URL plus a full
-        # request/response header block at INFO for EVERY blob call: ~9.6k
-        # lines a day on this worker, about a third of its total output, all
-        # of it burying the errors it sits between. Real failures still
-        # surface - they are raised, and our own handlers log them.
-        "azure", "azure.core", "azure.core.pipeline.policies",
-        "azure.core.pipeline.policies.http_logging_policy", "azure.identity",
-        "azure.storage", "azure.storage.blob",
+        "aiobotocore", "aioboto3",
         "grpc", "grpc._cython", "grpc._cython.cygrpc",
     ):
         logging.getLogger(_noisy).setLevel(logging.WARNING)

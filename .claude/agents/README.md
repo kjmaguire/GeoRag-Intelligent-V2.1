@@ -31,7 +31,7 @@ experts** own a body of knowledge and are the ones to ask whether something is
 ├── rag-expert.md                # retrieval quality, citations, the six layers
 ├── agentic-ai-expert.md         # the LangGraph loop, guards, tool dispatch
 ├── chat-expert.md               # SSE → Reverb → Echo → React, end to end
-├── cohere-expert.md             # Command A+, Parse 5, Embed v4, Rerank 3.5
+├── cohere-expert.md             # Command A+, Parse 5, Embed 5 Pro (v4 rollback), Rerank 3.5
 ├── aws-expert.md                # ECS/RDS/Terraform, cost, the power switch
 ├── hatchet-expert.md            # 51 workflows, crons, durable retries
 ├── postgres-gis-expert.md       # schemas, RLS, GIST, PgBouncer, RDS

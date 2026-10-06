@@ -20,7 +20,6 @@ import { buildSilverTileUrl } from '../lib/tileUrl';
 import { createTileFailureWatchdog } from '../lib/tileFailureWatchdog';
 import { escapeHtml } from '../lib/escapeHtml';
 import { demSourceSpec, useBasemapStyleUrl, useImageryTileUrl, useTerrainDemUrl } from '@/lib/basemap';
-import { useEvidenceMapPin } from '@/Hooks/useEvidenceMapPin';
 import { useSilverTileInvalidation } from '@/Hooks/useTileInvalidation';
 import { UNCERTAINTY_RINGS_FILTER, UNCERTAINTY_RINGS_PAINT } from '@/lib/uncertaintyRings';
 import type { PageProps } from '../types';
@@ -35,9 +34,7 @@ import type { PageProps } from '../types';
  * Props:
  *   projectId     {string}   - UUID of the active project (required when inlineGeoJson absent)
  *   onCollarClick {function} - callback(hole_id) when a marker is clicked
- *   selectedHoleId {string}  - currently selected hole_id (highlights marker;
- *                              when omitted, falls back to the global Evidence
- *                              Map Mode pin via useEvidenceMapPin)
+ *   selectedHoleId {string}  - currently selected hole_id (highlights marker)
  *   useMartinTiles {boolean} - Feature flag: true = MVT tile layers from Martin
  *                              (GPU-rendered, viewport-scoped). Default true.
  *                              GeoJSON is the fallback for inlineGeoJson / no projectId.
@@ -432,14 +429,6 @@ export default function MapView({
     compact = false,
     crs = 'EPSG:32613',
 }: MapViewProps) {
-    // Phase G.4 — Evidence Map Mode: subscribe to the citation-click
-    // pin. When a chat citation marker is clicked and resolves to a
-    // hole_id, MapView highlights that drill collar even though
-    // `selectedHoleId` wasn't passed as a prop. Prop wins when both
-    // are present (explicit parent control overrides the global pin).
-    const evidenceMapPin = useEvidenceMapPin();
-    const effectiveSelectedHoleId =
-        selectedHoleId ?? (evidenceMapPin?.kind === 'hole_id' ? evidenceMapPin.hole_id : undefined);
     const mapContainer = useRef<HTMLDivElement | null>(null);
     const mapRef = useRef<MapLibreMap | null>(null);
     const markersRef = useRef<Record<string, Marker>>({});
@@ -585,9 +574,18 @@ export default function MapView({
     }, [inlineGeoJson]);
 
     // ── Fetch collars (legacy GeoJSON path — skipped when MVT is active) ─────
+    // Newest-request-wins guard: a slow response for a previous project (or a
+    // fetch still in flight at unmount) must not overwrite the current rows.
+    const fetchSeqRef = useRef(0);
     const fetchCollars = useCallback(async () => {
-        if (!projectId || inlineGeoJson || useMvt) return;
+        if (!projectId || inlineGeoJson || useMvt) {
+            // Nothing to fetch; release any spinner left by a superseded request.
+            setLoading(false);
+            return;
+        }
 
+        const seq = ++fetchSeqRef.current;
+        const isStale = () => seq !== fetchSeqRef.current;
         setLoading(true);
         setError(null);
 
@@ -623,16 +621,22 @@ export default function MapView({
                 }),
             );
 
+            if (isStale()) return;
             setCollars(withCoords.filter((c) => !('_invalid' in c && c._invalid)));
         } catch (err) {
+            if (isStale()) return;
             setError(err instanceof Error ? err.message : String(err));
         } finally {
-            setLoading(false);
+            if (!isStale()) setLoading(false);
         }
     }, [projectId, inlineGeoJson, useMvt, crs]);
 
     useEffect(() => {
         void fetchCollars();
+        const seqRef = fetchSeqRef;
+        return () => {
+            seqRef.current += 1;
+        };
     }, [fetchCollars]);
 
     // ── Initialise map ────────────────────────────────────────────────────────
@@ -971,7 +975,7 @@ export default function MapView({
         });
     }, [visibleLayers, mapReady, useMvt]);
 
-    // ── MVT selection highlight — update filter on effectiveSelectedHoleId change ─────
+    // ── MVT selection highlight — update filter on selectedHoleId change ─────
     useEffect(() => {
         const map = mapRef.current;
         if (!map || !mapReady || !useMvt) return;
@@ -979,11 +983,9 @@ export default function MapView({
 
         map.setFilter(
             'mvt-collars-selected',
-            effectiveSelectedHoleId
-                ? ['==', ['get', 'hole_id'], effectiveSelectedHoleId]
-                : ['==', ['get', 'hole_id'], ''], // match nothing
+            selectedHoleId ? ['==', ['get', 'hole_id'], selectedHoleId] : ['==', ['get', 'hole_id'], ''], // match nothing
         );
-    }, [effectiveSelectedHoleId, mapReady, useMvt]);
+    }, [selectedHoleId, mapReady, useMvt]);
 
     // ── MVT click + hover interactions ───────────────────────────────────────
     useEffect(() => {
@@ -1812,7 +1814,7 @@ export default function MapView({
     useEffect(() => {
         if (useMvt) return; // MVT path handles selection via paint filter
         const prev = prevSelectedRef.current;
-        const next = effectiveSelectedHoleId ?? null;
+        const next = selectedHoleId ?? null;
 
         // Deselect previous
         if (prev && markersRef.current[prev]) {
@@ -1844,7 +1846,7 @@ export default function MapView({
         }
 
         prevSelectedRef.current = next;
-    }, [effectiveSelectedHoleId, useMvt]);
+    }, [selectedHoleId, useMvt]);
 
     // ── GeoJSON collar source for scale (legacy path only) ──────────────────
     useEffect(() => {
@@ -1925,17 +1927,17 @@ export default function MapView({
         }
     }, [collars, mapReady, useMvt]);
 
-    // ── Re-style selected marker when effectiveSelectedHoleId changes ─────────────────
+    // ── Re-style selected marker when selectedHoleId changes ─────────────────
     // (handled by full marker rebuild above, but we also pan to it)
     useEffect(() => {
         const map = mapRef.current;
-        if (!map || !mapReady || !effectiveSelectedHoleId) return;
+        if (!map || !mapReady || !selectedHoleId) return;
 
-        const collar = collars.find((c) => c.hole_id === effectiveSelectedHoleId);
+        const collar = collars.find((c) => c.hole_id === selectedHoleId);
         if (collar) {
             map.panTo([collar._lon, collar._lat], { duration: 400 });
         }
-    }, [effectiveSelectedHoleId, collars, mapReady]);
+    }, [selectedHoleId, collars, mapReady]);
 
     // ── Render ────────────────────────────────────────────────────────────────
     return (

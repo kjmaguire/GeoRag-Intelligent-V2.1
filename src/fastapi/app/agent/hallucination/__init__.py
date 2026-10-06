@@ -20,10 +20,19 @@ Read this before changing anything in this package.
                                  typed-output repair, called from
                                  agentic_retrieval/nodes.py.
 
-    layer5_provenance.py         ``enrich_provenance`` — citation provenance
-                                 enrichment, called from
-                                 agentic_retrieval/nodes.py. Enrichment, not
-                                 a gate.
+    layer1_retrieval.py          ``assess_retrieval_quality`` — the query-level
+                                 retrieval quality gate (restored 2026-09-24).
+                                 ``assemble_node`` hard-refuses BEFORE the LLM
+                                 is called when nothing cleared the relevance
+                                 floor from any store; "weak" retrieval is an
+                                 advisory warning from
+                                 orchestrator_validators.verify_retrieval_quality.
+
+    layer5_provenance.py         ``gate_citation_provenance`` (a gate: a
+                                 citation whose chunk was not retrieved for
+                                 this query is rejected with its sentence) and
+                                 ``enrich_provenance`` (enrichment), both
+                                 called from agentic_retrieval/nodes.py.
 
     layer6_constraints.py        ``_find_violations`` — imported by
                                  orchestrator_validators.verify_constraints.
@@ -50,7 +59,8 @@ is:
 
     Entity grounding        orchestrator_validators.verify_entities —
                             drill-hole IDs and quoted names verified against
-                            silver.collars + the Neo4j KG, plus
+                            silver.collars (the graph half is permanently
+                            fail-open: Neo4j was removed 2026-07-28), plus
                             qualitative_detector for disambiguation.
 
     Citation completeness   layer2_typed_output (every marker has a matching
@@ -65,17 +75,18 @@ is:
                             confidence-floor decision in
                             agentic_retrieval/nodes.py.
 
-    layer5_provenance       Chunk provenance enrichment. A sub-component of
-                            numeric / entity grounding rather than an
-                            independent guard.
+    layer1_retrieval /      Retrieval quality gate and chunk provenance gate;
+    layer5_provenance       both default ON (RETRIEVAL_QUALITY_GATE_ENABLED,
+                            CHUNK_PROVENANCE_GATE_ENABLED).
 
 When §04i is referenced in code review or docs, prefer the 4-guard
 vocabulary; treat the layerN_*.py file names as implementation detail.
 
 Deleted 2026-08-21 — a parallel implementation that never ran
 -------------------------------------------------------------
-``layer1_retrieval.py``, ``layer3_numerical.py``, ``layer4_entity.py`` and
-``layer_completeness.py`` (1,287 lines) were removed, along with
+``layer1_retrieval.py`` (the original, since re-created 2026-09-24 as the
+live query-level gate described above), ``layer3_numerical.py``,
+``layer4_entity.py`` and ``layer_completeness.py`` (1,287 lines) were removed, along with
 ``app/services/refusal_builder.py`` (523 lines) which only they could reach.
 
 They were built for Pydantic AI's ``@agent.output_validator`` decorator

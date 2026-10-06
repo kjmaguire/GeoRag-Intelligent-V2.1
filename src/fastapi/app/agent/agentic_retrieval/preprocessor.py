@@ -52,7 +52,6 @@ TOOL_DATA_SOURCE_MAP: dict[str, set[DataSource]] = {
     "query_spatial_collars": {"drill_logs", "maps"},
     "query_downhole_logs": {"drill_logs"},
     "query_assay_data": {"assays"},
-    "traverse_knowledge_graph": {"technical_reports", "drill_logs"},
     "query_project_overview": {"drill_logs", "technical_reports"},
     # The "public_geoscience" DataSource has existed in context_envelope.py
     # since the envelope landed but was never mapped to a tool, because the

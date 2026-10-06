@@ -10,6 +10,12 @@ interface ForgotPasswordApiResponse {
     message?: string;
 }
 
+/** Same-origin session CSRF token; stateful Sanctum requests are rejected (419) without it. */
+function csrfHeader(): Record<string, string> {
+    const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+    return token ? { 'X-CSRF-TOKEN': token } : {};
+}
+
 export default function ForgotPassword(): JSX.Element {
     const [email, setEmail] = useState<string>('');
     const [sent, setSent] = useState<boolean>(false);
@@ -24,10 +30,10 @@ export default function ForgotPassword(): JSX.Element {
         try {
             const res = await fetch('/api/v1/auth/forgot-password', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...csrfHeader() },
                 body: JSON.stringify({ email }),
             });
-            const data: ForgotPasswordApiResponse = await res.json();
+            const data: ForgotPasswordApiResponse = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message ?? 'Request failed');
             setSent(true);
         } catch (err) {

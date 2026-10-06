@@ -98,9 +98,13 @@ to `terraform destroy`.
 
 ## Model hosting posture
 
-- **Bedrock**, serverless, nothing accrues at rest: Cohere **Embed v4**
-  (1024 dims, matches `georag_chunks`) and Cohere **Rerank 3.5** (NOT v4).
-- **Cohere's own API**: Command A+ chat and Parse 5 OCR, since ADR-0023.
+- **Bedrock**, serverless, nothing accrues at rest: Cohere **Rerank 3.5**
+  (NOT v4), plus Cohere Embed v4 kept only as the ADR-0025 rollback until
+  2026-10-19 (with the v4 Qdrant snapshot and the Bedrock embed grant).
+- **Cohere's own API**: Command A+ chat and Parse 5 OCR since ADR-0023, and
+  Cohere **Embed 5 Pro** (`embed-v5.0-pro`, 1024 dims, matches
+  `georag_chunks`) since 2026-10-05 (ADR-0025, Terraform
+  `embedding_backend = "cohere"`).
 - **No SageMaker Marketplace endpoints, deliberately.** They bill while they
   exist with no idle state — that is why ADR-0023 moved chat and OCR off
   Bedrock one week after ADR-0022 put them there. `aws-preflight.sh` **A-09

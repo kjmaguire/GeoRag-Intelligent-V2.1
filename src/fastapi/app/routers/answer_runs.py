@@ -364,7 +364,7 @@ async def get_trust_summary(
             SELECT answer_run_id::text, query_text, query_class, model_name,
                    citation_lifecycle_state, citation_mode, partial_resolution_rate,
                    rejection_reason, created_at, evidence_truncated_count,
-                   workspace_data_version_at_query
+                   workspace_data_version_at_query, trace_id
               FROM silver.answer_runs
              WHERE answer_run_id = $1::uuid
             """,
@@ -545,7 +545,8 @@ async def get_trust_summary(
         "claim_ledger":            claim_summary,  # §7.4 — verification rollup
         "feedback":                [dict(f) for f in fb],
         "provenance": {
-            "trace_id":            ar["query_class"],  # placeholder
+            # This used to be filled with query_class ("placeholder").
+            "trace_id":            ar["trace_id"],
             "lookup_endpoint":     f"/v1/answer_runs/{answer_run_id}/events",
         },
     }

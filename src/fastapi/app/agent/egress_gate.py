@@ -151,7 +151,17 @@ async def _fetch_allow_external_llm_flag(
     if pg_pool is None:
         return None
     try:
-        async with pg_pool.acquire() as conn:
+        # silver.workspace_settings is FORCE ROW LEVEL SECURITY with a
+        # fail-closed policy (no `app.workspace_id` GUC -> zero rows), and
+        # the runtime role is georag_app (NOBYPASSRLS). A bare
+        # `pool.acquire()` therefore saw NO row for any workspace, so the
+        # flag read as "not set" and the gate refused every Anthropic call
+        # even for a workspace that had opted in. Bind the GUC.
+        from app.db import scoped_connection  # noqa: PLC0415
+
+        async with scoped_connection(
+            pg_pool, workspace_id=workspace_id, site="egress_gate.allow_external_llm",
+        ) as conn:
             row = await conn.fetchrow(
                 "SELECT extra_payload "
                 "FROM silver.workspace_settings "

@@ -166,8 +166,7 @@ class AuditEmitter
      *
      * `*.alert` is the live notification. `*.acknowledged` is the ack
      * counter row written when an admin clicks Acknowledge — surfacing
-     * that to the inbox lets other admins see the ack live (matches the
-     * multi-operator UX value of IngestionReviewDispositionChanged).
+     * that to the inbox lets other admins see the ack live.
      */
     private function isAlertActionType(string $actionType): bool
     {

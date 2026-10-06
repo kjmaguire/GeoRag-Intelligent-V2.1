@@ -194,11 +194,14 @@ async def extract_user_context(
 
     try:
         import jwt  # noqa: PLC0415
-    except ImportError:
-        logger.warning(
-            "extract_user_context: PyJWT not installed — skipping JWT validation"
-        )
-        return UserContext()
+    except ImportError as exc:
+        # PyJWT is a hard dependency (pyproject). Fail CLOSED: returning an
+        # empty UserContext here would accept any Bearer string unverified.
+        logger.critical("extract_user_context: PyJWT not installed — refusing to authenticate")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="JWT verification unavailable",
+        ) from exc
 
     from app.config import settings  # noqa: PLC0415
 

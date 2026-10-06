@@ -138,6 +138,18 @@ def test_parse_and_persist_heartbeat_by_the_input_run_id() -> None:
         assert 'else ""' not in hb, "workspace_id is a required UUID; the ternary was dead"
 
 
+def test_the_parse_progress_relay_starts_from_the_input_run_id() -> None:
+    """The relay that folds the subprocess's page beacon into stage_pct used to
+    resolve its row from (workspace, key) alone, the very lookup that lands on
+    a sibling row; it must start from the id the run was dispatched under."""
+    from app.hatchet_workflows import ingest_pdf
+
+    src = inspect.getsource(ingest_pdf)
+    relay = src[src.index("async def _relay_progress("):]
+    relay = relay[: relay.index("_relay_task = asyncio.create_task")]
+    assert "run_id: str | None = input.run_id" in relay
+
+
 def test_every_stage_marker_in_ingest_pdf_targets_the_input_run_id() -> None:
     from app.hatchet_workflows import ingest_pdf
 

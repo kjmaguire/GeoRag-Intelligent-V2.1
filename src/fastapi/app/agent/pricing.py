@@ -97,9 +97,9 @@ def has_pricing(model: str) -> bool:
     on one.
 
     That distinction is not hypothetical here. Production runs
-    `Cohere-command-a-plus-05-2026` on Azure AI Foundry (verified on
-    the live fastapi-cc, 2026-08-21) and there is no entry for it
-    below, so every production call would be costed at Sonnet rates.
+    `command-a-plus-05-2026` on Cohere's own API and there is no entry
+    for it below, so every production call would be costed at Sonnet
+    rates.
     `cost_burn_watcher` suspends a workspace at 2x its hourly
     ceiling; feeding it a fabricated number could take a customer
     offline over spend that never happened.

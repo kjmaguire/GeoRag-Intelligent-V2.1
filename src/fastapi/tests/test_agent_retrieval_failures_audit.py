@@ -227,11 +227,25 @@ def test_cohere_shape_error_is_llm_unavailable():
     assert code == ErrorCode.LLM_UNAVAILABLE
 
 
-def test_bedrock_throttle_is_rate_limited():
-    from app.agent.llm_bedrock import BedrockPreStreamError
+def _bedrock_client_error(code: str):
+    from botocore.exceptions import ClientError
 
-    code, _ = classify_error(BedrockPreStreamError("ThrottlingException: slow down"))
+    return ClientError({"Error": {"Code": code, "Message": "x"}}, "ConverseStream")
+
+
+def test_bedrock_throttle_is_rate_limited():
+    code, _ = classify_error(_bedrock_client_error("ThrottlingException"))
     assert code == ErrorCode.RATE_LIMITED
+
+
+def test_bedrock_transient_5xx_is_llm_unavailable():
+    code, _ = classify_error(_bedrock_client_error("ServiceUnavailableException"))
+    assert code == ErrorCode.LLM_UNAVAILABLE
+
+
+def test_bedrock_non_transient_error_is_still_internal():
+    code, _ = classify_error(_bedrock_client_error("AccessDeniedException"))
+    assert code == ErrorCode.INTERNAL_ERROR
 
 
 def test_unrelated_runtime_error_is_still_internal():

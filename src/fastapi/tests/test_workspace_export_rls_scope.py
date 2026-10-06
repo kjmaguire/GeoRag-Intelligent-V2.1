@@ -172,7 +172,6 @@ async def test_export_reads_fail_closed_tables_under_a_nobypassrls_role(
         out = await we.run_export.fn(
             we.WorkspaceExportInput(
                 workspace_id=workspace_id,
-                include_neo4j=False,
                 include_qdrant=False,
                 include_redis=False,
             ),

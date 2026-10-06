@@ -159,3 +159,50 @@ class TestWholeDocumentParallelism:
             result = pdf_report._attempt_ocr_cohere_parse("/nonexistent.pdf")
 
         assert [p.page_number for p in result.pages] == list(range(1, pages + 1))
+
+
+class TestOcrProgressBeacon:
+    """The whole-document scan path never wrote the progress beacon, and the
+    mixed path wrote it only after every page had finished, so a scanned report
+    showed no movement for the whole multi-hour OCR."""
+
+    def test_a_scanned_document_advances_the_beacon_page_by_page(
+        self, stub_page_count, tmp_path, monkeypatch,
+    ) -> None:
+        import json
+
+        pages = 6
+        stub_page_count(pages)
+        beacon = tmp_path / "progress.json"
+        seen: list[int] = []
+
+        def watching(path, page_num, **_kw):
+            if beacon.exists():
+                seen.append(json.loads(beacon.read_text())["done"])
+            return _fake_page_result(page_num)
+
+        monkeypatch.setattr(pdf_report, "_ACTIVE_PROGRESS_FILE", str(beacon))
+        monkeypatch.setattr(pdf_report, "_PROGRESS_TICK_INTERVAL_S", 0.0)
+        monkeypatch.setenv("PDF_OCR_PAGE_CONCURRENCY", "1")
+        monkeypatch.setenv("OCR_PAGES_PER_BATCH", "1")
+        with patch.object(pdf_report, "_ocr_single_page", side_effect=watching), \
+             patch.object(pdf_report, "_postprocess_ocr_text", side_effect=lambda t: t):
+            pdf_report._attempt_ocr_cohere_parse("/nonexistent.pdf")
+
+        final = json.loads(beacon.read_text())
+        assert final == {"phase": "ocr", "done": pages, "total": pages}
+        # Strictly increasing while pages were still being read: it moved
+        # DURING the pass, not once at the end.
+        assert seen == sorted(seen) and len(set(seen)) > 1
+
+    def test_the_counter_never_exceeds_the_total(self, tmp_path) -> None:
+        import json
+
+        beacon = tmp_path / "p.json"
+        progress = pdf_report._OcrProgress(str(beacon), 3)
+        for _ in range(5):
+            progress.advance()
+        assert json.loads(beacon.read_text())["done"] == 3
+
+    def test_no_progress_file_is_a_no_op(self) -> None:
+        pdf_report._OcrProgress(None, 3).advance(2)  # must not raise

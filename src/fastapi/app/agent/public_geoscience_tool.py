@@ -32,8 +32,8 @@ implying it is current.
 What this is NOT
 ----------------
 **Semantic search.** The previous implementation ranked against six Qdrant
-collections holding 182,826 embedded points, fed by a Dagster pipeline dormant
-since 2026-07-28. That corpus never reached Azure and its 384-dim vectors
+collections holding 182,826 embedded points, fed by a Dagster pipeline retired
+2026-07-28. That corpus never reached Azure and its 384-dim vectors
 could not be read by a 1024-dim reader (``HTTP 400: expected dim: 384, got
 1024``). It is gone and is not being rebuilt: embedding a copy of someone
 else's structured feature service buys ranking-by-meaning over records that

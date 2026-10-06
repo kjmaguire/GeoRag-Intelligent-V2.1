@@ -286,6 +286,17 @@ def tiff_env(monkeypatch):
     async def _mark_completed(**kw):
         calls["legacy_completed"] += 1
 
+    async def _claim(**kw):
+        from app.hatchet_workflows._progress import DispatchClaim
+
+        return DispatchClaim(claimed=True, run_id="d3000000-0000-0000-0000-00000000000c")
+
+    async def _noop_progress(**kw):
+        return None
+
+    monkeypatch.setattr(tn.ingest_progress, "claim_dispatch", _claim)
+    monkeypatch.setattr(tn.ingest_progress, "stamp_workflow_run_id", _noop_progress)
+    monkeypatch.setattr(tn.ingest_progress, "release_undispatched", _noop_progress)
     monkeypatch.setattr(tn.ingest_progress, "mark_started", _mark_started)
     monkeypatch.setattr(tn.ingest_progress, "lookup_active_run_id", _lookup)
     monkeypatch.setattr(

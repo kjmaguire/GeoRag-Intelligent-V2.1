@@ -25,14 +25,6 @@ use Illuminate\Queue\SerializesModels;
  *
  * Pages subscribe via the useAdminSurfaceUpdated React hook (mirrors
  * useWorkspaceDataUpdated from Phase 1, but lives on the admin Gate).
- *
- * Distinct from the two pre-existing admin events:
- *   - ReportBuildProgress (per-build cockpit progress, admin.reports.{build_id})
- *     — domain-specific stage labels are useful in the payload, kept as-is.
- *   - IngestionReviewDispositionChanged (multi-operator disposition sync on
- *     admin.ingestion-review) — kept as-is; new "queue grew" signals layer on
- *     by also dispatching AdminSurfaceUpdated on the same channel. Multiple
- *     event names coexist fine on one channel.
  */
 class AdminSurfaceUpdated implements ShouldBroadcastNow
 {

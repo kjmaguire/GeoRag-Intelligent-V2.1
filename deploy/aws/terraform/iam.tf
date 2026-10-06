@@ -281,8 +281,7 @@ locals {
 # whole resource group until 2026-08-23, and two cron jobs deleted the
 # database with it. The custom role that replaced it was `*/read` plus
 # containerApps/write plus the flexible-server start/stop actions; this is
-# the same shape, plus the SageMaker endpoint lifecycle the Bedrock route
-# added.
+# the same shape.
 
 resource "aws_iam_role" "scheduler_task" {
   name               = "${local.name}-scheduler-task"
@@ -323,18 +322,6 @@ data "aws_iam_policy_document" "scheduler_task" {
     # gated anyway; this only has to stay syntactically valid.
     resources = [try(local.db.arn, "arn:aws:rds:::db:none")]
   }
-
-  # CycleMarketplaceEndpoints and UseTheRetainedEndpointConfigs were here
-  # until 2026-09-15. They granted sagemaker:CreateEndpoint /
-  # :DeleteEndpoint so the nightly sweeps could delete Marketplace
-  # endpoints overnight and recreate them in the morning, because those
-  # endpoints bill for as long as they exist.
-  #
-  # ADR-0023 removed the endpoints, so the grants have no caller. They are
-  # deleted rather than left dormant: the scheduler role could delete a
-  # SageMaker endpoint in this account, and a permission whose only
-  # justification has gone is exactly what the "Contributor incident" note
-  # above is about.
 
   statement {
     sid    = "OwnLogs"

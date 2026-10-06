@@ -202,15 +202,6 @@ def scrub_rejected_markers(
     )
 
 
-def _scrub_rejected_sentences(
-    text: str,
-    rejected_citation_ids: set[str],
-    valid_citation_ids: set[str],
-) -> str:
-    """Text-only form of :func:`scrub_rejected_markers` (no insights offset)."""
-    return scrub_rejected_markers(text, rejected_citation_ids, valid_citation_ids)[0]
-
-
 def _retrieved_chunk_reports(tool_results: list[tuple[str, Any]]) -> dict[str, Any]:
     """chunk_id → report_id for every chunk retrieved for THIS query."""
     from app.agent.tools import DocumentSearchResult  # noqa: PLC0415

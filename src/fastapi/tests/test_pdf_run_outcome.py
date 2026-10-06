@@ -500,6 +500,13 @@ def _verify_pool():
     return SimpleNamespace(acquire=_acquire, close=AsyncMock())
 
 
+@asynccontextmanager
+async def _passthrough_scope(pool, workspace_id, site):
+    """embed_verify's workspace bind, minus the real connection it needs."""
+    async with pool.acquire() as conn:
+        yield conn
+
+
 async def _run_embed_verify(persisted: dict, *, row_after: dict, transitioned: bool = True):
     def _task_output(task: Any) -> dict:
         return persisted if task is mod.persist else {"parser_used": "ocr_cohere_parse"}
@@ -510,6 +517,7 @@ async def _run_embed_verify(persisted: dict, *, row_after: dict, transitioned: b
     post = AsyncMock()
     with (
         patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=_verify_pool())),
+        patch.object(mod, "_scoped_acquire", _passthrough_scope),
         patch.object(mod.ingest_progress, "mark_started", AsyncMock()),
         patch.object(mod.ingest_progress, "lookup_active_run_id", AsyncMock(return_value="run-1")),
         patch.object(mod.ingest_progress, "mark_completed_by_run", complete),
@@ -573,6 +581,7 @@ async def test_embed_verify_falls_back_to_the_stored_verdict_when_persist_output
     complete = AsyncMock(return_value=True)
     with (
         patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=_verify_pool())),
+        patch.object(mod, "_scoped_acquire", _passthrough_scope),
         patch.object(mod.ingest_progress, "mark_started", AsyncMock()),
         patch.object(mod.ingest_progress, "lookup_active_run_id", AsyncMock(return_value="run-1")),
         patch.object(mod.ingest_progress, "mark_completed_by_run", complete),

@@ -1,7 +1,7 @@
 """Pure-function helpers that operate on tool-result objects.
 
 Extracted from ``app.agent.orchestrator`` in Phase F.7 (see
-``docs/master_plan_orchestrator_refactor.md``). All four helpers used
+``docs/master_plan_orchestrator_refactor.md``). These helpers used
 to live in ``orchestrator.py`` and are re-exported from there for
 backward compatibility.
 
@@ -14,8 +14,6 @@ Module contents (all synchronous, no I/O):
   ``DocumentChunk`` payloads.
 * ``_is_empty_tool_result`` — Phase F.4 helper, returns True when a
   tool result has no rows worth citing.
-* ``_build_retrieval_summary`` — formats a "N chunks from Qdrant · M
-  graph entities" status line for the phase checklist.
 """
 
 from __future__ import annotations
@@ -28,7 +26,6 @@ from app.agent.tools import (
     CollarDetailsResult,
     DocumentSearchResult,
     DownholeLogsResult,
-    GraphTraversalResult,
     ProjectOverviewResult,
     SpatialQueryResult,
 )
@@ -219,7 +216,6 @@ def _is_empty_tool_result(result: Any) -> bool:
       * ``DownholeLogsResult.count == 0``
       * ``SpatialQueryResult.count == 0``
       * ``DocumentSearchResult.chunks == []``
-      * ``GraphTraversalResult.count == 0``
       * ``PublicGeoscienceSearchResult.records == []``
 
     Unknown / synthetic result objects (e.g. the ``drill_targeting`` text
@@ -240,8 +236,6 @@ def _is_empty_tool_result(result: Any) -> bool:
         return (result.count or 0) == 0
     if isinstance(result, DocumentSearchResult):
         return not result.chunks
-    if isinstance(result, GraphTraversalResult):
-        return (result.count or 0) == 0
     if isinstance(result, PublicGeoscienceSearchResult):
         return not result.records
     if isinstance(result, ProjectOverviewResult):
@@ -255,59 +249,8 @@ def _is_empty_tool_result(result: Any) -> bool:
     return False
 
 
-def _build_retrieval_summary(tool_results: list[tuple[str, Any]]) -> str:
-    """D1 — format a per-store retrieval summary for the phase checklist.
-
-    Returns a human-readable string like
-      "7 graph entities · 18 chunks from Qdrant · 3 rows from PostGIS"
-    or an empty string when nothing retrieved anything worth reporting.
-
-    Counts are pulled from each tool result's `count` attribute. Tools
-    that returned 0 are omitted so the summary reads positive ("got X")
-    rather than exhaustive ("got X, 0 from Y, 0 from Z").
-    """
-    if not tool_results:
-        return ""
-
-    # Label + count per store, ordered by typical relevance for the
-    # reader: documents first (most-cited), then entities, then spatial,
-    # then the specialised paths.
-    parts: list[tuple[int, str]] = []
-
-    def _push(order: int, label: str, count: int) -> None:
-        if count > 0:
-            parts.append((order, f"{count} {label}"))
-
-    for name, result in tool_results:
-        count = int(getattr(result, "count", 0) or 0)
-        if name == "search_documents":
-            _push(10, "chunks from Qdrant", count)
-        elif name == "traverse_knowledge_graph" or name == "query_graph_by_label":
-            _push(20, "graph entities", count)
-        elif name == "query_spatial_collars":
-            _push(30, "PostGIS rows", count)
-        elif name == "query_assay_data":
-            element = getattr(result, "element", None) or "assay"
-            _push(40, f"{element} samples", count)
-        elif name == "query_downhole_logs":
-            _push(50, "downhole intervals", count)
-        elif name == "search_public_geoscience":
-            _push(15, "Public Geoscience records", count)
-        elif name == "query_project_overview":
-            # ProjectOverviewResult.count is collar_count + len(curves).
-            # The phase checklist line reads better as "project metadata"
-            # than as a raw count, so we render a compact summary.
-            _push(5, "project metadata + curve catalog", 1 if count > 0 else 0)
-
-    if not parts:
-        return ""
-    parts.sort(key=lambda p: p[0])
-    return " · ".join(text for _, text in parts)
-
-
 __all__ = [
     "_build_collar_aggregates",
     "_mmr_select_chunks",
     "_is_empty_tool_result",
-    "_build_retrieval_summary",
 ]

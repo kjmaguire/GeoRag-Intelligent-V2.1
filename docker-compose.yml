@@ -6,8 +6,6 @@
 # All deploy.resources limits in this file are dev-workstation starting points
 # (AMD Ryzen 8-core, 64GB RAM, RTX 4080 16GB). Revisit before production:
 #   - PostgreSQL limits assume no other RAM-hungry services are co-running.
-#   - vLLM intentionally has NO CPU/mem limits — adding them can
-#     bottleneck GPU throughput as the CUDA runtime makes large allocations.
 #   - Prod recommendation: raise Qdrant to 4 CPU/8GiB, FastAPI to 4 CPU/4GiB.
 #
 # IMAGE PINNING NOTE (Task 1)
@@ -68,36 +66,26 @@ name: "GeoRag Intelligence V1.0"
 volumes:
   postgres_data:
     driver: local
-  # neo4j_data / neo4j_logs / neo4j_plugins removed 2026-07-28 (B1).
   qdrant_data:
     driver: local
   redis_data:
     driver: local
   minio_data:
     driver: local
-  # Uranium ingest staging — pre-existing named volume that holds the
-  # extracted PLSS-section directories produced by scripts/overnight_uranium_ingest.sh.
-  # Declared `external: true` so docker compose doesn't try to manage its
-  # lifecycle — the volume is populated by the orchestrator outside the
-  # compose graph and lives across stack restarts.
+  # Uranium ingest staging — holds the extracted PLSS-section directories
+  # produced by scripts/overnight_uranium_ingest.sh. It was `external: true`,
+  # which makes `docker compose up` fail with "external volume not found" on
+  # any machine that never ran that script (every fresh clone), since
+  # fastapi and hatchet-worker both mount it. An explicit `name:` keeps the
+  # same volume on hosts that already have one and creates an empty one
+  # everywhere else.
   georag-phase-b-extract:
-    external: true
-  # ollama_models volume removed 2026-05-17 along with the ollama service.
-  # vllm_hf_cache volume removed 2026-07-30 along with the vllm service
-  # (Azure AI Foundry cutover — see the vllm-removal note further below).
+    name: georag-phase-b-extract
   fastapi_hf_cache:
     driver: local
   # Hatchet engine config (TLS certs, server config) persisted across restarts.
   hatchet_config:
     driver: local
-  # Phase 3 Step 7 — activepieces_cache volume removed (sunset).
-  # Kestra storage volume — flow execution data + internal storage. Phase 3 Step 2.
-  # Kestra working directory (subprocess tasks, scratch).
-  # rapidocr_models volume removed 2026-07-29 along with docling (its only
-  # consumer) — docling never ran in production.
-  # Caddy /data — holds the internal CA + issued certs (Phase 7 Step 3).
-  # Persisting this keeps the dev cert stable across container restarts,
-  # so clients that trust it once don't have to re-import every reboot.
 
 # =============================================================================
 # Network — single bridge, all services communicate by container name
@@ -113,7 +101,7 @@ networks:
 services:
 
   # ---------------------------------------------------------------------------
-  # POSTGRESQL 17 + PostGIS 3.6
+  # POSTGRESQL 18 + PostGIS 3.6
   # Applications must connect through PgBouncer on port 6432, NOT directly.
   # Port 5432 is not exposed to the host — only PgBouncer can reach it.
   # Tuning targets: 64GB workstation, NVMe storage (random_page_cost=1.1).
@@ -500,22 +488,14 @@ services:
       HATCHET_PG_DB: hatchet
       HATCHET_PG_USER: hatchet
       HATCHET_PG_PASSWORD: ${HATCHET_DB_PASSWORD:-hatchet}
-      # Phase 3 Step 7 — Activepieces sunset. ACTIVEPIECES_PG_* removed.
-      # Kestra + KestraSsoController were removed 2026-07-28 (A7) — this
-      # block used to wire KESTRA_PG_*_LARAVEL/KESTRA_BASIC_AUTH_* for that
-      # controller. Confirmed zero PHP references before deleting (the
-      # required `${VAR:?...}` vars forced every operator to fill in
-      # values nothing consumed).
       # Redis
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      CACHE_DRIVER: redis
+      CACHE_STORE: redis
       SESSION_DRIVER: redis
       QUEUE_CONNECTION: redis
-      # FastAPI service
-      FASTAPI_HOST: fastapi
-      FASTAPI_PORT: 8000
+      # FastAPI service (config/services.php reads FASTAPI_INTERNAL_URL)
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
       # Reverb WebSocket. NOTE: REVERB_HOST/PORT here are the PUBLISHER
       # targets (where Laravel POSTs broadcast events from inside the
@@ -614,8 +594,6 @@ services:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       # Browser-facing URL (used by Laravel SupportCockpit for trace deep-links).
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3001}
-      FASTAPI_HOST: fastapi
-      FASTAPI_PORT: 8000
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
       # Reverb broadcaster — Horizon POSTs events into the Docker
       # network, so target the laravel-reverb service hostname on
@@ -790,8 +768,6 @@ services:
       # the Dockerfile's `uv pip install --system --no-deps . || true` step)
       # and bind-mount edits silently no-op until the next image rebuild.
       PYTHONPATH: /app
-      FASTAPI_HOST: ${FASTAPI_HOST:-0.0.0.0}
-      FASTAPI_PORT: ${FASTAPI_PORT:-8000}
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
       # Reverb broadcast bridge — laravel_bridge.post_ingestion_progress /
       # post_workspace_data_updated POST here. Internal Docker DNS hostname;
@@ -948,8 +924,6 @@ services:
       LLM_BACKEND: ${LLM_BACKEND:-cohere}
       LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-}
       LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
-      LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
-      LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
       # Cohere API (Cohere Command A+) — used when LLM_BACKEND=cohere.
       # One key, no endpoint to stand up and nothing billing while idle,
       # which is why ADR-0023 made it the default over the Bedrock
@@ -1018,7 +992,6 @@ services:
       # timeout is 30s (services/sparse_encoder.py) -- thirty inside two.
       # 45 matches the code default; TIMEOUT_GATHER_S is 180, so it fits.
       TIMEOUT_QDRANT_S: ${TIMEOUT_QDRANT_S:-45}
-      TIMEOUT_REDIS_MS: ${TIMEOUT_REDIS_MS:-500}
       TIMEOUT_GATHER_S: ${TIMEOUT_GATHER_S:-180}
       RETRIEVAL_QUALITY_THRESHOLD: ${RETRIEVAL_QUALITY_THRESHOLD:-0.5}
       # ADR-0010 — silver.document_passages canonical chunked corpus.
@@ -1055,12 +1028,7 @@ services:
       HF_HOME: /tmp/hf_cache
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
-      # Additional caches needed once unstructured[pdf] is in the image.
-      # numba JIT cache + matplotlib config + fontconfig — all default to
-      # $HOME (/var/www) which is read-only for www-data. Without these,
-      # `from unstructured.partition.pdf import partition_pdf` raises
-      # RuntimeError at import time (numba can't write its cache).
-      NUMBA_CACHE_DIR: /tmp/numba_cache
+      # matplotlib config defaults to $HOME (/var/www), read-only for www-data.
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
       # 2026-06-23 sweep — several import-time cache mkdirs (numba,
@@ -1196,7 +1164,6 @@ services:
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       OMP_NUM_THREADS: "10"
       TOKENIZERS_PARALLELISM: "false"
@@ -1268,7 +1235,6 @@ services:
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       OMP_NUM_THREADS: "10"
       TOKENIZERS_PARALLELISM: "false"
@@ -1331,7 +1297,6 @@ services:
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       OMP_NUM_THREADS: "10"
       TOKENIZERS_PARALLELISM: "false"
@@ -1367,29 +1332,12 @@ services:
   # ===========================================================================
 
   # ---------------------------------------------------------------------------
-  # ---------------------------------------------------------------------------
-  # NEO4J + NEO4J-WARMUP — REMOVED 2026-07-28 (B1).
-  #
-  # traverse_knowledge_graph WAS actively firing on real queries (a
-  # 2026-06-28 audit fix wired lightweight entity extraction so it stopped
-  # being silently skipped) — this was a deliberate trade for the demo, not
-  # a dead-code cut. Every consumer (traverse_knowledge_graph,
-  # query_graph_by_label, fetch_project_graph_entities in
-  # agent/orchestrator/__init__.py, the Layer 4 entity-resolution
-  # validators, the three Phase 0 graph-health agents, the backup/restore
-  # workflows) already treated a missing/unreachable driver as a fail-open
-  # case, so removing the store degrades retrieval quality rather than
-  # breaking anything. AgentDeps.neo4j_driver is now always None.
-  # ---------------------------------------------------------------------------
-
-  # ---------------------------------------------------------------------------
   # QDRANT v1.19 — vector database
   # HNSW m=32, ef_construct=256 tuned for geological embedding retrieval.
   # Payload indices on filter fields (project_id, document_type, etc.) are
   # configured at collection creation time by the FastAPI service on startup.
   # ---------------------------------------------------------------------------
   qdrant:
-    # SIDECAR-MIGRATION 2026-04-19: Backups owned by georag-backup-agent (Module 1 Phase B, 2026-04-19)
     # B8 — digest pinned 2026-04-19 (v1.17 is a floating minor tag)
     # 2026-06-23 sweep: v1.17 (floating minor) -> v1.17.1 (patch).
     # Digest is identical — the floating v1.17 tag had already been
@@ -1576,52 +1524,6 @@ services:
         condition: service_healthy
     restart: "no"
     profiles: ["dev-data", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # OLLAMA — REMOVED 2026-05-17 (Phase 0 pre-work). vLLM is the single
-  # inference runtime per master-plan §12. Legacy service block + env vars
-  # archived in git history. Modelfiles preserved under docker/_deprecated/
-  # ollama/ for the documented rollback procedure.
-  # ---------------------------------------------------------------------------
-
-  # ---------------------------------------------------------------------------
-  # vLLM — REMOVED 2026-07-30 (Phase C, Azure AI Foundry cutover). The LLM
-  # inference runtime moved off self-hosted vLLM to Azure AI Foundry, and
-  # from there to Amazon Bedrock on 2026-09-08 (LLM_BACKEND=bedrock by
-  # default — see src/fastapi/app/config.py BEDROCK_* settings). This also removes the only consumer of the
-  # ingestion worker's GPU reservation from the LLM side (docling/§04p paddle
-  # were already off — see the trim plan). LLM_BACKEND=vllm remains supported
-  # in code for operators who want to point at an external OpenAI-compatible
-  # endpoint; nothing runs one locally anymore. Legacy service block + env
-  # vars archived in git history (see the trim/phase-a-deletions branch
-  # history and feature/azure-foundry-llm for the cutover).
-  # ---------------------------------------------------------------------------
-
-  # ===========================================================================
-  # PROFILE: dev-ingest — REMOVED 2026-07-28 (B2)
-  #
-  # dagster-daemon and dagster-webserver are gone. What they actually ran:
-  #
-  #   - minio_upload_sensor, the trigger for CSV/XLSX structured ingestion.
-  #     Verified STOPPED on the live stack (`dagster sensor list`) — it
-  #     declares no default_status while every schedule in definitions.py
-  #     declares one, so it defaulted to STOPPED and never fired. Generic
-  #     CSV uploads therefore stopped after the object + bronze manifest row
-  #     and nothing downstream ever consumed them.
-  #   - The bronze->silver structured pipelines, public-geoscience pulls and
-  #     gold/visual assets that hung off it.
-  #
-  # PDF ingestion never went through here: Laravel dispatches it to Hatchet
-  # (UploadController, category 'reports'), and A1 moved the PDF parser into
-  # app/services/ingest/pdf_report.py so the FastAPI image no longer imports
-  # anything from the Dagster tree.
-  #
-  # src/dagster/ is retained on disk but dormant — its CSV/XLSX/LAS/SEGY
-  # parsers and their tests are worth keeping for when structured ingest is
-  # rebuilt, and they cost nothing while no container mounts them. The assets
-  # that imported the relocated PDF parser were deleted, since they could no
-  # longer resolve it.
-  # ===========================================================================
 
   # ---------------------------------------------------------------------------
   # RAGFlow removed in §04p Phase 3 — replaced by the in-process PDF Ingestion
@@ -1811,7 +1713,6 @@ services:
       HF_HOME: /tmp/hf_cache
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
       # 2026-06-23 sweep — several import-time cache mkdirs (numba,
@@ -1978,42 +1879,6 @@ services:
               count: 1
               capabilities: [gpu]
     profiles: ["dev-data", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # ACTIVEPIECES — sunset at Phase 3 Step 7. The service block was here in
-  # Phase 2 but has been removed; Kestra (next block) is the integration edge.
-  # The activepieces logical DB + role were dropped via
-  # database/raw/phase3/90-activepieces-sunset.sql. Historical runbooks
-  # archived under docs/_archived/phase2_activepieces_*.md.
-  # ---------------------------------------------------------------------------
-
-  # ---------------------------------------------------------------------------
-  # KESTRA + CADDY — REMOVED 2026-07-28 (A7).
-  #
-  # Kestra was never live: KESTRA_URL was set in no .env.example, no compose
-  # service env, and not in the live .env (only KESTRA_BASIC_AUTH_*,
-  # KESTRA_PORT, and the secret since renamed FLOW_JWT_SECRET). Its three
-  # flows were never deployed
-  # (flow-source-loader.enabled: false, no CI push step) — see the deleted
-  # kestra/flows/georag/*.yaml in git history. Two Phase 0 escalation paths
-  # silently no-op'd for months as a result (repointed onto the outbox
-  # 2026-07-25/26); a third (services/dispatchers/kestra.py) was repointed
-  # in this commit.
-  #
-  # Caddy existed only to front Kestra — a WebSocket-capable edge proxy that
-  # validated Sanctum sessions via forward_auth to Laravel, then reverse-
-  # proxied to kestra:8080 with basic auth injected. It proxied nothing else,
-  # so it goes with Kestra.
-  #
-  # Also removed: the kestra Postgres role + logical DB
-  # (database/raw/phase3/95-kestra-sunset.sql mirrors the established
-  # 90-activepieces-sunset.sql pattern), the Laravel SSO proxy
-  # (KestraSsoController + KestraSsoCheckController + their routes), the
-  # kestra config block in config/services.php, and the dead
-  # IntegrationsController Kestra-dashboard methods (index/toggleFlag —
-  # unrouted since the Integrations.tsx page they rendered was deleted in
-  # the reader-core trim).
-  # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
   # Martin — MVT tile server over the PostGIS tile functions.

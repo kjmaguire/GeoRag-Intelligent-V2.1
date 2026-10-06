@@ -1,5 +1,15 @@
 # Runbook — Embedding swap: bge-small-en-v1.5 → Qwen3-Embedding-0.6B
 
+> **Scope note (2026-10-06):** this runbook concerns only the self-hosted
+> `embedding` sidecar (Qwen3-Embedding-0.6B, `EMBEDDING_BACKEND=local`) used
+> by the dev compose stack and on-prem deployments. It does not describe
+> production: production embeds with Cohere Embed 5 Pro (`embed-v5.0-pro`)
+> on Cohere's own API since 2026-10-05 (ADR-0025,
+> `docs/adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md`), with
+> Embed v4 on Bedrock as the rollback until 2026-10-19. The "has NOT been
+> executed" status below is the 2026-06-03 state of the local bge-small →
+> Qwen3 re-embed and has not been re-verified since.
+
 **Status:** Code is migrated as of 2026-06-03. **Corpus re-embed has NOT
 been executed.** Until the steps below run, queries will 400 against
 existing Qdrant collections because the vector dim changed 384 → 1024.

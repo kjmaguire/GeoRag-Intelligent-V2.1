@@ -125,11 +125,13 @@ SELECT ok(
 );
 
 -- ── 3. Cross-tenant denial under non-matching GUC (9 assertions) ────────
--- PostgreSQL superusers bypass RLS even with FORCE ROW LEVEL SECURITY.
--- The migrations create role `martin_readonly` and GRANT it SELECT on
--- every policy-bearing table specifically so this test can SET ROLE to
--- a non-superuser and exercise the policy. Production traffic runs as
--- a non-superuser too, so this is the realistic enforcement scenario.
+-- PostgreSQL superusers bypass RLS even with FORCE ROW LEVEL SECURITY, so
+-- the denial checks run as `georag_app` -- the NOSUPERUSER NOBYPASSRLS role
+-- every application container connects as, and which migration
+-- 2026_08_19_050000 grants SELECT on every migrated silver table. That is the
+-- realistic enforcement scenario. (This file used `martin_readonly` until
+-- 2026_10_06_100200 cut that role back to the tile sources' relations; it
+-- holds no SELECT on these tables any more, which is the point.)
 --
 -- GUC contract (2026-05/06 normalization): all 9 policies read
 -- app.workspace_id. The legacy georag.workspace_id / georag.project_id
@@ -138,7 +140,7 @@ SELECT ok(
 -- unset-GUC escape hatch (all rows visible) and made the drill_traces
 -- denial test fail against seeded fixture rows. Setting a non-matching
 -- app.workspace_id is what exercises the deny path.
-SET LOCAL ROLE martin_readonly;
+SET LOCAL ROLE georag_app;
 SET LOCAL app.workspace_id = '00000000-0000-0000-0000-000000000fff';
 SELECT ok((SELECT count(*) FROM silver.evidence_items) = 0, 'evidence_items denies non-matching workspace');
 SELECT ok((SELECT count(*) FROM silver.answer_runs) = 0, 'answer_runs denies non-matching workspace');

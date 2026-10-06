@@ -14,9 +14,11 @@ Auth: X-Service-Key, same as /internal/v1/shadow.
 from __future__ import annotations
 
 import logging
+from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import settings
 from app.hatchet_workflows import _progress as ingest_progress
@@ -52,14 +54,24 @@ class MvRefreshRunInput(BaseModel):
         description="UUID. Scopes the gold.mv_refresh_log row + dependency "
                     "staleness check. NULL = global refresh (nightly cron).",
     )
-    triggered_by: str = Field(
+    triggered_by: Literal["ingestion", "nightly_integrity", "manual"] = Field(
         default="ingestion",
-        description="One of: ingestion, nightly_integrity, manual.",
+        description="One of: ingestion, nightly_integrity, manual "
+                    "(the values gold.mv_refresh_log's CHECK constraint admits).",
     )
     force: bool = Field(
         default=False,
         description="Bypass the staleness check and refresh unconditionally.",
     )
+
+    @field_validator("workspace_id")
+    @classmethod
+    def _workspace_is_uuid(cls, v: str | None) -> str | None:
+        # A malformed value used to reach `$2::uuid` and surface as a 500;
+        # reject it at the boundary (422) and pass a canonical UUID string on.
+        if v is None:
+            return None
+        return str(UUID(v))
 
 
 class MvRefreshViewResult(BaseModel):

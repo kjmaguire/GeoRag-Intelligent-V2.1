@@ -152,13 +152,13 @@ async def _dispatch_qdrant(row: asyncpg.Record) -> tuple[str, str | None]:
 
 async def _dispatch_neo4j(row: asyncpg.Record) -> tuple[str, str | None]:
     """B1 (2026-07-28): Neo4j was removed from the stack. Stays registered
-    under target_store='neo4j' so any lingering outbox rows still route
-    somewhere, but is now a permanent no-op returning the same
-    transient_failure the try/except used to produce when the driver was
-    unreachable — the caller's existing dead-letter-after-N-attempts path
-    handles it identically, just without the wasted connection attempt.
+    under target_store='neo4j' only because the table's CHECK constraint
+    still admits the value, so any lingering outbox row routes somewhere.
+    Dead-lettered at once (``permanent_failure``): the store cannot come
+    back, and the retries a ``transient_failure`` buys are three wasted
+    claim cycles per row.
     """
-    return "transient_failure", "neo4j was removed from the stack (B1, 2026-07-28)"
+    return "permanent_failure", "neo4j was removed from the stack (B1, 2026-07-28)"
 
 
 async def _dispatch_seaweedfs(row: asyncpg.Record) -> tuple[str, str | None]:

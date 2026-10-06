@@ -1,10 +1,13 @@
-"""Pydantic AI tool implementations for the GeoRAG agent.
+"""Tool implementations for the GeoRAG agent.
 
-Each tool in this module is a grounded data-access function registered on
-``geo_agent`` via ``@geo_agent.tool``.  The agent calls these tools to fetch
-real numbers, spatial records, and knowledge-graph relationships — the LLM
-synthesises and explains; it never generates numerical values itself
-(hallucination prevention Layer 3).
+Each tool in this module is a grounded data-access function.  The
+agentic-retrieval ``execute`` node resolves them by name
+(``getattr(app.agent.tools, tool_name)``) and calls them to fetch real
+numbers, spatial records and document passages — the LLM synthesises and
+explains; it never generates numerical values itself (hallucination
+prevention Layer 3).  There is no ``geo_agent`` / ``@geo_agent.tool``
+registration; the ``RunContext`` first parameter is satisfied by
+``app.agent.deps.ToolContext``.
 
 Timeout discipline (Section 06e)
 ---------------------------------
@@ -12,8 +15,7 @@ Every database call is wrapped with ``asyncio.wait_for`` using the timeout
 constants from ``app.config.settings``:
 
   PostGIS   5 s   TIMEOUT_POSTGIS_S
-  Neo4j     3 s   TIMEOUT_NEO4J_S
-  Qdrant    2 s   TIMEOUT_QDRANT_S
+  Qdrant    TIMEOUT_QDRANT_S (see app.config for the current value)
 
 Partial results under timeout are surfaced as empty lists with a warning log
 rather than propagating an exception — partial data is always preferable to a
@@ -21,17 +23,15 @@ hard failure when the agent has already started assembling a response.
 
 Parallel fan-out
 ----------------
-The caller (queries.py / geo_agent.py) is expected to dispatch the three
-primary retrieval tools via asyncio.gather() per the critical pattern in
-Section 05c.  The tools themselves are single-responsibility; they do not
+The caller (the agentic-retrieval execute node) dispatches the retrieval
+tools via asyncio.gather() per the critical pattern in Section 05c.  The tools themselves are single-responsibility; they do not
 know about each other.
 
-Milestone notes
----------------
-search_documents and traverse_knowledge_graph return empty results until the
-embedding pipeline (Milestone 2) and graph population (Milestone 3) are
-complete.  The agent is wired to handle empty tool results gracefully and will
-report "insufficient information" rather than fabricating data.
+Empty results
+-------------
+search_documents returns an empty result when nothing is indexed or retrieval
+fails.  The agent handles empty tool results gracefully and reports
+"insufficient information" rather than fabricating data.
 """
 
 from __future__ import annotations
@@ -62,150 +62,6 @@ from app.agent.deps import AgentDeps
 from app.agent.log_safe import query_hash
 from app.config import settings
 from app.services.reranker import RERANKER_BACKEND
-
-# ---------------------------------------------------------------------------
-# P2 #28 — Cypher identifier allowlist.
-# ---------------------------------------------------------------------------
-# `traverse_knowledge_graph` and `query_graph_by_label` interpolate the
-# LLM-supplied `relationship_type` and `label` parameters DIRECTLY into the
-# Cypher query string — Neo4j's parameterised-query API does not support
-# parameterising labels or relationship types (this is a Cypher language
-# limit, not a driver one). That makes those parameters the Cypher
-# equivalent of P0 #2's SQL-injection vector: an LLM-supplied
-# `relationship_type="HOSTS_IN] WITH count(*) AS x MATCH (n) DETACH DELETE n //"`
-# would execute as a destructive query against the graph.
-#
-# Mirror the SQL allowlist pattern: maintain a hard-coded set of valid
-# labels + relationship types pulled from the graph schema (silver/gold
-# Dagster assets + scripts/populate_neo4j.py). Any value not on the
-# allowlist is logged and the function returns an empty result instead
-# of running the dangerous Cypher.
-
-# Node labels — keep in sync with:
-#   - src/fastapi/scripts/populate_neo4j.py (Project, DrillHole, Formation, ...)
-#   - src/fastapi/app/agent/orchestrator.py:_LABEL_KEYWORDS
-#   - src/fastapi/app/agent/viz_builder.py type_colors
-#   - src/dagster/.../gold_public_geoscience.py (Public-Geoscience labels)
-#   - docker/neo4j/warmup.cypher (warmup traversals reference labels)
-_ALLOWED_GRAPH_LABELS: frozenset[str] = frozenset({
-    # Internal project graph. Canonical drill-hole label is `DrillHole`
-    # (PascalCase, §04f Global Invariant 4). The 2026-04-27 migration
-    # (script deleted 2026-08-28 with the rest of the Neo4j remnants) renamed
-    # all live nodes from the legacy `:Drillhole` (lowercase h) form.
-    "Project",
-    "DrillHole",
-    "Formation",
-    "Report",
-    "QualifiedPerson",
-    "Deposit",
-    "MineralOccurrence",
-    "Commodity",
-    "PublicGeoSource",  # observed in live data — single PG-source registry node
-    "Document",
-    # Public Geoscience graph (PG-side ingester labels)
-    "Source",
-    "Mine",
-    "MineralDisposition",
-    "Jurisdiction",
-    "ResourcePotentialZone",
-    "RockSample",
-    "AssessmentSurvey",
-    "GeophysicalSurvey",
-    "Publication",
-})
-
-# Relationship types — pulled from MERGE statements in populate_neo4j.py
-# and gold_public_geoscience.py. Adding a new relationship to the indexer
-# REQUIRES adding it here too, or the LLM will silently lose the ability
-# to filter by it.
-_ALLOWED_GRAPH_RELATIONSHIPS: frozenset[str] = frozenset({
-    # Project ↔ DrillHole
-    "HAS_HOLE", "LOCATED_IN",
-    # DrillHole ↔ Formation / Lithology
-    "HAS_LITHOLOGY", "INTERSECTS",
-    # Project ↔ Report ↔ QualifiedPerson
-    "HAS_REPORT", "AUTHORED_BY",
-    # Project ↔ Deposit ↔ Formation
-    "HOSTS", "DESCRIBES", "HOSTED_BY",
-    # Deposit ↔ MineralOccurrence ↔ DrillHole
-    "HAS_MINERALIZATION", "TARGETS",
-    # Formation hierarchy
-    "PART_OF",
-    # QP ↔ Project
-    "WORKS_ON",
-    # Public-Geoscience graph
-    "PUBLISHED_BY", "SOURCED_FROM",
-    "HAS_COMMODITY", "HAS_PRIMARY_COMMODITY", "HAS_ASSOCIATED_COMMODITY",
-    "COVERS_AREA_FOR",
-    # Neo4j review — observed in live data, were missing from allowlist:
-    "MENTIONS",          # Document → entity references
-    "REFERENCES",        # Report → cross-references
-    "ANALOGOUS_TO",      # Deposit ↔ Deposit comparable links
-})
-
-# Defensive regex — used as a SECOND gate before the allowlist check so
-# an LLM that fabricates a never-before-seen identifier with valid-looking
-# casing (e.g. "Deposit_drop_table") gets rejected fast even if a future
-# allowlist update accidentally widens the set. Cypher identifiers are
-# [A-Za-z_][A-Za-z0-9_]* with a 64-char ceiling we apply for sanity.
-_CYPHER_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
-
-
-def _validate_cypher_label(label: str | None) -> str | None:
-    """Return ``label`` if it's safe to interpolate into Cypher, else None.
-
-    Two-stage gate:
-      1. Regex match — must be a syntactically valid Cypher identifier.
-         Catches any payload with `]`, `(`, ` `, `;`, or other Cypher
-         metacharacters BEFORE we test the allowlist.
-      2. Allowlist membership — must be on `_ALLOWED_GRAPH_LABELS`.
-
-    Returns None on any failure with a structured warning log so operators
-    can spot LLM probing attempts in Loki.
-    """
-    if not label:
-        return None
-    label = label.strip()
-    if not _CYPHER_IDENTIFIER_RE.match(label):
-        logger.warning(
-            "_validate_cypher_label: rejected label=%r (regex fail)",
-            label[:80],
-        )
-        return None
-    if label not in _ALLOWED_GRAPH_LABELS:
-        logger.warning(
-            "_validate_cypher_label: rejected label=%r (not on allowlist)",
-            label[:80],
-        )
-        return None
-    return label
-
-
-def _validate_cypher_relationship(rel_type: str | None) -> str | None:
-    """Return ``rel_type`` if safe to interpolate, else None.
-
-    Same two-stage gate as `_validate_cypher_label` but against the
-    relationship-type allowlist. Returning None lets the caller fall
-    back to the unfiltered `[r]` traversal — preserves the user's
-    intent (find any related entity) without honouring the unsafe
-    type filter.
-    """
-    if not rel_type:
-        return None
-    rel_type = rel_type.strip()
-    if not _CYPHER_IDENTIFIER_RE.match(rel_type):
-        logger.warning(
-            "_validate_cypher_relationship: rejected rel_type=%r (regex fail)",
-            rel_type[:80],
-        )
-        return None
-    if rel_type not in _ALLOWED_GRAPH_RELATIONSHIPS:
-        logger.warning(
-            "_validate_cypher_relationship: rejected rel_type=%r (not on allowlist)",
-            rel_type[:80],
-        )
-        return None
-    return rel_type
 
 
 def _metered(tool_name: str):
@@ -382,8 +238,8 @@ class SpatialQueryResult:
 class DocumentChunk:
     """Single document chunk returned from Qdrant semantic search.
 
-    Fields match the georag_reports collection payload schema produced by the
-    Dagster ``index_reports`` asset.  The ``section_number`` and
+    Fields match the Qdrant chunk payload schema written by the ingestion
+    passage embedder (``app.services.ingest.passage_embedder``).  The ``section_number`` and
     ``section_title`` fields allow precise citation (hallucination Layer 2).
     """
 
@@ -542,34 +398,13 @@ class ProjectOverviewResult:
                              #   answer "what file types are indexed?" too.
     count: int               # = collar_count + len(distinct_curves) +
                              #   report_count, for the generic
-                             #   _is_empty_tool_result/_build_retrieval_summary
+                             #   _is_empty_tool_result
                              #   path which expects a `count` attribute
     data_source: str = "PostGIS silver.projects + silver.well_log_curves + silver.reports"
     #: "timeout" / "error" when one of the overview queries did not finish.
     #: The fields it would have filled are then zero/empty, which is NOT
     #: "the project has none" (audit item 12).
     retrieval_failure: str | None = None
-
-
-@dataclass
-class GraphEntity:
-    """Single entity returned from the Neo4j knowledge graph."""
-
-    entity_id: str
-    entity_type: str
-    name: str
-    properties: dict[str, str]
-    relationship_type: str
-    relationship_direction: str  # "INBOUND" | "OUTBOUND"
-
-
-@dataclass
-class GraphTraversalResult:
-    """Return type for traverse_knowledge_graph."""
-
-    entities: list[GraphEntity]
-    count: int
-    data_source: str  # "Neo4j" — supports provenance Layer 5
 
 
 @dataclass
@@ -894,12 +729,8 @@ class CollarDetailsResult:
 
 
 # ---------------------------------------------------------------------------
-# Lazy import of geo_agent to avoid circular imports.
-# The tools module is imported by geo_agent.py; registering tools here via
-# @geo_agent.tool would create a circular import.  Instead, geo_agent.py
-# imports and registers all tools explicitly after creating the agent.
-# The tool functions below are plain async functions that accept a RunContext;
-# geo_agent.py wraps them with @geo_agent.tool.
+# The tool functions below are plain async functions that accept a
+# RunContext-shaped first argument (``app.agent.deps.ToolContext``).
 # ---------------------------------------------------------------------------
 
 
@@ -2263,8 +2094,9 @@ async def search_documents(
     returned zero chunks and the agent answered "insufficient information"
     about a corpus that plainly contained the answer.
 
-    The tool targets the ``georag_reports`` Qdrant collection which is
-    populated by the Dagster ``index_reports`` asset.  Whether a project_id
+    The tool targets the Qdrant chunk collection populated by the ingestion
+    passage embedder (``georag_chunks``; see ``RETRIEVAL_USE_DOCUMENT_PASSAGES``
+    below).  Whether a project_id
     filter is applied depends on ``settings.QDRANT_DOCUMENT_PROJECT_SCOPE``:
 
       * ``cross_project``     — no filter (historical default; safe only when
@@ -2891,244 +2723,6 @@ async def search_documents(
         count=len(chunks),
         rerank_degraded=True,
         data_source=f"qdrant:{_doc_collection} (rerank unavailable)",
-    )
-
-
-@_metered("traverse_knowledge_graph")
-async def traverse_knowledge_graph(
-    ctx: RunContext[AgentDeps],
-    entity_name: str,
-    project_id: str,
-    relationship_type: str | None = None,
-    depth: int = 1,
-) -> GraphTraversalResult:
-    """Traverse the Neo4j knowledge graph to find entities related to a named entity.
-
-    Matching strategy (in order):
-      1. Exact case-insensitive match on the ``name`` property.
-      2. CONTAINS substring match (e.g. "Triple R" matches "Triple R Deposit").
-      3. If no start node found, returns empty result gracefully.
-
-    Scoping: only nodes with ``project_id = $project_id`` are considered
-    as start nodes. Related nodes are NOT project-scoped so cross-project
-    links (if any) are returned.
-
-    Args:
-        entity_name: Name of the starting entity node (fuzzy-matched).
-        project_id: UUID to scope the start node to this project's subgraph.
-        relationship_type: Optional Cypher relationship type to filter edges.
-        depth: Traversal depth (1–3).
-
-    Returns:
-        GraphTraversalResult with related entities, count, and data source.
-    """
-    # B1 (2026-07-28): Neo4j removed. Explicit early return rather than
-    # relying on the bare except below to catch AttributeError from
-    # None.session() — same empty-result contract, clearer intent.
-    if ctx.deps.neo4j_driver is None:
-        return GraphTraversalResult(entities=[], count=0, data_source="Neo4j knowledge graph (unavailable)")
-
-    depth = min(max(depth, 1), 3)
-
-    # P2 #28 — validate the LLM-supplied relationship_type before
-    # interpolating it into the Cypher string. Invalid → None → fall
-    # back to the unfiltered `[r]` form so we still honour the user's
-    # discovery intent without executing dangerous Cypher.
-    safe_rel_type = _validate_cypher_relationship(relationship_type)
-    rel_filter = f"[r:{safe_rel_type}]" if safe_rel_type else "[r]"
-
-    # Two-stage match: exact first, then CONTAINS. The UNION deduplicates.
-    cypher = (
-        "CALL { "
-        "  MATCH (start) WHERE start.project_id = $project_id "
-        "    AND toLower(start.name) = toLower($entity_name) "
-        f"  MATCH (start)-{rel_filter}-(related) "
-        "  RETURN start, related, r "
-        "  UNION "
-        "  MATCH (start) WHERE start.project_id = $project_id "
-        "    AND toLower(start.name) CONTAINS toLower($entity_name) "
-        f"  MATCH (start)-{rel_filter}-(related) "
-        "  RETURN start, related, r "
-        "} "
-        "RETURN DISTINCT "
-        "  elementId(related) AS entity_id, "
-        "  labels(related)[0] AS entity_type, "
-        "  related.name AS name, "
-        "  properties(related) AS props, "
-        "  type(r) AS rel_type, "
-        "  CASE WHEN startNode(r) = start THEN 'OUTBOUND' ELSE 'INBOUND' END AS direction "
-        "LIMIT 50"
-    )
-
-    logger.info(
-        "traverse_knowledge_graph: entity='%s' project=%s rel_type=%s depth=%s",
-        entity_name,
-        project_id,
-        relationship_type,
-        depth,
-    )
-
-    async def _run_traversal() -> list[GraphEntity]:
-        async with ctx.deps.neo4j_driver.session() as session:
-            result = await session.run(
-                cypher,
-                entity_name=entity_name,
-                project_id=project_id,
-            )
-            records = await result.data()
-
-        entities: list[GraphEntity] = []
-        for rec in records:
-            raw_props: dict = rec.get("props") or {}
-            str_props = {k: str(v) for k, v in raw_props.items()}
-            entities.append(
-                GraphEntity(
-                    entity_id=str(rec.get("entity_id", "")),
-                    entity_type=rec.get("entity_type", "Unknown"),
-                    name=rec.get("name", ""),
-                    properties=str_props,
-                    relationship_type=rec.get("rel_type", ""),
-                    relationship_direction=rec.get("direction", "OUTBOUND"),
-                )
-            )
-        return entities
-
-    try:
-        entities = await asyncio.wait_for(_run_traversal(), timeout=settings.TIMEOUT_NEO4J_S)
-    except TimeoutError:
-        logger.warning(
-            "traverse_knowledge_graph timed out after %.1fs for entity='%s' project=%s",
-            settings.TIMEOUT_NEO4J_S,
-            entity_name,
-            project_id,
-        )
-        entities = []
-    except Exception:
-        logger.exception(
-            "traverse_knowledge_graph failed for entity='%s' project=%s",
-            entity_name,
-            project_id,
-        )
-        entities = []
-
-    return GraphTraversalResult(
-        entities=entities,
-        count=len(entities),
-        data_source="Neo4j knowledge graph",
-    )
-
-
-@_metered("query_graph_by_label")
-async def query_graph_by_label(
-    ctx: RunContext[AgentDeps],
-    label: str,
-    project_id: str,
-) -> GraphTraversalResult:
-    """List all nodes of a given label in the project's subgraph.
-
-    Used by the orchestrator as a fallback when traverse_knowledge_graph
-    returns empty because the user asked about a *category* ("formations",
-    "deposits") rather than a specific *entity* ("Triple R"). Returns
-    nodes directly without traversal. Each returned GraphEntity carries
-    relationship_type="" and direction="OUTBOUND" as placeholders.
-
-    Args:
-        label: Neo4j node label (e.g. "Formation", "Deposit", "DrillHole").
-        project_id: UUID scope.
-
-    Returns:
-        GraphTraversalResult with all matching nodes (capped at 50).
-        Returns an empty result (count=0) when ``label`` is not on the
-        Cypher identifier allowlist (P2 #28) — rejecting an unsafe
-        label is preferred over executing arbitrary Cypher.
-    """
-    # B1 (2026-07-28): Neo4j removed. Same explicit-early-return rationale
-    # as traverse_knowledge_graph above.
-    if ctx.deps.neo4j_driver is None:
-        return GraphTraversalResult(entities=[], count=0, data_source="Neo4j knowledge graph (unavailable)")
-
-    # P2 #28 — validate the LLM-supplied label before interpolating it.
-    # Unlike `relationship_type` in traverse_knowledge_graph (which has
-    # an unfiltered `[r]` fallback), `label` has no safe-fallback because
-    # MATCH (n) without a label scans every node in the database — wrong
-    # result shape, dangerous query cost. Bail out empty instead.
-    safe_label = _validate_cypher_label(label)
-    if safe_label is None:
-        logger.info(
-            "query_graph_by_label: rejected label=%r — returning empty result",
-            label[:80] if label else None,
-        )
-        return GraphTraversalResult(
-            entities=[],
-            count=0,
-            data_source="Neo4j knowledge graph (label rejected)",
-        )
-
-    cypher = (
-        f"MATCH (n:{safe_label}) "
-        "WHERE n.project_id = $project_id "
-        "OPTIONAL MATCH (n)-[r]-(m) "
-        "RETURN "
-        "  elementId(n) AS entity_id, "
-        "  labels(n)[0] AS entity_type, "
-        "  n.name AS name, "
-        "  properties(n) AS props, "
-        "  COLLECT(DISTINCT type(r) + ' → ' + COALESCE(m.name, '?'))[..5] AS rels "
-        "LIMIT 50"
-    )
-
-    logger.info(
-        "query_graph_by_label: label=%s project=%s",
-        label,
-        project_id,
-    )
-
-    async def _run() -> list[GraphEntity]:
-        async with ctx.deps.neo4j_driver.session() as session:
-            result = await session.run(cypher, project_id=project_id)
-            records = await result.data()
-
-        entities: list[GraphEntity] = []
-        for rec in records:
-            raw_props: dict = rec.get("props") or {}
-            str_props = {k: str(v) for k, v in raw_props.items()}
-            # Append relationship summary to properties
-            rels = rec.get("rels") or []
-            if rels:
-                str_props["related_to"] = "; ".join(rels)
-            entities.append(
-                GraphEntity(
-                    entity_id=str(rec.get("entity_id", "")),
-                    entity_type=rec.get("entity_type", "Unknown"),
-                    name=rec.get("name", ""),
-                    properties=str_props,
-                    relationship_type="",
-                    relationship_direction="OUTBOUND",
-                )
-            )
-        return entities
-
-    try:
-        entities = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_NEO4J_S)
-    except TimeoutError:
-        logger.warning(
-            "query_graph_by_label timed out label=%s project=%s",
-            label,
-            project_id,
-        )
-        entities = []
-    except Exception:
-        logger.exception(
-            "query_graph_by_label failed label=%s project=%s",
-            label,
-            project_id,
-        )
-        entities = []
-
-    return GraphTraversalResult(
-        entities=entities,
-        count=len(entities),
-        data_source="Neo4j knowledge graph",
     )
 
 
@@ -4547,8 +4141,7 @@ class DrillTraceCollar:
     """One drill hole rendered as a 3-D trace.
 
     Sourced from ``silver.collars`` + ``silver.drill_traces``. The trace
-    points come from the LINESTRINGZ geometry written by the
-    silver_drill_traces Dagster asset — every coordinate the LLM ever
+    points come from the LINESTRINGZ geometry in ``silver.drill_traces`` — every coordinate the LLM ever
     cites traces back to a row in silver.collars (§04i Layer 5).
     """
 
@@ -4662,23 +4255,6 @@ def _parse_linestring_z_points(wkt_or_text: str) -> list[tuple[float, float, flo
         except ValueError:
             continue
     return pts
-
-
-def _downsample_trace_points(
-    pts: list[tuple[float, float, float]],
-    max_points: int = _DRILL_TRACE_MAX_POINTS_PER_TRACE,
-) -> list[tuple[float, float, float]]:
-    """Stride-sample a trace down to ``max_points`` items while keeping the toe.
-
-    Deterministic: same input → same output. The first and last points
-    are always preserved so the visible line still terminates at the toe.
-    """
-    if len(pts) <= max_points:
-        return pts
-    stride = (len(pts) - 1) / (max_points - 1)
-    sampled = [pts[int(i * stride)] for i in range(max_points - 1)]
-    sampled.append(pts[-1])
-    return sampled
 
 
 @_metered("query_drill_traces_3d")

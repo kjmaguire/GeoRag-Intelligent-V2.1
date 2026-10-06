@@ -1,24 +1,9 @@
 """SPLADE++ sparse encoder -- singleton loader for GeoRAG hybrid retrieval.
 
 This module provides the shared SPLADE++ sparse encoder used at query time
-(FastAPI) and at index time (Dagster index_reports).
-
-FORKED COPY -- do NOT sync back
--------------------------------
-There is a near-identical file at
-``src/dagster/georag_dagster/assets/sparse_encoder.py``. This header used to
-say "both copies must be identical; when changing this file, change the other
-too" (last sync 2026-04-21). That instruction is now actively harmful:
-
-  * the Dagster tree has been dormant since 2026-07-28 and nothing in it
-    executes, so its copy is documentation rather than code;
-  * this copy diverged on 2026-08-22 to stop logging 80 characters of raw
-    customer text on the empty-vector branch, using ``app.agent.log_safe``
-    -- which the Dagster package cannot import.
-
-Copying that change back is impossible, and copying the Dagster version
-FORWARD would silently reinstate the leak. Treat this file as the only live
-one.
+(FastAPI) and at index time (the Hatchet ingest workers, via
+``passage_embedder``). It is the only copy: the Dagster tree that carried a
+forked duplicate was deleted 2026-08-28.
 
 Model choice
 ------------
@@ -30,8 +15,7 @@ geological queries that include specific identifiers (hole IDs like
 
 The model is pinned by HuggingFace revision SHA to prevent silent weight
 drift. When a new model version is approved (after Milestone 2 benchmarking),
-update SPARSE_MODEL_REVISION and SPARSE_MODEL_VERSION here AND in the
-Dagster counterpart.
+update SPARSE_MODEL_REVISION and SPARSE_MODEL_VERSION here.
 
 Memory footprint
 ----------------
@@ -73,12 +57,6 @@ Lifespan pre-warm
 Calling encode_sparse() during FastAPI lifespan startup triggers the
 lru_cache load, warming the model before the first real request. See
 main.py for the pre-warm call.
-
-Dagster note
-------------
-In Dagster workers, the lru_cache persists for the lifetime of the Dagster
-daemon/executor process. For multi-process execution (the default), each
-worker subprocess loads its own model copy. This is the expected behaviour.
 """
 
 from __future__ import annotations
@@ -99,7 +77,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 SPARSE_MODEL_NAME = "naver/splade-cocondenser-ensembledistil"
 SPARSE_MODEL_REVISION = "49cf4c7b0db5b870a401ddf5e2669993ef3699c7"
-# Short form stored in answer_runs.sparse_model_version and Qdrant payload parser_version
+# Short form of the pinned revision. NOTE: nothing persists it today --
+# answer_runs.sparse_model_version is declared on the model but never written.
 SPARSE_MODEL_VERSION = "splade-cocondenser-ensembledistil@49cf4c7b"
 
 
@@ -110,17 +89,17 @@ SPARSE_MODEL_VERSION = "splade-cocondenser-ensembledistil@49cf4c7b"
 # SPLADE sidecar (app.sparse_service) over a localhost hop instead of loading a
 # per-process model. NOT on the sidecar itself (which would proxy to itself).
 #
-# The original rule said "ONLY on the FastAPI service, NOT on the Dagster index
-# pipeline, which keeps its own local model for throughput". Dagster was
-# retired 2026-07-28 and its successor, the hatchet-worker, DOES get this URL
-# on AWS (deploy/aws/terraform/config.tf sets it in common_environment). That
+# The original rule said "ONLY on the FastAPI service, NOT on the index
+# pipeline, which keeps its own local model for throughput". The pipeline
+# that rule named (Dagster) is gone and its successor, the hatchet-worker,
+# DOES get this URL on AWS (deploy/aws/terraform/config.tf sets it in common_environment). That
 # is a live trade rather than an oversight: one shared 440 MB model instead of
 # a second copy resident in the worker, paid for with a network hop per
 # passage during bulk ingest. If ingest throughput ever becomes the
 # constraint, unsetting it on hatchet-worker is the lever. The sidecar runs THIS SAME
 # code with the URL unset, so the produced vectors are identical. Sibling of the
-# embedding sidecar (app/services/embedding.py). This block is part of the
-# KEEP-IN-SYNC contract above; it is inert wherever SPARSE_SERVICE_URL is unset.
+# embedding sidecar (app/services/embedding.py). It is inert wherever
+# SPARSE_SERVICE_URL is unset.
 SPARSE_SERVICE_URL = (os.environ.get("SPARSE_SERVICE_URL") or "").strip()
 
 

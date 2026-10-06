@@ -66,6 +66,7 @@ def _trust_conn(answer_run_id: UUID) -> StubConn:
                     "created_at": datetime.datetime(2026, 9, 29, tzinfo=datetime.UTC),
                     "evidence_truncated_count": 0,
                     "workspace_data_version_at_query": 3,
+                    "trace_id": "0af7651916cd43dd8448eb211c80319c",
                 },
             ),
             (
@@ -116,6 +117,8 @@ def test_trust_summary_does_not_500_on_cited_answers(monkeypatch) -> None:
     assert body["citations"]["total"] == 4
     assert body["citations"]["resolved"] == 3
     assert body["citations"]["resolution_pct"] == 75.0
+    # provenance.trace_id is the stored trace id, not query_class.
+    assert body["provenance"]["trace_id"] == "0af7651916cd43dd8448eb211c80319c"
 
 
 def test_trust_summary_reads_feedback_from_message_feedback(monkeypatch) -> None:

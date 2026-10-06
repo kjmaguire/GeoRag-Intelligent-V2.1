@@ -56,6 +56,26 @@ class TestRenderPagePng:
         assert png.startswith(b"\x89PNG")
 
 
+class TestRenderWithASharedDocument:
+    """stage_page_images opens the PDF once and hands the document to every
+    render, instead of re-parsing the whole file twice per page."""
+
+    def test_a_shared_document_renders_the_identical_png(self) -> None:
+        pdfium = pytest.importorskip("pypdfium2")
+        pdf = _pdf_with_pages([LETTER, A0, LETTER])
+        document = pdfium.PdfDocument(pdf)
+        try:
+            for page in (1, 2, 3):
+                alone = render_page_png(pdf, page)
+                shared = render_page_png(pdf, page, document=document)
+                assert shared == alone
+            # The caller's document is still usable: render_page_png must not
+            # close what it does not own.
+            assert len(document) == 3
+        finally:
+            document.close()
+
+
 class TestClientRendering:
     def test_pages_render_under_the_env_cap_and_warn_when_downscaled(
         self, tmp_path, monkeypatch, caplog

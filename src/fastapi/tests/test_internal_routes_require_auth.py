@@ -173,13 +173,16 @@ def test_every_internal_route_requires_the_service_key() -> None:
     )
 
 
-def test_the_two_routers_that_were_open_are_covered() -> None:
-    """Named explicitly so a future refactor cannot quietly drop them."""
+def test_the_router_that_was_open_is_covered() -> None:
+    """Named explicitly so a future refactor cannot quietly drop it.
+
+    (outlier_assist was the other router that had no auth; it was unmounted on
+    2026-10-06 once its only caller, the Dagster outlier detector, was gone.)
+    """
     paths = {path for path, route in _internal_routes() if _has_auth_dependency(route)}
 
     assert "/internal/exports/shapefile" in paths
     assert "/internal/exports/geopackage" in paths
-    assert any(path.startswith("/internal/outlier-assist") for path in paths)
 
 
 def test_the_per_flow_jwt_route_is_recognised_and_really_checks() -> None:

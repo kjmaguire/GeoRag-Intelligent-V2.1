@@ -117,7 +117,6 @@ _DEFAULT_MODEL_ID_V2 = "Qwen/Qwen2.5-VL-7B-Instruct"
 # AWQ-4bit or MLliu6/Qwen3-VL-8B-Instruct-AWQ-W4A16 (unofficial — vet before
 # promoting). See ADR-0015 + docs/runbooks for the serving decision.
 _DEFAULT_MODEL_ID_V3 = "Qwen/Qwen3-VL-8B-Instruct"
-_DEFAULT_MODEL_ID = _DEFAULT_MODEL_ID_V2  # back-compat alias
 _DEFAULT_BACKEND = "vllm"
 # Audit 2026-06-28: default to the VL sidecar (vllm-vl), NOT the main text-only
 # vLLM (vllm). The main endpoint serves the 14B TEXT model, which cannot do

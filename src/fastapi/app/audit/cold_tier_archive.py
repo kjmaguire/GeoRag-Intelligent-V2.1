@@ -20,9 +20,8 @@ Design:
       ``first_hash``, ``last_hash``, ``chain_continuous`` (bool —
       verified inline by re-walking previous_hash == prev_row.hash),
       and the cold-tier URIs for the JSONL chunks.
-    * The cold tier is any object that implements the
-      :class:`app.services.bronze_store.BronzeStore` Protocol — SeaweedFS
-      in prod, LocalFs in dev/CI.
+    * The cold tier is any object with the bronze-store put/get shape
+      (georag_object_storage.protocols) — S3 in prod, local in dev/CI.
 
 Output contract (ArchiveRun dataclass):
     rows_archived          how many rows met the cutoff

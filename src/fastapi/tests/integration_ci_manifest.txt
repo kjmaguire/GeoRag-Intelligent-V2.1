@@ -76,7 +76,6 @@ tests/test_train_models.py
 # ── Domain surfaces ───────────────────────────────────────────────────
 tests/test_hypothesis_generator.py
 tests/test_mechanical_questions.py
-tests/test_neo4j_drillhole_label.py
 tests/test_section11_3_wave2_extras.py
 tests/test_sme_seeders.py
 tests/test_whatchanged_report_integration.py

@@ -153,9 +153,6 @@ return [
     */
     'fastapi' => [
         'internal_url' => env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
-        // Audit 2026-06-28: base_url alias so controllers read it via config()
-        // (config:cache-safe) instead of a bare env('FASTAPI_BASE_URL').
-        'base_url' => env('FASTAPI_BASE_URL', env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000')),
         'service_key' => env('FASTAPI_SERVICE_KEY'),
         // V1.5-03 — `kid` (key id) header on every minted JWT. FastAPI uses it
         // to pick the matching secret from a kid→key map, enabling
@@ -196,25 +193,13 @@ return [
         // terminates. Over budget, the job broadcasts a slim `completed`
         // (answer, citations, verdicts) marked payload_truncated=true.
         'completed_frame_budget_bytes' => (int) env('FASTAPI_COMPLETED_FRAME_BUDGET_BYTES', 700_000),
-        // Stamped onto every query_audit_log row by QueryController.
-        //
-        // The default was 'Qwen/Qwen3-14B-AWQ' with a docblock explaining
-        // that it existed precisely so the audit row would be accurate
-        // — and FASTAPI_LLM_MODEL was never set on the production
-        // container, so the wrong default was exactly what got stamped.
-        // The vLLM cutover to Azure AI Foundry completed 2026-07-30, so
-        // every audit row since then names a model that has not served a
-        // request. For a platform selling cited, auditable answers for
-        // regulated mining disclosure, that makes any retrospective
-        // "which model produced this answer" question wrong, along with
-        // any cost or quality attribution built on the column.
-        //
-        // The default now matches what fastapi-cc actually runs
-        // (AZURE_FOUNDRY_DEPLOYMENT=Cohere-command-a-plus-05-2026, verified
-        // live 2026-08-21). Set FASTAPI_LLM_MODEL when the backend moves,
-        // and treat a mismatch between this and AZURE_FOUNDRY_DEPLOYMENT as
-        // a deploy error rather than a cosmetic one.
-        'llm_model' => env('FASTAPI_LLM_MODEL', 'Cohere-command-a-plus-05-2026'),
+        // Provisional model name stamped onto every query_audit_log row by
+        // QueryController at reservation time. StreamQueryFromFastApi
+        // overwrites it from the `completed` frame's `llm_model`, so only a
+        // run that never completes keeps this value. Set FASTAPI_LLM_MODEL
+        // when the chat backend moves; a stale default makes the audit
+        // question "which model was meant to answer" wrong for failed runs.
+        'llm_model' => env('FASTAPI_LLM_MODEL', 'command-a-plus-05-2026'),
     ],
 
     'hatchet' => [
@@ -222,98 +207,6 @@ return [
         // old hard-coded 2000ms was sized for 500-file bulk replays and
         // pinned an Octane worker >=2s per interactive upload.
         'dispatch_throttle_ms' => (int) env('HATCHET_DISPATCH_THROTTLE_MS', 250),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Qdrant
-    |--------------------------------------------------------------------------
-    |
-    | Drift L-02 (Wave 3.A audit): config/services.php had no 'qdrant' key,
-    | so HealthController's `config('services.qdrant.host', env('QDRANT_HOST'
-    | , 'qdrant'))` was load-bearing on the env() default. Surfaced here so
-    | the config cache picks it up and the defensive env() in the consumer
-    | becomes belt-and-suspenders.
-    */
-    'qdrant' => [
-        'host' => env('QDRANT_HOST', 'qdrant'),
-        'port' => (int) env('QDRANT_PORT', 6333),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Tempo (distributed tracing backend)
-    |--------------------------------------------------------------------------
-    |
-    | Phase 0 Step 3 — Workflow Run Dashboard renders one anchor per row that
-    | links to Tempo's HTTP API for the trace_id stamped on the run. Operators
-    | click through to the span tree without leaving the dashboard. Defaulted
-    | to localhost:3200 to match the dev compose stack; production overrides
-    | via TEMPO_HOST_URL (typically the in-cluster grafana/tempo URL or the
-    | external operator-facing hostname behind SSO).
-    |
-    */
-    'tempo' => [
-        'url' => env('TEMPO_HOST_URL', 'http://localhost:3200'),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Kestra — REMOVED 2026-07-28 (A7)
-    |--------------------------------------------------------------------------
-    |
-    | KestraSsoController (which read this block) and the compose kestra +
-    | caddy services are gone. Kestra was never deployed — KESTRA_URL was
-    | unset in every environment. See database/raw/phase3/95-kestra-sunset.sql.
-    |
-    */
-
-    /*
-    |--------------------------------------------------------------------------
-    | Dagster GraphQL
-    |--------------------------------------------------------------------------
-    |
-    | CC-01 Item 1 Slice 1 — Laravel synchronously launches asset
-    | materialisations (silver_collars / silver_lithology / silver_samples /
-    | silver_xlsx) via Dagster's GraphQL endpoint to avoid the 5-minute MinIO
-    | sensor poll on the drill-upload UX path. The location/repository defaults
-    | match the standard georag_dagster package layout; override when the
-    | code-location naming diverges.
-    |
-    */
-    'dagster' => [
-        // Dagster was retired 2026-07-28 (trim B2). OFF by default: with it
-        // on, every /internal/metrics scrape opened a PDO connection to the
-        // hardcoded docker-compose host `postgresql:5432`, which does not
-        // resolve on Azure — so each scrape paid a failed connect against a
-        // 2s timeout and wrote a `dagster_metrics_query_failed` warning into
-        // Log Analytics, then emitted `dagster_runs_total{status="none"} 0`,
-        // making a decommissioned stack read as merely idle.
-        //
-        // Set DAGSTER_METRICS_ENABLED=true only where a Dagster runs DB is
-        // genuinely reachable (i.e. the self-hosted docker-compose stack).
-        'enabled' => (bool) env('DAGSTER_METRICS_ENABLED', false),
-
-        'url' => env('DAGSTER_GRAPHQL_URL', 'http://dagster-webserver:3001'),
-        'location' => env('DAGSTER_LOCATION', 'georag_dagster'),
-        'repository' => env('DAGSTER_REPOSITORY', '__repository__'),
-        'timeout' => (int) env('DAGSTER_GRAPHQL_TIMEOUT', 10),
-
-        // Direct PDO connection to the Dagster runs DB — used by
-        // MetricsController::dagsterRunsRowsViaPdo() to surface
-        // dagster_runs_total{status=...} on /internal/metrics. Without
-        // these, every scrape tick logged `dagster_metrics_query_failed:
-        // no password supplied` because config(...pg_db) and friends
-        // resolved to null → empty string. (Added 2026-05-25 after a
-        // 15-second-cadence log spam was traced back here.)
-        //
-        // The controller hard-codes host=postgresql:5432 because
-        // PgBouncer doesn't proxy the Dagster DB; only the credentials
-        // + DB name are taken from config. Defaults mirror the .env
-        // example so a fresh checkout works without manual wiring.
-        'pg_db' => env('DAGSTER_PG_DB', 'georag_dagster'),
-        'pg_user' => env('DAGSTER_PG_USER', 'georag'),
-        'pg_password' => env('DAGSTER_PG_PASSWORD', ''),
     ],
 
     /*

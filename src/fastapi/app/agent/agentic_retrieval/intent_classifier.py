@@ -226,11 +226,6 @@ _DECISION_SUPPORT_AUGMENT_RE = _compile(
 )
 
 
-def _keyword_count(pattern: re.Pattern[str], query: str) -> int:
-    """Count distinct matches of *pattern* in *query*."""
-    return len(pattern.findall(query))
-
-
 def _decision_support_score(query: str) -> tuple[float, tuple[str, ...], bool]:
     """Use Phase 1.4's classifier as the decision-support score source.
 

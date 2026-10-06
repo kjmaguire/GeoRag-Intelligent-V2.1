@@ -78,12 +78,18 @@ The CI job applies it in the same step sequence.
 
 | File | Purpose | Assertions |
 |------|---------|-----------|
+| `01_core_schema.sql` | Core silver tables exist with their key columns | 10 |
+| `02_evidence_model.sql` | Evidence-model tables (document revisions, passages, evidence items, answer runs) | 10 |
+| `03_rls_baseline.sql` | RLS enabled + FORCE + workspace policy on collars, samples, drill_traces and the evidence tables | 15 |
 | `08_silver_mvt_functions.sql` | 7 silver MVT functions: existence, signature, etag format, etag bump on data_version increment, determinism, martin_readonly grants | 80 |
 | `09_public_geoscience_mvt_functions.sql` | 8 PGEO function wrappers: existence, etag md5 format, two-column return, different coords, determinism, martin_readonly grants | 27 |
 | `10_golden_mvt_snapshots.sql` | Golden MVT byte snapshots for all 7 silver functions + determinism re-check | 21 |
+| `11_rls_workspace_isolation.sql` | Policy existence + FORCE on the 9 workspace-scoped tables; cross-tenant denial run as `georag_app` | 36 |
+| `12_phase3_ocr_confidence.sql` | OCR-confidence columns and constraints on `silver.document_passages` | 13 |
+| `13_database_review_2026_10.sql` | 2026-10 review migrations: FK indexes, no duplicate workspace indexes, `silver.samples.workspace_id` NOT NULL + FK + trigger, `martin_readonly` least privilege | 14 |
 | `seed_golden_fixture.sql` | Idempotent seed for `10_golden_mvt_snapshots.sql` — NOT a pgTAP file | — |
 
-**Total pgTAP assertions: 128**
+**Total pgTAP assertions: 226**
 
 ## Support files
 
@@ -95,7 +101,7 @@ The CI job applies it in the same step sequence.
 
 ## Notes
 
-- Files `08`, `09`, and `10` run inside `BEGIN ... ROLLBACK` — no test data is
+- Every numbered file runs inside `BEGIN ... ROLLBACK` — no test data is
   committed to the database.
 - `seed_golden_fixture.sql` DOES commit (no transaction wrapper). It is
   idempotent via `ON CONFLICT DO NOTHING`.
@@ -104,5 +110,8 @@ The CI job applies it in the same step sequence.
 - All 7 silver function etag_hash values are identical for the same tile+project
   because they share the formula `md5(data_version|z|x|y|project_id)`. This is
   correct by design. The MVT byte hashes differ per layer.
-- `martin_readonly` EXECUTE grants are verified in files `08` and `09`.
-  SELECT grants on source tables are verified separately in Module 8 Chunk 8.3.
+- `martin_readonly` EXECUTE grants are verified in files `08` and `09`. Its
+  SELECT grants are deliberately limited to the tile sources' relations
+  (migration `2026_10_06_100200`); file `13` asserts both the grants it keeps
+  and the ones it must not hold. Tests that need a non-superuser,
+  non-BYPASSRLS session (file `11`) use `georag_app`, the application role.

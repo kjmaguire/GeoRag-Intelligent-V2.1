@@ -13,7 +13,7 @@
 --
 -- Extensions are installed in the public schema (PostgreSQL convention).
 -- Schemas are created without objects here; individual service migrations
--- (Laravel, FastAPI, Dagster) own the tables within each schema.
+-- (Laravel, FastAPI) own the tables within each schema.
 
 -- ============================================================================
 -- EXTENSIONS
@@ -66,8 +66,9 @@ CREATE SCHEMA IF NOT EXISTS silver;
 
 -- gold: aggregated and analytical outputs.
 -- Pre-computed joins, rollups, and project-scoped views that are expensive
--- to compute at query time. Materialized views in this schema are refreshed
--- by Dagster pipeline jobs on a schedule. The Laravel API reads from gold
+-- to compute at query time. The tables in this schema are plain tables
+-- written by promote_silver_to_gold (the only materialized view in the
+-- system is silver.mv_collar_summary). The Laravel API reads from gold
 -- for dashboard and export endpoints.
 CREATE SCHEMA IF NOT EXISTS gold;
 
@@ -116,16 +117,6 @@ BEGIN
     END IF;
 END
 $$;
-
--- ============================================================================
--- DAGSTER DATABASE
--- ============================================================================
-
--- Dagster stores its run history and event log in a separate database so its
--- schema migrations never collide with the application tables.
--- DAGSTER_PG_DB defaults to georag_dagster in docker-compose.yml.
-SELECT 'CREATE DATABASE georag_dagster OWNER georag'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'georag_dagster')\gexec
 
 -- ============================================================================
 -- VERIFICATION

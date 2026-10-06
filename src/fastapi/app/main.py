@@ -53,29 +53,21 @@ from starlette.responses import Response  # for /metrics return-type resolution
 from app.config import settings
 from app.db.dsn import build_dsn, redact_dsn
 from app.logging_config import configure_json_logging
-from app.routers import admin_tier1_misc as tier1_misc_router  # Phase H4 Tier 1 — source-trust + export-gate + k6
 from app.routers import (
     admin_tier234 as tier234_router,  # Phase H4 §11.1/§11.10 backups/cold-tier ops (trimmed 2026-07-28, task #31)
 )
 from app.routers import answer_runs as answer_runs_router
-from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
 from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
 from app.routers import coverage as coverage_router  # CC-03 Item 5 — coverage density heatmap
 from app.routers import evidence as evidence_router
 from app.routers import exports as exports_router
 from app.routers import integrations_trigger as integrations_trigger_router
-from app.routers import maps as maps_router  # CC-01 Item 3 (stub) — map ingest scaffold
 from app.routers import metrics_ingestion_events as metrics_ingestion_events_router
-from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
 from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
-from app.routers import outlier_assist as outlier_assist_router
-from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
 from app.routers import public_geo_trigger as public_geo_trigger_router
 from app.routers import shadow_trigger as shadow_trigger_router
-from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
-from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 from app.routers import workflow_trigger as workflow_trigger_router  # HAT-13
 from app.services._bedrock import RetiredAzureConfiguration
 from app.services.qdrant_conn import qdrant_client_kwargs
@@ -783,7 +775,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     #
     # Reranking runs INSIDE `search_documents`, over Qdrant candidates only —
     # nothing fuses Qdrant results with the PostGIS/assay tool results. The
-    # single RERANKER_TOP_K value applies (`top_k_for_class` has no callers).
+    # single RERANKER_TOP_K value applies.
     #
     # Failure policy (changed 2026-10-04, audit items B/C): this is NOT a
     # degrade-to-RRF path any more. app.state.reranker = None is allowed to
@@ -820,116 +812,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "SPLADE++ encoder pre-warm failed -- hybrid retrieval will fail on "
             "first query. Install transformers and torch in pyproject.toml and rebuild."
         )
-
-    # -------------------------------------------------------------------------
-    # 8. §04p PDF Ingestion Subsystem — Stage 2 render service + Bronze store
-    # -------------------------------------------------------------------------
-    # PdfRenderService holds a ProcessPoolExecutor (process workers, not threads,
-    # per §04p Stage 2 PDFium thread-safety requirement) and an LRU render cache.
-    # S3BronzeStore (SeaweedFS) is the production Bronze store as of the
-    # storage-abstraction plan's PR4; LocalFsBronzeStore is a fallback for a
-    # bare dev shell that isn't running the full docker-compose stack.
-    try:
-        import os as _os  # noqa: PLC0415
-
-        from app.services.bronze_store import LocalFsBronzeStore, S3BronzeStore  # noqa: PLC0415
-        from app.services.pdf_render import PdfRenderService  # noqa: PLC0415
-
-        app.state.pdf_render_service = PdfRenderService()
-        try:
-            app.state.bronze_store = S3BronzeStore()
-            logger.info(
-                "PDF render service ready; Bronze store backed by object storage (STORAGE_BACKEND=%s)",
-                _os.environ.get("STORAGE_BACKEND", "s3_compatible"),
-            )
-        except ValueError:
-            # No object-storage credentials in this environment (AWS_ACCESS_KEY_ID/
-            # AWS_SECRET_ACCESS_KEY, or a legacy S3_*/MINIO_*/SEAWEEDFS_* fallback,
-            # are all unset) — expected in a bare dev shell, not in any environment
-            # actually running SeaweedFS. Fall back to local disk rather than
-            # failing PDF render entirely.
-            logger.warning(
-                "No object-storage credentials found — Bronze store falling back to "
-                "local disk. Fine for a bare dev shell; any environment with more than "
-                "one FastAPI instance needs SeaweedFS-backed storage to work correctly."
-            )
-            app.state.bronze_store = LocalFsBronzeStore()
-            logger.info("PDF render service and Bronze store ready (local-disk fallback)")
-    except Exception:
-        logger.exception(
-            "§04p PDF subsystem init failed — /pdf/* endpoints will return 503. "
-            "Ensure pikepdf and pypdfium2 are installed: uv pip install 'pikepdf>=9.0' 'pypdfium2>=4.30'"
-        )
-        app.state.pdf_render_service = None
-        app.state.bronze_store = None
-
-    # -------------------------------------------------------------------------
-    # 9. §04p Stage 3 extract service — NOT started since 2026-09-29.
-    # -------------------------------------------------------------------------
-    # Its only consumers were GET /pdf/extract_text and /pdf/find_tables,
-    # unmounted by database audit PG-13 (silver.pdf_text_blocks /
-    # pdf_table_cells are never created). Starting it only spawned an unused
-    # process pool in every worker. app.state.pdf_extract_service stays None.
-    app.state.pdf_extract_service = None
-
-    # -------------------------------------------------------------------------
-    # 12. §04p PDF Ingestion Subsystem — Stage 6 VL service (Phase 1.D)
-    # -------------------------------------------------------------------------
-    # PdfVlService is async-native (httpx I/O to vLLM — no process pool).
-    # It holds an asyncpg pool reference, a reference to PdfRenderService for
-    # 200-DPI page renders, and an optional pooled httpx client.
-    #
-    # Config (all optional — defaults target the in-network vllm service):
-    #   PDF_VL_MODEL_ID    — model identifier (default: "Qwen/Qwen2.5-VL-7B-Instruct")
-    #   PDF_VL_BACKEND     — "vllm" | "anthropic" (default: "vllm")
-    #   PDF_VL_BACKEND_URL — full base URL (no default; the local vLLM
-    #                        service was removed 2026-07-30)
-    #   PDF_VL_TIMEOUT_S   — inference timeout in seconds (default: 120)
-    #   PDF_VL_MAX_PAGES   — max pages per request (default: 4)
-    #
-    # OPERATOR ACTION REQUIRED before /pdf/summarize_section works:
-    #   vLLM serves: --model Qwen/Qwen2.5-VL-7B-Instruct on /v1
-    #   All Python deps are already present (httpx + asyncpg + pydantic).
-    #
-    # Defensive try/except: VL config errors (bad URL, wrong backend name) must
-    # NOT block startup.  /pdf/summarize_section returns 503 until fixed.
-    app.state.pdf_vl_service = None
-    _vl_render_svc = getattr(app.state, "pdf_render_service", None)
-    if _vl_render_svc is not None:
-        try:
-            from app.services.pdf_vl import PdfVlService  # noqa: PLC0415
-
-            _vl_http_client = getattr(app.state, "openai_http_client", None)
-            app.state.pdf_vl_service = PdfVlService(
-                pool=pg_pool,
-                render_service=_vl_render_svc,
-                http_client=_vl_http_client,
-            )
-            logger.info(
-                "PDF VL service ready (§04p Phase 1.D — Qwen-VL via %s)",
-                app.state.pdf_vl_service._backend,
-            )
-        except Exception:
-            logger.exception(
-                "§04p Phase 1.D VL service init failed — "
-                "/pdf/summarize_section will return 503. "
-                "Check PDF_VL_BACKEND_URL and PDF_VL_MODEL_ID env vars."
-            )
-    else:
-        logger.warning(
-            "§04p Phase 1.D VL service skipped — pdf_render_service is None. "
-            "Render service must initialise successfully before the VL service."
-        )
-
-    # -------------------------------------------------------------------------
-    # 12.5 / 13. AssessmentSummarizer and PdfCoordinatesService — NOT started
-    # since 2026-09-29. Their only consumers (/assessment_summary/*,
-    # /completeness_audit/*, GET /pdf/find_coordinates) were unmounted by
-    # database audit PG-13: they read silver.pdf_text_blocks /
-    # silver.pdf_coordinates, which no migration creates.
-    # -------------------------------------------------------------------------
-    app.state.assessment_summarizer = None
-    app.state.pdf_coordinates_service = None
 
     # -------------------------------------------------------------------------
     # Plan §0e — retrieval-trace flush loop. Drains the in-process buffer
@@ -994,27 +876,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             trace_flush_task.cancel()
         except Exception:
             logger.exception("Trace flush loop shutdown failed (non-fatal)")
-
-    # §04p — shut down the PDF render process pool before DB pools so
-    # in-flight render tasks can finish while DB connections are still open.
-    pdf_render_service = getattr(app.state, "pdf_render_service", None)
-    if pdf_render_service is not None:
-        try:
-            await pdf_render_service.shutdown()
-            logger.info("PDF render service shut down")
-        except Exception:
-            logger.debug("PDF render service shutdown failed", exc_info=True)
-
-    # §04p Phase 1.B — shut down the extract process pool before DB pools.
-    # Must come before pg_pool.close() because the extract service may have
-    # in-flight cache writes that need the pool to complete.
-    pdf_extract_service = getattr(app.state, "pdf_extract_service", None)
-    if pdf_extract_service is not None:
-        try:
-            await pdf_extract_service.shutdown()
-            logger.info("PDF extract service shut down")
-        except Exception:
-            logger.debug("PDF extract service shutdown failed", exc_info=True)
 
     # Anthropic first (no pool, just an httpx client; symmetric teardown order).
     anthropic_client = getattr(app.state, "anthropic_client", None)
@@ -1277,25 +1138,16 @@ _assert_production_posture()
 app.include_router(queries.router, prefix="/internal")
 app.include_router(projects.router, prefix="/internal")
 app.include_router(exports_router.router)
-# Track A.1 Phase 4.B-ii — LLM-assist outlier endpoint called by the
-# Dagster outlier detector. /internal/outlier-assist is the path the
-# Dagster helper expects (OUTLIER_LLM_ASSIST_ENDPOINT env var defaults
-# to http://fastapi:8000/internal/outlier-assist).
-app.include_router(outlier_assist_router.router, prefix="/internal")
 # Module 6 Phase B Chunk 4a — evidence inspector (no /internal prefix;
 # auth is on the router itself via verify_service_key dependency).
 app.include_router(evidence_router.router)
 # Module 7 Phase B Chunk 1 — answer-run replay + feedback endpoints.
 app.include_router(answer_runs_router.router)
-# §04p Phase 1.A — PDF Ingestion Subsystem (Stage 2 render endpoints).
-# No /internal prefix: these endpoints are called by the Pydantic AI agent
-# tools directly, not routed through the Laravel-to-FastAPI internal path.
 # API-14 — /pdf/* (6 routes) and /assessment_summary/* (2) were removed
 # 2026-09-29: no caller anywhere, and nothing writes the Bronze
 # ``pdfs/{sha256}.pdf`` layout both read, so every call 404'd. The lifespan
-# services they used (render/extract pools, VL, assessment summarizer) are
-# still initialised above; removing those is a separate lifespan change.
-app.include_router(phase0_ops_router.router)
+# services they used (render/extract pools, VL, assessment summarizer, Bronze
+# store) are no longer initialised either.
 app.include_router(shadow_trigger_router.router)
 app.include_router(public_geo_trigger_router.router)  # operator "Sync now" for public_geo_sync
 app.include_router(workflow_trigger_router.router)  # HAT-13 triggers for UI-only workflows
@@ -1303,13 +1155,15 @@ app.include_router(mv_refresh_trigger_router.router)  # Phase 2 reliability spec
 app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliability spec
 app.include_router(integrations_trigger_router.router)
 app.include_router(visualizations_router.router)  # Phase H4 §5 — strip-log / cross-section / stereonet
-app.include_router(ml_training_router.router)     # Phase H4 §12 UI — ML training runs
 app.include_router(citation_feedback_router.router)  # Phase H4 §12.8 UI — citation 👍/👎
-app.include_router(audit_findings_router.router)  # Phase H4 §11.5/11.10/6.4 UI — audit findings
-app.include_router(what_changed_router.router)    # Phase H4 §9.9 UI — what-changed digest viewer
-app.include_router(tier1_misc_router.source_trust_router)
-app.include_router(tier1_misc_router.export_gate_router)
-app.include_router(tier1_misc_router.k6_router)
+# REMOVED 2026-10-06 (full-code review): maps (501 stub), outlier_assist (its
+# only caller, the Dagster outlier detector, is gone), smdi (serves a table
+# nothing refreshes since Dagster went), phase0_ops, ml_training,
+# audit_findings, what_changed and admin_tier1_misc (source-trust / export-gate
+# / load-test viewers). Each had zero callers anywhere in the repo (Laravel,
+# React, Hatchet, CI, runbooks) -- the admin pages that used them were deleted
+# in the reader-core trim -- and several run cross-workspace reads or inline ML
+# jobs behind the shared service key alone. Modules and tests deleted.
 # tier234_router.{rec,qp,ws_members,ws_settings,audit_explorer,saved_maps,
 # alerts,phase_h4_health}_router — REMOVED 2026-07-28 (task #31). Zero
 # Laravel-side callers for any of the 8; the admin pages that reached them
@@ -1318,11 +1172,8 @@ app.include_router(tier1_misc_router.k6_router)
 # 2026-05-17.
 # completeness_router — UNMOUNTED 2026-09-29 (database audit PG-13). It reads
 # silver.pdf_text_blocks / silver.pdf_coordinates, which no migration creates,
-# and had no caller. The module stays. /assessment_summary/* was removed
-# outright (API-14, above).
-app.include_router(maps_router.router)  # CC-01 Item 3 (stub) — map ingest scaffold
+# and had no caller. /assessment_summary/* was removed outright (API-14, above).
 app.include_router(coverage_router.router)  # CC-03 Item 5 — coverage density heatmap
-app.include_router(smdi_router.router)  # SMDI ingestion plan v1.1 Phase 6 — /public-geo/smdi/features
 app.include_router(tier234_router.backups_router)  # Phase H4 §11.1/§11.10 — backup / cold-tier ops
 
 # §19.3 Interpretation Workspace — notes / section-lines / target-zones / comments
@@ -1371,25 +1222,28 @@ async def ready() -> dict[str, str]:
             await conn.fetchval("SELECT 1")
         checks["postgres"] = "ok"
     except Exception as exc:
-        checks["postgres"] = f"error: {exc}"
+        logger.warning("ready: postgres check failed", exc_info=True)
+        checks["postgres"] = f"error: {type(exc).__name__}"
 
     # Qdrant
     try:
         await app.state.qdrant_client.get_collections()
         checks["qdrant"] = "ok"
     except Exception as exc:
-        checks["qdrant"] = f"error: {exc}"
+        logger.warning("ready: qdrant check failed", exc_info=True)
+        checks["qdrant"] = f"error: {type(exc).__name__}"
 
-    # Neo4j — REMOVED 2026-07-28 (B1). Was checked here; an Azure readiness
-    # probe reading this endpoint would otherwise mark the pod perpetually
-    # unhealthy for a store that no longer exists.
+    # Neo4j — REMOVED 2026-07-28 (B1). It is no longer checked here; a
+    # readiness probe would otherwise mark the task perpetually unhealthy
+    # for a store that no longer exists.
 
     # Redis
     try:
         await app.state.redis_client.ping()
         checks["redis"] = "ok"
     except Exception as exc:
-        checks["redis"] = f"error: {exc}"
+        logger.warning("ready: redis check failed", exc_info=True)
+        checks["redis"] = f"error: {type(exc).__name__}"
 
     # Query-path embedder (VEN-1, 2026-09-29). A task whose warm-up failed
     # reports "warming" until the background re-warm succeeds, and one whose

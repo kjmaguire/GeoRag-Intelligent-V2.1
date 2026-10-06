@@ -108,6 +108,7 @@ def render_page_png(
     page_number: int,
     *,
     max_pixels: int = EMBED_V4_MAX_PIXELS,
+    document: object | None = None,
 ) -> tuple[bytes, int, int, float]:
     """Render ONE page to PNG sized to fit a pixel cap (Embed v4's by default).
 
@@ -121,6 +122,12 @@ def render_page_png(
         pypdfium2's 0-indexed convention internally — the off-by-one here
         would silently embed the wrong page, so it is done in exactly one
         place.
+    document:
+        An already-open ``pypdfium2.PdfDocument`` over ``pdf_bytes``, owned by
+        the caller. Without it the PDF is parsed twice per call (once to
+        measure the page, once to render it), which on a 1,000-page scan is
+        2,000 full-document parses inside the parse subprocess's wall cap;
+        ``stage_page_images`` passes one document for the whole run.
 
     Returns
     -------
@@ -128,27 +135,37 @@ def render_page_png(
     """
     import pypdfium2 as pdfium  # noqa: PLC0415 — heavy import, lazy
 
-    from app.services.pdf_render import _render_full_page_worker  # noqa: PLC0415
+    from app.services.pdf_render import (  # noqa: PLC0415
+        _render_full_page_worker,
+        _render_page_png_from_document,
+    )
 
     # Measure the page before rendering it — we need its dimensions to pick a
     # DPI, and opening the document twice is far cheaper than rendering at the
     # wrong size and discarding the result.
-    pdf = pdfium.PdfDocument(pdf_bytes)
+    pdf = document if document is not None else pdfium.PdfDocument(pdf_bytes)
     try:
         page = pdf[page_number - 1]
-        width_points, height_points = page.get_size()
+        try:
+            width_points, height_points = page.get_size()
+        finally:
+            page.close()
+
+        dpi = dpi_for_page(width_points, height_points, max_pixels=max_pixels)
+        if dpi < _MIN_USEFUL_DPI:
+            logger.warning(
+                "page_image: page %d is %.0fx%.0f pt — capping at %.0f DPI to fit "
+                "the %d px limit; the render may be too coarse to be useful",
+                page_number, width_points, height_points, dpi, max_pixels,
+            )
+
+        if document is not None:
+            png = _render_page_png_from_document(pdf, page_number - 1, int(dpi))
+        else:
+            png = _render_full_page_worker(pdf_bytes, page_number - 1, int(dpi))
     finally:
-        pdf.close()
-
-    dpi = dpi_for_page(width_points, height_points, max_pixels=max_pixels)
-    if dpi < _MIN_USEFUL_DPI:
-        logger.warning(
-            "page_image: page %d is %.0fx%.0f pt — capping at %.0f DPI to fit "
-            "the %d px limit; the render may be too coarse to be useful",
-            page_number, width_points, height_points, dpi, max_pixels,
-        )
-
-    png = _render_full_page_worker(pdf_bytes, page_number - 1, int(dpi))
+        if document is None:
+            pdf.close()
 
     # Trust but verify: the pixel cap is a hard API boundary, and PIL's
     # rounding is the one thing between our arithmetic and a 400.
@@ -366,11 +383,15 @@ def stage_page_images(
 
     import pypdfium2 as pdfium  # noqa: PLC0415
 
+    # Opened ONCE and handed to every render below; closed in the finally that
+    # wraps the loop. Re-parsing the whole file for each page of a large scan
+    # was the dominant cost of this stage.
     pdf = pdfium.PdfDocument(pdf_bytes)
     try:
         total_pages = len(pdf)
-    finally:
+    except BaseException:
         pdf.close()
+        raise
 
     text_pages = (
         text_pages_from_sections(sections, engine_text_pages)
@@ -413,30 +434,35 @@ def stage_page_images(
             })
         targets = targets[:max_pages]
 
-    storage = get_storage_client()
     manifest: list[dict] = []
     failed_pages: list[int] = []
-    for page_number in targets:
-        try:
-            png, width, height, dpi = render_page_png(pdf_bytes, page_number)
-            key = pending_key(sha256, page_number)
-            storage.put_bytes(
-                Bucket.BRONZE_RASTER, key, png, content_type="image/png",
-            )
-        except Exception as exc:  # noqa: BLE001 — see fail-soft note above
-            logger.warning(
-                "page_image: staging failed for page %d of %s: %s",
-                page_number, pdf_path, exc,
-            )
-            failed_pages.append(page_number)
-            continue
-        manifest.append({
-            "page_number": page_number,
-            "pending_key": key,
-            "width": width,
-            "height": height,
-            "dpi": round(dpi, 1),
-        })
+    try:
+        storage = get_storage_client()
+        for page_number in targets:
+            try:
+                png, width, height, dpi = render_page_png(
+                    pdf_bytes, page_number, document=pdf,
+                )
+                key = pending_key(sha256, page_number)
+                storage.put_bytes(
+                    Bucket.BRONZE_RASTER, key, png, content_type="image/png",
+                )
+            except Exception as exc:  # noqa: BLE001 — see fail-soft note above
+                logger.warning(
+                    "page_image: staging failed for page %d of %s: %s",
+                    page_number, pdf_path, exc,
+                )
+                failed_pages.append(page_number)
+                continue
+            manifest.append({
+                "page_number": page_number,
+                "pending_key": key,
+                "width": width,
+                "height": height,
+                "dpi": round(dpi, 1),
+            })
+    finally:
+        pdf.close()
 
     if failed_pages and warnings_out is not None:
         shown = ", ".join(str(p) for p in failed_pages[:25])

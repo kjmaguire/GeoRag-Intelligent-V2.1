@@ -309,7 +309,7 @@ class ReportCreate(BaseModel):
     sections_text maps section headings to their extracted text content.
     resource_estimate stores the structured resource table extracted from the
     report (tonnage, grade, classification, commodity).
-    embedding_ids lists the Qdrant/RAGFlow chunk IDs generated from this report
+    embedding_ids lists the Qdrant chunk IDs generated from this report
     so provenance can be traced from Citation → chunk → Report.
     """
 

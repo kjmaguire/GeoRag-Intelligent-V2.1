@@ -17,8 +17,6 @@ import { safeReturnTo } from '@/lib/safeReturnTo';
  */
 
 interface LoginApiResponse {
-    token?: string;
-    user: unknown;
     message?: string;
 }
 
@@ -54,15 +52,14 @@ export default function Login(): JSX.Element {
                 body: JSON.stringify({ email, password }),
             });
 
-            const data: LoginApiResponse = await res.json();
+            // A proxy/5xx error page is not JSON; do not surface a parse error.
+            const data: LoginApiResponse = await res.json().catch(() => ({}));
 
             if (!res.ok) {
-                setError(data.message ?? 'Login failed');
+                setError(data.message ?? `Login failed (HTTP ${res.status})`);
                 setLoading(false);
                 return;
             }
-
-            localStorage.setItem('georag_user', JSON.stringify(data.user));
 
             // Honour ?return_to=... from bootstrap.ts 401 handler — only when
             // it resolves to THIS origin (lib/safeReturnTo; a backslash path like `/\evil.example`

@@ -55,8 +55,6 @@ attrs==26.1.0
     # via
     #   aiohttp
     #   rasterio
-authlib==1.8.0
-    # via georag-fastapi
 backoff==2.2.1
     # via langfuse
 boto3==1.40.61
@@ -99,9 +97,7 @@ click==8.5.0
     #   rasterio
     #   uvicorn
 cloudpickle==3.1.2
-    # via
-    #   joblib
-    #   shap
+    # via joblib
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   tqdm
@@ -110,9 +106,7 @@ contourpy==1.4.0
     # via matplotlib
 cryptography==50.0.1
     # via
-    #   authlib
     #   georag-fastapi
-    #   joserfc
     #   pdfminer-six
 cssselect2==0.10.1
     # via weasyprint
@@ -236,8 +230,6 @@ jmespath==1.1.0
     #   botocore
 joblib==1.6.0
     # via scikit-learn
-joserfc==1.7.5
-    # via authlib
 jsonpatch==1.33
     # via langchain-core
 jsonpointer==3.1.1
@@ -278,17 +270,10 @@ lasio==0.32
     #   georag-geoparsers
 limits==5.8.0
     # via slowapi
-llvmlite==0.49.0
-    # via
-    #   georag-fastapi
-    #   numba
-    #   shap
 logfire-api==4.41.0
     # via pydantic-graph
 lxml==6.1.3
-    # via
-    #   pikepdf
-    #   python-docx
+    # via pikepdf
 markdown-it-py==4.2.0
     # via rich
 markupsafe==3.0.3
@@ -312,10 +297,6 @@ narwhals==2.26.0
     # via scikit-learn
 networkx==3.6.1
     # via torch
-numba==0.67.0
-    # via
-    #   georag-fastapi
-    #   shap
 numpy==2.5.3
     # via
     #   contourpy
@@ -324,7 +305,6 @@ numpy==2.5.3
     #   lasio
     #   matplotlib
     #   mplstereonet
-    #   numba
     #   pandas
     #   pyogrio
     #   qdrant-client
@@ -332,7 +312,6 @@ numpy==2.5.3
     #   scikit-learn
     #   scipy
     #   sentence-transformers
-    #   shap
     #   shapely
     #   transformers
     #   xgboost
@@ -384,12 +363,9 @@ packaging==25.0
     #   pikepdf
     #   pyogrio
     #   pytesseract
-    #   shap
     #   transformers
 pandas==3.0.5
-    # via
-    #   geopandas
-    #   shap
+    # via geopandas
 pdf2image==1.17.0
     # via georag-fastapi
 pdfminer-six==20260107
@@ -499,8 +475,6 @@ python-dateutil==2.9.0.post0
     #   hatchet-sdk
     #   matplotlib
     #   pandas
-python-docx==1.2.0
-    # via georag-fastapi
 python-dotenv==1.2.3
     # via
     #   pydantic-settings
@@ -549,12 +523,10 @@ scikit-learn==1.9.1
     # via
     #   georag-fastapi
     #   sentence-transformers
-    #   shap
 scipy==1.18.1
     # via
     #   scikit-learn
     #   sentence-transformers
-    #   shap
     #   xgboost
     #   xgboost-cpu
 sentence-transformers==5.7.0
@@ -563,10 +535,6 @@ setuptools==83.0.0
     # via
     #   grpcio-tools
     #   torch
-shap==0.49.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
-    # via georag-fastapi
-shap==0.52.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
-    # via georag-fastapi
 shapely==2.1.2
     # via
     #   geopandas
@@ -577,8 +545,6 @@ six==1.17.0
     # via
     #   langdetect
     #   python-dateutil
-slicer==0.0.8
-    # via shap
 slowapi==0.1.10
     # via georag-fastapi
 sniffio==1.3.1
@@ -616,7 +582,6 @@ tqdm==4.70.1
     #   huggingface-hub
     #   openai
     #   sentence-transformers
-    #   shap
     #   transformers
 transformers==5.17.0
     # via
@@ -647,9 +612,7 @@ typing-extensions==4.16.0
     #   opentelemetry-semantic-conventions
     #   pydantic
     #   pydantic-core
-    #   python-docx
     #   sentence-transformers
-    #   shap
     #   torch
     #   typing-inspection
 typing-inspection==0.4.4

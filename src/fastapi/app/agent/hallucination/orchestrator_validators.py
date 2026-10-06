@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 #
 # The entity guard's Neo4j Formation-name lookup is the single most expensive
 # guard operation (~200-500 ms on a warm Neo4j, dominating guard runtime when
-# sequential).  Since Formation nodes change only on Dagster ingestion runs
+# sequential).  Since Formation nodes change only on ingestion runs
 # (much less frequent than 5 minutes), a per-process TTL cache is safe and
 # keeps the entity guard cheap on the hot path.
 #
@@ -213,7 +213,7 @@ def _written_tolerance(token: str) -> tuple[float, float]:
 #:
 #: `_NUMBER_RE` has no idea what a hole ID is, so "PLS-22-08" yielded the two
 #: numbers **-22.0 and -8.0** — the hyphens read as minus signs. Both sides of
-#: Layer 3 did this: the response text, and `_collect_grounded_numbers`, which
+#: Layer 3 did this: the response text, and the grounded-number collection, which
 #: regexes digit runs straight out of the serialised tool results where every
 #: collar row carries a `hole_id`.
 #:
@@ -668,12 +668,6 @@ def _extract_numbers_from_text(text: str) -> list[float]:
     `_IDENTIFIER_TOKEN_RE`.
     """
     return [value for value, _exact, _rounded in _extract_number_tokens(text)]
-
-
-def _collect_grounded_numbers(tool_results: list[tuple[str, Any]]) -> set[float]:
-    """Every content number in the tool results (identifiers, scores, pages
-    and other metadata excluded -- see `_NON_CONTENT_KEYS`)."""
-    return _collect_evidence(tool_results).literal
 
 
 #: Conversion factors applied to every grounded value, both directions:

@@ -76,22 +76,20 @@ class AgentDeps:
     qdrant_client: AsyncQdrantClient
     project_id: str
     # Module 9 Chunk 9.3 — workspace_id GUC scoping. Optional because some
-    # callers (single-tenant Dagster ingestion, admin scripts) intentionally
+    # callers (single-tenant ingestion, admin scripts) intentionally
     # don't carry workspace context. When set, acquire_scoped() emits
     # SET LOCAL app.workspace_id alongside app.project_id so the
     # workspace-scoped RLS policies on silver.evidence_items, answer_runs,
     # answer_retrieval_items, answer_citation_items, answer_citation_spans,
     # document_revisions, document_passages, and message_feedback fire.
     workspace_id: str | None = None
-    # B1 (2026-07-28): Neo4j was removed from the stack, so this is no
-    # longer a hard dependency. Every consumer (traverse_knowledge_graph,
-    # query_graph_by_label, fetch_project_graph_entities, the Layer 4
-    # entity-resolution validators, the Phase 0 graph-health agents)
-    # already treated a missing/unreachable driver as a fail-open case —
-    # graph data being briefly unavailable was always a real possibility,
-    # so this formalizes that path as the permanent one rather than
-    # introducing a new failure mode.
-    neo4j_driver: Any = None  # always None; the neo4j package is no longer installed
+    # B1 (2026-07-28): Neo4j was removed from the stack. Always None; the
+    # only remaining consumers are the Layer 4 formation check
+    # (orchestrator_validators._get_known_formations), which is permanently
+    # fail-open on None, and the Phase 0 graph-health agents. Kept only
+    # because routers/queries.py, the eval harness and ~25 tests still pass
+    # the keyword.
+    neo4j_driver: Any = None
     embedding_model: Any = None  # SentenceTransformer (BAAI/bge-small-en-v1.5)
     reranker: Any = None  # CrossEncoder (Qwen/Qwen3-Reranker-0.6B; logit delta ~[-15,+15])
     # B2 — pooled clients; Any-typed so missing imports (non-anthropic deploys)
@@ -127,7 +125,7 @@ class AgentDeps:
         2026_04_17_120200_replace_toothless_rls_with_guc_aware_policies.php
         installs policies that read `current_setting('georag.project_id', true)`
         and admit:
-          * every row when the GUC is unset (single-tenant / Dagster)
+          * every row when the GUC is unset (single-tenant / maintenance)
           * only matching project_id rows when the GUC is set
 
         This method is the canonical "set the GUC" path. It opens a
@@ -167,7 +165,7 @@ class AgentDeps:
                 # case where asyncio.wait_for cancels the asyncpg call but
                 # Postgres is mid-call into libgeos and only checks for
                 # cancellation at op-boundaries. SET LOCAL keeps it scoped
-                # to this transaction so Dagster ingestion (which uses a
+                # to this transaction so ingestion (which uses a
                 # different connection / different acquire path entirely)
                 # is never affected.
                 #

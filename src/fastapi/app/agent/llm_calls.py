@@ -9,18 +9,14 @@ RAG pipeline:
 * :func:`_build_user_message` — assembles the per-turn user role content.
 * :func:`_call_openai_compatible_llm` — OpenAI-compatible POST to
   vLLM / Ollama with streaming + Qwen3 sampling discipline.
-* :func:`_resolve_local_llm_fallback_target` — picks ``(base_url, model)``
-  for the Anthropic→local cross-backend failover path.
 * :func:`_call_anthropic_llm` — native Anthropic Messages API with prompt
   caching + adaptive-thinking telemetry.
-* :func:`_call_llm` — the backend dispatcher used by the orchestrator's
-  retry / failover loop.
+* :func:`_call_llm` — the backend dispatcher called by the agentic-retrieval
+  nodes (classify, assemble, repair).
 
-``orchestrator.py`` re-exports every symbol below so existing callers
-that import ``from app.agent.orchestrator import _call_llm`` keep working
-without churn. ``run_deterministic_rag`` itself still owns the retry +
-failover loop — only the per-call wire format and budget bookkeeping
-moved here.
+``orchestrator.py`` re-exports a few of these names (``_call_llm``,
+``_call_anthropic_llm``, ``_call_openai_compatible_llm``, the call counter and
+``LLMCallBudgetExceeded``) because tests import them from there.
 
 System-prompt default
 ---------------------
@@ -47,7 +43,7 @@ from typing import Any
 
 import httpx
 
-from app.agent.query_classification import _sanitize_query
+from app.agent.query_sanitizer import _sanitize_query
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -333,7 +329,17 @@ async def _is_suspended_in_postgres(pg_pool: Any, workspace_id: str) -> bool:
         return cached[1]
 
     try:
-        async with pg_pool.acquire() as conn:
+        # usage.workspace_cost_ceilings has a fail-closed RLS policy (no
+        # `app.workspace_id` GUC -> zero rows; 2026_08_14_030000) and the
+        # runtime role is georag_app (NOBYPASSRLS). A bare `pool.acquire()`
+        # saw no row, read it as "never suspended", and so this Postgres
+        # fallback could never keep a suspension in force once the Redis
+        # flag's TTL lapsed -- the exact case it exists for. Bind the GUC.
+        from app.db import scoped_connection  # noqa: PLC0415
+
+        async with scoped_connection(
+            pg_pool, workspace_id=workspace_id, site="llm_calls.cost_ceiling_suspension",
+        ) as conn:
             row = await conn.fetchrow(
                 "SELECT suspended_at, admin_override_enabled "
                 "FROM usage.workspace_cost_ceilings "
@@ -1155,28 +1161,6 @@ async def _call_openai_compatible_llm(
     return content
 
 
-def _resolve_local_llm_fallback_target() -> tuple[str, str] | None:
-    """R12 — resolve the (base_url, model) for the OpenAI-compat failover.
-
-    Returns a retained external VLLM_URL, then LLM_PRIMARY_URL/MODEL, or
-    None if neither is configured — which makes the orchestrator surface the
-    "LLM error" without trying a cross-backend retry.
-
-    The primary backend is deliberately NOT a candidate any more. Until
-    2026-09-08 this preferred Azure Foundry, which was reachable over an
-    OpenAI-compatible URL and so could serve as its own failover target.
-    Bedrock is not: it has no base URL, and boto3 resolves the endpoint from
-    the region (`settings.effective_llm_url` raises for this backend by
-    design). A cross-backend retry against Bedrock therefore has to go
-    through `llm_bedrock.call_bedrock_llm`, not through this resolver.
-    """
-    if settings.VLLM_URL:
-        return settings.VLLM_URL, settings.VLLM_MODEL
-    if settings.LLM_PRIMARY_URL:
-        return settings.LLM_PRIMARY_URL, settings.LLM_PRIMARY_MODEL
-    return None
-
-
 async def _call_anthropic_llm(
     user_message: str,
     temperature: float,
@@ -1282,7 +1266,7 @@ async def _call_anthropic_llm(
         #   2. project_preamble — names: change only when ingestion adds
         #                         entities or operator renames project
         #   3. project_facts    — counts / depth aggregates: change after
-        #                         every Dagster materialised-view refresh
+        #                         every materialised-view refresh
         # Putting facts on its own cache_control means a daily ingestion
         # update only invalidates that block; preamble + system stay warm.
         system_blocks: list[dict[str, Any]] = [
@@ -1713,7 +1697,6 @@ __all__ = [
     "NON_ANSWER_AUDIT_LABELS",
     "_build_user_message",
     "_call_openai_compatible_llm",
-    "_resolve_local_llm_fallback_target",
     "_call_anthropic_llm",
     "_call_llm",
     "get_run_llm_model",

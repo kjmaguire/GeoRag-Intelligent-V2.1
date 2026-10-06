@@ -76,8 +76,9 @@ log = logging.getLogger("georag.hatchet.ingest_pdf")
 # Memory guard:
 #   Before submitting a parse to the pool, the parse task awaits
 #   _wait_for_memory_headroom() which polls psutil.virtual_memory().available.
-#   If RAM < PARSE_MIN_FREE_RAM_MB (default 1500), the task waits up to
-#   PARSE_MEMORY_WAIT_MAX_S (default 30) then raises MemoryError so
+#   If RAM < PARSE_MIN_FREE_RAM_MB (default: 30% of the container limit, see
+#   _default_min_free_mb), the task waits up to
+#   PARSE_MEMORY_WAIT_MAX_S (default 120) then raises MemoryError so
 #   Hatchet retries on a freer worker.
 _PARSE_POOL: Any = None
 
@@ -115,15 +116,19 @@ def _compute_parse_max_workers() -> int:
     return max(1, min(os.cpu_count() or 1, 4))
 
 
-#: cgroup v2 puts the container's own limit and usage here. Container Apps
-#: runs on a Kubernetes-backed host, so this is the file that describes the
-#: 8 GiB the worker actually has.
+#: cgroup v2 puts the container's own limit and usage here. An ECS Fargate
+#: task is a cgroup-limited container on a shared host, so this is the file
+#: that describes the 8 GiB the worker actually has.
 _CGROUP_V2_MAX = "/sys/fs/cgroup/memory.max"
 _CGROUP_V2_CURRENT = "/sys/fs/cgroup/memory.current"
 
 #: cgroup v1 fallback, for older hosts.
 _CGROUP_V1_LIMIT = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
 _CGROUP_V1_USAGE = "/sys/fs/cgroup/memory/memory.usage_in_bytes"
+
+#: Per-cgroup counters, used to take reclaimable page cache out of "usage".
+_CGROUP_V2_STAT = "/sys/fs/cgroup/memory.stat"
+_CGROUP_V1_STAT = "/sys/fs/cgroup/memory/memory.stat"
 
 
 def _read_int(path: str) -> int | None:
@@ -134,22 +139,38 @@ def _read_int(path: str) -> int | None:
         return None
 
 
+def _read_stat_bytes(path: str, key: str) -> int:
+    """One counter from a cgroup ``memory.stat`` file; 0 when unreadable."""
+    try:
+        with open(path) as fh:  # noqa: PTH123
+            for line in fh:
+                name, _, value = line.partition(" ")
+                if name == key:
+                    return int(value.strip())
+    except (OSError, ValueError):
+        # No stat file (not in a cgroup) or an unparsable line: treat the
+        # counter as 0, i.e. fall back to the raw usage figure.
+        log.debug("cgroup memory.stat unreadable: %s (%s)", path, key, exc_info=True)
+        return 0
+    return 0
+
+
 def _cgroup_available_mb() -> float | None:
     """Memory left inside THIS container's cgroup, or None if unreadable.
 
     psutil.virtual_memory() reads /proc/meminfo, which inside a
-    Kubernetes-backed container reports the HOST NODE, not the cgroup limit.
-    hatchet-worker-cc is 4 vCPU / 8 GiB with PARSE_MIN_FREE_RAM_MB=2500; with
+    containerised host reports the HOST, not the cgroup limit. The worker is
+    4 vCPU / 8 GiB (default threshold ~2.4 GB); with
     two 400-page parses already running and the container at 7 GiB of its 8,
-    psutil would report the node's free memory — many GB on a shared ACA
-    node — the guard would clear instantly, a third parse would be submitted,
+    psutil would report the host's free memory — many GB on a shared
+    host — the guard would clear instantly, a third parse would be submitted,
     and the cgroup OOM-killer would fire. Which is the exact failure the
     guard was added to prevent, and the symptom the 2026-08-17 comment below
     chased and attributed to leaked worker processes.
     """
-    for limit_path, usage_path in (
-        (_CGROUP_V2_MAX, _CGROUP_V2_CURRENT),
-        (_CGROUP_V1_LIMIT, _CGROUP_V1_USAGE),
+    for limit_path, usage_path, stat_path, cache_key in (
+        (_CGROUP_V2_MAX, _CGROUP_V2_CURRENT, _CGROUP_V2_STAT, "inactive_file"),
+        (_CGROUP_V1_LIMIT, _CGROUP_V1_USAGE, _CGROUP_V1_STAT, "total_inactive_file"),
     ):
         limit = _read_int(limit_path)
         usage = _read_int(usage_path)
@@ -160,9 +181,58 @@ def _cgroup_available_mb() -> float | None:
         # limit either.
         if limit <= 0 or limit >= (1 << 62):
             continue
+        # memory.current / usage_in_bytes COUNT the page cache. Every PDF this
+        # worker downloads, hashes and re-reads (a scanned drill log is
+        # hundreds of MB) leaves its pages in the cache, and the kernel keeps
+        # them until it is under pressure, so on a long-lived worker the
+        # "used" figure drifts to the limit while the memory is reclaimable.
+        # The guard then read an idle container as full and failed parses
+        # with MemoryError. Subtract the inactive file cache, the same
+        # working-set definition the kubelet and `docker stats` use.
+        usage = max(0, usage - _read_stat_bytes(stat_path, cache_key))
         return max(0.0, (limit - usage) / (1024 * 1024))
 
     return None
+
+
+def _cgroup_limit_mb() -> float | None:
+    """This container's memory limit in MiB, or None when there is none."""
+    for limit_path in (_CGROUP_V2_MAX, _CGROUP_V1_LIMIT):
+        limit = _read_int(limit_path)
+        if limit is None or limit <= 0 or limit >= (1 << 62):
+            continue
+        return limit / (1024 * 1024)
+    return None
+
+
+#: Fraction of a container's memory limit that must be free before a parse
+#: starts when PARSE_MIN_FREE_RAM_MB is not set, and the clamp on the result.
+_PARSE_FREE_RAM_FRACTION = 0.30
+_PARSE_FREE_RAM_FLOOR_MB = 1500
+_PARSE_FREE_RAM_CAP_MB = 4500
+
+
+def _default_min_free_mb() -> int:
+    """Free-RAM threshold for the pre-parse memory guard when none is configured.
+
+    The fixed 4500 MB default was tuned for a 36 GB dev host. On the 8 GiB
+    production worker (the AWS task definition does not set the variable) it
+    asks for 56% of the container to be free: one parse already running leaves
+    ~3.5 GB, so every SECOND concurrent PDF waited out PARSE_MEMORY_WAIT_MAX_S
+    and then failed with MemoryError, twice (retries=1), while the first
+    parse was still working. Scaled to the container instead: 30% of its
+    limit, clamped to [1500, 4500] MB (8 GiB -> ~2.4 GB, the 2500 the old
+    Container Apps deployment pinned by hand). An explicit
+    PARSE_MIN_FREE_RAM_MB always wins, and with no cgroup limit the old 4500
+    stands.
+    """
+    limit_mb = _cgroup_limit_mb()
+    if limit_mb is None:
+        return _PARSE_FREE_RAM_CAP_MB
+    return int(max(
+        _PARSE_FREE_RAM_FLOOR_MB,
+        min(_PARSE_FREE_RAM_CAP_MB, limit_mb * _PARSE_FREE_RAM_FRACTION),
+    ))
 
 
 def _available_memory_mb() -> float | None:
@@ -740,20 +810,6 @@ class IngestPdfFinalOut(BaseModel):
 _dsn = build_dsn
 
 
-def _sections_to_dict(sections) -> dict:
-    """Mirror of v1.49 _build_sections_dict — keyed by section_number string."""
-    result: dict = {}
-    for s in sections:
-        n = getattr(s, "section_number", None)
-        title = getattr(s, "section_title", "") or ""
-        text = getattr(s, "text", "") or ""
-        key = str(n) if n is not None else (title.lower() or "section")
-        if key in result:
-            key = f"{key}_dup"
-        result[key] = text
-    return result
-
-
 # =============================================================================
 # Workflow + steps
 # =============================================================================
@@ -786,8 +842,8 @@ ingest_pdf = hatchet.workflow(
     # cancelled at exactly the 5-min mark. schedule_timeout="2h" gives
     # space for ~80 sequential parses before the tail starts expiring.
     # 2026-08-07 — raised 1 → 2. The original OOM driver (docling/Paddle
-    # models resident per parse) is gone: OCR is remote (Cohere Parse on
-    # Foundry) and embedding is remote (Foundry). Two in-flight runs
+    # models resident per parse) is gone: OCR is remote (Cohere Parse) and
+    # embedding is hosted (Embed 5 Pro). Two in-flight runs
     # let doc B parse while doc A persists/embeds, roughly halving batch
     # wall-clock; PARSE_SUBPROCESS_MAX_WORKERS and the memory guard still
     # bound actual parse concurrency on small containers.
@@ -1072,22 +1128,16 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
     # worker has enough free RAM to safely run a parse alongside any
     # already-running ones. Raises MemoryError on timeout; Hatchet's
     # retries=1 will retry on a freer worker.
-    # 2026-05-23 — defaults raised from (1500, 30) to (4500, 120).
-    # The 1500 MB threshold was tuned in Phase 5 for the v1.49 fitz-only
-    # parser; the 5/22 overhaul briefly made docling+PaddleOCR+RapidOCR
-    # the primary path and those each loaded ~3-4 GB of model weights
-    # (docling was removed 2026-07-29 — never ran in production — but
-    # the raised threshold is still the right conservative default for
-    # the 36 GB host with the rest of the platform (vLLM cache, Neo4j,
-    # Postgres, Qdrant, Langfuse, dagster containers) eating ~32 GB
-    # baseline; only ~4 GB is genuinely free). The 120 s wait budget
-    # gives a transient pressure spike room to clear before the
-    # workflow gives up and lets Hatchet retry. See
-    # [[tiff-smoke-2026-05-23]] for the root-cause analysis.
+    # The threshold defaults to 30% of the container's memory limit,
+    # clamped to [1500, 4500] MB (see _default_min_free_mb); 4500 is the
+    # figure tuned for the 36 GB dev host. The 120 s wait budget gives a
+    # transient pressure spike room to clear before the workflow gives up
+    # and lets Hatchet retry. See [[tiff-smoke-2026-05-23]] for the
+    # root-cause analysis.
     try:
-        _min_free_mb = int(os.environ.get("PARSE_MIN_FREE_RAM_MB", "4500"))
+        _min_free_mb = int(os.environ.get("PARSE_MIN_FREE_RAM_MB") or _default_min_free_mb())
     except ValueError:
-        _min_free_mb = 4500
+        _min_free_mb = _default_min_free_mb()
     try:
         _max_wait_s = int(os.environ.get("PARSE_MEMORY_WAIT_MAX_S", "120"))
     except ValueError:
@@ -1113,7 +1163,12 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
     _progress_path = f"{_PDF_BODY_CACHE_DIR}/progress.{uuid.uuid4().hex}.json"
 
     async def _relay_progress() -> None:
-        run_id: str | None = None
+        # The caller-claimed row when there is one. Resolving by (workspace,
+        # key) alone can land on a newer non-terminal row for the same file (a
+        # sweep child, a re-upload), which is the mix-up IngestPdfInput.run_id
+        # was added to end: progress bars and heartbeats written to a sibling
+        # row while this run's own row shows nothing.
+        run_id: str | None = input.run_id
         import json as _json
         while True:
             await asyncio.sleep(3)
@@ -1936,11 +1991,9 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 page_no = entry.get("page")
                 caption = (entry.get("caption") or "").strip()
                 pending_key = entry.get("pending_key")
-                # entry.get("bucket") is defensive legacy code — pending
-                # figure uploads always land in the bronze bucket (see
-                # georag_dagster/parsers/pdf_report.py's docling extractor,
-                # the only producer of this manifest), so Bucket.BRONZE is
-                # always correct here.
+                # entry.get("bucket") is ignored on purpose — pending figure
+                # uploads always land in the bronze bucket, so Bucket.BRONZE
+                # is always correct here.
                 img_sha = entry.get("sha256")
 
                 final_key = None
@@ -2670,6 +2723,24 @@ _EMBEDDABLE_OCR_PREDICATE = (
 )
 
 
+@contextlib.asynccontextmanager
+async def _scoped_acquire(pool: Any, workspace_id: str, site: str):
+    """Acquire a connection with the workspace bound for the read it is about to do.
+
+    silver.document_passages is FAIL-CLOSED (tenant_isolation, no GUC -> no rows)
+    and the worker connects as georag_app (NOBYPASSRLS). embed_verify counted
+    unembedded passages on a bare connection, so in production the count was
+    always 0: every run was closed "Ingestion complete; all chunks embedded"
+    the moment persist finished, before a single vector existed, and the
+    backstop re-dispatch below could never fire. Same defect, and same fix, as
+    stale_run_detector's HAT-1 check. Bound per acquire, never per pool:
+    asyncpg resets session state when a connection is released.
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        await bind_workspace_scope(conn, workspace_id=workspace_id, site=site)
+        yield conn
+
+
 # Safety net for the BattleNorth-style race where the inline embed dispatch
 # from persist gets lost between Hatchet retries. Quickly polls the project's
 # unembedded passage count and re-dispatches the embed workflow if anything
@@ -2726,11 +2797,12 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
             run_id=input.run_id,
         )
 
+    _verify_workspace = str(input.workspace_id) if input.workspace_id else LEGACY_DEFAULT_TENANT_UUID
     pool = await asyncpg.create_pool(
         _dsn(), min_size=1, max_size=1, statement_cache_size=0,
     )
     try:
-        async with pool.acquire() as conn:
+        async with _scoped_acquire(pool, _verify_workspace, "hatchet.ingest_pdf.embed_verify") as conn:
             row = await conn.fetchrow(
                 f"""
                 SELECT count(*) AS unembedded
@@ -2775,7 +2847,10 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
                 # never embedded, as an INFO warning (does not turn it amber).
                 if _persisted_report_id and _run_warnings is not None:
                     try:
-                        async with pool.acquire() as _img_conn:
+                        async with _scoped_acquire(
+                            pool, _verify_workspace,
+                            "hatchet.ingest_pdf.embed_verify.images",
+                        ) as _img_conn:
                             _img_row = await _img_conn.fetchrow(
                                 "SELECT count(*) AS n "
                                 "FROM silver.document_passages p "

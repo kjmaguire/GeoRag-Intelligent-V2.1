@@ -1648,6 +1648,7 @@ def _extract_all_tables_as_sections(
         )
         return []
 
+    _table_failed_pages: list[int] = []
     with _pdf_ctx as pdf:
         _total_pages = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages, start=1):
@@ -1677,7 +1678,10 @@ def _extract_all_tables_as_sections(
                     if t:
                         tables.extend(t)
                 except Exception:
-                    pass
+                    # Not silent: a page whose tables could not be read is a
+                    # coverage hole (its prose is still in the text layer, its
+                    # row/column structure is not). Reported once, below.
+                    _table_failed_pages.append(page_num)
             if run_text:
                 try:
                     t = page.extract_tables(table_settings={
@@ -1687,7 +1691,7 @@ def _extract_all_tables_as_sections(
                     if t:
                         tables.extend(t)
                 except Exception:
-                    pass
+                    _table_failed_pages.append(page_num)
 
             seen_sigs: set[str] = set()
             for idx, tbl in enumerate(tables):
@@ -1721,6 +1725,14 @@ def _extract_all_tables_as_sections(
                             page_last=page_num,
                         )
                     )
+
+    if _table_failed_pages:
+        _failed = sorted(set(_table_failed_pages))
+        logger.warning(
+            "pdf_report: pdfplumber table extraction raised on %d page(s) of "
+            "'%s' (first: %s); those pages contribute no table sections",
+            len(_failed), pdf_path, _failed[:10],
+        )
 
     # ------------------------------------------------------------------
     # 3. Final dedupe pass via a content signature, in case the lines
@@ -1922,6 +1934,41 @@ def _tick_progress(
             json.dump({"phase": phase, "done": done, "total": total}, fh)
     except Exception:
         pass
+
+
+#: Progress file of the parse in flight in THIS process, set by
+#: ``parse_pdf_report``. Whole-document OCR (``_attempt_ocr``) is reached
+#: through a one-argument call that tests and callers replace, so the beacon
+#: path travels here rather than through its signature. One document is
+#: parsed per subprocess at a time (see ``_run_parser_subprocess``).
+_ACTIVE_PROGRESS_FILE: str | None = None
+
+
+class _OcrProgress:
+    """Thread-safe page counter that writes the ``ocr`` progress beacon.
+
+    Before this the beacon only moved after the whole OCR pass had returned
+    (the mixed path ticked in a loop over finished results; the scanned path
+    never ticked), so the Ingestion Runs bar sat at its stage boundary for the
+    entire multi-hour OCR of a scanned report, which is exactly when a
+    geologist is looking at it.
+    """
+
+    def __init__(self, progress_file: str | None, total: int) -> None:
+        self._file = progress_file
+        self._total = max(1, int(total))
+        self._done = 0
+        self._lock = threading.Lock()
+
+    def advance(self, pages: int = 1) -> None:
+        if not self._file:
+            return
+        with self._lock:
+            self._done = min(self._total, self._done + max(0, pages))
+            _tick_progress(
+                self._file, "ocr", self._done, self._total,
+                force=self._done >= self._total,
+            )
 
 
 def _native_text_screen_reason(
@@ -2407,6 +2454,8 @@ def _parse_with_fitz(
         # that asked for tesseract.
         from . import cohere_parse_client as _engine
 
+        _ocr_progress = _OcrProgress(progress_file, len(short_page_nums))
+        _short_grouped = False
         _short_batched: dict[int, Any] = {}
         _short_block_size = _engine.pages_per_batch()
         if (
@@ -2415,6 +2464,7 @@ def _parse_with_fitz(
             and _engine.is_engine_selected()
             and _engine.is_configured()
         ):
+            _short_grouped = True
             _short_plan = [
                 short_page_nums[i:i + _short_block_size]
                 for i in range(0, len(short_page_nums), _short_block_size)
@@ -2427,9 +2477,12 @@ def _parse_with_fitz(
             with ThreadPoolExecutor(
                 max_workers=max(1, min(_OCR_PAGE_CONCURRENCY, len(_short_plan)))
             ) as _short_executor:
-                for _mapping in _short_executor.map(
-                    lambda pages: _ocr_page_selection(path, pages), _short_plan
-                ):
+                def _short_group(pages: list[int]) -> dict[int, Any]:
+                    mapping = _ocr_page_selection(path, pages)
+                    _ocr_progress.advance(len(pages))
+                    return mapping
+
+                for _mapping in _short_executor.map(_short_group, _short_plan):
                     _short_batched.update(_mapping)
             _short_hits = sum(1 for _r in _short_batched.values() if _r.text.strip())
             logger.info(
@@ -2439,6 +2492,14 @@ def _parse_with_fitz(
             )
 
         def _ocr_one_page(n: int):
+            try:
+                return _ocr_one_page_inner(n)
+            finally:
+                # When the group pass ran it already counted every page.
+                if not _short_grouped:
+                    _ocr_progress.advance()
+
+        def _ocr_one_page_inner(n: int):
             try:
                 _usable = _usable_batched_page(
                     _short_batched.get(n), page_num=n, pdf_path=path
@@ -2492,12 +2553,9 @@ def _parse_with_fitz(
         # is safe: nothing else in this process touches asyncio.
         ocr_page_results = asyncio.run(_run_ocr_fanout())
 
-        _ocr_done = 0
         _engine_text_pages: list[int] = []
         _native_fallback_pages: list[int] = []
         for n, _ocr_result, _ocr_exc in ocr_page_results:
-            _ocr_done += 1
-            _tick_progress(progress_file, "ocr", _ocr_done, len(short_page_nums), force=True)
             if n in engine_first_native:
                 # PDF_PARSE_MODE=all, text-layer page. The engine's text
                 # replaces the text layer only when it is a real answer: from
@@ -4131,6 +4189,7 @@ def _attempt_ocr_cohere_parse(path: str) -> OcrAttemptResult:
 
     _block_size = _engine_mod.pages_per_batch()
     _batched: dict[int, Any] = {}
+    _ocr_progress = _OcrProgress(_ACTIVE_PROGRESS_FILE, total_pages)
     if _block_size > 1:
         _plan = _ocr_block_plan(total_pages, _block_size)
         logger.info(
@@ -4141,9 +4200,12 @@ def _attempt_ocr_cohere_parse(path: str) -> OcrAttemptResult:
         with ThreadPoolExecutor(
             max_workers=max(1, min(_ocr_concurrency, len(_plan)))
         ) as _block_executor:
-            for _mapping in _block_executor.map(
-                lambda block: _ocr_page_block(path, block[0], block[1]), _plan
-            ):
+            def _block_ocr(block: tuple[int, int]) -> dict[int, Any]:
+                mapping = _ocr_page_block(path, block[0], block[1])
+                _ocr_progress.advance(block[1])
+                return mapping
+
+            for _mapping in _block_executor.map(_block_ocr, _plan):
                 _batched.update(_mapping)
         _batched_hits = sum(1 for _r in _batched.values() if _r.text.strip())
         logger.info(
@@ -4153,6 +4215,14 @@ def _attempt_ocr_cohere_parse(path: str) -> OcrAttemptResult:
         )
 
     def _ocr_one(page_num: int):
+        try:
+            return _ocr_one_inner(page_num)
+        finally:
+            # When the group pass ran it already counted every page.
+            if _block_size <= 1:
+                _ocr_progress.advance()
+
+    def _ocr_one_inner(page_num: int):
         try:
             usable = _usable_batched_page(
                 _batched.get(page_num), page_num=page_num, pdf_path=path
@@ -4505,6 +4575,8 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
       tesseract or Cohere Parse per `OCR_ENGINE`.
     The ``parser_used`` field on the result records which engine ran.
     """
+    global _ACTIVE_PROGRESS_FILE  # noqa: PLW0603 — see its definition
+    _ACTIVE_PROGRESS_FILE = progress_file
     with _tracer.start_as_current_span("pdf_report.preflight") as _span:
         if not Path(path).is_file():
             raise FileNotFoundError(f"parse_pdf_report: file not found at '{path}'")

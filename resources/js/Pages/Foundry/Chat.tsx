@@ -1644,8 +1644,8 @@ const MessageBubble = memo(function MessageBubble({
                 )}
                 {/* Plan §3a/§3b — typed evidence summary strip. Shows
                     per-kind counts (documents / tables / assays / collars /
-                    spatial / graph) + a budget-pressure pill. Renders
-                    nothing when the agentic graph wasn't engaged. */}
+                    spatial). Renders nothing when the agentic graph
+                    wasn't engaged. */}
                 {!isUser && <EvidencePacketBadge packet={m.evidencePacket} />}
                 {/* Plan §3e — multi-turn resolution preview chip. Shows
                     "Interpreted as: …" when the resolve_node rewrote the

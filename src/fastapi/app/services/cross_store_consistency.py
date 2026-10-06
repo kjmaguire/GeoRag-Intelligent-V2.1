@@ -19,7 +19,7 @@ Usage
     footprint = await count_workspace_footprint("a0000000-...-001", pool)
     print(footprint.total_rows())     # sum across all stores
     print(footprint.postgres["silver_workspaces"])
-    print(footprint.neo4j_nodes)
+    print(footprint.qdrant_points)
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ import asyncpg
 # surface changes (the test in tests/test_section11_consistency.py
 # pins the names so a divergence shows up immediately).
 from app.hatchet_workflows.restore_workspace import (
-    _count_neo4j_nodes,
     _count_postgres_rows,
     _count_qdrant_points,
     _count_redis_keys,
@@ -49,8 +48,11 @@ class WorkspaceFootprint:
         workspace_id        — the queried workspace UUID as text
         postgres            — dict of per-table row counts
         postgres_error      — None if PG queries succeeded, else error string
-        neo4j_nodes         — count of Neo4j nodes scoped to this workspace
-        neo4j_error         — None if Neo4j queries succeeded
+        neo4j_nodes         — always -1: Neo4j was removed from the stack
+                              (2026-07-28). Kept only because the
+                              ``/workspace-consistency`` response model
+                              (routers/admin_tier234.py) still requires the key.
+        neo4j_error         — always None, for the same reason
         qdrant_points       — count of Qdrant points filtered by workspace_id
         qdrant_error        — None if Qdrant queries succeeded
         redis_keys          — count of Redis keys prefixed by workspace_id
@@ -115,7 +117,7 @@ async def count_workspace_footprint(
     """Count the cross-store footprint of one workspace.
 
     Each store is queried independently — a failure in one (e.g.,
-    Neo4j unreachable) does not block the others. Errors land on the
+    Qdrant unreachable) does not block the others. Errors land on the
     corresponding `*_error` field; the count for that store stays at -1.
 
     Args:
@@ -129,7 +131,6 @@ async def count_workspace_footprint(
     workspace_str = str(workspace_id)
 
     pg_counts, pg_err = await _count_postgres_rows(pool, workspace_str)
-    n4_count, n4_err = await _count_neo4j_nodes(workspace_str)
     qd_count, qd_err = await _count_qdrant_points(workspace_str)
     rd_count, rd_err = await _count_redis_keys(workspace_str)
 
@@ -137,8 +138,6 @@ async def count_workspace_footprint(
         workspace_id=workspace_str,
         postgres=pg_counts,
         postgres_error=pg_err,
-        neo4j_nodes=n4_count,
-        neo4j_error=n4_err,
         qdrant_points=qd_count,
         qdrant_error=qd_err,
         redis_keys=rd_count,

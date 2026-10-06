@@ -135,19 +135,6 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(600)->by($key);
         });
 
-        // Phase H4 §7 — bridge:report-progress rate limit.
-        // FastAPI POSTs to /api/internal/admin/reports/{build_id}/progress
-        // from generate_report; even a runaway worker shouldn't be able to
-        // saturate Reverb with broadcast traffic. 600 events/minute total
-        // (~10/s) leaves ample headroom for the §15 12-node graph while
-        // capping a stuck retry loop. Keyed on build_id from the URL so
-        // one bad build doesn't drown out the others.
-        RateLimiter::for('bridge:report-progress', function (Request $request): Limit {
-            $buildId = (string) $request->route('build_id', 'unknown');
-
-            return Limit::perMinute(600)->by('build:'.$buildId);
-        });
-
         // ── Module 10 Chunk 10.4 — authz_audit → Prometheus counter ────
         //
         // Bridges the structured `authz.deny` events emitted by

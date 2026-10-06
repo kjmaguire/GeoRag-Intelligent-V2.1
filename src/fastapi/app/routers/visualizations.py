@@ -541,7 +541,7 @@ async def render_chart_endpoint(
         return render_chart(body.chart_kind, params)
     except Exception as exc:  # noqa: BLE001
         logger.exception("chart render failed: %s / %s", body.chart_kind, exc)
-        raise HTTPException(500, f"chart render failed: {exc}")
+        raise HTTPException(500, "chart render failed") from exc
 
 
 # ============================================================================

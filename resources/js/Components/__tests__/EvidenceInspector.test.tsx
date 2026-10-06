@@ -41,6 +41,34 @@ describe('EvidenceInspector', () => {
         vi.clearAllMocks();
     });
 
+    it("never shows the previous citation's text while a different citation loads", async () => {
+        fetchMock.mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            json: async () => ({ text: 'FIRST CHUNK TEXT', metadata: {} }),
+        });
+        const { rerender } = render(
+            <EvidenceInspector citation={citation} open onOpenChange={() => {}} projectSlug="demo" />,
+        );
+        await waitFor(() =>
+            expect(screen.getByTestId('evidence-inspector-text')).toHaveTextContent('FIRST CHUNK TEXT'),
+        );
+
+        rerender(<EvidenceInspector citation={citation} open={false} onOpenChange={() => {}} projectSlug="demo" />);
+        // Second citation never resolves: the sheet must show loading, not the first text.
+        fetchMock.mockReturnValueOnce(new Promise(() => {}));
+        rerender(
+            <EvidenceInspector
+                citation={{ ...citation, citation_id: 'cit-2', source_chunk_id: 'georag_reports:report-2:chunk=zzz' }}
+                open
+                onOpenChange={() => {}}
+                projectSlug="demo"
+            />,
+        );
+        expect(screen.queryByText('FIRST CHUNK TEXT')).not.toBeInTheDocument();
+        expect(screen.getByTestId('evidence-inspector-loading')).toBeInTheDocument();
+    });
+
     it('renders nothing (closed Sheet) when open is false', () => {
         render(<EvidenceInspector citation={null} open={false} onOpenChange={() => {}} projectSlug="demo" />);
         expect(screen.queryByTestId('evidence-inspector')).not.toBeInTheDocument();

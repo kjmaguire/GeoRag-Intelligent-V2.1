@@ -93,10 +93,11 @@ data "aws_iam_policy_document" "github_actions_assume" {
     # credentials" with a generic AccessDenied that looked identical to a
     # missing/wrong AWS_DEPLOY_ROLE_ARN secret — CloudTrail's userIdentity on
     # the denied AssumeRoleWithWebIdentity call is what actually distinguishes
-    # the two. var.github_repository stays "owner/repo" (matches the output's
-    # doc comment and every other reference to it); the ID suffixes are
-    # inlined here instead of parameterized, since they're this AWS account's
-    # fixed GitHub identity, not something an operator sets per deploy.
+    # the two. The owner/repo and both IDs are inlined here instead of
+    # parameterized, since they're this AWS account's fixed GitHub identity,
+    # not something an operator sets per deploy. (A `github_repository`
+    # variable used to sit beside this and nothing read it; it had no
+    # default, so every fresh plan prompted for a value that did nothing.)
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
@@ -214,11 +215,6 @@ resource "aws_iam_role_policy" "github_deploy" {
   name   = "deploy"
   role   = aws_iam_role.github_deploy.id
   policy = data.aws_iam_policy_document.github_deploy.json
-}
-
-variable "github_repository" {
-  description = "owner/repo this OIDC trust is scoped to, e.g. kjmaguire/GeoRag-Intelligent-V2.1."
-  type        = string
 }
 
 output "github_deploy_role_arn" {

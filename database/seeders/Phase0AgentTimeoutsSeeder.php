@@ -8,8 +8,10 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Seed default rows in `workspace.agent_timeouts` for the 11 Phase 0
- * agents. Kickoff §Step 5.3 mandates these defaults exist before any
+ * Seed default rows in `workspace.agent_timeouts` for the Phase 0
+ * agents that exist in src/fastapi/app/agents/phase0 (the vLLM Security Check and
+ * GPU/VRAM Health agents were retired with the GPU stack and are no longer
+ * seeded). Kickoff §Step 5.3 mandates these defaults exist before any
  * agent invocation runs, so the operational-contract wrapper can read
  * a timeout policy on first call.
  *
@@ -34,8 +36,6 @@ class Phase0AgentTimeoutsSeeder extends Seeder
             ['Index Health Agent', 'R0'],
             ['Store Reconciliation Agent', 'R2'],
             ['Model Upgrade Watch Agent', 'R0'],
-            ['vLLM Security Check Agent', 'R0'],
-            ['GPU/VRAM Health Agent', 'R0'],
             ['Model Cost Summary Agent', 'R0'],
             ['LLM Incident Diagnosis Agent', 'R0'],
             ['Support Packet Agent', 'R0'],

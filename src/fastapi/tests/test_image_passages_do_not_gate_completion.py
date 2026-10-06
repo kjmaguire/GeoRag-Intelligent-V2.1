@@ -135,6 +135,13 @@ def _pool(images: int):
     return SimpleNamespace(acquire=_acquire, close=AsyncMock())
 
 
+@asynccontextmanager
+async def _passthrough_scope(pool, workspace_id, site):
+    """embed_verify's workspace bind, minus the real connection it needs."""
+    async with pool.acquire() as conn:
+        yield conn
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("images", "expect_warning"), [(2, True), (0, False)])
 async def test_embed_verify_closes_with_the_info_warning_when_images_did_not_embed(
@@ -150,6 +157,7 @@ async def test_embed_verify_closes_with_the_info_warning_when_images_did_not_emb
     complete = AsyncMock(return_value=True)
     with (
         patch.object(pdf_wf.asyncpg, "create_pool", AsyncMock(return_value=_pool(images))),
+        patch.object(pdf_wf, "_scoped_acquire", _passthrough_scope),
         patch.object(pdf_wf.ingest_progress, "mark_started", AsyncMock()),
         patch.object(pdf_wf.ingest_progress, "lookup_active_run_id",
                      AsyncMock(return_value="run-1")),

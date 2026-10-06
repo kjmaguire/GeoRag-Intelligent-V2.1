@@ -24,6 +24,7 @@ from __future__ import annotations
 import inspect
 import sys
 import types
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,6 +53,13 @@ def _make_input(project_id="11111111-2222-3333-4444-555555555555",
         file_size=1024,
         correlation_token="tok",
     )
+
+
+@asynccontextmanager
+async def _passthrough_scope(pool, workspace_id, site):
+    """embed_verify's workspace bind, minus the real connection it needs."""
+    async with pool.acquire() as conn:
+        yield conn
 
 
 def _make_ctx():
@@ -142,6 +150,7 @@ async def test_embed_verify_exits_when_zero_unembedded():
     )
 
     with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=fake_pool)), \
+            patch.object(mod, "_scoped_acquire", _passthrough_scope), \
             patch.dict(
                 sys.modules,
                 {"app.hatchet_workflows.embed_pending_passages": fake_embed_module},
@@ -180,6 +189,7 @@ async def test_embed_verify_dispatches_when_unembedded_remains():
     )
 
     with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=fake_pool)), \
+            patch.object(mod, "_scoped_acquire", _passthrough_scope), \
             patch.dict(
                 sys.modules,
                 {"app.hatchet_workflows.embed_pending_passages": fake_embed_module},
@@ -220,6 +230,7 @@ async def test_embed_verify_dispatch_failure_returns_ok_false():
     )
 
     with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=fake_pool)), \
+            patch.object(mod, "_scoped_acquire", _passthrough_scope), \
             patch.dict(
                 sys.modules,
                 {"app.hatchet_workflows.embed_pending_passages": fake_embed_module},
@@ -259,7 +270,8 @@ async def test_embed_verify_single_select_roundtrip():
 
     from app.hatchet_workflows import ingest_pdf as mod
 
-    with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=fake_pool)):
+    with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=fake_pool)), \
+            patch.object(mod, "_scoped_acquire", _passthrough_scope):
         await embed_verify(_make_input(), _make_ctx())
 
     unembedded_fetches = [
@@ -267,3 +279,61 @@ async def test_embed_verify_single_select_roundtrip():
         if "count(*) AS unembedded" in call[0][0]
     ]
     assert len(unembedded_fetches) == 1
+
+
+# ---------------------------------------------------------------------------
+# The unembedded count runs with the workspace bound
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_unembedded_count_binds_the_workspace_before_it_reads():
+    """silver.document_passages is fail-closed: on a bare connection the count
+    is always 0, so every run was closed 'all chunks embedded' immediately."""
+    from app.hatchet_workflows import ingest_pdf as mod
+
+    events: list[str] = []
+
+    class _Conn:
+        def transaction(self):
+            @asynccontextmanager
+            async def _txn():
+                events.append("begin")
+                yield
+                events.append("commit")
+
+            return _txn()
+
+        async def fetchrow(self, *_a, **_k):
+            events.append("count")
+            return {"unembedded": 3}
+
+    @asynccontextmanager
+    async def _acquire():
+        yield _Conn()
+
+    pool = types.SimpleNamespace(acquire=_acquire, close=AsyncMock())
+
+    async def _bind(conn, *, workspace_id, site, **_kw):
+        events.append(f"bind:{workspace_id}:{site}")
+
+    dispatch = AsyncMock()
+    fake_embed_module = types.SimpleNamespace(
+        EmbedPendingPassagesInput=lambda **kw: types.SimpleNamespace(**kw),
+        embed_pending_passages_wf=MagicMock(aio_run_no_wait=dispatch),
+    )
+    with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=pool)), \
+            patch.object(mod, "bind_workspace_scope", _bind), \
+            patch.object(mod.ingest_progress, "mark_started", AsyncMock()), \
+            patch.dict(
+                sys.modules,
+                {"app.hatchet_workflows.embed_pending_passages": fake_embed_module},
+            ):
+        result = await _get_embed_verify_func()(_make_input(), _make_ctx())
+
+    assert events[:3] == [
+        "begin",
+        "bind:a0000000-0000-0000-0000-000000000001:hatchet.ingest_pdf.embed_verify",
+        "count",
+    ]
+    assert result["unembedded_observed"] == 3 and result["redispatched"] is True
+    dispatch.assert_awaited_once()

@@ -48,8 +48,8 @@ has_match=True.
 
 Boost application, and why it currently changes nothing
 ------------------------------------------------------
-The boost_factor is passed to hybrid_query() / hybrid_query_no_workspace() as
-sparse_boost_factor.  Those functions multiply PREFETCH_LIMIT by the factor for
+The boost_factor is passed to hybrid_query() as
+sparse_boost_factor.  That function multiplies PREFETCH_LIMIT by the factor for
 the sparse Prefetch branch only.  The dense branch is unchanged.
 
     Default prefetch per branch: 100
@@ -91,9 +91,10 @@ anything the dense branch produces, so a chunk literally containing
 "PLS-22-08" is guaranteed into the fused output.
 
 PRECONDITION, unverified as of 2026-08-21: MatchText requires a full-text
-payload index on `text`.  Nothing in the live tree creates one -- every
-create_payload_index call in the repo is in the dormant src/dagster tree or
-in database/raw/phase28/seed_ni43_chunks.py.  If the index is absent on the
+payload index on `text`.  Nothing in the live tree creates one -- the only
+create_payload_index call left in the repo is in
+database/raw/phase28/seed_ni43_chunks.py (the src/dagster tree that held the
+others was deleted 2026-08-28).  If the index is absent on the
 live collection the whole query_points call fails, taking document search
 down for exactly the queries this was meant to help.  Confirm the index
 exists on georag_chunks before implementing, and create it in a live

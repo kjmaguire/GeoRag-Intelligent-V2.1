@@ -32,11 +32,7 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from app.agent.hallucination.citation_markers import (
-    ALL_MARKER_RE,
-    CITATION_MARKER_CAPTURE_RE,
-    canonical_marker,
-)
+from app.agent.hallucination.citation_markers import ALL_MARKER_RE
 
 #: "." after one of these is not a sentence end. Lower-cased, without the
 #: trailing dot. Chosen for geological report prose; words that routinely END
@@ -120,14 +116,6 @@ def is_marker_only(piece: str) -> bool:
     """True when ``piece`` is nothing but citation marker(s) and whitespace."""
     stripped = piece.strip()
     return bool(stripped) and not ALL_MARKER_RE.sub("", stripped).strip()
-
-
-def marker_ids(piece: str) -> list[str]:
-    """Canonical (dash-form) ids of the numeric markers in ``piece``."""
-    return [
-        canonical_marker(m.group(1), m.group(3))
-        for m in CITATION_MARKER_CAPTURE_RE.finditer(piece)
-    ]
 
 
 def strip_list_prefix(piece: str) -> str:

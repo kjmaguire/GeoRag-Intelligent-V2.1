@@ -47,7 +47,7 @@ final class DeprecatedAnswerQualityColumnsTest extends TestCase
      */
     private function mentions(): array
     {
-        $roots = ['app', 'src/fastapi/app', 'resources/js', 'src/dagster'];
+        $roots = ['app', 'src/fastapi/app', 'resources/js'];
         $found = [];
 
         foreach ($roots as $rel) {

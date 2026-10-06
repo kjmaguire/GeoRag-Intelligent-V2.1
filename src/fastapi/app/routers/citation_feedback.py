@@ -189,20 +189,24 @@ async def post_feedback(req: FeedbackRequest) -> FeedbackResponse:
         feature_id = str(row["feature_id"])
         cumulative = int(row["event_count"])
 
-        # Audit anchor — the per-event record.
+        # Audit anchor — the per-event record. Best-effort, but inside a
+        # SAVEPOINT: a failed INSERT aborts the surrounding transaction, and
+        # swallowing it bare would roll back the two upserts above while still
+        # answering 201 (the feedback silently lost).
         try:
             from app.audit import emit_audit
-            await emit_audit(
-                conn,
-                action_type="citation.feedback.recorded",
-                workspace_id=ws,
-                actor_id=req.submitted_by_user_id,
-                actor_kind="user",
-                target_schema="silver",
-                target_table="source_trust_features",
-                target_id=feature_id,
-                payload=payload,
-            )
+            async with conn.transaction():
+                await emit_audit(
+                    conn,
+                    action_type="citation.feedback.recorded",
+                    workspace_id=ws,
+                    actor_id=req.submitted_by_user_id,
+                    actor_kind="user",
+                    target_schema="silver",
+                    target_table="source_trust_features",
+                    target_id=feature_id,
+                    payload=payload,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("citation feedback: audit emit failed err=%s", exc)
 

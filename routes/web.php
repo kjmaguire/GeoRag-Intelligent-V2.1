@@ -83,7 +83,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     //
     // Restored 2026-08-25. Removed in 0eada56c ("remove demo-external
     // services") along with Martin itself; the 18 PostGIS tile functions it
-    // proxies were never removed and are live on the Azure server.
+    // proxies were never removed.
     Route::middleware(['throttle:public-geoscience-tiles'])->group(function () {
         Route::get(
             '/tiles/public-geoscience/{source}/{z}/{x}/{y}.pbf',
@@ -136,7 +136,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
         ->name('foundry.ingest-quality');
 
     // Per-project ingestion-run progress (Phase A: derived from silver.reports
-    // + bronze MinIO listing; Phase B will swap to silver.ingest_progress).
+    // + bronze listing; Phase B will swap to silver.ingest_progress).
     // The .json variant powers the 5s poll from the IngestionRuns page and
     // the small Overview ingest card.
     Route::get('/projects/{slug}/ingestion-runs', [IngestionRunsController::class, 'show'])
@@ -218,7 +218,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projects/{slug}/reports/{report_id}', [ReportController::class, 'view'])
         ->where('slug', '[a-z0-9\-]+')->whereUuid('report_id')
         ->name('foundry.reports.view');
-    // Figure manifest w/ presigned MinIO URLs (1-hour TTL). Lives behind
+    // Figure manifest w/ presigned object-store URLs (1-hour TTL). Lives behind
     // the Foundry auth shell so RLS scopes by workspace via Sanctum.
     Route::get('/projects/{slug}/reports/{report_id}/figures',
         [ReportController::class, 'figures'])
@@ -262,12 +262,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/api/v1/citations/feedback',
         [CitationFeedbackController::class, 'submit'])
         ->name('citations.feedback');
-
-    // Phase 4 Step 2 / Phase 6 Step 2 — Sanctum-fronted reverse proxy to
-    // Kestra UI/API, and the Caddy forward_auth target that gated it.
-    // REMOVED 2026-07-28 (A7): Kestra was never deployed (KESTRA_URL unset
-    // in every environment) and the compose kestra + caddy services are
-    // gone. See database/raw/phase3/95-kestra-sunset.sql.
 
     // Sender + flow-JWT-key operator actions. Dormant and gated OFF
     // (LAR-11): 404 unless services.admin_integrations.enabled; see the

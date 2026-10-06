@@ -108,9 +108,9 @@ These four services have no `profiles:` key and start on a bare
   `Z_activate_*.sql` opt-ins. `init-roles.sql` is inside this directory; an
   older note claiming it had to be applied by hand is obsolete.
 - **No WAL archive volume.** The base compose has no `archive_mode` and no
-  `pg_wal_archive` volume; those live only in the
-  `docker/compose.wal-archiving.yml` overlay (§6). Production relies on
-  the managed provider's PITR (35 days).
+  `pg_wal_archive` volume (the `docker/compose.wal-archiving.yml` overlay
+  and its init hook were deleted 2026-10-06; its drain side was already
+  gone). Production relies on RDS automated backups with 35-day PITR.
 - **Healthcheck** `pg_isready -U georag -d georag`, 10 s interval, 30 s
   start period. **Stop grace** 30 s. **Limits** 6 CPU / 16 GiB
   (reservation 10 GiB), `shm_size: 1gb`.
@@ -546,7 +546,6 @@ exist in the base file.
 |---|---|---|
 | [docker/compose.langfuse.yml](../../../docker/compose.langfuse.yml) | Self-hosted Langfuse v3 (`langfuse-web`, `langfuse-worker`, ClickHouse, `langfuse-init`) reusing the stack's Postgres / Redis / SeaweedFS | Optional. Every app service already carries `LANGFUSE_*` env pointing at `langfuse-web:3000`; empty keys disable the SDK. |
 | [docker/compose.redis-staging.yml](../../../docker/compose.redis-staging.yml) | Three Redis instances (`redis-cache`, `redis-queue`, `redis-sessions`) under `staging` / `prod` profiles | Dormant. Its runbooks are under `ops/runbooks/_archived/`. Production uses one `redis-cc`. |
-| [docker/compose.wal-archiving.yml](../../../docker/compose.wal-archiving.yml) | `pg_wal_archive` volume + `archive_mode` for on-prem PITR | Dormant and partly broken: it expects `georag-backup-agent` and Ofelia, both deleted 2026-08-23. Keep for an on-prem build; do not apply as-is. |
 
 The previously listed `docker/compose.exporters.yml` and
 `docker/compose.vllm.yml` do not exist.

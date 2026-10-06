@@ -75,10 +75,28 @@ class _FakeRedisError:
         raise ConnectionError("redis unreachable")
 
 
+class _FakeTx:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+
 class _FakeConn:
     def __init__(self, row: dict[str, Any] | None) -> None:
         self._row = row
         self.fetchrow_calls = 0
+        # The DB fallback reads through scoped_connection(): a transaction plus
+        # a set_config('app.workspace_id', ...) bind, both recorded here.
+        self.executed: list[tuple[str, tuple[Any, ...]]] = []
+
+    def transaction(self) -> _FakeTx:
+        return _FakeTx()
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.executed.append((query, args))
+        return "OK"
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         self.fetchrow_calls += 1
@@ -138,6 +156,23 @@ async def test_db_fallback_blocks_when_redis_flag_expired() -> None:
             WORKSPACE_ID, redis_client=_FakeRedisMiss(), pg_pool=pg_pool,
         )
     assert pg_pool.conn.fetchrow_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_db_fallback_reads_under_the_workspace_rls_scope() -> None:
+    """usage.workspace_cost_ceilings has a fail-closed RLS policy and the
+    runtime role does not bypass RLS, so a read with no ``app.workspace_id``
+    GUC sees no row and the suspension would never be honoured. The fallback
+    must bind the GUC to the workspace it is checking."""
+    pg_pool = _FakePgPool({"suspended_at": "2026-08-15T00:00:00Z", "admin_override_enabled": False})
+    with pytest.raises(llm_calls.WorkspaceQuotaExceeded):
+        await llm_calls.assert_workspace_not_suspended(
+            WORKSPACE_ID, redis_client=_FakeRedisMiss(), pg_pool=pg_pool,
+        )
+    assert any(
+        "set_config('app.workspace_id'" in sql and args == (WORKSPACE_ID,)
+        for sql, args in pg_pool.conn.executed
+    ), pg_pool.conn.executed
 
 
 @pytest.mark.asyncio

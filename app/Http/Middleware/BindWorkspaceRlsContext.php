@@ -232,7 +232,12 @@ class BindWorkspaceRlsContext
      */
     private function resolveWorkspaceId(Request $request): ?string
     {
-        $user = $request->user();
+        // This middleware runs in the group stack, BEFORE the route's
+        // auth:sanctum, so the default `web` guard has seen only the session.
+        // A Bearer-token caller (POST /api/v1/auth/login returns one) is
+        // anonymous to it and would bind '' — RLS disarmed on the fail-open
+        // policies. The sanctum guard answers for the session AND the token.
+        $user = $request->user() ?? $request->user('sanctum');
 
         if ($user === null) {
             return null;

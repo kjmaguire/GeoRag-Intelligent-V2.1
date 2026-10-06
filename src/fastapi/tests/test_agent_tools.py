@@ -1,13 +1,12 @@
 """Unit tests for the GeoRAG agent tool functions.
 
-These tests mock all external I/O (asyncpg, Qdrant, Neo4j) so they run
+These tests mock all external I/O (asyncpg, Qdrant) so they run
 without any live infrastructure.  They verify:
 
   - Correct SQL construction and parameter binding for query_spatial_collars
   - Graceful timeout handling (returns empty list, does not raise)
   - Graceful database exception handling (returns empty list, does not raise)
   - search_documents returns empty when embedding_model is None (pre-M2)
-  - traverse_knowledge_graph maps Neo4j records to GraphEntity correctly
   - verify_numerical_claim returns verified=True when values match within tol
   - verify_numerical_claim returns verified=False when values diverge
   - verify_numerical_claim blocks disallowed table names
@@ -30,7 +29,6 @@ from app.agent.tools import (
     CollarRecord,
     DocumentSearchResult,
     DownholeLogsResult,
-    GraphTraversalResult,
     NumericalClaimVerification,
     ProjectOverviewResult,
     SpatialQueryResult,
@@ -39,7 +37,6 @@ from app.agent.tools import (
     query_project_overview,
     query_spatial_collars,
     search_documents,
-    traverse_knowledge_graph,
     verify_numerical_claim,
 )
 
@@ -917,109 +914,6 @@ class TestSearchDocuments:
         assert result.rerank_degraded is True
         assert "reranked" not in result.data_source
         assert "rerank unavailable" in result.data_source
-
-
-# ---------------------------------------------------------------------------
-# traverse_knowledge_graph
-# ---------------------------------------------------------------------------
-
-
-class TestTraverseKnowledgeGraph:
-    """Tests for traverse_knowledge_graph tool."""
-
-    @pytest.mark.asyncio
-    async def test_maps_neo4j_records_to_graph_entities(self) -> None:
-        """Tool maps Neo4j record dicts to GraphEntity instances."""
-        fake_records = [
-            {
-                "entity_id": "elem-id-001",
-                "entity_type": "Formation",
-                "name": "Athabasca Group",
-                "props": {"age_ma": "1700", "rock_type": "Sandstone"},
-                "rel_type": "OVERLIES",
-                "direction": "INBOUND",
-            }
-        ]
-
-        mock_result = AsyncMock()
-        mock_result.data = AsyncMock(return_value=fake_records)
-
-        mock_session = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        mock_driver = MagicMock()
-        mock_driver.session = MagicMock(return_value=mock_session)
-
-        deps = _make_deps(neo4j_driver=mock_driver)
-        ctx = _MockRunContext(deps=deps)
-
-        result: GraphTraversalResult = await traverse_knowledge_graph(
-            ctx,  # type: ignore[arg-type]
-            entity_name="Basement",
-            project_id="proj-test-uuid",
-        )
-
-        assert result.count == 1
-        entity = result.entities[0]
-        assert entity.name == "Athabasca Group"
-        assert entity.entity_type == "Formation"
-        assert entity.relationship_type == "OVERLIES"
-        assert entity.relationship_direction == "INBOUND"
-        assert entity.properties["age_ma"] == "1700"
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_on_neo4j_timeout(self) -> None:
-        """Tool returns empty GraphTraversalResult on Neo4j timeout — does not raise."""
-
-        async def _slow_run(*args: object, **kwargs: object) -> object:
-            await asyncio.sleep(999)
-
-        mock_session = AsyncMock()
-        mock_session.run = _slow_run
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        mock_driver = MagicMock()
-        mock_driver.session = MagicMock(return_value=mock_session)
-
-        deps = _make_deps(neo4j_driver=mock_driver)
-        ctx = _MockRunContext(deps=deps)
-
-        with patch("app.agent.tools.settings") as mock_settings:
-            mock_settings.TIMEOUT_NEO4J_S = 0.01
-            result: GraphTraversalResult = await traverse_knowledge_graph(
-                ctx,  # type: ignore[arg-type]
-                entity_name="Basement",
-                project_id="proj-test-uuid",
-            )
-
-        assert result.count == 0
-
-    @pytest.mark.asyncio
-    async def test_depth_capped_at_3(self) -> None:
-        """Depth parameter is capped to 3 regardless of input."""
-        # We just check no error is raised with depth=99; the cap is internal.
-        mock_result = AsyncMock()
-        mock_result.data = AsyncMock(return_value=[])
-        mock_session = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_driver = MagicMock()
-        mock_driver.session = MagicMock(return_value=mock_session)
-
-        deps = _make_deps(neo4j_driver=mock_driver)
-        ctx = _MockRunContext(deps=deps)
-
-        result = await traverse_knowledge_graph(
-            ctx,  # type: ignore[arg-type]
-            entity_name="Zone",
-            project_id="proj-test-uuid",
-            depth=99,
-        )
-        assert result.count == 0
 
 
 # ---------------------------------------------------------------------------

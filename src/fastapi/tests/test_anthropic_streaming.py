@@ -126,7 +126,18 @@ def _permissive_pool():
     async def _fetchrow(_sql: str, _workspace_id: str):
         return {"extra_payload": {"allow_external_llm": True}}
 
-    conn = SimpleNamespace(fetchrow=_fetchrow)
+    class _TxCM:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def _execute(_sql: str, *_args):
+        return "OK"
+
+    # The egress gate reads through scoped_connection(): transaction + GUC bind.
+    conn = SimpleNamespace(fetchrow=_fetchrow, execute=_execute, transaction=lambda: _TxCM())
 
     class _AcquireCM:
         async def __aenter__(self):

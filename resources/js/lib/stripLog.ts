@@ -170,15 +170,6 @@ export function lithologyColourMap(bands: { code: string; color?: string | null 
     return categoryColours(bands.map((b) => ({ key: b.code || '?', hint: b.color })));
 }
 
-/** Alteration and mineral colours use a different offset so a type that shares a name with a code is not the same swatch. */
-export function alterationColour(type: string): string {
-    return stableColour(`alt:${type}`, 5);
-}
-
-export function mineralColour(mineral: string): string {
-    return stableColour(`min:${mineral}`, 11);
-}
-
 /** Colours for the alteration types / minerals of one hole. */
 export function alterationColourMap(types: string[]): Map<string, string> {
     return categoryColours(

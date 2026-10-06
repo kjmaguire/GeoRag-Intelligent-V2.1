@@ -2,15 +2,6 @@
  * Shared TypeScript types for GeoRAG Intelligence frontend.
  */
 
-// Ambient declaration for Ziggy's `route()` helper. Ziggy is not installed
-// in the package.json, but some admin pages reference `route()` for URL
-// generation. Declared as `(name, params?) => string` to satisfy tsc; at
-// runtime these callsites should either be replaced with explicit URLs or
-// Ziggy should be installed (tightenco/ziggy + @routes Blade directive).
-declare global {
-    function route(name: string, params?: Record<string, unknown> | string | number, absolute?: boolean): string;
-}
-
 // ── Inertia shared props ───────────────────────────────────────────────────
 
 /**
@@ -72,41 +63,6 @@ export interface Project {
     updated_at: string;
 }
 
-export interface CollarRecord {
-    collar_id: string;
-    hole_id: string;
-    project_id: string;
-    easting: number;
-    northing: number;
-    elevation: number;
-    /** Optional since 2026-09-29 (§04e): null when the source had no EOH. */
-    total_depth: number | null;
-    hole_type: string;
-    azimuth: number;
-    /** Degrees from horizontal, negative = down, positive = up-hole (§04e). */
-    dip: number;
-    drill_date: string | null;
-    status: string;
-    longitude?: number | null;
-    latitude?: number | null;
-}
-
-export interface LithologyInterval {
-    log_id: string;
-    collar_id: string;
-    hole_id: string;
-    from_depth: number;
-    to_depth: number;
-    lithology_code: string | null;
-    lithology_description: string | null;
-    grain_size: string | null;
-    color: string | null;
-    hardness: string | null;
-    rqd: number | null;
-    recovery: number | null;
-    weathering: string | null;
-}
-
 export interface Citation {
     citation_id: string;
     citation_type: 'DATA' | 'NI43' | 'PUB' | 'PGEO';
@@ -135,15 +91,6 @@ export interface Citation {
     license_url?: string | null;
     source_url?: string | null;
     staleness_seconds?: number | null;
-}
-
-export interface GeoRAGResponse {
-    text: string;
-    citations: Citation[];
-    confidence: number;
-    sources_used: string[];
-    map_payload?: MapPayload | null;
-    viz_payload?: VizPayload | null;
 }
 
 // ── Map types ──────────────────────────────────────────────────────────────
@@ -194,9 +141,6 @@ export const KNOWN_VIZ_CHART_TYPES = [
     'coverage_table',
     'stereonet',
 ] as const;
-
-/** Type alias for the literal-union element type of `KNOWN_VIZ_CHART_TYPES`. */
-export type KnownVizChartType = (typeof KNOWN_VIZ_CHART_TYPES)[number];
 
 /**
  * Shape of `viz_payload.plotly_layout.meta` — the per-card payload
@@ -253,128 +197,6 @@ export interface VizPayload {
     title?: string;
     plotly_data?: Record<string, unknown>[];
     plotly_layout?: VizPayloadLayout;
-}
-
-// ── Chat types ─────────────────────────────────────────────────────────────
-
-/**
- * 5-state lifecycle for assistant messages (Module 7 Phase B §B2).
- *
- * State machine (derived from SSE event ordering):
- *   draft       — first `delta` event received; tokens flowing
- *   generated   — stream ended; awaiting `completed` event (transient ~300ms)
- *   validated   — `completed` received with no refusal_payload
- *   committed   — ~500ms after validated (pure visual; no structural change)
- *   rejected    — `completed` with refusal_payload OR `failed` event
- *
- * Absent value defaults to 'committed' for backward compatibility with
- * messages loaded from localStorage before Module 7 Chunk 3.
- */
-export type LifecycleState = 'draft' | 'generated' | 'validated' | 'committed' | 'rejected';
-
-/**
- * Structured refusal payload shape (Module 6 Chunk 4a + Module 7 §B7).
- * Present on `completed` events where the answer was refused, and synthesised
- * from `failed` events for system-level failures.
- */
-export type RefusalReasonCode =
-    | 'insufficient_evidence'
-    | 'guard_numeric_fail'
-    | 'guard_entity_fail'
-    | 'guard_completeness_fail'
-    | 'llm_unavailable'
-    | 'budget_exhausted'
-    | 'model_no_output'
-    | 'unsupported_by_sources';
-
-export interface NearestCandidate {
-    marker: string;
-    source_store: string;
-    relevance_score: number;
-    preview: string;
-    evidence_id?: string | null;
-}
-
-export interface RefusalPayload {
-    type: 'refusal';
-    reason_code: RefusalReasonCode;
-    searched: {
-        stores_queried: string[];
-        candidates_considered: number;
-        query_class: string;
-    };
-    missing: {
-        what_was_needed: string;
-        nearest_candidates: NearestCandidate[];
-    };
-    message: string;
-    failed_guards?: string[];
-}
-
-// ── Conflict + Freshness types (Module 7 §B8) ─────────────────────────────
-
-/**
- * A single conflicting-evidence entry (Global Invariant 7 — never auto-pick winner).
- * Parallel arrays: values[i] is supported by evidence_ids[i].
- */
-export interface ConflictEntry {
-    entity_key: string;
-    property_name: string;
-    evidence_ids: string[];
-    values: string[];
-}
-
-/**
- * Freshness metadata snapshotted at query time.
- * Module 7 computes staleness by comparing workspace_data_version_at_query
- * against the current workspace data_version, which is exposed via Inertia's
- * shared props as `usePage<PageProps>().props.workspace.data_version`
- * (wired in Module 8 §8.5 — no separate endpoint needed).
- * Fallback: clock-based age from answered_at.
- */
-export interface FreshnessData {
-    workspace_data_version_at_query: number;
-    project_data_version_at_query?: number | null;
-    answered_at: string; // ISO 8601
-}
-
-export interface ChatMessage {
-    id: string;
-    role: 'user' | 'assistant' | 'system';
-    content: string;
-    timestamp: string;
-    citations?: Citation[];
-    confidence?: number | null;
-    sources_used?: string[];
-    mapPayload?: MapPayload | null;
-    vizPayload?: VizPayload | null;
-    /** Module 7 §B2 — per-message lifecycle state. Defaults to 'committed' when absent. */
-    lifecycle_state?: LifecycleState;
-    /** Module 7 §B7 — structured refusal payload; present when lifecycle_state === 'rejected'. */
-    refusal_payload?: RefusalPayload | null;
-    /** Module 7 §B8 — conflicting evidence entries; null/absent = no conflicts detected. */
-    conflicting_evidence?: ConflictEntry[] | null;
-    /** Module 7 §B8 — freshness metadata snapshotted at query time; null/absent = not available. */
-    freshness?: FreshnessData | null;
-    /** Module 7 §B6 — answer_run_id from completed SSE event; used for feedback POST. */
-    answer_run_id?: string | null;
-    /** Audit 2026-06-28: client-side message fields the Chat page accumulates
-     *  from SSE events / optimistic updates (previously hidden by @ts-nocheck). */
-    phases?: unknown[];
-    originalQuery?: string;
-    status?: string | null;
-    error?: string | null;
-    degradedSources?: unknown;
-    followups?: string[];
-}
-
-export interface ChatThread {
-    id: string;
-    title: string;
-    createdAt: string | number;
-    updatedAt: string | number;
-    /** Audit 2026-06-28: client-side per-thread search/filter text. */
-    search?: string;
 }
 
 // ── Source viewer types ────────────────────────────────────────────────────
@@ -460,16 +282,4 @@ export interface EntityReferencesResponse {
         established_at: string | null;
         established_by: string | null;
     }>;
-}
-
-// ── Export types ────────────────────────────────────────────────────────────
-
-export interface ExportRecord {
-    export_id: string;
-    project_id: string;
-    format: string;
-    status: 'pending' | 'processing' | 'completed' | 'failed';
-    file_path: string | null;
-    file_size: number | null;
-    created_at: string;
 }

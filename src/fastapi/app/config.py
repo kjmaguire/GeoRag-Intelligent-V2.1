@@ -11,7 +11,6 @@ by any module without re-defining magic numbers.
 from __future__ import annotations
 
 import os
-from typing import ClassVar
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -198,17 +197,13 @@ class Settings(BaseSettings):
     # main.py::_assert_production_posture as a GEORAG_POSTURE_CRITICAL.
     POSTGRES_USER: str = "georag"
     POSTGRES_PASSWORD: str
-    # Local pgbouncer needs no TLS; Azure Database for PostgreSQL Flexible
-    # Server requires it. asyncpg accepts this as a DSN query param directly.
+    # Local pgbouncer needs no TLS; RDS for PostgreSQL requires it. asyncpg
+    # accepts this as a DSN query param directly.
     #
-    # NOTE the delta this buys is smaller than it looks. georag-pg-cc has
-    # `require_secure_transport = on`, so the server refuses unencrypted
-    # connections and asyncpg's default `prefer` already negotiates TLS with
-    # no possible plaintext fallback. And libpq/asyncpg `require` does NOT
-    # verify the server certificate — only `verify-ca` / `verify-full` do.
-    # So `require` here is documentation, not enforcement. Raise it to
-    # `verify-full` (with a CA bundle) if certificate identity ever needs to
-    # be guaranteed.
+    # libpq/asyncpg `require` does NOT verify the server certificate — only
+    # `verify-ca` / `verify-full` do. So `require` encrypts but does not
+    # authenticate the server. Raise it to `verify-full` (with a CA bundle)
+    # if certificate identity ever needs to be guaranteed.
     POSTGRES_SSLMODE: str = "prefer"
 
     # Direct-to-Postgres, bypassing PgBouncer. Added to Settings 2026-08-21:
@@ -225,15 +220,8 @@ class Settings(BaseSettings):
     POSTGRES_DIRECT_PORT: int = 5432
 
     # -------------------------------------------------------------------------
-    # Neo4j — REMOVED 2026-07-28 (B1). NEO4J_HOST/PORT/USER/PASSWORD were only
-    # read by main.py's driver construction, which is gone. The handful of
-    # standalone Phase 0 monitoring agents and backup/restore workflows that
-    # still probe Neo4j directly (graph_tenant_auditor.py, index_health.py,
-    # store_reconciliation.py, tool_gateway/impls.py, outbox_dispatcher.py,
-    # restore_workspace.py, _export_extras.py, _restore_extras.py) read raw
-    # NEO4J_* env vars via os.environ.get(...) with hardcoded fallbacks, not
-    # through this settings object, so removing these fields doesn't affect
-    # them — they already fail open on a connection error.
+    # Neo4j — REMOVED 2026-07-28 (B1). There are no NEO4J_* settings; any
+    # remaining reader of a raw NEO4J_* env var fails open on a missing store.
     # -------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
@@ -248,12 +236,9 @@ class Settings(BaseSettings):
     # QDRANT_API_KEY in .env — the value is passed to both the FastAPI
     # AsyncQdrantClient AND the Qdrant container itself via compose.
     QDRANT_API_KEY: str = ""
-    # Azure Container Apps internal ingress (transport=Auto, i.e. HTTP) only
-    # fronts the app on 80/443 via its Envoy proxy — the container's own
-    # target port (6333) is not reachable directly through the environment's
-    # internal DNS, even with the bare app name. Set QDRANT_HTTPS=true and
-    # QDRANT_PORT=443 there; leave both at their plain-HTTP/6333 defaults for
-    # local compose (Qdrant is reached directly, no ingress in the way).
+    # Set QDRANT_HTTPS=true (and QDRANT_PORT to the TLS-fronted port) when
+    # Qdrant sits behind a TLS terminator; leave both at their plain-HTTP/6333
+    # defaults for local compose (Qdrant is reached directly).
     QDRANT_HTTPS: bool = False
 
     # -------------------------------------------------------------------------
@@ -375,8 +360,8 @@ class Settings(BaseSettings):
     VLLM_QUANTIZATION: str = "awq_marlin"
     VLLM_MAX_MODEL_LEN: int = 8192
 
-    # Amazon Bedrock — used when LLM_BACKEND=bedrock (the default primary
-    # backend after the 2026-09-08 AWS move, ADR-0022). The deployed model is
+    # Amazon Bedrock — used when LLM_BACKEND=bedrock (selectable only; the
+    # default moved to "cohere" under ADR-0023). The model is
     # Cohere Command A+ (command-a-plus-05-2026), reached through a **Bedrock
     # Marketplace** endpoint rather than the serverless catalogue: Bedrock's
     # serverless Cohere generative line is Command R/R+ (legacy), which is not
@@ -423,11 +408,10 @@ class Settings(BaseSettings):
     # "inherit AWS_REGION", resolved in app.services._bedrock.bedrock_region.
     BEDROCK_REGION: str = ""
     # Marketplace endpoints do NOT scale to zero — they bill for SageMaker
-    # compute for as long as they exist, which is why the nightly sweeps
-    # delete and recreate them (deploy/aws/scheduler/). A cold recreate takes
-    # minutes, so the first call after a startup sweep can legitimately be
-    # slow; this is the ceiling before that counts as a failure rather than a
-    # cold start.
+    # compute for as long as they exist (ADR-0023: nothing is deployed on
+    # this path today). A cold recreate takes minutes, so the first call
+    # against a freshly created endpoint can legitimately be slow; this is
+    # the ceiling before that counts as a failure rather than a cold start.
     BEDROCK_CHAT_COLD_START_TIMEOUT_S: float = 120.0
 
     # -------------------------------------------------------------------------
@@ -497,11 +481,9 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = "claude-opus-4-8"
     ANTHROPIC_MAX_OUTPUT_TOKENS: int = 4096
 
-    # Ollama review #5 — `num_predict` cap for the OpenAI-compatible
-    # path. Default in Ollama is -1 (unlimited) — a small model that
-    # gets stuck in a repetition loop will generate forever and burn
-    # the FastAPI 8 s deadline. Match the Anthropic ceiling so the
-    # output budget is consistent across backends.
+    # Output-token cap for the OpenAI-compatible (vllm) path, so a model
+    # stuck in a repetition loop cannot generate forever. Matches the
+    # Anthropic ceiling so the output budget is consistent across backends.
     LLM_MAX_OUTPUT_TOKENS: int = 4096
 
     # Qwen3 sampling parameters — published recommendations from the Qwen
@@ -639,9 +621,8 @@ class Settings(BaseSettings):
 
     # ADR-0010 — silver.document_passages is the canonical chunked-content
     # corpus. When True, `search_documents` reads from the new
-    # `georag_chunks` collection (fed by the Dagster
-    # `index_document_passages` asset) instead of the legacy
-    # `georag_reports` collection (fed by `index_reports`). Hard flag
+    # `georag_chunks` collection (fed by the passage_embedder / Hatchet
+    # embed workflows) instead of the legacy `georag_reports` collection. Hard flag
     # flip per Kyle 2026-05-27 — no transition / shadow mode.
     #
     # Flipped to True on 2026-05-28 (overnight ADR-0010 Session C) after
@@ -660,7 +641,7 @@ class Settings(BaseSettings):
     # index_document_passages).
     RETRIEVAL_USE_DOCUMENT_PASSAGES: bool = True
 
-    # P0 #4 — multi-tenant project boundary enforcement.
+    # P0 #4 — multi-tenant project boundary enforcement (default True).
     # When True, FastAPI routes that accept a JWT refuse to service the
     # request if:
     #   * the Authorization header is missing / not a Bearer JWT, OR
@@ -668,24 +649,11 @@ class Settings(BaseSettings):
     #     `project_id`, OR
     #   * the JWT has no `project_id` claim at all.
     #
-    # When False (default — graceful rollout), the check is a soft warning:
-    # we log the mismatch and honour the body's project_id. This lets legacy
-    # Laravel deploys that haven't shipped the JWT minter yet continue to
-    # work against the current FastAPI build.
-    #
-    # Flip to True once every Laravel deploy in your environment is signed
-    # up through the FastApiJwtMinter path. Do NOT flip in a multi-customer
-    # deployment until you have verified the minter is in place everywhere
-    # — otherwise legitimate requests will start returning 403.
-    #
-    # Single-tenant deployments can safely leave this False; the JWT flow
-    # still signs every request and project ownership is enforced at the
-    # Laravel layer before the JWT is minted. The main benefit of flipping
-    # it on is defence-in-depth in multi-customer deployments.
-    # Module 9 Chunk 9.4 (A2-03) — flipped to True. Multi-tenant deployments
-    # MUST enforce JWT-vs-body equality. Solo deployments must opt out via
-    # SINGLE_TENANT_MODE=True; a model-validator below refuses to start the
-    # service if both flags are False (loud failure beats silent insecurity).
+    # When False the project check is only a soft warning (the body's
+    # project_id is honoured), which is only permitted together with
+    # SINGLE_TENANT_MODE=True: a model-validator below refuses to start the
+    # service if both flags are False (loud failure beats silent
+    # insecurity). Module 9 Chunk 9.4 (A2-03) flipped the default to True.
     MULTI_TENANT_ENFORCEMENT_ENABLED: bool = True
 
     # Explicit single-tenant escape hatch. When True, MULTI_TENANT_ENFORCEMENT_ENABLED
@@ -1436,35 +1404,6 @@ class Settings(BaseSettings):
     # render later in dispatch order. Retrieval quality goes DOWN.
     RERANKER_TOP_K: int = 12
 
-    # ── Plan §2b — dynamic temperature by query type ───────────────────
-    # Read by the orchestrator's _call_openai_compatible_llm when the
-    # intent classifier has produced a router_decision. Falls back to
-    # the existing global default when intent is unknown. Plan §2b
-    # verbatim values; tune per A/B benchmark results.
-    #
-    # Pydantic v2 doesn't infer types for plain dicts on a BaseSettings
-    # subclass, so we declare it with an explicit ClassVar to keep it
-    # off the env-loading path (it's not configurable via .env — code
-    # change to update). The import is at module top — an in-class
-    # ``from typing import ClassVar`` creates a non-annotated class
-    # attribute that Pydantic's namespace inspector rejects.
-    TEMPERATURE_BY_QUERY_TYPE: ClassVar[dict[str, float]] = {
-        # Plan §2b intent-style keys (agentic_retrieval intents)
-        "factual_lookup": 0.10,
-        "synthesis": 0.30,
-        "hypothesis_generation": 0.35,
-        "anomaly_detection": 0.20,
-        "uncertainty_quantification": 0.25,
-        "decision_support": 0.30,
-        # Legacy spec query-class keys (answer_runs.query_class enum)
-        "factual": 0.10,
-        "spatial": 0.15,
-        "document": 0.30,
-        "computation": 0.10,
-        "viz": 0.20,
-        "unknown": 0.30,
-    }
-
     # Minimum reranker logit score to retain a chunk after cross-encoder scoring.
     # Cross-encoder outputs raw logits; sigmoid(logit) gives a [0,1] probability.
     #
@@ -1810,41 +1749,9 @@ class Settings(BaseSettings):
     # Per-category row caps inside _build_context.
     MAX_CONTEXT_COLLARS: int = 20
     MAX_CONTEXT_DOC_CHUNKS: int = 5
-    MAX_CONTEXT_GRAPH_ENTITIES: int = 20
     MAX_CONTEXT_PG_RECORDS: int = 12
 
 
 # Module-level singleton — imported by all other modules as:
 #   from app.config import settings
 settings = Settings()  # type: ignore[call-arg]
-
-
-# ---------------------------------------------------------------------------
-# Per-query-class token budget table (CTX-01 partial resolution — Chunk 2)
-# ---------------------------------------------------------------------------
-# Module 5 Chunk 2 (2026-04-21): starter per-class budgets for qwen3-14b-awq
-# 8K context window. All values must be ≤ MAX_CONTEXT_TOKENS for
-# Ollama/vLLM backends. The Anthropic backend uses MAX_CONTEXT_TOKENS_ANTHROPIC
-# for all classes (200K — no truncation concern).
-#
-# TOOL-CALL-01 fix (2026-04-21): all values scaled 2x to match the raised
-# OLLAMA_NUM_CTX=16384 context window. 16K context matches Qwen3-14B
-# capacity + thinking disabled on grounded synthesis; KV cache at 16K fits
-# in ~400 MB within RTX 4080's 800 MB VRAM headroom. Proportions preserved.
-# Per TOOL-CALL-01 fix 2026-04-21.
-#
-# Usage in the orchestrator's context truncation step:
-#   from app.config import settings, MAX_CONTEXT_TOKENS_PER_CLASS
-#   per_class_budget = MAX_CONTEXT_TOKENS_PER_CLASS.get(spec_class, settings.MAX_CONTEXT_TOKENS)
-#   effective_budget = min(per_class_budget, settings.effective_max_context_tokens)
-#
-# Tune values after Phase C measurement pass (Module 5 Phase C golden-corpus
-# recall/MRR evaluation pairs with Module 10 golden corpus).
-MAX_CONTEXT_TOKENS_PER_CLASS: dict[str, int] = {
-    "factual":     14_000,  # factual: moderate context, compact answers
-    "spatial":     15_000,  # spatial: most verbose (collar metadata + aggregates)
-    "document":    15_000,  # document: NI 43-101 chunks are long, need full budget
-    "computation": 13_000,  # computation: needs reasoning headroom, less raw context
-    "viz":         13_000,  # viz: payload construction, minimal text evidence needed
-    "unknown":     14_000,  # unknown: conservative fallback
-}

@@ -51,7 +51,7 @@ import logging
 import os
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,20 @@ def _render_full_page_worker(pdf_bytes: bytes, page_index: int, dpi: int) -> byt
 
     pdf = pdfium.PdfDocument(pdf_bytes)
     try:
-        page = pdf[page_index]
+        return _render_page_png_from_document(pdf, page_index, dpi)
+    finally:
+        pdf.close()
+
+
+def _render_page_png_from_document(pdf: Any, page_index: int, dpi: int) -> bytes:
+    """Render one page of an ALREADY-OPEN pypdfium2 document to PNG bytes.
+
+    Split out of ``_render_full_page_worker`` so a caller rendering many pages
+    of one file (ingest's page-image staging) opens the document once instead
+    of re-parsing the whole PDF for every page. The caller owns ``pdf``.
+    """
+    page = pdf[page_index]
+    try:
         scale = dpi / _PDF_POINTS_PER_INCH
         bitmap = page.render(scale=scale, rotation=0)
         pil_image = bitmap.to_pil()
@@ -109,7 +122,7 @@ def _render_full_page_worker(pdf_bytes: bytes, page_index: int, dpi: int) -> byt
         pil_image.save(buf, format="PNG")
         return buf.getvalue()
     finally:
-        pdf.close()
+        page.close()
 
 
 def _render_crop_worker(

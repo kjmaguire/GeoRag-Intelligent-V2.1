@@ -9,7 +9,7 @@ construct the GeoRAGResponse programmatically from what actually happened:
   - confidence:   computed from validator pass rate and tool result quality
   - sources_used: list of tool names + row IDs that were actually called
 
-This approach is more robust than NativeOutput/PromptedOutput for Ollama-hosted
+This approach is more robust than NativeOutput/PromptedOutput for smaller
 models because the LLM only has one job: write good text. The structured
 metadata is assembled from ground truth (tool results) rather than being
 invented by the LLM.
@@ -34,7 +34,6 @@ from app.agent.tools import (
     DocumentSearchResult,
     DownholeLogsResult,
     DrillTrace3DResult,
-    GraphTraversalResult,
     ProjectOverviewResult,
     ProjectSummaryResult,
     SpatialQueryResult,
@@ -76,10 +75,10 @@ EMPTY_SOURCE_SENTINELS: frozenset[str] = frozenset({
 #:
 #: The zero-row id is structural, not a fixed sentinel: an assay lookup that
 #: found nothing yields `silver.samples:element=U3O8:count=0`, a spatial one
-#: `silver.collars:count=0`, a graph one `neo4j:count=0`. Enumerating those
+#: `silver.collars:count=0`. Enumerating those
 #: as literals is what left the set covering three shapes out of eleven.
 _EMPTY_SOURCE_SUFFIXES: tuple[str, ...] = (
-    ":count=0",          # assays, spatial collars, neo4j
+    ":count=0",          # assays, spatial collars
     ":rows=0:first_row=none",   # ADR-0007 project summary card
 )
 
@@ -191,10 +190,10 @@ def _citation_type_for_tool(
     - DocumentSearchResult with NI43/NI 43-101 document_type → "NI43"
     - DocumentSearchResult with PUB document_type → "PUB"
     - PublicGeoscienceSearchResult → "PGEO" (plan §08 jurisdiction-aware citation)
-    - Everything else (spatial queries, graph traversal) → "DATA"
+    - Everything else (spatial queries, project summaries, ...) → "DATA"
 
-    The document_type field in each DocumentChunk payload is set by the Dagster
-    index_reports asset at indexing time. We inspect the first chunk's type as
+    The document_type field in each DocumentChunk payload is set by the
+    ingestion passage embedder at indexing time. We inspect the first chunk's type as
     representative of the whole result set (all chunks in a single
     search_documents call come from the same collection and typically the same
     report or similar report types).
@@ -230,7 +229,6 @@ def assemble_response(
     Citation type mapping (hallucination Layer 2):
       - DocumentSearchResult  → citation_type="NI43" or "PUB", id prefix [NI43-X] / [PUB-X]
       - SpatialQueryResult    → citation_type="DATA", id prefix [DATA-X]
-      - GraphTraversalResult  → citation_type="DATA", id prefix [DATA-X]
 
     If the LLM text contains no citation markers, we append them to the end so
     the text + citations list stay consistent.
@@ -604,10 +602,6 @@ def _extract_source_id(tool_name: str, result: Any) -> str:
             )
             return f"georag_reports:{first.report_id}:{section_part}:chunk={first.chunk_id}"
         return "georag_reports:empty"
-    if isinstance(result, GraphTraversalResult):
-        if result.entities:
-            return f"neo4j:entities={result.count}:first={result.entities[0].entity_id}"
-        return f"neo4j:count={result.count}"
     if isinstance(result, ProjectOverviewResult):
         return (
             f"silver.projects:slug={result.slug or 'unknown'}"
@@ -796,8 +790,6 @@ def _extract_relevance(result: Any) -> float:
             return 0.0
         scores = [c.relevance_score for c in result.chunks]
         return sum(scores) / len(scores)
-    if isinstance(result, GraphTraversalResult):
-        return 1.0 if result.count > 0 else 0.0
     if isinstance(result, ProjectOverviewResult):
         # Project metadata is deterministic structured data — 100% relevant
         # to the query that triggered it. The empty-result filter (F.4)

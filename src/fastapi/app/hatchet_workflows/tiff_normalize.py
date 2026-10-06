@@ -568,21 +568,63 @@ async def _normalize_downloaded(
     head = await asyncio.to_thread(store.head, Bucket.BRONZE, derived_key)
     derived_size = int(head.get("size") or 0)
 
-    downstream_input = IngestPdfInput(
-        workspace_id=input.workspace_id,
-        project_id=input.project_id,
-        minio_key=derived_key,
-        file_size=derived_size,
-        vendor_profile_id=input.vendor_profile_id,
-        correlation_token=input.correlation_token,
-        actor_id=input.actor_id,
-    )
+    # Claim the derived PDF's progress row BEFORE dispatching, the way the
+    # trigger endpoints and the ZIP fan-out do (HAT-4/HAT-6/HAT-12). Without
+    # it (a) this task's own Hatchet retry, or the same TIFF uploaded twice in
+    # a burst, dispatched a SECOND ingest_pdf for the same derived key and the
+    # scanned pages were OCR-billed twice; and (b) the derived PDF had no
+    # progress row at all until ingest_pdf's preflight started, so a PDF
+    # queued behind the per-workspace concurrency cap (a large scanned
+    # drill-log can wait hours) was invisible, and one Hatchet cancelled
+    # before its body ran left nothing for the sweeps to see.
+    claim = None
+    try:
+        claim = await ingest_progress.claim_dispatch(
+            workspace_id=str(input.workspace_id),
+            project_id=str(input.project_id),
+            minio_key=derived_key,
+            triggered_by="upload",
+        )
+    except Exception as exc:  # noqa: BLE001 - fail open, as shadow_trigger does
+        log.warning(
+            "tiff_normalize: dispatch claim failed (%s) - dispatching ingest_pdf "
+            "without dedupe", exc,
+        )
 
-    ref = await ingest_pdf.aio_run_no_wait(downstream_input)
-    log.info(
-        "tiff_normalize.dispatched_ingest_pdf workflow_run_id=%s derived_key=%s",
-        ref.workflow_run_id, derived_key,
-    )
+    if claim is not None and not claim.claimed:
+        # A run for this derived PDF is already queued or running.
+        ingest_pdf_workflow_run_id = claim.workflow_run_id
+        log.info(
+            "tiff_normalize.ingest_pdf_already_active run=%s workflow_run_id=%s "
+            "derived_key=%s - not dispatching again",
+            claim.run_id, claim.workflow_run_id, derived_key,
+        )
+    else:
+        downstream_input = IngestPdfInput(
+            workspace_id=input.workspace_id,
+            project_id=input.project_id,
+            minio_key=derived_key,
+            file_size=derived_size,
+            vendor_profile_id=input.vendor_profile_id,
+            correlation_token=input.correlation_token,
+            actor_id=input.actor_id,
+            run_id=claim.run_id if claim is not None else None,
+        )
+        try:
+            ref = await ingest_pdf.aio_run_no_wait(downstream_input)
+        except BaseException:
+            if claim is not None:
+                await ingest_progress.release_undispatched(run_id=claim.run_id)
+            raise
+        ingest_pdf_workflow_run_id = ref.workflow_run_id
+        if claim is not None:
+            await ingest_progress.stamp_workflow_run_id(
+                run_id=claim.run_id, workflow_run_id=ingest_pdf_workflow_run_id,
+            )
+        log.info(
+            "tiff_normalize.dispatched_ingest_pdf workflow_run_id=%s derived_key=%s",
+            ingest_pdf_workflow_run_id, derived_key,
+        )
 
     # F6 (2026-08-11) — the source-TIFF progress row ends here: the derived
     # PDF is tracked by its own row (created by ingest_pdf's preflight).
@@ -636,7 +678,7 @@ async def _normalize_downloaded(
         page_count=page_count,
         truncated_at_cap=truncated,
         normalize_skipped=normalize_skipped,
-        ingest_pdf_workflow_run_id=ref.workflow_run_id,
+        ingest_pdf_workflow_run_id=ingest_pdf_workflow_run_id,
         total_frames=total_frames,
         frames_ignored=frames_ignored,
         warnings=frame_warnings,

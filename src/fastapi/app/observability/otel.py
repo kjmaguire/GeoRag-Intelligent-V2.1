@@ -1,6 +1,6 @@
 """Phase 5 Step 4 / R-P3-7 — lazy OTel TracerProvider bootstrap.
 
-Relocated 2026-07-28 (A1) from ``georag_dagster.observability`` alongside the
+Relocated 2026-07-28 (A1) from the retired Dagster tree alongside the
 PDF parser it instruments; the parser is now
 ``app.services.ingest.pdf_report``. This module gives its callers — the
 Hatchet worker and the parse subprocess — a shared, idempotent way to wire up
@@ -18,7 +18,7 @@ opentelemetry-api with no exporter).
 
 Env contract:
   OTEL_EXPORTER_OTLP_ENDPOINT  — e.g. http://otel-collector:4318
-  OTEL_SERVICE_NAME            — e.g. dagster-daemon, hatchet-worker-ai
+  OTEL_SERVICE_NAME            — e.g. hatchet-worker
   OTEL_EXPORTER_OTLP_PROTOCOL  — "http/protobuf" (default) | "grpc"
 
 Idempotent: re-calling install_tracer_provider() is a no-op once a real

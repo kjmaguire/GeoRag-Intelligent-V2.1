@@ -15,38 +15,12 @@ raw dicts) so future fields can be added without breaking validation.
 
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from app.agent.schemas import GeoAnswer
-
-
-class AnswerMode(StrEnum):
-    """Plan §4a — three answer-shape modes the caller can request.
-
-    ``detailed`` (default): full 8-section structured format
-    (Direct answer / Key numbers / Evidence / Source citation /
-    Assumptions / Confidence / Missing / Follow-up).
-
-    ``short``: section 1 + section 4 only. ~50 tokens. Field mode
-    (per `project_phase3_geologist_question_plan` Q21 decision).
-
-    ``evidence_only``: section 3 + section 4 only. No synthesis, no
-    confidence, no interpretation. For SMEs who want to interpret
-    themselves.
-
-    Resolved by the orchestrator's prompt selector + the response
-    assembler. When unset on the request, defaults to ``detailed``
-    on desktop surfaces and ``short`` on Field mode (Q21).
-    """
-
-    SHORT = "short"
-    DETAILED = "detailed"
-    EVIDENCE_ONLY = "evidence_only"
-
 
 # ---------------------------------------------------------------------------
 # Citation
@@ -61,7 +35,7 @@ class Citation(BaseModel):
     during response assembly, not stored in the database.
 
     source_chunk_id is the canonical provenance pointer — it references a
-    Qdrant vector or RAGFlow chunk. Every Citation must have a non-empty
+    Qdrant chunk. Every Citation must have a non-empty
     source_chunk_id. Responses with any Citation missing this field are
     rejected by Pydantic AI's typed output validation (Layer 2).
 
@@ -92,7 +66,7 @@ class Citation(BaseModel):
     source_chunk_id: str = Field(
         ...,
         min_length=1,
-        description="Qdrant/RAGFlow chunk ID. Must be non-empty — missing IDs are a validation failure.",
+        description="Qdrant chunk ID. Must be non-empty — missing IDs are a validation failure.",
     )
     document_title: str = Field(..., min_length=1)
     section: str | None = Field(
@@ -362,7 +336,7 @@ class GeoRAGResponse(BaseModel):
         default=None,
         description=(
             "Model that generated this answer (e.g. "
-            "'Cohere-command-a-plus-05-2026'). Null when no answer-producing "
+            "'command-a-plus-05-2026'). Null when no answer-producing "
             "LLM call ran — refusals and early failures."
         ),
     )
