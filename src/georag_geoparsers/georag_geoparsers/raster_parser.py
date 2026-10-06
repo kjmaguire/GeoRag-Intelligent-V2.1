@@ -110,35 +110,6 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def _sha256_directory(path: str) -> str:
-    """Deterministic SHA-256 of a directory by hashing '{name}:{size}' for each file.
-
-    Used for GDB directories where the 'file' is actually a folder.
-    Files are sorted for determinism.
-    """
-    h = hashlib.sha256()
-    root = Path(path)
-    for child in sorted(root.rglob("*")):
-        if child.is_file():
-            entry = f"{child.name}:{child.stat().st_size}"
-            h.update(entry.encode())
-    return h.hexdigest()
-
-
-def _crs_to_string(crs) -> str | None:
-    """Convert a rasterio CRS object to a canonical string.
-
-    Returns "EPSG:XXXX" if an EPSG code is available, otherwise the proj4
-    string. Returns None only if *crs* is None.
-    """
-    if crs is None:
-        return None
-    epsg = crs.to_epsg()
-    if epsg is not None:
-        return f"EPSG:{epsg}"
-    return crs.to_string()
-
-
 def _score_crs_confidence(crs, bounds_4326) -> float:
     """Heuristic CRS confidence score (0–1) mirroring spatial_parser style.
 

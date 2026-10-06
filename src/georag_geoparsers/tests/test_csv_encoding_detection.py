@@ -203,3 +203,38 @@ class TestSampleParserEncodingIntegration:
         binary_io = BytesIO(csv_bytes)
         result = parse_csv_samples(binary_io)
         assert result.valid_rows == 1
+
+
+# ---------------------------------------------------------------------------
+# A UTF-8 file must not be reported as "not UTF-8"
+# ---------------------------------------------------------------------------
+
+class TestUtf8IsNotWarnedAbout:
+    """charset-normalizer names UTF-8 ``"utf_8"``. Five parsers compared that
+    against ``("utf8", "utf-8", "ascii")`` after stripping only hyphens, so any
+    UTF-8 file with a non-ASCII character or a BOM drew an
+    ``encoding_non_utf8 ... decoded with replacement`` warning."""
+
+    def test_the_helper_accepts_every_spelling_of_utf8(self):
+        from georag_geoparsers._encoding import is_utf8_compatible
+
+        for name in ("utf-8", "utf_8", "UTF-8", "utf-8-sig", "utf_8_sig", "ascii", None):
+            assert is_utf8_compatible(name), name
+        for name in ("cp1252", "utf_16", "iso8859_1", "latin-1"):
+            assert not is_utf8_compatible(name), name
+
+    def test_a_utf8_collar_file_with_a_degree_sign_and_bom_has_no_encoding_warning(self):
+        text = _make_collar_csv("Grid 12° Åre")
+        for payload in (text.encode("utf-8"), text.encode("utf-8-sig")):
+            result = parse_csv_collars(BytesIO(payload))
+            codes = [w["code"] for w in result.warnings]
+            assert "encoding_non_utf8" not in codes, (result.detected_encoding, codes)
+            assert result.valid_rows == 1
+
+    def test_a_cp1252_file_is_still_flagged(self):
+        result = parse_csv_collars(BytesIO(_make_collar_csv("Café").encode("cp1252")))
+        assert result.valid_rows == 1
+        if result.detected_encoding.lower().replace("-", "").replace("_", "") not in (
+            "utf8", "ascii",
+        ):
+            assert "encoding_non_utf8" in [w["code"] for w in result.warnings]

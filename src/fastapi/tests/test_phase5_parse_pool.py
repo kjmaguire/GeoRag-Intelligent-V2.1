@@ -318,3 +318,43 @@ def test_reset_parse_pool_noop_when_already_none(monkeypatch):
     mod._reset_parse_pool()  # must not raise
 
     assert mod._PARSE_POOL is None
+
+
+# ---------------------------------------------------------------------------
+# 13. Memory guard measures the container, and its default scales with it
+# ---------------------------------------------------------------------------
+
+def test_default_free_ram_threshold_scales_with_the_container(monkeypatch):
+    """4500 MB on an 8 GiB worker made every second concurrent PDF fail with
+    MemoryError after the wait; the default is now 30% of the limit, clamped."""
+    from app.hatchet_workflows import ingest_pdf as mod
+
+    monkeypatch.setattr(mod, "_cgroup_limit_mb", lambda: 8192.0)
+    assert mod._default_min_free_mb() == 2457
+    monkeypatch.setattr(mod, "_cgroup_limit_mb", lambda: 2048.0)
+    assert mod._default_min_free_mb() == 1500  # floor
+    monkeypatch.setattr(mod, "_cgroup_limit_mb", lambda: 65536.0)
+    assert mod._default_min_free_mb() == 4500  # cap
+    monkeypatch.setattr(mod, "_cgroup_limit_mb", lambda: None)
+    assert mod._default_min_free_mb() == 4500  # no limit: the old default
+
+
+def test_cgroup_availability_excludes_reclaimable_page_cache(monkeypatch, tmp_path):
+    """memory.current counts the page cache every downloaded PDF leaves
+    behind; reading it as 'used' made an idle long-lived worker look full."""
+    from app.hatchet_workflows import ingest_pdf as mod
+
+    mib = 1024 * 1024
+    (tmp_path / "max").write_text(str(8192 * mib))
+    (tmp_path / "current").write_text(str(7000 * mib))
+    (tmp_path / "stat").write_text(f"anon {1000 * mib}\ninactive_file {5000 * mib}\n")
+    monkeypatch.setattr(mod, "_CGROUP_V2_MAX", str(tmp_path / "max"))
+    monkeypatch.setattr(mod, "_CGROUP_V2_CURRENT", str(tmp_path / "current"))
+    monkeypatch.setattr(mod, "_CGROUP_V2_STAT", str(tmp_path / "stat"))
+
+    # 8192 - (7000 - 5000) = 6192 MiB, not the 1192 the raw counter implies.
+    assert mod._cgroup_available_mb() == pytest.approx(6192.0)
+
+    # No memory.stat: falls back to the raw counter rather than guessing.
+    monkeypatch.setattr(mod, "_CGROUP_V2_STAT", str(tmp_path / "missing"))
+    assert mod._cgroup_available_mb() == pytest.approx(1192.0)

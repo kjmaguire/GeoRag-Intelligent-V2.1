@@ -397,9 +397,6 @@ async def _run(monkeypatch, tmp_path, conn, *, qdrant_error: str | None = None):
     async def _redis(_ws: str):  # noqa: ANN202
         return [], None
 
-    async def _neo(_ws: str):  # noqa: ANN202
-        return [], [], "neo4j was removed from the stack (B1, 2026-07-28)"
-
     monkeypatch.setattr(we.asyncpg, "connect", _connect)
     monkeypatch.setattr(we, "bind_workspace_scope", _noop)
     monkeypatch.setattr(we, "emit_audit", _noop)
@@ -407,7 +404,6 @@ async def _run(monkeypatch, tmp_path, conn, *, qdrant_error: str | None = None):
     monkeypatch.setattr(we, "_build_dsn", lambda *a, **k: "postgres://x/y")
     monkeypatch.setattr(ex, "stream_qdrant_workspace", _stream)
     monkeypatch.setattr(ex, "export_redis_workspace", _redis)
-    monkeypatch.setattr(ex, "export_neo4j_workspace", _neo)
     monkeypatch.setattr(
         we, "_WORKSPACE_TABLES",
         [("silver_workspaces", "silver.workspaces"),
@@ -436,7 +432,8 @@ async def test_run_export_streams_uploads_from_disk_and_reports_counts(monkeypat
     }
     assert out.rows_exported == 4
     assert out.qdrant_point_count == 3 and out.redis_key_count == 0
-    assert "neo4j" in out.partial_stores
+    # Neo4j is gone from the stack: a clean export is NOT reported partial.
+    assert out.partial_stores == {}
 
     lines = gzip.decompress(uploaded["body"]).decode().splitlines()
     manifest = json.loads(lines[0])
@@ -474,3 +471,42 @@ def test_nothing_in_the_module_reads_a_whole_table_into_memory() -> None:
     run_src = inspect.getsource(we.run_export.fn)
     assert "BytesIO" not in run_src and "put_object" not in run_src
     assert not hasattr(we, "_put_s3")
+
+
+# ---------------------------------------------------------------------------
+# Qdrant section: collection + named-vector round trip
+# ---------------------------------------------------------------------------
+
+
+def test_the_qdrant_helpers_default_to_the_collection_ingest_writes() -> None:
+    """They defaulted to the legacy ``georag_reports``, which no writer has
+    touched since ADR-0010: every export carried zero points or a failure."""
+    import inspect
+
+    from app.hatchet_workflows import _export_extras as ex
+    from app.hatchet_workflows import _restore_extras as rx
+
+    assert ex._QDRANT_COLLECTION == "georag_chunks"
+    for fn in (ex.stream_qdrant_workspace, ex.export_qdrant_workspace, rx.restore_qdrant):
+        assert inspect.signature(fn).parameters["collection_name"].default == "georag_chunks"
+
+
+def test_a_named_dense_plus_sparse_vector_survives_export_and_restore() -> None:
+    """georag_chunks points carry {"": dense, "text": SparseVector}. The export
+    used ``list(p.vector)``, which turned that mapping into its key names."""
+    from qdrant_client.models import SparseVector
+
+    from app.hatchet_workflows._export_extras import _vector_to_json
+    from app.hatchet_workflows._restore_extras import _vector_from_json
+
+    original = {"": [0.1, 0.2], "text": SparseVector(indices=[3, 9], values=[0.5, 0.25])}
+    exported = _vector_to_json(original)
+    assert exported == {"": [0.1, 0.2], "text": {"indices": [3, 9], "values": [0.5, 0.25]}}
+    json.dumps(exported)  # JSON-serialisable, unlike a SparseVector
+
+    restored = _vector_from_json(exported)
+    assert restored[""] == [0.1, 0.2]
+    assert isinstance(restored["text"], SparseVector)
+    assert list(restored["text"].indices) == [3, 9]
+    # An unnamed vector (older shape) passes straight through.
+    assert _vector_to_json([0.5]) == [0.5] and _vector_from_json([0.5]) == [0.5]

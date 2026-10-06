@@ -55,7 +55,6 @@ log = logging.getLogger("georag.ingest.cameco_log")
 # hole IDs in the Wyoming archive no longer get rejected before parse.
 _COORDS_RE = re.compile(rb"E=(\d+)\s+N=(\d+)")
 _BASIN_RE = re.compile(rb"([A-Z][A-Z\s]+BASIN)\b")
-_TOOL_RE = re.compile(rb"(?:PROCESSED|ORIGINAL)\s*(\d+[A-Z])")
 _HOLE_ID_FILENAME_RE = re.compile(r"^([A-Z0-9]+-[A-Z0-9]+)_")
 # Cameco filename layout (observed 2026-05-18, Phase C tuning):
 #   <hole_id>_<date>_<time>_<tool>_<step>_<dip>_<total_depth_ft>_<kind>.log

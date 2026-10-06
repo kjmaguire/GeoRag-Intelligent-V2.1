@@ -52,6 +52,24 @@ def detect_encoding(data: bytes) -> str:
     return encoding
 
 
+def is_utf8_compatible(encoding: str | None) -> bool:
+    """True when *encoding* names UTF-8 (with or without a BOM) or plain ASCII.
+
+    charset-normalizer reports UTF-8 as ``"utf_8"`` (underscore), and a BOM'd
+    file as ``"utf_8"`` too, while callers' own default is ``"utf-8"``. The five
+    drill parsers compared ``name.lower().replace("-", "")`` against
+    ``("utf8", "utf-8", "ascii")``, which ``"utf_8"`` never matches, so every
+    UTF-8 file with a single non-ASCII character (``°``, ``µ``, ``Å``, ``m³``,
+    an Excel "CSV UTF-8" BOM) was reported as ``encoding_non_utf8 ... decoded
+    with replacement`` and the run went amber for a file that decoded
+    perfectly.
+    """
+    if not encoding:
+        return True
+    name = encoding.lower().replace("-", "").replace("_", "").replace(" ", "")
+    return name in ("utf8", "utf8sig", "ascii", "usascii")
+
+
 def open_csv_bytes(data: bytes) -> tuple[StringIO, str]:
     """Detect encoding of *data*, decode, and return (StringIO, encoding_name).
 

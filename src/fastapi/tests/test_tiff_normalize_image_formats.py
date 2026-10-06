@@ -19,6 +19,7 @@ from app.services.ingest.raster_metadata import RasterCaptureResult
 WS = "a0000000-0000-0000-0000-00000000feed"
 PJ = "b1000000-0000-0000-0000-0000000000a0"
 RUN = "c2000000-0000-0000-0000-000000000009"
+DERIVED_RUN = "d3000000-0000-0000-0000-00000000000a"
 
 
 class _Store:
@@ -48,7 +49,8 @@ def env(monkeypatch):
 
     calls: dict[str, Any] = {
         "completed_by_run": [], "legacy_completed": 0, "broadcast": [],
-        "dispatched": [], "to_thread": [],
+        "dispatched": [], "to_thread": [], "claims": [], "stamped": [],
+        "released": [], "active_claim": None,
     }
 
     async def _noop(**kw):
@@ -67,6 +69,23 @@ def env(monkeypatch):
     async def _bcast(**kw):
         calls["broadcast"].append(kw)
 
+    async def _claim(**kw):
+        from app.hatchet_workflows._progress import DispatchClaim
+
+        calls["claims"].append(kw)
+        if calls["active_claim"] is not None:
+            return calls["active_claim"]
+        return DispatchClaim(claimed=True, run_id=DERIVED_RUN)
+
+    async def _stamp(**kw):
+        calls["stamped"].append(kw)
+
+    async def _release(**kw):
+        calls["released"].append(kw)
+
+    monkeypatch.setattr(tn.ingest_progress, "claim_dispatch", _claim)
+    monkeypatch.setattr(tn.ingest_progress, "stamp_workflow_run_id", _stamp)
+    monkeypatch.setattr(tn.ingest_progress, "release_undispatched", _release)
     monkeypatch.setattr(tn.ingest_progress, "mark_started", _noop)
     monkeypatch.setattr(tn.ingest_progress, "lookup_active_run_id", _lookup)
     monkeypatch.setattr(tn.ingest_progress, "mark_completed_by_run", _done_by_run)
@@ -341,3 +360,73 @@ def test_jpeg_encoded_pages_are_an_info_warning_not_a_partial_run() -> None:
     assert tn._frame_warnings(
         page_count=1, total_frames=1, truncated=False, frames_ignored=0,
     ) == []
+
+
+class TestDerivedPdfDispatchIsClaimed:
+    """The derived PDF's progress row is claimed BEFORE dispatch, so a retry of
+    this task cannot start a second (OCR-billed) ingest_pdf for the same file,
+    and a PDF queued behind the concurrency cap is visible."""
+
+    @pytest.mark.asyncio
+    async def test_the_claimed_run_id_travels_with_the_dispatch_and_is_stamped(self, env) -> None:
+        tn, calls, use = env
+        use(_Store(_png()))
+
+        out = await tn.normalize.fn(_input(tn, "scan.png"), object())
+
+        (claim,) = calls["claims"]
+        assert claim["minio_key"] == out.derived_minio_key
+        assert claim["workspace_id"] == WS and claim["project_id"] == PJ
+        (payload,) = calls["dispatched"]
+        assert payload.run_id == DERIVED_RUN and payload.minio_key == out.derived_minio_key
+        assert calls["stamped"] == [{"run_id": DERIVED_RUN, "workflow_run_id": "wf-1"}]
+        assert calls["released"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_run_already_active_for_the_derived_pdf_is_not_dispatched_again(self, env) -> None:
+        from app.hatchet_workflows._progress import DispatchClaim
+
+        tn, calls, use = env
+        calls["active_claim"] = DispatchClaim(
+            claimed=False, run_id="e4000000-0000-0000-0000-00000000000b",
+            workflow_run_id="wf-already-running",
+        )
+        use(_Store(_png()))
+
+        out = await tn.normalize.fn(_input(tn, "scan.png"), object())
+
+        assert calls["dispatched"] == []
+        assert out.ingest_pdf_workflow_run_id == "wf-already-running"
+        assert calls["stamped"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_dispatch_that_raises_gives_the_claimed_row_back(self, env, monkeypatch) -> None:
+        tn, calls, use = env
+
+        async def _boom(_payload):
+            raise RuntimeError("engine unreachable")
+
+        monkeypatch.setattr(tn.ingest_pdf, "aio_run_no_wait", _boom)
+        use(_Store(_png()))
+
+        with pytest.raises(RuntimeError, match="engine unreachable"):
+            await tn.normalize.fn(_input(tn, "scan.png"), object())
+
+        assert calls["released"] == [{"run_id": DERIVED_RUN}]
+
+    @pytest.mark.asyncio
+    async def test_a_claim_that_cannot_be_made_fails_open_and_still_dispatches(self, env, monkeypatch) -> None:
+        tn, calls, use = env
+
+        async def _db_down(**_kw):
+            raise ConnectionError("pg unreachable")
+
+        monkeypatch.setattr(tn.ingest_progress, "claim_dispatch", _db_down)
+        use(_Store(_png()))
+
+        out = await tn.normalize.fn(_input(tn, "scan.png"), object())
+
+        (payload,) = calls["dispatched"]
+        assert payload.run_id is None  # ingest_pdf's preflight mints the row
+        assert out.ingest_pdf_workflow_run_id == "wf-1"
+        assert calls["stamped"] == []

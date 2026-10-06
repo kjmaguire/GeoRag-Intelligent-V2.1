@@ -1,17 +1,14 @@
-"""§11.3 wave 2 — Neo4j / Qdrant / Redis restore from a workspace_export manifest.
+"""§11.3 wave 2 — Qdrant / Redis restore from a workspace_export manifest.
 
 Companion to ``_export_extras.py``. Reads the v2.0 manifest produced
 by ``workspace_export.run_export`` and applies each store's section
 back to its target.
 
 Idempotency notes:
-  - Neo4j: nodes are MERGEd on a derived natural key (workspace_id +
-    `id` property if present, else neo4j_id from the source). Relationships
-    are MERGEd on (source, target, type).
   - Qdrant: points are UPSERTed by id (Qdrant's native semantics).
   - Redis: SET with EX matching the exported TTL.
 
-All three helpers stream from a fetched .jsonl.gz body (passed in
+Both helpers stream from a fetched .jsonl.gz body (passed in
 already-decoded — the caller is responsible for the S3 GET).
 """
 from __future__ import annotations
@@ -24,6 +21,7 @@ import logging
 import os
 from typing import Any
 
+from app.hatchet_workflows._export_extras import _QDRANT_COLLECTION
 from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.hatchet.restore_workspace.extras")
@@ -67,39 +65,32 @@ def parse_export_jsonl_gz(body: bytes) -> tuple[
 
 
 # ---------------------------------------------------------------------------
-# Neo4j
+# Qdrant
 # ---------------------------------------------------------------------------
-async def restore_neo4j(
-    workspace_id: str,
-    nodes: list[dict[str, Any]],
-    rels: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """MERGE nodes + relationships back into Neo4j.
+def _vector_from_json(vector: Any) -> Any:
+    """Inverse of ``_export_extras._vector_to_json``.
 
-    Strategy: rebuild a per-export id → neo4j_id map as we MERGE nodes,
-    then MERGE relationships keyed on the (source, target, type) tuple.
-
-    Returns ``{nodes_merged: int, rels_merged: int, error: str | None}``.
-
-    B1 (2026-07-28): Neo4j was removed from the stack. This helper stays
-    in place for the restore workflow's call signature but now returns
-    the same fail-open shape the try/except used to produce when the
-    driver was unreachable, without the wasted connection attempt.
+    A named-vector point comes back as ``{"": [floats], "text": {"indices":
+    [...], "values": [...]}}``; the sparse entry has to be a ``SparseVector``
+    again for the upsert to accept it.
     """
+    if not isinstance(vector, dict):
+        return vector
+    from qdrant_client.models import SparseVector  # noqa: PLC0415
+
     return {
-        "nodes_merged": 0,
-        "rels_merged": 0,
-        "error": "neo4j was removed from the stack (B1, 2026-07-28)",
+        name: (
+            SparseVector(indices=v["indices"], values=v["values"])
+            if isinstance(v, dict) else v
+        )
+        for name, v in vector.items()
     }
 
 
-# ---------------------------------------------------------------------------
-# Qdrant
-# ---------------------------------------------------------------------------
 async def restore_qdrant(
     workspace_id: str,
     points: list[dict[str, Any]],
-    collection_name: str = "georag_reports",
+    collection_name: str = _QDRANT_COLLECTION,
 ) -> dict[str, Any]:
     """Upsert points back into Qdrant by their original id.
 
@@ -127,7 +118,8 @@ async def restore_qdrant(
                     payload = dict(p.get("payload") or {})
                     payload["workspace_id"] = workspace_id
                     structs.append(PointStruct(
-                        id=p["id"], vector=p["vector"], payload=payload,
+                        id=p["id"], vector=_vector_from_json(p["vector"]),
+                        payload=payload,
                     ))
                 if structs:
                     await client.upsert(
@@ -198,7 +190,6 @@ async def restore_redis(
 
 __all__ = [
     "parse_export_jsonl_gz",
-    "restore_neo4j",
     "restore_qdrant",
     "restore_redis",
 ]

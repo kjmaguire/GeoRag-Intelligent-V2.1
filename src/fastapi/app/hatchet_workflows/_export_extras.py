@@ -1,4 +1,4 @@
-"""§11.3 wave 2 — Neo4j / Qdrant / Redis workspace export helpers.
+"""§11.3 wave 2 — Qdrant / Redis workspace export helpers.
 
 These extend `workspace_export.run_export` past Postgres so the
 exported manifest can recreate a workspace's full footprint on a
@@ -10,10 +10,9 @@ records the reason in the per-store stats dict. The PG export
 path still completes — operators see the partial coverage in the
 manifest's `partial_stores` field.
 
-Three exports, three patterns:
+Two exports, two patterns (Neo4j was removed from the stack on 2026-07-28;
+there is no graph section):
 
-  - Neo4j: cypher MATCH on workspace_id, return node props + labels +
-    relationships. We export both node + relationship lists.
   - Qdrant: scroll API with workspace_id payload filter, paginate
     until empty. Vectors + payload exported.
   - Redis: SCAN for `georag:ws:<uuid>:*` keys, then bulk-GET. Cache-
@@ -32,42 +31,46 @@ log = logging.getLogger("georag.hatchet.workspace_export.extras")
 
 
 # ---------------------------------------------------------------------------
-# Neo4j
-# ---------------------------------------------------------------------------
-async def export_neo4j_workspace(
-    workspace_id: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    """Export Neo4j nodes + relationships scoped to one workspace.
-
-    Returns ``(nodes, relationships, error)``. On any failure, returns
-    ``([], [], reason)`` — the export workflow records the reason and
-    continues with PG.
-
-    Each node dict: ``{labels: [str], properties: {...}, neo4j_id: int}``
-    Each rel dict: ``{type: str, start_neo4j_id: int, end_neo4j_id: int,
-                       properties: {...}}``
-
-    B1 (2026-07-28): Neo4j was removed from the stack. This helper stays
-    in place for the export workflow's call signature but now returns
-    the same ``([], [], reason)`` fail-open shape the try/except used to
-    produce when the driver was unreachable, without the wasted
-    connection attempt.
-    """
-    return [], [], "neo4j was removed from the stack (B1, 2026-07-28)"
-
-
-# ---------------------------------------------------------------------------
 # Qdrant
 # ---------------------------------------------------------------------------
 #: Points per scroll page. Each carries a 1024-dim vector (~4 KB as floats,
 #: more as Python objects), so a page is a few MB.
 _QDRANT_SCROLL_PAGE = 200
 
+#: The collection ingest writes to (passage_embedder). It used to default to
+#: the legacy ``georag_reports``, which no writer has touched since ADR-0010
+#: and which does not exist on a fresh deploy, so every export either carried
+#: zero points or recorded a qdrant failure in ``partial_stores``.
+_QDRANT_COLLECTION = "georag_chunks"
+
+
+def _vector_to_json(vector: Any) -> Any:
+    """A Qdrant point's vector(s) as JSON-safe data.
+
+    ``georag_chunks`` points carry NAMED vectors: the dense one under the
+    empty name and a SPLADE++ ``SparseVector`` under ``"text"``. The old
+    ``list(p.vector)`` turned that mapping into its key names
+    (``["", "text"]``) and, for a sparse value, could not be serialised at
+    all.
+    """
+    if vector is None:
+        return None
+    if isinstance(vector, dict):
+        return {
+            name: (
+                {"indices": list(v.indices), "values": list(v.values)}
+                if hasattr(v, "indices") and hasattr(v, "values")
+                else list(v)
+            )
+            for name, v in vector.items()
+        }
+    return list(vector)
+
 
 async def stream_qdrant_workspace(
     workspace_id: str,
     emit: Callable[[dict[str, Any]], None],
-    collection_name: str = "georag_reports",
+    collection_name: str = _QDRANT_COLLECTION,
 ) -> tuple[int, str | None]:
     """Scroll one workspace's Qdrant points page by page into ``emit``.
 
@@ -109,7 +112,7 @@ async def stream_qdrant_workspace(
                 for p in batch:
                     emit({
                         "id":      p.id if isinstance(p.id, (int, str)) else str(p.id),
-                        "vector":  list(p.vector) if p.vector is not None else None,
+                        "vector":  _vector_to_json(p.vector),
                         "payload": dict(p.payload or {}),
                     })
                     emitted += 1
@@ -130,7 +133,7 @@ async def stream_qdrant_workspace(
 
 async def export_qdrant_workspace(
     workspace_id: str,
-    collection_name: str = "georag_reports",
+    collection_name: str = _QDRANT_COLLECTION,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Export Qdrant points (id + vector + payload) for one workspace.
 
@@ -209,7 +212,6 @@ async def export_redis_workspace(
 
 
 __all__ = [
-    "export_neo4j_workspace",
     "export_qdrant_workspace",
     "stream_qdrant_workspace",
     "export_redis_workspace",

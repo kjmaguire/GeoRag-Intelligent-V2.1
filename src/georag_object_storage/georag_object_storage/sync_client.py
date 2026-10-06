@@ -1,9 +1,7 @@
 """boto3-backed synchronous S3-compatible object storage.
 
-Client construction and error handling here are lifted from the
-already-correct ``S3Resource`` in ``src/dagster/georag_dagster/resources.py``
-(the one existing reusable boto3 wrapper in the codebase); that class
-becomes a thin delegating wrapper around this one in a follow-up PR.
+Blocking: call it from sync code or wrap each call in ``asyncio.to_thread``.
+Async callers use :mod:`async_client` instead.
 """
 
 from __future__ import annotations
@@ -27,10 +25,9 @@ def build_boto3_client(config: StorageConfig):
 
     Public — and separated out from :class:`S3CompatibleStorage` — so a
     caller that needs the raw boto3 client rather than the higher-level
-    ``ObjectStorage`` interface (Dagster's ``S3Resource.get_client()``,
-    used directly by several assets for paginator/list_objects_v2 calls
-    with dynamic, non-``Bucket``-enum bucket names) can share the exact
-    same construction logic instead of re-declaring it.
+    ``ObjectStorage`` interface (paginator/list_objects_v2 calls with
+    dynamic, non-``Bucket``-enum bucket names) can share the exact same
+    construction logic instead of re-declaring it.
     """
     return boto3.client("s3", **_client_kwargs(config))
 

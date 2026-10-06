@@ -1,4 +1,4 @@
-"""§11.3 wave 2 — Neo4j / Qdrant / Redis workspace export + restore.
+"""§11.3 wave 2 — Qdrant / Redis workspace export + restore.
 
 Tests are focused on the parts that don't require all 3 stores
 configured + populated:
@@ -8,7 +8,7 @@ configured + populated:
   - restore_workspace.dry_run=False handles v1.0 manifests gracefully
     (skips extras since the section data isn't there)
 
-For full end-to-end tests with live Neo4j/Qdrant/Redis populated,
+For full end-to-end tests with live Qdrant/Redis populated,
 use the existing §11.2 cross-store consistency harness path —
 those require a populated workspace which the test suite doesn't
 seed.
@@ -37,20 +37,12 @@ def _fake_export_body() -> bytes:
     per_table = {
         "silver_workspaces": [{"workspace_id": "ws-1", "name": "Test WS"}],
     }
-    neo4j_nodes = [{
-        "neo4j_id": 100,
-        "labels": ["DrillHole"],
-        "properties": {"id": "DH-001", "name": "Test Hole"},
-    }]
-    neo4j_rels = [{
-        "type": "BELONGS_TO",
-        "start_neo4j_id": 100,
-        "end_neo4j_id": 101,
-        "properties": {},
-    }]
     qdrant_points = [{
         "id": "point-1",
-        "vector": [0.1, 0.2, 0.3],
+        "vector": {
+            "": [0.1, 0.2, 0.3],
+            "text": {"indices": [1, 5], "values": [0.5, 0.25]},
+        },
         "payload": {"workspace_id": "ws-1", "title": "Doc"},
     }]
     redis_keys = [{
@@ -61,13 +53,11 @@ def _fake_export_body() -> bytes:
     }]
     manifest = _build_manifest(
         "ws-1", "run-abc", per_table,
-        neo4j_nodes=neo4j_nodes, neo4j_rels=neo4j_rels,
         qdrant_points=qdrant_points, redis_keys=redis_keys,
         partial_stores={},
     )
     return _serialise_jsonl_gz(
         manifest, per_table,
-        neo4j_nodes=neo4j_nodes, neo4j_rels=neo4j_rels,
         qdrant_points=qdrant_points, redis_keys=redis_keys,
     )
 
@@ -78,8 +68,7 @@ def test_manifest_v2_carries_per_store_counts():
 
     assert manifest["manifest_version"] == "2.0"
     assert manifest["workspace_id"] == "ws-1"
-    assert manifest["neo4j_node_count"] == 1
-    assert manifest["neo4j_rel_count"] == 1
+    assert "neo4j_node_count" not in manifest
     assert manifest["qdrant_point_count"] == 1
     assert manifest["redis_key_count"] == 1
 
@@ -93,12 +82,10 @@ def test_parse_export_round_trip():
     assert pg_tables["silver_workspaces"][0]["workspace_id"] == "ws-1"
 
     # §11.3-v2 sections
-    assert "neo4j_nodes" in sections
-    assert "neo4j_rels" in sections
+    assert "neo4j_nodes" not in sections
     assert "qdrant_points" in sections
     assert "redis_keys" in sections
-    assert sections["neo4j_nodes"][0]["properties"]["id"] == "DH-001"
-    assert sections["qdrant_points"][0]["vector"] == [0.1, 0.2, 0.3]
+    assert sections["qdrant_points"][0]["vector"][""] == [0.1, 0.2, 0.3]
     assert sections["redis_keys"][0]["key"] == "georag:ws:ws-1:cache:foo"
 
 
@@ -152,13 +139,10 @@ def test_workspace_export_output_carries_v2_fields():
         bytes=1024,
         rows_exported=5,
         per_table={"silver_workspaces": 1},
-        neo4j_node_count=12,
-        neo4j_rel_count=20,
         qdrant_point_count=300,
         redis_key_count=8,
         partial_stores={},
         started_at=datetime.now(tz=UTC),
         completed_at=datetime.now(tz=UTC),
     )
-    assert out.neo4j_node_count == 12
     assert out.qdrant_point_count == 300

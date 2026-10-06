@@ -25,6 +25,7 @@ from georag_geoparsers._csv_io import (
 )
 from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._drill_schema import LITHOLOGY_ALIASES, LITHOLOGY_REQUIRED
+from georag_geoparsers._encoding import is_utf8_compatible
 from georag_geoparsers._header_match import alias_skeletons, build_column_map, normalize_header
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 from georag_geoparsers._optional_enum import BlankedValues, canonical_choice
@@ -94,7 +95,6 @@ _CODE_NUMERIC_CAST = "numeric_cast_failed"
 _CODE_DEPTH_ORDER = "depth_order_invalid"
 _CODE_DEPTH_NEG = "depth_negative"
 _CODE_RANGE = "range_check_failed"
-_CODE_CATEGORICAL = "invalid_categorical_value"  # retained: no longer emitted for optional fields
 _CODE_DECIMAL_COMMA = "decimal_comma_detected"
 
 
@@ -414,7 +414,7 @@ def parse_csv_lithology(
         stream, detected_encoding, sha256_hex, _byte_count = open_csv_with_encoding(source)
         raw_content = stream.getvalue()
 
-        if detected_encoding.lower().replace("-", "") not in ("utf8", "utf-8", "ascii"):
+        if not is_utf8_compatible(detected_encoding):
             global_warnings.append({
                 "row": None,
                 "code": _CODE_ENCODING_NON_UTF8,

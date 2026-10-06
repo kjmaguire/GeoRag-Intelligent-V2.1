@@ -5,24 +5,11 @@ CC-02 Item 6 (2026-05-23): the vendor_profile + column_mapping tables
 in Laravel have existed since 2026-04-18 but no parser actually
 consumed them at ingest time. This module is the consumption layer.
 
-Status by parser
-----------------
-csv_lithology   — wired (parse_csv_lithology accepts vendor_aliases= kwarg)
-csv_collar      — NOT wired yet (mirror the pattern when adopting)
-csv_sample      — NOT wired yet
-csv_survey      — NOT wired yet
-csv_geochem     — n/a (different ingest path)
-
-A follow-up should mirror the csv_lithology change in the other three
-parsers. The seeder Database\\Seeders\\VendorProfiles\\MxDepositSeeder
-seeds an MX Deposit profile with placeholder column_mappings; once a
-real MX Deposit export is available from Anna, the placeholders should
-be replaced with actual MX columns and the other parsers should be
-wired.
+Every csv_* parser (and the xlsx sheet router) accepts ``vendor_aliases=``;
+``ingest_tabular._vendor_aliases_for`` builds the dict from the per-upload
+column map. Vendor spellings are placed AHEAD of the built-in aliases.
 """
 from __future__ import annotations
-
-from collections.abc import Iterable
 
 
 def merge_vendor_aliases(
@@ -62,29 +49,3 @@ def merge_vendor_aliases(
 
     return merged
 
-
-def vendor_aliases_from_rows(
-    rows: Iterable[dict],
-    *,
-    parser_type: str,
-) -> dict[str, list[str]]:
-    """Turn the result of `SELECT canonical_field, source_column FROM
-    column_mappings WHERE vendor_profile_id = ? AND parser_type = ?` into
-    the {canonical: [aliases]} shape merge_vendor_aliases expects.
-
-    Multiple aliases for the same canonical_field are accumulated in
-    column-mapping insertion order. Skips rows whose parser_type doesn't
-    match the caller's expected parser_type — defensive guard so a
-    misconfigured profile can't silently feed csv_collar aliases into
-    csv_lithology.
-    """
-    result: dict[str, list[str]] = {}
-    for row in rows:
-        if row.get("parser_type") != parser_type:
-            continue
-        canonical = row.get("canonical_field")
-        alias = row.get("source_column")
-        if not canonical or not alias:
-            continue
-        result.setdefault(canonical, []).append(alias)
-    return result

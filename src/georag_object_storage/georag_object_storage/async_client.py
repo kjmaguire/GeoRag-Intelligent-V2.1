@@ -27,11 +27,10 @@ def async_client_kwargs(config: StorageConfig) -> dict:
     Public — the async counterpart to :func:`sync_client.build_boto3_client`,
     for callers that need a raw aiobotocore client for operations outside
     the higher-level ``AsyncObjectStorage`` interface (dynamic/arbitrary
-    bucket names — e.g. ``backup_seaweedfs.py``'s cross-bucket snapshot
-    copy, or ``outbox_dispatcher.py``'s per-row target bucket). aioboto3
-    clients are async context managers and can't be handed back as a plain
-    object the way ``build_boto3_client()`` returns a sync boto3 client, so
-    callers do their own::
+    bucket names — e.g. ``outbox_dispatcher.py``'s per-row target bucket).
+    aioboto3 clients are async context managers and can't be handed back as
+    a plain object the way ``build_boto3_client()`` returns a sync boto3
+    client, so callers do their own::
 
         async with aioboto3.Session().client("s3", **async_client_kwargs(config)) as client:
             ...

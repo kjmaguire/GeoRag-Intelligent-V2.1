@@ -1,7 +1,7 @@
 """§11.3 wave 1 — per-workspace logical export to cold tier.
 
 Complement to the §11.1 full-store backup crons. Where §11.1 dumps each
-store wholesale (pg_dump / neo4j-admin / qdrant snapshot / Redis RDB /
+store wholesale (pg_dump / qdrant snapshot / Redis RDB /
 SeaweedFS bucket clone), this workflow walks **one workspace** across
 the tenant-scoped Postgres tables and writes a JSONL.gz export to
 SeaweedFS that ``restore_workspace.dry_run=False`` can consume.
@@ -26,12 +26,10 @@ walked under the target workspace's RLS scope (SET app.workspace_id),
 serialised to JSONL, gzipped, and uploaded to SeaweedFS under
 ``workspace-exports/<workspace_id>/<timestamp>-<run_id>.jsonl.gz``.
 
-Neo4j / Qdrant / Redis exports are not in v1 — adding them needs:
-  - Neo4j: cypher-shell APOC export-with-filter
-  - Qdrant: scroll API with workspace_id payload filter
-  - Redis: SCAN + workspace-prefixed keys
-Each is its own engineering pass; v1 ships PG to give operators
-the biggest win (most workspace state is PG-stored).
+Qdrant and Redis sections were added in manifest v2.0 (Qdrant: scroll API
+with a workspace_id payload filter; Redis: SCAN over the workspace-prefixed
+keys). There is no Neo4j section: Neo4j was removed from the stack on
+2026-07-28 and the export carries no graph data.
 
 Memory and format (database audit 2026-10)
 ==========================================
@@ -124,10 +122,6 @@ class WorkspaceExportInput(BaseModel):
         default="workspace-exports",
         description="SeaweedFS bucket receiving the export object.",
     )
-    include_neo4j: bool = Field(
-        default=True,
-        description="§11.3-v2 — include Neo4j nodes + relationships scoped to workspace.",
-    )
     include_qdrant: bool = Field(
         default=True,
         description="§11.3-v2 — include Qdrant points (vectors + payload) filtered by workspace_id.",
@@ -172,8 +166,6 @@ class WorkspaceExportOutput(BaseModel):
     rows_exported: int
     per_table: dict[str, int]
     # §11.3-v2 — per-store extra counts + partial-store failure reasons
-    neo4j_node_count: int = 0
-    neo4j_rel_count: int = 0
     qdrant_point_count: int = 0
     redis_key_count: int = 0
     partial_stores: dict[str, str] = Field(default_factory=dict)
@@ -345,15 +337,13 @@ def _build_manifest_from_counts(
     run_id: str,
     table_row_counts: dict[str, int],
     *,
-    neo4j_node_count: int = 0,
-    neo4j_rel_count: int = 0,
     qdrant_point_count: int = 0,
     redis_key_count: int = 0,
     partial_stores: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The manifest is the first JSONL line; subsequent lines are
     `{"table": <output_key>, "row": <row_dict>}` for PG tables and
-    `{"section": <neo4j_nodes|neo4j_rels|qdrant_points|redis_keys>,
+    `{"section": <qdrant_points|redis_keys>,
        "row": <dict>}` for the §11.3-v2 extra stores.
 
     restore_workspace reads the manifest line first to validate target
@@ -374,8 +364,6 @@ def _build_manifest_from_counts(
         "table_row_counts":   dict(table_row_counts),
         "tables":             list(table_row_counts.keys()),
         # §11.3-v2 extras
-        "neo4j_node_count":   neo4j_node_count,
-        "neo4j_rel_count":    neo4j_rel_count,
         "qdrant_point_count": qdrant_point_count,
         "redis_key_count":    redis_key_count,
         "partial_stores":     dict(partial_stores or {}),
@@ -387,8 +375,6 @@ def _build_manifest(
     run_id: str,
     per_table_rows: dict[str, list[dict[str, Any]]],
     *,
-    neo4j_nodes: list[dict[str, Any]] | None = None,
-    neo4j_rels: list[dict[str, Any]] | None = None,
     qdrant_points: list[dict[str, Any]] | None = None,
     redis_keys: list[dict[str, Any]] | None = None,
     partial_stores: dict[str, str] | None = None,
@@ -396,8 +382,6 @@ def _build_manifest(
     return _build_manifest_from_counts(
         workspace_id, run_id,
         {k: len(v) for k, v in per_table_rows.items()},
-        neo4j_node_count=len(neo4j_nodes or []),
-        neo4j_rel_count=len(neo4j_rels or []),
         qdrant_point_count=len(qdrant_points or []),
         redis_key_count=len(redis_keys or []),
         partial_stores=partial_stores,
@@ -408,14 +392,11 @@ def _serialise_jsonl_gz(
     manifest: dict[str, Any],
     per_table_rows: dict[str, list[dict[str, Any]]],
     *,
-    neo4j_nodes: list[dict[str, Any]] | None = None,
-    neo4j_rels: list[dict[str, Any]] | None = None,
     qdrant_points: list[dict[str, Any]] | None = None,
     redis_keys: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Manifest as line 1, then PG rows (table-tagged), then §11.3-v2
-    extra-store rows (section-tagged: neo4j_nodes / neo4j_rels /
-    qdrant_points / redis_keys).
+    extra-store rows (section-tagged: qdrant_points / redis_keys).
 
     The in-memory REFERENCE serialiser. ``run_export`` no longer calls it --
     it streams through ``_GzipSpool`` / ``_assemble_archive`` -- but the
@@ -436,8 +417,6 @@ def _serialise_jsonl_gz(
                 gz.write(b"\n")
         # §11.3-v2 extras — each tagged with `section`
         for section, rows in (
-            ("neo4j_nodes",   neo4j_nodes or []),
-            ("neo4j_rels",    neo4j_rels or []),
             ("qdrant_points", qdrant_points or []),
             ("redis_keys",    redis_keys or []),
         ):
@@ -533,10 +512,9 @@ async def run_export(
         # removed on the way out.
         with tempfile.TemporaryDirectory(prefix="ws-export-") as tmp:
             pg_spool = _GzipSpool(os.path.join(tmp, "pg.jsonl.gz"))
-            neo4j_spool = _GzipSpool(os.path.join(tmp, "neo4j.jsonl.gz"))
             qdrant_spool = _GzipSpool(os.path.join(tmp, "qdrant.jsonl.gz"))
             redis_spool = _GzipSpool(os.path.join(tmp, "redis.jsonl.gz"))
-            spools = [pg_spool, neo4j_spool, qdrant_spool, redis_spool]
+            spools = [pg_spool, qdrant_spool, redis_spool]
             try:
                 # Walk each tenant table, as one consistent snapshot. Opened
                 # and closed here so it does not pin the xmin horizon while
@@ -548,22 +526,9 @@ async def run_export(
                             conn, qualified_table, workspace_id, output_key, pg_spool,
                         )
 
-                # §11.3-v2 — walk the 3 extra stores. Each failure is
+                # §11.3-v2 — walk the 2 extra stores. Each failure is
                 # recorded in partial_stores but does NOT fail the export (PG
                 # already ran successfully + that's the must-preserve store).
-                if input.include_neo4j:
-                    from app.hatchet_workflows._export_extras import export_neo4j_workspace
-                    neo4j_nodes, neo4j_rels, n4_err = await export_neo4j_workspace(workspace_id)
-                    if n4_err:
-                        partial_stores["neo4j"] = n4_err
-                    for row in neo4j_nodes:
-                        neo4j_spool.write_json({"section": "neo4j_nodes", "row": row})
-                    node_count = len(neo4j_nodes)
-                    for row in neo4j_rels:
-                        neo4j_spool.write_json({"section": "neo4j_rels", "row": row})
-                    rel_count = len(neo4j_rels)
-                else:
-                    node_count = rel_count = 0
                 if input.include_qdrant:
                     from app.hatchet_workflows._export_extras import stream_qdrant_workspace
                     _, q_err = await stream_qdrant_workspace(
@@ -587,7 +552,6 @@ async def run_export(
                 # Manifest (needs the final counts) + assemble + upload.
                 manifest = _build_manifest_from_counts(
                     workspace_id, run_id, table_row_counts,
-                    neo4j_node_count=node_count, neo4j_rel_count=rel_count,
                     qdrant_point_count=qdrant_spool.lines,
                     redis_key_count=redis_spool.lines,
                     partial_stores=partial_stores,
@@ -669,8 +633,6 @@ async def run_export(
             bytes=archive_bytes,
             rows_exported=rows_exported,
             per_table=per_table_counts,
-            neo4j_node_count=node_count,
-            neo4j_rel_count=rel_count,
             qdrant_point_count=qdrant_point_count,
             redis_key_count=redis_key_count,
             partial_stores=partial_stores,

@@ -21,10 +21,3 @@ class ObjectNotFoundError(ObjectStorageError):
         self.key = key
         super().__init__(f"object not found: {bucket}/{key}")
 
-
-class BucketNotFoundError(ObjectStorageError):
-    """Raised when a requested bucket does not exist."""
-
-    def __init__(self, bucket: str) -> None:
-        self.bucket = bucket
-        super().__init__(f"bucket not found: {bucket}")

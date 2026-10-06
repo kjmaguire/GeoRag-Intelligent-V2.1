@@ -38,6 +38,7 @@ from georag_geoparsers._drill_schema import (
     coordinate_family_conflict,
     detect_coordinate_mode,
 )
+from georag_geoparsers._encoding import is_utf8_compatible
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 from georag_geoparsers._vendor_aliases import merge_vendor_aliases
@@ -309,7 +310,7 @@ def parse_csv_collars(
         stream, detected_encoding, sha256_hex, _byte_count = open_csv_with_encoding(source)
         raw_content = stream.getvalue()
 
-        if detected_encoding.lower().replace("-", "") not in ("utf8", "utf-8", "ascii"):
+        if not is_utf8_compatible(detected_encoding):
             global_warnings.append({
                 "row": None,
                 "code": _CODE_ENCODING_NON_UTF8,

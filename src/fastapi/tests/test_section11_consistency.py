@@ -73,13 +73,11 @@ def test_count_workspace_footprint_is_async_callable() -> None:
 # ---------------------------------------------------------------------------
 def test_restore_workspace_private_helpers_still_importable() -> None:
     from app.hatchet_workflows.restore_workspace import (
-        _count_neo4j_nodes,
         _count_postgres_rows,
         _count_qdrant_points,
         _count_redis_keys,
     )
     assert callable(_count_postgres_rows)
-    assert callable(_count_neo4j_nodes)
     assert callable(_count_qdrant_points)
     assert callable(_count_redis_keys)
 

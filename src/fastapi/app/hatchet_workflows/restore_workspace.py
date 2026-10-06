@@ -4,16 +4,17 @@ Doc-phase 100 skeleton → doc-phase 148 dry-run graduation → Phase G.2
 **cross-store** consistency check (this commit).
 
 The doc-phase 100 spec called for cross-store consistency restore
-(Postgres + Neo4j + Qdrant + Redis + SeaweedFS). Real restore needs
-backup infrastructure (snapshot manifests, pg_restore, neo4j-admin,
-Qdrant snapshot API, Redis BGSAVE, SeaweedFS object replication) — most
-of which is operator territory.
+(Postgres + Qdrant + Redis + object storage). Real restore needs
+backup infrastructure (snapshot manifests, pg_restore, Qdrant snapshot
+API, Redis BGSAVE, object replication) — most of which is operator
+territory. Neo4j was removed from the stack on 2026-07-28 and is not
+counted, exported or restored.
 
 This graduation lands two slices:
 
   1. **Dry-run cross-store consistency check** (`dry_run=True`, default):
-     Counts workspace-scoped rows / nodes / points / keys / objects in
-     **all five** stores so operators have one place to verify a
+     Counts workspace-scoped rows / points / keys in Postgres, Qdrant
+     and Redis so operators have one place to verify a
      workspace's footprint before kicking off a restore. Emits an
      audit anchor + returns a per-store breakdown.
 
@@ -24,7 +25,7 @@ This graduation lands two slices:
      deferred to Phase 11.1 alongside real restore.
 
   3. `dry_run=False` restores a workspace export manifest to Postgres,
-     Neo4j, Qdrant, and Redis when the corresponding sections exist.
+     Qdrant, and Redis when the corresponding sections exist.
 
 Trigger. Since 2026-09-29 (HAT-13) an admin who belongs to the workspace
 starts it with Laravel
@@ -163,22 +164,6 @@ async def _count_postgres_rows(
         return counts, f"postgres_count_failed: {type(exc).__name__}: {exc}"
 
 
-async def _count_neo4j_nodes(workspace_str: str) -> tuple[int, str | None]:
-    """Count Neo4j nodes carrying this workspace_id. Returns (count, error).
-
-    Per the Phase F graph_entities reference: nodes carry `project_id`
-    not `workspace_id`, but indirectly belong to a workspace via the
-    Project node. We count by either property when present.
-
-    B1 (2026-07-28): Neo4j was removed from the stack. This helper stays
-    in place for the dry-run consistency check's call signature but now
-    returns the same fail-open ``(-1, reason)`` shape the try/except used
-    to produce when the driver was unreachable, without the wasted
-    connection attempt.
-    """
-    return -1, "neo4j was removed from the stack (B1, 2026-07-28)"
-
-
 async def _count_qdrant_points(workspace_str: str) -> tuple[int, str | None]:
     """Count Qdrant points in the canonical collection for this workspace.
 
@@ -276,7 +261,6 @@ def _verify_snapshot_manifest(
             "workspace_id": "<uuid>",
             "stores": {
                 "postgres": {"row_counts": {<output_key>: <int>}},
-                "neo4j":    {"node_count": <int>},
                 "qdrant":   {"point_count": <int>},
                 "redis":    {"key_count": <int>},
                 "seaweedfs":{"object_count": <int>, "bytes": <int>}
@@ -320,17 +304,6 @@ def _verify_snapshot_manifest(
                 "expected": int(expected),
                 "actual": int(actual),
             })
-    # Neo4j single bucket
-    n4_expected = (stores.get("neo4j") or {}).get("node_count")
-    n4_actual = live_counts.get("neo4j_nodes")
-    if n4_expected is not None and n4_actual is not None and n4_actual != -1:
-        if int(n4_actual) != int(n4_expected):
-            mismatches.append({
-                "store": "neo4j",
-                "key": "node_count",
-                "expected": int(n4_expected),
-                "actual": int(n4_actual),
-            })
     # Qdrant
     q_expected = (stores.get("qdrant") or {}).get("point_count")
     q_actual = live_counts.get("qdrant_points")
@@ -362,8 +335,8 @@ async def execute(
 ) -> RestoreWorkspaceOutput:
     """Cross-store consistency restore.
 
-    * dry_run=True (default): counts workspace-scoped rows / nodes /
-      points / keys in **all five** stores, optionally verifies the
+    * dry_run=True (default): counts workspace-scoped rows / points /
+      keys in Postgres, Qdrant and Redis, optionally verifies the
       manifest URI's claimed counts match live state, emits an audit
       anchor.
     * dry_run=False: explicit guard — backup infrastructure not yet
@@ -379,8 +352,7 @@ async def execute(
         # store §11.1 dumps can't be restored per-workspace (pg_restore
         # is database-level, not workspace-level).
         #
-        # Neo4j / Qdrant / Redis stay in dry-run mode for wave 1; their
-        # restore patterns land separately as §11.3-v2.
+        # Qdrant / Redis follow in the §11.3-v2 block below.
         from app.hatchet_workflows._restore_pg_from_export import (
             restore_postgres_from_export,
         )
@@ -398,7 +370,7 @@ async def execute(
                 failure_reason=msg,
             )
 
-        # §11.3-v2 — Neo4j / Qdrant / Redis restore from the same manifest.
+        # §11.3-v2 — Qdrant / Redis restore from the same manifest.
         # Fetch the manifest body once and parse out the per-section rows.
         stores_restored: list[str] = ["postgres"]
         extras_summary: dict[str, Any] = {}
@@ -410,7 +382,6 @@ async def execute(
 
             from app.hatchet_workflows._restore_extras import (
                 parse_export_jsonl_gz,
-                restore_neo4j,
                 restore_qdrant,
                 restore_redis,
             )
@@ -421,15 +392,6 @@ async def execute(
             # Only attempt extras when the manifest claims to carry them
             # (v1.0 manifests pre-date §11.3-v2 and have no extra sections).
             if manifest_version >= "2.0":
-                nodes = sections.get("neo4j_nodes", [])
-                rels = sections.get("neo4j_rels", [])
-                if nodes or rels:
-                    extras_summary["neo4j"] = await restore_neo4j(
-                        workspace_str, nodes, rels,
-                    )
-                    if extras_summary["neo4j"].get("error") is None:
-                        stores_restored.append("neo4j")
-
                 points = sections.get("qdrant_points", [])
                 if points:
                     extras_summary["qdrant"] = await restore_qdrant(
@@ -461,8 +423,7 @@ async def execute(
             stores_restored=stores_restored,
             consistency_check_results={
                 "restore_mode":             "v2_workspace_export"
-                                            if "neo4j" in stores_restored
-                                            or "qdrant" in stores_restored
+                                            if "qdrant" in stores_restored
                                             or "redis" in stores_restored
                                             else "pg_only_from_workspace_export",
                 "tables_restored":          pg_result["tables"],
@@ -497,17 +458,15 @@ async def execute(
                 failure_reason=msg,
             )
 
-        # 2. Per-store counts (PG + Neo4j + Qdrant + Redis run sequentially —
+        # 2. Per-store counts (PG + Qdrant + Redis run sequentially —
         # they're each <1s and the orchestration is clearer than a gather).
         pg_counts, pg_err = await _count_postgres_rows(pool, workspace_str)
-        neo4j_count, neo4j_err = await _count_neo4j_nodes(workspace_str)
         qdrant_count, qdrant_err = await _count_qdrant_points(workspace_str)
         redis_count, redis_err = await _count_redis_keys(workspace_str)
 
         store_errors = {
             k: v for k, v in {
                 "postgres": pg_err,
-                "neo4j": neo4j_err,
                 "qdrant": qdrant_err,
                 "redis": redis_err,
             }.items() if v
@@ -516,7 +475,6 @@ async def execute(
         live_counts = {
             "workspace_id": workspace_str,
             "postgres": pg_counts,
-            "neo4j_nodes": neo4j_count,
             "qdrant_points": qdrant_count,
             "redis_keys": redis_count,
         }
@@ -565,11 +523,11 @@ async def execute(
             )
 
         log.info(
-            "restore_workspace.task_completed workspace=%s pg=%s neo4j=%s "
+            "restore_workspace.task_completed workspace=%s pg=%s "
             "qdrant=%s redis=%s manifest_loaded=%s mismatches=%d",
             workspace_str,
             sum(v for v in pg_counts.values() if v >= 0),
-            neo4j_count, qdrant_count, redis_count,
+            qdrant_count, redis_count,
             manifest_check.get("loaded", False),
             len(manifest_check.get("mismatches", [])),
         )
