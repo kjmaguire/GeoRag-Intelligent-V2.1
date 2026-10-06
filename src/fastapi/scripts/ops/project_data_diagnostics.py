@@ -1071,22 +1071,27 @@ SELECT pr.crs_epsg AS crs_epsg,
 
 # $2 = project crs_epsg. What the 3D view does with easting/northing is "treat them as
 # metres"; geom_4326 re-projected into the project CRS is where the map says the hole is.
-_OFFSET_DIST = (
-    "ST_Distance(ST_Transform(c.geom_4326, $2::int), ST_SetSRID(ST_MakePoint(c.easting, c.northing), $2::int))"
-)
-_OFFSET_FROM = (
-    "FROM silver.collars c WHERE c.project_id = $1::uuid AND c.geom_4326 IS NOT NULL "
-    "AND c.easting IS NOT NULL AND c.northing IS NOT NULL"
-)
+# Written out in full, not assembled from shared fragments: the CI schema gate
+# (scripts/ci/check_sql_against_schema.py) PREPAREs each literal with its f-string holes
+# filled by placeholders, so a FROM clause held in a hole leaves `c.` unresolvable.
 _OFFSET_AGG_SQL = f"""
 SELECT count(*) AS compared,
        count(*) FILTER (WHERE d.dist_m > {COLLAR_OFFSET_THRESHOLD_M}) AS over_threshold,
        max(d.dist_m) AS max_m
-  FROM (SELECT {_OFFSET_DIST} AS dist_m {_OFFSET_FROM}) d
+  FROM (SELECT ST_Distance(ST_Transform(c.geom_4326, $2::int),
+                           ST_SetSRID(ST_MakePoint(c.easting, c.northing), $2::int)) AS dist_m
+          FROM silver.collars c
+         WHERE c.project_id = $1::uuid AND c.geom_4326 IS NOT NULL
+           AND c.easting IS NOT NULL AND c.northing IS NOT NULL) d
 """  # noqa: S608 — constants
 _OFFSET_LIST_SQL = f"""
 SELECT d.hole_id, d.dist_m
-  FROM (SELECT c.hole_id, {_OFFSET_DIST} AS dist_m {_OFFSET_FROM}) d
+  FROM (SELECT c.hole_id,
+               ST_Distance(ST_Transform(c.geom_4326, $2::int),
+                           ST_SetSRID(ST_MakePoint(c.easting, c.northing), $2::int)) AS dist_m
+          FROM silver.collars c
+         WHERE c.project_id = $1::uuid AND c.geom_4326 IS NOT NULL
+           AND c.easting IS NOT NULL AND c.northing IS NOT NULL) d
  WHERE d.dist_m > {COLLAR_OFFSET_THRESHOLD_M}
  ORDER BY d.dist_m DESC, d.hole_id
  LIMIT {ID_LIST_LIMIT}
@@ -1194,21 +1199,28 @@ async def _placement_extents(conn: Any, project: Project) -> dict[str, Any]:
 
 # Start of each trace vs its collar, in metres on the spheroid. The promotion builds a trace
 # by translating metre offsets onto the collar, so the first vertex IS the collar.
-_TRACE_DIST = "ST_Distance(ST_StartPoint(t.geom)::geography, c.geom_4326::geography)"
-_TRACE_FROM = (
-    "FROM silver.drill_traces t JOIN silver.collars c ON c.collar_id = t.collar_id "
-    "WHERE t.project_id = $1::uuid AND c.project_id = $1::uuid"
-)
+# Written out in full for the same reason as _OFFSET_AGG_SQL.
 _TRACE_AGG_SQL = f"""
 SELECT count(*) AS traces,
        count(*) FILTER (WHERE d.dist_m IS NULL) AS no_collar_position,
        count(*) FILTER (WHERE d.dist_m > {TRACE_START_THRESHOLD_M}) AS over_threshold,
        max(d.dist_m) AS max_m
-  FROM (SELECT CASE WHEN c.geom_4326 IS NULL THEN NULL ELSE {_TRACE_DIST} END AS dist_m {_TRACE_FROM}) d
+  FROM (SELECT CASE WHEN c.geom_4326 IS NULL THEN NULL
+                    ELSE ST_Distance(ST_StartPoint(t.geom)::geography, c.geom_4326::geography)
+               END AS dist_m
+          FROM silver.drill_traces t
+          JOIN silver.collars c ON c.collar_id = t.collar_id
+         WHERE t.project_id = $1::uuid AND c.project_id = $1::uuid) d
 """  # noqa: S608 — constants
 _TRACE_LIST_SQL = f"""
 SELECT d.hole_id, d.dist_m
-  FROM (SELECT c.hole_id, CASE WHEN c.geom_4326 IS NULL THEN NULL ELSE {_TRACE_DIST} END AS dist_m {_TRACE_FROM}) d
+  FROM (SELECT c.hole_id,
+               CASE WHEN c.geom_4326 IS NULL THEN NULL
+                    ELSE ST_Distance(ST_StartPoint(t.geom)::geography, c.geom_4326::geography)
+               END AS dist_m
+          FROM silver.drill_traces t
+          JOIN silver.collars c ON c.collar_id = t.collar_id
+         WHERE t.project_id = $1::uuid AND c.project_id = $1::uuid) d
  WHERE d.dist_m > {TRACE_START_THRESHOLD_M}
  ORDER BY d.dist_m DESC, d.hole_id
  LIMIT {ID_LIST_LIMIT}

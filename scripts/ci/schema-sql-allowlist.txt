@@ -10,17 +10,6 @@
 # swallowed exception in production (database audit 2026-09-29, PG-3..13).
 
 # ── Being fixed by other PRs from the 2026-09-29 audit ─────────────────────
-# PG-5 (guards): layer5 provenance enrichment joins bronze.source_files on
-# columns it does not have.
-src/fastapi/app/agent/hallucination/layer5_provenance.py|bf.sha256
-# PG-8 / API-1 (fastapi): the trust summary reads silver.answer_run_feedback;
-# the §10p writer writes silver.message_feedback.
-src/fastapi/app/routers/answer_runs.py|silver.answer_run_feedback
-# API-3 (fastapi): GET /v1/evidence/{id} document_passage branch.
-src/fastapi/app/routers/evidence.py|dp.document_revision_id
-src/fastapi/app/routers/evidence.py|passage_text
-# API-7 (fastapi): GET /internal/projects/{id}/collars reads geo.collars.
-src/fastapi/app/routers/projects.py|geo.collars
 # PG-13 / security (laravel): the OAuth ingest callback CREATEs this table at
 # request time; being flag-gated.
 app/Http/Controllers/OAuthIngestController.php|silver.cloud_ingest_connections
@@ -53,9 +42,6 @@ src/fastapi/app/agents/phase0/index_health.py|hypopg_reset
 # pg_partman is only present where the raw partitioning files ran; the
 # workflow reports its own no-op (pg_partman_maintenance.py:83-111).
 src/fastapi/app/hatchet_workflows/pg_partman_maintenance.py|partman.part_config
-# Dagster's own run database (a separate DSN), not the application schema.
-# Dagster was retired 2026-07-28; the metric can go with it.
-app/Http/Controllers/Internal/MetricsController.php|runs
 # SQLite (GeoPackage) catalog query, not Postgres.
 src/georag_geoparsers/georag_geoparsers/spatial_parser.py|sqlite_master
 # One-off operator scripts that predate the current schema.
