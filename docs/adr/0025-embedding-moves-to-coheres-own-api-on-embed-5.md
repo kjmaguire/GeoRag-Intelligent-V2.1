@@ -401,6 +401,33 @@ Still to confirm at cutover time (Negative consequences above): the account's
 data-retention and training settings on Cohere's API. Not checked by the
 tooling; recorded here as open.
 
+**Cohere's published terms, looked up 2026-10-06** (Cohere's Enterprise Data
+Commitments page, `cohere.com/enterprise-data-commitments`, and its privacy
+policy dated 2026-01-30, as quoted by a web search; the pages themselves were
+not fetchable from the session that wrote this, so re-read them before
+relying on the exact wording):
+
+- **Training: opt-OUT, not opt-in.** Prompts and generations sent to Cohere's
+  SaaS platform (the `api.cohere.com` host this deployment uses for chat,
+  Parse and now Embed) *may be used to train Cohere's models unless the
+  account opts out*. This is the opposite default from Bedrock, whose terms
+  are AWS's and do not train on customer content. The opt-out is a toggle:
+  Cohere dashboard → Settings → **Data Controls** → off.
+- **Retention: 30 days.** Logged prompts and generations are deleted
+  automatically after 30 days, except where a legal requirement or customer
+  contract needs longer or the usage is flagged as possibly violating
+  Cohere's terms.
+- **Zero data retention** (nothing logged) exists but is an enterprise
+  arrangement with Cohere, not a dashboard setting.
+- The terms say "prompts and generations"; they do not single out embed or
+  rerank inputs. Read them as covering every chunk sent to `/v2/embed`.
+
+**The account's own setting is still unverified**: the Data Controls toggle
+is account state, readable only in the dashboard (no API reports it). Until
+someone with the login confirms it is off, assume the default, i.e. the
+whole corpus, every question and answer, and every scanned page sent since
+ADR-0023 may be eligible for training.
+
 ## Verification (this commit)
 
 This ADR records a proposed decision. No code changes in this commit. What
