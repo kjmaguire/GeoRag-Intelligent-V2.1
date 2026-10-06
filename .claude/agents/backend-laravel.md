@@ -73,7 +73,7 @@ The `georag-*` skills are project-specific and override generic Laravel guidance
    - **No direct LLM calls on the user-facing query path** — the RAG synthesis loop is FastAPI/Pydantic AI's job (§05 step 4). Never call an LLM from a Laravel controller, Horizon job, or event listener that's on the request → answer path.
    - Delegate all domain logic to FastAPI via Section 07d contracts
 
-   **AI SDK boundary (`laravel/ai`):** the SDK is installed for *non-critical Laravel-side* AI use only — admin tooling, internal helpers, audit-log summarization, classifying feedback tickets. If you need an LLM on a user-facing path, the work belongs in FastAPI instead. `laravel/ai` is currently v0 (alpha); keeping its blast radius small means a future v1 refactor stays cheap. Ollama was removed on 2026-05-17 and a pre-commit hook blocks its return; use `anthropic` for the milestone-gate tooling per §08.
+   **AI SDK boundary (`laravel/ai`):** the Laravel AI SDK is **not installed** — `laravel/ai` is not in `composer.json`, and adding it is a dependency change that needs approval. If it is ever added, keep it to *non-critical Laravel-side* use (admin tooling, internal helpers); if you need an LLM on a user-facing path, the work belongs in FastAPI instead. Ollama was removed on 2026-05-17 and a pre-commit hook blocks its return; use `anthropic` for the milestone-gate tooling per §08.
 
 4. **Streaming pattern (Option A)**:
    ```

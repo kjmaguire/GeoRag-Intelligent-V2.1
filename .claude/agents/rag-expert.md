@@ -141,15 +141,17 @@ not run on PRs.
 
 ## Deployment-shaped failure modes to watch for
 
-Embedding and rerank are `bedrock` in production; the three sidecars
+Embedding is `cohere` (Embed 5 Pro, since 2026-10-05) and rerank `bedrock` in production; the three sidecars
 (`embedding`, `sparse`, `reranker`) are the dev path. Two traps:
 
 - `EMBEDDING_BACKEND` and `RERANKER_BACKEND` must be set **identically on the
   query AND ingest paths**. A mismatch writes one vector space and queries
   another — retrieval returns plausible-looking garbage and nothing errors.
 - Switching embedding backends needs a **full re-embed** via
-  `scripts/reset_embeddings_for_reencode.py`. Cohere Embed v4 at 1024 dims
-  matches `georag_chunks`, so no Qdrant migration is needed — but dimension
+  `src/fastapi/scripts/reset_embeddings_for_reencode.py`. Production embeds
+  with Cohere Embed 5 Pro (`embed-v5.0-pro`) on Cohere's own API since
+  2026-10-05 (ADR-0025; Embed v4 on Bedrock is the rollback until
+  2026-10-19). At 1024 dims it matches `georag_chunks`, so no Qdrant migration is needed — but dimension
   matching is not the same as vector-space compatibility.
 
 ## How to report

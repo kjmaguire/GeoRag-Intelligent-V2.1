@@ -1,6 +1,6 @@
 ---
 name: cohere-expert
-description: Every Cohere-family capability and its route — Command A+ chat, Parse 5 OCR, Embed v4 and Rerank 3.5 — across both hosts (Cohere's own API and Amazon Bedrock). Use for wire shapes, request/response contracts, model IDs, the probes, token limits, JSON mode, sentinels, error handling, and choosing which host serves which model. This agent owns the vendor boundary; rag-expert owns whether the answers are good.
+description: Every Cohere-family capability and its route — Command A+ chat, Parse 5 OCR, Embed 5 Pro (and the Embed v4 rollback) and Rerank 3.5 — across both hosts (Cohere's own API and Amazon Bedrock). Use for wire shapes, request/response contracts, model IDs, the probes, token limits, JSON mode, sentinels, error handling, and choosing which host serves which model. This agent owns the vendor boundary; rag-expert owns whether the answers are good.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: sonnet
 color: pink
@@ -15,19 +15,25 @@ only the *route* changed when the platform moved to AWS.
 |---|---|---|---|
 | Chat | `command-a-plus-05-2026` | **Cohere's own API** | `LLM_BACKEND=cohere` |
 | OCR | Parse 5 (`parse-v5.0`) | **Cohere's own API** | `OCR_ENGINE=cohere_parse` |
-| Embedding | Cohere Embed v4, 1024 dims | **Bedrock** (serverless) | `EMBEDDING_BACKEND=bedrock` |
+| Embedding | Cohere **Embed 5 Pro** (`embed-v5.0-pro`), 1024 dims | **Cohere's own API** (since 2026-10-05, ADR-0025) | `EMBEDDING_BACKEND=cohere` |
+| Embedding (rollback until 2026-10-19) | Cohere Embed v4, 1024 dims | **Bedrock** (serverless) | `EMBEDDING_BACKEND=bedrock` |
 | Rerank | Cohere **Rerank 3.5** | **Bedrock** (serverless) | `RERANKER_BACKEND=bedrock` |
 
-Chat and Parse share one key: `COHERE_API_KEY`, against `COHERE_BASE_URL`.
-Embed and Rerank use AWS credentials. **A Cohere key that only covers chat
-will fail Parse** — the key must cover both.
+Chat, Parse and Embed 5 share one key: `COHERE_API_KEY`, against
+`COHERE_BASE_URL`. Rerank (and the Embed v4 rollback) use AWS credentials.
+**A Cohere key that only covers chat will fail Parse and Embed** — the key
+must cover all three.
 
 **Why chat and OCR are not on Bedrock:** ADR-0023 (2026-09-15) took the
 default off `bedrock` one week after ADR-0022 set it. Command A+ is an AWS
 *Marketplace* SageMaker package, not a Bedrock model — A100/H100 instances
 that bill whether or not anything calls them, because a Marketplace endpoint
-has **no idle state**. Embed v4 and Rerank 3.5 stay on Bedrock precisely
-because they *are* serverless and accrue nothing at rest.
+has **no idle state**. Rerank 3.5 stays on Bedrock precisely because it
+*is* serverless and accrues nothing at rest. Embed v4 stayed there too until
+ADR-0025 moved production to Embed 5 Pro on Cohere's own API on 2026-10-05;
+v4 on Bedrock (and the v4 Qdrant snapshot) is the rollback until 2026-10-19.
+A v4/v5 mixed collection returns meaningless cosines with every guard
+passing — switching back means a full reset and re-embed, not a flag flip.
 
 `bedrock` remains selectable for an operator who deploys a Marketplace
 endpoint anyway. Do not delete that path.
@@ -38,8 +44,10 @@ endpoint anyway. Do not delete that path.
   `llm_bedrock.py`, not a branch of the OpenAI-compatible client.
 - `app/agent/llm_bedrock.py` — the Bedrock chat path.
 - `app/agent/llm_common.py` — what belongs to neither host.
-- `app/services/cohere_wire.py` — the chat + parse contracts, **as data**.
-- `app/services/bedrock_wire.py` — embed, rerank, bedrock chat, **as data**.
+- `app/services/cohere_wire.py` — the chat, parse and embed contracts, **as data**
+  (`EMBED` is ASSUMED until the probe's embed section, `probe_embed`, observes it).
+- `app/services/bedrock_wire.py` — embed v4 (rollback), rerank, bedrock chat, **as data**.
+- `app/services/embedding.py` — `_CohereEmbedding` (Embed 5) and the Bedrock v4 path.
 - `app/services/_bedrock.py` — the Bedrock client plumbing.
 
 ## Wire shapes are UNVERIFIED and you must keep saying so
@@ -67,7 +75,7 @@ what the *model* emits, not what the host wraps it in.
 ## The probes — two of them, and neither covers the other's models
 
 - `ops/validation/bedrock_probe.py` — Embed v4, Rerank 3.5
-- `ops/validation/cohere_probe.py` — Command A+, Parse 5
+- `ops/validation/cohere_probe.py` — Command A+, Parse 5, Embed 5 (`probe_embed`)
 
 `scripts/operator/aws-preflight.sh` **A-11 fails until BOTH reports are
 committed** to `ops/validation/reports/`. Running one does not satisfy it.
@@ -96,8 +104,8 @@ migration defaulting the flag to true, or every query refuses.
 
 - `LLM_BACKEND=azure` is a **hard startup error naming the replacement**.
   Keep it that way; it is how an operator with a stale `.env` finds out.
-- `EMBEDDING_BACKEND` and `RERANKER_BACKEND` both default to `bedrock` **in
-  code and in compose**, so an unset value picks the hosted backend rather
+- `EMBEDDING_BACKEND` defaults to `cohere` and `RERANKER_BACKEND` to `bedrock`
+  **in code and in compose**, so an unset value picks the hosted backend rather
   than a model host that does not exist in production. `.env.example` sets
   `local` / `cross_encoder` explicitly for the dev sidecars.
 - Set both **identically on the query AND ingest paths.** A mismatch writes

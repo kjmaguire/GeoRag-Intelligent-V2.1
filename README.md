@@ -7,15 +7,16 @@ GeoRAG is a geological intelligence platform that ingests decades of fragmented 
 **V1 production-hardened — engineering scope closed.** All 10 modules and the
 23-item V1.5 follow-up backlog are complete. ~1,500 automated assertions
 passing (199 pgTAP, ~622 FastAPI, 217 Laravel feature, 500 vitest, 14 tracing
-round-trip). 9/9 Prometheus targets UP. 28 operational runbooks. Zero active
-leak primitives, hallucination prevention layered across six gates, RLS on 11
+round-trip). Zero active leak primitives, hallucination prevention layered across six gates, RLS on 11
 silver tables.
 
-First production deployment is gated on a one-afternoon operator setup
-documented in [`docs/OPERATOR-AFTERNOON.md`](docs/OPERATOR-AFTERNOON.md) — SOPS
-key generation, GitHub Secrets provisioning, and the cold-start procedure.
-Run `bash scripts/operator/preflight.sh` to see the current state of the
-seven O-01..O-07 gates.
+Production runs on **Amazon ECS Fargate**, provisioned by Terraform in
+[`deploy/aws/terraform/`](deploy/aws/terraform/) (ADR-0022, 2026-09-08). Start
+at [`deploy/aws/README.md`](deploy/aws/README.md); the cutover gate is
+`AWS_REGION=<region> bash scripts/operator/aws-preflight.sh`. The older
+[`docs/OPERATOR-AFTERNOON.md`](docs/OPERATOR-AFTERNOON.md) /
+`scripts/operator/preflight.sh` (SOPS + age) path predates ADR-0022 and now
+applies only to the on-prem Helm chart (`charts/georag/`).
 
 The full ship-readiness checklist lives at
 [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md).
@@ -28,12 +29,14 @@ The full ship-readiness checklist lives at
 
 ## Technology Stack
 
-- **Frontend**: React + Inertia.js, shadcn/ui + Tailwind, MapLibre GL, React Flow, Plotly
-- **Application**: Laravel 13 on Octane (Swoole/RoadRunner), Horizon, Reverb, Sanctum, Pulse
-- **Domain Service**: FastAPI 0.135.x on Python 3.13, Pydantic AI, asyncpg, aioredis
-- **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (PgBouncer edoburu 1.25), Neo4j Community 2026.03, Qdrant v1.19, Redis 8.6, SeaweedFS (S3-compatible)
-- **Ingestion**: Dagster, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, RAGFlow
-- **LLM**: Ollama + DeepSeek distills (dev), vLLM + DeepSeek V3 (prod), Claude/GPT-4 API (optional fallback)
+- **Frontend**: React 19 + Inertia.js v3, shadcn/ui + Tailwind v4, MapLibre GL, Plotly (no graph view — React Flow was removed 2026-08-28)
+- **Application**: Laravel 13 on Octane (Swoole), Horizon, Reverb, Sanctum, Pulse (local-only)
+- **Domain Service**: FastAPI 0.141 on Python 3.13, LangGraph, asyncpg, redis.asyncio, async Qdrant client
+- **Data Stores**: PostgreSQL 18 + PostGIS 3.6 (PgBouncer edoburu 1.25.1 in compose only; RDS for PostgreSQL 18 in production), Qdrant v1.19, Redis 8.6 (8.10 in production), SeaweedFS in compose / AWS S3 in production (both S3-compatible). No knowledge graph — Neo4j was removed 2026-07-28.
+- **Ingestion**: Hatchet workflows (`ingest_pdf`, `ingest_tabular`, `ingest_spatial`, `ingest_well_logs`, `ingest_geophysics`, …) on one `hatchet-worker`; parsers in the local `georag_geoparsers` package (Polars, GDAL via pyogrio/GeoPandas/rasterio, lasio, …); scanned-page OCR is Cohere Parse 5 with Tesseract as last resort
+- **LLM**: Cohere Command A+ on Cohere's own API (`LLM_BACKEND=cohere`, the default); `bedrock`, `vllm` and `anthropic` (Claude, optional fallback) are selectable
+- **Embedding / rerank**: Cohere Embed 5 Pro (`embed-v5.0-pro`, 1024 dims) on Cohere's own API in production since 2026-10-05 (ADR-0025; Embed v4 on Bedrock is the rollback until 2026-10-19), Cohere Rerank 3.5 on Bedrock; in dev, local Qwen3 embedding/reranker + SPLADE++ sparse sidecars
+- **Production**: Amazon ECS Fargate, Terraform in `deploy/aws/terraform/` (ADR-0022)
 
 ## Getting Started (Development)
 
@@ -47,22 +50,23 @@ cp .env.example .env
 Update `.env` with:
 - `APP_KEY`: Generate with `php artisan key:generate --show` (run in container later)
 - `FASTAPI_SERVICE_KEY`: Generate with `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`
-- LLM API keys if using `LLM_BACKEND=anthropic` (Claude, GPT-4)
-- `OLLAMA_KEEP_ALIVE`: Dev default is `30m`; change to `5m` if VRAM is constrained
+- `COHERE_API_KEY`: required for the default `LLM_BACKEND=cohere` (chat) and Cohere Parse OCR
+- `ANTHROPIC_API_KEY` only if using `LLM_BACKEND=anthropic`
 
 ### 2. Start infrastructure
 
 ```bash
-docker compose --profile dev-light up -d
+docker compose --profile dev-light --profile dev-data up -d
 ```
 
-This starts PostgreSQL, Redis, Laravel Octane (port 8888), FastAPI (port 8000), and Reverb (port 8085) for WebSocket streaming.
-
-Optional profiles:
-- `--profile dev-data`: Adds Neo4j, Qdrant, MinIO
-- `--profile dev-llm`: Adds Ollama (requires `docker run --gpus all` or NVIDIA Container Toolkit)
-- `--profile dev-ingest`: Adds Dagster, RAGFlow
+PostgreSQL, PgBouncer, Redis and Martin have no profile and always start.
+The profiles (the `profiles:` key on each service in `docker-compose.yml` is
+the truth):
+- `--profile dev-light`: Laravel Octane (`APP_PORT`, 8888 in `.env.example`), Horizon, and Reverb (port 8085)
+- `--profile dev-data`: FastAPI (port 8000), the `embedding` / `sparse` / `reranker` sidecars (the reranker wants the GPU), Qdrant, SeaweedFS (service `minio`) + `minio-init`, `hatchet-lite` + `hatchet-worker`
 - `--profile dev-full`: Everything (full integration test)
+
+A working day is `dev-light` + `dev-data`.
 
 ### 3. Run migrations and seed data
 
@@ -76,10 +80,10 @@ docker exec georag-laravel-octane php artisan db:seed
 - **Frontend**: http://localhost:8888
 - **Laravel Octane**: http://localhost:8888/api
 - **FastAPI docs**: http://localhost:8000/docs
-- **Neo4j (if dev-data)**: http://localhost:7474
-- **Qdrant (if dev-data)**: http://localhost:6333/docs
-- **MinIO (if dev-data)**: http://localhost:9001
-- **Ollama (if dev-llm)**: http://localhost:11434
+- **Qdrant (if dev-data)**: http://localhost:6333/dashboard
+- **SeaweedFS S3 API (if dev-data)**: http://localhost:8333
+- **Hatchet (if dev-data)**: http://localhost:8889
+- **Martin tiles**: http://localhost:3002
 
 ## Running Tests
 
@@ -119,21 +123,24 @@ npm run test -- --coverage
 .
 ├── app/                      # Laravel application (HTTP, models, jobs)
 ├── src/
-│   ├── fastapi/             # Python domain service (orchestration, LLM, retrieval)
-│   └── dagster/             # Ingestion pipeline orchestration
+│   ├── fastapi/             # Python domain service (orchestration, LLM, retrieval, Hatchet workflows)
+│   ├── georag_geoparsers/   # Format parsers used by the ingestion workflows
+│   └── georag_object_storage/ # S3-compatible object-storage client
 ├── resources/js/            # React + Inertia.js frontend
 ├── tests/                   # Laravel feature + unit tests
 ├── docs/
 │   ├── RUNBOOK.md          # Operator procedures (PII handling, secrets)
 │   └── ...                 # Deployment, tuning, troubleshooting
 ├── ops/
-│   ├── runbooks/            # 28 operational runbooks (deploy, rollback, on-call, ...)
+│   ├── runbooks/            # 4 current runbooks (aws-oncall, ...) + 41 archived compose-era ones
 │   ├── audit/               # Module security/observability audit reports
 │   ├── baselines/           # API latency + capacity-planning baselines
 │   └── backlog/             # V1.5 follow-up tracker (engineering-closed 2026-04-26)
 ├── scripts/operator/        # First-deploy bootstrap + GitHub Secrets + preflight
-├── openspec/                # OpenAPI / AsyncAPI specifications
-├── docker/                  # Dockerfile build contexts + Prometheus/Grafana/Loki configs
+├── openspec/                # OpenSpec change-workflow config (config.yaml)
+├── docker/                  # Dockerfile build contexts + service configs (postgresql, martin, seaweedfs)
+├── deploy/aws/terraform/    # Production infrastructure (ECS Fargate, RDS, ...)
+├── charts/georag/           # Helm chart for on-prem deployment
 ├── docker-compose.yml       # Service definitions + profiles
 ├── .env.example             # Template environment variables (dev defaults)
 ├── .env.production.example  # Production template (143 keys, secrets as CHANGE_ME placeholders)
@@ -146,9 +153,10 @@ npm run test -- --coverage
 - [**CLAUDE.md**](CLAUDE.md) — Project context, hard rules, agent responsibilities, code style, commit convention
 - [**georag-architecture.html**](georag-architecture.html) — Complete spec: Section 00 (README) → Section 04 (schemas + pipelines) → Section 05-06 (deployment + tuning)
 - [**docs/acceptance-criteria.md**](docs/acceptance-criteria.md) — Canonical "is V1 done?" checklist, 21/22 ✅ at engineering close
-- [**docs/OPERATOR-AFTERNOON.md**](docs/OPERATOR-AFTERNOON.md) — One-afternoon checklist for first production deploy (SOPS bootstrap, GitHub Secrets, cold-start)
+- [**deploy/aws/README.md**](deploy/aws/README.md) — Production deployment on AWS ECS Fargate (Terraform, preflight, first-deploy steps)
+- [**docs/OPERATOR-AFTERNOON.md**](docs/OPERATOR-AFTERNOON.md) — Pre-ADR-0022 first-deploy checklist (SOPS bootstrap, GitHub Secrets, cold-start); now relevant to the on-prem Helm path only
 - [**docs/RUNBOOK.md**](docs/RUNBOOK.md) — Operator procedures for PII decryption, secret rotation, database maintenance
-- [**ops/runbooks/**](ops/runbooks/) — four runbooks (`aws-oncall`, `secret-rotation`, `refusal-rate-spike`, `raw-sql-layer` — the last three still carry Azure-era procedures in places, and say so) plus 40 archived compose-era ones under `_archived/`
+- [**ops/runbooks/**](ops/runbooks/) — four runbooks (`aws-oncall`, `secret-rotation`, `refusal-rate-spike`, `raw-sql-layer` — the last three still carry Azure-era procedures in places, and say so) plus 41 archived compose-era ones under `_archived/`
 - [**ops/backlog/v1.5-followups.md**](ops/backlog/v1.5-followups.md) — V1.5 follow-up tracker with per-item close-out evidence
 
 ## Contributing
@@ -166,9 +174,9 @@ the copyright holder. Source is shared for review and collaboration only;
 no permission is granted for redistribution or commercial use without
 written agreement.
 
-All third-party dependencies are restricted to free and permissive licenses
-(MIT, BSD, Apache 2.0, MPL-2.0). No GPL, no paid SaaS — see CLAUDE.md
-"Free licensing only" rule.
+Third-party dependencies are kept to free and permissive licenses
+(MIT, BSD, Apache 2.0, MPL-2.0), no GPL. The hosted model APIs (Cohere,
+AWS Bedrock, optional Anthropic) are paid services under their own terms.
 
 ---
 
