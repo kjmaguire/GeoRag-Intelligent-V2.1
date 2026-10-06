@@ -2,10 +2,9 @@
 # Nightly cost-control shutdown sweep for the GeoRAG ECS cluster.
 #
 # Runs as an ECS task launched by the `georag-shutdown` EventBridge
-# schedule; see deploy/aws/scheduler/schedules.tf. Ported from
-# deploy/azure/containerapps/scripts/shutdown-sweep.sh on 2026-09-08
-# (ADR-0022). Everything the Azure version learned the hard way is kept;
-# what changed is called out below.
+# schedule; see deploy/aws/terraform/scheduler.tf (ADR-0022). Ported from
+# the Azure Container Apps version, which is gone; what it learned the hard
+# way is kept and what changed is called out below.
 #
 # ---------------------------------------------------------------------
 # WHAT CHANGED FROM THE AZURE VERSION
@@ -62,7 +61,7 @@
 #
 # So: no -e, every action attempted, failures collected, and a non-zero
 # exit at the end. The task's exit code then means what it says, and the
-# CloudWatch alarm in deploy/aws/alerts/ has something true to watch.
+# CloudWatch alarm in deploy/aws/terraform/alerts.tf has something true to watch.
 #
 # ---------------------------------------------------------------------
 # WHY PROGRESS GOES TO STDERR
@@ -187,7 +186,7 @@ case "$db_state" in
     ;;
 esac
 
-# Services, plus the database. The endpoint term is gone with ADR-0023.
+# Services, plus the database.
 TOTAL=$(( SERVICE_COUNT + 1 ))
 
 if [ ${#FAILURES[@]} -eq 0 ]; then

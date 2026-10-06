@@ -244,61 +244,6 @@ services:
         target: /data
         volume: {}
 
-  # ---------------------------------------------------------------------------
-  # Per-instance Prometheus exporters (one per Redis so role labels are clean)
-  # Ports 9121 / 9122 / 9123 — match docker/prometheus/prometheus.yml jobs
-  # ---------------------------------------------------------------------------
-  redis_exporter_cache:
-    profiles:
-      - staging
-      - prod
-    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
-    container_name: georag-redis-exporter-cache
-    command:
-      - --redis.addr=redis://redis-cache:6379
-      - --redis.password=${REDIS_CACHE_PASSWORD}
-      - --web.listen-address=:9121
-    depends_on:
-      redis-cache:
-        condition: service_healthy
-    networks:
-      georag: null
-    restart: unless-stopped
-
-  redis_exporter_queue:
-    profiles:
-      - staging
-      - prod
-    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
-    container_name: georag-redis-exporter-queue
-    command:
-      - --redis.addr=redis://redis-queue:6379
-      - --redis.password=${REDIS_QUEUE_PASSWORD}
-      - --web.listen-address=:9122
-    depends_on:
-      redis-queue:
-        condition: service_healthy
-    networks:
-      georag: null
-    restart: unless-stopped
-
-  redis_exporter_sessions:
-    profiles:
-      - staging
-      - prod
-    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
-    container_name: georag-redis-exporter-sessions
-    command:
-      - --redis.addr=redis://redis-sessions:6379
-      - --redis.password=${REDIS_SESSION_PASSWORD}
-      - --web.listen-address=:9123
-    depends_on:
-      redis-sessions:
-        condition: service_healthy
-    networks:
-      georag: null
-    restart: unless-stopped
-
 # =============================================================================
 # Volumes
 # =============================================================================

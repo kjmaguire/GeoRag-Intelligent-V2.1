@@ -27,36 +27,27 @@
 # both sides ran against a real LLM + real embeddings. This job's LLM and
 # embedding calls are STUBBED (tests/e2e_smoke/stub_backend.py — the same
 # stub the "E2E money-path smoke" job in ci.yml uses; see that file's
-# docstring for exactly what's real vs faked) because no real Azure AI
-# Foundry credentials are available to a GitHub-hosted runner:
-#
-#     $ gh secret list -R kjmaguire/GeoRag-Intelligent-V2.1
-#     AZURE_CLIENT_ID        (OIDC federated identity for CD deploys)
-#     AZURE_SUBSCRIPTION_ID
-#     AZURE_TENANT_ID
-#
-# These three are an Azure login identity (used by cd.yml to deploy), not a
-# Foundry API key or a reachable database — there is no secrets.STAGING_URL
-# either (the same gap release-rehearsal.yml's golden/hallucination steps
-# already document as continue-on-error for the identical reason). Running
+# docstring for exactly what's real vs faked) because no Cohere / Bedrock
+# credentials are available to a GitHub-hosted runner: the only AWS
+# identities this repository holds are OIDC roles (AWS_DEPLOY_ROLE_ARN and
+# the two Terraform roles), none of which may read COHERE_API_KEY or invoke
+# a model, and there is no reachable database or secrets.STAGING_URL either
+# (the same gap release-rehearsal.yml's golden/hallucination steps already
+# document as continue-on-error for the identical reason). Running
 # compare_benchmarks.py here is still worthwhile: it proves the CLI's own
 # parsing/diff logic doesn't crash and produces a human-readable diff
 # artifact — but its pass/fail verdict is NOT trusted as a quality gate, so
 # the step is continue-on-error and its exit code is informational only.
 #
 # ─── PROMOTION CRITERIA (to a real quality gate) ──────────────────────────
-# 1. Provision either (a) a reachable staging FastAPI URL with a real Azure
-#    AI Foundry backend behind it (secrets.STAGING_URL, mirroring
-#    release-rehearsal.yml's pattern), or (b) Key-Vault-backed secret
-#    retrieval via the existing AZURE_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID
-#    OIDC identity (az login --service-principal + az keyvault secret show
-#    for AZURE_FOUNDRY_ENDPOINT/API_KEY) — NOT implemented here per this
-#    branch's scope (no az commands beyond read-only `gh` were run to build
-#    this file, and wiring live credential retrieval deserves its own
-#    reviewed change).
+# 1. Give this job a real backend: a COHERE_API_KEY repository secret (chat
+#    and embeddings both use it) and credentials for Rerank 3.5 on Bedrock,
+#    or a reachable staging FastAPI URL (secrets.STAGING_URL, mirroring
+#    release-rehearsal.yml's pattern). Wiring live credentials deserves its
+#    own reviewed change.
 # 2. Point the "Run golden benchmark" step at that real backend instead of
-#    the stub (drop EMBEDDING_BACKEND/AZURE_FOUNDRY_*/LLM_BACKEND/VLLM_URL
-#    overrides below, stop starting stub_backend.py).
+#    the stub (drop the EMBEDDING_BACKEND/LLM_BACKEND/VLLM_URL overrides
+#    below, stop starting stub_backend.py).
 # 3. Flip the compare step's continue-on-error to false and decide what a
 #    real regression should do (fail the run — this workflow doesn't gate
 #    PRs, so "fail" just means a red nightly + notification, not a blocked

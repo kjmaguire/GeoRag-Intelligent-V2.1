@@ -221,9 +221,6 @@ then chat 401s and every scanned page falls back to tesseract. `A-08` in
 the preflight catches a placeholder value; at runtime the signal is
 `COHERE_PARSE_REJECTED` in the services log group.
 
-The endpoint CONFIGS are never deleted, precisely so this is one call
-rather than a rebuild. A cold create takes minutes.
-
 ### Qdrant's optimizer is stuck
 
 **Largely gone, and worth knowing why.** On Azure the classic cause was

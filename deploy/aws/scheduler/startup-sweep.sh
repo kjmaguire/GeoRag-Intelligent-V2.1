@@ -2,16 +2,15 @@
 # Morning startup sweep for the GeoRAG ECS cluster.
 #
 # Runs as an ECS task launched by the `georag-startup` EventBridge
-# schedule; see deploy/aws/scheduler/schedules.tf. Ported from
-# deploy/azure/containerapps/scripts/startup-sweep.sh on 2026-09-08
-# (ADR-0022). Read shutdown-sweep.sh's header first — it carries the
-# shared contract (no `set -e`, progress to stderr, state checks not exit
-# codes, and why the DST guard is gone).
+# schedule; see deploy/aws/terraform/scheduler.tf (ADR-0022). Read
+# shutdown-sweep.sh's header first — it carries the shared contract (no
+# `set -e`, progress to stderr, state checks not exit codes, and why there
+# is no DST guard).
 #
 # ---------------------------------------------------------------------
 # THE TIERS ARE NOT DECORATION
 # ---------------------------------------------------------------------
-# Unchanged from Azure. Starting everything at once works until it does
+# Starting everything at once works until it does
 # not: fastapi's lifespan opens a Postgres pool and checks the live Qdrant
 # dense dimension, the Hatchet worker cannot register workflows without
 # the engine, and Laravel's chat bridge posts to fastapi on the first
@@ -20,26 +19,12 @@
 # stampede of crash-looping tasks and a pile of alarms.
 #
 # ---------------------------------------------------------------------
-# THE BEDROCK ENDPOINT STEP IS THE ONE THAT CAN LEAVE THE PLATFORM DEAD
+# NO MODEL TIER TO START
 # ---------------------------------------------------------------------
-# The sharpest edge this sweep carried is GONE as of 2026-09-15 (ADR-0023),
-# and it is worth recording what it was. Command A+ and Cohere Parse 5 ran
-# on SageMaker-managed endpoints that bill while they exist, so the
-# shutdown sweep deleted them and this one recreated them from retained
-# configs — minutes to reach InService, able to fail outright, and a failed
-# recreate was no chat and no OCR at all with NO invocation metric to alarm
-# on, because there were no invocations to fail. That is why this sweep
-# waited for InService and emitted `BEDROCK_ENDPOINT_NOT_INSERVICE`.
-#
-# Both models moved to Cohere's own API, which has no endpoint to stand up
-# and bills per token and per page. There is nothing to recreate, nothing
-# to wait for, and nothing that can fail silently at 6am. The whole block
-# is deleted rather than gated on an unset variable: the scheduler role no
-# longer holds sagemaker:CreateEndpoint, so a dormant branch someone
-# re-enabled would fail with AccessDenied.
-#
-# Embeddings and reranking are still Bedrock, and always were serverless —
-# nothing to cycle, nothing accruing overnight.
+# Chat and OCR run on Cohere's own API (ADR-0023) and embeddings and
+# reranking are serverless Bedrock calls, so there is no endpoint to
+# recreate or wait for. The scheduler role holds no sagemaker permissions,
+# so a Marketplace step added back here would fail with AccessDenied.
 set -uo pipefail
 
 CLUSTER="${SWEEP_CLUSTER:-georag}"
@@ -113,10 +98,9 @@ case "$db_state" in
     ;;
 esac
 
-# RDS reports `available` before it accepts connections on a cold start.
-# The Azure version had the same gap and papered over it with the tier
-# waits below; this is explicit so a slow database is a logged wait rather
-# than a tier-1 crash loop.
+# RDS reports `available` before it accepts connections on a cold start;
+# this is explicit so a slow database is a logged wait rather than a tier-1
+# crash loop.
 log "--- waiting for ${DB_INSTANCE} to accept connections ---"
 if ! aws rds wait db-instance-available --db-instance-identifier "$DB_INSTANCE" 2>/dev/null; then
   log "${DB_INSTANCE}: wait timed out or errored -- continuing, the tier waits will surface it"
@@ -167,7 +151,7 @@ for svc in "${TIER3[@]}"; do
   wait_stable "$svc" || true
 done
 
-# Services, plus the database. The endpoint term is gone with ADR-0023.
+# Services, plus the database.
 TOTAL=$(( SERVICE_COUNT + 1 ))
 if [ ${#FAILURES[@]} -eq 0 ]; then
   log "startup sweep complete: ${TOTAL}/${TOTAL} actions succeeded and all readiness checks passed"

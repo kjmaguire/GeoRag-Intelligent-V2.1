@@ -542,11 +542,10 @@ jobs:
       - name: DSN single-source check
         run: bash scripts/ci/dsn_single_source_check.sh
 
-  # ─── Qwen / Ollama config-drift guard ────────────────────────────────
-  # Cheap stdlib-only check that the four cross-file Qwen settings stay
-  # consistent across .env.example, docker-compose.yml, and config.py.
-  # Cost-justified after the 2026-04-27 review found three live drifts
-  # (LLM_PRIMARY_MODEL, OLLAMA_NUM_CTX, MAX_CONTEXT_TOKENS).
+  # ─── Qwen config-drift guard ─────────────────────────────────────────
+  # Cheap stdlib-only check that LLM_PRIMARY_MODEL and MAX_CONTEXT_TOKENS
+  # stay consistent across .env.example, docker-compose.yml, and config.py.
+  # Cost-justified after the 2026-04-27 review found three live drifts.
   qwen-config-drift:
     name: Qwen config drift guard
     runs-on: ubuntu-latest
@@ -577,9 +576,8 @@ jobs:
   # like a correct off-hour skip. EventBridge Scheduler is timezone-aware:
   # one schedule, one fire, no guard, nothing to disagree.
   #
-  # The behavioural half is not gone and matters more than ever, because
-  # the sweeps now also cycle the Bedrock Marketplace endpoints and a
-  # failed recreate means no chat and no OCR at all.
+  # The behavioural half is not gone: a sweep that mis-orders its tiers or
+  # reports success over a half-stopped platform is quiet and expensive.
   scheduler-jobs:
     name: Nightly scheduler jobs
     runs-on: ubuntu-latest

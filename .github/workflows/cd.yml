@@ -110,22 +110,41 @@ jobs:
   check-ci:
     name: Check CI outcome
     runs-on: ubuntu-latest
+    # `branches: [main]` on the trigger matches the HEAD BRANCH NAME, not the
+    # repository: a pull request from a fork whose own branch is called `main`
+    # produces a workflow_run with head_branch == main and the fork's head_sha,
+    # and this workflow runs with the base repository's OIDC trust (main only,
+    # ci.tf) and its secrets. CI also runs on pull_request, so without the
+    # `event == 'push'` test a fork PR that passes CI would be built and
+    # deployed to production.
     if: >
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       short_sha: ${{ steps.resolve.outputs.short_sha }}
     steps:
       - name: Resolve deploy SHA
         id: resolve
+        # Passed through env, not interpolated into the script: the dispatch
+        # input is free text, and it becomes a checkout ref and an IMMUTABLE
+        # ECR tag, so it must be a commit SHA and nothing else.
+        env:
+          INPUT_SHA: ${{ github.event.inputs.sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_SHA: ${{ github.sha }}
         run: |
-          if [ -n "${{ github.event.inputs.sha }}" ]; then
-            SHA="${{ github.event.inputs.sha }}"
-          elif [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
-            SHA="${{ github.event.workflow_run.head_sha }}"
+          if [ -n "$INPUT_SHA" ]; then
+            SHA="$INPUT_SHA"
+          elif [ -n "$RUN_SHA" ]; then
+            SHA="$RUN_SHA"
           else
-            SHA="${{ github.sha }}"
+            SHA="$EVENT_SHA"
+          fi
+          if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "::error::'${SHA}' is not a commit SHA (7-40 lowercase hex characters)"
+            exit 1
           fi
           SHORT="${SHA::7}"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
@@ -458,15 +477,34 @@ jobs:
             aws ecs update-service --cluster "$ECS_CLUSTER" --service "$svc" \
               --task-definition "$rev" --output text --query 'service.serviceName'
             echo "$svc -> $rev"
+            echo "$svc $rev" >> /tmp/rollback/deployed-revisions
           done
 
       - name: Wait for services to stabilise
         run: |
+          set -euo pipefail
           # One waiter call per batch: `services-stable` takes up to 10
           # services and polls for 40 x 15s = 600s.
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" \
             --services laravel-octane laravel-horizon laravel-reverb \
                        fastapi hatchet-worker sparse martin
+
+          # `services-stable` is also true AFTER the deployment circuit
+          # breaker has rolled a service back to its previous task
+          # definition, so the waiter alone passes a deploy that did not
+          # deploy — and the smoke task below runs the NEW image in a one-off
+          # task, so it would pass too. Ask each service which revision it is
+          # actually on.
+          bad=0
+          while read -r svc rev; do
+            running=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$svc" \
+                        --query 'services[0].taskDefinition' --output text)
+            if [ "$running" != "$rev" ]; then
+              echo "::error::${svc} is on ${running##*/}, not ${rev##*/} — the deployment was rolled back (circuit breaker) or superseded"
+              bad=1
+            fi
+          done < /tmp/rollback/deployed-revisions
+          [ "$bad" -eq 0 ] || exit 1
 
       # ── The three services this workflow does NOT roll ───────────────
       # hatchet, qdrant and redis run vendor images that CD never builds, and
