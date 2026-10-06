@@ -443,7 +443,7 @@ pydyf==0.12.1
     # via weasyprint
 pygments==2.21.0
     # via rich
-pyjwt==2.14.0
+pyjwt==2.15.0
     # via georag-fastapi
 pyogrio==0.13.0
     # via
