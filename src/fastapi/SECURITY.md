@@ -36,10 +36,13 @@ disable isolation):
 
 1. Set `MULTI_TENANT_ENFORCEMENT_ENABLED=false` AND `SINGLE_TENANT_MODE=true`
    in the FastAPI env file.
-2. In that relaxed posture: `X-Service-Key`-only requests are accepted; JWT
-   `project_id` mismatches are logged as warnings but the request proceeds
-   using the body's `project_id`; requests without a JWT are accepted so long
-   as `X-Service-Key` validates.
+2. In that relaxed posture: JWT `project_id` mismatches are logged as
+   warnings but the request proceeds using the body's `project_id`. A valid
+   Bearer JWT is still required on every route that resolves a user context
+   (`extract_user_context`: queries, answer runs, evidence, ...) — a missing
+   or invalid one is a 401 regardless of this flag — and `X-Service-Key` must
+   still validate. Service-to-service trigger routes (shadow / workflows /
+   exports) take the service key alone.
 
 The relaxed posture is safe **only** when the deployment is single-customer
 (every Laravel user shares one trust boundary and the Laravel front door
@@ -55,7 +58,7 @@ installs RLS policies on `silver.collars` and `silver.samples` that read
 `current_setting('georag.project_id', true)` and admit:
 
 - **Every row** when the GUC is unset (single-tenant deployments and
-  Dagster ingestion — backwards-compatible with everything that exists
+  Hatchet ingestion — backwards-compatible with everything that exists
   today).
 - **Only matching project_id rows** when the GUC is set.
 

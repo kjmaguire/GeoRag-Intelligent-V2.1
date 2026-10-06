@@ -3,7 +3,8 @@
 POST /internal/queries
 ---------------------
 Receives a natural-language geological query from Laravel, runs it through the
-Pydantic AI geo_agent, and streams the response back as Server-Sent Events
+LangGraph orchestrator (``run_deterministic_rag``), and streams the response
+back as Server-Sent Events
 (SSE). Laravel's GeoRagService consumes the stream, forwards delta tokens to
 the React frontend via Reverb, and waits for the 'completed' event to persist
 the final GeoRAGResponse.
@@ -49,17 +50,13 @@ Architecture references
 
 Streaming strategy
 ------------------
-Pydantic AI's run_stream() returns a StreamedRunResult whose stream_text()
-async generator yields delta tokens as the LLM produces them.  Because the
-agent has a structured output type (GeoRAGResponse) the text stream ends when
-the model closes the JSON block; stream_text(delta=True) surfaces the raw
-token fragments.  After the text stream closes, get_output() returns the
-validated GeoRAGResponse which we use to emit citation and completed events.
-
-If stream_text produces no tokens (e.g. the model returned a pure JSON blob
-without intermediate text), the response text is split on word boundaries and
-emitted as synthetic delta events so the frontend always sees a progressive
-stream rather than a sudden completed event.
+The orchestrator runs in a background task and pushes ``status`` / ``bind`` /
+``delta`` items onto a queue; this module drains the queue into SSE frames and
+finishes with ``completed`` (or ``failed``). Token chunks are forwarded live
+(``token_callback``). If the backend produced no streamed tokens, the final
+response text is split on word boundaries and emitted as synthetic ``delta``
+events so the frontend always sees a progressive stream. Every path ends in
+exactly one terminal frame (``completed`` or ``failed``).
 """
 
 from __future__ import annotations
@@ -80,6 +77,7 @@ from pydantic import BaseModel, Field
 from app.agent.deps import AgentDeps
 from app.agent.event_stamper import EventStamper
 from app.config import settings
+from app.db.scoped_pool import bind_workspace_scope
 from app.models.rag import GeoRAGResponse
 from app.services.auth import UserContext, extract_user_context, verify_service_key
 from app.services.rate_limit import limiter
@@ -241,27 +239,6 @@ async def _next_stream_item(
     return None
 
 
-def _extract_tool_results(messages: list[Any]) -> list[tuple[str, Any]]:
-    """Walk the Pydantic AI message history and extract (tool_name, result) tuples.
-
-    Tool calls appear in ModelRequest messages as ToolReturnPart items.
-    Each part has .tool_name and .content (the tool's return value).
-    """
-    results: list[tuple[str, Any]] = []
-    for msg in messages:
-        parts = getattr(msg, "parts", None)
-        if not parts:
-            continue
-        for part in parts:
-            # ToolReturnPart has tool_name and content fields
-            if hasattr(part, "tool_name") and hasattr(part, "content"):
-                tool_name = getattr(part, "tool_name", None)
-                content = getattr(part, "content", None)
-                if tool_name and content is not None:
-                    results.append((tool_name, content))
-    return results
-
-
 # ---------------------------------------------------------------------------
 # Agent stream
 # ---------------------------------------------------------------------------
@@ -274,19 +251,17 @@ async def _agent_rag_stream(
     stamper: EventStamper | None = None,
     resolved_workspace_id: str | None = None,
 ) -> AsyncIterator[str]:
-    """Run the full geo_agent RAG pipeline and yield SSE events.
+    """Run the orchestrator (``run_deterministic_rag``) and yield SSE events.
 
     Flow:
       1. Build AgentDeps from app.state pools (assembled once per request).
-      2. Open run_stream context — Pydantic AI sends the prompt + system
-         prompt to Ollama, which starts the token stream.
-      3. Yield delta events for each token fragment from stream_text().
-      4. After stream_text() exhausts, call get_output() to get the
-         validated GeoRAGResponse.
-      5. If the text stream produced no tokens (model returned a pure JSON
-         blob), synthesise delta events by splitting response.text on spaces.
-      6. Emit citation events for each citation in order of appearance.
-      7. Emit the completed event with the full serialised GeoRAGResponse.
+      2. Start the orchestrator as a background task; it pushes status, bind
+         and delta items onto a queue.
+      3. Yield those items as SSE frames until the run finishes.
+      4. If no tokens were streamed, synthesise delta events by splitting
+         response.text on spaces.
+      5. Emit citation events for each citation in order of appearance.
+      6. Emit the completed event with the full serialised GeoRAGResponse.
 
     The overall deadline is settings.TIMEOUT_GATHER_S.  If the agent run
     exceeds this deadline we yield a failed event.  Per-tool timeouts are
@@ -490,9 +465,8 @@ async def _agent_rag_stream(
         # has to arrive, instead of a second protocol to keep alive.
         await status_queue.put(("status", message))
 
-    # P0 #5 — sequence counter + token pump. Both the Anthropic streaming
-    # path and the OpenAI-compatible path (incl. Azure Foundry/Cohere
-    # Command A+) call this once per chunk — as of the agentic_retrieval
+    # P0 #5 — sequence counter + token pump. Every streaming backend path
+    # (Cohere, Bedrock, Anthropic, OpenAI-compatible) calls this once per chunk — as of the agentic_retrieval
     # Step 2.5 wiring, assemble_node forwards this straight into
     # app.agent.llm_calls._call_llm's token_callback param, which flips
     # `stream: true` on the request regardless of backend. The Phase-3
@@ -692,7 +666,7 @@ async def _agent_rag_stream(
                 token_count += 1
                 # P1 #16 — first-token latency. Observed exactly once per
                 # request; the histogram is labelled by backend so we can
-                # compare Anthropic streaming vs Ollama blocking.
+                # compare streaming vs blocking backends.
                 if not first_token_observed:
                     first_token_observed = True
                     try:
@@ -774,12 +748,12 @@ async def _agent_rag_stream(
             }
         )
 
-    # Phase 3: if stream_text produced nothing, synthesise word-level deltas
+    # Phase 3: if no token was streamed, synthesise word-level deltas
     # from the final response text so the frontend always gets progressive
     # rendering rather than a single completed event.
     if token_count == 0 and final.text:
         # P1 #16 — observe first-token latency on the synth fallback too
-        # so non-streaming backends (Ollama, Anthropic without
+        # so non-streaming backends (e.g. Anthropic without
         # token_callback) still appear in the dashboard. Backend label
         # makes the streaming-vs-blocking comparison visible at a glance.
         if not first_token_observed:
@@ -827,7 +801,7 @@ async def _agent_rag_stream(
     summary="Submit a geological RAG query",
     description=(
         "Accepts a natural-language query scoped to a project and streams the "
-        "Pydantic AI agent response as Server-Sent Events. "
+        "orchestrator response as Server-Sent Events. "
         "Requires X-Service-Key header authentication."
     ),
     dependencies=[Depends(verify_service_key)],
@@ -904,8 +878,12 @@ async def post_query(
                         str(_wid),
                         _re_lc.IGNORECASE,
                     ):
-                        await _lc_conn.execute(
-                            f"SET LOCAL app.workspace_id = '{_wid}'"
+                        # Canonical, parameter-bound SET LOCAL helper; never
+                        # interpolate a caller-supplied claim into SQL.
+                        await bind_workspace_scope(
+                            _lc_conn,
+                            workspace_id=str(_wid),
+                            site="routers.queries.lifecycle",
                         )
                 await require_active_project(
                     project_id=body.project_id, conn=_lc_conn

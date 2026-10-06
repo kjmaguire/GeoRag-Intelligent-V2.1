@@ -21,7 +21,6 @@ enforcement but no row-level permission check beyond workspace_id.
 Performance target: ≤500ms p95 per spec B6.
   - No LLM calls.
   - At most 2 DB round-trips (evidence_items + one hydration query).
-  - Neo4j queries are ≤2s each (asyncio.wait_for enforced).
   - All DB errors return 500 {detail: "evidence_fetch_failed"}, logged
     with evidence_id for post-hoc debugging.
 
@@ -34,7 +33,6 @@ Architecture references
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -51,13 +49,6 @@ router = APIRouter(
     tags=["evidence"],
     dependencies=[Depends(verify_service_key)],
 )
-
-# ---------------------------------------------------------------------------
-# Neo4j timeout (per Section 06 spec: Neo4j ≤3s per query)
-# ---------------------------------------------------------------------------
-
-_NEO4J_TIMEOUT_S = 2.0  # tight — don't let a slow graph query hang the inspector
-
 
 # ---------------------------------------------------------------------------
 # Workspace resolver
@@ -139,9 +130,9 @@ class EvidenceStructuredPayload(BaseModel):
 class EvidenceGraphEdgePayload(BaseModel):
     """Payload for evidence_type='graph_edge'.
 
-    graph_edge_ref is the raw JSONB. start_node_* / end_node_* are hydrated
-    from Neo4j (best-effort — absent when Neo4j is unavailable).
-    described_in lists DocumentRevision nodes connected to the edge nodes.
+    graph_edge_ref is the raw JSONB. start_node_* / end_node_* / described_in
+    are kept for wire compatibility but are always null: there is no graph
+    store to hydrate them from (Neo4j removed 2026-07-28).
     """
 
     evidence_type: Literal["graph_edge"]
@@ -152,13 +143,13 @@ class EvidenceGraphEdgePayload(BaseModel):
     start_node_labels: list[str] | None = None
     start_node_preview: dict[str, Any] | None = Field(
         default=None,
-        description='{"primary_property": "value"} from Neo4j node properties',
+        description='Always null — no graph store (Neo4j removed 2026-07-28)',
     )
     end_node_labels: list[str] | None = None
     end_node_preview: dict[str, Any] | None = None
     described_in: list[dict[str, Any]] | None = Field(
         default=None,
-        description="DocumentRevision nodes connected to the edge endpoints (best-effort)",
+        description="Always null — no graph store (Neo4j removed 2026-07-28)",
     )
     workspace_id: UUID
 
@@ -354,76 +345,6 @@ async def _fetch_structured_lineage(
 
 
 # ---------------------------------------------------------------------------
-# Neo4j helpers — graph_edge hydration
-# ---------------------------------------------------------------------------
-
-
-async def _fetch_neo4j_node(
-    neo4j_driver: object, node_id: int
-) -> tuple[list[str], dict[str, Any]]:
-    """Fetch labels + properties for one Neo4j node by internal ID.
-
-    Returns (labels, preview_props). On any error returns ([], {}).
-    """
-    cypher = (
-        "MATCH (n) WHERE id(n) = $node_id "
-        "RETURN labels(n) AS labels, properties(n) AS props LIMIT 1"
-    )
-    try:
-        async with neo4j_driver.session() as session:  # type: ignore[union-attr]
-            result = await asyncio.wait_for(
-                session.run(cypher, node_id=int(node_id)),
-                timeout=_NEO4J_TIMEOUT_S,
-            )
-            record = await asyncio.wait_for(result.single(), timeout=_NEO4J_TIMEOUT_S)
-        if not record:
-            return [], {}
-        labels = list(record["labels"] or [])
-        props = dict(record["props"] or {})
-        # Trim to a compact preview: first 5 properties.
-        preview = dict(list(props.items())[:5])
-        return labels, preview
-    except (TimeoutError, Exception):
-        logger.warning(
-            "evidence: Neo4j node fetch failed node_id=%s (non-fatal)",
-            node_id,
-            exc_info=True,
-        )
-        return [], {}
-
-
-async def _fetch_neo4j_described_in(
-    neo4j_driver: object, start_id: int, end_id: int, rel_type: str
-) -> list[dict[str, Any]] | None:
-    """Fetch DocumentRevision nodes connected to start/end nodes.
-
-    Best-effort: returns None on Neo4j unavailability or empty match.
-    """
-    cypher = (
-        "MATCH (start)-[r]->(end) "
-        "WHERE id(start) = $sid AND id(end) = $eid AND type(r) = $rel "
-        "MATCH (start)-[:DESCRIBED_IN]->(d:DocumentRevision) "
-        "RETURN properties(d) AS props LIMIT 5"
-    )
-    try:
-        async with neo4j_driver.session() as session:  # type: ignore[union-attr]
-            result = await asyncio.wait_for(
-                session.run(cypher, sid=int(start_id), eid=int(end_id), rel=rel_type),
-                timeout=_NEO4J_TIMEOUT_S,
-            )
-            records = await asyncio.wait_for(result.data(), timeout=_NEO4J_TIMEOUT_S)
-        if not records:
-            return None
-        return [dict(r.get("props") or {}) for r in records]
-    except (TimeoutError, Exception):
-        logger.warning(
-            "evidence: Neo4j described_in fetch failed (non-fatal)",
-            exc_info=True,
-        )
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Branch assemblers
 # ---------------------------------------------------------------------------
 
@@ -527,59 +448,24 @@ async def _assemble_structured(
     )
 
 
-async def _assemble_graph_edge(
-    row: dict[str, Any], neo4j_driver: object | None, workspace_id: UUID
+def _assemble_graph_edge(
+    row: dict[str, Any], workspace_id: UUID
 ) -> EvidenceGraphEdgePayload:
-    """Assemble EvidenceGraphEdgePayload from the evidence_items row."""
+    """Assemble EvidenceGraphEdgePayload from the evidence_items row.
+
+    There is no graph store (Neo4j was removed 2026-07-28), so the endpoint
+    node previews and ``described_in`` are always absent; only the stored
+    ``graph_edge_ref`` is returned.
+    """
     graph_edge_ref = row.get("graph_edge_ref") or {}
     if isinstance(graph_edge_ref, str):
         import json  # noqa: PLC0415
         graph_edge_ref = json.loads(graph_edge_ref)
 
-    start_id = graph_edge_ref.get("start_node_id")
-    end_id = graph_edge_ref.get("end_node_id")
-    rel_type = graph_edge_ref.get("rel_type", "")
-
-    start_labels: list[str] | None = None
-    start_preview: dict[str, Any] | None = None
-    end_labels: list[str] | None = None
-    end_preview: dict[str, Any] | None = None
-    described_in: list[dict[str, Any]] | None = None
-
-    if neo4j_driver is not None and start_id is not None and end_id is not None:
-        # Parallel fan-out for start node + end node + described_in.
-        start_task = _fetch_neo4j_node(neo4j_driver, start_id)
-        end_task = _fetch_neo4j_node(neo4j_driver, end_id)
-        described_task = _fetch_neo4j_described_in(
-            neo4j_driver, start_id, end_id, rel_type
-        )
-        raw_start, raw_end, described_in = await asyncio.gather(
-            start_task, end_task, described_task, return_exceptions=True
-        )
-
-        if isinstance(raw_start, BaseException):
-            raw_start = ([], {})
-        if isinstance(raw_end, BaseException):
-            raw_end = ([], {})
-        if isinstance(described_in, BaseException):
-            described_in = None
-
-        start_labels, start_preview = raw_start  # type: ignore[misc]
-        end_labels, end_preview = raw_end  # type: ignore[misc]
-        start_labels = start_labels or None
-        start_preview = start_preview or None
-        end_labels = end_labels or None
-        end_preview = end_preview or None
-
     return EvidenceGraphEdgePayload(
         evidence_type="graph_edge",
         evidence_id=UUID(str(row["evidence_id"])),
         graph_edge_ref=graph_edge_ref,
-        start_node_labels=start_labels,
-        start_node_preview=start_preview,
-        end_node_labels=end_labels,
-        end_node_preview=end_preview,
-        described_in=described_in if isinstance(described_in, list) else None,
         workspace_id=workspace_id,
     )
 
@@ -647,12 +533,12 @@ async def get_evidence(
       3. Branch on evidence_type:
            document_passage → fetch passage + context + source report
            structured_record → fetch structured_ref + lineage
-           graph_edge → hydrate Neo4j nodes + described_in
+           graph_edge → return the stored graph_edge_ref (no graph store)
            map_feature → parse tile_function / bbox / properties
       4. Return typed payload.
 
     Returns 404 on missing row OR cross-tenant mismatch (silent enumeration guard).
-    Returns 500 {detail: "evidence_fetch_failed"} on internal DB / Neo4j errors.
+    Returns 500 {detail: "evidence_fetch_failed"} on internal DB errors.
     """
     # Resolve DB pools from app.state.
     try:
@@ -667,11 +553,6 @@ async def get_evidence(
     # Resolve workspace_id (Module 9 Chunk 9.4 — JWT-derived, no default fallback).
     redis_client = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pg_pool, redis_client)
-
-    try:
-        neo4j_driver = request.app.state.neo4j_driver
-    except AttributeError:
-        neo4j_driver = None
 
     # 1. Fetch base evidence_items row.
     try:
@@ -703,7 +584,7 @@ async def get_evidence(
             return await _assemble_structured(row, pg_pool, workspace_id)
 
         if evidence_type == "graph_edge":
-            return await _assemble_graph_edge(row, neo4j_driver, workspace_id)
+            return _assemble_graph_edge(row, workspace_id)
 
         if evidence_type == "map_feature":
             return _assemble_map_feature(row, workspace_id)

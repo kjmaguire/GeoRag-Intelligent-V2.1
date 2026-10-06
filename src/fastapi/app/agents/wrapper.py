@@ -282,6 +282,7 @@ async def _record_dry_run(
 # Process-local cache for Langfuse SDK presence. None = not yet probed.
 # False = SDK unavailable or unconfigured (skip fast). True = ready.
 _LANGFUSE_READY: bool | None = None
+_LANGFUSE_TASKS: set[asyncio.Task[Any]] = set()
 
 
 async def _emit_langfuse_trace(
@@ -589,7 +590,9 @@ def georag_agent(
             # not be in the agent hot-path.
             if _LANGFUSE_READY is not False:
                 try:  # noqa: SIM105
-                    asyncio.create_task(_emit_langfuse_trace(
+                    # Keep a strong reference: the loop only holds weak refs to
+                    # tasks, so a bare create_task() can be collected mid-run.
+                    _bg = asyncio.create_task(_emit_langfuse_trace(
                         ctx=ctx,
                         name=name,
                         version=version,
@@ -601,6 +604,8 @@ def georag_agent(
                         kwargs=kwargs,
                         value=value,
                     ))
+                    _LANGFUSE_TASKS.add(_bg)
+                    _bg.add_done_callback(_LANGFUSE_TASKS.discard)
                 except Exception:  # pragma: no cover
                     pass
 

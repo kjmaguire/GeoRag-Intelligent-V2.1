@@ -8,7 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.46.0",
     "pydantic>=2.11",
     # Storage-abstraction plan PR1 — vendor-neutral object storage interface,
-    # shared with src/dagster via a uv path dependency (see [tool.uv.sources]
+    # shared with the Hatchet workers via a uv path dependency (see [tool.uv.sources]
     # below). Local package, not published; version is unused by uv sources.
     "georag-object-storage",
     # Geology format parsers (CSV/XLSX/spatial/raster/LAS/XYZ) for the
@@ -241,40 +241,18 @@ dependencies = [
     #
     # azure-ai-documentintelligence + azure-core (the #28 Azure Document
     # Intelligence OCR adapter, 2026-07-28) removed 2026-09-02 per ADR-0019.
-    # The OCR engine is now Cohere Parse 5 on a Bedrock Marketplace endpoint
-    # (ADR-0022 moved it off Foundry), called with the httpx client already
+    # The OCR engine is now Cohere Parse 5 on Cohere's own API (ADR-0023;
+    # ADR-0022 had briefly put it on a Marketplace endpoint), called with the httpx client already
     # used for Embed/Rerank — no vendor SDK.
     #
     # azure-core used to arrive here anyway, transitively, through
     # georag-object-storage's azure-storage-blob. That dependency was
     # dropped on 2026-09-14 once ADR-0022 made STORAGE_BACKEND=azure_blob a
     # hard error, so no Azure package reaches this service by any route now.
-    # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
-    # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
-    # listed above) are sufficient to call the Ollama / vLLM backend via the
-    # OpenAI-compatible /v1/chat/completions endpoint with multipart-image content.
-    #
-    # OPERATOR ACTION REQUIRED (model pull — NOT pip install):
-    #   The Qwen2.5-VL model weights must be loaded into the LLM backend before
-    #   the /pdf/summarize_section endpoint returns anything other than 503.
-    #   Model weights are Apache 2.0 — fully permissive per §04p license posture.
-    #
-    #   Ollama (dev):
-    #     ollama pull qwen2.5-vl:7b      # ~5 GB on disk, 8 GB VRAM minimum
-    #     # or for higher quality (Milestone 2 benchmark candidate):
-    #     ollama pull qwen2.5-vl:72b     # ~42 GB on disk, 80 GB VRAM
-    #
-    #   vLLM (prod):
-    #     python -m vllm.entrypoints.openai.api_server \
-    #       --model Qwen/Qwen2.5-VL-7B-Instruct \
-    #       --max-model-len 32768
-    #
-    #   Configure via .env:
-    #     PDF_VL_MODEL_ID=qwen2.5-vl:7b
-    #     PDF_VL_BACKEND=ollama           # or "vllm" / "anthropic"
-    #     PDF_VL_BACKEND_URL=http://ollama:11434/v1
-    #     PDF_VL_TIMEOUT_S=120
-    #     PDF_VL_MAX_PAGES=4
+    # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6): no Python
+    # deps beyond httpx / asyncpg / pydantic. It needs an OpenAI-compatible
+    # VL backend (PDF_VL_BACKEND_URL); none is deployed (the vllm compose
+    # service was removed 2026-07-30), so it is dormant.
 
     # Doc-phase 122-fix — explicit deps that were missing from HEAD's
     # pyproject but are required by app.hatchet_workflows / app.routers /
@@ -298,8 +276,7 @@ dependencies = [
     "pypdf>=6.14.2,<7",
     # Phase 5 (2026-05-22) — used by the parse-subprocess memory guard
     # in ingest_pdf.py. Pre-fork RAM check prevents OOM when running
-    # multiple concurrent PDF parses on the ingestion worker. Already
-    # transitively present via dagster; this is the explicit pin.
+    # multiple concurrent PDF parses on the ingestion worker. This is the explicit pin.
     "psutil>=7.0",
     # GHSA-xgmm-8j9v-c9wx: mixed-family JWK/HMAC confusion fixed in 2.13.
     # GeoRAG already pins HS256 at every decode call, but the patched floor
@@ -308,7 +285,7 @@ dependencies = [
 
     # Master-plan §5 (doc-phase 71) — spatial pipeline + drillhole visuals.
     # geopandas + rasterio bring GeoJSON/GeoTIFF read/write + CRS reprojection
-    # into the FastAPI ingestion path (already in src/dagster/pyproject.toml).
+    # into the FastAPI ingestion path (also declared by georag-geoparsers).
     # mplstereonet renders stereonets for §5.8 structure visualizations.
     # matplotlib itself is a hard dep of the static-PNG renderers
     # (cross_section.py, stereonet.py, strip_log.py — Report Builder PDF
@@ -352,8 +329,7 @@ dependencies = [
     # `lasio` reads LAS 1.2 / 2.0 / 3.0 well-log files. Used by the
     # Phase B Cameco e-log + WSGS historical archive ingest pipeline
     # (uranium_logs_all.zip). Pure-Python, no system deps.
-    # Mirrors the dagster service's lasio>=0.31 pin so cross-service
-    # parsing is consistent.
+    # Same lasio>=0.31 floor as georag-geoparsers, so parsing stays consistent.
     "lasio>=0.31",
 
     # Master-plan §12 (doc-phase 122) — XGBoost + source trust + advanced learning.
@@ -364,7 +340,7 @@ dependencies = [
     # 2026-08-19: split to the CPU-only distribution on linux. Plain
     # `xgboost` declares nvidia-nccl-cu13 (288 MB of multi-GPU collective
     # comms) as a hard linux dependency for its GPU tree method, which no
-    # deployment uses -- nothing in the Azure stack has a GPU and the
+    # deployment uses -- no deployment (ECS Fargate, compose CPU sidecars) has a GPU and the
     # scoring paths in services/target_scoring_ml/ are CPU inference.
     # `xgboost-cpu` is the upstream project's own CPU-only build: same
     # `xgboost` module, same 3.4.1 version, no CUDA dependencies. It only
@@ -494,14 +470,14 @@ ignore = ["E501", "E701", "E731", "B008", "B904", "B017", "B023", "SIM102", "SIM
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
-    "integration: requires the live Docker Compose stack (fastapi, postgresql, ollama)",
+    "integration: requires the live Docker Compose stack (fastapi, postgresql, qdrant, redis)",
     "golden: golden query set — failure blocks milestone acceptance",
     "hallucination: adversarial queries that must be refused",
-    # live: requires a live LLM (Ollama/vLLM). Superset of integration.
+    # live: requires a live LLM backend. Superset of integration.
     # Used to partition tests that would time-out on GitHub-hosted runners
     # even with the full Docker stack running (15+ GB model download).
     # Chunk 10.2 will wire a self-hosted runner or staging URL for these.
-    "live: requires Ollama/vLLM running with a loaded model — not run in CI",
+    "live: requires a live LLM backend (Cohere / vLLM / Bedrock) — not run in CI",
     # chaos / resilience marker. No test carries it since 2026-09-07, when
     # chaos.yml and its one test were deleted; the marker stays registered so
     # --strict-markers does not reject a re-introduced chaos test.
@@ -657,12 +633,10 @@ module = [
     "app.hatchet_workflows.train_source_trust",
     "app.hatchet_workflows.workspace_export",
     "app.middleware",
-    "app.routers.assessment_summary",
     "app.routers.audit_findings",
     "app.routers.evidence",
     "app.routers.interpretation",
     "app.routers.shadow_trigger",
-    "app.services.answer_run_store",
     "app.services.assessment_summarizer",
     "app.services.bronze_store",
     "app.services.decision_intelligence.recorder",

@@ -101,27 +101,6 @@ PROMPT_TOTAL_TOKENS = Counter(
 )
 
 # ---------------------------------------------------------------------------
-# R9 classifier escalation — the signal the whole dashboard was built for.
-# ---------------------------------------------------------------------------
-
-ESCALATION_TRIGGERED = Counter(
-    "georag_escalation_triggered_total",
-    "Queries where classifier_fallback + all_tools_empty fired.",
-    labelnames=("reason",),
-)
-
-ESCALATION_REPHRASED = Counter(
-    "georag_escalation_rephrasings_total",
-    "LLM-generated rephrasings produced for a single query.",
-)
-
-ESCALATION_OUTCOME = Counter(
-    "georag_escalation_outcome_total",
-    "Did the rephrasing retry rescue the query? success = non-empty chunks.",
-    labelnames=("outcome",),   # "success" | "empty" | "error"
-)
-
-# ---------------------------------------------------------------------------
 # B4/B5 retrieval quality — chunks returned per query after gating.
 # ---------------------------------------------------------------------------
 
@@ -315,28 +294,6 @@ HALLUCINATION_GUARD_FIRES = Counter(
     labelnames=("layer", "outcome"),
 )
 
-# Orphan-span tracking. Bumped on every answer_runs row where
-# orphan_span_count > 0 at lifecycle commit time.
-ANSWER_RUNS_WITH_ORPHAN = Counter(
-    "georag_answer_runs_with_orphan_total",
-    "answer_runs where orphan_span_count > 0 at commit/reject time.",
-)
-
-# Total answer_runs (denominator for OrphanSpanRateHigh alert).
-ANSWER_RUNS_TOTAL = Counter(
-    "georag_answer_runs_total",
-    "answer_runs persisted, regardless of lifecycle state.",
-    labelnames=("lifecycle",),  # draft|generated|validated|committed|rejected
-)
-
-# Committed-without-guard-results — the HallucinationGuardBypassed alert
-# uses the ratio of this to ANSWER_RUNS_TOTAL{lifecycle="committed"}.
-ANSWER_RUNS_COMMITTED_GUARD_STATUS = Counter(
-    "georag_answer_runs_committed_total",
-    "Committed answer_runs, split by whether guard_results JSONB is present.",
-    labelnames=("guard_results",),  # "present" | "absent"
-)
-
 
 # ---------------------------------------------------------------------------
 # Phase 6 — Ingestion reliability metrics.
@@ -430,15 +387,6 @@ WORKSPACE_DATA_UPDATED_EMISSION_LATENCY = Histogram(
     "Wall-clock seconds from terminal-state ingest completion to "
     "workspace.data_updated broadcast dispatch.",
     buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600),
-)
-
-# /v1/viz/readiness probe response time, split by whether the probe was
-# workspace-scoped (real backing data) or unscoped (empty-state path).
-READINESS_PROBE_DURATION = Histogram(
-    "georag_readiness_probe_duration_seconds",
-    "Latency of the visualization readiness probe served by /v1/viz/readiness.",
-    labelnames=("workspace_scoped",),  # "true" | "false"
-    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
 )
 
 # ---------------------------------------------------------------------------

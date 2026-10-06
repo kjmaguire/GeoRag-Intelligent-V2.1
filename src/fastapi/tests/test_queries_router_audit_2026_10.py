@@ -44,6 +44,11 @@ class _Conn:
     def transaction(self) -> _Txn:
         return _Txn()
 
+    def is_in_transaction(self) -> bool:
+        # bind_workspace_scope refuses SET LOCAL outside a transaction; the
+        # handler only calls it inside `conn.transaction()`.
+        return True
+
     async def execute(self, sql: str, *a: Any) -> None:
         self.executed.append(sql)
 

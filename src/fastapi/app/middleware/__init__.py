@@ -15,13 +15,13 @@ regardless of which form Python resolves ``app.middleware`` to.
 # Re-export HTTP middleware classes from the sibling module so that
 # ``from app.middleware import BodySizeLimitMiddleware`` continues to work
 # now that this package directory takes precedence over middleware.py.
-import importlib as _importlib
+import importlib.util as _importlib_util
 import pathlib as _pathlib
 import types as _types
 
 _middleware_py = _pathlib.Path(__file__).parent.parent / "middleware.py"
-_spec = _importlib.util.spec_from_file_location("app._middleware_impl", _middleware_py)
-_mod: _types.ModuleType = _importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+_spec = _importlib_util.spec_from_file_location("app._middleware_impl", _middleware_py)
+_mod: _types.ModuleType = _importlib_util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
 BodySizeLimitMiddleware = _mod.BodySizeLimitMiddleware

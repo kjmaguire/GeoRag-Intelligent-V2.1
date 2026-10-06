@@ -15,10 +15,12 @@ had already drifted four ways:
   * none of the sixty appended ``sslmode``.
 
 **The sslmode omission is not the security hole it looks like**, and it is
-worth writing that down so nobody "fixes" it twice. `georag-pg-cc` has
-``require_secure_transport = on``, so the server refuses unencrypted
-connections and asyncpg's default ``prefer`` negotiates TLS and cannot fall
-back to plaintext. And libpq/asyncpg ``sslmode=require`` does **not** verify
+worth writing that down so nobody "fixes" it twice. The server this was
+audited against (the retired Azure ``georag-pg-cc``) had
+``require_secure_transport = on``, and RDS for PostgreSQL 15+ defaults
+``rds.force_ssl = 1``, so the server refuses unencrypted connections and
+asyncpg's default ``prefer`` negotiates TLS and cannot fall back to
+plaintext. And libpq/asyncpg ``sslmode=require`` does **not** verify
 the server certificate either — only ``verify-ca`` / ``verify-full`` do — so
 the sixty hand-rolled DSNs were cryptographically identical to the one
 "correct" DSN in `main.py` against this server. Nothing was exposed.
@@ -101,7 +103,7 @@ def build_dsn(
             ``postgresql``. asyncpg accepts both.
         include_sslmode: append ``?sslmode=`` from ``POSTGRES_SSLMODE``.
             Off by default because it changes nothing against a server
-            with ``require_secure_transport = on`` and would be a
+            that enforces TLS and would be a
             behaviour change dressed as a cleanup. Turn it on deliberately
             if a deployment ever needs ``verify-full``.
 
@@ -155,8 +157,8 @@ def build_dsn(
         # environment.
         #
         # Opting in is NOT currently safe, for a reason worth stating here
-        # rather than rediscovering: Azure's built-in PgBouncer runs
-        # pool_mode=transaction, and six call sites still use
+        # rather than rediscovering: a transaction-mode PgBouncer
+        # (pool_mode=transaction) is what a pooler here would be, and six call sites still use
         # `set_config(..., false)` -- a SESSION-scoped GUC. Under
         # transaction pooling a session GUC does not reliably survive to
         # the next statement and can be observed by whoever holds that

@@ -68,7 +68,7 @@ def _laravel_base() -> str:
             "laravel_bridge: LARAVEL_INTERNAL_URL is not set; falling back to %s. "
             "Every callback into Laravel (ingestion progress, workspace-data-updated, "
             "admin surfaces, report-build progress, user inbox) will fail unless this "
-            "host resolves. In Azure Container Apps set it to http://laravel-octane-cc.",
+            "host resolves. On ECS it is the Cloud Map name of laravel-octane (deploy/aws/terraform/config.tf).",
             _DEFAULT_LARAVEL_URL,
         )
 
