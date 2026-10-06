@@ -29,7 +29,6 @@ from types import SimpleNamespace  # noqa: E402
 
 import asyncpg  # noqa: E402
 
-from app.routers.admin_tier1_misc import list_source_trust_scores  # noqa: E402
 from app.routers.citation_feedback import FeedbackRequest, post_feedback  # noqa: E402
 from app.services.source_trust.boost import (  # noqa: E402
     FEEDBACK_ANCHOR_MODEL_VERSION,
@@ -133,16 +132,28 @@ async def test_feedback_aggregates_on_one_anchor_row(workspace_id, app_pool) -> 
     assert payload["last_event"]["verdict"] == "partial"
 
 
-async def test_admin_list_counts_feedback_and_boost_ignores_anchor(workspace_id, app_pool) -> None:
+async def test_feedback_events_are_counted_and_boost_ignores_anchor(workspace_id, app_pool) -> None:
     source = str(uuid.uuid4())
     await post_feedback(_request(workspace_id, source, "wrong"))
     await post_feedback(_request(workspace_id, source, "wrong"))
 
-    listing = await list_source_trust_scores(workspace_id=uuid.UUID(workspace_id), limit=10)
-    assert [(s.source_document_id, s.feedback_event_count) for s in listing.scores] == [(source, 2)]
-
     async with app_pool.acquire() as conn, conn.transaction():
         await conn.execute("SELECT set_config('app.workspace_id', $1, true)", workspace_id)
+        # Feedback is aggregated on the source's anchor row as one
+        # citation_accuracy feature (routers/citation_feedback.py).
+        event_count = await conn.fetchval(
+            """
+            SELECT COALESCE(sum((f.payload->>'event_count')::int), 0)
+              FROM silver.source_trust_features f
+              JOIN silver.source_trust_scores a ON a.trust_score_id = f.trust_score_id
+             WHERE a.workspace_id = $1::uuid
+               AND a.source_document_id::text = $2
+               AND a.model_version = $3
+               AND f.feature_name = 'citation_accuracy'
+            """,
+            workspace_id, source, FEEDBACK_ANCHOR_MODEL_VERSION,
+        )
+        assert event_count == 2
         trust = await _trust_lookup(conn, {source}, fallback_trust=0.73)
     # The anchor's placeholder 0.5 must not be read as a score.
     assert trust == {source: 0.73}

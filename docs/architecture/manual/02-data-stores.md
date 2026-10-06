@@ -172,11 +172,11 @@ Default `search_path` for the `georag` DB is
 ### 1.6 Durability
 
 The base compose has **no WAL archiving**. The `docker/compose.wal-archiving.yml`
-overlay adds a `pg_wal_archive` volume and the `Z_activate_wal_archiving.sql`
-init hook, but its drain side depended on the backup agent deleted
-2026-08-23, and nothing invokes `docker/postgresql/backup.sh` or
-`wal-upload.sh` any more. Production durability is Azure Flexible Server's
-automated backups with 35-day point-in-time restore
+overlay, its `Z_activate_wal_archiving.sql` init hook and the
+`docker/postgresql/backup.sh` / `wal-upload.sh` scripts were deleted
+2026-10-06 (their drain side, the backup agent, went 2026-08-23). Production
+durability is RDS for PostgreSQL's automated backups with 35-day
+point-in-time restore
 ([Ch 14](14-status-matrix.md)). See §8.
 
 ---
@@ -429,7 +429,7 @@ agent went with them. What remains:
 
 | Store | Recovery story | Evidence |
 |---|---|---|
-| PostgreSQL | RDS automated backups, 35-day PITR. No repo-side dump or WAL upload runs. | [Ch 14](14-status-matrix.md); `docker/postgresql/backup.sh` and `wal-upload.sh` have no caller |
+| PostgreSQL | RDS automated backups, 35-day PITR. No repo-side dump or WAL upload runs. | [Ch 14](14-status-matrix.md); the old `docker/postgresql/backup.sh` and `wal-upload.sh` were deleted 2026-10-06 |
 | Qdrant | Derived data: reset `embedding_id` and let `embed_pending_passages` rebuild from `silver.document_passages` | `src/fastapi/scripts/reset_embeddings_for_reencode.py` |
 | Redis | AOF on an EFS volume since 2026-09-08. The Azure app had `--appendonly yes` with **no volume**, so every nightly restart dropped sessions and any queued Horizon job | `deploy/aws/terraform/services.tf`; `scripts/check_redis_manifests.py` |
 | Object storage | S3 versioning with 90-day non-current retention since 2026-09-08. On Azure it was the one irreplaceable copy: LRS only, no backup workflow, no restore procedure | `deploy/aws/terraform/`; ADR-0022 |

@@ -1156,15 +1156,14 @@ app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliabilit
 app.include_router(integrations_trigger_router.router)
 app.include_router(visualizations_router.router)  # Phase H4 §5 — strip-log / cross-section / stereonet
 app.include_router(citation_feedback_router.router)  # Phase H4 §12.8 UI — citation 👍/👎
-# UNMOUNTED 2026-10-06 (full-code review): maps (501 stub), outlier_assist (its
+# REMOVED 2026-10-06 (full-code review): maps (501 stub), outlier_assist (its
 # only caller, the Dagster outlier detector, is gone), smdi (serves a table
 # nothing refreshes since Dagster went), phase0_ops, ml_training,
 # audit_findings, what_changed and admin_tier1_misc (source-trust / export-gate
 # / load-test viewers). Each had zero callers anywhere in the repo (Laravel,
 # React, Hatchet, CI, runbooks) -- the admin pages that used them were deleted
 # in the reader-core trim -- and several run cross-workspace reads or inline ML
-# jobs behind the shared service key alone. The modules remain on disk for
-# deletion together with their tests.
+# jobs behind the shared service key alone. Modules and tests deleted.
 # tier234_router.{rec,qp,ws_members,ws_settings,audit_explorer,saved_maps,
 # alerts,phase_h4_health}_router — REMOVED 2026-07-28 (task #31). Zero
 # Laravel-side callers for any of the 8; the admin pages that reached them

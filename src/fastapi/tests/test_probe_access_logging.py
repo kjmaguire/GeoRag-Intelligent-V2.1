@@ -43,11 +43,8 @@ def _client() -> TestClient:
 
 
 def _levels_for(caplog, path: str) -> list[int]:
-    # Captured at the root, not by logger name: app/middleware/__init__.py
-    # loads app/middleware.py under the module name "app._middleware_impl"
-    # to work around the package shadowing the module, so the logger is
-    # not called what the import path suggests. Records propagate either
-    # way; naming it here would couple this test to that workaround.
+    # Captured at the root, not by logger name, so the test does not
+    # depend on which module the access log lives in.
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         _client().get(path)

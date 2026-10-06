@@ -1,40 +1,23 @@
 """FastAPI middleware sub-package.
 
-The existing HTTP middleware stack (BodySizeLimitMiddleware,
-GlobalTimeoutMiddleware, StructuredAccessLogMiddleware) lives in
-``app/middleware.py`` (singular module).  This package holds new
-async *helpers* that are called explicitly from route handlers —
-not Starlette BaseHTTPMiddleware subclasses.
+``http`` holds the HTTP middleware stack (BodySizeLimitMiddleware,
+GlobalTimeoutMiddleware, StructuredAccessLogMiddleware), re-exported here so
+``from app.middleware import BodySizeLimitMiddleware`` works. The other
+modules are async helpers called explicitly from route handlers, not
+Starlette BaseHTTPMiddleware subclasses.
 
-NOTE: Because this package directory shadows the ``app/middleware.py``
-module, we re-export the HTTP middleware classes here so that
-``from app.middleware import BodySizeLimitMiddleware`` works correctly
-regardless of which form Python resolves ``app.middleware`` to.
+(Until 2026-10-06 the stack lived in a sibling ``app/middleware.py`` that
+this package shadowed and loaded through ``importlib`` by file path.)
 """
 
-# Re-export HTTP middleware classes from the sibling module so that
-# ``from app.middleware import BodySizeLimitMiddleware`` continues to work
-# now that this package directory takes precedence over middleware.py.
-import importlib.util as _importlib_util
-import pathlib as _pathlib
-import types as _types
-
-_middleware_py = _pathlib.Path(__file__).parent.parent / "middleware.py"
-_spec = _importlib_util.spec_from_file_location("app._middleware_impl", _middleware_py)
-_mod: _types.ModuleType = _importlib_util.module_from_spec(_spec)  # type: ignore[arg-type]
-_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
-
-BodySizeLimitMiddleware = _mod.BodySizeLimitMiddleware
-GlobalTimeoutMiddleware = _mod.GlobalTimeoutMiddleware
-StructuredAccessLogMiddleware = _mod.StructuredAccessLogMiddleware
-
-# W3C Trace Context helpers (Module 10 Chunk 10.6). Still defined in the
-# sibling middleware.py and used by StructuredAccessLogMiddleware — re-export
-# them too so direct callers/tests can reach them through ``app.middleware``
-# despite the package shadowing the module.
-_is_valid_traceparent = _mod._is_valid_traceparent
-_mint_traceparent = _mod._mint_traceparent
-_PROBE_PATHS = _mod._PROBE_PATHS
+from .http import (
+    _PROBE_PATHS,
+    BodySizeLimitMiddleware,
+    GlobalTimeoutMiddleware,
+    StructuredAccessLogMiddleware,
+    _is_valid_traceparent,
+    _mint_traceparent,
+)
 
 __all__ = [
     "BodySizeLimitMiddleware",

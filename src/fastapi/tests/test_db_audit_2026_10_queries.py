@@ -10,15 +10,13 @@ bounding box can never exclude a row the exact geography test would keep.
 """
 from __future__ import annotations
 
-import math
-import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 
 from app.agent.entity_resolver import resolve_entity
-from app.services import completeness_audit, qdrant_fallback
+from app.services import qdrant_fallback
 
 WS = "11111111-1111-4111-8111-111111111111"
 
@@ -146,55 +144,3 @@ async def test_fuzzy_threshold_is_clamped_into_the_range_the_guc_accepts(given: 
     )
     set_call = next(c for c in conn.calls if "pg_trgm.similarity_threshold" in c[1])
     assert set_call[2] == (expected,)
-
-
-# ---------------------------------------------------------------------------
-# completeness_audit coords_unmappable
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("lat", [0.0, 45.0, 58.0, 70.0, 89.5, -58.0])
-async def test_bbox_prefilter_never_excludes_what_the_exact_test_keeps(lat: float) -> None:
-    coords = [{"page": 1, "lat": lat, "lon": -102.1}]
-    conn = _Conn(rows=coords, fetchval=True)
-    audit = completeness_audit.CompletenessAudit(_Pool(conn))  # type: ignore[arg-type]
-    await audit._check_coords_unmappable(project_id=uuid.uuid4(), pdf_id="pdf")
-
-    (_, sql, args) = next(c for c in conn.calls if c[0] == "fetchval")
-    assert sql.count("&& ST_MakeEnvelope(") == 2, "collars AND spatial_features are both prefiltered"
-    assert "geom_4326 && ST_MakeEnvelope(" in sql and "geom && ST_MakeEnvelope(" in sql
-    assert sql.count("ST_DWithin(") == 2, "the exact geography test stays"
-
-    _, lon, lat_arg, dlon, dlat = args
-    assert (lon, lat_arg) == (-102.1, lat)
-    # 2 km in degrees of latitude is >= 2000 / 111,694 m (the longest degree).
-    assert dlat >= 2000.0 / 111_700.0
-    # A degree of longitude is 111,320 * cos(lat) m, shortest at the box's far edge.
-    far_edge = abs(lat) + dlat
-    if far_edge >= 89.0:
-        assert dlon >= 360.0, "near the pole the longitude span is unbounded"
-    else:
-        metres_per_deg_lon = 111_320.0 * math.cos(math.radians(far_edge))
-        assert dlon * metres_per_deg_lon >= 2000.0 - 1e-6
-
-
-async def test_a_flat_003_degrees_would_have_been_too_small_at_athabasca_latitude() -> None:
-    """The reason the box is computed, not the 0.03 deg rule of thumb."""
-    metres = 0.03 * 111_320.0 * math.cos(math.radians(58.0))
-    assert metres < 2000.0
-
-    conn = _Conn(rows=[{"page": 1, "lat": 58.0, "lon": -102.1}])
-    await completeness_audit.CompletenessAudit(_Pool(conn))._check_coords_unmappable(  # type: ignore[arg-type]
-        project_id=uuid.uuid4(), pdf_id="pdf",
-    )
-    (_, _, args) = next(c for c in conn.calls if c[0] == "fetchval")
-    assert args[3] > 0.03, "the longitude half-width at 58 N must exceed 0.03 degrees"
-
-
-async def test_unmapped_coordinate_is_still_reported() -> None:
-    conn = _Conn(rows=[{"page": 4, "lat": 58.0, "lon": -102.1}], fetchval=False)
-    findings = await completeness_audit.CompletenessAudit(_Pool(conn))._check_coords_unmappable(  # type: ignore[arg-type]
-        project_id=uuid.uuid4(), pdf_id="pdf",
-    )
-    assert [f.finding_kind for f in findings] == ["coords_unmappable"]
-    assert findings[0].evidence["tolerance_m"] == 2000

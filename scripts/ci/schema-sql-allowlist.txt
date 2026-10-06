@@ -25,25 +25,13 @@ src/fastapi/app/routers/projects.py|geo.collars
 # request time; being flag-gated.
 app/Http/Controllers/OAuthIngestController.php|silver.cloud_ingest_connections
 
-# ── PG-13: unmounted 2026-09-29, module kept ───────────────────────────────
-# §04p Stage-3 cache tables were never migrated. Their endpoints
-# (/pdf/extract_text, /pdf/find_tables, /pdf/find_coordinates,
-# /completeness_audit, /assessment_summary) are unmounted and the services
-# are no longer started; re-mounting needs the tables migrated (FORCE RLS +
-# tenant_isolation) first, which is also what removes these lines.
-src/fastapi/app/services/pdf_extract.py|silver.pdf_text_blocks
-src/fastapi/app/services/pdf_extract.py|silver.pdf_table_cells
-src/fastapi/app/services/pdf_coordinates.py|silver.pdf_text_blocks
-src/fastapi/app/services/pdf_coordinates.py|silver.pdf_coordinates
-src/fastapi/app/services/completeness_audit.py|silver.pdf_text_blocks
-src/fastapi/app/services/completeness_audit.py|silver.pdf_coordinates
-src/fastapi/app/services/assessment_summarizer.py|silver.pdf_text_blocks
+# ── PG-13 ──────────────────────────────────────────────────────────────────
+# The §04p Stage-3 services that read never-migrated cache tables
+# (pdf_extract, pdf_coordinates, completeness_audit, assessment_summarizer)
+# were deleted 2026-10-06 along with review_lineage_lookup.
 # /pdf/summarize_section stays mounted; only its section_kind=layout_region
 # branch reads this never-created table (documented in routers/pdf.py).
 src/fastapi/app/services/pdf_vl.py|silver.pdf_layout_regions
-# Its only caller (tool gateway audit_provenance) was removed; the SQL
-# function it wraps was never migrated.
-src/fastapi/app/services/review_lineage_lookup.py|silver.get_review_lineage
 # Unrouted controller (no route in routes/*.php). silver.evidence_items has
 # no project_id, so its tenancy gate must be rewritten before it is routed.
 app/Http/Controllers/Api/V1/EvidenceController.php|silver.evidence_items.project_id

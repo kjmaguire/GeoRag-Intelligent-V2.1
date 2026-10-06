@@ -298,8 +298,7 @@ Postgres init runs from `docker/postgresql/init/` on a fresh data volume:
 3. `init-test-db.sh` — provisions test database.
 4. `10-phase0-extensions-and-schemas.sql` — `auto_explain`, `h3`, `h3_postgis`, `hypopg`, `pg_stat_kcache`, `pg_partman`, `pg_repack`, `pg_ivm`. Schemas: `partman`, `audit`, `usage`, `outbox`, `workflow`, `workspace`.
 5. `20-hatchet-database.sql` — creates `hatchet` role + database.
-6. `Z_activate_threadripper_tuning.sql` — Threadripper-Pro `ALTER SYSTEM SET` parallelism + I/O concurrency tunings.
-7. `Z_activate_wal_archiving.sql` — paired with `compose.wal-archiving.yml` overlay.
+(`Z_activate_threadripper_tuning.sql` and `Z_activate_wal_archiving.sql` were deleted 2026-10-06; compose `-c` flags carry the tuning.)
 
 `shared_preload_libraries='pg_stat_statements,auto_explain,pg_stat_kcache'` is mandatory at boot (compose `command:` `-c` flag). Changes require Postgres restart, not SIGHUP.
 

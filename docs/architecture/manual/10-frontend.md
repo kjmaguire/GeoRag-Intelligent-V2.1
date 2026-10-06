@@ -29,7 +29,7 @@ the 2026-09-24 chat-adjacent build — `RefusalPanel.tsx`,
 | [`resources/js/Components/Foundry/`](../../../resources/js/Components/Foundry/) | workspace-mode views (3D, section, structure), command palette, toasts |
 | [`resources/js/Components/Analytics/`](../../../resources/js/Components/Analytics/), `HoleAnalysis/`, `PublicGeoscience/` | feature component groups |
 | [`resources/js/Components/ui/`](../../../resources/js/Components/ui/) | the shadcn-style primitive set |
-| [`resources/js/Hooks/`](../../../resources/js/Hooks/) | five hooks: `useEvidenceMapPin`, `useFullscreenToggle`, `useTileInvalidation`, `useWorkspaceActivity`, `useWorkspaceDataUpdated` |
+| [`resources/js/Hooks/`](../../../resources/js/Hooks/) | four hooks: `useFullscreenToggle`, `useTileInvalidation`, `useWorkspaceActivity`, `useWorkspaceDataUpdated` (the never-wired evidence-map pin — `useEvidenceMapPin`, `lib/evidenceMapStore.ts`, `lib/spatialCitation.ts` — was deleted 2026-10-06) |
 | [`resources/js/lib/`](../../../resources/js/lib/) | map, tile, citation, upload and formatting helpers — including `echoChannel.ts`, `mvtLayers.ts`, `tileFailureWatchdog.ts` |
 | [`resources/js/Layouts/`](../../../resources/js/Layouts/), `Types/`, `test/` | shell layout, shared TS types, Vitest setup |
 

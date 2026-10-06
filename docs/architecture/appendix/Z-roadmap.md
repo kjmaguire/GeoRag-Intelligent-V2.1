@@ -88,12 +88,11 @@ verification, confidence formula, golden eval thresholds. Still owed:
 per-workspace tuning of the layer-1 threshold + the LoRA reranker bake
 pipeline.
 
-## Z.9 Knowledge graph schema — **DRAFT SHIPPED** ([Appendix H](H-knowledge-graph-schema.md))
+## Z.9 Knowledge graph schema — **WITHDRAWN**
 
-Node labels, properties, relationships, workspace fence, upsert /
-deletion / conflict rules + example Cypher per agent tool. `DrillHole`
-canonical capitalisation noted. Still owed: the nightly
-`graph_tenant_audit` verifier.
+There is no knowledge graph: Neo4j was removed 2026-07-28 (CLAUDE.md hard
+rule 9), and the Appendix H schema draft has been deleted with it. Nothing
+is owed here.
 
 ## Z.10 Threat model + security architecture — **DONE (initial cut)**
 
@@ -115,10 +114,10 @@ the chaos / failure-recovery suite implementation.
 
 ## Z.13 Deployment + operations appendix — **DRAFT SHIPPED** ([Appendix K](K-deployment-operations.md))
 
-Fresh install, prod posture, offline bundle, GPU requirements,
-.env / port / volume matrices, backup / restore / upgrade / rollback,
-scaling, sizing, RPO/RTO, incident playbooks. Still owed:
-- ACME-issued TLS verified end-to-end on a live prod stack.
+Rewritten 2026-10-06 as a pointer page: Docker Compose profiles (dev),
+AWS ECS Fargate via `deploy/aws/terraform/` (production, ADR-0022), Helm
+chart (on-prem). The compose-era install / backup / playbook detail it
+used to carry described infrastructure that no longer exists. Still owed:
 - Workspace migration (move a workspace between hosts) runbook.
 
 ## Z.14 Status markers — **DONE**
@@ -145,7 +144,7 @@ implementation work the appendices specify. Priority order:
 9. **Lower-tier frontend specs** (the pages not in Appendix I).
 10. **Chaos / failure-recovery suite** ([Appendix J §2.10](J-testing-matrix.md)).
 11. **Workspace migration runbook + ACME E2E** ([Appendix K](K-deployment-operations.md)).
-12. **Graph tenant audit verifier** ([Appendix H §6](H-knowledge-graph-schema.md#6-workspace-isolation-the-fence)).
+12. ~~Graph tenant audit verifier~~ — withdrawn: no knowledge graph exists (Neo4j removed 2026-07-28).
 13. **`silver.data_quality_flags` validation engine** — schema landed [2026_05_26_220200](../../../database/migrations/2026_05_26_220200_create_silver_data_quality_flags.php). **Partial as of Pass 4:** four DQ writers landed (`silver_assay_dq`, `silver_collar_dq`, `silver_crs_dq`, `silver_unit_consistency_dq`); broader rule engine + ingestion-readiness gate still owed.
 14. ~~Document supersession schema + Qdrant payload sync~~ — **Schema DONE 2026-05-26** ([silver.document_versions](../../../database/migrations/2026_05_26_220400_create_silver_document_versions.php)); drives Spine A §3b authority rank. Qdrant payload sync still owed.
 15. **Finish wiring structured-answer prompt** — prompt module live at [structured_answer_format.py](../../../src/fastapi/app/agent/prompts/structured_answer_format.py); confirm it has fully superseded OIUR in production. ([structured_answer_format_spec.md](../structured_answer_format_spec.md))

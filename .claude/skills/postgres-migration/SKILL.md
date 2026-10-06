@@ -6,7 +6,7 @@ metadata:
   authoritative-sources:
     - georag-architecture.html §04e (Core Data Schemas — 9 PostGIS schemas)
     - CLAUDE.md hard rules #2 (async-native drivers in FastAPI), #6 (schemas are contracts), #9 (no knowledge graph)
-    - docker/postgresql/init/Z_activate_threadripper_tuning.sql (cluster-level tuning baseline)
+    - docker-compose.yml postgresql `command:` -c flags and deploy/aws/terraform/data.tf parameter group (cluster-level tuning)
     - docs/RUNBOOK.md "PostgreSQL access control" section (when present)
   scope: Laravel-side migrations. PostGIS extension features (geometry, geography). Raw SQL files for PG-specific features Eloquent's Schema builder can't express cleanly.
   see-also:
