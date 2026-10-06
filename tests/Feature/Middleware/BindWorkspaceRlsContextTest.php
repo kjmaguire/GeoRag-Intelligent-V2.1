@@ -75,6 +75,26 @@ final class BindWorkspaceRlsContextTest extends TestCase
             ->assertJsonPath('workspace_id', 'b0000000-0000-0000-0000-0000000000ff');
     }
 
+    /**
+     * The middleware runs before the route's auth:sanctum, so a Bearer-token
+     * caller is anonymous to the default `web` guard. Without the sanctum
+     * fallback the token request bound '' (RLS disarmed on fail-open tables).
+     */
+    public function test_a_bearer_token_caller_is_bound_like_a_session_caller(): void
+    {
+        $user = User::factory()->create();
+        $project = Project::factory()->create([
+            'workspace_id' => 'b0000000-0000-0000-0000-0000000000ff',
+        ]);
+        $user->projects()->attach($project->project_id, ['role' => 'owner']);
+        $token = $user->createToken('test')->plainTextToken;
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->getJson('/_test/rls/echo')
+            ->assertOk()
+            ->assertJsonPath('workspace_id', 'b0000000-0000-0000-0000-0000000000ff');
+    }
+
     public function test_a_user_in_several_workspaces_is_bound_to_none(): void
     {
         $user = User::factory()->create();

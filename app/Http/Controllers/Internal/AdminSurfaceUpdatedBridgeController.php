@@ -11,7 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Internal — FastAPI / Dagster → Laravel bridge for admin surface push events.
+ * Internal — FastAPI / Hatchet → Laravel bridge for admin surface push events.
  *
  * Service-key auth only. Dispatches the generic
  * {@see App\Events\Admin\AdminSurfaceUpdated} event on the
@@ -21,7 +21,6 @@ use Illuminate\Support\Facades\Log;
  * Sibling endpoints:
  *   - /api/internal/v1/ingest-progress/broadcast    — workspace-scoped ingestion
  *   - /api/internal/v1/workspace-data-updated       — workspace-scoped non-ingestion
- *   - /api/internal/admin/reports/{build_id}/progress — admin per-build cockpit
  *
  * This is the catch-all admin-side bridge for the workflows that don't
  * have a domain-specific endpoint.

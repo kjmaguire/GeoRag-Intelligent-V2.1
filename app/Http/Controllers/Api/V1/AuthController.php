@@ -272,21 +272,6 @@ class AuthController extends Controller
     }
 
     /**
-     * SPA session logout — invalidates the session and rotates the CSRF token.
-     */
-    public function spaLogout(Request $request): JsonResponse
-    {
-        Auth::guard('web')->logout();
-
-        $request->session()->invalidate();
-        $request->session()->regenerateToken();
-
-        return response()->json([
-            'message' => 'Logged out.',
-        ]);
-    }
-
-    /**
      * Return the authenticated user's profile and project memberships.
      */
     public function me(Request $request): JsonResponse

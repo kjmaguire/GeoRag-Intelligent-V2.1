@@ -114,31 +114,13 @@ Broadcast::channel('project.{projectId}.ingestion', function ($user, string $pro
 });
 
 /**
- * Master-plan §3 Step 8 — Silver Review queue live broadcast
- * (doc-phase 64). Admins viewing /admin/ingestion-review subscribe
- * here; receives IngestionReviewDispositionChanged events when any
- * admin applies a disposition.
+ * Silver Review queue admin surface (`ingestion-review` on
+ * AdminSurfaceUpdated). No admin page subscribes today.
  *
  * Auth: admin Gate (users.is_admin = true) — multi-operator queue
  * coordination is an admin surface only.
  */
 Broadcast::channel('admin.ingestion-review', function ($user) {
-    return (bool) ($user->is_admin ?? false);
-});
-
-/**
- * Phase H4 §7 — real-time generate_report progress per build.
- * Channel: private-admin.reports.{build_id}
- * Auth: admin Gate only.
- */
-Broadcast::channel('admin.reports.{build_id}', function ($user, string $build_id) {
-    if (! preg_match(
-        '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i',
-        $build_id,
-    )) {
-        return false;
-    }
-
     return (bool) ($user->is_admin ?? false);
 });
 
@@ -151,9 +133,8 @@ Broadcast::channel('admin.reports.{build_id}', function ($user, string $build_id
  * the event's affected_props list. See the event class docblock for
  * the channel naming convention.
  *
- * Per-resource channel `admin.target-run.{run_id}` matches the
- * precedent set by `admin.reports.{build_id}` (cockpit-style
- * drilldown). The shared list-page channels (workflow-runs, reports,
+ * Per-resource channel `admin.target-run.{run_id}` is the cockpit-style
+ * drilldown. The shared list-page channels (workflow-runs, reports,
  * ml-training, etc.) match the `admin.ingestion-review` precedent.
  */
 $adminOnly = static fn ($user) => (bool) ($user->is_admin ?? false);

@@ -182,17 +182,6 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
-        // Phase 3 Step 7 — pgsql_activepieces connection removed. The
-        // Kestra logical DB + role were dropped via
-        // database/raw/phase3/90-activepieces-sunset.sql.
-
-        // Phase 3 Step 6 — pgsql_kestra connection REMOVED 2026-07-28 (A7).
-        // It read Kestra's own Postgres database to surface flow listings on
-        // /admin/integrations, which no longer exists (Integrations.tsx was
-        // deleted in the reader-core trim; the dead index() method that used
-        // this connection was removed alongside it). Kestra itself was never
-        // deployed. See database/raw/phase3/95-kestra-sunset.sql.
-
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),
