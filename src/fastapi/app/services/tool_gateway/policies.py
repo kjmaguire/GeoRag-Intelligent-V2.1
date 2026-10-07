@@ -26,11 +26,6 @@ class RiskTier(StrEnum):
     def requires_approval(self) -> bool:
         return self in {RiskTier.R4, RiskTier.R5}
 
-    @property
-    def requires_qp_signoff(self) -> bool:
-        return self == RiskTier.R5
-
-
 async def resolve_effective_tier(
     conn: asyncpg.Connection,
     *,

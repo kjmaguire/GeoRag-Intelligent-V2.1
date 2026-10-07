@@ -174,16 +174,6 @@ def _query_hash(text: str) -> str:
     return hashlib.sha1((text or "").strip().lower().encode("utf-8")).hexdigest()[:16]
 
 
-def _strip_nul(s: str | None) -> str:
-    """PDF parser sometimes leaves U+0000 in silver.document_passages.text.
-    Postgres TEXT permits it but asyncpg's wire codec rejects it
-    (ProgramLimitExceededError: 'null character not permitted'). Strip
-    in Python after fetch — cheapest place to do it."""
-    if s is None:
-        return ""
-    return s.replace("\x00", "")
-
-
 def _split_assignment(
     run_ids: list[str],
     seed: int,
@@ -207,15 +197,6 @@ def _split_assignment(
         else:
             out[rid] = "train"
     return out
-
-
-async def _load_golden_query_hashes(conn) -> set[str]:
-    try:
-        rows = await conn.fetch(_GOLDEN_QUERY_HASHES_SQL)
-        return {_query_hash(r["query_text"]) for r in rows if r["query_text"]}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("could not load eval.golden_questions hashes (%s) — bench-leak protection disabled", exc)
-        return set()
 
 
 def main_sync(args):

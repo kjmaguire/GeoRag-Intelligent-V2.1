@@ -79,11 +79,6 @@ class EventStamper:
         self._seq += 1
         return self._seq, str(uuid4())
 
-    @property
-    def current_seq(self) -> int:
-        """The last emitted event_seq (0 if no events emitted yet)."""
-        return self._seq
-
     async def push_to_redis(
         self,
         redis: Any,

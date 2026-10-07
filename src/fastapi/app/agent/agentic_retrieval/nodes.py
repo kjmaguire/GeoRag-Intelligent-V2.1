@@ -1359,7 +1359,7 @@ def _build_context_blocks(
             # Structured results (collars / samples / overview / ...) — one
             # header-first block per tool result. Sourced from our own
             # PostGIS tables, not externally-authored free text, so
-            # (matching _build_context) these are NOT fenced.
+            # (matching the retired _build_context) these are NOT fenced.
             cid = bundle[0] if bundle else "[DATA-0]"
             blocks.append(_ContextBlock(
                 ti, 0, "structured", 0.0,
@@ -1486,9 +1486,9 @@ def _render_tool_results_context(
     Prompt-injection fencing (RAG-safety audit 2026-08-15): this is the
     ONLY renderer on the live agentic-retrieval path (assemble_node calls
     it whenever ``CONTEXT_PREP_ENABLED`` is off, which is the default) —
-    ``app.agent.context_builder._build_context`` implements the same
-    fencing but is dead code (confirmed zero call sites outside the
-    retired legacy orchestrator's re-export and tests). Reusing its
+    the retired legacy renderer (``_build_context``, removed 2026-10-07)
+    applied the same fencing. Reusing the helpers in
+    ``app.agent.context_builder``
     ``_fence_untrusted``/``_UNTRUSTED_GUARD`` here, gated by the SAME
     ``settings.PROMPT_INJECTION_DELIMITING_ENABLED`` flag (default True
     since 2026-08-21; it was False for the first eight weeks, and live
@@ -1497,7 +1497,7 @@ def _render_tool_results_context(
     just the abandoned one. Fencing is applied to the two
     externally-sourced free-text surfaces the model sees — retrieved
     document-chunk text and public-geoscience record dumps — mirroring
-    exactly what ``_build_context`` fences (structured PostGIS/
+    exactly what the retired ``_build_context`` fenced (structured PostGIS/
     collar blocks stay unfenced, same as there).
 
 

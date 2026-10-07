@@ -583,11 +583,10 @@ async def _build_project_preamble(
 # docs/master_plan_orchestrator_refactor.md.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Phase F.11 — _build_context extracted to a sibling module. Re-exported
-# here for backward compatibility (e.g. test_context_packing imports it
-# from orchestrator). See docs/master_plan_orchestrator_refactor.md.
+# Phase F.11 — tool-result helpers extracted to a sibling module. Re-exported
+# here for backward compatibility (e.g. test_retrieval_precision imports
+# _mmr_select_chunks from orchestrator). See docs/master_plan_orchestrator_refactor.md.
 # ---------------------------------------------------------------------------
-from app.agent.context_builder import _build_context  # noqa: E402, F401
 from app.agent.tool_result_helpers import (  # noqa: E402, F401
     _build_collar_aggregates,  # noqa: F401
     _is_empty_tool_result,

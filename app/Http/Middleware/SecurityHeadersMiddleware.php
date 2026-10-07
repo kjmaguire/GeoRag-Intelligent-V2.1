@@ -211,7 +211,7 @@ final class SecurityHeadersMiddleware
             "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
             // Tailwind + shadcn require inline styles; fonts.bunny.net
             // hosts the Figtree + Instrument Sans webfonts referenced
-            // by app.blade.php / welcome.blade.php.
+            // by app.blade.php.
             "style-src 'self' 'unsafe-inline' https://fonts.bunny.net",
             // Raster tiles (MapLibre) + plot images can come from any HTTPS
             // source; data: URIs are used for inline SVGs.

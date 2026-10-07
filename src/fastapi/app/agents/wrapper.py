@@ -255,30 +255,6 @@ async def _idempotency_store(
     )
 
 
-async def _record_dry_run(
-    ctx: AgentContext,
-    target: str,
-    payload: dict[str, Any],
-) -> None:
-    """Helper exposed via ctx-bound shim — not called directly here. The
-    wrapper publishes ctx.dry_run; agents whose side-effect adapters detect it
-    should call this function instead of executing.
-    """
-    rt = get_runtime()
-    await rt.pg_pool.execute(
-        """
-        INSERT INTO workspace.dry_run_outputs
-            (invocation_id, workspace_id, agent_name, target, payload)
-        VALUES ($1, $2, $3, $4, $5::jsonb)
-        """,
-        str(ctx.invocation_id),
-        str(ctx.workspace_id),
-        ctx.agent_name,
-        target,
-        json.dumps(payload, default=str),
-    )
-
-
 # Process-local cache for Langfuse SDK presence. None = not yet probed.
 # False = SDK unavailable or unconfigured (skip fast). True = ready.
 _LANGFUSE_READY: bool | None = None
