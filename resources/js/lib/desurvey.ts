@@ -309,6 +309,8 @@ export interface CollarForDesurvey {
     easting: number | null;
     northing: number | null;
     elevation?: number | null;
+    /** 'terrain': `elevation` is a terrain-model ground height, not a surveyed RL. */
+    elevation_source?: 'file' | 'terrain' | null;
     azimuth?: number | null;
     dip?: number | null;
     total_depth?: number | null;
@@ -319,6 +321,8 @@ export interface PlacedHole extends DesurveyedHole {
     /** Absolute collar position: easting, northing, elevation (0 when unknown). */
     origin: { x: number; y: number; z: number };
     elevationKnown: boolean;
+    /** The z is a terrain-model height (a surface model: it reads canopy in forest). */
+    elevationFromTerrain: boolean;
 }
 
 /**
@@ -349,6 +353,7 @@ export function desurveyCollars(
             collar_id: c.collar_id,
             origin: { x: c.easting, y: c.northing, z: c.elevation ?? 0 },
             elevationKnown: c.elevation != null,
+            elevationFromTerrain: c.elevation != null && c.elevation_source === 'terrain',
         });
     }
     return out;
@@ -414,6 +419,7 @@ export interface Scene3D {
     fullPath(collarId: string): XYZArrays | null;
     caption: string;
     elevationKnownForAll: boolean;
+    elevationFromTerrainAny: boolean;
 }
 
 export function buildScene3D(
@@ -466,12 +472,18 @@ export function buildScene3D(
         },
         caption: describeDesurvey(holes.values()),
         elevationKnownForAll: Array.from(holes.values()).every((h) => h.elevationKnown),
+        elevationFromTerrainAny: Array.from(holes.values()).some((h) => h.elevationFromTerrain),
     };
 }
 
 /** z-axis title for a Scene3D. */
-export function sceneZAxisTitle(scene: Pick<Scene3D, 'elevationKnownForAll'>): string {
-    return scene.elevationKnownForAll ? 'Elevation (m)' : 'Elevation (m · collars without one at 0)';
+export function sceneZAxisTitle(
+    scene: Pick<Scene3D, 'elevationKnownForAll'> & Partial<Pick<Scene3D, 'elevationFromTerrainAny'>>,
+): string {
+    const notes: string[] = [];
+    if (scene.elevationFromTerrainAny) notes.push('some from terrain model');
+    if (!scene.elevationKnownForAll) notes.push('collars without one at 0');
+    return notes.length ? `Elevation (m · ${notes.join(' · ')})` : 'Elevation (m)';
 }
 
 /**

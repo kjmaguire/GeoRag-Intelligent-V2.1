@@ -111,3 +111,8 @@ tests/test_sme_schema_decisions_integration.py
 # Planner SQL is built at runtime from SPATIAL_TARGETS, so only a PREPARE
 # against a migrated database can check its column names.
 tests/test_spatial_plans_prepare_integration.py
+
+# ── Terrain elevation for collars (2026-10-06): the promote step's real SQL ──
+# The unit tests drive it through a scripted connection, so only this file
+# executes the stale-clearing, unnest UPDATE and datum-withdrawal statements.
+tests/test_dem_elevation_pg.py

@@ -17,14 +17,35 @@ export interface WorkspaceTruncation {
     interval_holes: CountLimit;
     /** Sent in the deferred 3D group since FE-11; absent until it loads. */
     survey_holes_downsampled?: number;
-    /**
-     * Holes whose file had no elevation, drawn at the terrain model's ground
-     * height (silver.collars.elevation_dem_m) instead of z = 0.
-     */
-    terrain_elevation_holes?: number;
 }
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
+
+/** Terrain model behind `silver.collars.elevation_dem_source`, and the credit its licence requires. */
+const COPERNICUS_GLO30 =
+    'Copernicus DEM GLO-30 (30 m), produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved';
+
+interface CollarElevationSource {
+    elevation_source?: 'file' | 'terrain' | null;
+    elevation_dem_source?: string | null;
+}
+
+/**
+ * Notice for holes drawn at a terrain-model height because their file had no
+ * elevation, naming the model that was actually used (and crediting it where
+ * its licence asks). Null when no hole is. Independent of the truncation prop:
+ * it must show even when that prop is absent.
+ */
+export function describeTerrainElevation(collars: readonly CollarElevationSource[]): string | null {
+    const terrain = collars.filter((c) => c.elevation_source === 'terrain');
+    if (terrain.length === 0) return null;
+    const sources = new Set(terrain.map((c) => c.elevation_dem_source ?? ''));
+    const model = Array.from(sources)
+        .map((s) => (s === 'copernicus_glo30' ? COPERNICUS_GLO30 : s ? `terrain model "${s}"` : 'a terrain model'))
+        .join('; ');
+    const n = terrain.length;
+    return `${fmt(n)} ${n === 1 ? 'hole has' : 'holes have'} no elevation in the file and ${n === 1 ? 'is' : 'are'} drawn at ground height from ${model}. A surface model: under forest it reads the canopy, not bare ground.`;
+}
 
 /**
  * Notices to show when the server capped what it sent. Empty when nothing was
@@ -42,12 +63,6 @@ export function describeTruncation(t: WorkspaceTruncation | null | undefined): s
     if ((t.survey_holes_downsampled ?? 0) > 0) {
         notices.push(
             `Survey stations thinned for ${fmt(t.survey_holes_downsampled ?? 0)} holes (first and last kept).`,
-        );
-    }
-    if ((t.terrain_elevation_holes ?? 0) > 0) {
-        const n = t.terrain_elevation_holes ?? 0;
-        notices.push(
-            `${fmt(n)} ${n === 1 ? 'hole has' : 'holes have'} no elevation in the file; drawn at terrain-model ground height (Copernicus 30 m).`,
         );
     }
     return notices;

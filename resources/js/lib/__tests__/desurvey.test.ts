@@ -6,6 +6,8 @@ import {
     desurveyCollars,
     desurveyHole,
     positionAtDepth,
+    buildScene3D,
+    sceneZAxisTitle,
     worldAtDepth,
     worldPathBetween,
 } from '@/lib/desurvey';
@@ -172,5 +174,37 @@ describe('placed holes (FE-9)', () => {
         const holes = desurveyCollars(collars, [], deepest);
         expect(holes.get('a')!.maxDepth).toBe(480);
         expect(describeDesurvey(holes.values())).toContain('1 unsurveyed');
+    });
+});
+
+describe('z-axis title and terrain heights', () => {
+    const base = { easting: 500000, northing: 6000000, azimuth: 0, dip: -90, total_depth: 50 };
+
+    it('plain title when every elevation is a surveyed one', () => {
+        const scene = buildScene3D([{ collar_id: 'a', ...base, elevation: 400, elevation_source: 'file' }], []);
+        expect(sceneZAxisTitle(scene)).toBe('Elevation (m)');
+    });
+
+    it('says so when some heights come from the terrain model, not a survey', () => {
+        const scene = buildScene3D(
+            [
+                { collar_id: 'a', ...base, elevation: 400, elevation_source: 'file' },
+                { collar_id: 'b', ...base, elevation: 53.5, elevation_source: 'terrain' },
+            ],
+            [],
+        );
+        expect(scene.holes.get('b')!.origin.z).toBe(53.5);
+        expect(sceneZAxisTitle(scene)).toBe('Elevation (m · some from terrain model)');
+    });
+
+    it('lists both caveats when terrain heights and missing elevations mix', () => {
+        const scene = buildScene3D(
+            [
+                { collar_id: 'b', ...base, elevation: 53.5, elevation_source: 'terrain' },
+                { collar_id: 'c', ...base, elevation: null },
+            ],
+            [],
+        );
+        expect(sceneZAxisTitle(scene)).toBe('Elevation (m · some from terrain model · collars without one at 0)');
     });
 });

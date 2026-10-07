@@ -28,7 +28,7 @@ import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/Compa
 import { SectionView } from '@/Components/Foundry/SectionView';
 import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
 import { LogCurveToggles, type AvailableLogCurve } from '@/Components/Foundry/LogCurveToggles';
-import { describeTruncation, type WorkspaceTruncation } from '@/lib/workspaceLimits';
+import { describeTerrainElevation, describeTruncation, type WorkspaceTruncation } from '@/lib/workspaceLimits';
 import { useFullscreenToggle } from '@/Hooks/useFullscreenToggle';
 import { structurePoles, structureStrikes } from '@/lib/structureProjection';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
@@ -66,6 +66,8 @@ interface Collar {
     elevation?: number | null;
     /** 'terrain' = no elevation in the file; `elevation` is the terrain model's. */
     elevation_source?: 'file' | 'terrain' | null;
+    /** The terrain model that gave `elevation` when `elevation_source` is 'terrain'. */
+    elevation_dem_source?: string | null;
     hole_type?: string | null;
     status?: string | null;
 }
@@ -551,16 +553,13 @@ export default function FoundryWorkspace({
         }
     }
 
-    const terrainElevationHoles = collars.filter((c) => c.elevation_source === 'terrain').length;
-    const truncationNotices = describeTruncation(
-        truncation
-            ? {
-                  ...truncation,
-                  survey_holes_downsampled: survey_holes_downsampled ?? 0,
-                  terrain_elevation_holes: terrainElevationHoles,
-              }
-            : truncation,
-    );
+    const terrainNotice = describeTerrainElevation(collars);
+    const truncationNotices = [
+        ...describeTruncation(
+            truncation ? { ...truncation, survey_holes_downsampled: survey_holes_downsampled ?? 0 } : truncation,
+        ),
+        ...(terrainNotice ? [terrainNotice] : []),
+    ];
 
     // FE-3: the canvas is shown when the project has ANY map data. It used to
     // be gated on collars alone, so a delivery of shapefiles / geochem /
