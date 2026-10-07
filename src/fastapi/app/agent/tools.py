@@ -61,6 +61,7 @@ from pydantic_ai import RunContext
 from app.agent.deps import AgentDeps
 from app.agent.log_safe import query_hash
 from app.config import settings
+from app.services.dem_elevation import EFFECTIVE_ELEVATION_SQL
 from app.services.reranker import RERANKER_BACKEND
 
 
@@ -4309,13 +4310,13 @@ async def query_drill_traces_3d(
     # z) tuples by extracting the underlying coordinates as text. We then
     # parse client-side rather than calling ST_DumpPoints to avoid a
     # second round-trip per collar.
-    collar_sql = """
+    collar_sql = f"""
         SELECT
             c.collar_id::text                                   AS collar_id,
             c.hole_id                                           AS hole_id,
             c.hole_type                                         AS hole_type,
             c.status                                            AS status,
-            COALESCE(c.elevation, 0.0)::float                   AS elevation,
+            COALESCE({EFFECTIVE_ELEVATION_SQL}, 0.0)::float AS elevation,
             c.total_depth::float                                AS total_depth,
             COALESCE(c.azimuth, 0.0)::float                     AS azimuth,
             COALESCE(c.dip, -90.0)::float                       AS dip,

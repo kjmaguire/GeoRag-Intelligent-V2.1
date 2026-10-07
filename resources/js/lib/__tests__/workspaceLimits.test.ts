@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { describeTruncation, toggleCurveSelection, type WorkspaceTruncation } from '../workspaceLimits';
+import {
+    describeTerrainElevation,
+    describeTruncation,
+    toggleCurveSelection,
+    type WorkspaceTruncation,
+} from '../workspaceLimits';
 
 const none: WorkspaceTruncation = {
     collars: { shown: 2, total: 2, truncated: false },
@@ -38,13 +43,35 @@ describe('describeTruncation', () => {
             'Survey stations thinned for 3 holes (first and last kept).',
         ]);
     });
+});
 
-    it('says when holes are drawn at terrain-model height', () => {
-        expect(describeTruncation({ ...none, terrain_elevation_holes: 5 })).toEqual([
-            '5 holes have no elevation in the file; drawn at terrain-model ground height (Copernicus 30 m).',
-        ]);
-        expect(describeTruncation({ ...none, terrain_elevation_holes: 1 })[0]).toMatch(/^1 hole has /);
-        expect(describeTruncation({ ...none, terrain_elevation_holes: 0 })).toEqual([]);
+describe('describeTerrainElevation', () => {
+    const terrain = (source: string | null) => ({ elevation_source: 'terrain' as const, elevation_dem_source: source });
+
+    it('is null when no hole is drawn at a terrain height', () => {
+        expect(describeTerrainElevation([])).toBeNull();
+        expect(describeTerrainElevation([{ elevation_source: 'file' }, { elevation_source: null }])).toBeNull();
+    });
+
+    it('names and credits Copernicus when that is the model', () => {
+        const text = describeTerrainElevation([terrain('copernicus_glo30'), terrain('copernicus_glo30')]);
+        expect(text).toMatch(
+            /^2 holes have no elevation in the file and are drawn at ground height from Copernicus DEM GLO-30/,
+        );
+        expect(text).toContain('© DLR e.V. 2010-2014');
+        expect(text).toContain('canopy');
+    });
+
+    it('names a different model by its label instead of claiming Copernicus', () => {
+        const text = describeTerrainElevation([terrain('my_lidar')]);
+        expect(text).toMatch(
+            /^1 hole has no elevation in the file and is drawn at ground height from terrain model "my_lidar"/,
+        );
+        expect(text).not.toContain('Copernicus');
+    });
+
+    it('still reports holes whose model label is missing', () => {
+        expect(describeTerrainElevation([terrain(null)])).toContain('a terrain model');
     });
 });
 

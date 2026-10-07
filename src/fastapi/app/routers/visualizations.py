@@ -30,6 +30,7 @@ from app.db.scoped_pool import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.auth import verify_service_key
 from app.services.collar_depth import EFFECTIVE_TOTAL_DEPTH_SQL
+from app.services.dem_elevation import EFFECTIVE_ELEVATION_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ async def _fetch_long_section_collars(
         rows = await conn.fetch(
             f"""
             WITH c AS (
-                SELECT c.hole_id, c.geom_4326, c.elevation,
+                SELECT c.hole_id, c.geom_4326, {EFFECTIVE_ELEVATION_SQL} AS elevation,
                        {EFFECTIVE_TOTAL_DEPTH_SQL} AS total_depth,
                        c.azimuth, c.dip
                   FROM silver.collars c

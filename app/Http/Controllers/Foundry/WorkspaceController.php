@@ -55,6 +55,14 @@ class WorkspaceController extends Controller
      */
     private const MAX_WORKSPACE_COLLARS = 1000;
 
+    /**
+     * True for a collar whose terrain lookup was made at its present position
+     * (silver.collars.elevation_dem_geom still equals geom_4326). A collar that
+     * has moved since keeps an old elevation_dem_m until the next promotion
+     * looks it up again; that value must not be served meanwhile.
+     */
+    private const TERRAIN_LOOKUP_CURRENT = 'elevation_dem_geom IS NOT NULL AND ST_Equals(elevation_dem_geom, geom_4326)';
+
     private const MAX_INTERVAL_HOLES = 200;
 
     private const MAX_INTERVAL_BANDS_PER_HOLE = 80;
@@ -116,7 +124,9 @@ class WorkspaceController extends Controller
                 // when the file had none (silver.collars.elevation_dem_m,
                 // written by promote_silver_to_gold) so a hole is not drawn
                 // at sea level; `elevation_from_terrain` says which it is.
-                ->selectRaw('collar_id, hole_id, hole_id_canonical, easting, northing, total_depth, ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat, spatial_uncertainty_m, crs_confidence, georef_method, azimuth, dip, COALESCE(elevation, elevation_dem_m) AS elevation, (elevation IS NULL AND elevation_dem_m IS NOT NULL) AS elevation_from_terrain, hole_type, status')
+                // Only a lookup made at the collar's present position counts:
+                // one that predates a move is stale and not served.
+                ->selectRaw('collar_id, hole_id, hole_id_canonical, easting, northing, total_depth, ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat, spatial_uncertainty_m, crs_confidence, georef_method, azimuth, dip, COALESCE(elevation, CASE WHEN '.self::TERRAIN_LOOKUP_CURRENT.' THEN elevation_dem_m END) AS elevation, (elevation IS NULL AND elevation_dem_m IS NOT NULL AND '.self::TERRAIN_LOOKUP_CURRENT.') AS elevation_from_terrain, elevation_dem_source, hole_type, status')
                 ->orderBy('hole_id')
                 ->orderBy('collar_id')
                 ->limit(self::MAX_WORKSPACE_COLLARS)
@@ -695,6 +705,11 @@ class WorkspaceController extends Controller
                         'elevation' => isset($c->elevation) ? (float) $c->elevation : null,
                         'elevation_source' => isset($c->elevation)
                             ? ((bool) ($c->elevation_from_terrain ?? false) ? 'terrain' : 'file')
+                            : null,
+                        // Which terrain model gave the height (COLLAR_DEM_SOURCE),
+                        // so the UI can name and credit it; null for a file elevation.
+                        'elevation_dem_source' => isset($c->elevation) && (bool) ($c->elevation_from_terrain ?? false)
+                            ? ($c->elevation_dem_source ?? null)
                             : null,
                         'hole_type' => $c->hole_type ?? null,
                         'status' => $c->status ?? null,

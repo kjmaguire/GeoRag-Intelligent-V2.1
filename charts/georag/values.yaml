@@ -173,6 +173,9 @@ ocr:
 # egress. An AIR-GAPPED site sets "" to turn the lookup off
 # (values-airgap.yaml does) or points it at a local mirror; `{tile}` is the
 # Copernicus tile name. See src/fastapi/app/services/dem_elevation.py.
+# Privacy: the bucket operator can see which 1-degree tile and which ~28 km
+# blocks of it were read (an approximate collar location, never a coordinate,
+# hole id or project). Set "" or mirror the tiles for a client who needs more.
 # ─────────────────────────────────────────────────────────────────────
 terrain:
   demUrlTemplate: "https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif"

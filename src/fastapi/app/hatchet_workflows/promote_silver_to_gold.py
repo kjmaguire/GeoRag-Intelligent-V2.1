@@ -709,18 +709,41 @@ ON CONFLICT (collar_id) DO UPDATE SET
 #: execution timeout on one; the remainder is logged, not dropped.
 _TERRAIN_LOOKUP_CAP = 20000
 
-#: Lookup targets: no file elevation, a position, and no current lookup —
-#: never looked up, looked up with another model, or looked up at a position
-#: the collar has since moved away from.
+#: A lookup that no longer describes the collar — made with another model, or
+#: at a position the collar has since moved away from — is cleared before
+#: anything is selected or read, so no reader (EFFECTIVE_ELEVATION_SQL checks
+#: the position too) and no later step treats it as current.
+_TERRAIN_CLEAR_STALE = """
+UPDATE silver.collars c
+   SET elevation_dem_m      = NULL,
+       elevation_dem_source = NULL,
+       elevation_dem_geom   = NULL
+ WHERE c.project_id = $1::uuid
+   AND c.elevation_dem_geom IS NOT NULL
+   AND (c.elevation_dem_source IS DISTINCT FROM $2::varchar
+        OR c.geom_4326 IS NULL
+        OR NOT ST_Equals(c.elevation_dem_geom, c.geom_4326))
+"""
+
+#: Collars the terrain fallback applies to (no file elevation, a position):
+#: how many in all, and how many still need a lookup.
+_TERRAIN_SCOPE = """
+SELECT count(*)                                         AS candidates,
+       count(*) FILTER (WHERE c.elevation_dem_geom IS NULL) AS pending
+  FROM silver.collars c
+ WHERE c.project_id = $1::uuid
+   AND c.elevation IS NULL
+   AND c.geom_4326 IS NOT NULL
+"""
+
+#: Lookup targets: no file elevation, a position, no current lookup.
 _TERRAIN_TARGETS = f"""
 SELECT c.collar_id, ST_X(c.geom_4326) AS lon, ST_Y(c.geom_4326) AS lat
   FROM silver.collars c
  WHERE c.project_id = $1::uuid
    AND c.elevation IS NULL
    AND c.geom_4326 IS NOT NULL
-   AND (c.elevation_dem_geom IS NULL
-        OR c.elevation_dem_source IS DISTINCT FROM $2::varchar
-        OR NOT ST_Equals(c.elevation_dem_geom, c.geom_4326))
+   AND c.elevation_dem_geom IS NULL
  ORDER BY c.collar_id
  LIMIT {_TERRAIN_LOOKUP_CAP}
 """
@@ -734,6 +757,18 @@ SELECT ST_X(c.geom_4326) AS lon, ST_Y(c.geom_4326) AS lat, c.elevation
    AND c.geom_4326 IS NOT NULL
  ORDER BY c.collar_id
  LIMIT {dem_elevation.DATUM_CHECK_SAMPLE}
+"""
+
+#: Datum mismatch: take back every terrain height the project already holds.
+#: Collars filled while the project had no surveyed collars would otherwise
+#: stay drawn a local-grid offset away from the ones that arrived later.
+_TERRAIN_CLEAR_ALL = """
+UPDATE silver.collars c
+   SET elevation_dem_m      = NULL,
+       elevation_dem_source = NULL,
+       elevation_dem_geom   = NULL
+ WHERE c.project_id = $1::uuid
+   AND c.elevation_dem_geom IS NOT NULL
 """
 
 #: The position written is the one looked up, not geom_4326 at write time,
@@ -762,6 +797,7 @@ async def _fill_terrain_elevations(
     *,
     project_id: str,
     out: PromoteSilverToGoldOutput,
+    budget: dem_elevation.TerrainBudget,
 ) -> None:
     """Give collars with no file elevation a terrain-model height.
 
@@ -770,43 +806,107 @@ async def _fill_terrain_elevations(
     why the file's value always wins. Never raises: the lookup is an
     enrichment, and a terrain host being down must not stop the trace,
     interval and structure promotions after it.
+
+    Order matters and is cheapest-first:
+
+    1. Clear lookups that no longer describe their collar (SQL only).
+    2. If the project has surveyed collars, measure their offset from the
+       terrain model FIRST — at most 50 points, one or two tiles. A local
+       grid (offset beyond ``MAX_DATUM_OFFSET_M``) clears whatever this
+       project already holds and stops here, before the bulk lookup that
+       would only be thrown away. A reference lookup that read NOTHING is
+       "could not measure", and fills nothing this run: filling on an
+       unmeasured datum is exactly the failure the check exists to stop.
+    3. Look up the pending collars up to the project's deadline, and write
+       what was read; the rest is picked up by the next promotion.
+
+    ``budget`` is one allowance for the whole run: a lookup that reads
+    nothing trips it, and every later project then skips the host instead of
+    waiting out its own timeouts.
     """
     config = dem_elevation.config_from_env()
     if not config.enabled:
         return
     try:
-        targets = await conn.fetch(_TERRAIN_TARGETS, project_id, config.source)
+        await conn.execute(_TERRAIN_CLEAR_STALE, project_id, config.source)
+        scope = await conn.fetchrow(_TERRAIN_SCOPE, project_id)
+        if scope is None or not scope["candidates"]:
+            return
+        if not budget.usable:
+            log.warning(
+                "promote.terrain: project %s skipped; the run's terrain budget is "
+                "spent or the host was unreachable earlier in this run",
+                project_id,
+            )
+            return
+        deadline = budget.project_deadline()
+
+        references = await conn.fetch(_TERRAIN_REFERENCES, project_id)
+        if references:
+            ref_points = [(float(r["lon"]), float(r["lat"])) for r in references]
+            ref_heights = await dem_elevation.lookup_elevations(ref_points, config, deadline)
+            if not ref_heights:
+                budget.trip()
+                log.warning(
+                    "promote.terrain: project %s - the terrain host could not be "
+                    "read, so its surveyed collars could not be compared; nothing "
+                    "was filled this run",
+                    project_id,
+                )
+                return
+            offsets = [
+                float(ref["elevation"]) - height
+                for i, ref in enumerate(references)
+                if (height := ref_heights.get(i)) is not None
+            ]
+            offset = dem_elevation.datum_offset_m(offsets)
+            if offset is None:
+                log.warning(
+                    "promote.terrain: project %s - none of its %d surveyed collar(s) "
+                    "has ground in the terrain model, so the datum could not be "
+                    "checked; nothing was filled this run",
+                    project_id,
+                    len(references),
+                )
+                return
+            if abs(offset) > dem_elevation.MAX_DATUM_OFFSET_M:
+                await conn.execute(_TERRAIN_CLEAR_ALL, project_id)
+                out.collars_terrain_datum_mismatch += int(scope["candidates"])
+                log.warning(
+                    "promote.terrain: project %s - its %d surveyed collar(s) sit a "
+                    "median %.0f m from the terrain model (%s), so their RLs are "
+                    "not heights above sea level (a local grid?). %d collar(s) "
+                    "without an elevation have NO terrain height; they stay at "
+                    "z = 0 until the file supplies one",
+                    project_id,
+                    len(offsets),
+                    offset,
+                    config.source,
+                    scope["candidates"],
+                )
+                return
+
+        if not scope["pending"]:
+            return
+        targets = await conn.fetch(_TERRAIN_TARGETS, project_id)
         if not targets:
             return
         if len(targets) >= _TERRAIN_LOOKUP_CAP:
             log.info(
                 "promote.terrain: project %s has more than %d collars to look "
                 "up; the rest are taken by the next promotion",
-                project_id, _TERRAIN_LOOKUP_CAP,
+                project_id,
+                _TERRAIN_LOOKUP_CAP,
             )
-        references = await conn.fetch(_TERRAIN_REFERENCES, project_id)
-
         points = [(float(r["lon"]), float(r["lat"])) for r in targets]
-        points += [(float(r["lon"]), float(r["lat"])) for r in references]
-        heights = await dem_elevation.lookup_elevations(points, config)
-
-        # Datum check: only when the project HAS surveyed collars.
-        n = len(targets)
-        offsets: list[float] = []
-        for i, ref in enumerate(references):
-            ref_height = heights.get(n + i)
-            if ref_height is not None:
-                offsets.append(float(ref["elevation"]) - ref_height)
-        offset = dem_elevation.datum_offset_m(offsets)
-        if offset is not None and abs(offset) > dem_elevation.MAX_DATUM_OFFSET_M:
-            out.collars_terrain_datum_mismatch += n
+        heights = await dem_elevation.lookup_elevations(points, config, deadline)
+        if not heights:
+            budget.trip()
             log.warning(
-                "promote.terrain: project %s - its %d surveyed collar(s) sit a "
-                "median %.0f m from the terrain model (%s), so their RLs are "
-                "not heights above sea level (a local grid?). %d collar(s) "
-                "without an elevation were NOT given a terrain height; they "
-                "stay at z = 0 until the file supplies one",
-                project_id, len(offsets), offset, config.source, n,
+                "promote.terrain: project %s - the terrain host returned nothing "
+                "for %d collar(s); skipping terrain for the rest of this run",
+                project_id,
+                len(points),
             )
             return
 
@@ -816,20 +916,25 @@ async def _fill_terrain_elevations(
         elevs: list[float | None] = []
         for i, row in enumerate(targets):
             if i not in heights:
-                continue  # transient read failure: retried next run
+                continue  # transient read failure or out of time: retried next run
             height = heights[i]
             if height is not None and not (_TERRAIN_MIN_M <= height <= _TERRAIN_MAX_M):
                 log.warning(
                     "promote.terrain: collar %s read %.1f m from %s, outside "
                     "[%g, %g]; recorded as no ground",
-                    row["collar_id"], height, config.source,
-                    _TERRAIN_MIN_M, _TERRAIN_MAX_M,
+                    row["collar_id"],
+                    height,
+                    config.source,
+                    _TERRAIN_MIN_M,
+                    _TERRAIN_MAX_M,
                 )
                 height = None
             ids.append(row["collar_id"])
             lons.append(points[i][0])
             lats.append(points[i][1])
-            elevs.append(height)
+            # 1 cm: the model's own resolution is metres, and a rounded double
+            # reads back as 12.9 rather than a float's long tail.
+            elevs.append(None if height is None else round(height, 2))
         if not ids:
             return
         await conn.execute(_TERRAIN_WRITE, ids, lons, lats, elevs, config.source)
@@ -839,7 +944,11 @@ async def _fill_terrain_elevations(
         log.info(
             "promote.terrain: project %s - %d collar(s) given a %s height, "
             "%d with no ground in the model, %d left for the next run",
-            project_id, filled, config.source, len(elevs) - filled, n - len(ids),
+            project_id,
+            filled,
+            config.source,
+            len(elevs) - filled,
+            len(targets) - len(ids),
         )
     except Exception as exc:  # noqa: BLE001 — see the docstring
         log.warning("promote.terrain: project %s skipped (%s)", project_id, exc)
@@ -903,7 +1012,7 @@ async def _promote_traces(
     collars = await conn.fetch(
         f"""
         SELECT c.collar_id,
-               COALESCE(c.elevation, c.elevation_dem_m) AS elevation,
+               {dem_elevation.EFFECTIVE_ELEVATION_SQL} AS elevation,
                {EFFECTIVE_TOTAL_DEPTH_SQL} AS total_depth, c.azimuth, c.dip,
                ST_X(c.geom_4326) AS lon,
                ST_Y(c.geom_4326) AS lat,
@@ -1487,6 +1596,11 @@ async def promote(
             )
         ])
 
+        # One wall-clock allowance for every project's terrain lookups in this
+        # run, with a breaker: an unreachable host costs the run one wait, not
+        # one per project (see dem_elevation.TerrainBudget).
+        terrain_budget = dem_elevation.TerrainBudget()
+
         for project_id in project_ids:
             out.projects_seen += 1
             # Canonical silver first: nothing downstream depends on it, but
@@ -1501,7 +1615,9 @@ async def promote(
             # Before the traces: a terrain height changes a trace's origin,
             # and the trace digest includes the origin, so the trace is
             # rebuilt at the new z in this same run.
-            await _fill_terrain_elevations(conn, project_id=project_id, out=out)
+            await _fill_terrain_elevations(
+                conn, project_id=project_id, out=out, budget=terrain_budget,
+            )
             await _promote_traces(
                 conn,
                 workspace_id=input.workspace_id,

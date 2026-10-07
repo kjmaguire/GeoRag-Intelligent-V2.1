@@ -423,6 +423,9 @@ class TestThePromotionRun:
         monkeypatch.setattr(promo, "bind_workspace_scope", _noop)
         monkeypatch.setattr(promo, "_promote_lithology_canonical", _noop)
         monkeypatch.setattr(promo, "_promote_traces", _no_traces)
+        # The terrain-elevation step issues its own housekeeping SQL; it has
+        # its own tests (test_dem_elevation*.py) and is not part of this ordering.
+        monkeypatch.setattr(promo, "_fill_terrain_elevations", _no_traces)
 
         out = await promo.promote.fn(
             promo.PromoteSilverToGoldInput(workspace_id=WS, project_id=PROJECT), None,

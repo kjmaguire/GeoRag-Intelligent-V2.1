@@ -109,12 +109,19 @@ final class WorkspaceThreeDPayloadTest extends TestCase
      */
     public function test_collar_elevation_falls_back_to_the_terrain_model(): void
     {
-        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars(3);
         DB::statement(
             "UPDATE silver.collars
                 SET elevation = NULL, elevation_dem_m = 53.5, elevation_dem_source = 'copernicus_glo30',
                     elevation_dem_geom = geom_4326
               WHERE project_id = ?::uuid AND hole_id = 'W3D-1'",
+            [$project->project_id],
+        );
+        DB::statement(
+            "UPDATE silver.collars
+                SET elevation = NULL, elevation_dem_m = 99.0, elevation_dem_source = 'copernicus_glo30',
+                    elevation_dem_geom = ST_SetSRID(ST_MakePoint(-150.0, 60.0), 4326)
+              WHERE project_id = ?::uuid AND hole_id = 'W3D-3'",
             [$project->project_id],
         );
         // W3D-2 keeps its surveyed 1000 m; a stale terrain value must not show.
@@ -135,6 +142,13 @@ final class WorkspaceThreeDPayloadTest extends TestCase
                 ->where('collars.1.hole_id', 'W3D-2')
                 ->where('collars.1.elevation', 1000)
                 ->where('collars.1.elevation_source', 'file')
+                ->where('collars.0.elevation_dem_source', 'copernicus_glo30')
+                ->where('collars.1.elevation_dem_source', null)
+                // W3D-3: a terrain height looked up at a position the collar
+                // has since left is stale and is not served as its elevation.
+                ->where('collars.2.hole_id', 'W3D-3')
+                ->where('collars.2.elevation', null)
+                ->where('collars.2.elevation_source', null)
                 ->etc(),
         );
     }

@@ -55,12 +55,36 @@ Configuration
     install with no mirror should, so the promotion does not spend its
     timeout on a host it cannot reach.
 ``COLLAR_DEM_SOURCE``
-    The label written to ``silver.collars.elevation_dem_source``. Defaults to
-    ``copernicus_glo30``; change it when the template points at a different
-    model, and every collar is looked up again (a lookup made with another
-    source is treated as stale).
+    The label written to ``silver.collars.elevation_dem_source`` (at most 32
+    characters, the column's width; a longer label is cut with a warning).
+    Defaults to ``copernicus_glo30``; change it when the template points at a
+    different model, and every collar is looked up again (a lookup made with
+    another source is treated as stale).
 ``COLLAR_DEM_TIMEOUT_S``
     Per-request HTTP timeout, seconds (default 20).
+
+What the host can see
+---------------------
+
+Reading a tile with HTTP range requests tells the bucket operator (and its
+access logs) WHICH 1° tile was opened and which blocks of it were read.
+Copernicus COG blocks are 1024 px, about 28 km, so a collar's position is
+disclosed to roughly that granularity — never a coordinate, a hole id, a
+project or workspace name. For a client whose drill-target locations are
+confidential even at that resolution, turn the lookup off
+(``COLLAR_DEM_URL_TEMPLATE=""``) or point it at a mirror inside the
+deployment.
+
+Time bounds
+-----------
+
+``promote_silver_to_gold`` calls this once per project, inside a 20-minute
+task. Three limits keep a slow or unreachable host from eating that:
+a per-call ``deadline`` (a monotonic timestamp checked between points, so a
+batch returns what it read instead of being abandoned), ``TerrainBudget``
+(one wall-clock allowance for the whole run, shared by every project), and a
+circuit breaker on that budget that trips when a call reads NOTHING, so later
+projects skip the host instead of each waiting out its own timeouts.
 """
 
 from __future__ import annotations
@@ -69,7 +93,9 @@ import asyncio
 import logging
 import math
 import os
+import re
 import statistics
+import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -83,6 +109,15 @@ TIMEOUT_ENV = "COLLAR_DEM_TIMEOUT_S"
 DEFAULT_URL_TEMPLATE = "https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif"
 DEFAULT_SOURCE = "copernicus_glo30"
 DEFAULT_TIMEOUT_S = 20.0
+
+#: Width of silver.collars.elevation_dem_source.
+SOURCE_MAX_LEN = 32
+
+#: Wall-clock allowance for ALL terrain lookups in one promote run, and the
+#: most a single project may take of it. The task has 20 minutes for
+#: everything; terrain is an enrichment and gets a quarter of that at most.
+RUN_BUDGET_S = 300.0
+PROJECT_BUDGET_S = 120.0
 
 #: A project that mixes collars WITH a file elevation and collars without one
 #: gets the terrain fallback only when the two agree. Many mines carry collar
@@ -98,6 +133,20 @@ MAX_DATUM_OFFSET_M = 50.0
 #: Surveyed collars sampled to measure that offset. The median of 50 is as
 #: stable as the median of 5,000 for this purpose and costs 1% of the reads.
 DATUM_CHECK_SAMPLE = 50
+
+
+#: The z every 3D reader draws a collar at, for the collar aliased ``c``: the
+#: file's elevation, else the terrain height — but only a terrain height that
+#: was looked up AT the collar's present position. A collar that has moved
+#: (re-uploaded under its correct CRS) keeps its old ``elevation_dem_m`` until
+#: the next promotion looks it up again; this keeps readers from drawing it at
+#: the old location's ground in the meantime. NULL when neither applies; the
+#: caller decides what NULL means (the trace builder and the long section use
+#: 0, the agent tool reports 0 as before).
+EFFECTIVE_ELEVATION_SQL = (
+    "COALESCE(c.elevation, CASE WHEN c.elevation_dem_geom IS NOT NULL "
+    "AND ST_Equals(c.elevation_dem_geom, c.geom_4326) THEN c.elevation_dem_m END)"
+)
 
 
 @dataclass(frozen=True)
@@ -119,11 +168,49 @@ def config_from_env() -> DemConfig:
     except ValueError:
         log.warning("dem_elevation: %s=%r is not a number; using %s", TIMEOUT_ENV, raw_timeout, DEFAULT_TIMEOUT_S)
         timeout_s = DEFAULT_TIMEOUT_S
+    source = os.environ.get(SOURCE_ENV, "").strip() or DEFAULT_SOURCE
+    if len(source) > SOURCE_MAX_LEN:
+        # The label goes into a varchar(32): a longer one would fail every
+        # write AFTER the whole remote lookup had been paid for.
+        log.warning(
+            "dem_elevation: %s=%r is longer than %d characters; using %r",
+            SOURCE_ENV,
+            source,
+            SOURCE_MAX_LEN,
+            source[:SOURCE_MAX_LEN],
+        )
+        source = source[:SOURCE_MAX_LEN]
     return DemConfig(
         url_template=os.environ.get(URL_TEMPLATE_ENV, DEFAULT_URL_TEMPLATE).strip(),
-        source=os.environ.get(SOURCE_ENV, "").strip() or DEFAULT_SOURCE,
+        source=source,
         timeout_s=max(1.0, timeout_s),
     )
+
+
+class TerrainBudget:
+    """One run's wall-clock allowance for terrain lookups, plus a breaker.
+
+    Created once per ``promote`` run and passed to every project's fill.
+    ``project_deadline()`` is the monotonic time a single project's lookup
+    must stop by; ``trip()`` is called when a lookup read nothing at all (the
+    host is down or blocked), after which ``usable`` is False for the rest of
+    the run.
+    """
+
+    def __init__(self, run_s: float = RUN_BUDGET_S, project_s: float = PROJECT_BUDGET_S) -> None:
+        self._end = time.monotonic() + run_s
+        self._project_s = project_s
+        self.tripped = False
+
+    @property
+    def usable(self) -> bool:
+        return not self.tripped and time.monotonic() < self._end
+
+    def project_deadline(self) -> float:
+        return min(time.monotonic() + self._project_s, self._end)
+
+    def trip(self) -> None:
+        self.tripped = True
 
 
 def copernicus_tile(lon: float, lat: float) -> str:
@@ -141,16 +228,25 @@ def copernicus_tile(lon: float, lat: float) -> str:
     return f"Copernicus_DSM_COG_10_{ns}{abs(lat_floor):02d}_00_{ew}{abs(lon_floor):03d}_00_DEM"
 
 
+_HTTP_404 = re.compile(r"http response code:\s*404\b")
+
+
 def _is_not_found(exc: Exception) -> bool:
     """True when the tile does not exist, as opposed to could not be fetched.
 
-    GDAL reports a missing ``/vsicurl/`` object as "does not exist in the file
-    system" (or the HTTP 404 itself) and a missing local file as "No such
-    file or directory". Anything else (a timeout, a 403, a DNS failure) is
-    transient and must NOT be recorded as "no ground here".
+    GDAL reports a missing remote object as ``HTTP response code: 404``, an
+    unpublished ``/vsicurl/`` path as "does not exist in the file system", and
+    a missing local file as "No such file or directory". The status is matched
+    as a status, not as the digits: a connection error naming port 4040 or a
+    timeout of 20404 ms is not a 404. Anything else (a timeout, a 403, a 5xx,
+    a DNS failure) is transient and must NOT be recorded as "no ground here".
     """
     text = str(exc).lower()
-    return "404" in text or "does not exist in the file system" in text or "no such file or directory" in text
+    return (
+        bool(_HTTP_404.search(text))
+        or "does not exist in the file system" in text
+        or "no such file or directory" in text
+    )
 
 
 def _bilinear(src, lon: float, lat: float) -> float | None:  # noqa: ANN001 — rasterio dataset
@@ -209,16 +305,29 @@ def _bilinear(src, lon: float, lat: float) -> float | None:  # noqa: ANN001 — 
     return value if math.isfinite(value) else None
 
 
+def _usable_position(lon: float, lat: float) -> bool:
+    return math.isfinite(lon) and math.isfinite(lat) and -90.0 <= lat <= 90.0 and -180.0 <= lon < 360.0
+
+
 def sample_elevations_sync(
     points: Sequence[tuple[float, float]],
     config: DemConfig,
+    deadline: float | None = None,
 ) -> dict[int, float | None]:
     """Terrain height at each (lon, lat), keyed by the point's index.
 
-    A point is ABSENT from the result when its tile could not be read for a
-    transient reason; it maps to None when the model definitively has no
-    ground there (unpublished ocean tile, nodata). Callers record the second
-    and retry the first.
+    A point is ABSENT from the result when it could not be read for a
+    transient reason (a tile that would not open, a read that failed, the
+    ``deadline`` passing); it maps to None when the model definitively has no
+    ground there (unpublished ocean tile, nodata) or the position is not a
+    position at all (NaN, out of range). Callers record the second and retry
+    the first.
+
+    ``deadline`` is a ``time.monotonic()`` timestamp. It is checked before
+    every tile and every point, so a batch that runs out of time returns what
+    it read — the caller writes that and the rest is retried — rather than
+    being abandoned with nothing. One GDAL request already in flight finishes
+    first (at most about three request timeouts).
 
     Synchronous (GDAL does blocking I/O): call it through
     ``lookup_elevations``, never directly from async code.
@@ -226,11 +335,19 @@ def sample_elevations_sync(
     import rasterio  # noqa: PLC0415 — keeps app import time free of GDAL
     from rasterio.errors import RasterioIOError  # noqa: PLC0415
 
+    out: dict[int, float | None] = {}
     by_tile: dict[str, list[int]] = defaultdict(list)
     for index, (lon, lat) in enumerate(points):
+        if not _usable_position(lon, lat):
+            # Not retryable: recording it keeps one bad position from
+            # re-selecting itself (and poisoning its batch) on every run.
+            out[index] = None
+            continue
         by_tile[copernicus_tile(lon, lat)].append(index)
 
-    out: dict[int, float | None] = {}
+    def expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
     timeout = str(int(math.ceil(config.timeout_s)))
     with rasterio.Env(
         GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
@@ -241,6 +358,9 @@ def sample_elevations_sync(
         GDAL_HTTP_RETRY_DELAY="1",
     ):
         for tile, indexes in by_tile.items():
+            if expired():
+                log.warning("dem_elevation: out of time; tile %s and later are left for the next promotion", tile)
+                break
             location = config.url_template.format(tile=tile)
             try:
                 src = rasterio.open(location)
@@ -256,43 +376,56 @@ def sample_elevations_sync(
                         len(indexes),
                     )
                 continue
+            # North to south, then west to east: the order the blocks are
+            # stored in, so neighbouring collars share a fetched block
+            # instead of re-requesting it.
+            indexes.sort(key=lambda i: (-points[i][1], points[i][0]))
             try:
                 with src:
                     for index in indexes:
+                        if expired():
+                            log.warning(
+                                "dem_elevation: out of time inside tile %s; the rest are left for the next promotion",
+                                tile,
+                            )
+                            break
                         lon, lat = points[index]
                         out[index] = _bilinear(src, lon, lat)
             except RasterioIOError as exc:
+                # What was read before the failure stands; the failing point
+                # and the ones after it were never added.
                 log.warning(
-                    "dem_elevation: reading tile %s failed (%s); its collars are left for the next promotion",
+                    "dem_elevation: reading tile %s failed (%s); its remaining collars are left for the next promotion",
                     tile,
                     exc,
                 )
-                for index in indexes:
-                    out.pop(index, None)
     return out
 
 
 async def lookup_elevations(
     points: Sequence[tuple[float, float]],
     config: DemConfig | None = None,
+    deadline: float | None = None,
 ) -> dict[int, float | None]:
     """Async wrapper over ``sample_elevations_sync``; {} when disabled.
 
-    Runs in a worker thread (GDAL blocks) under an overall bound of one
-    per-request timeout per tile plus one, so a host that accepts the
-    connection and then stalls cannot hold the promotion for its whole
-    20-minute budget. Never raises: a terrain lookup is an enrichment, and
-    the trace, interval and structure promotions after it must still run.
+    Runs in a worker thread (GDAL blocks). The sampler stops itself at
+    ``deadline`` (a ``time.monotonic()`` timestamp) and returns what it read;
+    the ``wait_for`` here is only a backstop for a call GDAL itself never
+    returns from, set a few request timeouts past the deadline. Never raises:
+    a terrain lookup is an enrichment, and the trace, interval and structure
+    promotions after it must still run.
     """
     cfg = config or config_from_env()
     if not cfg.enabled or not points:
         return {}
-    tiles = {copernicus_tile(lon, lat) for lon, lat in points}
-    budget = cfg.timeout_s * 3 * (len(tiles) + 1)
+    backstop = None
+    if deadline is not None:
+        backstop = max(0.0, deadline - time.monotonic()) + cfg.timeout_s * 3 + 5.0
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(sample_elevations_sync, points, cfg),
-            timeout=budget,
+            asyncio.to_thread(sample_elevations_sync, points, cfg, deadline),
+            timeout=backstop,
         )
     except Exception as exc:  # noqa: BLE001 — see the docstring
         log.warning("dem_elevation: lookup of %d point(s) failed (%s)", len(points), exc)
@@ -310,9 +443,14 @@ def datum_offset_m(file_minus_dem: Sequence[float]) -> float | None:
 __all__ = [
     "DATUM_CHECK_SAMPLE",
     "DEFAULT_SOURCE",
+    "EFFECTIVE_ELEVATION_SQL",
     "DEFAULT_URL_TEMPLATE",
     "MAX_DATUM_OFFSET_M",
+    "PROJECT_BUDGET_S",
+    "RUN_BUDGET_S",
+    "SOURCE_MAX_LEN",
     "DemConfig",
+    "TerrainBudget",
     "config_from_env",
     "copernicus_tile",
     "datum_offset_m",

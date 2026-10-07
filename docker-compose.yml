@@ -1740,7 +1740,8 @@ services:
       COHERE_PARSE_TIMEOUT_S: ${COHERE_PARSE_TIMEOUT_S:-120}
       COHERE_PARSE_MAX_PIXELS: ${COHERE_PARSE_MAX_PIXELS:-20000000}
       # Terrain model for collars with no elevation in the file (promote_silver_to_gold).
-      # Empty turns it off; see app/services/dem_elevation.py.
+      # Empty turns it off; see app/services/dem_elevation.py (which also says what
+      # the tile host can see: the 1-degree tile and ~28 km blocks read).
       COLLAR_DEM_URL_TEMPLATE: ${COLLAR_DEM_URL_TEMPLATE-https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif}
       COHERE_PARSE_OUTPUT_FORMAT: ${COHERE_PARSE_OUTPUT_FORMAT:-blocks}
       COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS: ${COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS:-0}
