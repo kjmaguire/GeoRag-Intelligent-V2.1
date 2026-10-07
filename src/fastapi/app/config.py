@@ -582,7 +582,6 @@ class Settings(BaseSettings):
     # MMR_ENABLED=False to disable if the golden-set baseline shows MMR
     # hurts recall on your corpus.
     MMR_ENABLED: bool = True
-    MMR_LAMBDA: float = 0.7
 
 
     # P0 #1 — Qdrant project_id scoping for search_documents.
@@ -1746,11 +1745,6 @@ class Settings(BaseSettings):
         if self.LLM_BACKEND in ("bedrock", "cohere"):
             return self.MAX_CONTEXT_TOKENS_BEDROCK
         return self.MAX_CONTEXT_TOKENS
-
-    # Per-category row caps (formerly applied inside the retired _build_context).
-    MAX_CONTEXT_COLLARS: int = 20
-    MAX_CONTEXT_DOC_CHUNKS: int = 5
-    MAX_CONTEXT_PG_RECORDS: int = 12
 
 
 # Module-level singleton — imported by all other modules as:
