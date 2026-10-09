@@ -78,6 +78,7 @@ export function Borehole3DView({
                 northing: h.northing,
                 total_depth: h.total_depth,
                 elevation: c?.elevation ?? null,
+                elevation_source: c?.elevation_source ?? null,
                 azimuth: c?.azimuth ?? null,
                 dip: c?.dip ?? null,
             };

@@ -318,18 +318,20 @@ class _Conn:
         *,
         candidates: int | None = None,
         pending: int | None = None,
+        held: int = 0,
     ) -> None:
         self.targets = targets
         self.references = references or []
         self.candidates = len(targets) if candidates is None else candidates
         self.pending = len(targets) if pending is None else pending
+        self.held = held
         self.fetches: list[str] = []
         self.executed: list[str] = []
         self.writes: list[tuple] = []
 
     async def fetchrow(self, sql: str, *args: object) -> dict:
         assert sql == m._TERRAIN_SCOPE
-        return {"candidates": self.candidates, "pending": self.pending}
+        return {"candidates": self.candidates, "pending": self.pending, "held": self.held}
 
     async def fetch(self, sql: str, *args: object) -> list[dict]:
         self.fetches.append(sql)
@@ -482,7 +484,7 @@ async def test_a_mismatch_takes_back_heights_the_project_already_holds(
     # Collars were filled while the project had no surveyed collars; a later
     # upload brought local-grid RLs. The earlier heights are withdrawn.
     refs = [{"lon": -160.55, "lat": 55.19, "elevation": 1050.0}]
-    conn = _Conn([], refs, candidates=3, pending=0)
+    conn = _Conn([], refs, candidates=3, pending=0, held=3)
     _fake_lookup(monkeypatch, {0: 45.0})
     out = await _fill(conn)
     assert m._TERRAIN_CLEAR_ALL in conn.executed
@@ -534,11 +536,37 @@ async def test_an_out_of_range_height_is_recorded_as_no_ground(enabled: None, mo
     assert out.collars_terrain_no_ground == 1
 
 
-async def test_disabled_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_disabled_reads_nothing_and_withdraws_stored_heights(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(dem.URL_TEMPLATE_ENV, "")
-    conn = _Conn(_targets(1))
+    calls = _fake_lookup(monkeypatch, {})
+    conn = _Conn(_targets(1), held=2)
     await _fill(conn)
-    assert conn.fetches == [] and conn.executed == []
+    assert calls == [] and conn.fetches == []
+    # Heights from an earlier, enabled run must not outlive the switch-off.
+    assert conn.executed == [m._TERRAIN_CLEAR_ALL]
+
+
+async def test_an_idle_project_with_no_terrain_heights_makes_no_reference_lookup(
+    enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refs = [{"lon": 10.0, "lat": 50.0, "elevation": 1000.0}]
+    calls = _fake_lookup(monkeypatch, {})
+    conn = _Conn([], refs, candidates=4, pending=0, held=0)
+    await _fill(conn)
+    assert calls == [] and conn.fetches == []
+
+
+async def test_held_heights_are_still_checked_against_the_datum_when_nothing_is_pending(
+    enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A local-grid project already holding terrain heights must lose them
+    # even with nothing new to fill.
+    refs = [{"lon": 10.0, "lat": 50.0, "elevation": 1000.0}]
+    calls = _fake_lookup(monkeypatch, {0: 0.0})
+    conn = _Conn([], refs, candidates=4, pending=0, held=2)
+    await _fill(conn)
+    assert len(calls) == 1
+    assert m._TERRAIN_CLEAR_ALL in conn.executed
 
 
 async def test_nothing_to_look_up_makes_no_lookup(enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -617,3 +645,47 @@ def test_the_range_guard_matches_the_check_constraint() -> None:
     ).read_text()
     assert f"BETWEEN {int(m._TERRAIN_MIN_M)} AND {int(m._TERRAIN_MAX_M)}" in migration
     assert math.isclose(m._TERRAIN_MIN_M, -500.0)
+
+
+# ---------------------------------------------------------------------------
+# Sampling: one bad tile or point, and longitudes outside -180..180
+# ---------------------------------------------------------------------------
+
+
+class _Src:
+    def __enter__(self) -> _Src:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def _sampler_config() -> dem.DemConfig:
+    return dem.DemConfig(url_template="https://example.test/{tile}.tif", source="copernicus_glo30", timeout_s=5.0)
+
+
+def test_a_non_io_error_on_one_tile_keeps_the_other_tiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A CRS error on one point must not discard what another tile already read.
+    monkeypatch.setattr("rasterio.open", lambda location: _Src())
+
+    def bilinear(src: object, lon: float, lat: float) -> float:
+        if lon > 15.0:
+            raise ValueError("bad transform")
+        return 5.0
+
+    monkeypatch.setattr(dem, "_bilinear", bilinear)
+    out = dem.sample_elevations_sync([(10.0, 50.0), (20.0, 50.0)], _sampler_config())
+    assert out == {0: 5.0}  # point 1 is absent: retried next run, not recorded as no ground
+
+
+def test_longitudes_are_wrapped_into_the_raster_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[float] = []
+    monkeypatch.setattr("rasterio.open", lambda location: _Src())
+    monkeypatch.setattr(dem, "_bilinear", lambda src, lon, lat: seen.append(lon) or 1.0)
+    out = dem.sample_elevations_sync([(200.5, -30.0)], _sampler_config())
+    assert out == {0: 1.0}
+    assert seen == [pytest.approx(-159.5)]
+    assert dem._wrap_lon(-180.0) == -180.0
+    assert dem._wrap_lon(180.0) == -180.0
+    assert math.isnan(dem._wrap_lon(float("nan")))
+
