@@ -13,8 +13,16 @@ Anti-bias UX contract (Anna 2026-05-23):
     cells everywhere.
 
 The frontend renders this directly as a MapLibre `fill` layer; no
-client-side reaggregation. The hexgrid is computed in EPSG:3857 (web
-mercator, metres) and reprojected to 4326 (WGS84) for the response.
+client-side reaggregation. The hexgrid is computed in the local UTM zone of
+the project's records (true metres: a cell is `cell_size_m` across, its long
+axis) and reprojected to 4326 (WGS84) for the response. Until 2026-10 it was
+laid out in EPSG:3857 units, which are only metres at the equator, so a "1 km"
+cell was about 530 m across at 58 N.
+
+A project whose extent is too big to draw as one local grid (typically one
+mis-located record at lon/lat 0,0 stretching it across the map) is REFUSED
+with 422, never answered with an empty or distorted layer: an empty map reads
+as "no coverage here", which is the misreading this layer exists to prevent.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ import logging
 import uuid
 from typing import Literal
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
@@ -99,7 +108,10 @@ async def coverage_density(
     200  application/json — FeatureCollection of hex cells with count > 0
     403  application/json — JWT project_id differs from the query's, or
                               the workspace cannot be resolved
-    422  application/json — invalid kind / cell_size_m
+    422  application/json — invalid kind / cell_size_m, or the project's
+                              extent is too large to draw as one grid at this
+                              cell size (``detail.code`` is
+                              ``coverage_extent_too_large``)
     503  application/json — pg pool not initialised
     """
     if cell_size_m not in (500, 1000, 5000, 10000):
@@ -139,15 +151,32 @@ async def coverage_density(
     redis_client = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(_user, request, pool, redis_client)
 
-    async with scoped_connection(
-        pool, workspace_id=str(workspace_id), site="coverage.density"
-    ) as conn:
-        rows = await conn.fetch(
-            "SELECT ST_AsGeoJSON(cell_polygon)::jsonb AS geom_json,"
-            "       record_count, bias_warning"
-            "  FROM silver.coverage_density($1, $2, $3)",
-            project_id, kind, cell_size_m,
+    try:
+        async with scoped_connection(
+            pool, workspace_id=str(workspace_id), site="coverage.density"
+        ) as conn:
+            rows = await conn.fetch(
+                "SELECT ST_AsGeoJSON(cell_polygon)::jsonb AS geom_json,"
+                "       record_count, bias_warning"
+                "  FROM silver.coverage_density($1, $2, $3)",
+                project_id, kind, cell_size_m,
+            )
+    except asyncpg.exceptions.ProgramLimitExceededError as exc:
+        # SQLSTATE 54000 from silver.coverage_density: the extent needs more
+        # cells (or more width) than one local grid can honestly be drawn in.
+        # Say so, with the function's own numbers and hint; do not 500.
+        logger.warning(
+            "coverage_density refused project=%s kind=%s cell=%dm: %s",
+            project_id, kind, cell_size_m, getattr(exc, "message", None) or str(exc),
         )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "coverage_extent_too_large",
+                "message": getattr(exc, "message", None) or str(exc),
+                "hint": getattr(exc, "hint", None),
+            },
+        ) from exc
 
     features: list[CoverageFeature] = []
     max_count = 0

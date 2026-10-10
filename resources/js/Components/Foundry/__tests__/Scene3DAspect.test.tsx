@@ -37,6 +37,10 @@ const collars = [
         hole_id_canonical: 'DD-01',
         easting: 500000,
         northing: 6000000,
+        // The views place holes by lng/lat in one local frame (GIS audit
+        // 2026-10); a collar with no position is not drawn.
+        lng: -105.0,
+        lat: 54.0,
         total_depth: 600,
         azimuth: 45,
         dip: -60,
@@ -48,6 +52,8 @@ const collars = [
         hole_id_canonical: 'DD-02',
         easting: 500400,
         northing: 6000100,
+        lng: -104.994,
+        lat: 54.001,
         total_depth: 300,
         azimuth: 90,
         dip: -70,
@@ -67,8 +73,8 @@ const views: Array<[string, () => ReactElement]> = [
                         total_depth: 600,
                         easting: 500000,
                         northing: 6000000,
-                        lat: null,
-                        lng: null,
+                        lat: 54.0,
+                        lng: -105.0,
                         bands: [{ from: 0, to: 600, code: 'SST', color: '#cccccc' }],
                     },
                 ]}

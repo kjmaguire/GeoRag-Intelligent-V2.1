@@ -1286,7 +1286,22 @@ def _render_spatial_result(result: Any) -> str:
         summary = _collar_summaries(collars)
         lines.extend(summary)
         summarised = bool(summary)
-    rows = [f"  {_short(item, 400)}" for item in collars[:_STRUCTURED_ROW_SAMPLE]]
+    # What the coordinates are, and which CRS the search centre was read in
+    # (GIS audit 2026-10): the model cites easting/northing verbatim, and
+    # without this they read as map coordinates.
+    note = getattr(result, "coordinate_note", None)
+    if note:
+        lines.append(f"NOTE: {note}")
+    centre = getattr(result, "centre_crs", None)
+    if centre:
+        lines.append(f"search centre read as {centre}")
+    rows = []
+    for item in collars[:_STRUCTURED_ROW_SAMPLE]:
+        row = f"  {_short(item, 400)}"
+        caveat = getattr(item, "position_caveat", None)
+        if caveat:
+            row += f"  [position: {caveat}]"
+        rows.append(row)
     # Whole rows only: with the summaries above, twelve rows no longer fit the
     # cap, and a row cut off mid-number would be read as a value.
     used = sum(len(line) + 1 for line in lines) + _ROWS_HEADER_RESERVE
@@ -2275,6 +2290,7 @@ def _build_chat_card_payloads(
                     "status":      c.status,
                     "azimuth":     c.azimuth,
                     "dip":         c.dip,
+                    "orientation": c.orientation,
                     "trace_points": _round_trace_points_for_card(c.trace_points),
                 }
                 for c in result.collars
@@ -2378,6 +2394,7 @@ def _build_chat_card_payloads(
                         "image_base64": result.image_base64,
                         "projection": result.projection,
                         "structure_count": result.count,
+                        "unoriented_count": result.unoriented_count,
                         "points": stereo_points,
                         "project_id": result.project_id,
                     },

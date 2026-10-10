@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from georag_geoparsers._area_of_use import classify_bounds
+
 logger = logging.getLogger(__name__)
 
 PARSER_VERSION = "1.1.0"
@@ -130,23 +132,13 @@ def _score_crs_confidence(crs, bounds_4326) -> float:
 
         data_west, data_south, data_east, data_north = bounds_4326
 
-        # Fully inside
-        if (
-            data_west >= area.west
-            and data_east <= area.east
-            and data_south >= area.south
-            and data_north <= area.north
-        ):
+        # Antimeridian-aware: an area that crosses 180 (EPSG:4269, 3338, ...)
+        # publishes west > east (GIS audit 2026-10).
+        fit = classify_bounds(area, data_west, data_south, data_east, data_north)
+        if fit == "inside":
             return 1.0
-        # Fully outside
-        if (
-            data_east < area.west
-            or data_west > area.east
-            or data_north < area.south
-            or data_south > area.north
-        ):
+        if fit == "outside":
             return 0.0
-        # Partial overlap
         return 0.5
     except Exception as exc:
         logger.debug("raster_parser: CRS confidence scoring failed: %s", exc)

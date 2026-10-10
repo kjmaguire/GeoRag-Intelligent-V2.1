@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react';
 import GeoPlot from '@/Components/GeoPlot';
 import {
+    EAST_AXIS_TITLE,
+    NORTH_AXIS_TITLE,
     buildScene3D,
     deepestIntervalByCollar,
+    hasLonLat,
     sceneZAxisTitle,
     type SurveyStationInput,
     SCENE_3D_ASPECT,
@@ -25,6 +28,10 @@ interface CollarPoint {
     collar_id: string;
     hole_id: string;
     hole_id_canonical: string;
+    /** EPSG:4326 position (geom_4326): what a hole is placed by. */
+    lng?: number | null;
+    lat?: number | null;
+    /** As stored, in the CRS of the collar's own upload: not used for placement. */
     easting: number | null;
     northing: number | null;
     total_depth: number | null;
@@ -66,7 +73,9 @@ export default function CommoditySamples3DView({
     }, [samples, selected]);
 
     const { data, layout, gradeRange, unit, caption } = useMemo(() => {
-        const valid = collars.filter((c) => c.easting !== null && c.northing !== null);
+        // Placed by lng/lat in one local frame; a collar without one is counted
+        // in the caption, not drawn at its per-upload-CRS easting/northing.
+        const valid = collars.filter(hasLonLat);
         if (valid.length === 0 || filtered.length === 0) {
             return {
                 data: [] as Record<string, unknown>[],
@@ -77,7 +86,7 @@ export default function CommoditySamples3DView({
             };
         }
 
-        const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(filtered));
+        const scene = buildScene3D(valid, surveys, deepestIntervalByCollar(filtered), collars.length - valid.length);
 
         const grades = filtered.map((s) => s.grades[selected]);
         const gMin = Math.min(...grades);
@@ -164,14 +173,14 @@ export default function CommoditySamples3DView({
         const layoutObj: Record<string, unknown> = {
             scene: {
                 xaxis: {
-                    title: { text: 'Easting (m)', font: { color: '#9ba9b8', size: 10 } },
+                    title: { text: EAST_AXIS_TITLE, font: { color: '#9ba9b8', size: 10 } },
                     color: '#9ba9b8',
                     gridcolor: 'rgba(155,169,184,0.18)',
                     backgroundcolor: '#0a0e14',
                     showbackground: true,
                 },
                 yaxis: {
-                    title: { text: 'Northing (m)', font: { color: '#9ba9b8', size: 10 } },
+                    title: { text: NORTH_AXIS_TITLE, font: { color: '#9ba9b8', size: 10 } },
                     color: '#9ba9b8',
                     gridcolor: 'rgba(155,169,184,0.18)',
                     backgroundcolor: '#0a0e14',
@@ -185,6 +194,9 @@ export default function CommoditySamples3DView({
                     showbackground: true,
                 },
                 bgcolor: '#0a0e14',
+                // True scale on all three axes: a 1:1:0.6 box drew every dip
+                // steeper or flatter than it is (FE-6 / GIS audit 2026-10). One
+                // constant, so a vertical exaggeration is a one-line change.
                 ...SCENE_3D_ASPECT,
                 camera: { eye: { x: 1.6, y: 1.6, z: 0.8 }, up: { x: 0, y: 0, z: 1 } },
             },

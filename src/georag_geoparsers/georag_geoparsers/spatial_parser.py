@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from georag_geoparsers._area_of_use import classify_bounds
+
 logger = logging.getLogger(__name__)
 
 PARSER_VERSION = "2.4.0"
@@ -695,30 +697,14 @@ def _score_crs_confidence(gdf) -> tuple[float, str]:
         bounds = gdf.to_crs("EPSG:4326").geometry.total_bounds  # (minx, miny, maxx, maxy)
         data_west, data_south, data_east, data_north = bounds
 
-        aou_west = area.west
-        aou_south = area.south
-        aou_east = area.east
-        aou_north = area.north
-
-        # Fully inside
-        if (
-            data_west >= aou_west
-            and data_east <= aou_east
-            and data_south >= aou_south
-            and data_north <= aou_north
-        ):
+        # Antimeridian-aware: NAD83 (4269), NAD27 (4267) and Alaska Albers
+        # (3338) publish west > east, and a plain west <= lon <= east scored
+        # correctly placed Saskatchewan / Alaska data 0.0 (GIS audit 2026-10).
+        fit = classify_bounds(area, data_west, data_south, data_east, data_north)
+        if fit == "inside":
             return 1.0, "bounds match CRS extent"
-
-        # Fully outside — no overlap
-        if (
-            data_east < aou_west
-            or data_west > aou_east
-            or data_north < aou_south
-            or data_south > aou_north
-        ):
+        if fit == "outside":
             return 0.0, "coordinates outside declared CRS extent"
-
-        # Partial overlap
         return 0.5, "partial CRS extent overlap"
 
     except Exception as exc:
@@ -1393,7 +1379,10 @@ def _parse_surpac_strings(path: str, *, source_epsg: int | None) -> SpatialParse
     the same reason: assuming 4326 for projected coordinates is what put a
     previous delivery at longitude 400,797.
     """
-    from georag_geoparsers.surpac_parser import read_surpac_strings  # noqa: PLC0415
+    from georag_geoparsers.surpac_parser import (  # noqa: PLC0415
+        MAX_DESCRIPTORS_PER_STRING,
+        read_surpac_strings,
+    )
 
     parsed = read_surpac_strings(path)
     basename = os.path.basename(path)
@@ -1429,10 +1418,30 @@ def _parse_surpac_strings(path: str, *, source_epsg: int | None) -> SpatialParse
         # reprojection small longitudes are reachable. repr on a float always
         # gives a decimal form PostGIS accepts.
         coords = ", ".join(f"{x!r} {y!r}" for x, y in points)
-        if as_ring:
+        if len(distinct) == 1:
+            # ONE distinct vertex (a one-vertex string, or the same point
+            # repeated) is a point, not a line. LINESTRING(x y) is not valid
+            # WKT - ST_GeomFromText raises "geometry requires more points" -
+            # and since the whole file goes in one INSERT, a single such
+            # string failed the entire upload (GIS audit 2026-10).
+            x0, y0 = points[0]
+            wkt, geom_type = f"POINT({x0!r} {y0!r})", "Point"
+        elif as_ring:
             wkt, geom_type = f"POLYGON(({coords}))", "Polygon"
         else:
             wkt, geom_type = f"LINESTRING({coords})", "LineString"
+
+        properties: dict[str, Any] = {
+            "surpac_string_number": s.string_number,
+            "level_z": s.level_z,
+            "point_count": len(s.points),
+            "closed": s.closed,
+        }
+        if s.descriptors:
+            # The Surpac descriptor fields (ore code, wall, point id ...): the
+            # attribute data of the file. Distinct values per string, in file
+            # order; they used to be counted in the log and discarded.
+            properties["surpac_descriptors"] = list(s.descriptors)
 
         features.append(SpatialFeature(
             name=f"string {s.string_number}",
@@ -1447,15 +1456,57 @@ def _parse_surpac_strings(path: str, *, source_epsg: int | None) -> SpatialParse
             feature_type="mineralization_zone",
             geometry_wkt=wkt,
             geometry_type=geom_type,
-            properties={
-                "surpac_string_number": s.string_number,
-                "level_z": s.level_z,
-                "point_count": len(s.points),
-                "closed": s.closed,
-            },
+            properties=properties,
         ))
 
     warnings_out: list[dict] = []
+    # What the reader skipped, dropped or could not finish. These were only
+    # logged: a skipped vertex is a gap in a string nobody can see, and a
+    # truncated file has lost whole strings (GIS audit 2026-10).
+    if parsed.rows_skipped:
+        warnings_out.append({
+            "code": "surpac_rows_skipped",
+            "message": (
+                f"{parsed.rows_skipped} record(s) in {basename} could not be "
+                "read and were skipped."
+            ),
+            "detail": (
+                f"{parsed.rows_skipped} line(s) of {basename} had a string "
+                "number or a coordinate that is not a number. Each is a vertex "
+                "(or a stray line) the file has and the imported strings do "
+                "not, so a string may be missing a corner. Compare the vertex "
+                "counts with the source in Surpac."
+            ),
+            "context": {"rows_skipped": parsed.rows_skipped},
+        })
+    if parsed.truncated:
+        warnings_out.append({
+            "code": "surpac_truncated",
+            "message": f"{basename} does not end with its END record; it may be incomplete.",
+            "detail": (
+                f"A complete Surpac string file ends with an END record. "
+                f"{basename} does not, so it may have been cut short in "
+                "transfer or export, and the strings after the break are not "
+                f"in the {len(parsed.strings)} imported. Re-export it and "
+                "compare the string count."
+            ),
+            "context": {"strings_read": len(parsed.strings)},
+        })
+    if parsed.descriptors_dropped:
+        warnings_out.append({
+            "code": "surpac_descriptors_dropped",
+            "message": (
+                f"{parsed.descriptors_dropped} descriptor value(s) in {basename} "
+                "were not kept."
+            ),
+            "detail": (
+                "Surpac descriptor fields are kept on each string (up to "
+                f"{MAX_DESCRIPTORS_PER_STRING} distinct values per string). "
+                f"{parsed.descriptors_dropped} further distinct value(s) did "
+                "not fit and are not in the imported features."
+            ),
+            "context": {"descriptors_dropped": parsed.descriptors_dropped},
+        })
     if source_epsg is None:
         warnings_out.append({
             "code": "surpac_no_crs",

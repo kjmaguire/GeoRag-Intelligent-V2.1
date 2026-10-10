@@ -65,11 +65,17 @@ def long_section_figure(
     collars: list[dict[str, Any]],   # [{hole_id, easting, northing, elevation, total_depth, azimuth?, inclination?}, ...]
     reference_azimuth_deg: float = 0.0,
     title: str | None = None,
+    holes_total: int | None = None,
 ) -> dict[str, Any]:
     """Project each drillhole onto a vertical plane oriented along
     `reference_azimuth_deg` (measured CW from north). Plots collar at
     top, projected total-depth point at bottom, simple straight-line
     trace between (true desurvey lives in §17.1 gold table).
+
+    `holes_total` is how many holes the caller had before cutting the list
+    to `collars` (GIS audit 2026-10, #12). When it exceeds what is drawn the
+    title says "first N of M holes" and `layout.meta` carries both counts, so
+    a truncated section is never mistaken for the whole project.
     """
     az_rad = math.radians(reference_azimuth_deg)
     # Projection axis: x' = E*sin(az) + N*cos(az)
@@ -123,7 +129,12 @@ def long_section_figure(
             "hovertemplate": "%{fullData.name}<br>x=%{x:.0f} m<br>elev=%{y:.0f} m<extra></extra>",
         })
 
-    layout = _empty_layout(title or f"Long section (az={reference_azimuth_deg:.0f}°)", height=500)
+    heading = title or f"Long section (az={reference_azimuth_deg:.0f}°)"
+    if holes_total is not None and holes_total > len(collars):
+        heading += f" — first {len(collars)} of {holes_total} holes (by hole id)"
+    layout = _empty_layout(heading, height=500)
+    if holes_total is not None and holes_total > len(collars):
+        layout["meta"] = {"holes_shown": len(collars), "holes_total": holes_total}
     layout["xaxis"] = {"title": {"text": f"Distance along section (m, +az={reference_azimuth_deg:.0f}°)"}}
     layout["yaxis"] = {"title": {"text": "Elevation (m)"}, "scaleanchor": "x", "scaleratio": 1}
     return {"data": traces, "layout": layout}

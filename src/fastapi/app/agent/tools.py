@@ -196,6 +196,16 @@ class CollarRecord:
     file supplied, in whatever CRS it used. The only collar geometry is
     ``geom_4326`` (the SRID-32613 ``geom`` twin was retired 2026-09-29), and
     the agent is instructed to cite these numerics verbatim.
+
+    THEIR CRS IS NOT RECORDED PER ROW. Two collars of one project can come
+    from files in different zones or units, so easting/northing are not
+    comparable between collars and are not a position on the earth; the
+    longitude / latitude pair (WGS84) is. ``georef_method``, ``crs_confidence``
+    and ``spatial_uncertainty_m`` say how far to trust where the collar sits
+    (GIS audit 2026-10). They are kept out of ``repr`` (the context window
+    shows ``position_caveat`` in words instead) and the numeric two are
+    non-content keys for the Layer 3 guard: a confidence or an uncertainty is
+    not data a claim may be grounded on.
     """
 
     hole_id: str
@@ -214,6 +224,53 @@ class CollarRecord:
     drill_date: str | None
     longitude: float | None = None
     latitude: float | None = None
+    #: silver.collars.georef_method: 'declared' | 'detected' | 'assumed' |
+    #: 'manual' | 'survey'; None when the row records none.
+    georef_method: str | None = field(default=None, repr=False)
+    #: silver.collars.crs_confidence, 0..1: how well the coordinates fit the
+    #: CRS they were read as. None when not scored.
+    crs_confidence: float | None = field(default=None, repr=False)
+    #: silver.collars.spatial_uncertainty_m: the stated horizontal
+    #: uncertainty of the position, metres. None when not recorded.
+    spatial_uncertainty_m: float | None = field(default=None, repr=False)
+    #: Plain words, no digits, for what is doubtful about the position (see
+    #: ``position_caveat``); None when nothing is.
+    position_caveat: str | None = field(default=None, repr=False)
+
+
+#: spatial_parser warns ``crs_low_confidence`` below this; the same line.
+_LOW_CRS_CONFIDENCE = 0.5
+
+
+def _as_float(value: Any) -> float | None:
+    """A REAL column as a float, None staying None."""
+    return None if value is None else float(value)
+
+
+def position_caveat(
+    georef_method: str | None, crs_confidence: float | None,
+) -> str | None:
+    """Words for what is doubtful about a collar's position, or None.
+
+    Deliberately free of digits: the confidence and the uncertainty are not
+    evidence a numeric claim may be grounded on (Layer 3), so the model is
+    told that a position is doubtful, never handed a number to quote.
+    """
+    parts: list[str] = []
+    if georef_method == "assumed":
+        parts.append("coordinate system was ASSUMED, not declared by the source file")
+    if crs_confidence is not None and crs_confidence < _LOW_CRS_CONFIDENCE:
+        parts.append("the coordinates fit their stated coordinate system poorly")
+    return "; ".join(parts) or None
+
+
+#: What easting / northing are, for every tool that returns them. No digits.
+COLLAR_COORDINATE_NOTE = (
+    "easting and northing are exactly as the source file supplied them, in that "
+    "file's own coordinate system, which is not recorded per collar and may "
+    "differ between collars; do not compare them across holes or present them "
+    "as map coordinates. longitude and latitude are WGS84."
+)
 
 
 @dataclass
@@ -233,6 +290,16 @@ class SpatialQueryResult:
     #: "timeout" / "error" when the query did not complete, so an outage is
     #: reported rather than read as "no holes" (audit item 12).
     retrieval_failure: str | None = None
+    #: How the search centre (center_easting / center_northing) was read, or
+    #: None when no centre was given: "EPSG:4326 (longitude/latitude)", the
+    #: project's declared CRS, or the 32613 DEFAULT. A centre in the wrong CRS
+    #: finds nothing, so an empty result must say which one was used.
+    centre_crs: str | None = None
+    #: True when the project declares no CRS and the 32613 default was applied
+    #: to a projected centre.
+    centre_crs_defaulted: bool = False
+    #: What easting / northing mean (see CollarRecord). No digits.
+    coordinate_note: str = COLLAR_COORDINATE_NOTE
 
 
 @dataclass
@@ -789,6 +856,7 @@ async def query_spatial_collars(
     # their historical behaviour unchanged.
     workspace_id = ctx.deps.workspace_id
     spatial_filter = ""
+    centre_srid_sql: str | None = None
     bind_args: list = [project_id]
     param_idx = 2  # $1 already used for project_id
 
@@ -815,13 +883,23 @@ async def query_spatial_collars(
         # geography, so radius_m is metres wherever the project is. The
         # geography cast gives up the GIST index; a project holds thousands
         # of collars, not millions, and the project_id filter bounds it.
+        # The CRS of the centre: lon/lat when it fits, else the project's
+        # declared CRS, else the 32613 DEFAULT. Built once and reused to REPORT
+        # which was used (centre_srid_sql, $1 = project, $2/$3 = the centre) -
+        # a silent default is how a search finds nothing and nobody knows why.
+        def _centre_srid(x: str, y: str) -> str:
+            return (
+                f"CASE WHEN abs({x}::double precision) <= 180"
+                f" AND abs({y}::double precision) <= 90 THEN 4326"
+                f" ELSE COALESCE((SELECT p.crs_epsg FROM silver.projects p"
+                f" WHERE p.project_id = $1::uuid), 32613) END"
+            )
+
+        centre_srid_sql = _centre_srid("$2", "$3")
         spatial_filter = (
             f" AND ST_DWithin(geom_4326::geography, ST_Transform(ST_SetSRID("
             f"ST_MakePoint(${param_idx}::double precision, ${param_idx + 1}::double precision),"
-            f" CASE WHEN abs(${param_idx}::double precision) <= 180"
-            f" AND abs(${param_idx + 1}::double precision) <= 90 THEN 4326"
-            f" ELSE COALESCE((SELECT p.crs_epsg FROM silver.projects p"
-            f" WHERE p.project_id = $1::uuid), 32613) END), 4326)::geography,"
+            f" {_centre_srid(f'${param_idx}', f'${param_idx + 1}')}), 4326)::geography,"
             f" ${param_idx + 2}::double precision)"
         )
         bind_args.extend([center_easting, center_northing, radius_m])
@@ -853,6 +931,10 @@ async def query_spatial_collars(
         "drill_date::text, "
         "ST_X(geom_4326) AS longitude, "
         "ST_Y(geom_4326) AS latitude, "
+        # How far to trust the position (GIS audit 2026-10): the CRS method and
+        # fit, and the stated uncertainty. The CRS of easting/northing is not
+        # on the row.
+        "georef_method, crs_confidence, spatial_uncertainty_m, "
         # Matching rows BEFORE the LIMIT: the sample below is alphabetical
         # and capped, so len(rows) says nothing about the project.
         "COUNT(*) OVER() AS total_count "
@@ -890,9 +972,40 @@ async def query_spatial_collars(
                     drill_date=row["drill_date"],
                     longitude=row["longitude"],
                     latitude=row["latitude"],
+                    georef_method=row.get("georef_method"),
+                    crs_confidence=_as_float(row.get("crs_confidence")),
+                    spatial_uncertainty_m=_as_float(row.get("spatial_uncertainty_m")),
+                    position_caveat=position_caveat(
+                        row.get("georef_method"), _as_float(row.get("crs_confidence")),
+                    ),
                 )
                 for row in rows
             ], _total
+
+    async def _centre_crs() -> tuple[str, bool] | None:
+        """Which CRS the search centre was read in, by the SAME CASE the filter uses."""
+        if centre_srid_sql is None:
+            return None
+        async with ctx.deps.acquire_scoped() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {centre_srid_sql} AS srid, "
+                "NOT EXISTS (SELECT 1 FROM silver.projects p "
+                "WHERE p.project_id = $1::uuid AND p.crs_epsg IS NOT NULL) AS defaulted",
+                project_id, center_easting, center_northing,
+            )
+        if row is None:
+            return None
+        srid, defaulted = int(row["srid"]), bool(row["defaulted"])
+        if srid == 4326:
+            return "EPSG:4326 (longitude/latitude)", False
+        if defaulted:
+            return (
+                f"EPSG:{srid} (the DEFAULT: this project declares no CRS, so the "
+                "centre was read as UTM zone 13N; if it is not, the search is in "
+                "the wrong place)",
+                True,
+            )
+        return f"EPSG:{srid} (the project's declared CRS)", False
 
     failure: str | None = None
     total_count: int | None = None
@@ -913,12 +1026,25 @@ async def query_spatial_collars(
         collars = []
         failure = "error"
 
+    centre_crs: str | None = None
+    centre_crs_defaulted = False
+    if failure is None:
+        try:
+            decided = await asyncio.wait_for(_centre_crs(), timeout=settings.TIMEOUT_POSTGIS_S)
+        except Exception:  # noqa: BLE001 - an enrichment: the search itself already ran
+            logger.warning("query_spatial_collars: could not resolve the centre CRS", exc_info=True)
+            decided = None
+        if decided is not None:
+            centre_crs, centre_crs_defaulted = decided
+
     return SpatialQueryResult(
         collars=collars,
         count=len(collars),
         data_source="PostGIS silver.collars",
         total_count=total_count,
         retrieval_failure=failure,
+        centre_crs=centre_crs,
+        centre_crs_defaulted=centre_crs_defaulted,
     )
 
 
@@ -1119,7 +1245,8 @@ async def query_downhole_logs(
         "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, drill_date::text, "
         "ST_X(geom_4326) AS longitude, "
-        "ST_Y(geom_4326) AS latitude "
+        "ST_Y(geom_4326) AS latitude, "
+        "georef_method, crs_confidence, spatial_uncertainty_m "
         "FROM silver.collars "
         f"WHERE project_id = $1 AND UPPER(hole_id) = UPPER($2){workspace_clause} "
         "LIMIT 1"
@@ -1157,6 +1284,13 @@ async def query_downhole_logs(
                 drill_date=collar_row["drill_date"],
                 longitude=collar_row["longitude"],
                 latitude=collar_row["latitude"],
+                georef_method=collar_row.get("georef_method"),
+                crs_confidence=_as_float(collar_row.get("crs_confidence")),
+                spatial_uncertainty_m=_as_float(collar_row.get("spatial_uncertainty_m")),
+                position_caveat=position_caveat(
+                    collar_row.get("georef_method"),
+                    _as_float(collar_row.get("crs_confidence")),
+                ),
             )
 
         intervals = [
@@ -4005,6 +4139,10 @@ class StereonetResult:
     data_source: str = (
         "PostGIS gold.structure_measurements_visual + mplstereonet server-render"
     )
+    #: Measurements on record that have no orientation (a NULL dip or dip
+    #: direction, so no stereonet x/y) and are therefore NOT plotted. They used
+    #: to be plotted at the centre of the net, i.e. as horizontal beds.
+    unoriented_count: int = 0
 
 
 # Cap render size so a project with thousands of measurements doesn't
@@ -4217,14 +4355,28 @@ async def query_stereonet(
         )
         raw_rows = []
 
-    sampled = _downsample_stereonet_points(raw_rows)
+    # promote_silver_to_gold writes stereonet_x/_y exactly when it writes a dip
+    # and a dip direction, and NULL otherwise: a NULL pair means the
+    # measurement has no orientation. It used to be coerced to 0.0 - the centre
+    # of the net, where the pole of a HORIZONTAL bed plots - which invented a
+    # population of flat-lying structures (GIS audit 2026-10). Never substitute
+    # 0: leave the row out and count it. Done before the downsample so the cap
+    # is not spent on rows that cannot be drawn.
+    oriented = [
+        r for r in raw_rows
+        if r.get("stereonet_x") is not None and r.get("stereonet_y") is not None
+    ]
+    unoriented = len(raw_rows) - len(oriented)
+    if unoriented:
+        logger.info(
+            "query_stereonet: %d of %d measurement(s) have no orientation and "
+            "are not plotted project=%s",
+            unoriented, len(raw_rows), project_id,
+        )
+    sampled = _downsample_stereonet_points(oriented)
 
     points: list[StereonetPoint] = []
     for r in sampled:
-        # Defensive: stereonet_x/_y are mandatory in the gold table for
-        # planar measurements but lineation-only rows may carry NULLs.
-        # Fall back to 0/0 so the dataclass shape is preserved; the
-        # renderer uses strike/dip or trend/plunge directly anyway.
         points.append(StereonetPoint(
             depth=r.get("depth"),
             structure_type=r.get("structure_type") or "other",
@@ -4233,8 +4385,8 @@ async def query_stereonet(
             dip_direction_deg=r.get("dip_direction_deg"),
             plunge_deg=r.get("plunge_deg"),
             trend_deg=r.get("trend_deg"),
-            stereonet_x=float(r.get("stereonet_x") or 0.0),
-            stereonet_y=float(r.get("stereonet_y") or 0.0),
+            stereonet_x=float(r["stereonet_x"]),
+            stereonet_y=float(r["stereonet_y"]),
             source_row_id=str(r.get("source_row_id") or ""),
         ))
 
@@ -4255,6 +4407,7 @@ async def query_stereonet(
         project_id=project_id,
         workspace_id=workspace_id,
         count=len(points),
+        unoriented_count=unoriented,
     )
 
 
@@ -4281,12 +4434,21 @@ class DrillTraceCollar:
     total_depth: float | None
     hole_type: str
     status: str
-    azimuth: float
-    dip: float
+    #: The collar row's own azimuth / dip, as stored - None when the row
+    #: records none. They were COALESCEd to 0 / -90 (due north, vertical)
+    #: in SQL until the GIS audit 2026-10, which made "not recorded" read as
+    #: a recorded vertical hole.
+    azimuth: float | None
+    dip: float | None
     # 2 points (collar + toe) for straight-line traces; N points along
     # the LINESTRINGZ for surveyed deviation. Each carries depth_m so
     # the React layer can interpolate interval colouring along the trace.
     trace_points: list[dict]
+    #: Where the drawn path's direction comes from: "surveyed" (the stored
+    #: desurveyed trace) or "unknown" (no stored trace - the path is a
+    #: vertical placeholder whose toe is flagged ``extrapolated`` + ``assumed``,
+    #: drawn from nothing but the collar position and total depth).
+    orientation: str = "unknown"
 
 
 @dataclass
@@ -4444,8 +4606,8 @@ async def query_drill_traces_3d(
             c.status                                            AS status,
             COALESCE({EFFECTIVE_ELEVATION_SQL}, 0.0)::float AS elevation,
             c.total_depth::float                                AS total_depth,
-            COALESCE(c.azimuth, 0.0)::float                     AS azimuth,
-            COALESCE(c.dip, -90.0)::float                       AS dip,
+            c.azimuth::float                                    AS azimuth,
+            c.dip::float                                        AS dip,
             ST_X(c.geom_4326)::float                            AS longitude,
             ST_Y(c.geom_4326)::float                            AS latitude,
             ST_AsText(t.geom)                                   AS trace_wkt
@@ -4502,9 +4664,9 @@ async def query_drill_traces_3d(
         if not cid:
             continue
         # GIS-8/GIS-21: position from geom_4326, and a collar without one is
-        # skipped — `or 0.0` drew it on Null Island. `is None`, not `or`,
-        # for the attitude too: `dip or -90.0` turned a horizontal hole
-        # (dip 0.0) into a vertical one.
+        # skipped — `or 0.0` drew it on Null Island. The attitude is kept as
+        # stored, `is None` and never `or`: `dip or -90.0` turned a horizontal
+        # hole (dip 0.0) into a vertical one.
         if r.get("longitude") is None or r.get("latitude") is None:
             continue
         lon = float(r["longitude"])
@@ -4514,8 +4676,10 @@ async def query_drill_traces_3d(
         # stored trace (if any) is drawn as-is, and the placeholder below
         # collapses to the collar point rather than inventing a length.
         td = float(r["total_depth"]) if r.get("total_depth") is not None else None
-        az = float(r["azimuth"]) if r.get("azimuth") is not None else 0.0
-        dip = float(r["dip"]) if r.get("dip") is not None else -90.0
+        # As stored: None means the collar row records no orientation. It is
+        # NOT 0 (due north) / -90 (vertical) - that was the old COALESCE.
+        az = float(r["azimuth"]) if r.get("azimuth") is not None else None
+        dip = float(r["dip"]) if r.get("dip") is not None else None
 
         wkt_points = _parse_linestring_z_points(r.get("trace_wkt") or "")
         if wkt_points:
@@ -4524,18 +4688,34 @@ async def query_drill_traces_3d(
             # INDEX, which misplaced every interval on unevenly spaced surveys.
             from app.agent.trace_depth import trace_points_with_depth  # noqa: PLC0415
 
+            # `collar=` is the backstop for traces built before the collar
+            # vertex was written: depth is measured from vertex 0, so vertex 0
+            # has to be the collar (GIS audit 2026-10).
             trace_points = trace_points_with_depth(
                 wkt_points, td, max_points=_DRILL_TRACE_MAX_POINTS_PER_TRACE,
+                collar=(lon, lat, elev),
             )
+            orientation = "surveyed"
         else:
             # Fallback when silver.drill_traces has no row for this
             # collar (e.g. unusable orientation). Emit a 2-point vertical
             # placeholder so the card still renders the hole position.
+            #
+            # The placeholder is NOT a measurement and must not read as one:
+            # nothing says the hole is vertical, or that it is placeholder_td
+            # long when td is None (it then collapses to the collar point).
+            # Its toe is flagged `extrapolated` - the card already draws
+            # those dashed - and `assumed`, and the collar says its
+            # orientation is "unknown" (GIS audit 2026-10).
             placeholder_td = td or 0.0
             trace_points = [
-                {"x": lon, "y": lat, "z": elev, "depth_m": 0.0},
-                {"x": lon, "y": lat, "z": elev - placeholder_td, "depth_m": placeholder_td},
+                {"x": lon, "y": lat, "z": elev, "depth_m": 0.0, "extrapolated": False},
+                {
+                    "x": lon, "y": lat, "z": elev - placeholder_td,
+                    "depth_m": placeholder_td, "extrapolated": True, "assumed": True,
+                },
             ]
+            orientation = "unknown"
 
         collars.append(DrillTraceCollar(
             hole_id=str(r.get("hole_id") or ""),
@@ -4549,6 +4729,7 @@ async def query_drill_traces_3d(
             azimuth=az,
             dip=dip,
             trace_points=trace_points,
+            orientation=orientation,
         ))
         collar_ids.append(cid)
 

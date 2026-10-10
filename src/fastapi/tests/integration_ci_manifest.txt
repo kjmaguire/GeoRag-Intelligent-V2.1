@@ -116,3 +116,25 @@ tests/test_spatial_plans_prepare_integration.py
 # The unit tests drive it through a scripted connection, so only this file
 # executes the stale-clearing, unnest UPDATE and datum-withdrawal statements.
 tests/test_dem_elevation_pg.py
+
+# ── Drill traces and stereonet poles (GIS audit 2026-10) ───────────────
+# The stored trace must start at the collar (the ST_Translate/ST_Transform that
+# puts the metre offsets onto it only runs here) and gold stereonet_x/y must be
+# the pole of the plane (an expression inside one INSERT ... SELECT).
+tests/test_promote_gis_pg.py
+
+# ── Coverage-density grid (GIS audit 2026-10) ───────────────────────────
+# silver.coverage_density is a plpgsql function, so cell size on the ground,
+# the intersects-not-contains counting and the 54000 refusal of an unbounded
+# extent only exist when it runs against a migrated PostGIS.
+tests/test_coverage_density_pg.py
+
+# ── Long-section chart query (GIS audit 2026-10) ────────────────────────
+# The hole count is a window function evaluated ahead of LIMIT, and the metres
+# come out of one local UTM frame: only a database proves either.
+tests/test_viz_long_section_pg.py
+
+# ── MVT tile functions: bounding-box prefilter on the 4326 column (GIS audit 2026-10) ──
+# A wrong prefilter silently drops features at tile edges; only a database can say
+# what a tile still contains.
+tests/test_mvt_tile_prefilter_pg.py

@@ -675,6 +675,10 @@ _NON_CONTENT_KEYS: frozenset[str] = frozenset((
     "pg_id", "source_id", "source_feature_id", "staleness_seconds",
     "source_row_id", "source_row_ids", "log_id", "entity_id", "slug",
     "license_url", "source_url", "license_summary", "canonical_type",
+    # A collar's stated position uncertainty is metadata about the position,
+    # not a value a claim may be grounded on (crs_confidence is already
+    # excluded by _NON_CONTENT_KEY_RE). GIS audit 2026-10.
+    "spatial_uncertainty_m",
 ))
 _NON_CONTENT_KEY_RE = re.compile(
     r"(?:_id|_ids|_uuid|_url|_at|_key|_sha256|_hash)$|^page|score|confidence|"

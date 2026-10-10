@@ -366,3 +366,94 @@ class TestGisAudit20260929:
         )
         depths = [tp["depth_m"] for tp in result.collars[0].trace_points]
         assert depths == pytest.approx([0.0, 12.0, 24.0, 300.0])
+
+
+class TestGisAudit202610:
+    """Findings 1 and 11: the collar vertex backstop; no invented orientation."""
+
+    # ---- finding 1 -------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_a_trace_stored_without_a_collar_vertex_is_anchored_at_the_collar(self) -> None:
+        # What the version-2 builder wrote for stations at 30 / 100 / 300 m on
+        # a vertical hole from a 2000 m collar: vertex 0 is md 30.
+        wkt = "LINESTRING Z (-108.0 56.0 1970.0, -108.0 56.0 1900.0, -108.0 56.0 1700.0)"
+        pool = _MultiQueryPool(collar_rows=[_collar_row(trace_wkt=wkt)])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        tp = result.collars[0].trace_points
+        assert [p["depth_m"] for p in tp] == pytest.approx([0.0, 30.0, 100.0, 300.0])
+        assert tp[0]["z"] == pytest.approx(2000.0)
+        assert not any(p["extrapolated"] for p in tp), "no phantom tail past the last station"
+
+    @pytest.mark.asyncio
+    async def test_a_trace_that_starts_at_the_collar_is_untouched(self) -> None:
+        wkt = "LINESTRING Z (-108.0 56.0 2000.0, -108.0 56.0 1970.0, -108.0 56.0 1700.0)"
+        pool = _MultiQueryPool(collar_rows=[_collar_row(trace_wkt=wkt)])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        assert [p["depth_m"] for p in result.collars[0].trace_points] == pytest.approx([0.0, 30.0, 300.0])
+
+    # ---- finding 11 ------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_the_collar_sql_no_longer_invents_an_orientation(self) -> None:
+        pool = _MultiQueryPool(collar_rows=[_collar_row()])
+        await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        first_sql, _ = pool.captured[0]
+        assert "COALESCE(c.azimuth" not in first_sql
+        assert "COALESCE(c.dip" not in first_sql
+        assert "c.azimuth::float" in first_sql and "c.dip::float" in first_sql
+
+    @pytest.mark.asyncio
+    async def test_a_null_orientation_reaches_the_result_as_none_not_north_and_vertical(self) -> None:
+        pool = _MultiQueryPool(collar_rows=[_collar_row(trace_wkt=None, azimuth=None, dip=None)])  # type: ignore[arg-type]
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        collar = result.collars[0]
+        assert collar.azimuth is None and collar.dip is None
+        assert collar.orientation == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_zero_azimuth_is_kept_as_zero(self) -> None:
+        pool = _MultiQueryPool(collar_rows=[_collar_row(azimuth=0.0, dip=0.0)])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        assert result.collars[0].azimuth == 0.0 and result.collars[0].dip == 0.0
+
+    @pytest.mark.asyncio
+    async def test_the_vertical_placeholder_is_flagged_not_presented_as_measured(self) -> None:
+        pool = _MultiQueryPool(collar_rows=[_collar_row(trace_wkt=None)])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        collar = result.collars[0]
+        collar_pt, toe = collar.trace_points
+        assert collar_pt["extrapolated"] is False and "assumed" not in collar_pt
+        assert toe["extrapolated"] is True and toe["assumed"] is True
+        assert collar.orientation == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_a_stored_trace_is_surveyed_and_its_points_are_not_assumed(self) -> None:
+        pool = _MultiQueryPool(collar_rows=[_collar_row()])
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        collar = result.collars[0]
+        assert collar.orientation == "surveyed"
+        assert not any(p.get("assumed") for p in collar.trace_points)
+
+    @pytest.mark.asyncio
+    async def test_a_stored_trace_with_no_collar_orientation_is_still_surveyed(self) -> None:
+        """Holes with a survey file and no azimuth/dip on the collar row are common."""
+        pool = _MultiQueryPool(collar_rows=[_collar_row(azimuth=None, dip=None)])  # type: ignore[arg-type]
+        result = await query_drill_traces_3d(
+            deps=_make_deps(pg_pool=pool), workspace_id=WORKSPACE_ID, project_id=PROJECT_ID,
+        )
+        collar = result.collars[0]
+        assert (collar.azimuth, collar.dip) == (None, None)
+        assert collar.orientation == "surveyed"

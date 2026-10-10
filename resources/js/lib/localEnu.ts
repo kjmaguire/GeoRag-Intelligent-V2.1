@@ -32,12 +32,29 @@ export function metresPerDegree(latDeg: number): { lon: number; lat: number } {
     return { lon: n * Math.cos(phi) * DEG, lat: m * DEG };
 }
 
-/** Mean of the given points, as the ENU origin. */
+/**
+ * A longitude difference as the short way round, in [-180, 180].
+ *
+ * A project that straddles the antimeridian has collars at 179.9° and
+ * -179.9°: subtracting the raw values is 359.8° (about 20,000 km) rather than
+ * the 0.2° (about 13 km) between them.
+ */
+export function wrapLonDelta(deltaDeg: number): number {
+    return ((((deltaDeg + 180) % 360) + 360) % 360) - 180;
+}
+
+/**
+ * Mean of the given points, as the ENU origin. Longitudes are averaged about
+ * the first one (by the short way round), so a project that straddles the
+ * antimeridian gets an origin inside it, not on the far side of the earth.
+ */
 export function centroidOrigin(points: ReadonlyArray<{ lon: number; lat: number }>): LonLatOrigin | null {
     const valid = points.filter((p) => Number.isFinite(p.lon) && Number.isFinite(p.lat));
     if (valid.length === 0) return null;
+    const ref = valid[0].lon;
+    const meanDelta = valid.reduce((s, p) => s + wrapLonDelta(p.lon - ref), 0) / valid.length;
     return {
-        lon: valid.reduce((s, p) => s + p.lon, 0) / valid.length,
+        lon: wrapLonDelta(ref + meanDelta),
         lat: valid.reduce((s, p) => s + p.lat, 0) / valid.length,
     };
 }
@@ -45,5 +62,5 @@ export function centroidOrigin(points: ReadonlyArray<{ lon: number; lat: number 
 /** Build a converter from lon/lat to east/north metres about `origin`. */
 export function toLocalMetres(origin: LonLatOrigin): (lon: number, lat: number) => { east: number; north: number } {
     const k = metresPerDegree(origin.lat);
-    return (lon, lat) => ({ east: (lon - origin.lon) * k.lon, north: (lat - origin.lat) * k.lat });
+    return (lon, lat) => ({ east: wrapLonDelta(lon - origin.lon) * k.lon, north: (lat - origin.lat) * k.lat });
 }

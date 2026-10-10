@@ -30,7 +30,8 @@ What this test pins
    workspace_id (Pydantic raises on instantiation without it).
 5. ``bootstrap_workspace_id`` rejects unknown reasons (every bootstrap
    site is an explicit allow-list entry).
-6. The reference router (visualizations) uses OptionalWorkspace.
+6. The router that used OptionalWorkspace (visualizations) resolves its workspace
+   from the JWT instead - request.state.workspace_id is never populated.
 
 Why pin file content + behavior
 --------------------------------
@@ -290,13 +291,18 @@ def test_bootstrap_allow_list_is_a_frozenset() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. Reference router (visualizations) uses the typed Depends
+# 6. visualizations resolves its workspace from the JWT, not request.state
 # ---------------------------------------------------------------------------
 
 
-def test_visualizations_router_uses_optional_workspace_depends() -> None:
-    """Belt-and-suspenders pin — the migration of visualizations.py
-    to OptionalWorkspace is the reference for the other 6 routers."""
+def test_visualizations_router_resolves_its_workspace_from_the_jwt() -> None:
+    """GIS audit 2026-10, finding 13. visualizations.py was the one router on
+    OptionalWorkspace, and nothing in the app ever sets
+    ``request.state.workspace_id``, so ``ws`` was always None and every
+    real-data branch ran as the default tenant. It resolves through
+    ``resolve_workspace_id`` now, like routers/coverage.py; the behaviour is
+    pinned in tests/test_viz_chart_workspace.py, this keeps the shape from
+    drifting back."""
     import app as _app_pkg
 
     router_path = (
@@ -304,15 +310,13 @@ def test_visualizations_router_uses_optional_workspace_depends() -> None:
     )
     src = router_path.read_text(encoding="utf-8")
 
-    assert "from app.agent.workspace_dependency import" in src, (
-        "visualizations.py must import from workspace_dependency. If "
-        "you reverted to the raw `hasattr(request.state, ...)` pattern, "
-        "you reverted REC#1's reference site."
+    assert "resolve_workspace_id" in src and "extract_user_context" in src, (
+        "visualizations.py must resolve the workspace from the caller's JWT "
+        "(services.workspace_resolution.resolve_workspace_id)."
     )
-    assert "OptionalWorkspace" in src, (
-        "visualizations.py must use OptionalWorkspace (chart gallery "
-        "genuinely serves anonymous traffic). RequiredWorkspace would "
-        "break the demo path."
+    assert "OptionalWorkspace" not in src, (
+        "request.state.workspace_id is never populated, so OptionalWorkspace "
+        "is always None and the router would serve the default tenant."
     )
 
 

@@ -102,6 +102,11 @@ def _build_context(
         if isinstance(result, SpatialQueryResult):
             record_lines.append("[SOURCE: PostGIS — authoritative database, confidence=HIGH]")
             record_lines.append(f"Spatial query returned {result.count} drill hole collar(s):")
+            # GIS audit 2026-10: easting/northing carry no CRS of their own.
+            if getattr(result, "coordinate_note", None):
+                record_lines.append(f"NOTE: {result.coordinate_note}")
+            if getattr(result, "centre_crs", None):
+                record_lines.append(f"search centre read as {result.centre_crs}")
             collar_cap = settings.MAX_CONTEXT_COLLARS
             for collar in result.collars[:collar_cap]:
                 record_lines.append(
@@ -112,6 +117,11 @@ def _build_context(
                     f"hole_type={collar.hole_type}, "
                     f"status={collar.status}, "
                     f"drill_date={collar.drill_date}"
+                    + (
+                        f", position: {collar.position_caveat}"
+                        if getattr(collar, "position_caveat", None)
+                        else ""
+                    )
                 )
             if result.count > collar_cap:
                 record_lines.append(

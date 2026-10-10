@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Services\Collars\SurveyAzimuthReference;
 use App\Support\HoleId;
 use App\Support\HoleStripTracks;
 use App\Support\SetsWorkspaceRlsContext;
@@ -62,6 +63,15 @@ class WorkspaceController extends Controller
      * looks it up again; that value must not be served meanwhile.
      */
     private const TERRAIN_LOOKUP_CURRENT = 'elevation_dem_geom IS NOT NULL AND ST_Equals(elevation_dem_geom, geom_4326)';
+
+    /**
+     * The UTM zone a collar sits in, as an EPSG code (326xx north, 327xx
+     * south), from geom_4326. The same rule as promote_silver_to_gold's
+     * _collar_local_utm: zone from longitude, clamped to 1..60, hemisphere
+     * from latitude.
+     */
+    private const LOCAL_UTM_SRID_SQL = '(CASE WHEN ST_Y(geom_4326) >= 0 THEN 32600 ELSE 32700 END)'
+        .' + LEAST(60, GREATEST(1, FLOOR((ST_X(geom_4326) + 180) / 6)::int + 1))';
 
     private const MAX_INTERVAL_HOLES = 200;
 
@@ -131,6 +141,12 @@ class WorkspaceController extends Controller
                 ->orderBy('collar_id')
                 ->limit(self::MAX_WORKSPACE_COLLARS)
                 ->get();
+
+            // The collar's own azimuth, relative to true north when the
+            // project declares which north its azimuths are measured from
+            // (empty, and free, when it does not). The 3D frame's north is
+            // true north; GIS audit 2026-10.
+            $collarAzimuths = $this->collarAzimuthsRelativeToTrueNorth($project, $collars);
 
             $collarsTotal = $collars->count();
             if ($collarsTotal >= self::MAX_WORKSPACE_COLLARS) {
@@ -678,8 +694,9 @@ class WorkspaceController extends Controller
                     'total_ore_thickness_m' => round($totalOreThicknessM, 1),
                     'mean_u3o8_pct' => $meanU3o8Pct !== null ? round($meanU3o8Pct, 4) : null,
                 ],
-                'collars' => $collars->map(function ($c) use ($oreBandsByCollar) {
+                'collars' => $collars->map(function ($c) use ($oreBandsByCollar, $collarAzimuths) {
                     $ore = $oreBandsByCollar[(string) $c->collar_id] ?? ['count' => 0, 'thickness_m' => 0];
+                    $azimuth = $collarAzimuths[(string) $c->collar_id] ?? null;
 
                     return [
                         'collar_id' => (string) $c->collar_id,
@@ -699,8 +716,17 @@ class WorkspaceController extends Controller
                         'crs_confidence' => isset($c->crs_confidence) ? (float) $c->crs_confidence : null,
                         'georef_method' => $c->georef_method ?? null,
                         // Orientation triple + classification — feeds the 3D
-                        // Trajectories sub-view in MODE=3D.
-                        'azimuth' => isset($c->azimuth) ? (float) $c->azimuth : null,
+                        // Trajectories sub-view in MODE=3D. `azimuth` is
+                        // relative to TRUE north (the 3D frame's north) when
+                        // the project declares a reference; `azimuth_recorded`
+                        // is what the collar table holds, sent only when the
+                        // two differ. See SurveyAzimuthReference.
+                        'azimuth' => $azimuth['azimuth'] ?? (isset($c->azimuth) ? (float) $c->azimuth : null),
+                        'azimuth_recorded' => $azimuth['azimuth_recorded'] ?? null,
+                        // True when the project declares a reference that could
+                        // not be applied (magnetic with no declination, or no
+                        // usable grid): `azimuth` is then the recorded one.
+                        'azimuth_unapplied' => $azimuth['azimuth_unapplied'] ?? false,
                         'dip' => isset($c->dip) ? (float) $c->dip : null,
                         'elevation' => isset($c->elevation) ? (float) $c->elevation : null,
                         'elevation_source' => isset($c->elevation)
@@ -825,6 +851,137 @@ class WorkspaceController extends Controller
     }
 
     /**
+     * Clockwise angle from grid north to true north, in degrees, at each
+     * collar: in the collar's own UTM zone (`local`) and in the project's CRS
+     * (`project`; null when the project has none, when it is the collar's own
+     * zone, or when the code is not in spatial_ref_sys).
+     *
+     * Measured the way promote_silver_to_gold measures it
+     * (azimuth_reference.true_north_bearing_in_grid): a short step due north
+     * along the meridian is projected into the grid and its bearing read off,
+     * here by PostGIS' PROJ. East of a UTM central meridian in the northern
+     * hemisphere true north lies WEST of grid north, so the angle is negative
+     * there. Both agree with pyproj to 1e-8 degrees (the golden values are in
+     * the tests on both sides).
+     *
+     * Runs in its own savepoint; a failure (a CRS PROJ cannot use) returns an
+     * empty map, which the caller reports as "could not apply", not as zero.
+     *
+     * @param list<string> $collarIds
+     *
+     * @return array<string, array{local: float|null, project: float|null}>
+     */
+    private function trueNorthBearings(array $collarIds, ?int $projectEpsg): array
+    {
+        if ($collarIds === []) {
+            return [];
+        }
+
+        $projectSrid = $projectEpsg !== null && $projectEpsg > 0 ? $projectEpsg : null;
+        $bearing = static fn (string $srid): string => 'degrees(ST_Azimuth(ST_Transform(g, '.$srid.'), '
+            .'ST_Transform(ST_Translate(g, 0, 0.0001), '.$srid.')))';
+        // ST_Azimuth is [0, 360); a bearing past 180 is a negative angle.
+        $signed = static fn (string $deg): string => 'CASE WHEN '.$deg.' > 180 THEN '.$deg.' - 360 ELSE '.$deg.' END';
+
+        $projectBearing = $projectSrid === null
+            ? 'NULL::float8'
+            : 'CASE WHEN '.$projectSrid.' <> local_srid AND EXISTS (SELECT 1 FROM spatial_ref_sys WHERE srid = '.$projectSrid.') '
+                .'THEN '.$signed($bearing((string) $projectSrid)).' END';
+
+        $sp = $this->openSavepoint();
+        try {
+            $inner = DB::table('silver.collars')
+                ->whereIn('collar_id', $collarIds)
+                ->whereNotNull('geom_4326')
+                ->selectRaw('collar_id, geom_4326 AS g, '.self::LOCAL_UTM_SRID_SQL.' AS local_srid');
+            $rows = DB::query()->fromSub($inner, 'c')
+                ->selectRaw('collar_id, '.$signed($bearing('local_srid')).' AS local_theta, '.$projectBearing.' AS project_theta')
+                ->get();
+            $this->releaseSavepoint($sp);
+        } catch (\Throwable $e) {
+            $this->rollBackToSavepoint($sp);
+            Log::warning('workspace: grid convergence unavailable; declared grid azimuths are drawn as recorded', ['error' => $e->getMessage()]);
+
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $r) {
+            $out[(string) $r->collar_id] = [
+                'local' => $r->local_theta !== null ? (float) $r->local_theta : null,
+                'project' => $r->project_theta !== null ? (float) $r->project_theta : null,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * The grid the azimuths of a collar are relative to when they declare
+     * "grid north": the project's CRS if it is a different projection from the
+     * collar's own UTM zone, else the zone — promote_silver_to_gold's choice.
+     *
+     * @param array{local: float|null, project: float|null}|null $bearings
+     */
+    private static function gridTrueBearing(?array $bearings): ?float
+    {
+        return $bearings === null ? null : ($bearings['project'] ?? $bearings['local']);
+    }
+
+    /**
+     * Each collar's azimuth relative to TRUE north, for the collars with an
+     * azimuth when the project declares which north its azimuths are measured
+     * from. Empty when the project declares nothing (BOH / TOH declare
+     * nothing).
+     *
+     * The collar's own azimuth comes from the collar table, not a survey
+     * file, so only the project's declaration applies to it — the rule
+     * promote_silver_to_gold uses.
+     *
+     * @param Collection<int, \stdClass> $collars
+     *
+     * @return array<string, array{azimuth: float, azimuth_recorded?: float, azimuth_unapplied?: true}>
+     */
+    private function collarAzimuthsRelativeToTrueNorth(Project $project, Collection $collars): array
+    {
+        $reference = SurveyAzimuthReference::canonical($project->orientation_reference);
+        if ($reference === null) {
+            return [];
+        }
+        $declination = $project->magnetic_declination !== null ? (float) $project->magnetic_declination : null;
+        $bearings = $reference === SurveyAzimuthReference::GRID
+            ? $this->trueNorthBearings(
+                $collars->pluck('collar_id')->map(fn ($id) => (string) $id)->all(),
+                $project->crs_epsg !== null ? (int) $project->crs_epsg : null,
+            )
+            : [];
+
+        $out = [];
+        foreach ($collars as $c) {
+            if (! isset($c->azimuth)) {
+                continue;
+            }
+            $recorded = (float) $c->azimuth;
+            $id = (string) $c->collar_id;
+            $result = SurveyAzimuthReference::toTrueNorth(
+                $recorded,
+                $reference,
+                $declination,
+                self::gridTrueBearing($bearings[$id] ?? null),
+            );
+            $row = ['azimuth' => $result['azimuth']];
+            if ($result['unapplied']) {
+                $row['azimuth_unapplied'] = true;
+            } elseif ($result['azimuth'] !== $recorded) {
+                $row['azimuth_recorded'] = $recorded;
+            }
+            $out[$id] = $row;
+        }
+
+        return $out;
+    }
+
+    /**
      * The 3D / STRUCTURE payload: interval bands, survey stations, structures,
      * assay composites, significant intersections, structure discs and
      * commodity samples, all for exactly the collars the page returned.
@@ -940,7 +1097,24 @@ class WorkspaceController extends Controller
         // rows gets stations derived from silver.well_log_curves AZIMUTH +
         // SANG curves (Cameco binary .log corpus carries per-depth survey
         // angles on every hole but has never promoted them into the surveys
-        // table), downsampled to ~25 stations per hole.
+        // table), downsampled to ~25 stations per hole. No azimuth reference
+        // is known for those, so none is applied.
+        //
+        // AZIMUTH REFERENCE (GIS audit 2026-10): a station's own
+        // silver.surveys.azimuth_reference, else the project's declared
+        // orientation_reference, says which north its azimuth is measured
+        // from. promote_silver_to_gold converts it before it desurveys the
+        // map trace; the 3D frame was drawn from the raw numbers, so a
+        // magnetic or non-local-grid hole was rotated against its own trace.
+        // `azimuth` below is relative to TRUE north (the 3D frame's north);
+        // `azimuth_recorded` is the stored value, sent when it differs, and
+        // `azimuth_unapplied` marks a declared reference that could not be
+        // applied (magnetic with no declination, or no usable grid), whose
+        // azimuth is still the recorded one. A station with NO declaration is
+        // drawn at its recorded azimuth — see SurveyAzimuthReference.
+        $projectReference = SurveyAzimuthReference::canonical($project->orientation_reference);
+        $declination = $project->magnetic_declination !== null ? (float) $project->magnetic_declination : null;
+        $projectEpsg = $project->crs_epsg !== null ? (int) $project->crs_epsg : null;
         $surveys = [];
         $surveyHolesDownsampled = 0;
         $sp = $this->openSavepoint();
@@ -951,7 +1125,7 @@ class WorkspaceController extends Controller
                 $ranked = DB::table('silver.surveys')
                     ->whereIn('collar_id', $collarIds)
                     ->selectRaw(
-                        'collar_id, depth, azimuth, dip, '
+                        'collar_id, depth, azimuth, dip, azimuth_reference, '
                         .'ROW_NUMBER() OVER (PARTITION BY collar_id ORDER BY depth) AS rn, '
                         .'COUNT(*) OVER (PARTITION BY collar_id) AS cnt',
                     );
@@ -962,19 +1136,42 @@ class WorkspaceController extends Controller
                     ))
                     ->orderBy('collar_id')
                     ->orderBy('depth')
-                    ->get(['collar_id', 'depth', 'azimuth', 'dip', 'cnt']);
+                    ->get(['collar_id', 'depth', 'azimuth', 'dip', 'azimuth_reference', 'cnt']);
 
+                // Grid convergence is only measured if something is declared
+                // grid north: most projects declare nothing and pay nothing.
+                $bearings = null;
                 $downsampled = [];
                 foreach ($surveyRows as $r) {
                     if ((int) $r->cnt > $maxStations) {
                         $downsampled[(string) $r->collar_id] = true;
                     }
-                    $surveys[] = [
+                    $station = [
                         'collar_id' => (string) $r->collar_id,
                         'depth' => (float) $r->depth,
                         'azimuth' => $r->azimuth !== null ? (float) $r->azimuth : null,
                         'dip' => $r->dip !== null ? (float) $r->dip : null,
                     ];
+                    $reference = SurveyAzimuthReference::canonical($r->azimuth_reference) ?? $projectReference;
+                    if ($station['azimuth'] !== null && $reference !== null) {
+                        if ($reference === SurveyAzimuthReference::GRID) {
+                            $bearings ??= $this->trueNorthBearings(array_map('strval', $collarIds), $projectEpsg);
+                        }
+                        $converted = SurveyAzimuthReference::toTrueNorth(
+                            $station['azimuth'],
+                            $reference,
+                            $declination,
+                            self::gridTrueBearing($bearings[$station['collar_id']] ?? null),
+                        );
+                        $station['azimuth_reference'] = $reference;
+                        if ($converted['unapplied']) {
+                            $station['azimuth_unapplied'] = true;
+                        } elseif ($converted['azimuth'] !== $station['azimuth']) {
+                            $station['azimuth_recorded'] = $station['azimuth'];
+                            $station['azimuth'] = $converted['azimuth'];
+                        }
+                    }
+                    $surveys[] = $station;
                 }
                 $surveyHolesDownsampled = count($downsampled);
 
@@ -1129,30 +1326,9 @@ class WorkspaceController extends Controller
                 ->orderBy('depth')
                 ->limit(5000)
                 ->get(['collar_id', 'strike_deg', 'dip_deg', 'structure_type', 'depth', 'trend_deg', 'plunge_deg', 'dip_direction_deg'])
-                ->map(function ($r) {
-                    // Pole-to-plane: trend = (dip_direction + 180) mod 360,
-                    // plunge = 90 - dip. Fallback because the gold asset
-                    // doesn't currently populate trend_deg / plunge_deg, but
-                    // it does populate dip_direction_deg + dip_deg.
-                    $dip = $r->dip_deg !== null ? (float) $r->dip_deg : 0.0;
-                    $dipDir = $r->dip_direction_deg !== null ? (float) $r->dip_direction_deg : null;
-                    $trend = $r->trend_deg !== null ? (float) $r->trend_deg
-                        : ($dipDir !== null ? fmod($dipDir + 180.0, 360.0) : 0.0);
-                    $plunge = $r->plunge_deg !== null ? (float) $r->plunge_deg : (90.0 - $dip);
-
-                    return [
-                        'collar_id' => (string) $r->collar_id,
-                        'strike_deg' => $r->strike_deg !== null ? (float) $r->strike_deg : 0.0,
-                        'dip_deg' => $dip,
-                        'measurement_kind' => (string) $r->structure_type,
-                        'depth_m' => $r->depth !== null ? (float) $r->depth : null,
-                        'pole_trend_deg' => $trend,
-                        'pole_plunge_deg' => $plunge,
-                        'display_color' => null,
-                        'display_symbol' => null,
-                        'confidence' => null,
-                    ];
-                })
+                ->map(fn ($r) => self::structureDiscRow($r))
+                // A measurement with no orientation is dropped, not drawn.
+                ->filter()
                 ->values()
                 ->all();
             $this->releaseSavepoint($sp);
@@ -1248,6 +1424,51 @@ class WorkspaceController extends Controller
             'commodity_samples_3d' => $commoditySamples,
             'commodity_keys_3d' => $commodityKeys,
             'survey_holes_downsampled' => $surveyHolesDownsampled,
+        ];
+    }
+
+    /**
+     * One structure-disc row from gold.structure_measurements_visual, or null
+     * when the measurement has no orientation to draw.
+     *
+     * Pole-to-plane: trend = (dip_direction + 180) mod 360, plunge = 90 - dip.
+     * A fallback, because the gold asset does not populate trend_deg /
+     * plunge_deg, but it does populate dip_direction_deg + dip_deg.
+     *
+     * A NULL dip or dip direction used to be coerced to 0, which sent a
+     * structure with NO orientation to the 3D discs as a flat plane (dip 0,
+     * strike 0) and to the stereonet as a horizontal bed at the centre of the
+     * net: an invented population of flat-lying structures (GIS audit
+     * 2026-10). promote_silver_to_gold writes NULL dip / dip direction for an
+     * out-of-range or missing angle precisely so that nothing is invented
+     * downstream. Never substitute 0.
+     *
+     * @return array{collar_id: string, strike_deg: float, dip_deg: float, measurement_kind: string, depth_m: float|null, pole_trend_deg: float, pole_plunge_deg: float, display_color: null, display_symbol: null, confidence: null}|null
+     */
+    public static function structureDiscRow(object $r): ?array
+    {
+        $dip = $r->dip_deg !== null ? (float) $r->dip_deg : null;
+        $dipDir = $r->dip_direction_deg !== null ? (float) $r->dip_direction_deg : null;
+        if ($dip === null || $dipDir === null) {
+            return null;
+        }
+
+        $trend = $r->trend_deg !== null ? (float) $r->trend_deg : fmod($dipDir + 180.0, 360.0);
+        $plunge = $r->plunge_deg !== null ? (float) $r->plunge_deg : (90.0 - $dip);
+        // Right-hand rule, from the same dip direction the pole came from.
+        $strike = $r->strike_deg !== null ? (float) $r->strike_deg : fmod($dipDir - 90.0 + 360.0, 360.0);
+
+        return [
+            'collar_id' => (string) $r->collar_id,
+            'strike_deg' => $strike,
+            'dip_deg' => $dip,
+            'measurement_kind' => (string) $r->structure_type,
+            'depth_m' => $r->depth !== null ? (float) $r->depth : null,
+            'pole_trend_deg' => $trend,
+            'pole_plunge_deg' => $plunge,
+            'display_color' => null,
+            'display_symbol' => null,
+            'confidence' => null,
         ];
     }
 
