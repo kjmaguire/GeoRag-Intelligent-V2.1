@@ -140,7 +140,10 @@ def decode_dispatch_params(raw: object) -> dict[str, object] | None:
         try:
             value = json.loads(raw)
         except ValueError as exc:
-            log.warning("dispatch_params is not valid JSON (%s); treated as not recorded", exc)
+            log.warning(
+                "dispatch_params is not valid JSON (%s); treated as not recorded", exc,
+                extra={"dispatch_params_chars": len(raw)},
+            )
             return None
         return value if isinstance(value, dict) else None
     return None
@@ -1279,7 +1282,10 @@ def is_final_attempt(ctx: object | None, exc: BaseException | None = None) -> bo
     try:
         return int(ctx.attempt_number) >= int(ctx.max_attempts)  # type: ignore[union-attr]
     except (AttributeError, TypeError, ValueError):
-        log.debug("is_final_attempt: %s has no attempt counters; not final", type(ctx).__name__)
+        log.debug(
+            "is_final_attempt: the context has no attempt counters; not final",
+            extra={"ctx_type": type(ctx).__name__},
+        )
         return False
 
 
