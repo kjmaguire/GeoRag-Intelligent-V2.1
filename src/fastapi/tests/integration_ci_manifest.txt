@@ -66,6 +66,9 @@ tests/test_support_access_audit.py
 tests/test_audit_verify_window_seed.py
 # The §35.1 hard stop must not wait on the alert (2026-10-10).
 tests/test_cost_burn_hard_stop.py
+# A platform (no-workspace) outbox row that dead-letters is logged and filed, not
+# silent (2026-10-10).
+tests/test_outbox_platform_dead_letter.py
 # The cold-tier archive against the real ledger: one hash chain per workspace,
 # the watermark window continuing each chain, and the asyncpg cursor/snapshot
 # plumbing (2026-10-10).

@@ -233,7 +233,15 @@ every minute by `outbox_dispatcher` (`FOR UPDATE SKIP LOCKED`, per-target
 semaphores `qdrant=10`, `neo4j=4`, `seaweedfs=8`, `external_webhook`
 default 4). After `dead_letter_after_attempts` (3) transient failures a
 row is dead-lettered and a `silver.store_reconciliation_findings` row is
-written for `store_reconciliation_run`.
+written for `store_reconciliation_run`. A platform row (`workspace_id` NULL,
+i.e. the tenant-isolation auditor's `security_critical` escalation) has no
+workspace of its own to file under: its finding goes to the platform workspace,
+and the dispatcher logs `OUTBOX_PLATFORM_DEAD_LETTER` ([Ch 12 §1.3](12-observability.md))
+after the commit. **Needs a decision:** nothing in AWS provisions that channel
+(`EXTERNAL_WEBHOOK_URL_SECURITY_CRITICAL` or `_DEFAULT`, and
+`EXTERNAL_WEBHOOK_HMAC_SECRET`, are absent from `deploy/aws/terraform/config.tf`),
+so such a row dead-letters on its first attempt and the alarm is the only
+signal.
 
 As built, **only two writers enqueue rows**: the tenant-isolation auditor
 and the support-packet agent. Ingestion does not use the outbox — passage

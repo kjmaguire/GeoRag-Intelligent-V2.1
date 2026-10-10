@@ -561,6 +561,71 @@ async def test_the_outbox_lag_gauge_sees_platform_rows(
         await _delete_outbox(owner_conn, [row])
 
 
+async def test_a_platform_dead_letter_is_filed_as_the_worker_role(
+    app_pool, owner_conn, monkeypatch, caplog,
+) -> None:
+    """The platform finding is best effort (a failure is logged, not raised, so
+    the dead letter itself always commits), which means only the real role can
+    show that it LANDS: store_reconciliation_findings is RLS-strict and the insert
+    has to bind the platform workspace first."""
+    import logging
+
+    from app.hatchet_workflows import outbox_dispatcher as ob
+
+    for name in list(os.environ):
+        if name.startswith("EXTERNAL_WEBHOOK_"):
+            monkeypatch.delenv(name, raising=False)
+    ob._TARGET_SEMAPHORES.clear()
+    key = f"dl-app-role:{uuid.uuid4()}"
+    async with _scoped(owner_conn, "") as c:
+        await c.execute(
+            "INSERT INTO silver.workspaces (workspace_id, name, slug) VALUES ($1::uuid, 'platform', 'platform') "
+            "ON CONFLICT (workspace_id) DO NOTHING", PLATFORM_WORKSPACE,
+        )
+        row = await c.fetchrow(
+            "INSERT INTO outbox.pending_propagations (workspace_id, source_schema, source_table, source_id, "
+            "target_store, target_collection, operation, payload, idempotency_key, status, last_attempted_at) "
+            "VALUES (NULL, 'audit', 'tenant_isolation', 'app-role', 'external_webhook', 'security_critical', "
+            "'upsert', '{}'::jsonb, $1, 'in_flight', now()) "
+            "RETURNING id, workspace_id, source_schema, source_table, source_id, target_store, "
+            "target_collection, operation, payload, idempotency_key, target_store_concurrency_hint", key,
+        )
+    try:
+        async with app_pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('app.workspace_id', '', true)")
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM outbox.pending_propagations WHERE id = $1", row["id"],
+            )
+        if not visible:
+            pytest.skip(
+                "this database's outbox policy hides platform rows from a cleared scope "
+                "(before 2026_10_10_100300), so the worker could not even claim one"
+            )
+
+        with caplog.at_level(logging.ERROR, logger="georag.hatchet.outbox_dispatcher"):
+            outcome = await ob._dispatch_one(app_pool, row, dead_letter_after=3)
+
+        assert outcome == "dead_lettered"
+        status = await owner_conn.fetchval("SELECT status FROM outbox.pending_propagations WHERE id = $1", row["id"])
+        assert status == "dead_lettered"
+        finding = await owner_conn.fetchrow(
+            "SELECT workspace_id::text AS ws, severity FROM silver.store_reconciliation_findings "
+            "WHERE details->>'propagation_id' = $1", str(row["id"]),
+        )
+        assert finding is not None, "the finding insert was swallowed: RLS or the bound workspace refused it"
+        assert (finding["ws"], finding["severity"]) == (PLATFORM_WORKSPACE, "critical")
+        assert [r for r in caplog.records if ob.OUTBOX_PLATFORM_DEAD_LETTER_MARKER in r.getMessage()]
+    finally:
+        async with owner_conn.transaction():
+            await owner_conn.execute("SET LOCAL session_replication_role = replica")
+            await owner_conn.execute(
+                "DELETE FROM silver.store_reconciliation_findings WHERE details->>'propagation_id' = $1", str(row["id"]),
+            )
+            await owner_conn.execute("DELETE FROM audit.audit_ledger WHERE target_id = $1", str(row["id"]))
+            await owner_conn.execute("DELETE FROM outbox.propagation_attempts WHERE propagation_id = $1", row["id"])
+            await owner_conn.execute("DELETE FROM outbox.pending_propagations WHERE id = $1", row["id"])
+
+
 # ---------------------------------------------------------------------------
 # HAT-7: Pass 2 bumps both counters
 # ---------------------------------------------------------------------------

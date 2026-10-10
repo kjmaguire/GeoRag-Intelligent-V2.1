@@ -93,6 +93,18 @@ locals {
       pattern     = "AUDIT_LEDGER_CHAIN_BREAK"
       description = "audit_ledger_verify (0 17 * * *): the nightly walk of the previous 24 h found audit_ledger rows whose stored hash or previous_hash does not match recomputation, or could not produce a verdict. The ledger is a tamper-evident record, so this means rows were altered, deleted or written outside the trigger - or the verifier is broken. The log line carries the run_id (audit.audit_ledger_verification_runs), the window and the first broken row ids; audit.verify_hash_chain(start, end) lists every mismatch."
     }
+    outbox-platform-dead-letter = {
+      # Emitted by outbox_dispatcher (hatchet-worker, services group) after a
+      # platform outbox row, one with no workspace, dead-letters. The only
+      # writer of such a row is the tenant-isolation auditor's escalation
+      # (target_collection 'security_critical'); no EXTERNAL_WEBHOOK_URL_* or
+      # EXTERNAL_WEBHOOK_HMAC_SECRET is provisioned in config.tf, so it
+      # dead-letters on its first attempt. Before 2026-10-10 that left an attempt
+      # row and an audit anchor and nothing anyone watches.
+      log_group   = "services"
+      pattern     = "OUTBOX_PLATFORM_DEAD_LETTER"
+      description = "outbox_dispatcher (* * * * *): a platform outbox row (workspace_id NULL) dead-lettered, so a notification meant for the operators was never sent. Today that is the tenant-isolation auditor's cross-tenant-leak escalation (channel security_critical), which cannot be delivered while no EXTERNAL_WEBHOOK_URL_SECURITY_CRITICAL / EXTERNAL_WEBHOOK_URL_DEFAULT and EXTERNAL_WEBHOOK_HMAC_SECRET are configured. The log line names the propagation, the channel and the last error; a silver.store_reconciliation_findings row (drift_type outbox_dead_letter, platform workspace) carries the same. Fixing the cause means giving the worker a webhook URL and secret, or choosing another channel for these alerts."
+    }
     qdrant-partial-loss = {
       log_group   = "services"
       pattern     = "QDRANT_PARTIAL_LOSS"
