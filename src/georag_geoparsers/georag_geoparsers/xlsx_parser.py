@@ -78,6 +78,12 @@ _FORWARDED_PARSER_WARNINGS = frozenset({
     "mineralization_value_unassigned",
     "alteration_style_in_notes",
     "alteration_value_unassigned",
+    # Collar sheets (audit findings 6 and 15): a repeated hole, and a drill
+    # date left empty because it was unreadable or day/month-ambiguous.
+    "duplicate_hole_id",
+    "date_unparseable",
+    "date_ambiguous",
+    "date_convention_inferred",
 })
 
 # Extension sets for routing to the correct read backend.

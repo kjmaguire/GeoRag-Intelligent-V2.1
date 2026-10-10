@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
 from pathlib import Path
 from typing import IO, Any, Union
 
@@ -26,6 +25,7 @@ from georag_geoparsers._csv_io import (
     read_csv_checked,
     transform_decimal_comma,
 )
+from georag_geoparsers._dates import DateReader
 from georag_geoparsers._depth_units import convert_feet_columns, feet_coordinate_warning
 from georag_geoparsers._dip_convention import DipConvention, normalize_dip, resolve_dip_convention
 from georag_geoparsers._drill_schema import (
@@ -144,19 +144,6 @@ def _build_column_map(
     return build_column_map(csv_columns, aliases if aliases is not None else COLUMN_ALIASES)
 
 
-def _parse_date(value: str | None) -> date | None:
-    """Try a handful of common date formats; return None on failure."""
-    if value is None or str(value).strip() == "":
-        return None
-    raw = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y%m%d", "%d-%b-%Y"):
-        try:
-            return date.fromisoformat(raw) if fmt == "%Y-%m-%d" else __import__("datetime").datetime.strptime(raw, fmt).date()
-        except ValueError:
-            continue
-    return None  # unparseable — not a rejection-worthy failure
-
-
 def _cast_float(value) -> float | None:
     """Return float or None; never raises."""
     if value is None:
@@ -174,6 +161,7 @@ def _validate_row(
     column_map: dict[str, str],
     dip_convention: DipConvention,
     coord_bounds: dict[str, tuple[float, float]],
+    date_reader: DateReader | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Validate a single raw row dict (keyed by canonical names).
 
@@ -226,7 +214,11 @@ def _validate_row(
                 }
             record[canonical] = casted
         elif canonical == "drill_date":
-            record[canonical] = _parse_date(raw_val)
+            # The reader decides the file's day/month order across the whole
+            # column and reports what it could not read (audit finding 15);
+            # a row validated on its own has no column to learn from.
+            reader = date_reader if date_reader is not None else DateReader([raw_val])
+            record[canonical] = reader.read(row_num, raw_val)
         else:
             record[canonical] = str(raw_val).strip() if raw_val is not None else None
 
@@ -539,10 +531,18 @@ def parse_csv_collars(
         "context": {"mode": coord_mode},
     })
 
+    # --- Drill dates: one day/month order for the whole file (finding 15) ---
+    date_reader = DateReader(
+        [r.get("drill_date") for r in rows_as_dicts] if "drill_date" in column_map else [],
+        first_row=2,
+    )
+
     for i, raw in enumerate(rows_as_dicts, start=2):  # row 1 = header, data starts at 2
         if ragged.skip(i, skipped):
             continue
-        record, skip_entry = _validate_row(i, raw, column_map, dip_convention, coord_bounds)
+        record, skip_entry = _validate_row(
+            i, raw, column_map, dip_convention, coord_bounds, date_reader,
+        )
         if record is not None:
             records.append(record)
         else:
@@ -557,6 +557,8 @@ def parse_csv_collars(
                 skip_entry.get("code"),
             )
             skipped.append(skip_entry)
+
+    global_warnings.extend(date_reader.warnings())
 
     # --- Repeated hole ids (audit finding 6) ---
     # Two rows for one hole reach the database as two upserts onto one
