@@ -48,16 +48,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from io import StringIO
 from pathlib import Path
 from typing import IO, Any
-
-import polars as pl
 
 from georag_geoparsers._csv_io import (
     DEFAULT_NULL_VALUES,
     detect_delimiter,
     open_csv_with_encoding,
+    read_csv_checked,
     transform_decimal_comma,
 )
 from georag_geoparsers._depth_units import convert_feet_columns
@@ -773,10 +771,13 @@ def parse_family(
                 ),
                 "context": {"delimiter": delimiter},
             })
-        df = pl.read_csv(
-            StringIO(content), separator=delimiter, infer_schema=False,
-            null_values=all_nulls, truncate_ragged_lines=True,
+        df, ragged = read_csv_checked(
+            content, separator=delimiter, null_values=all_nulls,
         )
+        if not companion:
+            # A companion parse reads the same rows the primary parse already
+            # reported; saying it twice would double the count on the run.
+            warnings.extend(ragged.warnings())
         df, transformed = transform_decimal_comma(df)
         if transformed:
             warnings.append({
@@ -863,6 +864,12 @@ def parse_family(
     source_rows = 0
 
     for row_num, raw in enumerate(df.to_dicts(), start=2):
+        if row_num in ragged.rows:
+            # Wider than the header: its values are shifted. The primary
+            # parse reports the row; a companion parse just leaves it out.
+            if not companion:
+                ragged.skip(row_num, skipped)
+            continue
         geom, rejection = _geometry(row_num, raw, plan.key_map)
         if geom is None:
             if companion:

@@ -16,16 +16,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date
-from io import StringIO
 from pathlib import Path
 from typing import IO, Any, Union
-
-import polars as pl
 
 from georag_geoparsers._csv_io import (
     DEFAULT_NULL_VALUES,
     detect_delimiter,
     open_csv_with_encoding,
+    read_csv_checked,
     transform_decimal_comma,
 )
 from georag_geoparsers._depth_units import convert_feet_columns, feet_coordinate_warning
@@ -330,13 +328,10 @@ def parse_csv_collars(
             })
             logger.info("csv_collar: detected delimiter %r", detected_delim)
 
-        df = pl.read_csv(
-            StringIO(raw_content),
-            separator=detected_delim,
-            infer_schema=False,
-            null_values=all_nulls,
-            truncate_ragged_lines=True,
+        df, ragged = read_csv_checked(
+            raw_content, separator=detected_delim, null_values=all_nulls,
         )
+        global_warnings.extend(ragged.warnings())
 
         # 2026-05-23 CSV audit gap #2 — column-aware decimal-comma transform
         # (replaces the previous warn-only path). Per-column gate: only
@@ -538,6 +533,8 @@ def parse_csv_collars(
     })
 
     for i, raw in enumerate(rows_as_dicts, start=2):  # row 1 = header, data starts at 2
+        if ragged.skip(i, skipped):
+            continue
         record, skip_entry = _validate_row(i, raw, column_map, dip_convention, coord_bounds)
         if record is not None:
             records.append(record)

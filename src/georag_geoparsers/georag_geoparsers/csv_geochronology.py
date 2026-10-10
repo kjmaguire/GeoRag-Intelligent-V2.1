@@ -47,16 +47,15 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from io import StringIO
 from pathlib import Path
 from typing import IO, Any, Union
 
-import polars as pl
-
 from georag_geoparsers._csv_io import (
     DEFAULT_NULL_VALUES,
+    RaggedRows,
     detect_delimiter,
     open_csv_with_encoding,
+    read_csv_checked,
     transform_decimal_comma,
 )
 from georag_geoparsers._encoding import decode_warnings
@@ -425,10 +424,13 @@ def parse_geochronology_rows(
     warnings: list[dict] | None = None,
     provenance: dict[str, Any] | None = None,
     detected_encoding: str = "utf-8",
+    ragged: RaggedRows | None = None,
 ) -> GeochronParseResult:
     """Validate rows already loaded from a table (header row = 1).
 
     ``columns`` is the header in file order; defaults to the first row's keys.
+    ``ragged`` names the rows of a CSV that were wider than its header; they
+    are reported as skipped instead of being read as shifted values.
     """
     global_warnings = list(warnings or [])
     if columns is None:
@@ -479,6 +481,8 @@ def parse_geochronology_rows(
     skipped: list[dict] = []
     location_issues: list[dict] = []
     for i, source_row in enumerate(rows, start=first_row_number):
+        if ragged is not None and ragged.skip(i, skipped):
+            continue
         raw = {canonical: source_row.get(col) for canonical, col in column_map.items()}
         record, skip_entry = _validate_row(i, raw, header_uncertainty_kind=header_kind)
         if record is not None:
@@ -576,13 +580,10 @@ def parse_csv_geochronology(
     global_warnings.extend(decode_warnings(detected_encoding, raw_content))
 
     detected_delim = detect_delimiter(raw_content, default=",")
-    df = pl.read_csv(
-        StringIO(raw_content),
-        separator=detected_delim,
-        infer_schema=False,
-        null_values=all_nulls,
-        truncate_ragged_lines=True,
+    df, ragged = read_csv_checked(
+        raw_content, separator=detected_delim, null_values=all_nulls,
     )
+    global_warnings.extend(ragged.warnings())
     df, transformed_cols = transform_decimal_comma(df)
     if transformed_cols:
         global_warnings.append({
@@ -599,6 +600,7 @@ def parse_csv_geochronology(
         warnings=global_warnings,
         detected_encoding=detected_encoding,
         provenance={"source_file_sha256": sha256_hex},
+        ragged=ragged,
     )
 
 
