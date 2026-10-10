@@ -60,3 +60,55 @@ describe('CompareHolesPanel depth axis', () => {
         expect(shallow.getAttribute('y')).toBe(deep.getAttribute('y'));
     });
 });
+
+describe('CompareHolesPanel coordinate labels (FE-18)', () => {
+    const located = (id: string) => ({
+        hole_id: id,
+        collar_id: 'c-' + id,
+        total_depth: 120,
+        easting: 500123.4,
+        northing: 6000456.7,
+        lat: null,
+        lng: null,
+        log_tracks: [],
+        log_depth_max: 600,
+        lithology_intervals: [],
+        alteration_intervals: [],
+        mineralization_intervals: [],
+        ore_bands: 0,
+        ore_thickness_m: 0,
+        mean_u3o8_pct: null,
+    });
+    const respondWithHoles = () =>
+        vi
+            .spyOn(globalThis, 'fetch')
+            .mockImplementation(
+                async (input) => new Response(JSON.stringify(located(String(input).includes('/A-1/') ? 'A-1' : 'B-2'))),
+            );
+
+    it("names the project's CRS on the easting and northing rows, never a fixed UTM zone", async () => {
+        respondWithHoles();
+        render(<CompareHolesPanel projectSlug="p" leftHole="A-1" rightHole="B-2" chartHeight={300} crsEpsg={26907} />);
+
+        expect(await screen.findByText('Easting (EPSG:26907)')).toBeInTheDocument();
+        expect(screen.getByText('Northing (EPSG:26907)')).toBeInTheDocument();
+        expect(screen.queryByText(/UTM 13N/)).toBeNull();
+        // The numbers are still the collar's own.
+        expect(screen.getAllByText('500,123')).toHaveLength(2);
+    });
+
+    it('says so when the project declares no CRS, instead of assuming one', async () => {
+        respondWithHoles();
+        render(<CompareHolesPanel projectSlug="p" leftHole="A-1" rightHole="B-2" chartHeight={300} crsEpsg={null} />);
+
+        expect(await screen.findByText('Easting (CRS not declared)')).toBeInTheDocument();
+        expect(screen.getByText('Northing (CRS not declared)')).toBeInTheDocument();
+        expect(screen.queryByText(/UTM 13N/)).toBeNull();
+    });
+
+    it('labels the map popup comparison the same way', async () => {
+        respondWithHoles();
+        render(<CompareHolesModal projectSlug="p" leftHole="A-1" rightHole="B-2" onClose={() => {}} crsEpsg={26912} />);
+        expect(await screen.findByText('Easting (EPSG:26912)')).toBeInTheDocument();
+    });
+});

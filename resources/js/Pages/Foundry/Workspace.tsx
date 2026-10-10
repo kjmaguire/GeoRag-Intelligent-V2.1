@@ -1637,6 +1637,7 @@ export default function FoundryWorkspace({
                                                                 leftHole={compareLeft}
                                                                 rightHole={compareRight}
                                                                 chartHeight={Math.max(360, chartH - 120)}
+                                                                crsEpsg={project.crs_epsg}
                                                             />
                                                         )
                                                     ) : (
@@ -1781,6 +1782,7 @@ export default function FoundryWorkspace({
                     leftHole={compareSet[0]}
                     rightHole={compareSet[1]}
                     onClose={closeCompareKeepOriginal}
+                    crsEpsg={project.crs_epsg}
                 />
             )}
         </>
