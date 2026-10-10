@@ -49,17 +49,18 @@ variable "image_tag" {
         deploy, where every task fails `CannotPullContainerError`, the
         deployment circuit breaker trips with no previous revision to roll
         back to, and the ALB alarms fire on a stack that looks applied.
-      * `georag-app-key-rotation` did NOT recover. Nothing re-registers it —
-        rotate-app-key.sh overrides `command` only, and ECS RunTask cannot
-        override an image at all — so the APP_KEY rotation would have failed
-        on an unpullable image the first time anyone ran it, in the middle of
-        a procedure that has already taken the platform down.
+      * `georag-app-key-rotation` did NOT recover. Nothing in CD re-registers
+        it and ECS RunTask cannot override an image, so the APP_KEY rotation
+        would have failed on an unpullable image the first time anyone ran it,
+        in the middle of a procedure that has already taken the platform
+        down. rotate-app-key.sh now registers a fresh revision on the image
+        laravel-octane is running before it touches anything, so this tag no
+        longer decides whether a rotation can start.
 
     Pass the short SHA of an image cd.yml has pushed. On the very first apply
     of a fresh account no image exists yet, so pass anything (`bootstrap` is
     the conventional placeholder) and expect the services to stay down until
-    the first deploy — then re-apply with a real SHA so the rotation task
-    points at something pullable.
+    the first deploy.
   EOT
   type        = string
 
@@ -225,8 +226,10 @@ variable "db_backup_retention_days" {
     35 matches what Azure Flexible Server was configured for, which is the
     only durability posture Postgres has ever had here. Note this covers
     Postgres ONLY: on Azure, blob storage had no backup and no restore
-    procedure at all, which is why the S3 bucket below gets versioning and
-    replication rather than inheriting that gap.
+    procedure at all, which is why the S3 buckets (data.tf) get versioning,
+    with non-current versions kept 90 days, rather than inheriting that gap.
+    They are NOT replicated: versioning answers an overwrite or a delete, not
+    the loss of the bucket, the region or the account.
   EOT
   type        = number
   default     = 35
@@ -503,8 +506,10 @@ variable "container_insights" {
     nothing alarms on an ECS task that is crash-looping or wedged. Container
     health checks (services.tf) detect it and ECS replaces the task, but no
     human is told. `HealthyHostCount` covers laravel-octane and laravel-reverb
-    only — the two behind the ALB — so a hatchet-worker OOM-restarting every
-    four minutes is silent, which is the exact shape Ch 12 §6 flags as
+    only — the two behind the ALB, each with a dead-air alarm in alerts.tf
+    (the Reverb one since 2026-10-10; before that the claim here was true of
+    the metric and false of the alarms) — so a hatchet-worker OOM-restarting
+    every four minutes is silent, which is the exact shape Ch 12 §6 flags as
     "ingestion has stopped moving" and sends you to the logs for.
 
     Closing it does NOT require this setting: AWS/ECS carries per-service

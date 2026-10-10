@@ -429,17 +429,22 @@ V="$NEW" jq -c '.FASTAPI_SERVICE_KEY = env.V' \
   | aws secretsmanager put-secret-value --secret-id georag/app --secret-string file:///dev/stdin \
       --query VersionId --output text
 unset NEW
-for svc in laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker; do
+for svc in sparse laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker; do
   aws ecs update-service --cluster "$CLUSTER" --service "$svc" --force-new-deployment --query 'service.serviceName' --output text
 done
-aws ecs wait services-stable --cluster "$CLUSTER" --services laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker
+aws ecs wait services-stable --cluster "$CLUSTER" --services sparse laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker
 ```
 
-`sparse` is intentionally excluded from the restart list: its task
-definition carries the key (the shared `Settings` class requires it to be
-present), but `sparse_service.py` never calls `verify_service_key`, so
-restarting it buys nothing and only widens the window other services are
-already open for.
+`sparse` IS in the restart list. An earlier version of this section excluded
+it on the grounds that `sparse_service.py` never calls `verify_service_key`.
+It does not call that one — it enforces the same key through
+`app/sidecar_auth.py`'s `require_service_key`, which reads
+`FASTAPI_SERVICE_KEY` from the process environment once, at import. A sparse
+task left running keeps the OLD key and answers 401 to `fastapi` and
+`hatchet-worker` as they come up on the new one, so every sparse call fails
+until it is restarted. A restarted `sparse` accepts
+`FASTAPI_SERVICE_KEY_PREVIOUS` as well, so restarting it first keeps callers
+that are still on the old key working.
 
 Verify with the same smoke check CD runs, as a one-off task rather than an
 `exec` — ECS Exec is not enabled on this cluster

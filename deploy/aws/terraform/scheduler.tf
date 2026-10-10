@@ -200,6 +200,31 @@ locals {
   # Fractional on purpose: 930 minutes is 15.5, and an operator reading the
   # output needs the half hour to be visible rather than floored away.
   maintenance_window_hours = local.maintenance_window_minutes / 60
+
+  # The dead-air suppressor (alerts.tf) is sized from this, not from the window
+  # above. The window is the gap between two local-time fires; the NIGHT is that
+  # gap in elapsed time, and twice a year the clocks change under it. 17:00 PDT
+  # on 2026-10-31 to 08:30 PST the next morning is 16h30m, not 15h30m (the
+  # 01:00-02:00 hour happens twice). The suppressor counts from the shutdown
+  # sweep's completion marker over a fixed period, so one sized for 15h30m let
+  # go about 50 minutes before the startup sweep fired, and with its 45 minute
+  # extension octane-dead-air emailed "no healthy Octane task" about five
+  # minutes BEFORE the platform had been asked to start. (Spring forward is the
+  # mirror image: a 14h30m night, so the suppressor outlasts the start by an
+  # hour and a real outage in that stretch is held back. Once a year, and the
+  # quieter failure.)
+  #
+  # A fixed period cannot be right on 364 nights and on that one, so it is
+  # sized for the longest, and the price is paid every morning: a platform that
+  # fails to come up at 08:30 is paged an hour later than it would otherwise
+  # be. The sweep's own verdict (sweep-failed, sweep-missing) is not delayed.
+  # An hour is the most any clock change moves a night in the zones this is
+  # likely to be set to; use 0 for a maintenance_timezone that does not observe
+  # DST. test_crons_avoid_the_shutdown_window.py checks it against the real
+  # tz database, so it cannot silently stop covering the longest night.
+  dst_slack_minutes = 60
+
+  maintenance_suppressor_minutes = local.maintenance_window_minutes + local.dst_slack_minutes
 }
 
 resource "aws_scheduler_schedule" "shutdown" {

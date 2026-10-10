@@ -259,7 +259,7 @@ collected at no cost and without any application change:
 
 | Source | Metrics used | Alarms |
 |---|---|---|
-| ALB (`AWS/ApplicationELB`) | `HTTPCode_Target_5XX_Count`, `HealthyHostCount` | `georag-octane-5xx` (>10 / 5 min), `georag-octane-dead-air` (healthy hosts < 1 for 2×5 min). Azure had **no** error-rate or availability rule on its equivalent at all |
+| ALB (`AWS/ApplicationELB`) | `HTTPCode_Target_5XX_Count`, `HealthyHostCount` | `georag-octane-5xx` (>10 / 5 min), `georag-octane-dead-air` and `georag-reverb-dead-air` (healthy hosts < 1 for 2×5 min, on each target group). Azure had **no** error-rate or availability rule on its equivalent at all |
 | RDS (`AWS/RDS`) | `CPUUtilization`, `FreeStorageSpace` | `georag-pg-cpu` (>85% for 3×5 min), `georag-pg-storage` (<10 GiB) |
 | Bedrock (`AWS/Bedrock`) | `InvocationClientErrors`, `InvocationServerErrors`, `InvocationThrottles` | `georag-bedrock-client-errors` (>50 / 15 min), `-server-errors` (>5 / 15 min), `-throttles` (>100 for 2×15 min) |
 
@@ -431,7 +431,9 @@ Everything below is in
 | `georag-octane-5xx` | metric, 5 m | 2 | >10 `HTTPCode_Target_5XX_Count` |
 | `georag-octane-dead-air` | metric, 2×5 m | 1 | `HealthyHostCount` < 1 |
 | `georag-octane-dead-air-alerting` | composite | 1 | the alarm that actually pages: dead-air AND not inside the maintenance window |
-| `georag-maintenance-window` | log filter | — | not an alert. It goes ALARM when the shutdown sweep completes, and is the suppressor input to the composite above |
+| `georag-reverb-dead-air` | metric, 2×5 m | 1 | `HealthyHostCount` < 1 on the Reverb target group: the platform answers and the browser shows nothing |
+| `georag-reverb-dead-air-alerting` | composite | 1 | the same, outside the maintenance window, with the same suppressor timings as Octane's (one shared local in `alerts.tf`) |
+| `georag-maintenance-window` | log filter | — | not an alert. It goes ALARM when the shutdown sweep completes, and is the suppressor input to both composites above. Its period is the schedule's window plus an hour of DST slack (`scheduler.tf`) |
 | `georag-bedrock-client-errors` | metric, 15 m | 2 | `InvocationClientErrors` > 50 |
 | `georag-bedrock-server-errors` | metric, 15 m | 2 | `InvocationServerErrors` > 5 |
 | `georag-bedrock-throttles` | metric, 2×15 m | 2 | `InvocationThrottles` > 100 |

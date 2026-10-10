@@ -485,12 +485,12 @@ knowing before the first apply:
   Terraform does not wait for steady state, so that first apply reports
   success over a stack that is not running. That is expected here; it is not
   expected later.
-* **Re-apply with a real SHA once CD has run.** `georag-app-key-rotation` is
-  the reason. Nothing re-registers it — `rotate-app-key.sh` overrides
-  `command`, and ECS RunTask cannot override an image at all — so it keeps
-  whatever tag the last apply gave it. Leave it on `bootstrap` and the APP_KEY
-  rotation fails on an unpullable image partway through the runbook, with the
-  platform already down.
+* **`georag-app-key-rotation` keeps whatever tag the last apply gave it.**
+  Nothing in CD re-registers it and ECS RunTask cannot override an image, so
+  `rotate-app-key.sh` registers a fresh revision on the image `laravel-octane`
+  is running before it touches anything. Leave the pin on `bootstrap`, or let
+  it age out of ECR's 30-image window, and the rotation still starts; a
+  re-apply with a real SHA is not needed for it.
 
 `scripts/check-ecs-image-tags.py` fails CI if a literal tag comes back.
 
@@ -1192,6 +1192,16 @@ minutes since 2026-09-16 — an hour-granular version silently floors a window
 whose sweeps do not both fire on the hour, and the shortfall lands where the
 platform is still down). `maintenance_window_hours` surfaces it as a
 Terraform output, fractional, so it can be checked.
+
+The suppressor's period is that window **plus an hour of DST slack**
+(`local.dst_slack_minutes`, `local.maintenance_suppressor_minutes`). The night
+the clocks fall back is 16h30m, not 15h30m, and a period sized for the
+schedule let the suppressor go before the startup sweep fired, so
+`octane-dead-air` paged about five minutes before the platform was asked to
+start. The cost is on every other morning: a platform that never comes up is
+paged at about 10:25 rather than 09:25. `sweep-failed` and `sweep-missing`
+read the sweep's own verdict and are not delayed. Set the slack to 0 for a
+timezone with no DST.
 
 ## What changed, on purpose
 

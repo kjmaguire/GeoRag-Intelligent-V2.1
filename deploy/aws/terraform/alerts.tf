@@ -560,6 +560,16 @@ resource "aws_cloudwatch_metric_alarm" "octane_dead_air" {
   }
 }
 
+locals {
+  # The two timings both dead-air composites suppress with; the Octane one
+  # below says what each is for. One definition, because "the same suppressor"
+  # is the whole point of having two composites: Octane and Reverb are stopped
+  # and started in the same tier (shutdown-sweep.sh, startup-sweep.sh), so a
+  # window that is right for one is right for the other.
+  dead_air_wait_period      = 900
+  dead_air_extension_period = 2700
+}
+
 # The suppression window, derived from the schedule rather than written out
 # again — the same discipline the Azure rule used, and for the same reason:
 # the window was already spelled out in three places and did not need a
@@ -587,17 +597,85 @@ resource "aws_cloudwatch_composite_alarm" "octane_dead_air_outside_window" {
   #     services-stable (README: ~15 min), then two healthy ALB checks and a
   #     clean 5-minute HealthyHostCount period. With 60 s the composite
   #     emailed at about 08:32 every day. 45 min covers a slow start with
-  #     margin; a platform still dead at ~09:15 is a real page.
+  #     margin; a platform still dead 45 min after the suppressor lets go is
+  #     a real page (when that is, see the DST hour below).
   #   wait_period 900 s (15 min) — the EVENING end. The shutdown sweep now
   #     drains tier by tier (AWS-8), so "shutdown sweep complete" lands
   #     several minutes after Octane stopped; dead air can reach ALARM before
   #     the suppressor does. The composite now waits up to 15 min for it.
   #     Cost: a genuine daytime outage emails up to 15 min later than before
   #     (on top of the 10 min the dead-air alarm itself needs).
+  #
+  # The suppressor's own period carries an hour of DST slack since 2026-10-10
+  # (local.maintenance_suppressor_minutes; scheduler.tf has the arithmetic).
+  # The fall-back night is an hour longer than the schedule says, and without
+  # the hour this paged about five minutes before the startup sweep fired on
+  # 2026-11-01. The price is on every other morning: the suppressor lets go at
+  # about 09:40 rather than 08:40, so the page for a platform that never came
+  # up arrives at about 10:25 rather than 09:25.
   actions_suppressor {
     alarm            = aws_cloudwatch_metric_alarm.maintenance_window[0].alarm_name
-    wait_period      = 900
-    extension_period = 2700
+    wait_period      = local.dead_air_wait_period
+    extension_period = local.dead_air_extension_period
+  }
+}
+
+# Reverb, the other service behind the ALB, and the only road an answer takes to
+# the browser: horizon runs the query and Reverb carries every streamed frame to
+# the page. With Reverb down the platform still answers and shows nothing, while
+# Octane is healthy and every alarm above stays quiet. variables.tf has said
+# since 2026-09-16 that HealthyHostCount covers laravel-reverb as well; until
+# 2026-10-10 only Octane's target group had an alarm on it.
+#
+# Same shape as Octane's and for the same reasons: desired is 2 here too
+# (main.tf), so "fewer than one healthy host" means BOTH tasks are out, which is
+# an outage and not a deploy in flight (the 50% floor in services.tf keeps one up
+# through a rollout); and missing data breaches, because with every task gone
+# there is nothing left to report a healthy host, and silence must not read as
+# health.
+resource "aws_cloudwatch_metric_alarm" "reverb_dead_air" {
+  count = local.on
+
+  alarm_name        = "${local.name}-reverb-dead-air"
+  alarm_description = <<-EOT
+    No healthy Reverb task. Answers are produced but never reach the browser:
+    the stream is carried over this service, and nothing else alarms on it.
+
+    Dead air is the INTENDED state during the nightly window. The composite
+    below gates it with the same suppressor as Octane's, so this alarm alone
+    is expected to be in ALARM every night and is not what pages.
+  EOT
+
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "HealthyHostCount"
+  statistic           = "Minimum"
+  period              = 300
+  evaluation_periods  = 2
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+
+  dimensions = {
+    LoadBalancer = aws_lb.this[0].arn_suffix
+    TargetGroup  = aws_lb_target_group.reverb[0].arn_suffix
+  }
+}
+
+# A composite of its own rather than a second clause on Octane's, so the email
+# says which service is down.
+resource "aws_cloudwatch_composite_alarm" "reverb_dead_air_outside_window" {
+  count = local.on
+
+  alarm_name        = "${local.name}-reverb-dead-air-alerting"
+  alarm_description = "Dead air on the WebSocket service, outside the nightly maintenance window."
+
+  alarm_rule    = "ALARM(${aws_cloudwatch_metric_alarm.reverb_dead_air[0].alarm_name})"
+  alarm_actions = local.alarm_actions
+
+  actions_suppressor {
+    alarm            = aws_cloudwatch_metric_alarm.maintenance_window[0].alarm_name
+    wait_period      = local.dead_air_wait_period
+    extension_period = local.dead_air_extension_period
   }
 }
 
@@ -620,15 +698,15 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
   alarm_name        = "${local.name}-maintenance-window"
   alarm_description = <<-EOT
     In ALARM while the platform is intentionally stopped, suppressing the
-    dead-air alarm.
+    dead-air alarms.
 
     The signal is "the shutdown sweep reported complete within the window's
     own length", which is true from the moment the platform goes down until
     the moment it comes back up and false the rest of the day. The period is
-    DERIVED from the two cron expressions (local.maintenance_window_minutes)
-    rather than written out again: the window was already spelled out in
-    three places on Azure and did not need a fourth, which is the same
-    reason the parity checker verified the cron against the DST guard.
+    DERIVED, not written out again: the two cron expressions
+    (local.maintenance_window_minutes) plus an hour of DST slack
+    (local.dst_slack_minutes), because the night the clocks fall back is an
+    hour longer than the schedule says.
 
     The period must cover the WHOLE window, not most of it. Any shortfall
     lands at the end, where the marker ages out while the platform is still
@@ -641,7 +719,7 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
   namespace           = "GeoRAG/Markers"
   metric_name         = "shutdown-sweep-complete"
   statistic           = "Sum"
-  period              = local.maintenance_window_minutes * 60
+  period              = local.maintenance_suppressor_minutes * 60
   evaluation_periods  = 1
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
