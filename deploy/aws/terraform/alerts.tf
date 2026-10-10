@@ -82,6 +82,17 @@ locals {
       pattern     = "COST_BURN_HARD_STOP_UNENFORCEABLE"
       description = "cost_burn_watcher (*/5 * * * *): a workspace is past 2x its hourly cost threshold but has no usage.workspace_cost_ceilings row, so the hard stop could not suspend it and it keeps spending. The COST_BURN_THRESHOLD_EXCEEDED alert for the same overrun has already gone out; this one says nothing will stop it automatically. Give the workspace a ceiling row (monthly_ceiling_usd) if it should be stoppable, or suspend it by hand. The log line names the workspace."
     }
+    audit-ledger-chain-break = {
+      # Emitted by audit_ledger_verify (hatchet-worker, services group) when a
+      # nightly walk of the audit ledger returns anything but 'clean'. Until
+      # 2026-10-10 the verifier reported a false break for the first row of
+      # every chain with history before the window, so a 'break' in
+      # audit.audit_ledger_verification_runs written before that date is not
+      # evidence of tampering by itself.
+      log_group   = "services"
+      pattern     = "AUDIT_LEDGER_CHAIN_BREAK"
+      description = "audit_ledger_verify (0 17 * * *): the nightly walk of the previous 24 h found audit_ledger rows whose stored hash or previous_hash does not match recomputation, or could not produce a verdict. The ledger is a tamper-evident record, so this means rows were altered, deleted or written outside the trigger - or the verifier is broken. The log line carries the run_id (audit.audit_ledger_verification_runs), the window and the first broken row ids; audit.verify_hash_chain(start, end) lists every mismatch."
+    }
     qdrant-partial-loss = {
       log_group   = "services"
       pattern     = "QDRANT_PARTIAL_LOSS"

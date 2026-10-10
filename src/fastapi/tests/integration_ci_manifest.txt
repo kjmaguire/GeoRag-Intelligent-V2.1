@@ -57,6 +57,9 @@ tests/test_phase8_embed_verify.py
 
 # ── Audit / tenancy ───────────────────────────────────────────────────
 tests/test_support_access_audit.py
+# The nightly hash-chain verifier: first in-window row vs the row before the
+# window, and the AUDIT_LEDGER_CHAIN_BREAK marker (2026-10-10).
+tests/test_audit_verify_window_seed.py
 # The §35.1 hard stop must not wait on the alert (2026-10-10).
 tests/test_cost_burn_hard_stop.py
 tests/test_workspace_export_rls_scope.py
