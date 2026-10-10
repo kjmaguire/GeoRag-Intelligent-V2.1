@@ -33,6 +33,13 @@ legitimately receive the key via the .env file rather than process env, and
 without the fallback such a deployment would send NO header and 401 against a
 keyed sidecar. The guarded import simply fails on the sidecars themselves
 (Settings demands DB secrets they don't have), leaving them env-only.
+
+Rotation: ``FASTAPI_SERVICE_KEY_PREVIOUS`` is accepted beside the primary, the
+way ``app.services.auth.service_key_matches`` does for the main app and for
+the same reason (ops/runbooks/secret-rotation.md § 3). On ECS the callers
+(fastapi, hatchet-worker) and this sidecar restart on their own schedules; a
+sidecar that knows only the new key refuses every caller still on the old one.
+Process env only, like the primary. Empty is the steady state.
 """
 from __future__ import annotations
 
@@ -47,6 +54,14 @@ logger = logging.getLogger(__name__)
 # Server-side enforcement key — process env ONLY (the sidecars cannot import
 # app.config; see module docstring).
 _SERVICE_KEY = (os.environ.get("FASTAPI_SERVICE_KEY") or "").strip()
+
+# The outgoing key during a rotation overlap; "" when none is in progress.
+_SERVICE_KEY_PREVIOUS = (os.environ.get("FASTAPI_SERVICE_KEY_PREVIOUS") or "").strip()
+
+#: Logged once per process the first time a request authenticates with the
+#: PREVIOUS key. Expected during a rotation; a week later it means a caller
+#: never got the new value (same signal as app/services/auth.py).
+_previous_key_seen = False
 
 # Explicit, in-writing opt-out of sidecar auth (e.g. an air-gapped single-host
 # dev loop). Without this, an unset key fails closed with HTTP 503.
@@ -80,7 +95,12 @@ async def require_service_key(
     is set. Comparison is constant-time over the UTF-8 bytes — comparing the
     ``str`` values directly would raise TypeError (→ 500) on a non-ASCII
     header, which HTTP permits (audit 2026-07-01).
+
+    During a rotation the previous key is accepted as well. Both candidates
+    are compared, not short-circuited, so the response time does not reveal
+    which key (if any) the caller matched.
     """
+    global _previous_key_seen
     if not _SERVICE_KEY:
         if _AUTH_OPTIONAL:
             return  # explicit opt-out (logged at import)
@@ -92,10 +112,21 @@ async def require_service_key(
                 "explicitly run unauthenticated)."
             ),
         )
-    if not x_service_key or not hmac.compare_digest(
-        x_service_key.encode("utf-8"), _SERVICE_KEY.encode("utf-8")
-    ):
+    supplied = (x_service_key or "").encode("utf-8")
+    matched_primary = hmac.compare_digest(supplied, _SERVICE_KEY.encode("utf-8"))
+    matched_previous = bool(_SERVICE_KEY_PREVIOUS) and hmac.compare_digest(
+        supplied, _SERVICE_KEY_PREVIOUS.encode("utf-8")
+    )
+    if not x_service_key or not (matched_primary or matched_previous):
         raise HTTPException(status_code=401, detail="invalid or missing X-Service-Key")
+    if matched_previous and not matched_primary and not _previous_key_seen:
+        _previous_key_seen = True
+        logger.warning(
+            "sidecar_auth: X-Service-Key authenticated with "
+            "FASTAPI_SERVICE_KEY_PREVIOUS — a caller is still on the outgoing "
+            "key. Expected during the rotation window; a caller was missed if "
+            "this persists."
+        )
 
 
 def enforce_batch_limits(

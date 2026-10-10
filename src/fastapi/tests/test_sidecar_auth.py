@@ -77,6 +77,145 @@ async def test_non_ascii_header_is_401_not_500(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# require_service_key — rotation overlap (FASTAPI_SERVICE_KEY_PREVIOUS)
+#
+# The sidecar read only FASTAPI_SERVICE_KEY, so a restart onto a rotated key
+# 401'd every caller still on the old one — and the sparse task is a keyed
+# sidecar on ECS. The main app has accepted the outgoing key since 2026-09-06
+# (tests/test_service_key_previous.py); these pin the same behaviour here.
+# ---------------------------------------------------------------------------
+
+PRIMARY = "primary-key-0123456789abcdef0123456789abcdef"
+PREVIOUS = "previous-key-0123456789abcdef0123456789abcdef"
+
+
+@pytest.fixture
+def rotating(monkeypatch):
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", PRIMARY)
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY_PREVIOUS", PREVIOUS)
+    monkeypatch.setattr(sidecar_auth, "_previous_key_seen", False)
+
+
+@pytest.mark.asyncio
+async def test_previous_key_is_accepted_during_a_rotation(rotating) -> None:
+    await sidecar_auth.require_service_key(x_service_key=PRIMARY)
+    await sidecar_auth.require_service_key(x_service_key=PREVIOUS)
+    for bad in ("wrong", None, ""):
+        with pytest.raises(HTTPException) as ei:
+            await sidecar_auth.require_service_key(x_service_key=bad)
+        assert ei.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_previous_key_is_rejected_outside_a_rotation(monkeypatch) -> None:
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", PRIMARY)
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY_PREVIOUS", "")
+    await sidecar_auth.require_service_key(x_service_key=PRIMARY)
+    with pytest.raises(HTTPException) as ei:
+        await sidecar_auth.require_service_key(x_service_key=PREVIOUS)
+    assert ei.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_an_empty_previous_key_does_not_authenticate_an_empty_header(
+    monkeypatch,
+) -> None:
+    """compare_digest(b"", b"") is True: "no rotation in progress" must not
+    turn a missing header into a match."""
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", PRIMARY)
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY_PREVIOUS", "")
+    for blank in (None, ""):
+        with pytest.raises(HTTPException) as ei:
+            await sidecar_auth.require_service_key(x_service_key=blank)
+        assert ei.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_previous_key_does_not_stand_in_for_an_unset_primary(monkeypatch) -> None:
+    """Fail-closed still wins: a previous key with no primary is a broken
+    deployment, not a rotation."""
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", "")
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY_PREVIOUS", PREVIOUS)
+    monkeypatch.setattr(sidecar_auth, "_AUTH_OPTIONAL", False)
+    with pytest.raises(HTTPException) as ei:
+        await sidecar_auth.require_service_key(x_service_key=PREVIOUS)
+    assert ei.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_both_keys_are_compared_not_short_circuited(rotating, monkeypatch) -> None:
+    """Matching the primary must still run the previous-key comparison, so the
+    response time does not say which key the caller held."""
+    from types import SimpleNamespace
+
+    seen: list[tuple[bytes, bytes]] = []
+
+    def spy(a: bytes, b: bytes) -> bool:
+        seen.append((a, b))
+        return a == b
+
+    monkeypatch.setattr(sidecar_auth, "hmac", SimpleNamespace(compare_digest=spy))
+    await sidecar_auth.require_service_key(x_service_key=PRIMARY)
+    assert seen == [
+        (PRIMARY.encode(), PRIMARY.encode()),
+        (PRIMARY.encode(), PREVIOUS.encode()),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_previous_key_use_is_logged_once(rotating, caplog) -> None:
+    with caplog.at_level("WARNING", logger=sidecar_auth.logger.name):
+        await sidecar_auth.require_service_key(x_service_key=PREVIOUS)
+        await sidecar_auth.require_service_key(x_service_key=PREVIOUS)
+        await sidecar_auth.require_service_key(x_service_key=PRIMARY)
+    hits = [r for r in caplog.records if "FASTAPI_SERVICE_KEY_PREVIOUS" in r.getMessage()]
+    assert len(hits) == 1
+    assert PREVIOUS not in hits[0].getMessage()
+
+
+def test_rotation_overlap_over_http(rotating) -> None:
+    """The dependency as a route sees it, header name and all."""
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    @app.post("/sparse", dependencies=[Depends(sidecar_auth.require_service_key)])
+    async def sparse() -> dict:
+        return {"ok": True}
+
+    client = TestClient(app)
+    assert client.post("/sparse", headers={"X-Service-Key": PRIMARY}).status_code == 200
+    assert client.post("/sparse", headers={"X-Service-Key": PREVIOUS}).status_code == 200
+    assert client.post("/sparse", headers={"X-Service-Key": "wrong"}).status_code == 401
+    assert client.post("/sparse").status_code == 401
+
+
+def test_previous_key_is_read_from_the_environment(monkeypatch) -> None:
+    try:
+        monkeypatch.setenv("FASTAPI_SERVICE_KEY", PRIMARY)
+        monkeypatch.setenv("FASTAPI_SERVICE_KEY_PREVIOUS", f"  {PREVIOUS}\n")
+        mod = importlib.reload(sidecar_auth)
+        assert mod._SERVICE_KEY == PRIMARY
+        assert mod._SERVICE_KEY_PREVIOUS == PREVIOUS  # stripped, like the primary
+        # ...and the CLIENT side still sends only the primary.
+        assert mod.SERVICE_KEY_HEADERS == {"X-Service-Key": PRIMARY}
+    finally:
+        monkeypatch.undo()
+        importlib.reload(sidecar_auth)
+
+
+def test_previous_key_defaults_to_none_in_progress(monkeypatch) -> None:
+    try:
+        monkeypatch.delenv("FASTAPI_SERVICE_KEY_PREVIOUS", raising=False)
+        mod = importlib.reload(sidecar_auth)
+        assert mod._SERVICE_KEY_PREVIOUS == ""
+    finally:
+        monkeypatch.undo()
+        importlib.reload(sidecar_auth)
+
+
+# ---------------------------------------------------------------------------
 # SERVICE_KEY_HEADERS — client-side resolution (import-time; needs reloads)
 # ---------------------------------------------------------------------------
 
