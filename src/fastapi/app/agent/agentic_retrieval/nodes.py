@@ -1217,10 +1217,24 @@ def _render_spatial_result(result: Any) -> str:
             f"are retrieved (an alphabetical sample by hole id, not a "
             f"ranking). State the total as {total}, never as {returned}."
         )
+    # What the coordinates are, and which CRS the search centre was read in
+    # (GIS audit 2026-10): the model cites easting/northing verbatim, and
+    # without this they read as map coordinates.
+    note = getattr(result, "coordinate_note", None)
+    if note:
+        lines.append(f"NOTE: {note}")
+    centre = getattr(result, "centre_crs", None)
+    if centre:
+        lines.append(f"search centre read as {centre}")
     shown = collars[:_STRUCTURED_ROW_SAMPLE]
     suffix = " (alphabetical sample)" if total > len(shown) else ""
     lines.append(f"collars: showing {len(shown)} of {total}{suffix}")
-    lines.extend(f"  {_short(item, 400)}" for item in shown)
+    for item in shown:
+        line = f"  {_short(item, 400)}"
+        caveat = getattr(item, "position_caveat", None)
+        if caveat:
+            line += f"  [position: {caveat}]"
+        lines.append(line)
     return "\n".join(lines)[:_STRUCTURED_CAP]
 
 
