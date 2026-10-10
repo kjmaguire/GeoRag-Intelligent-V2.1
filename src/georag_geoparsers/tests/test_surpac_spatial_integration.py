@@ -6,19 +6,26 @@ and the CRS contract. All against the real file, which is the Main Vein
 orebody as 129 strings across 73 levels.
 """
 
+import os
 from pathlib import Path
 
 import pytest
 
 from georag_geoparsers.spatial_parser import parse_spatial_file
 
+#: GEORAG_REDSTAR_DIR points at the RedStar delivery when it is mounted
+#: somewhere else.
+_REDSTAR = Path(os.environ.get("GEORAG_REDSTAR_DIR", r"C:\Users\GeoRAG\Desktop\RedStar"))
 STR_FILE = (
-    Path(r"C:\Users\GeoRAG\Desktop\RedStar\Shumagin\Raster_Surfaces\MODELS")
+    _REDSTAR / "Shumagin" / "Raster_Surfaces" / "MODELS"
     / "Main Vein" / "JCG_Sections" / "Main Plan Sections.str"
 )
 
-pytestmark = pytest.mark.skipif(
-    not STR_FILE.exists(), reason="RedStar delivery not present on this machine",
+#: Per test, not per module: a module-level skip also skipped the test that
+#: never reads the file (audit finding 24).
+needs_redstar = pytest.mark.skipif(
+    not STR_FILE.exists(),
+    reason="RedStar delivery not present on this machine (set GEORAG_REDSTAR_DIR)",
 )
 
 #: NAD83 / UTM zone 4N — the code every CRS carrier in that delivery declares.
@@ -27,6 +34,8 @@ UTM_4N = 26904
 
 @pytest.fixture(scope="module")
 def parsed():
+    if not STR_FILE.exists():
+        pytest.skip("RedStar delivery not present on this machine (set GEORAG_REDSTAR_DIR)")
     return parse_spatial_file(str(STR_FILE), source_epsg=UTM_4N)
 
 
@@ -113,6 +122,7 @@ class TestCrsContract:
         assert parsed.crs_missing is False
         assert parsed.crs_override_applied is True
 
+    @needs_redstar
     def test_without_one_the_caller_is_told_not_to_persist(self):
         # Same contract as a .prj-less shapefile, for the same reason:
         # assuming 4326 for projected coordinates is what put a previous
@@ -121,17 +131,21 @@ class TestCrsContract:
         assert result.crs_missing is True
         assert [w["code"] for w in result.warnings] == ["surpac_no_crs"]
 
+    @needs_redstar
     def test_the_warning_says_what_to_do_about_it(self):
         result = parse_spatial_file(str(STR_FILE))
         detail = result.warnings[0]["detail"]
         assert "EPSG" in detail
         assert "not written" in detail
 
-    def test_a_bad_epsg_is_refused_before_any_parsing(self):
+    def test_a_bad_epsg_is_refused_before_any_parsing(self, tmp_path):
         # The early return sits AFTER _validate_source_epsg so a bad override
-        # fails the same way it does for every other format.
-        with pytest.raises(ValueError):
-            parse_spatial_file(str(STR_FILE), source_epsg=42)
+        # fails the same way it does for every other format. Refused before
+        # the file is even opened, so no delivery is needed: the path below
+        # does not exist, and a ValueError (not FileNotFoundError) proves the
+        # order.
+        with pytest.raises(ValueError, match="1024-32767"):
+            parse_spatial_file(str(tmp_path / "missing.str"), source_epsg=42)
 
 
 def test_provenance_names_the_surpac_reader(parsed):
