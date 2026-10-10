@@ -1984,6 +1984,11 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         redis_client=getattr(state.deps, "redis_client", None),
         pg_pool=getattr(state.deps, "pg_pool", None),
     )
+    # Read in THIS node: the adapter's note is a contextvar, and the next node
+    # runs in a Task that got a copy of the context from before this one.
+    from app.agent.llm_common import take_truncated_generation  # noqa: PLC0415
+
+    generation_truncated = take_truncated_generation()
 
     # Audit item 2 (2026-10-04): the adapters return BUDGET_EXHAUSTED_FALLBACK
     # -- operator wording about token budgets -- when the model produced no
@@ -1992,17 +1997,22 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # confidence = mean retrieval relevance. Replace it with plain user text,
     # floor the confidence, stamp the refusal and drop the retrieved
     # citations (nothing was claimed, so nothing is cited).
+    #
+    # Audit 2026-10 finding 6: only Cohere returned that string. The Bedrock,
+    # Anthropic and vLLM paths return "" when the model says nothing, and
+    # assemble_response("") builds GeoRAGResponse(text="") (min_length=1) and
+    # raises ValidationError, which the user saw as INTERNAL_ERROR. Empty
+    # counts as no content here, for every backend.
     from app.agent.hallucination.refusals import (  # noqa: PLC0415
         MODEL_NO_OUTPUT_MESSAGE,
         MODEL_NO_OUTPUT_TEXT,
-        is_budget_exhausted_text,
         make_refusal_payload,
     )
 
-    if is_budget_exhausted_text(text):
+    if _model_returned_nothing(text):
         logger.error(
             "agentic_retrieval.assemble: the model returned no content "
-            "(BUDGET_EXHAUSTED_FALLBACK) -- replacing with a plain "
+            "(empty or BUDGET_EXHAUSTED_FALLBACK) -- replacing with a plain "
             "model_no_output refusal"
         )
         no_output = assemble_response(MODEL_NO_OUTPUT_TEXT, [])
@@ -2041,6 +2051,8 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     )
     response = _with_retrieval_failures(response, state.retrieval_failures)
     update: dict[str, Any] = {"response": response, **_fold_token_usage(state)}
+    if generation_truncated:
+        update["generation_truncated"] = generation_truncated
     # Audit AGT-5: the in-place `state.X = ...` writes above are visible to
     # the rest of THIS node only. LangGraph rebuilds the state for the next
     # node from channels, so anything persist_node reads has to be in the
@@ -2052,6 +2064,29 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     if rendered_results is not state.tool_results:
         update["tool_results"] = rendered_results
     return update
+
+
+#: validate_node's warning for an answer the model did not finish. Deliberately
+#: carries no "Layer N" prefix: it is not a guard finding, so it must not be
+#: filed under a guard code or counted by the demoter.
+_TRUNCATED_ANSWER_WARNING = (
+    "Generation truncated: the model stopped at its output limit "
+    "(finish_reason={reason}); the answer may be incomplete."
+)
+
+
+def _model_returned_nothing(text: str | None) -> bool:
+    """True when an LLM call produced no usable answer text.
+
+    Empty or whitespace-only (what the Bedrock, Anthropic and vLLM adapters
+    return) or the operator-facing BUDGET_EXHAUSTED_FALLBACK (what Cohere
+    returns, and what the other adapters return for a reasoning-only reply).
+    One predicate for every site that assembles a user-facing answer from model
+    text, so the backends cannot disagree about what "nothing" looks like.
+    """
+    from app.agent.hallucination.refusals import is_budget_exhausted_text  # noqa: PLC0415
+
+    return not (text or "").strip() or is_budget_exhausted_text(text)
 
 
 def _with_retrieval_failures(
@@ -2783,6 +2818,21 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             warnings,
         )
 
+    # Audit 2026-10 finding 4 -- the model stopped at its output cap (or errored)
+    # with text already delivered. The guards judge what is there, and what is
+    # there reads as a finished answer, so say it is not: warn, floor the
+    # confidence, put a caveat in the text, and let validation_state read
+    # "flagged". Nothing is thrown away; see llm_common "Cut-off generations".
+    if state.generation_truncated:
+        warnings = [
+            *warnings,
+            _TRUNCATED_ANSWER_WARNING.format(reason=state.generation_truncated),
+        ]
+        response = _floor_confidence_with_warning_banner(
+            response,
+            "the answer was cut off at the model's output limit and may be incomplete",
+        )
+
     # L909 — the state the UI actually branches on. `confidence` is a
     # retrieval-strength number (see GeoRAGResponse.confidence): a
     # structured-only hit scores 0.95 whatever the synthesis says, and the
@@ -3400,13 +3450,17 @@ async def _reissue_llm_only(
     # first pass. A repair attempt that produced nothing is no improvement
     # on an answer that already passed the guards: raise, and the caller
     # restores the checkpoint so the validated answer ships unchanged.
-    from app.agent.hallucination.refusals import (  # noqa: PLC0415
-        is_budget_exhausted_text,
-    )
+    from app.agent.llm_common import take_truncated_generation  # noqa: PLC0415
 
-    if is_budget_exhausted_text(text):
+    # A repair attempt that was cut off is no better than one that said
+    # nothing: it would replace an answer that already passed the guards with a
+    # fragment. (Also clears the note so it cannot leak into a later read.)
+    truncated = take_truncated_generation()
+    if _model_returned_nothing(text) or truncated:
         raise RepairReissueNoOutputError(
             "repair re-issue (LLM-only): the model returned no content"
+            if not truncated
+            else f"repair re-issue (LLM-only): the answer was cut off ({truncated})"
         )
 
     # Same card payloads and envelope notes assemble_node attaches — a

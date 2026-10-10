@@ -43,6 +43,11 @@ from typing import Any
 
 import httpx
 
+from app.agent.llm_common import (
+    is_truncated_finish_reason,
+    note_truncated_generation,
+    query_time_remaining_s,
+)
 from app.agent.query_sanitizer import _sanitize_query
 from app.config import settings
 
@@ -513,7 +518,11 @@ async def _retry_pre_stream_call(
     - Wall-clock budget: retries stop once the time remaining under
       `settings.TIMEOUT_GATHER_S` isn't enough to plausibly fit another
       backoff + attempt, so retries alone can never consume the whole
-      per-query timeout budget.
+      per-query timeout budget. "Remaining" is the lesser of that figure
+      measured from this call's start and the time left before the QUERY's
+      own deadline (`llm_common.set_query_deadline`), so a late call in a
+      query that has already spent most of its budget does not get a fresh
+      one.
 
     Once either budget (or `max_attempts`) is exhausted, the ORIGINAL
     exception is re-raised (not `_PreStreamTransientError`) so callers see
@@ -532,6 +541,9 @@ async def _retry_pre_stream_call(
             delay = min(2.0 * (2 ** (attempt - 1)), max_backoff_s)
             elapsed = time.monotonic() - start
             remaining = timeout_budget - elapsed
+            query_left = query_time_remaining_s()
+            if query_left is not None:
+                remaining = min(remaining, query_left)
             if attempt >= max_attempts or n_so_far >= cap or remaining <= delay:
                 logger.warning(
                     "%s: pre-stream retry exhausted (attempt=%d/%d "
@@ -873,6 +885,7 @@ async def _call_openai_compatible_llm(
         text_parts: list[str] = []
         usage: dict[str, Any] = {}
         sent_any_token = False
+        finish_reason: str | None = None
         try:
             async with client.stream(
                 "POST",
@@ -905,6 +918,9 @@ async def _call_openai_compatible_llm(
                     # the final blocking-style chunk carries `message.content`.
                     choices = chunk.get("choices") or []
                     if choices:
+                        _fr = choices[0].get("finish_reason")
+                        if isinstance(_fr, str) and _fr:
+                            finish_reason = _fr
                         delta = choices[0].get("delta") or {}
                         content = delta.get("content")
                         if content is None:
@@ -936,7 +952,12 @@ async def _call_openai_compatible_llm(
             raise
 
         return {
-            "choices": [{"message": {"content": "".join(text_parts).strip()}}],
+            "choices": [
+                {
+                    "message": {"content": "".join(text_parts).strip()},
+                    "finish_reason": finish_reason,
+                }
+            ],
             "usage": usage,
         }
 
@@ -1101,7 +1122,9 @@ async def _call_openai_compatible_llm(
     # by thinking" failure mode as Qwen3 reproduces here too).
     _message = (data.get("choices") or [{}])[0].get("message", {})
     reasoning: str = _message.get("reasoning") or _message.get("reasoning_content") or ""
+    _budget_exhausted = False
     if not content and reasoning.strip():
+        _budget_exhausted = True
         logger.warning(
             "budget_exhausted_by_thinking: empty content with %d-char reasoning. "
             "backend=%s model=%s max_tokens=%d prompt_tokens~%d. "
@@ -1116,6 +1139,19 @@ async def _call_openai_compatible_llm(
             "exhaustion during its internal reasoning pass. This typically happens "
             "on very large projects. Please retry, or raise the configured max "
             "output/context budget if the problem persists."
+        )
+
+    # A reply that stopped at the output cap is a fragment, however fluent. The
+    # adapters read the finish reason only to word the empty-answer log line
+    # above, so a cut-off answer shipped as a finished one (audit 2026-10
+    # finding 4). Recorded, not raised: see llm_common "Cut-off generations".
+    _finish_reason = ((data.get("choices") or [{}])[0] or {}).get("finish_reason")
+    if content and not _budget_exhausted and is_truncated_finish_reason(_finish_reason):
+        note_truncated_generation(
+            backend=backend_label,
+            model=effective_model,
+            reason=_finish_reason,
+            answer_chars=len(content),
         )
 
     # Phase 5 follow-up — Langfuse generation observation. Until 2026-05-19
@@ -1463,7 +1499,18 @@ async def _call_anthropic_llm(
             thinking_chars,
         )
 
-    return "".join(text_parts).strip()
+    answer = "".join(text_parts).strip()
+    stop_reason = getattr(msg, "stop_reason", None)
+    if answer and is_truncated_finish_reason(stop_reason):
+        # Hit max_tokens (or the context window) with text already delivered.
+        # Recorded, not raised: see llm_common "Cut-off generations".
+        note_truncated_generation(
+            backend="anthropic",
+            model=effective_model,
+            reason=stop_reason,
+            answer_chars=len(answer),
+        )
+    return answer
 
 
 async def _call_llm(

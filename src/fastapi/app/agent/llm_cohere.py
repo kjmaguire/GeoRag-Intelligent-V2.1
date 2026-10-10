@@ -69,6 +69,8 @@ from app.agent.llm_common import (
     BUDGET_EXHAUSTED_FALLBACK,
     cap_output_tokens,
     clean_model_text,
+    is_truncated_finish_reason,
+    note_truncated_generation,
     parse_retry_after,
     record_llm_metrics,
     wait_before_pre_stream_retry,
@@ -285,6 +287,18 @@ def _extract_content(payload: Any) -> str:
         "The wire shape is UNVERIFIED — run the probe and correct "
         "_extract_content from its report."
     )
+
+
+def _extract_finish_reason(payload: Any) -> str | None:
+    """The v2 ``finish_reason`` of a non-streaming reply (COMPLETE, MAX_TOKENS, ERROR ...).
+
+    None when absent or not a string: a reply that does not say why it stopped
+    is not evidence that it was cut off.
+    """
+    if not isinstance(payload, dict):
+        return None
+    reason = payload.get("finish_reason")
+    return reason if isinstance(reason, str) else None
 
 
 def _extract_usage(payload: Any) -> tuple[int, int]:
@@ -550,6 +564,7 @@ async def call_cohere_llm(
         sent_any_token = False
         content = ""
         input_tokens = output_tokens = 0
+        finish_reason: str | None = None
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if not streaming:
@@ -573,6 +588,7 @@ async def call_cohere_llm(
                     payload = response.json()
                     content = _extract_content(payload)
                     input_tokens, output_tokens = _extract_usage(payload)
+                    finish_reason = _extract_finish_reason(payload)
                 else:
                     chunks: list[str] = []
                     # Kept for the error path only — see _shape_fingerprint.
@@ -580,7 +596,6 @@ async def call_cohere_llm(
                     seen_shapes: list[Any] = []
                     saw_any_event = False
                     thinking_chars = 0
-                    finish_reason: str | None = None
                     # Lines that were not events, kept (bounded) in case the
                     # whole body is one pretty-printed JSON reply — a host
                     # that ignored `stream`. Also the evidence if nothing
@@ -631,6 +646,7 @@ async def call_cohere_llm(
                                 # A complete non-streaming reply on one line.
                                 piece = _extract_content(event)
                                 input_tokens, output_tokens = _extract_usage(event)
+                                finish_reason = _extract_finish_reason(event) or finish_reason
                             if piece:
                                 chunks.append(piece)
                                 # Forward BEFORE recording, so a callback that
@@ -658,6 +674,7 @@ async def call_cohere_llm(
                             saw_any_event = True
                             piece = _extract_content(whole)
                             input_tokens, output_tokens = _extract_usage(whole)
+                            finish_reason = _extract_finish_reason(whole) or finish_reason
                             if piece:
                                 chunks.append(piece)
                                 await token_callback(piece)  # type: ignore[misc]
@@ -756,6 +773,15 @@ async def call_cohere_llm(
             input_tokens,
         )
         return BUDGET_EXHAUSTED_FALLBACK
+    if is_truncated_finish_reason(finish_reason):
+        # Cut off at the output cap (or errored) with text already delivered.
+        # Not raised: see llm_common "Cut-off generations".
+        note_truncated_generation(
+            backend="cohere",
+            model=settings.effective_llm_model,
+            reason=finish_reason,
+            answer_chars=len(cleaned),
+        )
     return cleaned
 
 

@@ -122,6 +122,13 @@ class AgenticRetrievalState(BaseModel):
     # ── Assemble node output ─────────────────────────────────────────────
     response: GeoRAGResponse | None = None
 
+    # Audit 2026-10 finding 4 — the finish reason ("max_tokens", "length",
+    # "error" ...) when the model's answer stopped short of finishing, else
+    # None. assemble_node reads it from llm_common.take_truncated_generation()
+    # straight after the call (a contextvar set inside a node is invisible to
+    # the next one) and validate_node turns it into a caveat on the answer.
+    generation_truncated: str | None = None
+
     # ── Validate node output ─────────────────────────────────────────────
     validation_warnings: list[str] = Field(default_factory=list)
 
