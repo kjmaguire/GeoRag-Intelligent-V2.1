@@ -24,12 +24,22 @@ declare global {
 // Skip conditions:
 //   - the response is for the /sanctum or /login endpoints themselves
 //     (otherwise we'd infinite-loop during sign-in)
+//   - the response is for the crash-telemetry POST. The ErrorBoundary sends it
+//     while it is showing "Something went wrong"; a 401/419 there (an expired
+//     session, a stale token) must not navigate away and replace that panel
+//     with the sign-in page — the report is best-effort and its failure says
+//     nothing the reader needs to act on
 //   - we're already ON /login (no sense redirecting to where we are)
 //   - the page is pre-hydration (window/location not available)
 //   - the request is cross-origin (a 401 from another host is not our session)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AUTH_PATHS = ['/sanctum/csrf-cookie', '/api/v1/auth/login', '/api/v1/auth/spa-login'];
+const NO_BOUNCE_PATHS = [
+    '/sanctum/csrf-cookie',
+    '/api/v1/auth/login',
+    '/api/v1/auth/spa-login',
+    '/api/v1/client-errors',
+];
 
 function shouldBounceOnAuthFailure(requestUrl: string | URL | Request): boolean {
     if (typeof window === 'undefined') return false;
@@ -53,7 +63,7 @@ function shouldBounceOnAuthFailure(requestUrl: string | URL | Request): boolean 
     }
     if (parsed.origin !== window.location.origin) return false;
 
-    for (const path of AUTH_PATHS) {
+    for (const path of NO_BOUNCE_PATHS) {
         if (parsed.pathname.includes(path)) return false;
     }
     return true;
