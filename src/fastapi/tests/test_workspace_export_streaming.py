@@ -102,6 +102,8 @@ def _rows() -> dict[str, tuple[list[str], list[dict[str, Any]]]]:
         ),
         # No workspace_id column: read through RLS alone, as before.
         "ops.support_tickets": (["id", "subject"], [{"id": 1, "subject": "x"}]),
+        # Exists, has no rows for this workspace: a legitimately empty section.
+        "targeting.target_recommendations": (["recommendation_id", "workspace_id"], []),
     }
 
 
@@ -164,20 +166,32 @@ def test_a_column_name_is_quoted_not_interpolated() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_a_missing_table_is_skipped_as_before(tmp_path) -> None:  # noqa: ANN001
+async def test_a_missing_table_is_reported_not_exported_as_an_empty_section(tmp_path) -> None:  # noqa: ANN001
     conn = _FakeConn({})
     sp = _spool(tmp_path)
-    assert await we._export_one_table(conn, "targeting.target_recommendations", WS, "k", sp) == 0  # type: ignore[arg-type]
+    with pytest.raises(we.ExportTableUnreadable, match="does not exist") as err:
+        await we._export_one_table(conn, "targeting.target_recommendations", WS, "k", sp)  # type: ignore[arg-type]
     sp.close()
     assert sp.lines == 0
+    assert (err.value.output_key, err.value.qualified_table) == ("k", "targeting.target_recommendations")
 
 
-async def test_an_unreadable_table_is_skipped_as_before(tmp_path) -> None:  # noqa: ANN001
+async def test_an_unreadable_table_is_reported_not_exported_as_an_empty_section(tmp_path) -> None:  # noqa: ANN001
     conn = _FakeConn(_rows(), unreadable={"silver.hypotheses"})
     sp = _spool(tmp_path)
-    assert await we._export_one_table(conn, "silver.hypotheses", WS, "k", sp) == 0  # type: ignore[arg-type]
+    with pytest.raises(we.ExportTableUnreadable, match="permission denied"):
+        await we._export_one_table(conn, "silver.hypotheses", WS, "k", sp)  # type: ignore[arg-type]
     sp.close()
     assert sp.lines == 0
+
+
+async def test_a_table_that_is_merely_empty_is_still_exported_as_zero_rows(tmp_path) -> None:  # noqa: ANN001
+    conn = _FakeConn(_rows())
+    sp = _spool(tmp_path)
+    assert await we._export_one_table(  # type: ignore[arg-type]
+        conn, "targeting.target_recommendations", WS, "k", sp,
+    ) == 0
+    sp.close()
 
 
 async def test_a_failure_after_rows_were_written_is_not_swallowed(tmp_path) -> None:  # noqa: ANN001
@@ -375,10 +389,13 @@ class _RunConn(_FakeConn):
         return None
 
 
-async def _run(monkeypatch, tmp_path, conn, *, qdrant_error: str | None = None):  # noqa: ANN001, ANN202
+async def _run(  # noqa: ANN202
+    monkeypatch, tmp_path, conn, *, qdrant_error: str | None = None,  # noqa: ANN001
+    uploaded: dict[str, Any] | None = None,
+):
     from app.hatchet_workflows import _export_extras as ex
 
-    uploaded: dict[str, Any] = {}
+    uploaded = {} if uploaded is None else uploaded
 
     async def _connect(*_a: Any, **_k: Any) -> _RunConn:
         return conn
@@ -439,6 +456,7 @@ async def test_run_export_streams_uploads_from_disk_and_reports_counts(monkeypat
     manifest = json.loads(lines[0])
     assert manifest["manifest_version"] == "2.0"
     assert manifest["qdrant_point_count"] == 3
+    assert manifest["skipped_tables"] == {}
     assert manifest["tables"] == list(out.per_table)
     kinds = [("table" if "table" in json.loads(ln) else "section") for ln in lines[1:]]
     assert kinds == ["table"] * 4 + ["section"] * 3, "PG rows first, then extras, as before"
@@ -450,6 +468,26 @@ def tempfile_dir() -> str:
     import tempfile
 
     return tempfile.gettempdir()
+
+
+async def test_run_export_fails_naming_every_unreadable_table_and_uploads_nothing(
+    monkeypatch, tmp_path,  # noqa: ANN001
+) -> None:
+    """An unreadable table used to count 0 and ship an empty section; restore
+    then restored the gap without a word."""
+    rows = _rows()
+    del rows["silver.hypotheses"]                      # missing
+    conn = _RunConn(rows, unreadable={"ops.support_tickets"})  # present, but not readable
+    uploaded: dict[str, Any] = {}
+    with pytest.raises(RuntimeError) as err:
+        await _run(monkeypatch, tmp_path, conn, uploaded=uploaded)
+    text = str(err.value)
+    assert "2 listed table(s) could not be read" in text
+    assert "silver_hypotheses" in text and "ops_support_tickets" in text
+    assert "no archive was written" in text
+    assert uploaded == {}, "nothing may be uploaded for a partial export"
+    # ... and the spool directory does not outlive the failure.
+    assert not [p for p in os.listdir(tempfile_dir()) if p.startswith("ws-export-")]
 
 
 async def test_a_failed_qdrant_section_is_discarded_and_reported(monkeypatch, tmp_path) -> None:  # noqa: ANN001

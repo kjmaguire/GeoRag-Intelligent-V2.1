@@ -43,7 +43,9 @@ times over. It now streams:
     ``prefetch=_PG_CURSOR_PREFETCH``) under ONE ``REPEATABLE READ, READ ONLY``
     transaction, so the tables are a consistent snapshot of each other (the
     old autocommit reads were each a different instant) -- with a savepoint
-    per table so one unreadable table is skipped, as before;
+    per table, so a table that cannot be read is named and the run fails after
+    every table has been tried (it used to be skipped, which shipped an empty
+    section that ``restore_workspace`` restored as a gap);
   * the column list is explicit: read from ``pg_attribute`` at run time and
     quoted into the SELECT, so the SQL no longer says ``SELECT *`` and a
     dropped column can never be selected, while a column added later is still
@@ -305,6 +307,21 @@ async def _stream_table(
         yield _row_to_dict(record)
 
 
+class ExportTableUnreadable(RuntimeError):
+    """A table the export lists could not be read at all (missing, no privilege).
+
+    Not a "skip". An empty section in the archive is indistinguishable from a
+    workspace that has no rows there, and ``restore_workspace`` would restore
+    the gap without a word -- so the run fails and names the table instead.
+    """
+
+    def __init__(self, output_key: str, qualified_table: str, cause: BaseException) -> None:
+        self.output_key = output_key
+        self.qualified_table = qualified_table
+        self.reason = f"{type(cause).__name__}: {cause}"
+        super().__init__(f"{qualified_table} could not be read ({self.reason})")
+
+
 async def _export_one_table(
     conn: asyncpg.Connection,
     qualified_table: str,
@@ -314,12 +331,13 @@ async def _export_one_table(
 ) -> int:
     """Stream one table into ``spool`` as ``{"table": key, "row": ...}`` lines.
 
-    Returns the rows written. A table that cannot be read AT ALL (missing,
-    no privilege) is skipped with a warning and counts 0, as before; the
-    savepoint keeps that failure from aborting the surrounding snapshot
-    transaction. A failure after rows have already been written re-raises:
-    the old fetch-then-serialise path could only fail before any row existed,
-    and silently shipping a truncated table would be worse than failing.
+    Returns the rows written. A table that cannot be read AT ALL (missing, no
+    privilege) raises ``ExportTableUnreadable``: it used to be logged and
+    counted as 0 rows, which shipped an empty section as if it were data.
+    The savepoint keeps the failure from aborting the surrounding snapshot
+    transaction, so ``run_export`` can go on and name every unreadable table
+    in one go. A failure after rows have already been written re-raises as it
+    was: silently shipping a truncated table would be worse than failing.
     """
     written = 0
     try:
@@ -330,11 +348,11 @@ async def _export_one_table(
     except Exception as exc:  # noqa: BLE001
         if written:
             raise
-        log.warning(
-            "workspace_export: skipping %s (err=%r)",
+        log.error(
+            "workspace_export: %s could not be read (err=%r)",
             qualified_table, exc,
         )
-        return 0
+        raise ExportTableUnreadable(output_key, qualified_table, exc) from exc
     return written
 
 
@@ -346,6 +364,7 @@ def _build_manifest_from_counts(
     qdrant_point_count: int = 0,
     redis_key_count: int = 0,
     partial_stores: dict[str, str] | None = None,
+    skipped_tables: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The manifest is the first JSONL line; subsequent lines are
     `{"table": <output_key>, "row": <row_dict>}` for PG tables and
@@ -356,6 +375,11 @@ def _build_manifest_from_counts(
     workspace + section list, then streams rows.
 
     Manifest version bumped from 1.0 to 2.0 with §11.3-v2.
+
+    ``skipped_tables`` names any listed table that could not be read, with the
+    reason. ``run_export`` fails rather than upload such an archive, so it is
+    ``{}`` in everything it writes; the restore refuses a manifest where it is
+    not, so a partial archive can never be mistaken for a complete one.
 
     Built from COUNTS rather than the rows themselves, because the rows are
     streamed to disk and never held; ``_build_manifest`` is the same thing
@@ -369,6 +393,7 @@ def _build_manifest_from_counts(
         "captured_at":        datetime.now(tz=UTC).isoformat(),
         "table_row_counts":   dict(table_row_counts),
         "tables":             list(table_row_counts.keys()),
+        "skipped_tables":     dict(skipped_tables or {}),
         # §11.3-v2 extras
         "qdrant_point_count": qdrant_point_count,
         "redis_key_count":    redis_key_count,
@@ -526,11 +551,27 @@ async def run_export(
                 # and closed here so it does not pin the xmin horizon while
                 # the (slow, non-transactional) extra stores are read.
                 table_row_counts: dict[str, int] = {}
+                skipped_tables: dict[str, str] = {}
                 async with conn.transaction(isolation="repeatable_read", readonly=True):
                     for output_key, qualified_table in _WORKSPACE_TABLES:
-                        table_row_counts[output_key] = await _export_one_table(
-                            conn, qualified_table, workspace_id, output_key, pg_spool,
-                        )
+                        try:
+                            table_row_counts[output_key] = await _export_one_table(
+                                conn, qualified_table, workspace_id, output_key, pg_spool,
+                            )
+                        except ExportTableUnreadable as exc:
+                            # Keep going so one run names EVERY unreadable
+                            # table; each had its own savepoint, so the
+                            # snapshot is still sound.
+                            skipped_tables[output_key] = exc.reason
+                if skipped_tables:
+                    # An archive with a silently empty section restores as a
+                    # workspace missing that data, and nothing says so. Fail
+                    # before anything is uploaded.
+                    raise RuntimeError(
+                        f"workspace_export {workspace_id}: {len(skipped_tables)} listed "
+                        f"table(s) could not be read, so no archive was written: "
+                        + "; ".join(f"{k}: {v}" for k, v in sorted(skipped_tables.items()))
+                    )
 
                 # §11.3-v2 — walk the 2 extra stores. Each failure is
                 # recorded in partial_stores but does NOT fail the export (PG
@@ -561,6 +602,7 @@ async def run_export(
                     qdrant_point_count=qdrant_spool.lines,
                     redis_key_count=redis_spool.lines,
                     partial_stores=partial_stores,
+                    skipped_tables=skipped_tables,
                 )
                 archive_path = os.path.join(tmp, "archive.jsonl.gz")
                 archive_bytes = await asyncio.to_thread(
