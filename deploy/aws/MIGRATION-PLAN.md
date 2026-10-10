@@ -295,6 +295,14 @@ configuration, so this plan takes it: **versioning on, a lifecycle policy, and
 Cross-Region or same-region replication on the `bronze` bucket**, decided
 explicitly rather than inherited.
 
+*As built, 2026-10-10.* Versioning and the lifecycle policy shipped
+(`deploy/aws/terraform/data.tf`, all four buckets, non-current versions kept
+90 days). **Replication did not:** there is no
+`aws_s3_bucket_replication_configuration`, so Bronze is protected against an
+overwrite or a delete but not against losing the bucket, the region or the
+account, and nothing else holds a copy. No later record says it was decided
+against; it is unbuilt and still an open question.
+
 ### 4.1 Cloudflare R2 for Bronze — costed and declined (2026-09-14)
 
 Asked because R2 bills no egress, and Bronze is both the largest data flow in
@@ -584,7 +592,8 @@ ADR rather than discarding it.
    `bedrock` backend values with loud rejection of `foundry`/`azure`, then
    tests. Re-measure `RERANKER_SCORE_THRESHOLD_FOUNDRY` against Rerank 3.5 on the golden set.
 3. **Storage.** IAM-chain credentials + endpoint resolution in
-   `georag_object_storage`, Laravel `s3` disk, S3 versioning and replication.
+   `georag_object_storage`, Laravel `s3` disk, S3 versioning (replication was
+   planned and not built; see the note in §4).
 4. **Infrastructure as code** for VPC / ALB / ECS / RDS / EFS / ECR / Secrets
    Manager / EventBridge / CloudWatch. Unlike Azure — where there is no Bicep,
    Terraform or ARM for the container apps and ~55 env vars per app drift freely

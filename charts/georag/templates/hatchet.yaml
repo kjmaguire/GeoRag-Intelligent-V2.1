@@ -40,12 +40,70 @@ spec:
           ports:
             - containerPort: 7077
               name: grpc
-            - containerPort: 8080
+            # Web UI + REST API. hatchet-lite serves both on 8888.
+            - containerPort: 8888
               name: api
+          # docker-compose.yml's hatchet-lite environment, with the two values
+          # that cannot carry over corrected for a cluster. This container had
+          # NO environment: hatchet-lite then dies at boot on the missing
+          # DATABASE_URL and takes every workflow and cron with it.
+          env:
+            # Declared before DATABASE_URL: $(VAR) only expands variables
+            # defined earlier in the list.
+            - name: HATCHET_DB_PW
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: HATCHET_DB_PASSWORD
+            # The engine's own database and role, inside the same Postgres
+            # (created by docker/postgresql/init/20-hatchet-database.sql;
+            # pg-init sets the password).
+            - name: DATABASE_URL
+              value: "postgres://hatchet:$(HATCHET_DB_PW)@{{ .Release.Name }}-postgresql:5432/hatchet?sslmode=disable"
+            # Postgres-backed message queue; RabbitMQ is not deployed.
+            - name: SERVER_MSGQUEUE_KIND
+              value: postgres
+            - name: SERVER_DEFAULT_ENGINE_VERSION
+              value: V1
+            - name: SERVER_AUTH_COOKIE_DOMAIN
+              value: {{ .Values.hatchet.engine.cookieDomain | quote }}
+            - name: SERVER_AUTH_COOKIE_INSECURE
+              value: {{ ternary "f" "t" (hasPrefix "https://" .Values.hatchet.engine.serverUrl) | quote }}
+            - name: SERVER_AUTH_SET_EMAIL_VERIFIED
+              value: "t"
+            - name: SERVER_URL
+              value: {{ .Values.hatchet.engine.serverUrl | quote }}
+            # Plaintext gRPC, as compose and the AWS tasks run it; the clients
+            # say HATCHET_CLIENT_TLS_STRATEGY=none to match. Cluster-internal.
+            - name: SERVER_GRPC_BIND_ADDRESS
+              value: "0.0.0.0"
+            - name: SERVER_GRPC_PORT
+              value: "7077"
+            - name: SERVER_GRPC_INSECURE
+              value: "t"
+            # What workers are told to dial. Compose sets `localhost`, which in
+            # a cluster would send every worker back to its own pod, so no
+            # workflow would ever be picked up: it has to be the Service.
+            - name: SERVER_GRPC_BROADCAST_ADDRESS
+              value: "{{ .Release.Name }}-hatchet:{{ .Values.hatchet.engine.service.grpcPort }}"
+            - name: SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS
+              value: "{{ .Release.Name }}-hatchet:{{ .Values.hatchet.engine.service.grpcPort }}"
           resources: {{- toYaml .Values.hatchet.engine.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: api
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 8
           volumeMounts:
+            # /config, not /hatchet/config: that is where the engine writes the
+            # encryption keyset it generates on first boot, and where
+            # `hatchet-admin --config /config token create` reads it back. A
+            # volume anywhere else keeps nothing, and every restart generates a
+            # new keyset — which invalidates every client token.
             - name: config
-              mountPath: /hatchet/config
+              mountPath: /config
   {{- if .Values.hatchet.engine.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:
@@ -93,14 +151,17 @@ spec:
           image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           command: ["python", "-m", "app.hatchet_workflows.worker"]
-          envFrom:
-            - secretRef:
-                name: {{ .Release.Name }}-secrets
+          # No envFrom. The worker used to take the whole release Secret — the
+          # Postgres superuser password, the Martin and Reverb credentials —
+          # and overrode only the one key it knew was dangerous. It reads
+          # exactly the variables below.
           env:
             - name: WORKER_POOL
               value: {{ .Values.hatchet.worker.pool | quote }}
-            - name: HATCHET_CLIENT_HOST
-              value: "{{ .Release.Name }}-hatchet:7077"
+            # The SDK reads HATCHET_CLIENT_HOST_PORT (+ TLS strategy, token);
+            # the HATCHET_CLIENT_HOST this used to set is ignored, so the
+            # worker dialled localhost:7070.
+            {{- include "georag.hatchetClientEnv" . | nindent 12 }}
             - name: POSTGRES_HOST
               value: {{ .Release.Name }}-pgbouncer
             - name: POSTGRES_PORT
@@ -111,8 +172,7 @@ spec:
               value: "5432"
             # SEC-1 (2026-09-29): georag_app, as on AWS. Without these the
             # DSN fell back to POSTGRES_USER=georag — the superuser, which
-            # bypasses RLS — with the superuser password from envFrom.
-            # Explicit env wins over the envFrom Secret for the same key.
+            # bypasses RLS.
             - name: POSTGRES_USER
               value: georag_app
             - name: POSTGRES_DB
@@ -124,8 +184,58 @@ spec:
                   key: PG_APP_PASSWORD
             - name: REDIS_HOST
               value: {{ .Release.Name }}-redis
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: REDIS_PASSWORD
             - name: QDRANT_HOST
               value: {{ .Release.Name }}-qdrant
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: QDRANT_API_KEY
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: FASTAPI_SERVICE_KEY
+            # Chat is not the worker's, but Cohere Parse OCR is. optional: true
+            # for an air-gapped install with no such key (see fastapi.yaml).
+            - name: COHERE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: COHERE_API_KEY
+                  optional: true
+            # Both default to compose hostnames (http://fastapi:8000,
+            # http://laravel.test) that do not resolve here. The first is read
+            # by nightly_ingestion_integrity, the second by every progress and
+            # workspace-data-updated callback to Laravel.
+            - name: FASTAPI_INTERNAL_URL
+              value: http://{{ .Release.Name }}-fastapi:{{ .Values.fastapi.service.port }}
+            - name: LARAVEL_INTERNAL_URL
+              value: http://{{ .Release.Name }}-laravel-octane:{{ .Values.laravelOctane.service.port }}
+            # The shared sidecars. Ingest still loads its own dense embedder
+            # (passage_embedder ignores EMBEDDING_SERVICE_URL), from the same
+            # model name and revision, so the vector spaces match.
+            {{- with (include "georag.modelServiceEnv" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            # Writable caches. The image's HF_HOME (/opt/hf_cache, which holds
+            # the baked SPLADE++ weights) is read-only for www-data, so the
+            # dense embedder's download needs somewhere else to go; without it
+            # the embed workflow never executes. Only the SentenceTransformer
+            # cache is moved, so the baked SPLADE++ weights are still found.
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: /tmp/hf_cache
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg_cache
+            - name: MPLCONFIGDIR
+              value: /tmp/mpl_cache
             # ADR-0025 follow-up: set explicitly. The code default is now
             # "cohere", which an on-prem / air-gapped install cannot reach (no
             # COHERE_API_KEY here, and no egress), so an unset value would take
@@ -145,6 +255,9 @@ spec:
             # "" turns it off (air-gapped: values-airgap.yaml).
             - name: COLLAR_DEM_URL_TEMPLATE
               value: {{ .Values.terrain.demUrlTemplate | quote }}
+            {{- with .Values.hatchet.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources: {{- toYaml .Values.hatchet.worker.resources | nindent 12 }}
 {{- end }}
 {{- end }}

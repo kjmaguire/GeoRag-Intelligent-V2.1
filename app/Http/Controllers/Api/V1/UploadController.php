@@ -514,7 +514,7 @@ class UploadController extends Controller
                 hash_update_stream($hashCtx, $handle);
                 $sha256 = hash_final($hashCtx);
                 rewind($handle);
-                $this->storage->bronze()->put($minioKey, $handle, $putOptions);
+                $this->storage->putOrFail($this->storage->bronze(), $minioKey, $handle, $putOptions);
             } finally {
                 if (is_resource($handle)) {
                     fclose($handle);

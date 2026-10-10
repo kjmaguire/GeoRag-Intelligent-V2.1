@@ -53,8 +53,9 @@ openpyxl/xlrd, ezdxf, mdbtools, rapidfuzz. **No DuckDB, segyio or obspy.**
 
 ## The PDF stack — in-process, and OCR leaves AWS
 
-§04p, replacing RAGFlow per ADR-0002. `app/services/pdf_extract.py`,
-`pdf_render.py`, `pdf_coordinates.py`, `pdf_vl.py`, `pdf_vl_shadow.py`.
+§04p, replacing RAGFlow per ADR-0002. `app/services/pdf_render.py`,
+`pdf_vl.py`, `pdf_vl_shadow.py`, and `app/services/ingest/pdf_report.py`,
+`pdf_ingester.py`, `tiff_to_pdf.py`.
 
 Scanned-page OCR is **Cohere Parse 5** (`parse-v5.0`) on **Cohere's own API**
 since ADR-0023 — `POST {COHERE_BASE_URL}/v2/parse`, keyed by `COHERE_API_KEY`

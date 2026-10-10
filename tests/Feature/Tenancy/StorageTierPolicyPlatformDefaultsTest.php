@@ -27,9 +27,12 @@ use Tests\TestCase;
  *    (dev had reached 90 copies of each rule).
  *
  * Gated like FailClosedRlsPolicyTest: Postgres only, georag_app must exist
- * without BYPASSRLS, and the table must exist (it is created only by the
- * phase0 raw SQL, so the migrate-only test database skips — see
- * scripts/raw-parity-baseline.txt).
+ * without BYPASSRLS, and the table must exist. The table WAS created only by
+ * the phase0 raw SQL, so a migrate-only database skipped this; since
+ * 2026_08_28_100500_create_silver_findings_and_storage_tier_tables it is
+ * created by a migration and the migrate-only suite runs all four tests
+ * (measured 2026-10-10). The table check stays for a cluster that really
+ * lacks it.
  */
 final class StorageTierPolicyPlatformDefaultsTest extends TestCase
 {

@@ -60,6 +60,30 @@ class QueryControllerTest extends TestCase
         Queue::assertPushed(StreamQueryFromFastApi::class, 1);
     }
 
+    public function test_thirty_queries_a_minute_fit_the_shared_throttle(): void
+    {
+        // Reserve and start share one bucket, hit once per request: the
+        // documented 30 queries a minute is 60 hits, not 30.
+        Queue::fake();
+
+        $project = Project::factory()->create();
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        for ($i = 0; $i < 30; $i++) {
+            $queryId = $this->postJson('/api/v1/queries', [
+                'query' => "Question {$i}",
+                'project_id' => $project->project_id,
+            ])->assertAccepted()->json('query_id');
+
+            $this->postJson("/api/v1/queries/{$queryId}/start")->assertAccepted();
+        }
+
+        $this->postJson('/api/v1/queries', [
+            'query' => 'One too many',
+            'project_id' => $project->project_id,
+        ])->assertTooManyRequests();
+    }
+
     public function test_store_returns_422_when_query_is_missing(): void
     {
         $project = Project::factory()->create();
@@ -72,15 +96,23 @@ class QueryControllerTest extends TestCase
             ->assertJsonValidationErrors(['query']);
     }
 
-    public function test_store_returns_422_when_project_id_does_not_exist(): void
+    public function test_a_missing_project_answers_like_one_the_caller_cannot_access(): void
     {
-        $response = $this->postJson('/api/v1/queries', [
+        // 422 "does not exist" for a missing project beside 403 for someone
+        // else's was an existence oracle over project ids.
+        $missing = $this->postJson('/api/v1/queries', [
             'query' => 'What is the average gold grade?',
             'project_id' => '00000000-0000-0000-0000-000000000000',
         ]);
 
-        $response->assertUnprocessable()
-            ->assertJsonValidationErrors(['project_id']);
+        $foreign = $this->postJson('/api/v1/queries', [
+            'query' => 'What is the average gold grade?',
+            'project_id' => Project::factory()->create()->project_id,
+        ]);
+
+        $missing->assertForbidden();
+        $foreign->assertForbidden();
+        $this->assertSame($foreign->json(), $missing->json());
     }
 
     public function test_store_returns_422_when_project_id_is_not_a_uuid(): void

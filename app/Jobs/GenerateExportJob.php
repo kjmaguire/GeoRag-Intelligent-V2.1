@@ -26,8 +26,16 @@ use Illuminate\Queue\TimeoutExceededException;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Generates a data export, uploads the resulting file(s) to MinIO, generates a
- * 24-hour presigned download URL, and updates the exports record accordingly.
+ * Generates a data export, uploads the resulting file to the exports bucket and
+ * records where it landed (`minio_path`) on the exports row.
+ *
+ * It deliberately does NOT mint or store a download URL. A presigned URL is
+ * only as long-lived as the credentials that signed it: production signs with
+ * ECS task-role session credentials, so a 24-hour URL stopped working when the
+ * session did (a few hours), and its X-Amz-Security-Token pushed it past the
+ * old varchar(1000) `download_url` column, so storing it failed outright
+ * (SQLSTATE 22001). ExportController mints a short-lived URL from
+ * `minio_path` on every show/download instead.
  *
  * Runs on the default Horizon queue. Dispatched by ExportController::store().
  * Octane-safe: no static state, connections released after each job.
@@ -90,20 +98,24 @@ class GenerateExportJob implements ShouldQueue
 
             // Upload to MinIO via the dedicated exports disk (separate bucket
             // from the bronze layer so generated artifacts never pollute the
-            // immutable raw archive).
-            $storage->exports()->put($minioKey, fopen($localPath, 'r'));
-
-            @unlink($localPath);
-
-            // Generate a presigned URL valid for 24 hours.
-            $expiresAt = now()->addHours(24);
-            $signedUrl = $storage->presignedUrl($storage->exports(), $minioKey, $expiresAt);
+            // immutable raw archive). putOrFail, because a refused write used
+            // to leave this export 'completed' with a link to nothing.
+            $handle = fopen($localPath, 'r');
+            if ($handle === false) {
+                throw new \RuntimeException('Unable to open the generated export for upload.');
+            }
+            try {
+                $storage->putOrFail($storage->exports(), $minioKey, $handle);
+            } finally {
+                if (is_resource($handle)) {
+                    fclose($handle);
+                }
+                @unlink($localPath);
+            }
 
             $export->update([
                 'status' => 'completed',
                 'minio_path' => $minioKey,
-                'download_url' => $signedUrl,
-                'download_url_expires_at' => $expiresAt,
                 'file_count' => 1,
                 'total_size_bytes' => $fileSize,
                 'completed_at' => now(),

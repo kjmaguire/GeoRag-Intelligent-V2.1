@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Foundry;
 
+use App\Http\Controllers\Api\V1\ChatConversationController;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use Illuminate\Http\Request;
@@ -120,7 +121,8 @@ class ChatController extends Controller
     }
 
     /**
-     * The LAST 200 messages of a thread, in thread order.
+     * The last MAX_MESSAGES messages of a thread (all of any thread a sync
+     * can have written), in thread order.
      *
      * Ownership is enforced here as well as by the caller: the conversation
      * must belong to this user AND this project.
@@ -128,8 +130,16 @@ class ChatController extends Controller
      * Ordered by `position` (CHAT-2 / LAR-5): every sync re-inserts the
      * whole thread within one second, so `created_at` alone ties and
      * Postgres returns ties in physical, not insertion, order. The query
-     * takes the newest 200 (descending, limit) and reverses them, so a
-     * long thread keeps its tail rather than losing the latest answers.
+     * takes the newest MAX_MESSAGES (descending, limit) and reverses them,
+     * so a long thread keeps its tail rather than losing the latest answers.
+     *
+     * The cap is the sync's own (ChatConversationController::MAX_MESSAGES),
+     * not a smaller page size: the page PUTs back the transcript it loaded
+     * plus the new turn, and the sync is a full replace. Loading only the
+     * last 200 of a 250-message thread erased its first 50 on the next
+     * answer (CH-8).
+     *
+     * @see ChatConversationController::upsert()
      *
      * @return Collection<int, \stdClass>
      */
@@ -149,7 +159,7 @@ class ChatController extends Controller
             ->orderByDesc('position')
             ->orderByDesc('created_at')
             ->orderByDesc('message_id')
-            ->limit(200)
+            ->limit(ChatConversationController::MAX_MESSAGES)
             ->get()
             ->reverse()
             ->values();

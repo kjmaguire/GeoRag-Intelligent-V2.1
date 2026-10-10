@@ -1,76 +1,49 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Tests\Feature;
 
 use Illuminate\Support\Facades\DB;
+use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
 /**
- * CC-03 Item 8 — Project lifecycle column smoke tests.
+ * CC-03 Item 8 — Project lifecycle column contract on silver.projects.
  *
  * Verifies that:
  *   1. The migration added `lifecycle_state` to silver.projects with the
  *      correct NOT NULL + DEFAULT 'active' contract.
  *   2. The CHECK constraint rejects values outside the four allowed states.
+ *   3. The (workspace_id, lifecycle_state) index exists.
  *
- * These tests gate on Postgres (silver schema is absent in SQLite / test-DB).
- * They do NOT use RefreshDatabase because silver.projects is not in the test
- * SQLite schema — instead they run direct raw SQL against the live Postgres
- * connection configured via pgsql_migrations.
+ * Read-only catalog inspection on the DEFAULT connection, so it needs the
+ * Postgres test connection (`-c phpunit.pgsql.xml`) and the schema the
+ * RefreshDatabase group of that config has already migrated; it lives in the
+ * "Postgres (read-only)" suite, which runs after it.
+ *
+ * Until 2026-10-10 this connected to `pgsql_migrations` and skipped when it
+ * could not. Under phpunit.xml that connection points at the docker host
+ * `postgresql` with no password, which is unreachable on a runner; and the
+ * file was in neither suite config, because the manifest guard
+ * (PgsqlSuiteManifestTest) only knew the RequiresPostgres / driver-name gates,
+ * not "connect to pgsql_migrations or skip". So the contract was checked
+ * nowhere. It now uses the normal gate and is listed in phpunit.pgsql.xml.
  *
  * Architecture references
  * -----------------------
  *   CC-03 Item 8 — project hibernation / soft freeze
- *   CLAUDE.md    — migrations must use pgsql_migrations connection
  */
 class ProjectLifecycleTest extends TestCase
 {
-    /**
-     * Skip the test when the pgsql_migrations connection cannot reach the live DB.
-     *
-     * The test environment uses SQLite for the *default* connection (phpunit.xml
-     * sets DB_CONNECTION=sqlite and DB_DATABASE=:memory:). The
-     * `pgsql_migrations` connection config falls back to DB_DATABASE which
-     * phpunit forces to ':memory:' — so we patch the connection config here to
-     * use MIGRATE_DB_DATABASE or POSTGRES_DB (set as system env vars by Docker
-     * Compose) before attempting to connect.
-     */
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $host = config('database.connections.pgsql_migrations.host');
-        if (empty($host)) {
-            $this->markTestSkipped(
-                'ProjectLifecycleTest requires a live Postgres connection (silver schema).',
-            );
-
-            return;
-        }
-
-        // phpunit.xml forces DB_DATABASE=:memory: which breaks pgsql_migrations.
-        // Patch the connection config with the real database name from the
-        // MIGRATE_DB_DATABASE or POSTGRES_DB system env vars.
-        $realDb = getenv('MIGRATE_DB_DATABASE') ?: getenv('POSTGRES_DB') ?: 'georag';
-        config(['database.connections.pgsql_migrations.database' => $realDb]);
-        DB::purge('pgsql_migrations');
-
-        try {
-            DB::connection('pgsql_migrations')->getPdo();
-        } catch (\Throwable $e) {
-            $this->markTestSkipped(
-                'ProjectLifecycleTest requires a live Postgres connection (silver schema). '
-                .'Error: '.$e->getMessage(),
-            );
-        }
-    }
+    use RequiresPostgres;
 
     /**
      * The lifecycle_state column must exist on silver.projects.
      */
     public function test_lifecycle_state_column_exists(): void
     {
-        $exists = DB::connection('pgsql_migrations')
+        $exists = DB::connection()
             ->table('information_schema.columns')
             ->where('table_schema', 'silver')
             ->where('table_name', 'projects')
@@ -80,7 +53,7 @@ class ProjectLifecycleTest extends TestCase
         $this->assertTrue(
             $exists,
             'lifecycle_state column is missing from silver.projects — '
-            .'run: php artisan migrate --database=pgsql_migrations',
+            .'run: php artisan migrate',
         );
     }
 
@@ -89,7 +62,7 @@ class ProjectLifecycleTest extends TestCase
      */
     public function test_lifecycle_state_default_is_active(): void
     {
-        $default = DB::connection('pgsql_migrations')
+        $default = DB::connection()
             ->table('information_schema.columns')
             ->where('table_schema', 'silver')
             ->where('table_name', 'projects')
@@ -112,7 +85,7 @@ class ProjectLifecycleTest extends TestCase
      */
     public function test_lifecycle_state_is_not_nullable(): void
     {
-        $isNullable = DB::connection('pgsql_migrations')
+        $isNullable = DB::connection()
             ->table('information_schema.columns')
             ->where('table_schema', 'silver')
             ->where('table_name', 'projects')
@@ -135,7 +108,7 @@ class ProjectLifecycleTest extends TestCase
     public function test_check_constraint_permits_all_valid_states(): void
     {
         /** @var string|null $constraintDef */
-        $constraintDef = DB::connection('pgsql_migrations')
+        $constraintDef = DB::connection()
             ->selectOne(
                 "SELECT pg_get_constraintdef(c.oid) AS def
                  FROM pg_constraint c
@@ -167,7 +140,7 @@ class ProjectLifecycleTest extends TestCase
      */
     public function test_workspace_lifecycle_index_exists(): void
     {
-        $indexExists = DB::connection('pgsql_migrations')
+        $indexExists = DB::connection()
             ->selectOne(
                 "SELECT 1
                  FROM pg_indexes
@@ -179,7 +152,7 @@ class ProjectLifecycleTest extends TestCase
         $this->assertNotNull(
             $indexExists,
             'silver_projects_workspace_lifecycle_idx is missing — '
-            .'run: php artisan migrate --database=pgsql_migrations',
+            .'run: php artisan migrate',
         );
     }
 }

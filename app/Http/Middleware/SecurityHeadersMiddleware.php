@@ -62,14 +62,14 @@ final class SecurityHeadersMiddleware
      * connect-src origins that are not derivable from configuration.
      *
      * `demotiles.maplibre.org` is MapLibre's own built-in fallback style,
-     * used when a configured style fails to load. `s3.amazonaws.com` is the
-     * presigned-download host for exports.
+     * used when a configured style fails to load. The presigned-download
+     * hosts for object storage are NOT here: they are derived from the disk
+     * config by objectStorageOrigins().
      *
      * @var list<string>
      */
     private const STATIC_CONNECT_ORIGINS = [
         'https://demotiles.maplibre.org',
-        'https://s3.amazonaws.com',
     ];
 
     public function handle(Request $request, Closure $next): Response
@@ -145,10 +145,17 @@ final class SecurityHeadersMiddleware
      * was never in the list. A new driver that names its host in some other
      * key has to be read here too.
      *
-     * A disk with no configured endpoint (AWS's own hosts, where the SDK
-     * derives the URL) contributes nothing here; `s3.amazonaws.com` is
-     * covered by STATIC_CONNECT_ORIGINS for connect-src and is added below
-     * for frames.
+     * A disk with no configured endpoint is AWS itself, where the SDK derives
+     * the URL from the bucket and region. That is what production is, and a
+     * presigned URL there is NOT on `s3.amazonaws.com`: it is
+     * `https://<bucket>.s3.<region>.amazonaws.com/...` (virtual-hosted), or
+     * `https://s3.<region>.amazonaws.com/<bucket>/...` for a bucket name with a
+     * dot in it. A CSP host-source matches the host exactly, so listing the
+     * global host blocked the Reports "Original" iframe in the one deployment
+     * that mattered. The hosts below are the ones the AWS SDK actually builds,
+     * derived per disk from its bucket, region, endpoint and path-style
+     * setting; a test builds a real presigned URL for each layout and checks
+     * it is allowed, so a change in the SDK's layout fails there.
      *
      * @return list<string>
      */
@@ -157,17 +164,89 @@ final class SecurityHeadersMiddleware
         $origins = [];
 
         foreach (['s3', 's3-bronze', 's3-exports'] as $disk) {
-            foreach (['endpoint', 'url'] as $key) {
-                $origins[] = self::originFromUrl(config("filesystems.disks.{$disk}.{$key}"));
+            $origins = array_merge($origins, self::diskOrigins((array) config("filesystems.disks.{$disk}", [])));
+        }
+
+        return array_values(array_unique(array_filter($origins)));
+    }
+
+    /**
+     * Every origin a presigned URL for one disk can be on.
+     *
+     * @param array<string, mixed> $disk a `filesystems.disks.*` entry
+     *
+     * @return list<string|null>
+     */
+    private static function diskOrigins(array $disk): array
+    {
+        // AWS_URL: a CDN or custom domain the deployment serves objects from.
+        $origins = [self::originFromUrl($disk['url'] ?? null)];
+
+        $bucket = self::dnsBucket($disk['bucket'] ?? null);
+        $pathStyle = filter_var($disk['use_path_style_endpoint'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+        $endpoint = $disk['endpoint'] ?? null;
+        if (is_string($endpoint) && $endpoint !== '') {
+            // Compose and on-prem (MinIO, SeaweedFS), or an AWS endpoint named
+            // explicitly. Path style is <endpoint>/<bucket>/<key>; without it
+            // the SDK moves the bucket into the host: <bucket>.<endpoint-host>.
+            $origins[] = self::originFromUrl($endpoint);
+            if ($bucket !== null && ! $pathStyle) {
+                $origins[] = self::bucketHostOrigin($endpoint, $bucket);
+            }
+
+            return $origins;
+        }
+
+        // AWS itself. The partition decides the DNS suffix; us-east-1 is the
+        // region the SDK still addresses through the global host.
+        $region = is_string($disk['region'] ?? null) ? strtolower($disk['region']) : '';
+        $suffix = str_starts_with($region, 'cn-') ? 'amazonaws.com.cn' : 'amazonaws.com';
+
+        if (preg_match('/^[a-z0-9-]+$/', $region) === 1) {
+            $origins[] = "https://s3.{$region}.{$suffix}";
+            if ($bucket !== null) {
+                $origins[] = "https://{$bucket}.s3.{$region}.{$suffix}";
+            }
+        }
+        if ($region === '' || $region === 'us-east-1') {
+            $origins[] = 'https://s3.amazonaws.com';
+            if ($bucket !== null) {
+                $origins[] = "https://{$bucket}.s3.amazonaws.com";
             }
         }
 
-        // Presigned S3 downloads resolve to the bucket's own host even when
-        // no endpoint is configured — the same origin connect-src already
-        // allows for the export download path.
-        $origins[] = 'https://s3.amazonaws.com';
+        return $origins;
+    }
 
-        return array_values(array_unique(array_filter($origins)));
+    /**
+     * The bucket name when it can be a DNS label (virtual-hosted addressing
+     * needs one), else null. A name with a dot is reached path-style on AWS.
+     */
+    private static function dnsBucket(mixed $bucket): ?string
+    {
+        return is_string($bucket) && preg_match('/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/', $bucket) === 1
+            ? $bucket
+            : null;
+    }
+
+    /**
+     * scheme://<bucket>.<host>[:port] for an endpoint, as the SDK addresses a
+     * virtual-hosted bucket on it; null when the endpoint has no host to
+     * prefix (an IP address, where the SDK falls back to path style).
+     */
+    private static function bucketHostOrigin(string $endpoint, string $bucket): ?string
+    {
+        $parts = parse_url($endpoint);
+        $scheme = $parts['scheme'] ?? null;
+        $host = $parts['host'] ?? null;
+        if ($scheme === null || $host === null || str_starts_with($host, '[') || filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return null;
+        }
+
+        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+
+        return "{$scheme}://{$bucket}.{$host}{$port}";
     }
 
     /**
@@ -229,9 +308,14 @@ final class SecurityHeadersMiddleware
             // whole point of that indirection is the air-gapped deployment
             // (CLAUDE.md hard rule #8), and a hard-coded allowlist defeats
             // it just as thoroughly as a hard-coded URL.
+            //
+            // The object-storage hosts are here too: connect-src has always
+            // listed the presigned-download host, and a fetch() of a presigned
+            // URL (as opposed to a navigation or an <iframe>) needs it.
             'connect-src '.implode(' ', array_merge(
                 ["'self'", 'wss:', 'ws:'],
                 self::STATIC_CONNECT_ORIGINS,
+                self::objectStorageOrigins(),
                 BasemapAssets::cspSources(),
             )),
             // fonts.bunny.net serves the actual .woff2 binaries.

@@ -5,8 +5,9 @@ hashes the whole file on the worker's event loop, stalling every other task
 on it (and holds the file in memory). The async ingesters now call
 ``await asyncio.to_thread(sha256_file, path)``.
 
-las_ingester.py still has one such line; it is left to the LAS depth-unit
-change (ING-8) that is rewriting that module, and listed in the audit report.
+las_ingester.py was the one holdout (it was waiting on the LAS depth-unit
+change, ING-8); it hashes through ``to_thread(sha256_file, ...)`` too now
+(audit finding 20), and is in the list below.
 """
 from __future__ import annotations
 
@@ -27,12 +28,19 @@ _INLINE_HASH = re.compile(r"hashlib\.sha256\([^)]*read_bytes\(\)")
     "services/ingest/xlsx_ingester.py",
     "services/ingest/cameco_log_ingester.py",
     "services/ingest/csv_collar_ingester.py",
+    "services/ingest/las_ingester.py",
     "hatchet_workflows/tiff_normalize.py",
     "hatchet_workflows/ingest_zip_archive.py",
 ])
 def test_no_inline_read_and_hash(module: str) -> None:
     text = (APP / module).read_text(encoding="utf-8")
     assert not _INLINE_HASH.search(text), module
+
+
+def test_las_ingester_hashes_through_to_thread() -> None:
+    text = (APP / "services/ingest/las_ingester.py").read_text(encoding="utf-8")
+    assert "await asyncio.to_thread(sha256_file, p)" in text
+    assert "import hashlib" not in text
 
 
 def test_tiff_normalize_does_not_download_to_memory() -> None:

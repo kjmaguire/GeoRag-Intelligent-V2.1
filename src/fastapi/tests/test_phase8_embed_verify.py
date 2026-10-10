@@ -94,13 +94,17 @@ def test_embed_verify_execution_timeout_shortened():
     Confirm the decorator timeout was tightened to match."""
     from app.hatchet_workflows import ingest_pdf as mod
     src = inspect.getsource(mod)
-    # Find the line decorating embed_verify
+    # Find the decorator of embed_verify. It spans several lines since the retry
+    # backoff was added (2026-10-10), so read from its opening line.
     lines = src.splitlines()
     for i, ln in enumerate(lines):
         if "async def embed_verify" in ln:
-            decorator_line = lines[i - 1]
-            assert 'execution_timeout="60s"' in decorator_line
-            assert 'execution_timeout="2m"' not in decorator_line
+            start = i - 1
+            while start > 0 and not lines[start].startswith("@ingest_pdf.task("):
+                start -= 1
+            decorator = " ".join(lines[start:i])
+            assert 'execution_timeout="60s"' in decorator
+            assert 'execution_timeout="2m"' not in decorator
             return
     pytest.fail("embed_verify decorator not found")
 

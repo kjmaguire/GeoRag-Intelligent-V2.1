@@ -20,6 +20,7 @@ import {
     type CrsProvenance,
 } from '@/lib/shapefileBundle';
 import { requestedProject } from '@/lib/importWizardLink';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * Foundry / DataImportWizard
@@ -645,11 +646,6 @@ export default function FoundryDataImportWizard() {
         addFiles(collected.length > 0 ? collected : plain);
     }
 
-    function csrfHeader(): Record<string, string> {
-        const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-        return token ? { 'X-CSRF-TOKEN': token } : {};
-    }
-
     async function uploadOne(projectId: string, qf: QueuedFile): Promise<UploadOutcome> {
         // UploadController requires `category` — omitting it 422'd EVERY
         // wizard upload while the create-project flow (which sends it)
@@ -721,7 +717,7 @@ export default function FoundryDataImportWizard() {
             const res = await fetch(`/api/v1/projects/${projectId}/upload`, {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { Accept: 'application/json', ...csrfHeader() },
+                headers: { Accept: 'application/json', ...csrfHeaders() },
                 body: fd,
             });
             if (!res.ok) {

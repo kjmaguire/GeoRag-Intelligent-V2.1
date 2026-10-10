@@ -24,13 +24,17 @@ becomes a no-op so dev iteration is unaffected.
 
 Storage backend
 ---------------
-Default is in-process memory (per FastAPI worker). With 4 uvicorn
-workers and a 20/min limit, an attacker can effectively burst at 80/min
-because each worker tracks its own bucket. For tighter accuracy,
-configure ``settings.RATE_LIMIT_STORAGE_URI`` to a Redis URL
-(``redis://:<pw>@redis:6380/4``) and the limits library shares state
-across workers. Recommended for staging/prod when 3-instance Redis
-topology lands; in dev the in-process default is fine.
+In-process memory (per FastAPI worker) is the only supported backend. With
+4 uvicorn workers and a 20/min limit, an attacker can effectively burst at
+80/min because each worker tracks its own bucket.
+
+Do NOT point ``settings.RATE_LIMIT_STORAGE_URI`` at Redis to share the bucket.
+This module used to recommend that; slowapi drives the SYNCHRONOUS ``limits``
+storages, so a ``redis://`` URL puts a blocking redis-py call on the event loop
+for every rate-limited request (hard rule 2), and ``Settings`` now refuses any
+value other than ``memory://`` at startup. A limiter shared across workers needs
+an async-native implementation (``limits.aio`` is not wired into slowapi) rather
+than a different URL.
 
 Key function — fast unverified JWT decode
 -----------------------------------------
@@ -167,8 +171,9 @@ class ProbeExemptSlowAPIMiddleware(SlowAPIMiddleware):
 # Shared across all routers. main.py exposes it via app.state so slowapi's
 # decorator path can find it.
 #
-# storage_uri: in-memory by default. Set settings.RATE_LIMIT_STORAGE_URI to
-#   a Redis URL for shared-state across workers (recommended in prod).
+# storage_uri: in-memory. settings.RATE_LIMIT_STORAGE_URI only accepts
+#   memory:// (a Redis URL would make blocking calls on the event loop, and is
+#   refused at startup by Settings).
 #
 # enabled: bound to settings.RATE_LIMIT_ENABLED. When False, every
 #   @limiter.limit(...) decorator is a no-op — perfect for dev iteration

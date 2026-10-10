@@ -18,6 +18,7 @@ stagger chain hanging off it move first. Manually invokable via
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -27,6 +28,26 @@ from pydantic import BaseModel, Field
 
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
+
+log = logging.getLogger("georag.hatchet.audit_ledger_verify")
+
+#: Log marker that carries a failed hash-chain verification out of the
+#: database. The verdict row in ``audit.audit_ledger_verification_runs`` and
+#: the admin-surface broadcast both need somebody to be looking at a screen;
+#: a CloudWatch metric filter on this string (alerts.tf, ``audit-ledger-chain-
+#: break``) turns it into email. Nothing else alarms on a ``break`` verdict --
+#: for the first ten weeks the verifier did not run at all
+#: (migration 2026_08_20_030000), and when it did, it reported a false break
+#: for the first row of every chain with history (2026_10_10_100400), so a
+#: verdict nobody could trust was a verdict nobody was wired to read.
+#:
+#: Upper case, underscored and long on purpose: it must not appear in ordinary
+#: prose or a stack trace. The line carries ids and counts only.
+AUDIT_CHAIN_BREAK_MARKER = "AUDIT_LEDGER_CHAIN_BREAK"
+
+#: How many broken row ids the marker line names. ``broken_ids`` can hold
+#: thousands; ``audit.verify_hash_chain(start, end)`` lists them all.
+_MARKER_ID_SAMPLE = 5
 
 
 class AuditVerifyInput(BaseModel):
@@ -60,6 +81,26 @@ audit_ledger_verify = hatchet.workflow(
 _build_dsn = build_dsn
 
 
+def _log_chain_break(
+    run_id: UUID, row: asyncpg.Record, start_at: datetime, end_at: datetime,
+) -> None:
+    """Emit ``AUDIT_CHAIN_BREAK_MARKER`` for a run whose verdict is not 'clean'."""
+    broken = [str(i) for i in (row["broken_ids"] or [])]
+    log.error(
+        "%s run_id=%s status=%s window=%s..%s rows_verified=%d breaks=%d "
+        "first_broken_ids=%s -- audit.verify_hash_chain(start, end) lists "
+        "every mismatch",
+        AUDIT_CHAIN_BREAK_MARKER,
+        run_id,
+        row["status"],
+        start_at.isoformat(),
+        end_at.isoformat(),
+        int(row["rows_verified"] or 0),
+        len(broken),
+        ",".join(broken[:_MARKER_ID_SAMPLE]) or "-",
+    )
+
+
 @audit_ledger_verify.task(execution_timeout="5m")
 async def run_verification(input: AuditVerifyInput, ctx: Context) -> AuditVerifyOutput:
     end_at = input.end_at or datetime.now(tz=UTC)
@@ -74,7 +115,7 @@ async def run_verification(input: AuditVerifyInput, ctx: Context) -> AuditVerify
         )
         row = await conn.fetchrow(
             """
-            SELECT status, rows_verified
+            SELECT status, rows_verified, broken_ids
               FROM audit.audit_ledger_verification_runs
              WHERE id = $1
             """,
@@ -84,6 +125,11 @@ async def run_verification(input: AuditVerifyInput, ctx: Context) -> AuditVerify
         await conn.close()
 
     if row is None:  # pragma: no cover — RETURNING-equivalent path
+        log.error(
+            "%s run_id=%s status=error window=%s..%s -- the verification run "
+            "row could not be read back, so there is no verdict",
+            AUDIT_CHAIN_BREAK_MARKER, run_id, start_at.isoformat(), end_at.isoformat(),
+        )
         return AuditVerifyOutput(
             run_id=str(run_id),
             status="error",
@@ -91,6 +137,9 @@ async def run_verification(input: AuditVerifyInput, ctx: Context) -> AuditVerify
             window_start=start_at,
             window_end=end_at,
         )
+
+    if row["status"] != "clean":
+        _log_chain_break(run_id, row, start_at, end_at)
 
     # Phase 5 admin surface push — drives Admin/AuditExplorer.
     # Only fires on the successful-completion path (skip the error

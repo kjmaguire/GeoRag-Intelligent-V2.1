@@ -35,14 +35,25 @@ from app.hatchet_workflows import hatchet
 log = logging.getLogger("georag.hatchet.idempotency_keys_cleanup")
 
 
+#: The shortest TTL the wrapper gives any idempotency row (R2: 30 days; R3 and up
+#: 90; see agents/wrapper.py:_idempotency_store). A bulk delete by age may not go
+#: below it: an R2 record younger than 30 days is exactly what stops a retried
+#: agent run from writing twice, and `older_than_days=0` (or a negative number,
+#: which puts the cutoff in the future) deleted every key in the table.
+SHORTEST_KEY_TTL_DAYS = 30
+
+
 class CleanupInput(BaseModel):
     """Optional override — left empty for the cron path."""
 
     older_than_days: int | None = Field(
         default=None,
+        ge=SHORTEST_KEY_TTL_DAYS,
+        le=3650,
         description=(
             "When set, deletes rows older than N days REGARDLESS of "
-            "expires_at. Use sparingly — bulk archival, not regular ops."
+            "expires_at. Use sparingly — bulk archival, not regular ops. "
+            f"At least {SHORTEST_KEY_TTL_DAYS}: no row is given a shorter TTL than that."
         ),
     )
 

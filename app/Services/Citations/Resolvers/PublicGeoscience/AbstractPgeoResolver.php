@@ -7,6 +7,7 @@ namespace App\Services\Citations\Resolvers\PublicGeoscience;
 use App\Services\Citations\Resolvers\AbstractCitationResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 /**
  * Common scaffolding for every Public Geoscience (PGEO) citation resolver.
@@ -59,9 +60,10 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
     abstract protected function mergePayload(array $envelope, ?object $entity, array $parts): array;
 
     /**
-     * $workspaceId and $projectIds are accepted for contract compatibility but
-     * intentionally unused: PGEO entities are government-published open data,
-     * workspace-global by design (not tenant-scoped).
+     * The entity itself is government-published open data, workspace-global
+     * by design, so it resolves for anyone. $projectIds still matters: the
+     * references summary lists the caller's OWN documents that mention the
+     * entity, and those are tenant data (see loadEntityReferencesSummary).
      *
      * @param list<string>|null $projectIds
      */
@@ -69,7 +71,7 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
     {
         $parts = $this->parseChunkId($sourceId);
         $entity = $this->loadEntity($parts['pg_id']);
-        $envelope = $this->buildEnvelope($sourceId, $parts);
+        $envelope = $this->buildEnvelope($sourceId, $parts, $projectIds);
         $payload = $this->mergePayload($envelope, $entity, $parts);
 
         return response()->json($payload);
@@ -101,7 +103,9 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
         $featureId = $f[1] ?? null;
 
         preg_match('/pg_id=([^:]+)/', $sourceId, $p);
-        $pgId = $p[1] ?? null;
+        // Every lookup keyed on it is a uuid column: a malformed id would be
+        // a Postgres 22P02 and a 500, where a missing entity is the answer.
+        $pgId = isset($p[1]) && Str::isUuid($p[1]) ? $p[1] : null;
 
         return [
             'canonical_type' => $canonicalType,
@@ -140,10 +144,11 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
      * Build the shared response envelope every PGEO resolver returns.
      *
      * @param array{canonical_type: ?string, source_id: ?string, feature_id: ?string, pg_id: ?string} $parts
+     * @param list<string>|null $projectIds
      *
      * @return array<string, mixed>
      */
-    protected function buildEnvelope(string $sourceChunkId, array $parts): array
+    protected function buildEnvelope(string $sourceChunkId, array $parts, ?array $projectIds = null): array
     {
         $sourceRow = DB::table('public_geo.sources as s')
             ->join('public_geo.jurisdictions as j', 'j.jurisdiction_code', '=', 's.jurisdiction_code')
@@ -206,6 +211,7 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
             'references_summary' => $this->loadEntityReferencesSummary(
                 $parts['pg_id'],
                 $parts['canonical_type'],
+                $projectIds,
             ),
             'title' => null,
             'text' => null,
@@ -221,29 +227,38 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
      * Cross-corpus link summary — "Referenced in N reports" surface for the
      * citation card (plan §07d).
      *
+     * Only the caller's own reports. public_geo.document_entity_links has no
+     * workspace column and no RLS, so the tenant boundary is the report it
+     * points at: an INNER join to silver.reports scoped to the caller's
+     * projects, the same fix EntityReferencesController::forEntity() got.
+     * This used to LEFT join with no scope, so anyone signed in could name a
+     * public mine id and read every tenant's linked document ids, filenames
+     * and match signals, plus the unscoped count.
+     *
+     * @param list<string>|null $projectIds
+     *
      * @return array{count: int, documents: array<int, array<string, mixed>>}
      */
-    protected function loadEntityReferencesSummary(?string $pgId, ?string $canonicalType): array
+    protected function loadEntityReferencesSummary(?string $pgId, ?string $canonicalType, ?array $projectIds = null): array
     {
-        if ($pgId === null || $canonicalType === null) {
+        if ($pgId === null || $canonicalType === null || $projectIds === null || $projectIds === []) {
             return ['count' => 0, 'documents' => []];
         }
 
-        $count = (int) DB::table('public_geo.document_entity_links')
-            ->where('entity_id', $pgId)
-            ->where('canonical_type', $canonicalType)
-            ->whereNull('superseded_at')
-            ->count();
+        $scoped = fn () => DB::table('public_geo.document_entity_links as l')
+            ->join('silver.reports as r', 'r.report_id', '=', 'l.document_id')
+            ->whereIn('r.project_id', $projectIds)
+            ->where('l.entity_id', $pgId)
+            ->where('l.canonical_type', $canonicalType)
+            ->whereNull('l.superseded_at');
+
+        $count = (int) $scoped()->count();
 
         if ($count === 0) {
             return ['count' => 0, 'documents' => []];
         }
 
-        $rows = DB::table('public_geo.document_entity_links as l')
-            ->leftJoin('silver.reports as r', 'r.report_id', '=', 'l.document_id')
-            ->where('l.entity_id', $pgId)
-            ->where('l.canonical_type', $canonicalType)
-            ->whereNull('l.superseded_at')
+        $rows = $scoped()
             ->orderByDesc('l.established_at')
             ->limit(5)
             ->get([

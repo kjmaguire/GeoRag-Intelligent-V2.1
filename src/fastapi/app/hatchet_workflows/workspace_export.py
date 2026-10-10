@@ -23,8 +23,16 @@ Scope (v1)
 
 Postgres only. Every tenant-scoped table in `_WORKSPACE_TABLES` is
 walked under the target workspace's RLS scope (SET app.workspace_id),
-serialised to JSONL, gzipped, and uploaded to SeaweedFS under
+serialised to JSONL, gzipped, and uploaded to the configured EXPORTS bucket
+(``AWS_BUCKET_EXPORTS``: ``georag-exports-<account>`` on AWS, ``exports`` in
+compose) under
 ``workspace-exports/<workspace_id>/<timestamp>-<run_id>.jsonl.gz``.
+
+The bucket used to be a bare ``workspace-exports``, which Terraform never
+creates or grants (it provisions bronze, bronze-raster, exports and backups),
+so on AWS every export ended in NoSuchBucket. ``workspace-exports/`` is now a
+key prefix inside the EXPORTS bucket, and a restore manifest URI is
+``s3://<exports bucket>/workspace-exports/<workspace_id>/<file>``.
 
 Qdrant and Redis sections were added in manifest v2.0 (Qdrant: scroll API
 with a workspace_id payload filter; Redis: SCAN over the workspace-prefixed
@@ -43,7 +51,9 @@ times over. It now streams:
     ``prefetch=_PG_CURSOR_PREFETCH``) under ONE ``REPEATABLE READ, READ ONLY``
     transaction, so the tables are a consistent snapshot of each other (the
     old autocommit reads were each a different instant) -- with a savepoint
-    per table so one unreadable table is skipped, as before;
+    per table, so a table that cannot be read is named and the run fails after
+    every table has been tried (it used to be skipped, which shipped an empty
+    section that ``restore_workspace`` restored as a gap);
   * the column list is explicit: read from ``pg_attribute`` at run time and
     quoted into the SELECT, so the SQL no longer says ``SELECT *`` and a
     dropped column can never be selected, while a column added later is still
@@ -64,7 +74,7 @@ No cron. Since 2026-09-29 (HAT-13) an admin who belongs to the workspace
 starts it with Laravel
 ``POST /api/v1/admin/workspaces/{workspace}/workflows/workspace_export``,
 which calls FastAPI ``POST /internal/v1/workflows/workspace_export/trigger``.
-That route only ever writes to the ``workspace-exports`` bucket. The Hatchet
+That route only ever writes to the configured EXPORTS bucket. The Hatchet
 UI still works for an operator, with ``{"workspace_id": "<uuid>"}``. Output
 run_id is logged + audit-row anchored.
 """
@@ -85,7 +95,7 @@ from typing import Any
 
 import aioboto3
 import asyncpg
-from georag_object_storage import StorageConfig, async_client_kwargs
+from georag_object_storage import Bucket, StorageConfig, async_client_kwargs
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -116,11 +126,24 @@ _WORKSPACE_TABLES: list[tuple[str, str]] = [
 ]
 
 
+#: Key prefix of every workspace export inside the EXPORTS bucket. The restore
+#: trigger route and Laravel's WorkflowTriggerController validate manifest URIs
+#: against it, so change all three together.
+EXPORT_KEY_PREFIX = "workspace-exports"
+
+
+def exports_bucket() -> str:
+    """The bucket exports are written to: the configured EXPORTS bucket
+    (``AWS_BUCKET_EXPORTS``; ``georag-exports-<account>`` on AWS)."""
+    return StorageConfig.from_env().bucket_name(Bucket.EXPORTS)
+
+
 class WorkspaceExportInput(BaseModel):
     workspace_id: str = Field(..., description="UUID of the workspace to export.")
-    bucket: str = Field(
-        default="workspace-exports",
-        description="SeaweedFS bucket receiving the export object.",
+    bucket: str | None = Field(
+        default=None,
+        description="Bucket receiving the export object. Default: the configured "
+                    "EXPORTS bucket (AWS_BUCKET_EXPORTS), resolved when the run starts.",
     )
     include_qdrant: bool = Field(
         default=True,
@@ -186,7 +209,7 @@ _build_dsn = build_dsn
 
 def _build_object_key(workspace_id: str, run_id: str, when: datetime) -> str:
     return (
-        f"{workspace_id}/"
+        f"{EXPORT_KEY_PREFIX}/{workspace_id}/"
         f"{when.year:04d}-{when.month:02d}-{when.day:02d}T"
         f"{when.hour:02d}{when.minute:02d}{when.second:02d}-{run_id}.jsonl.gz"
     )
@@ -290,6 +313,12 @@ async def _stream_table(
     if qualified_table == "silver.workspaces" or "workspace_id" in columns:
         # silver.workspaces is keyed on workspace_id (its PK).
         query = f"SELECT {select_list} FROM {qualified_table} WHERE workspace_id = $1::uuid"
+        if qualified_table == "audit.audit_ledger":
+            # The ledger is hash-chained by a BEFORE INSERT trigger that rebuilds
+            # previous_hash/hash from the newest existing row, so a restore
+            # reproduces the chain only if rows are replayed oldest-first -- the
+            # same (created_at, id) order the trigger and the verifier use.
+            query += " ORDER BY created_at, id"
         args: tuple[Any, ...] = (workspace_id,)
     else:
         query = f"SELECT {select_list} FROM {qualified_table}"
@@ -297,6 +326,21 @@ async def _stream_table(
 
     async for record in conn.cursor(query, *args, prefetch=_PG_CURSOR_PREFETCH):
         yield _row_to_dict(record)
+
+
+class ExportTableUnreadable(RuntimeError):
+    """A table the export lists could not be read at all (missing, no privilege).
+
+    Not a "skip". An empty section in the archive is indistinguishable from a
+    workspace that has no rows there, and ``restore_workspace`` would restore
+    the gap without a word -- so the run fails and names the table instead.
+    """
+
+    def __init__(self, output_key: str, qualified_table: str, cause: BaseException) -> None:
+        self.output_key = output_key
+        self.qualified_table = qualified_table
+        self.reason = f"{type(cause).__name__}: {cause}"
+        super().__init__(f"{qualified_table} could not be read ({self.reason})")
 
 
 async def _export_one_table(
@@ -308,12 +352,13 @@ async def _export_one_table(
 ) -> int:
     """Stream one table into ``spool`` as ``{"table": key, "row": ...}`` lines.
 
-    Returns the rows written. A table that cannot be read AT ALL (missing,
-    no privilege) is skipped with a warning and counts 0, as before; the
-    savepoint keeps that failure from aborting the surrounding snapshot
-    transaction. A failure after rows have already been written re-raises:
-    the old fetch-then-serialise path could only fail before any row existed,
-    and silently shipping a truncated table would be worse than failing.
+    Returns the rows written. A table that cannot be read AT ALL (missing, no
+    privilege) raises ``ExportTableUnreadable``: it used to be logged and
+    counted as 0 rows, which shipped an empty section as if it were data.
+    The savepoint keeps the failure from aborting the surrounding snapshot
+    transaction, so ``run_export`` can go on and name every unreadable table
+    in one go. A failure after rows have already been written re-raises as it
+    was: silently shipping a truncated table would be worse than failing.
     """
     written = 0
     try:
@@ -324,11 +369,11 @@ async def _export_one_table(
     except Exception as exc:  # noqa: BLE001
         if written:
             raise
-        log.warning(
-            "workspace_export: skipping %s (err=%r)",
+        log.error(
+            "workspace_export: %s could not be read (err=%r)",
             qualified_table, exc,
         )
-        return 0
+        raise ExportTableUnreadable(output_key, qualified_table, exc) from exc
     return written
 
 
@@ -340,6 +385,7 @@ def _build_manifest_from_counts(
     qdrant_point_count: int = 0,
     redis_key_count: int = 0,
     partial_stores: dict[str, str] | None = None,
+    skipped_tables: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The manifest is the first JSONL line; subsequent lines are
     `{"table": <output_key>, "row": <row_dict>}` for PG tables and
@@ -350,6 +396,11 @@ def _build_manifest_from_counts(
     workspace + section list, then streams rows.
 
     Manifest version bumped from 1.0 to 2.0 with §11.3-v2.
+
+    ``skipped_tables`` names any listed table that could not be read, with the
+    reason. ``run_export`` fails rather than upload such an archive, so it is
+    ``{}`` in everything it writes; the restore refuses a manifest where it is
+    not, so a partial archive can never be mistaken for a complete one.
 
     Built from COUNTS rather than the rows themselves, because the rows are
     streamed to disk and never held; ``_build_manifest`` is the same thing
@@ -363,6 +414,7 @@ def _build_manifest_from_counts(
         "captured_at":        datetime.now(tz=UTC).isoformat(),
         "table_row_counts":   dict(table_row_counts),
         "tables":             list(table_row_counts.keys()),
+        "skipped_tables":     dict(skipped_tables or {}),
         # §11.3-v2 extras
         "qdrant_point_count": qdrant_point_count,
         "redis_key_count":    redis_key_count,
@@ -454,11 +506,10 @@ def _assemble_archive(
 
 
 async def _upload_file_s3(bucket: str, key: str, path: str) -> None:
-    # bucket is a caller-supplied string (see run_export below —
-    # "workspace-exports" today, but not one of georag_object_storage's
-    # four fixed logical Bucket members), so this uses the raw-client
-    # escape hatch (async_client_kwargs) rather than the higher-level
-    # AsyncObjectStorage interface.
+    # bucket is the resolved physical name (the configured EXPORTS bucket,
+    # or an operator override -- see run_export below), so this uses the
+    # raw-client escape hatch (async_client_kwargs) rather than the
+    # higher-level AsyncObjectStorage interface, which takes a logical Bucket.
     #
     # upload_file, not put_object: it streams from disk and switches to a
     # multipart upload past 8 MiB, so the archive is never in memory (and is
@@ -474,6 +525,9 @@ async def run_export(
 ) -> WorkspaceExportOutput:
     started_at = datetime.now(tz=UTC)
     workspace_id = str(input.workspace_id)
+    # The configured EXPORTS bucket unless the operator named one (the trigger
+    # route pins it to the configured one).
+    bucket = input.bucket or exports_bucket()
 
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)
     try:
@@ -520,11 +574,28 @@ async def run_export(
                 # and closed here so it does not pin the xmin horizon while
                 # the (slow, non-transactional) extra stores are read.
                 table_row_counts: dict[str, int] = {}
+                skipped_tables: dict[str, str] = {}
                 async with conn.transaction(isolation="repeatable_read", readonly=True):
                     for output_key, qualified_table in _WORKSPACE_TABLES:
-                        table_row_counts[output_key] = await _export_one_table(
-                            conn, qualified_table, workspace_id, output_key, pg_spool,
-                        )
+                        try:
+                            table_row_counts[output_key] = await _export_one_table(
+                                conn, qualified_table, workspace_id, output_key, pg_spool,
+                            )
+                        except ExportTableUnreadable as exc:
+                            # Keep going so one run names EVERY unreadable
+                            # table; each had its own savepoint, so the
+                            # snapshot is still sound.
+                            log.debug("workspace_export: %s unreadable: %s", qualified_table, exc.reason)
+                            skipped_tables[output_key] = exc.reason
+                if skipped_tables:
+                    # An archive with a silently empty section restores as a
+                    # workspace missing that data, and nothing says so. Fail
+                    # before anything is uploaded.
+                    raise RuntimeError(
+                        f"workspace_export {workspace_id}: {len(skipped_tables)} listed "
+                        f"table(s) could not be read, so no archive was written: "
+                        + "; ".join(f"{k}: {v}" for k, v in sorted(skipped_tables.items()))
+                    )
 
                 # §11.3-v2 — walk the 2 extra stores. Each failure is
                 # recorded in partial_stores but does NOT fail the export (PG
@@ -555,12 +626,13 @@ async def run_export(
                     qdrant_point_count=qdrant_spool.lines,
                     redis_key_count=redis_spool.lines,
                     partial_stores=partial_stores,
+                    skipped_tables=skipped_tables,
                 )
                 archive_path = os.path.join(tmp, "archive.jsonl.gz")
                 archive_bytes = await asyncio.to_thread(
                     _assemble_archive, archive_path, manifest, spools,
                 )
-                await _upload_file_s3(input.bucket, object_key, archive_path)
+                await _upload_file_s3(bucket, object_key, archive_path)
             finally:
                 for spool in spools:
                     spool.close()
@@ -584,7 +656,7 @@ async def run_export(
             target_id=workspace_id,
             payload={
                 "run_id":            run_id,
-                "bucket":            input.bucket,
+                "bucket":            bucket,
                 "object_key":        object_key,
                 "bytes":             archive_bytes,
                 "rows_exported":     rows_exported,
@@ -628,7 +700,7 @@ async def run_export(
         return WorkspaceExportOutput(
             run_id=run_id,
             workspace_id=workspace_id,
-            bucket=input.bucket,
+            bucket=bucket,
             object_key=object_key,
             bytes=archive_bytes,
             rows_exported=rows_exported,

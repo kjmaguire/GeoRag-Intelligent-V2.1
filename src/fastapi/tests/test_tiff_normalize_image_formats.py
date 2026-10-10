@@ -179,6 +179,40 @@ async def test_an_unsupported_extension_is_refused_with_the_supported_list(env) 
         await tn.normalize.fn(_input(tn, "scan.xyz"), object())
 
 
+@pytest.mark.asyncio
+async def test_an_unusable_input_fails_the_run_once_not_twice(env) -> None:
+    """TiffNormalizeError means the input is the problem. normalize has
+    retries=1, so Hatchet downloaded and decoded the same bytes a second time to
+    fail the same way. The error is non-retryable now, and still a
+    TiffNormalizeError for anything that catches that."""
+    from hatchet_sdk import NonRetryableException
+
+    tn, _calls, use = env
+    for name, payload in (("scan.xyz", b"x"), ("scan.tif", b"this is not a tiff")):
+        use(_Store(payload))
+        with pytest.raises(NonRetryableException) as caught:
+            await tn.normalize.fn(_input(tn, name), object())
+        assert isinstance(caught.value, tn.TiffNormalizeError), name
+
+
+@pytest.mark.asyncio
+async def test_a_storage_failure_is_still_retried(env) -> None:
+    """Only the input's own faults are non-retryable. A storage outage is the
+    case the one retry exists for."""
+    from hatchet_sdk import NonRetryableException
+
+    tn, _calls, use = env
+
+    class _Down(_Store):
+        def get_file(self, bucket: Any, key: str, file_path: str) -> None:
+            raise ConnectionError("object store unreachable")
+
+    use(_Down(b""))
+    with pytest.raises(ConnectionError) as caught:
+        await tn.normalize.fn(_input(tn, "scan.png"), object())
+    assert not isinstance(caught.value, NonRetryableException)
+
+
 def test_supported_extensions_match_the_php_accept_list_and_the_zip_list() -> None:
     from app.hatchet_workflows.ingest_zip_archive import _RASTER_EXTS
     from app.hatchet_workflows.tiff_normalize import SUPPORTED_EXTENSIONS

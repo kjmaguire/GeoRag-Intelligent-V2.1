@@ -304,10 +304,18 @@ data "aws_iam_policy_document" "scheduler_task" {
   }
 
   statement {
-    sid       = "ScaleServices"
-    effect    = "Allow"
-    actions   = ["ecs:UpdateService"]
-    resources = [for s in aws_ecs_service.this : s.id]
+    sid     = "ScaleServices"
+    effect  = "Allow"
+    actions = ["ecs:UpdateService"]
+    # aws_ecs_service.this is gated, so under power = "off" the loop is empty,
+    # and IAM rejects a statement with no Resource (MalformedPolicyDocument).
+    # This policy is deliberately kept across power cycles, so it degrades to
+    # an ARN that matches nothing, as the RDS statement below does.
+    # check-aws-power-flag.py fails any such loop that is not wrapped.
+    resources = coalescelist(
+      [for s in aws_ecs_service.this : s.id],
+      ["arn:aws:ecs:::service/none"],
+    )
   }
 
   statement {

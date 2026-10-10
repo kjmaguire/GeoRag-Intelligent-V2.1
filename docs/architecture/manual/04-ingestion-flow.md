@@ -93,6 +93,23 @@ Decomposed into 5 steps + 1 on-failure task:
 | `p04p_dual_write` | `p04p_dual_write()` | When `P04P_DUAL_WRITE_ENABLED=true`, also runs the legacy parser and diffs (shadow A/B) | Writes to `silver.shadow_runs` |
 | `on_failure` | `on_failure_task` (line 1428) | Marks the run failed, broadcasts a failure Reverb event | Hatchet retries this task itself (retries=2) |
 
+Task-output size: `parse` returns the document (`ParseOut`: sections, resource
+tables, ...) as its Hatchet task output, which travels to the engine and on to
+`persist` as one gRPC message, and `hatchet_sdk` caps those at 4 MiB by default.
+Past `PARSE_OUTPUT_INLINE_MAX_BYTES` (2 MiB) `_pack_parse_output()` gzips the
+heavy fields into `ParseOut.heavy_gz_b64` and `persist` unpacks them
+(`_unpack_parse_output()`); if the packed output would still exceed
+`PARSE_OUTPUT_MAX_BYTES` (3 MiB) the parse fails once with `NonRetryableException`
+rather than re-OCRing every page for the same failure. Raise it together with the
+Hatchet client's `HATCHET_CLIENT_GRPC_MAX_SEND/RECV_MESSAGE_LENGTH`.
+
+Page images in `persist`: the staged page renders are copied to their final keys
+BEFORE any database connection exists (S3 only; 400 pages is 400 sequential
+round trips), and only the rows are written inside the persist transaction. The
+staged objects are deleted after the commit, never before, so a rollback plus a
+Hatchet retry copies again from the same untouched sources, and a retry after a
+commit finds the final keys in place and counts those pages as finalised.
+
 Memory protection:
 - `_compute_parse_max_workers()` returns `min(os.cpu_count(), 4)` when
   `PARSE_SUBPROCESS_MAX_WORKERS` is empty.
@@ -126,7 +143,7 @@ Downstream of the parse:
 | `nl_summaries` | structured rows → natural-language passages (ADR-0012) |
 | `verbalize_page_images` | page-image descriptions; inert unless `IMAGE_VERBALIZATION_ENABLED` |
 | `promote_silver_to_gold` | silver → the gold visual tables the Workspace reads |
-| `stale_run_detector` | closes `silver.ingest_progress` rows with no heartbeat, but only after Hatchet confirms the run is no longer QUEUED/RUNNING, so a queued bulk upload is not timed out (2026-09-02) |
+| `stale_run_detector` | closes `silver.ingest_progress` rows with no heartbeat, but only after Hatchet confirms the run is no longer QUEUED/RUNNING, so a queued bulk upload is not timed out (2026-09-02). Per tick it marks the row, dispatches the recovery, and only then (after every row) pushes the `timed_out` events to Laravel, while time remains; it stops starting rows after 7 minutes (`STALE_RUN_DETECTOR_BUDGET_SECONDS`) and leaves the rest for the next tick, under a 10-minute `execution_timeout` (it was 2, and a Laravel that was down killed it between a row's `timed_out` mark and its dispatch, which loses that run for good) |
 | `nightly_ingestion_integrity` | cross-checks bronze against silver |
 
 **Not registered**, despite appearing in earlier versions of this chapter:

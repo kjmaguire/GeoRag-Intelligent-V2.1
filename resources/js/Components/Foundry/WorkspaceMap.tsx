@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { mapStartFailure } from '@/lib/mapInit';
+import MapStartFailure from '@/Components/MapStartFailure';
 import type { Map as MaplibreMap } from 'maplibre-gl';
 import { Link, router } from '@inertiajs/react';
 import {
@@ -209,6 +211,8 @@ export function WorkspaceMap({
     // removed one while their controls still read "on" (FE-6).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [map, setMap] = useState<any>(null);
+    // Set when the map itself could not start (no WebGL 2, the chunk failed).
+    const [mapError, setMapError] = useState<string | null>(null);
     // Tile cache key — seeded from the page, bumped by the ingest broadcast
     // (FE-5). Only ever increases.
     const [tileVersion, setTileVersion] = useState<number>(dataVersion);
@@ -287,8 +291,8 @@ export function WorkspaceMap({
             projectExtent,
         );
 
-        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(
-            ([maplibregl, { configureMaplibreWorker }]) => {
+        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')])
+            .then(([maplibregl, { configureMaplibreWorker }]) => {
                 if (cancelled || !containerRef.current) return;
                 configureMaplibreWorker(maplibregl);
 
@@ -299,19 +303,27 @@ export function WorkspaceMap({
                 // The style and DEM this map starts with; the style-switch effect
                 // compares against it to spot a later basemap change.
                 appliedStyleRef.current = { styleSpec: styleSpecRef.current, demUrl: demUrlRef.current };
-                const map = new maplibregl.Map({
-                    container: containerRef.current,
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    style: styleSpecRef.current as any,
-                    ...(view.bounds
-                        ? { bounds: view.bounds, fitBoundsOptions: { padding: 60, maxZoom: 15 } }
-                        : { center: view.center, zoom: view.zoom }),
-                    attributionControl: false,
-                    // Allow zooming much closer than the default 22 maxZoom; the
-                    // halo + label interpolation stops at 22 so going past that
-                    // just keeps geometry crisp.
-                    maxZoom: 22,
-                });
+                let map: InstanceType<typeof maplibregl.Map>;
+                try {
+                    map = new maplibregl.Map({
+                        container: containerRef.current,
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        style: styleSpecRef.current as any,
+                        ...(view.bounds
+                            ? { bounds: view.bounds, fitBoundsOptions: { padding: 60, maxZoom: 15 } }
+                            : { center: view.center, zoom: view.zoom }),
+                        attributionControl: false,
+                        // Allow zooming much closer than the default 22 maxZoom; the
+                        // halo + label interpolation stops at 22 so going past that
+                        // just keeps geometry crisp.
+                        maxZoom: 22,
+                    });
+                } catch (startError) {
+                    // Inside this .then the throw was unhandled: a silent blank map.
+                    console.error('WorkspaceMap: the map could not start', startError);
+                    setMapError(mapStartFailure(startError));
+                    return;
+                }
 
                 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
                 map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
@@ -905,8 +917,14 @@ export function WorkspaceMap({
                 });
 
                 mapRef.current = map;
-            },
-        );
+            })
+            .catch((loadError: unknown) => {
+                // The map chunk failed to load (a deploy replaced it, the network
+                // dropped): this was an unhandled rejection and a blank panel.
+                if (cancelled) return;
+                console.error('WorkspaceMap: the map could not load', loadError);
+                setMapError(mapStartFailure(loadError));
+            });
 
         return () => {
             cancelled = true;
@@ -1569,6 +1587,7 @@ export function WorkspaceMap({
             }}
         >
             <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+            {mapError && <MapStartFailure message={mapError} />}
 
             {/* Live drag-box overlay for Select tool. Pixel-positioned in
                 the same screen space as the map canvas (since the parent

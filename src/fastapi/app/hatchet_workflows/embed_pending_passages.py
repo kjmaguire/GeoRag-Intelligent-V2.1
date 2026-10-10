@@ -142,6 +142,9 @@ class EmbedPendingPassagesInput(BaseModel):
 
 class EmbedPendingPassagesOutput(BaseModel):
     projects_processed: int
+    #: Projects (and orphan passes) another run was already embedding, so this
+    #: one left them alone. See `_embed_lease`.
+    projects_skipped_busy: int = 0
     total_seen: int = 0
     total_embedded: int = 0
     total_upserted: int = 0
@@ -178,6 +181,12 @@ embed_pending_passages_wf = hatchet.workflow(
     # Concurrency key: use workspace_id when provided (manual/ingest triggers),
     # fall back to the literal string "cron" for cron-fired runs that have no
     # workspace_id in the input.
+    #
+    # Those two keys do NOT serialise against each other: the cron fan-out
+    # (key 'cron') walks every workspace, so it can embed workspace W's
+    # passages while an inline run (key W, dispatched by ingest_pdf.persist)
+    # embeds the same ones, paying for each twice. `_embed_lease` below closes
+    # that per project, whichever key the run has.
     #
     # 2026-08-21 — the 2026-06-01 version of this fallback did not work, and
     # that is why both crons here had effectively never fired: 93 runs over
@@ -239,6 +248,46 @@ _QDRANT_BOOTSTRAP_TIMEOUT_S = 120
 #: condition holds until the collection refills, so the next sweep takes
 #: the next batch.
 _QDRANT_DRIFT_RESET_BATCH = 5000
+
+
+@contextlib.asynccontextmanager
+async def _embed_lease(key: str):
+    """Yield True when this run may embed ``key``, False when another run is
+    already embedding it.
+
+    The workflow's concurrency key is the workspace id for an inline dispatch and
+    the literal 'cron' for the fan-out, so a cron tick and an inline run for the
+    same project are different groups and run side by side, each reading the same
+    unembedded passages and sending them to the embedder (billed per text) and to
+    Qdrant. A session-level advisory lock on a direct connection (not PgBouncer:
+    app/db/dsn.py) makes them take turns per project instead. The loser skips the
+    project: the holder embeds everything pending, and the next */10 tick picks up
+    whatever landed since.
+
+    Closing the connection ends the session, which releases the lock, so there is
+    no unlock to forget on a failure path. A lock that cannot be taken at all
+    (connect error) fails OPEN: this is a guard against duplicate spend, and
+    refusing to embed because the guard is unavailable would be the worse failure.
+    """
+    conn = None
+    leased = True
+    try:
+        conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
+        leased = bool(await conn.fetchval(
+            "SELECT pg_try_advisory_lock(hashtext($1)::bigint)", key,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "embed_pending_passages.lease_unavailable key=%s err=%s — "
+            "embedding without it", key, exc,
+        )
+        leased = True
+    try:
+        yield leased
+    finally:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                await conn.close()
 
 
 @embed_pending_passages_wf.task(execution_timeout="2h", schedule_timeout="2h", retries=0)
@@ -563,27 +612,37 @@ async def run(
     # is no single input workspace to use.
     upserted_workspaces: set[str] = set()
 
+    projects_skipped_busy = 0
+
     for wid, pid in targets:
-        try:
-            r = await embed_pending_passages(
-                workspace_id=wid,
-                project_id=pid,
-                embedding_model=embedding_model,
-                batch_size=input.batch_size,
-                max_passages=input.max_passages,
-            )
-            total_seen += r.passages_seen
-            total_embedded += r.passages_embedded
-            total_upserted += r.qdrant_points_upserted
-            total_skipped += r.passages_skipped
-            errors.extend(r.errors)
-            if r.qdrant_points_upserted > 0:
-                upserted_workspaces.add(wid)
-        except Exception as e:
-            errors.append(f"project={pid}:{type(e).__name__}:{e}")
-            log.warning(
-                "embed_pending_passages.project_failed pid=%s err=%s", pid, e,
-            )
+        async with _embed_lease(f"embed_pending_passages:{wid}:{pid}") as leased:
+            if not leased:
+                projects_skipped_busy += 1
+                log.info(
+                    "embed_pending_passages.project_busy ws=%s pid=%s — another run "
+                    "is embedding it; leaving it to that run", wid, pid,
+                )
+                continue
+            try:
+                r = await embed_pending_passages(
+                    workspace_id=wid,
+                    project_id=pid,
+                    embedding_model=embedding_model,
+                    batch_size=input.batch_size,
+                    max_passages=input.max_passages,
+                )
+                total_seen += r.passages_seen
+                total_embedded += r.passages_embedded
+                total_upserted += r.qdrant_points_upserted
+                total_skipped += r.passages_skipped
+                errors.extend(r.errors)
+                if r.qdrant_points_upserted > 0:
+                    upserted_workspaces.add(wid)
+            except Exception as e:
+                errors.append(f"project={pid}:{type(e).__name__}:{e}")
+                log.warning(
+                    "embed_pending_passages.project_failed pid=%s err=%s", pid, e,
+                )
 
     # Orphan / cross-project pass: passages without a parent report
     # (chunk_kind in {'public_geo_synthesis','kg_narrative',
@@ -617,32 +676,40 @@ async def run(
             log.warning("embed_pending_passages.orphan_discovery_failed err=%s", e)
 
         for wid in orphan_workspaces:
-            try:
-                r = await embed_pending_passages(
-                    workspace_id=wid,
-                    project_id=None,
-                    embedding_model=embedding_model,
-                    batch_size=input.batch_size,
-                    max_passages=input.max_passages,
-                )
-                total_seen += r.passages_seen
-                total_embedded += r.passages_embedded
-                total_upserted += r.qdrant_points_upserted
-                total_skipped += r.passages_skipped
-                errors.extend(r.errors)
-                if r.qdrant_points_upserted > 0:
-                    upserted_workspaces.add(wid)
-                log.info(
-                    "embed_pending_passages.orphan_pass ws=%s seen=%d embedded=%d "
-                    "upserted=%d",
-                    wid, r.passages_seen, r.passages_embedded,
-                    r.qdrant_points_upserted,
-                )
-            except Exception as e:
-                errors.append(f"orphan_pass:{wid}:{type(e).__name__}:{e}")
-                log.warning(
-                    "embed_pending_passages.orphan_pass_failed ws=%s err=%s", wid, e,
-                )
+            async with _embed_lease(f"embed_pending_passages:{wid}:orphans") as leased:
+                if not leased:
+                    projects_skipped_busy += 1
+                    log.info(
+                        "embed_pending_passages.orphan_pass_busy ws=%s — another "
+                        "run is embedding them", wid,
+                    )
+                    continue
+                try:
+                    r = await embed_pending_passages(
+                        workspace_id=wid,
+                        project_id=None,
+                        embedding_model=embedding_model,
+                        batch_size=input.batch_size,
+                        max_passages=input.max_passages,
+                    )
+                    total_seen += r.passages_seen
+                    total_embedded += r.passages_embedded
+                    total_upserted += r.qdrant_points_upserted
+                    total_skipped += r.passages_skipped
+                    errors.extend(r.errors)
+                    if r.qdrant_points_upserted > 0:
+                        upserted_workspaces.add(wid)
+                    log.info(
+                        "embed_pending_passages.orphan_pass ws=%s seen=%d embedded=%d "
+                        "upserted=%d",
+                        wid, r.passages_seen, r.passages_embedded,
+                        r.qdrant_points_upserted,
+                    )
+                except Exception as e:
+                    errors.append(f"orphan_pass:{wid}:{type(e).__name__}:{e}")
+                    log.warning(
+                        "embed_pending_passages.orphan_pass_failed ws=%s err=%s", wid, e,
+                    )
 
     log.info(
         "embed_pending_passages.complete projects=%d seen=%d embedded=%d "
@@ -796,6 +863,7 @@ async def run(
 
     return EmbedPendingPassagesOutput(
         projects_processed=len(project_ids),
+        projects_skipped_busy=projects_skipped_busy,
         total_seen=total_seen,
         total_embedded=total_embedded,
         total_upserted=total_upserted,

@@ -13,23 +13,21 @@ record them in Dagster materialisation metadata.
 
 import logging
 from dataclasses import dataclass, field
-from io import StringIO
 from pathlib import Path
 from typing import IO, Any, Union
-
-import polars as pl
 
 from georag_geoparsers._azimuth_reference import canonical_azimuth_reference
 from georag_geoparsers._csv_io import (
     DEFAULT_NULL_VALUES,
     detect_delimiter,
     open_csv_with_encoding,
+    read_csv_checked,
     transform_decimal_comma,
 )
 from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._dip_convention import DipConvention, normalize_dip, resolve_dip_convention
 from georag_geoparsers._drill_schema import SURVEY_ALIASES, SURVEY_REQUIRED
-from georag_geoparsers._encoding import is_utf8_compatible
+from georag_geoparsers._encoding import decode_warnings, is_utf8_compatible
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 from georag_geoparsers._optional_enum import BlankedValues, canonical_choice
@@ -292,16 +290,8 @@ def parse_csv_surveys(
         stream, detected_encoding, sha256_hex, _byte_count = open_csv_with_encoding(source)
         raw_content = stream.getvalue()
 
+        global_warnings.extend(decode_warnings(detected_encoding, raw_content))
         if not is_utf8_compatible(detected_encoding):
-            global_warnings.append({
-                "row": None,
-                "code": _CODE_ENCODING_NON_UTF8,
-                "message": (
-                    f"detected encoding '{detected_encoding}' (not UTF-8) — "
-                    f"decoded with replacement"
-                ),
-                "context": {"encoding": detected_encoding},
-            })
             logger.info("csv_survey: detected encoding '%s'", detected_encoding)
 
         # 2026-05-23 — delimiter auto-detection (CSV audit gap #1).
@@ -318,16 +308,14 @@ def parse_csv_surveys(
             })
             logger.info("csv_survey: detected delimiter %r", detected_delim)
 
-        df = pl.read_csv(
-            StringIO(raw_content),
-            separator=detected_delim,
-            infer_schema=False,
-            null_values=all_nulls,
-            truncate_ragged_lines=True,
+        df, ragged = read_csv_checked(
+            raw_content, separator=detected_delim, null_values=all_nulls,
         )
+        global_warnings.extend(ragged.warnings())
 
         # 2026-05-23 — column-aware decimal-comma transform (CSV audit gap #2).
         df, transformed_cols = transform_decimal_comma(df)
+        global_warnings.extend(transformed_cols.ambiguity_warnings())
         if transformed_cols:
             global_warnings.append({
                 "row": None,
@@ -434,6 +422,8 @@ def parse_csv_surveys(
 
     rows_as_dicts = df_trimmed.to_dicts()
     for i, raw in enumerate(rows_as_dicts, start=2):
+        if ragged.skip(i, skipped):
+            continue
         record, skip_entry = _validate_row(i, raw, column_map, dip_convention, blanked)
         if record is not None:
             records.append(record)

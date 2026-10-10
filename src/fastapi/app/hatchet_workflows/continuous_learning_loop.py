@@ -277,12 +277,14 @@ async def execute(
             workspaces_pending_training=workspaces_pending_training,
         )
 
-    except Exception as exc:
+    except Exception:
+        # Fail the run. This used to return success=False, which Hatchet records
+        # as a COMPLETED task: the 22:30 cron showed green on a night the
+        # retraining check had not run, and nothing else reports it. (The
+        # `success` / `failure_reason` fields stay on the output for callers that
+        # read them; a failure no longer reaches them.)
         log.exception("continuous_learning_loop.failed")
-        return ContinuousLearningLoopOutput(
-            success=False,
-            failure_reason=f"{type(exc).__name__}: {str(exc)[:200]}",
-        )
+        raise
     finally:
         await conn.close()
 

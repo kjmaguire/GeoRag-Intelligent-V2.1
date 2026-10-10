@@ -260,7 +260,7 @@ async def test_failed_sparse_encode_leaves_the_passage_for_retry(monkeypatch):
     written = [p.payload["text"] for p in qdrant.points]
     assert written == ["collar PLS-22-08"]
     assert "text" in qdrant.points[0].vector  # the sparse slot is present
-    assert [pid for _eid, pid in conn.writebacks] == [ok["passage_id"]]
+    assert [pid for _eid, pid, _encoded in conn.writebacks] == [ok["passage_id"]]
     assert result.passages_skipped == 1
     assert any(e.startswith("sparse_encode_failed") for e in result.errors)
     # RAG-9: the synthesized passage's project reaches the payload.

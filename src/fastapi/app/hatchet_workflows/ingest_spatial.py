@@ -44,6 +44,7 @@ import re
 import shutil
 import tempfile
 import time as _t
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -149,6 +150,7 @@ def _logical_source_name(filename: str) -> str:
 
 async def _replace_previous_upload(
     conn: asyncpg.Connection, *, project_id: str, filename: str,
+    layers: Collection[str | None] | None = None,
 ) -> int:
     """Delete the features an earlier upload of the same file wrote.
 
@@ -158,17 +160,55 @@ async def _replace_previous_upload(
     ``geology.shp.zip`` drew every polygon twice. The exact-name arm keeps
     matching rows written before any prefix existed. Run inside the caller's
     transaction, so the delete only lands if the re-insert does.
+
+    ``layers`` narrows the delete to the ``source_layer`` values THIS run is
+    about to write (``None`` in the collection is the unnamed layer of a lone
+    file). Without it every layer of the earlier upload went, so a re-upload
+    whose member failed to parse, or which no longer held one layer of a
+    multi-layer delivery, erased that layer and wrote nothing in its place
+    (audit finding 4). A layer the run does not rewrite stays, and
+    ``_previous_layers_kept`` lets the run say so. ``None`` keeps the
+    whole-file replace for a caller that has no layer list.
     """
+    scope = ""
+    extra: list[Any] = []
+    if layers is not None:
+        scope = (
+            "     AND (source_layer = ANY($5::text[])"
+            "          OR ($6::boolean AND source_layer IS NULL))"
+        )
+        extra = [sorted(name for name in layers if name is not None), None in layers]
     return int(await conn.fetchval(
         "WITH gone AS ("
         "  DELETE FROM silver.spatial_features"
         "   WHERE project_id = $1::uuid"
         "     AND (source_file = $2"
         "          OR regexp_replace(source_file, $4, '') = $3)"
+        + scope +
         "  RETURNING 1"
         ") SELECT count(*) FROM gone",
         project_id, filename, _logical_source_name(filename), _UPLOAD_STAMP_SQL,
+        *extra,
     ) or 0)
+
+
+async def _previous_layers_kept(
+    conn: asyncpg.Connection, *, project_id: str, filename: str,
+) -> list[str]:
+    """Layers of earlier uploads of this file that are still in the table.
+
+    Read after ``_replace_previous_upload(layers=...)`` and before this run's
+    inserts, so what is left is exactly what this upload did not rewrite.
+    """
+    rows = await conn.fetch(
+        "SELECT DISTINCT source_layer FROM silver.spatial_features"
+        " WHERE project_id = $1::uuid"
+        "   AND (source_file = $2 OR regexp_replace(source_file, $4, '') = $3)"
+        " ORDER BY source_layer NULLS FIRST",
+        project_id, filename, _logical_source_name(filename), _UPLOAD_STAMP_SQL,
+    )
+    return [str(r["source_layer"]) if r["source_layer"] is not None else "(unnamed layer)"
+            for r in rows]
 
 
 # One DSN builder for the whole service — see app/db/dsn.py for why
@@ -641,6 +681,149 @@ def _reported_layers(parse_result: Any, layer_override: str | None) -> list[str]
     ))
 
 
+#: ``(min lon, min lat, max lon, max lat)`` of EPSG:4326, the CRS
+#: ``silver.spatial_features.geom`` is stored in, widened by a rounding
+#: allowance (about 0.1 m) so a feature exactly on the antimeridian or a pole
+#: is not refused for a reprojection residue.
+_LON_LAT_LIMITS = (-180.000001, -90.000001, 180.000001, 90.000001)
+
+
+def _stored_layer(feature: Any, layer_override: str | None) -> str | None:
+    """The ``source_layer`` ``_write_features`` stores for *feature*.
+
+    The one place the per-feature rule lives (the parser's own
+    ``_layer_name`` wins, the override names a lone file), shared by the
+    writer and by the decision about which earlier rows this run replaces.
+    """
+    return (getattr(feature, "properties", None) or {}).get("_layer_name") or layer_override
+
+
+def _split_implausible(
+    features: Any,
+) -> tuple[list[Any], list[tuple[Any, tuple[float, float, float, float]]]]:
+    """``(features that can be stored, [(feature, bounds)] that cannot)``.
+
+    The geometry column is EPSG:4326, so a coordinate beyond longitude +-180 /
+    latitude +-90 is not a place on Earth: it is a projected coordinate (or the
+    product of a wrong transform) stored under the wrong CRS. A misdeclared
+    ``.prj`` produces exactly that, nothing else notices, and one such
+    geometry breaks ``silver.coverage_density`` for every project that
+    includes it. Geometry that cannot be read or is empty has no bounds to
+    judge and is passed through to PostGIS, which decides.
+    """
+    items = list(features)
+    if not items:
+        return [], []
+    import numpy as np  # noqa: PLC0415
+    import shapely  # noqa: PLC0415
+
+    wkts = np.array([getattr(f, "geometry_wkt", None) for f in items], dtype=object)
+    bounds = shapely.bounds(shapely.from_wkt(wkts, on_invalid="ignore"))
+    min_x, min_y, max_x, max_y = _LON_LAT_LIMITS
+    outside = (
+        (bounds[:, 0] < min_x) | (bounds[:, 1] < min_y)
+        | (bounds[:, 2] > max_x) | (bounds[:, 3] > max_y)
+    )   # NaN (no bounds) compares False: not judged here
+    kept = [f for f, bad in zip(items, outside, strict=True) if not bad]
+    dropped = [
+        (f, (float(b[0]), float(b[1]), float(b[2]), float(b[3])))
+        for f, b, bad in zip(items, bounds, outside, strict=True) if bad
+    ]
+    return kept, dropped
+
+
+def _extent(dropped: list[tuple[Any, tuple[float, float, float, float]]]) -> str:
+    """The extent of the unplaceable features, for a message."""
+    xs = [v for _f, b in dropped for v in (b[0], b[2])]
+    ys = [v for _f, b in dropped for v in (b[1], b[3])]
+    return f"x {min(xs):.10g} to {max(xs):.10g}, y {min(ys):.10g} to {max(ys):.10g}"
+
+
+def _implausible_warning(
+    dropped: list[tuple[Any, tuple[float, float, float, float]]],
+    *, total: int, layer: str,
+) -> dict[str, Any]:
+    """The ``crs_implausible`` warning for features left out of one layer."""
+    first = getattr(dropped[0][0], "name", None)
+    kept = total - len(dropped)
+    return {
+        "code": "crs_implausible",
+        "layer": layer,
+        "message": (
+            f"{len(dropped)} of {total} feature(s) in '{layer}' have coordinates "
+            f"that are not on Earth and were not stored"
+        ),
+        "detail": (
+            f"{len(dropped)} of {total} feature(s) of '{layer}' lie outside "
+            f"longitude +-180 / latitude +-90 after conversion to WGS 84 "
+            f"({_extent(dropped)}; first: {first or 'unnamed'!r}). That is what a "
+            f"wrongly declared coordinate system produces, so they were left "
+            f"out rather than stored at positions that do not exist (they "
+            f"would also break the project's coverage statistics). "
+            + (
+                f"The other {kept} feature(s) of the layer were written."
+                if kept else "No feature of this layer was written."
+            )
+            + " Check the file's CRS (or give its EPSG code) and re-upload."
+        )[:900],
+        "context": {
+            "dropped": len(dropped), "total": total, "extent": _extent(dropped),
+        },
+    }
+
+
+#: Warning codes that say WHY a delivery yielded nothing, quoted in the
+#: refusal when it did.
+_NOTHING_READ_CODES = frozenset({
+    "archive_has_no_vector_data", "archive_member_failed",
+    "archive_member_refused", "layer_parse_failed",
+})
+
+
+def _layers_to_write(
+    parsed: list[tuple[str | None, Any]],
+    *, filename: str, manifest_only: bool, warnings: list[dict[str, Any]],
+) -> set[str | None]:
+    """The ``source_layer`` values this run will write; raises if there are none.
+
+    Decided BEFORE anything is deleted (audit finding 4). The delete of the
+    earlier upload used to run first, so a re-upload in which nothing parsed
+    (every member failed, or the archive held no vector file), or whose
+    coordinates were all unplaceable, erased the previous good ingest of the
+    same file and then wrote nothing. A QGIS project with no data shipped
+    (``manifest_only``) legitimately writes nothing and is not refused.
+    """
+    layers: set[str | None] = set()
+    total = 0
+    dropped_all: list[tuple[Any, tuple[float, float, float, float]]] = []
+    for layer_name, result in parsed:
+        features = getattr(result, "features", None) or []
+        total += len(features)
+        kept, dropped = _split_implausible(features)
+        dropped_all.extend(dropped)
+        layers.update(_stored_layer(f, layer_name) for f in kept)
+    if layers or manifest_only:
+        return layers
+    if dropped_all:
+        raise ValueError(
+            f"'{filename}' cannot be ingested: every one of its {total} feature(s) "
+            f"lies outside longitude +-180 / latitude +-90 after conversion "
+            f"({_extent(dropped_all)}), so its coordinate system is wrong or "
+            f"missing. Nothing was written and any earlier upload of this file "
+            f"was left in place. Re-upload with the correct EPSG code."
+        )
+    reasons = "; ".join(
+        f"{w.get('member') or w.get('layer') or w['code']}: "
+        f"{str(w.get('detail') or w.get('message'))[:100]}"
+        for w in [w for w in warnings if w.get("code") in _NOTHING_READ_CODES][:3]
+    )
+    raise ValueError(
+        f"'{filename}' contained no features that could be stored, so nothing "
+        f"was written and any earlier upload of this file was left in place."
+        + (f" Reasons: {reasons}" if reasons else "")
+    )
+
+
 #: WKT for a 3D geometry names the dimension before the coordinate list --
 #: "POINT Z (...)", "LINESTRING ZM (...)". Cheap to spot, and we only need to
 #: know whether the layer has any.
@@ -739,13 +922,32 @@ async def _write_features(
     Invalid geometries are repaired (``_repair_invalid_wkt``) and, when
     ``warnings_out`` is given, reported once per layer with the first
     ``ST_IsValidReason``-style explanation.
+
+    A feature whose coordinates lie outside longitude +-180 / latitude +-90
+    (``_split_implausible``) is NOT stored: it is a projected coordinate
+    under a wrong CRS, and storing it at SRID 4326 breaks
+    ``silver.coverage_density`` for the whole project. It is reported as
+    ``crs_implausible``; the rest of the layer is written.
     """
     import json  # noqa: PLC0415
 
     epsg = _crs_epsg(parse_result.source_crs)
+    features, unplaceable = _split_implausible(parse_result.features)
+    if unplaceable:
+        layer_label = layer_override or source_file
+        log.warning(
+            "ingest_spatial: %d of %d feature(s) of %s are outside lon/lat limits "
+            "and were not stored (%s)",
+            len(unplaceable), len(parse_result.features), layer_label,
+            _extent(unplaceable),
+        )
+        if warnings_out is not None:
+            warnings_out.append(_implausible_warning(
+                unplaceable, total=len(parse_result.features), layer=layer_label,
+            ))
     rows = []
     repaired: list[tuple[str | None, str]] = []
-    for feat in parse_result.features:
+    for feat in features:
         props = dict(feat.properties or {})
         # _layer_name is the parser's bookkeeping column, not upstream data.
         # It becomes source_layer, so leaving it in properties duplicates it
@@ -1191,8 +1393,18 @@ async def run_ingest_spatial(
                     if refusal:
                         raise ValueError(refusal)
 
+                    # What this run can actually store, per layer, decided
+                    # BEFORE the delete: a re-upload that parsed to nothing
+                    # raises here with the earlier upload untouched, and one
+                    # that rewrites only some layers replaces only those
+                    # (audit finding 4).
+                    layers_to_write = _layers_to_write(
+                        parsed, filename=filename, manifest_only=manifest_only,
+                        warnings=warnings,
+                    )
                     replaced = await _replace_previous_upload(
                         conn, project_id=input.project_id, filename=filename,
+                        layers=layers_to_write,
                     )
                     if replaced:
                         log.info(
@@ -1206,6 +1418,30 @@ async def run_ingest_spatial(
                                 f"{replaced} feature(s) from a previous upload of "
                                 f"{logical_name} were replaced by this one."
                             ),
+                        })
+                    kept_layers = await _previous_layers_kept(
+                        conn, project_id=input.project_id, filename=filename,
+                    )
+                    if kept_layers:
+                        warnings.append({
+                            "code": "previous_layers_kept",
+                            "message": (
+                                f"{len(kept_layers)} layer(s) of an earlier upload of "
+                                f"{logical_name} were left in place"
+                            ),
+                            "detail": (
+                                f"An earlier upload of {logical_name} also held "
+                                f"{', '.join(repr(n) for n in kept_layers[:5])}"
+                                + (f" and {len(kept_layers) - 5} more"
+                                   if len(kept_layers) > 5 else "")
+                                + ", which this upload did not contain or could "
+                                "not read, so those features were kept instead of "
+                                "deleted. If a layer was dropped on purpose, remove "
+                                "its features separately; if it should be in this "
+                                "upload, check the archive_member_failed warnings "
+                                "and re-upload."
+                            ),
+                            "layers": kept_layers[:20],
                         })
 
                     for layer_name, result in parsed:
@@ -1257,9 +1493,13 @@ async def run_ingest_spatial(
                             warnings_out=warnings,
                         )
                         features_written += n
-                        layers_written.extend(
-                            _reported_layers(result, layer_name)
-                        )
+                        if n or not result.features:
+                            # A layer every feature of which was unplaceable
+                            # (crs_implausible) wrote nothing, so it is not
+                            # reported as written.
+                            layers_written.extend(
+                                _reported_layers(result, layer_name)
+                            )
             finally:
                 await conn.close()
 
@@ -1296,7 +1536,13 @@ async def run_ingest_spatial(
                 )
 
     except Exception as exc:
-        if run_id:
+        # Close the row, and tell the page, only when Hatchet will not run this
+        # task again (see _progress.is_final_attempt). Both used to happen on
+        # EVERY attempt: the first failure made the row terminal, so a retry
+        # that succeeded could not complete it, skipped the completion
+        # broadcast, and the page had already been told "failed". The failure
+        # hook below closes the row if the last attempt cannot.
+        if run_id and _progress.is_final_attempt(ctx, exc):
             # kwarg is `error`, not `error_text` -- passing the wrong name
             # raised TypeError *inside* the handler, so the real failure
             # was replaced by the TypeError and the progress row never

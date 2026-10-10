@@ -38,7 +38,9 @@ class CollarCrudTest extends TestCase
         Project::getModel()->setTable('projects');
         Collar::getModel()->setTable('collars');
         $this->user = User::factory()->create();
-        $this->project = Project::factory()->create();
+        // A stated coordinate system: store() refuses a collar it cannot place
+        // (StoreCollarRequest), exactly as CollarControllerTest's project does.
+        $this->project = Project::factory()->create(['crs_epsg' => 32613]);
 
         // Attach the user to the project so the hasProjectAccess gate (A2-02 fix)
         // passes for all tests that operate against $this->project.
@@ -52,6 +54,9 @@ class CollarCrudTest extends TestCase
                 'hole_id' => 'DH-TEST-001',
                 'easting' => 512345.0,
                 'northing' => 6234567.0,
+                // The factory project has no crs_epsg, and a collar is placed
+                // only through a known coordinate system (CollarController::store).
+                'crs_epsg' => 32613,
                 'elevation' => 450.0,
                 'total_depth' => 350.0,
                 'hole_type' => 'Diamond',

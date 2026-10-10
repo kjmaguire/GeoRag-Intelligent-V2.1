@@ -6,6 +6,16 @@ import { test, expect } from '@playwright/test';
  * jsdom can't compute MapLibre layer-visibility paint state, and the
  * localStorage round-trip in MapView.tsx is only meaningful with a
  * real browser session. Real-browser only.
+ *
+ * STATUS 2026-10-10: this spec cannot pass yet, and the reasons are not in this file.
+ *   - It drives `/map`. There is no such route; the map lives in the project workspace
+ *     (`/projects/{slug}/workspace`; `/projects/{slug}/map` is a redirect to it), so it needs a slug.
+ *   - It looks for a "Layers" button and "collars" switches on a `canvas.maplibregl-canvas` that
+ *     the current Workspace page may label differently; none of it has been checked against a
+ *     running stack since the map was merged into the workspace.
+ *   - .github/workflows/e2e.yml has no seeded project for it to open.
+ * Only the post-login wait was corrected here: Login.tsx navigates to `/projects`, and the old
+ * pattern `/(dashboard|portfolio|map)/` never matched, so every test timed out first.
  */
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:8888';
@@ -19,10 +29,10 @@ test.describe('Map: layer visibility persists across reload', () => {
         await page.getByLabel(/email/i).fill(TEST_EMAIL);
         await page.getByLabel(/password/i).fill(TEST_PASSWORD);
         await page.getByRole('button', { name: /log in|sign in/i }).click();
-        await page.waitForURL(/\/(dashboard|portfolio|map)/, { timeout: 10_000 });
+        await page.waitForURL(/\/projects/, { timeout: 10_000 });
     });
 
-    test('toggling a layer off survives a hard reload', async ({ page, context }) => {
+    test('toggling a layer off survives a hard reload', async ({ page }) => {
         await page.goto(`${BASE_URL}/map`);
         await page.waitForSelector('canvas.maplibregl-canvas', { timeout: 15_000 });
         await page.waitForTimeout(1500);

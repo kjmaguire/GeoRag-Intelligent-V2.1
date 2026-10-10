@@ -330,14 +330,20 @@ class TestWorkbookDispatch:
 
     @staticmethod
     def _sheet(tmp_path, monkeypatch, frame_columns):
-        import polars as pl
+        # A real workbook, written with openpyxl: the .xlsx path reads it
+        # through openpyxl too, so nothing about the read needs stubbing.
+        import openpyxl
 
         from georag_geoparsers import xlsx_parser
 
-        frame = pl.DataFrame(frame_columns)
-        monkeypatch.setattr(xlsx_parser.pl, "read_excel", lambda *a, **k: frame)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Struct"
+        ws.append(list(frame_columns))
+        for row in zip(*frame_columns.values(), strict=True):
+            ws.append(list(row))
         path = tmp_path / "structures.xlsx"
-        path.write_bytes(b"x")
+        wb.save(path)
         return xlsx_parser.parse_xlsx_sheet(str(path), "Struct", "structure")
 
     def test_xlsx_sheet_type_structure_is_dispatched(

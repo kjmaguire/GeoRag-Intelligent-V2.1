@@ -25,6 +25,33 @@
 --     via the UI; this preserves them rather than dropping them.
 --
 -- Idempotent: ALTERs / CREATEs guarded by IF NOT EXISTS / IF EXISTS.
+--
+-- AS BUILT (database audit 2026-10) -- read before relying on "strict" below.
+-- On a cluster built the way the ECS migrate task builds one (`migrate`, THEN
+-- `db:apply-raw`) the policies this file creates are NOT the only policies on
+-- three of its tables, and the table is therefore NOT strict:
+--
+--   silver.collars          collars_workspace_isolation_v2
+--   silver.reports          silver_reports_workspace_isolation_v2
+--   silver.spatial_features silver_spatial_features_workspace_isolation_v2
+--
+-- Each `_v2` policy is fail-open (`<GUC unset> OR workspace_id = <GUC>`). collars'
+-- comes from 2026_05_25_184630, reports' and spatial_features' from
+-- 2026_05_25_175214; both migrations install it "only when nothing covers the
+-- table yet", i.e. they assume this file ran FIRST. The ECS migrate task runs the
+-- migrations first, so the sibling lands, this file DROPs only the policy NAMES it
+-- knows about, and permissive policies are OR-ed: the strict policy below is
+-- decided by its fail-open sibling. Net effect, measured on a migrate + raw
+-- database: a session with a workspace BOUND is clamped to it; a session with NO
+-- workspace bound reads and writes every tenant's rows. (silver.well_log_curves
+-- and silver.hypothesis_evidence_links are the two tables here that really are
+-- strict; they have no sibling.)
+--
+-- Left like this on purpose, pending a decision: workflow.refresh_silver_agent_mvs()
+-- refreshes the cross-tenant silver.mv_collar_summary as the table owner, which on
+-- RDS is not a superuser and so is bound by these policies; with only the strict
+-- policy the refreshed view is empty. See docs/architecture/manual/11-tenancy-and-rls.md
+-- section 4.1 for the full list of affected tables and what making them strict takes.
 -- =============================================================================
 
 BEGIN;

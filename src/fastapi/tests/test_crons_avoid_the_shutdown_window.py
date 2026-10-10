@@ -55,7 +55,9 @@ WHAT IS EXEMPT, AND WHY
 from __future__ import annotations
 
 import re
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -458,3 +460,347 @@ def test_the_end_time_check_catches_the_enrich_regression() -> None:
     assert usable <= start
     assert start + 180 > stop + 1440, "a 3 h budget from 21:45 must be caught"
     assert start + 120 <= stop + 1440, "the 2 h cap must clear the stop"
+
+
+# ---------------------------------------------------------------------------
+# pg_cron jobs inside RDS (AW-10, 2026-10-10)
+# ---------------------------------------------------------------------------
+# Hatchet is not the only scheduler that stops with the platform. bootstrap.sql
+# schedules partman's maintenance with pg_cron INSIDE the RDS instance, and the
+# instance is stopped for the same fifteen and a half hours. pg_cron does not
+# run a job it missed, so `0 3 * * *` -- 03:00 UTC, closed in both DST halves --
+# did not run late: it never ran, and nothing ever created or dropped a
+# partition through it. Every check above reads the Hatchet workflows, so none
+# of them could see it.
+
+BOOTSTRAP_SQL = REPO / "deploy" / "aws" / "bootstrap.sql"
+DATA_TF = REPO / "deploy" / "aws" / "terraform" / "data.tf"
+
+#: `cron.schedule('<name>', '<expression>', ...)`, and the _in_database form.
+_PG_CRON_CALL = re.compile(
+    r"cron\.schedule(?:_in_database)?\(\s*'([^']+)'\s*,\s*'([^']+)'", re.S,
+)
+
+
+def _without_sql_comments(sql: str) -> str:
+    """Drop `--` comments. bootstrap.sql carries the operator's copy-paste SQL
+    for an already-bootstrapped database in its comments, and a commented-out
+    cron.schedule() is not a job. (Naive on purpose: no job's command text
+    contains `--`.)"""
+    return "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
+
+
+def pg_cron_daily_jobs(sql: str | None = None) -> list[tuple[str, str, int, int]]:
+    """(job name, expression, hour, minute) UTC for each fixed-hour pg_cron job.
+
+    Reads bootstrap.sql unless given SQL text. A job that fires many times a
+    day (``*/10 * * * *``) is exempt for the reason the Hatchet scan exempts
+    it, and so is pg_cron's ``30 seconds`` form. A fixed-hour expression this
+    cannot read as plain integers (a range, a step inside a list) FAILS rather
+    than being skipped: a job nobody can classify is exactly how this went
+    unseen.
+    """
+    text = _without_sql_comments(
+        BOOTSTRAP_SQL.read_text(encoding="utf-8") if sql is None else sql
+    )
+    found: list[tuple[str, str, int, int]] = []
+    for name, expression in _PG_CRON_CALL.findall(text):
+        fields = expression.split()
+        if len(fields) != 5:
+            continue
+        minute, hour = fields[0], fields[1]
+        if hour == "*" or hour.startswith("*/"):
+            continue
+        try:
+            hours = [int(h) for h in hour.split(",")]
+            minutes = [0] if minute.startswith("*") else [int(m) for m in minute.split(",")]
+        except ValueError:
+            raise AssertionError(
+                f"pg_cron job {name!r} has the expression {expression!r}, which "
+                "this test cannot place on the clock. Write the hour and minute "
+                "as plain numbers (or a comma list) so it can be checked against "
+                "the shutdown window."
+            ) from None
+        found.extend((name, expression, h, m) for h in hours for m in minutes)
+    return found
+
+
+def test_bootstrap_sql_schedules_partman_maintenance() -> None:
+    """Guards the guard: if this stops parsing, the window check below passes
+    vacuously over an empty list."""
+    names = [name for name, *_ in pg_cron_daily_jobs()]
+    assert "partman-maintenance" in names, (
+        f"bootstrap.sql schedules {names or 'no fixed-hour pg_cron jobs'}; the "
+        "partman-maintenance job is the one this section exists to watch. If it "
+        "moved or was renamed, update the parser rather than letting this "
+        "section check nothing."
+    )
+
+
+def test_no_pg_cron_job_fires_while_rds_is_stopped() -> None:
+    stop, usable = shutdown_window()
+
+    offenders = [
+        (name, expression, f"{hour:02d}:{minute:02d} UTC")
+        for name, expression, hour, minute in pg_cron_daily_jobs()
+        if stop <= hour * 60 + minute < usable
+    ]
+
+    assert not offenders, (
+        f"These pg_cron jobs fire between {_hhmm(stop)} and {_hhmm(usable)} "
+        "UTC, when shutdown-sweep.sh has stopped the RDS instance pg_cron lives "
+        "in, or when the startup sweep is still bringing it back. pg_cron does "
+        "not run a job it missed; it does not run:\n"
+        + "\n".join(
+            f"  {name:24s} {expression:16s} {when}"
+            for name, expression, when in sorted(offenders)
+        )
+        + f"\n\nMove them to {_hhmm(usable)} UTC or later, and put the SQL "
+          "an operator runs on an already-bootstrapped database next to the "
+          "change in bootstrap.sql: that file is applied once, by hand."
+    )
+
+
+def test_pg_cron_still_schedules_in_gmt() -> None:
+    """The expressions above are read as UTC because pg_cron's default zone is
+    GMT. Setting cron.timezone in the parameter group would move every job by
+    the zone's offset without touching bootstrap.sql, and the check above would
+    keep passing."""
+    text = "\n".join(
+        line for line in DATA_TF.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "cron.timezone" not in text, (
+        "data.tf sets cron.timezone. The pg_cron expressions in bootstrap.sql "
+        "are checked here as UTC; either drop the parameter or teach "
+        "pg_cron_daily_jobs() the zone."
+    )
+
+
+def test_the_pg_cron_check_catches_the_03_00_regression() -> None:
+    """The case AW-10 found, and the slot it moved to."""
+    stop, usable = shutdown_window()
+    job = "SELECT cron.schedule('partman-maintenance', '{}', $$CALL partman.run_maintenance_proc()$$);"
+
+    (_, _, hour, minute), = pg_cron_daily_jobs(job.format("0 3 * * *"))
+    assert stop <= hour * 60 + minute < usable, "03:00 UTC must be caught"
+
+    (_, _, hour, minute), = pg_cron_daily_jobs(job.format("45 18 * * *"))
+    assert not stop <= hour * 60 + minute < usable, "18:45 UTC must clear it"
+
+
+def test_the_pg_cron_scan_reads_only_live_statements() -> None:
+    sql = (
+        "-- SELECT cron.schedule('old', '0 3 * * *', $$SELECT 1$$);\n"
+        "--   SELECT cron.schedule('also-old', '0 4 * * *', $$SELECT 1$$);\n"
+        "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'x';\n"
+        "SELECT cron.schedule(\n"
+        "    'live',\n"
+        "    '10,40 19 * * *',\n"
+        "    $$SELECT 1$$\n"
+        ");\n"
+        "SELECT cron.schedule('often', '*/10 * * * *', $$SELECT 1$$);\n"
+        "SELECT cron.schedule('seconds', '30 seconds', $$SELECT 1$$);\n"
+    )
+    assert pg_cron_daily_jobs(sql) == [
+        ("live", "10,40 19 * * *", 19, 10),
+        ("live", "10,40 19 * * *", 19, 40),
+    ]
+
+
+def test_an_unreadable_pg_cron_hour_fails_instead_of_being_skipped() -> None:
+    with pytest.raises(AssertionError, match="cannot place"):
+        pg_cron_daily_jobs("SELECT cron.schedule('range', '0 1-4 * * *', $$SELECT 1$$);")
+
+
+# ---------------------------------------------------------------------------
+# The dead-air suppressor against the longest night (AW-11, 2026-10-10)
+# ---------------------------------------------------------------------------
+# alerts.tf suppresses octane-dead-air for `period` after the shutdown sweep's
+# completion marker. The schedule says the night is 15h30m. In a zone that
+# changes its clocks the clock disagrees twice a year, 16h30m the night it
+# falls back and 14h30m the night it springs forward, and a period sized for
+# the schedule lets go before the startup sweep fires on the long night and
+# pages about five minutes before the platform has been asked to start.
+#
+# America/Vancouver no longer has that night: British Columbia's 2026-03-08
+# spring forward was its last clock change (tz database 2026b), so every night
+# since is the schedule's length and scheduler.tf's slack is 0. The zone's
+# real rules are used here, not a hardcoded figure, so the test notices if the
+# zone, the crons, the slack or the rules change. That makes it only as good
+# as the host's tz data, which _current_zone() checks before using it.
+
+SCHEDULER_TF = REPO / "deploy" / "aws" / "terraform" / "scheduler.tf"
+ALERTS_TF = REPO / "deploy" / "aws" / "terraform" / "alerts.tf"
+
+#: The years whose nights the suppressor has to cover.
+FUTURE_YEARS = range(2026, 2036)
+
+#: Years in which America/Vancouver still changed its clocks twice: settled
+#: history in every tz database release, so the reader is checked against them.
+DST_YEARS = range(2020, 2026)
+
+
+def _maintenance_timezone() -> str:
+    text = TERRAFORM.read_text(encoding="utf-8")
+    block = re.search(r'variable\s+"maintenance_timezone"\s*\{(.*?)\n\}', text, re.S)
+    assert block, "no maintenance_timezone variable"
+    match = re.search(r'default\s*=\s*"([^"]+)"', block.group(1))
+    assert match, "maintenance_timezone has no default"
+    return match.group(1)
+
+
+def _current_zone(tz_name: str) -> ZoneInfo:
+    """The zone, from tz data new enough to know 2026's rules, or a failure.
+
+    zoneinfo reads the host's tz database before the tzdata package, and a
+    host's copy can be years old. One that predates 2026b still has
+    America/Vancouver falling back on 2026-11-01, so it measures a 16h30m
+    night that no longer happens and sends whoever reads the failure off to
+    add an hour to every morning's page. January 2027 is -08 there in every
+    release before 2026b and -07 in every release since.
+    """
+    offset = datetime(2027, 1, 15, 12, tzinfo=ZoneInfo("America/Vancouver")).utcoffset()
+    hours = (offset or timedelta()).total_seconds() / 3600
+    assert offset == timedelta(hours=-7), (
+        f"this host's tz database predates 2026b: it has America/Vancouver at "
+        f"UTC{hours:+g} in January 2027, where British Columbia has stayed at "
+        "UTC-7 since its 2026-03-08 spring forward, so the night lengths it "
+        "gives are wrong. Update the host's tzdata, or run with "
+        "`PYTHONTZPATH= uv run --with tzdata pytest ...` to read the tzdata "
+        "package instead."
+    )
+    return ZoneInfo(tz_name)
+
+
+def night_lengths(tz: ZoneInfo, years: range) -> list[int]:
+    """Elapsed minutes from each day's shutdown fire to the next startup fire.
+
+    Both are local-time schedules (EventBridge Scheduler takes a timezone), so
+    the instants come from the tz database, and the subtraction is done in UTC:
+    two aware datetimes sharing a tzinfo subtract as wall-clock time, which
+    would report every night as 15h30m and hide exactly what this measures.
+    """
+    stop_h, stop_m = divmod(_local_minutes("shutdown_cron"), 60)
+    start_h, start_m = divmod(_local_minutes("startup_cron"), 60)
+    same_day = (start_h, start_m) > (stop_h, stop_m)
+
+    nights: list[int] = []
+    day = date(years.start, 1, 1)
+    while day.year < years.stop:
+        stop_at = datetime(day.year, day.month, day.day, stop_h, stop_m, tzinfo=tz)
+        start_day = day if same_day else day + timedelta(days=1)
+        start_at = datetime(
+            start_day.year, start_day.month, start_day.day, start_h, start_m, tzinfo=tz
+        )
+        elapsed = start_at.astimezone(UTC) - stop_at.astimezone(UTC)
+        nights.append(int(elapsed.total_seconds() // 60))
+        day += timedelta(days=1)
+    return nights
+
+
+def _scheduler_local_minutes(name: str, text: str) -> int:
+    """A scheduler.tf local that is an integer, or a sum of integers and locals.
+
+    `maintenance_window_minutes` is derived from the two crons, as Terraform
+    derives it. Anything fancier than a sum is refused rather than guessed at,
+    so the day it becomes something this cannot read, this fails.
+    """
+    if name == "maintenance_window_minutes":
+        return (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    match = re.search(rf"^  {name}\s*=\s*([^\n#]+)", text, re.M)
+    assert match, f"scheduler.tf defines no local {name!r}"
+    total = 0
+    for term in (t.strip() for t in match.group(1).split("+")):
+        if term.isdigit():
+            total += int(term)
+            continue
+        ref = re.fullmatch(r"local\.(\w+)", term)
+        assert ref, (
+            f"cannot evaluate {term!r} in local {name!r}: keep it a sum of "
+            "integers and other locals, or teach this test the new expression"
+        )
+        total += _scheduler_local_minutes(ref.group(1), text)
+    return total
+
+
+def suppressor_minutes() -> int:
+    """The period, in minutes, of alerts.tf's maintenance_window alarm."""
+    block = re.search(
+        r'resource\s+"aws_cloudwatch_metric_alarm"\s+"maintenance_window"\s*\{(.*?)\n\}',
+        ALERTS_TF.read_text(encoding="utf-8"), re.S,
+    )
+    assert block, "no maintenance_window alarm in alerts.tf"
+    period = re.search(r"^\s*period\s*=\s*local\.(\w+)\s*\*\s*60\s*$", block.group(1), re.M)
+    assert period, (
+        "the maintenance_window alarm's period is no longer `local.<name> * 60`; "
+        "teach suppressor_minutes() the new shape"
+    )
+    return _scheduler_local_minutes(period.group(1), SCHEDULER_TF.read_text(encoding="utf-8"))
+
+
+def test_the_longest_night_is_what_the_clock_says_not_what_the_schedule_says() -> None:
+    """Guards the guard, on years whose answer is settled: Vancouver still
+    changed its clocks in 2020-2025, so six nights an hour long and six an
+    hour short. A reader that subtracted wall-clock times would see the
+    schedule's length every night, and would pass a suppressor sized for the
+    schedule in a zone that still falls back."""
+    nights = night_lengths(ZoneInfo("America/Vancouver"), DST_YEARS)
+    nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+
+    assert sorted(set(nights)) == [nominal - 60, nominal, nominal + 60], (
+        f"nights in 2020-2025 ran {sorted(set(nights))} min against a scheduled "
+        f"{nominal}; the reader no longer sees the clock changes"
+    )
+    assert nights.count(nominal + 60) == 6 and nights.count(nominal - 60) == 6
+
+
+def test_the_suppressor_covers_the_longest_night_of_the_year() -> None:
+    longest = max(night_lengths(_current_zone(_maintenance_timezone()), FUTURE_YEARS))
+    period = suppressor_minutes()
+
+    assert period >= longest, (
+        f"the maintenance_window alarm suppresses for {period} min after the "
+        f"shutdown-complete marker, but the longest night runs {longest} min "
+        "from the shutdown fire to the startup fire. The suppressor lets go "
+        "before the startup sweep has fired, and octane-dead-air emails about "
+        "five minutes before the platform is asked to start. Raise "
+        "local.dst_slack_minutes in scheduler.tf; the extension_period in "
+        "alerts.tf covers the sweep's own runtime and is not where this belongs."
+    )
+
+
+def test_a_period_equal_to_the_schedule_would_not_cover_a_night_the_clocks_fall_back() -> None:
+    """The regression the suppressor test exists for, shown on a zone that
+    still had the night: Vancouver before 2026, whose night of 2025-11-01 was
+    an hour longer than the schedule. It is also where scheduler.tf's "set 60
+    for a zone that still observes DST" comes from."""
+    nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    longest = max(night_lengths(ZoneInfo("America/Vancouver"), DST_YEARS))
+    assert longest - nominal == 60
+
+
+def test_the_slack_is_only_the_clock_change_and_not_more() -> None:
+    """The price of the slack is paid every morning (the page for a platform
+    that never came up is late by exactly the slack), so it is what the
+    zone's clock changes add to the longest night, and 0 in a zone that has
+    none left."""
+    nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    longest = max(night_lengths(_current_zone(_maintenance_timezone()), FUTURE_YEARS))
+    assert suppressor_minutes() <= longest, (
+        f"the suppressor is {suppressor_minutes()} min against a longest night "
+        f"of {longest} (schedule {nominal}). Every minute above the longest "
+        "night delays the morning page for a platform that did not come up; "
+        "lower local.dst_slack_minutes in scheduler.tf."
+    )
+
+
+def test_the_scheduler_local_reader_follows_sums_and_refuses_anything_else() -> None:
+    text = "  a = 60\n  b = local.maintenance_window_minutes + local.a\n  c = local.a * 2\n"
+    window = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    assert _scheduler_local_minutes("a", text) == 60
+    assert _scheduler_local_minutes("b", text) == window + 60
+    with pytest.raises(AssertionError, match="cannot evaluate"):
+        _scheduler_local_minutes("c", text)
+    with pytest.raises(AssertionError, match="defines no local"):
+        _scheduler_local_minutes("missing", text)

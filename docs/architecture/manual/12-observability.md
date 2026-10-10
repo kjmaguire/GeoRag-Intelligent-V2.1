@@ -174,7 +174,10 @@ can match on:
 | Marker | Emitted by | Meaning | Rule in `create-alerts.sh` |
 |---|---|---|---|
 | `ANSWER_QUALITY_REGRESSION` | `answer_quality_watch` (Hatchet cron `30 14 * * *`) | yesterday's refusal rate, guard-fire rate, zero-evidence rate or mean confidence moved past threshold against the trailing week | `answer-quality-regression`, Sev 2 |
-| `COST_BURN_THRESHOLD_EXCEEDED` | `cost_burn_watcher` (`*/5 * * * *`) | a workspace spent past its hourly ceiling; at 2× the watcher suspends its LLM activity | `cost-burn-threshold-exceeded`, Sev 1 |
+| `COST_BURN_THRESHOLD_EXCEEDED` | `cost_burn_watcher` (`*/5 * * * *`) | a workspace spent past its hourly ceiling; at 2× the watcher suspends its LLM activity (if the workspace has a `usage.workspace_cost_ceilings` row) | `cost-burn-threshold-exceeded`, Sev 1 |
+| `COST_BURN_HARD_STOP_UNENFORCEABLE` | `cost_burn_watcher` (`*/5 * * * *`) | a workspace is past 2× its threshold but has no `usage.workspace_cost_ceilings` row, so the hard stop could not suspend it (added 2026-10-10; it was silent) | `cost-burn-hard-stop-unenforceable` |
+| `AUDIT_LEDGER_CHAIN_BREAK` | `audit_ledger_verify` (`0 17 * * *`), `cold_tier_archive` (`0 19 * * *`, with `source=cold_tier_archive`) | the nightly walk of the previous 24 h returned a verdict other than `clean`: `audit.audit_ledger` rows whose stored hash or `previous_hash` no longer matches recomputation (added 2026-10-10). `cold_tier_archive` emits it when the window it was about to archive fails its per-workspace chain check, and then fails the run | `audit-ledger-chain-break` |
+| `OUTBOX_PLATFORM_DEAD_LETTER` | `outbox_dispatcher` (`* * * * *`) | a platform outbox row (`workspace_id` NULL) dead-lettered: an operator notification, today the tenant-isolation auditor's `security_critical` escalation, was never sent. In AWS no `EXTERNAL_WEBHOOK_URL_*` / `EXTERNAL_WEBHOOK_HMAC_SECRET` is provisioned, so it dead-letters on its first attempt (added 2026-10-10; it left only an attempt row and an audit anchor). The same dispatch writes a `silver.store_reconciliation_findings` row (`outbox_dead_letter`, platform workspace) | `outbox-platform-dead-letter` |
 | `QDRANT_PARTIAL_LOSS` | `embed_pending_passages` sweep | Qdrant holds >2 % fewer points for a project than `silver.document_passages` records as embedded | `qdrant-partial-loss`, Sev 2 |
 | `shutdown sweep INCOMPLETE` / `startup sweep INCOMPLETE` / `FATAL:` | scheduler jobs (stderr) | a nightly sweep reported a failed action or could not authenticate | `scheduler-sweep-failed`, Sev 1 |
 | `sweep complete` | scheduler jobs | verdict line; its **absence** for 25 h is the dead-man signal | `scheduler-sweep-missing`, Sev 1 |
@@ -259,7 +262,7 @@ collected at no cost and without any application change:
 
 | Source | Metrics used | Alarms |
 |---|---|---|
-| ALB (`AWS/ApplicationELB`) | `HTTPCode_Target_5XX_Count`, `HealthyHostCount` | `georag-octane-5xx` (>10 / 5 min), `georag-octane-dead-air` (healthy hosts < 1 for 2×5 min). Azure had **no** error-rate or availability rule on its equivalent at all |
+| ALB (`AWS/ApplicationELB`) | `HTTPCode_Target_5XX_Count`, `HealthyHostCount` | `georag-octane-5xx` (>10 / 5 min), `georag-octane-dead-air` and `georag-reverb-dead-air` (healthy hosts < 1 for 2×5 min, on each target group). Azure had **no** error-rate or availability rule on its equivalent at all |
 | RDS (`AWS/RDS`) | `CPUUtilization`, `FreeStorageSpace` | `georag-pg-cpu` (>85% for 3×5 min), `georag-pg-storage` (<10 GiB) |
 | Bedrock (`AWS/Bedrock`) | `InvocationClientErrors`, `InvocationServerErrors`, `InvocationThrottles` | `georag-bedrock-client-errors` (>50 / 15 min), `-server-errors` (>5 / 15 min), `-throttles` (>100 for 2×15 min) |
 
@@ -431,7 +434,9 @@ Everything below is in
 | `georag-octane-5xx` | metric, 5 m | 2 | >10 `HTTPCode_Target_5XX_Count` |
 | `georag-octane-dead-air` | metric, 2×5 m | 1 | `HealthyHostCount` < 1 |
 | `georag-octane-dead-air-alerting` | composite | 1 | the alarm that actually pages: dead-air AND not inside the maintenance window |
-| `georag-maintenance-window` | log filter | — | not an alert. It goes ALARM when the shutdown sweep completes, and is the suppressor input to the composite above |
+| `georag-reverb-dead-air` | metric, 2×5 m | 1 | `HealthyHostCount` < 1 on the Reverb target group: the platform answers and the browser shows nothing |
+| `georag-reverb-dead-air-alerting` | composite | 1 | the same, outside the maintenance window, with the same suppressor timings as Octane's (one shared local in `alerts.tf`) |
+| `georag-maintenance-window` | log filter | — | not an alert. It goes ALARM when the shutdown sweep completes, and is the suppressor input to both composites above. Its period is the schedule's window plus `local.dst_slack_minutes` (`scheduler.tf`), which is 0 because America/Vancouver has not changed its clocks since 2026-03-08 and 60 in a zone that still falls back |
 | `georag-bedrock-client-errors` | metric, 15 m | 2 | `InvocationClientErrors` > 50 |
 | `georag-bedrock-server-errors` | metric, 15 m | 2 | `InvocationServerErrors` > 5 |
 | `georag-bedrock-throttles` | metric, 2×15 m | 2 | `InvocationThrottles` > 100 |
@@ -439,11 +444,14 @@ Everything below is in
 | `georag-pg-storage` | metric, 5 m | 2 | `FreeStorageSpace` < 10 GiB |
 | `georag-answer-quality-regression` | marker, 15 m | 2 | `ANSWER_QUALITY_REGRESSION` — emitted daily by `answer_quality_watch` (`30 14 * * *`) |
 | `georag-cost-burn-threshold-exceeded` | marker, 15 m | 1 | `COST_BURN_THRESHOLD_EXCEEDED` — emitted by `cost_burn_watcher` (`*/5 * * * *`) |
+| `georag-cost-burn-hard-stop-unenforceable` | marker, 15 m | 2 | `COST_BURN_HARD_STOP_UNENFORCEABLE` — `cost_burn_watcher` found a workspace past 2× its threshold with no `usage.workspace_cost_ceilings` row to suspend |
+| `georag-audit-ledger-chain-break` | marker, 15 m | 1 | `AUDIT_LEDGER_CHAIN_BREAK` — emitted by `audit_ledger_verify` (`0 17 * * *`) when the nightly hash-chain walk is not `clean`, and by `cold_tier_archive` (`0 19 * * *`) when the window it would archive fails its per-workspace chain check |
+| `georag-outbox-platform-dead-letter` | marker, 15 m | 1 | `OUTBOX_PLATFORM_DEAD_LETTER` — emitted by `outbox_dispatcher` when a platform (no-workspace) outbox row dead-letters, e.g. the tenant-isolation `security_critical` escalation with no webhook configured |
 | `georag-qdrant-partial-loss` | marker, 15 m | 2 | `QDRANT_PARTIAL_LOSS` — emitted by the `embed_pending_passages` sweep |
 | `georag-cohere-parse-rejected` | marker, 15 m | 2 | `COHERE_PARSE_REJECTED` — Parse refused the call (401/403/404/413/422) and every scanned page is silently falling back to tesseract. **The entire signal since ADR-0023**: on Cohere's own API no AWS metric sits behind it |
 | `georag-cohere-parse-unrecognised-response` | marker, 15 m | 2 | `COHERE_PARSE_UNRECOGNISED_RESPONSE` — Parse returned HTTP 200 with a body the adapter does not recognise. No invocation metric on any host can see this one: the call *succeeded* |
 
-> **The five `marker` rows above share one alarm resource**, so they share
+> **The `marker` rows above share one alarm resource**, so they share
 > one window: `aws_cloudwatch_metric_alarm.markers` is a `for_each` over
 > `local.log_markers` with `period = 900`, `evaluation_periods = 1`,
 > `threshold > 0` and `treat_missing_data = "notBreaching"`
@@ -551,9 +559,18 @@ production schema, because CD runs `laravel-migrate-job` and never
 widens the status check and installs `audit.recompute_hash`,
 `verify_hash_chain` and `run_verification` verbatim from the raw SQL.
 Before it, the ledger's hash chain had never actually been verified in
-production. Nothing alerts on `verification_runs.status = 'failed'`
-today; the Grafana panel and Alertmanager rule this chapter used to cite
-never existed in any deployment. Unchanged by the cloud move.
+production. Even then the verifier reported a false break for the first
+row of every chain that had history before the 24 h window (it took
+`LAG(hash)` over the in-window rows only, so that row's expected parent
+was NULL); migration `2026_10_10_100400_audit_verify_hash_chain_seeds_window_from_prior_row.php`
+checks it against the newest row of its own chain before the window
+instead, so a `break` verdict written before 2026-10-10 is not evidence of
+tampering by itself. Since the same change `audit_ledger_verify` logs
+`AUDIT_LEDGER_CHAIN_BREAK` (§1.3) for any verdict other than `clean`, and
+the `georag-audit-ledger-chain-break` alarm emails it; before it nothing
+alerted on the verdict at all. The Grafana panel and Alertmanager rule this
+chapter used to cite never existed in any deployment. Unchanged by the
+cloud move.
 
 ## 8. Broadcast events
 

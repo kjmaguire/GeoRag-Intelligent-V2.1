@@ -230,7 +230,7 @@ def image_embed_scope() -> str:
     return raw
 
 
-def should_embed_page(page_number: int, text_pages: set[int]) -> bool:
+def should_embed_page(page_number: int, text_pages: set[int] | frozenset[int]) -> bool:
     """True when this page should get an image vector under the active scope.
 
     `text_pages` is the set of page numbers the parser read successfully as
@@ -340,6 +340,7 @@ def stage_page_images(
     max_pages: int | None = None,
     engine_text_pages: set[int] | frozenset[int] | None = None,
     warnings_out: list[dict] | None = None,
+    text_pages: set[int] | frozenset[int] | None = None,
 ) -> list[dict]:
     """Render in-scope pages and upload them under their pending keys.
 
@@ -360,6 +361,13 @@ def stage_page_images(
     carries onto its silver.ingest_progress row.
 
     ``engine_text_pages`` -- see :func:`text_pages_from_sections`.
+
+    ``text_pages`` is the parser's EXACT set of pages that produced text
+    (``ReportParseResult.text_pages``) and, when given, is used instead of
+    inferring one from the sections' page spans. Under scope ``figures`` the
+    span inference marks every page of a multi-page chunk as a text page, so an
+    image-only page in the middle of a text run never got an image passage
+    (audit finding 14). Callers without it keep the inference.
     """
     scope = image_embed_scope()
     if scope == "off":
@@ -393,12 +401,15 @@ def stage_page_images(
         pdf.close()
         raise
 
-    text_pages = (
-        text_pages_from_sections(sections, engine_text_pages)
-        if scope == "figures" else set()
-    )
+    if scope != "figures":
+        figure_scope_text_pages: set[int] | frozenset[int] = set()
+    elif text_pages is not None:
+        figure_scope_text_pages = text_pages
+    else:
+        figure_scope_text_pages = text_pages_from_sections(sections, engine_text_pages)
     targets = [
-        n for n in range(1, total_pages + 1) if should_embed_page(n, text_pages)
+        n for n in range(1, total_pages + 1)
+        if should_embed_page(n, figure_scope_text_pages)
     ]
 
     # Cap mirrors OCR_MAX_PAGES_PER_DOC's rationale: one pathological

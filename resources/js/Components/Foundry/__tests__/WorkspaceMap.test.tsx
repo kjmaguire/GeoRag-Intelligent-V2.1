@@ -18,6 +18,8 @@ type Handler = (...args: unknown[]) => void;
 
 class FakeMap {
     static instances: FakeMap[] = [];
+    // Make the next construction throw, as maplibre-gl does with no WebGL 2.
+    static failToStart = false;
     opts: Record<string, unknown>;
     sources = new Map<string, Record<string, unknown>>();
     layers = new Map<string, Record<string, unknown>>();
@@ -29,6 +31,7 @@ class FakeMap {
     removed = false;
     dragPan = { enable: vi.fn(), disable: vi.fn() };
     constructor(opts: Record<string, unknown>) {
+        if (FakeMap.failToStart) throw new Error('Failed to initialize WebGL');
         this.opts = opts;
         FakeMap.instances.push(this);
     }
@@ -154,6 +157,7 @@ async function loadedMap(index: number): Promise<FakeMap> {
 
 beforeEach(() => {
     FakeMap.instances = [];
+    FakeMap.failToStart = false;
 });
 afterEach(() => {
     vi.clearAllMocks();
@@ -163,6 +167,16 @@ describe('WorkspaceMap', () => {
     // FE-6 (basemap switch re-applies layer state) now lives in
     // WorkspaceMap.styleSwitch.test.tsx: the map is no longer rebuilt on a
     // basemap change, it is restyled in place with the camera kept.
+
+    it('says why when the map cannot start, instead of a silent blank panel', async () => {
+        FakeMap.failToStart = true;
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        render(<WorkspaceMap {...baseProps()} />);
+
+        // The throw happened inside the dynamic-import .then, unhandled.
+        expect(await screen.findByTestId('map-start-failure')).toHaveTextContent(/needs WebGL 2/);
+    });
 
     it('builds the map with no positioned collars, from the project extent (FE-3)', async () => {
         render(<WorkspaceMap {...baseProps({ collars: [], projectExtent: [-106.2, 57.1, -105.8, 57.4] })} />);

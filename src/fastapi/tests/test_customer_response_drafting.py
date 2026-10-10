@@ -210,8 +210,8 @@ async def test_draft_customer_response_uses_investigation_summary_when_present(
     await conn.execute(
         """
         INSERT INTO ops.support_ticket_traces
-            (ticket_id, trace_id, trace_summary, added_by_user_id)
-        VALUES ($1::uuid, $2, $3, $4)
+            (ticket_id, trace_id, trace_summary, added_by_user_id, workspace_id)
+        VALUES ($1::uuid, $2, $3, $4, 'a0000000-0000-0000-0000-000000000001'::uuid)
         """,
         str(synthetic_ticket),
         f"inv_test_{uuid4().hex[:12]}",

@@ -11,6 +11,7 @@ use App\Models\Export;
 use App\Models\Project;
 use App\Services\StorageService;
 use App\Support\PaginationLimit;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -25,9 +26,26 @@ use Throwable;
  *   POST   /projects/{project}/exports           → store  (dispatches GenerateExportJob)
  *   GET    /projects/{project}/exports/{export}  → show
  *   GET    /exports/{export}/download            → download (302 redirect to signed URL)
+ *
+ * Download URLs are never stored. Every response that carries one mints it from
+ * the row's `minio_path` with a short lifetime; see downloadLink().
  */
 class ExportController extends Controller
 {
+    /**
+     * Lifetime of a minted download URL.
+     *
+     * Short on purpose. A presigned URL stops working when the credentials that
+     * signed it expire, whatever its X-Amz-Expires says, and production signs
+     * with ECS task-role session credentials that last a few hours — a stored
+     * 24-hour URL was dead long before its stated expiry. Minting per response
+     * with a few minutes' life keeps the worst case to the SDK's one-minute
+     * credential refresh window, and a client that finds a link dead asks for
+     * another. The download route redirects at once, and S3 checks the expiry
+     * when a request starts, so a long transfer that began in time finishes.
+     */
+    private const DOWNLOAD_URL_TTL_SECONDS = 300;
+
     public function __construct(
         private readonly StorageService $storage,
     ) {}
@@ -54,7 +72,9 @@ class ExportController extends Controller
                 ->orderByDesc('created_at')
                 ->paginate(PaginationLimit::clamp($request, 20));
 
-            return response()->json($exports);
+            return response()->json(
+                $exports->through(fn (Export $export): array => $this->present($export)),
+            );
         } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Project not found.'], 404);
         } catch (Throwable $e) {
@@ -119,8 +139,8 @@ class ExportController extends Controller
     // -------------------------------------------------------------------------
 
     /**
-     * Return the current status of an export, including the download URL when
-     * status is 'completed'.
+     * Return the current status of an export, including a freshly minted
+     * download URL when status is 'completed'.
      *
      * GET /api/v1/projects/{project}/exports/{export}
      */
@@ -136,12 +156,7 @@ class ExportController extends Controller
             $export = Export::where('project_id', $projectId)
                 ->findOrFail($exportId);
 
-            // Refresh the signed URL if it has expired and the export is complete.
-            if ($export->status === 'completed' && $this->urlExpired($export)) {
-                $export = $this->refreshSignedUrl($export);
-            }
-
-            return response()->json(['data' => $export]);
+            return response()->json(['data' => $this->present($export)]);
         } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Export not found.'], 404);
         } catch (Throwable $e) {
@@ -156,8 +171,8 @@ class ExportController extends Controller
     // -------------------------------------------------------------------------
 
     /**
-     * Redirect to the MinIO presigned download URL for a completed export.
-     * Regenerates the URL if it has expired.
+     * Redirect to a presigned download URL for a completed export, minted for
+     * this request from the stored object key.
      *
      * GET /api/v1/exports/{export}/download
      */
@@ -180,11 +195,13 @@ class ExportController extends Controller
                 ], 409);
             }
 
-            if ($this->urlExpired($export)) {
-                $export = $this->refreshSignedUrl($export);
+            $link = $this->downloadLink($export);
+            if ($link === null) {
+                // Completed, yet no object key was recorded: nothing to sign.
+                return response()->json(['message' => 'Export has no stored file.'], 404);
             }
 
-            return redirect()->away($export->download_url);
+            return redirect()->away($link['url']);
         } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Export not found.'], 404);
         } catch (Throwable $e) {
@@ -234,26 +251,45 @@ class ExportController extends Controller
         return response()->json($body, 500);
     }
 
-    private function urlExpired(Export $export): bool
+    /**
+     * The export as the API returns it: its columns plus a download link that
+     * is minted for this response.
+     *
+     * `download_url` and `download_url_expires_at` are always present, null
+     * until the export is completed, and never read from the row — see
+     * {@see Export} for the legacy columns they used to come from.
+     *
+     * @return array<string, mixed>
+     */
+    private function present(Export $export): array
     {
-        if (! $export->download_url || ! $export->download_url_expires_at) {
-            return true;
-        }
+        $link = $this->downloadLink($export);
 
-        // Treat as expired if within 5 minutes of the expiry to avoid race conditions.
-        return $export->download_url_expires_at->subMinutes(5)->isPast();
+        return array_merge($export->toArray(), [
+            'download_url' => $link['url'] ?? null,
+            'download_url_expires_at' => $link !== null ? $link['expires_at']->toJSON() : null,
+        ]);
     }
 
-    private function refreshSignedUrl(Export $export): Export
+    /**
+     * Mint a short-lived URL for the export's file, or null when there is
+     * nothing to download: the export is not completed, or no object key was
+     * recorded for it.
+     *
+     * @return array{url: string, expires_at: CarbonInterface}|null
+     */
+    private function downloadLink(Export $export): ?array
     {
-        $expiresAt = now()->addHours(24);
-        $signedUrl = $this->storage->presignedUrl($this->storage->exports(), $export->minio_path, $expiresAt);
+        $key = $export->minio_path;
+        if ($export->status !== 'completed' || ! is_string($key) || $key === '') {
+            return null;
+        }
 
-        $export->update([
-            'download_url' => $signedUrl,
-            'download_url_expires_at' => $expiresAt,
-        ]);
+        $expiresAt = now()->addSeconds(self::DOWNLOAD_URL_TTL_SECONDS);
 
-        return $export->fresh();
+        return [
+            'url' => $this->storage->presignedUrl($this->storage->exports(), $key, $expiresAt),
+            'expires_at' => $expiresAt,
+        ];
     }
 }

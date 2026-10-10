@@ -110,6 +110,21 @@ final class CitationFeedbackControllerTest extends TestCase
         $this->actingAs($this->user)
             ->postJson('/api/v1/citations/feedback', $this->payload())
             ->assertStatus(502)
-            ->assertJsonPath('fastapi_status', 500);
+            ->assertJsonPath('fastapi_status', 500)
+            ->assertJsonMissingPath('fastapi_body');
+    }
+
+    public function test_an_unreachable_fastapi_does_not_leak_its_address(): void
+    {
+        Http::fake(['fastapi.test/*' => Http::failedConnection(
+            'cURL error 7: Failed to connect to fastapi.internal.georag port 8000',
+        )]);
+
+        $response = $this->actingAs($this->user)
+            ->postJson('/api/v1/citations/feedback', $this->payload())
+            ->assertStatus(502);
+
+        $this->assertStringNotContainsString('fastapi.internal.georag', $response->getContent());
+        $this->assertStringNotContainsString('8000', $response->getContent());
     }
 }

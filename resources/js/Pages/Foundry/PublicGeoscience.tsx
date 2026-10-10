@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Head, usePage } from '@inertiajs/react';
 import * as maplibregl from 'maplibre-gl';
 import { configureMaplibreWorker } from '@/lib/maplibreWorker';
+import { mapStartFailure } from '@/lib/mapInit';
+import MapStartFailure from '@/Components/MapStartFailure';
 import type { Map as MapLibreMap, GeoJSONSource, AddLayerObject, FilterSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { PageHeader } from '@/Components/Foundry/primitives';
@@ -127,6 +129,8 @@ export default function PublicGeoscience() {
     const isAdmin = Boolean(usePage<PageProps>().props.auth?.user?.is_admin);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    // Set when the map itself could not start (no WebGL 2); the page stays.
+    const [mapError, setMapError] = useState<string | null>(null);
     const [jurisdiction, setJurisdiction] = useState('');
     const [viewport, setViewport] = useState<Viewport | null>(null);
 
@@ -161,13 +165,21 @@ export default function PublicGeoscience() {
         if (!mapContainer.current) return;
 
         configureMaplibreWorker(maplibregl);
-        const map = new maplibregl.Map({
-            container: mapContainer.current,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            style: styleSpec as any,
-            center: cameraRef.current.center,
-            zoom: cameraRef.current.zoom,
-        });
+        let map: MapLibreMap;
+        try {
+            map = new maplibregl.Map({
+                container: mapContainer.current,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                style: styleSpec as any,
+                center: cameraRef.current.center,
+                zoom: cameraRef.current.zoom,
+            });
+        } catch (startError) {
+            // Thrown into the root error boundary, this took the whole page.
+            console.error('PublicGeoscience: the map could not start', startError);
+            setMapError(mapStartFailure(startError));
+            return;
+        }
 
         map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
         map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: 'metric' }), 'bottom-left');
@@ -619,6 +631,7 @@ export default function PublicGeoscience() {
                     <div className="absolute inset-0">
                         <div ref={mapContainer} style={{ width: '100%', height: '100%' }} />
                     </div>
+                    {mapError && <MapStartFailure message={mapError} />}
 
                     {/* Hover tooltip — the Workspace map's, hidden while a card is open. */}
                     {hover && !selection && (

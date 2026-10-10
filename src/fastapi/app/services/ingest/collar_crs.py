@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import asyncpg
+from georag_geoparsers._area_of_use import within_area
 
 logger = logging.getLogger(__name__)
 
@@ -352,12 +353,7 @@ def _within_area(area: Any, lon: float, lat: float) -> bool:
     the antimeridian (the Aleutians), so a plain ``west <= lon <= east``
     rejects every point in it.
     """
-    if not (area.south - _AREA_SLACK_DEG <= lat <= area.north + _AREA_SLACK_DEG):
-        return False
-    west, east = area.west - _AREA_SLACK_DEG, area.east + _AREA_SLACK_DEG
-    if area.west <= area.east:
-        return bool(west <= lon <= east)
-    return bool(lon >= west or lon <= east)
+    return bool(within_area(area, lon, lat, slack_deg=_AREA_SLACK_DEG))
 
 
 def plausibility_warnings(

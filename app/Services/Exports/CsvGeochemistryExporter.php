@@ -57,7 +57,7 @@ class CsvGeochemistryExporter
             if ($includeRee) {
                 $header[] = 'ree_json';
             }
-            fputcsv($handle, $header);
+            fputcsv($handle, $header, escape: '');
 
             $selectCols = [
                 'g.geochem_id',
@@ -100,7 +100,7 @@ class CsvGeochemistryExporter
                 ->select($selectCols);
 
             if (! empty($filters['hole_id'])) {
-                $query->where('c.hole_id', $filters['hole_id']);
+                CollarExportQuery::whereHoleId($query, (string) $filters['hole_id'], 'c');
             }
             if (! empty($filters['sample_type'])) {
                 $query->where('g.sample_type', $filters['sample_type']);
@@ -110,9 +110,16 @@ class CsvGeochemistryExporter
             // hole_id nor from_depth, so without it their order is whatever
             // the planner returns and two exports of the same data can
             // disagree — which looks like the data changed.
+            //
+            // sample_id is itself nullable (and unique only per project where
+            // set), so it is not a total order either. Offset chunk() pages
+            // only line up over one, and rows tied on all three keys could be
+            // repeated or dropped at a page boundary; the primary key is the
+            // final tiebreaker.
             $query->orderBy('c.hole_id')
                 ->orderBy('g.from_depth')
                 ->orderBy('g.sample_id')
+                ->orderBy('g.geochem_id')
                 ->chunk(2000, function ($rows) use ($handle, $includeRee) {
                     foreach ($rows as $row) {
                         $line = [
@@ -139,7 +146,7 @@ class CsvGeochemistryExporter
                             // pass through verbatim so consumers can re-parse.
                             $line[] = $row->ree_json;
                         }
-                        fputcsv($handle, $line);
+                        fputcsv($handle, $line, escape: '');
                     }
                 });
         } finally {

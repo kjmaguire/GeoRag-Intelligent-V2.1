@@ -111,11 +111,13 @@ export default function EditProjectSheet({ project, open, onOpenChange }: EditPr
         // applied; the server refuses it too (ProjectController::update).
         if (localDeclinationError) return;
 
-        const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-
         try {
+            // No CSRF header here on purpose. Inertia's XHR client already
+            // sends the live XSRF-TOKEN cookie as X-XSRF-TOKEN; an explicit
+            // X-CSRF-TOKEN read from the page's <meta> tag used to ride along
+            // and, being stale after a SPA sign-out/in, OVERRODE it (Laravel
+            // prefers X-CSRF-TOKEN) — the save 419'd and bounced to /login.
             await form.patch(`/api/v1/projects/${project.project_id}`, {
-                headers: csrf ? { 'X-CSRF-TOKEN': csrf } : {},
                 onSuccess: () => {
                     onOpenChange(false);
                     router.reload();

@@ -30,9 +30,14 @@ window.
 
 | what | when |
 | --- | --- |
-| shutdown sweep fires | 23:00 **US-Pacific** |
-| startup sweep fires | 06:00 **US-Pacific** |
-| so the stack is down | roughly **06:00–13:00 UTC** (PDT) / **07:00–14:00 UTC** (PST) |
+| shutdown sweep fires | 17:00 **America/Vancouver** (`shutdown_cron`) |
+| startup sweep fires | 08:30 **America/Vancouver** (`startup_cron`) |
+| so the stack is down | roughly **00:00–15:30 UTC** (PDT) / **01:00–16:30 UTC** (PST) |
+
+The times are Terraform defaults (`deploy/aws/terraform/variables.tf`:
+`shutdown_cron`, `startup_cron`, `maintenance_timezone`); check the live
+tfvars if they may have been overridden. (Corrected 2026-10-10: this table
+said 23:00 / 06:00 US-Pacific, which matches no schedule in the repo.)
 
 One fire each, not two. EventBridge Scheduler is timezone-aware, so the
 Azure-era double-fire — both candidate UTC hours, with a DST guard inside

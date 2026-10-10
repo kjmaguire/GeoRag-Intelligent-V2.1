@@ -35,6 +35,17 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from tests._hallucination_oracle import summarize_pass_rate
+
+# REQUIRE_LIVE_DB=1 (set by the CI jobs that provision the database) turns a
+# skip into a failure, so a gate that did not run cannot read as one that
+# passed. The hooks and the allow-list live in tests/_live_db.py; registering
+# them here is what makes them apply to every test module.
+from tests._live_db import (  # noqa: F401 -- hook registration by import
+    pytest_make_collect_report,
+    pytest_runtest_makereport,
+)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -268,3 +279,26 @@ def _clear_query_path_caches():
     clear_query_caches()
     yield
     clear_query_caches()
+
+
+# ---------------------------------------------------------------------------
+# Hallucination suite verdict (Section 07e: 95%)
+# ---------------------------------------------------------------------------
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):  # type: ignore[no-untyped-def]
+    """Print the hallucination failure suite's pass rate against the 95% target.
+
+    This hook used to be defined at the bottom of test_hallucination_failures.py,
+    where pytest never called it: hooks are only collected from conftest.py files
+    and plugins, never from test modules, so the 95% verdict the milestone is
+    judged on was never printed. The counting is
+    tests/_hallucination_oracle.py::summarize_pass_rate (errors count against the
+    rate; a run that selected no hallucination test prints nothing).
+    """
+    lines = summarize_pass_rate(terminalreporter.stats)
+    if lines is None:
+        return
+    terminalreporter.write_sep("=", "Hallucination failure suite summary")
+    for line in lines:
+        terminalreporter.write_line(line)

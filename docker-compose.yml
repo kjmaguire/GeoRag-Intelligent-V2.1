@@ -379,6 +379,13 @@ services:
     #
     # Timeout (review #8): close idle clients after 10 min. Defence
     # against leaky clients; `tcp-keepalive=300` handles dead sockets.
+    #
+    # requirepass is passed only when REDIS_PASSWORD is non-empty. .env.example
+    # allows it empty (dev, no auth), and `--requirepass ${REDIS_PASSWORD:-}`
+    # then left a flag with no argument as the last word of the command, which
+    # redis-server does not read as "no password" — the container never came
+    # up. `${VAR:+...}` expands to nothing for an unset or empty variable, the
+    # same form the healthcheck below uses to leave out `-a`.
     command: >
       redis-server
         --maxmemory ${REDIS_MAXMEMORY:-512mb}
@@ -398,7 +405,7 @@ services:
         --lazyfree-lazy-user-del yes
         --lazyfree-lazy-user-flush yes
         --loglevel notice
-        --requirepass ${REDIS_PASSWORD:-}
+        ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
     ports:
       - "${GEORAG_BIND_ADDR:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
     volumes:

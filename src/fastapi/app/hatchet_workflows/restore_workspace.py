@@ -31,8 +31,10 @@ Trigger. Since 2026-09-29 (HAT-13) an admin who belongs to the workspace
 starts it with Laravel
 ``POST /api/v1/admin/workspaces/{workspace}/workflows/restore_workspace``,
 which calls FastAPI ``POST /internal/v1/workflows/restore_workspace/trigger``.
-That route accepts only a ``s3://workspace-exports/<this workspace>/...``
-manifest; a ``file://`` URI or another workspace's export is refused. A
+That route accepts only a
+``s3://<exports bucket>/workspace-exports/<this workspace>/...`` manifest (the
+configured EXPORTS bucket, ``AWS_BUCKET_EXPORTS``); a ``file://`` URI or another
+workspace's export is refused. A
 ``dry_run=false`` restore also needs ``confirm_workspace_id`` on the Laravel
 side. No cron.
 """
@@ -339,8 +341,12 @@ async def execute(
       keys in Postgres, Qdrant and Redis, optionally verifies the
       manifest URI's claimed counts match live state, emits an audit
       anchor.
-    * dry_run=False: explicit guard — backup infrastructure not yet
-      shipped; returns failure without touching data.
+    * dry_run=False: restores a workspace_export archive -- Postgres rows
+      first, then (manifest v2) Qdrant points and Redis keys. Returns
+      ``success=False`` / ``failure_stage="pg_restore"`` when the archive
+      cannot be read OR when any exported row was rejected by the database;
+      Qdrant and Redis are then left untouched. Re-running is safe: every
+      step skips what is already there.
     """
     workspace_str = str(input.workspace_id)
 
@@ -348,18 +354,27 @@ async def execute(
         # §11.3 wave 1 — PG-only restore from a workspace_export manifest
         # produced by app.hatchet_workflows.workspace_export. The
         # snapshot_manifest_uri MUST point at a workspace_export object
-        # (s3://workspace-exports/<workspace_id>/...jsonl.gz) — full-
+        # (s3://<exports bucket>/workspace-exports/<workspace_id>/...jsonl.gz) — full-
         # store §11.1 dumps can't be restored per-workspace (pg_restore
         # is database-level, not workspace-level).
         #
         # Qdrant / Redis follow in the §11.3-v2 block below.
         from app.hatchet_workflows._restore_pg_from_export import (
+            _fetch_manifest_bytes,
             restore_postgres_from_export,
+            restore_shortfall,
         )
+        # The archive is fetched and decoded ONCE: the PG pass streams the
+        # table rows and hands back the Qdrant / Redis sections it meets, so
+        # nothing re-downloads or re-parses the export for the extras below.
+        sections: dict[str, list[dict[str, Any]]] = {}
         try:
+            body = await _fetch_manifest_bytes(input.snapshot_manifest_uri)
             pg_result = await restore_postgres_from_export(
                 workspace_id=workspace_str,
                 manifest_uri=input.snapshot_manifest_uri,
+                body=body,
+                sections_out=sections,
             )
         except Exception as exc:  # noqa: BLE001
             msg = f"PG restore from {input.snapshot_manifest_uri} failed: {exc}"
@@ -370,23 +385,45 @@ async def execute(
                 failure_reason=msg,
             )
 
+        pg_counts = {
+            "tables_restored":      pg_result["tables"],
+            "rows_in_export":       pg_result["rows_in_export"],
+            "rows_inserted":        pg_result["rows_inserted"],
+            "rows_already_present": pg_result["rows_already_present"],
+            "rows_rejected":        pg_result["rows_rejected"],
+            "rejected_samples":     pg_result["rejected_samples"],
+            "manifest_workspace_id": pg_result["manifest_workspace_id"],
+        }
+        shortfall = restore_shortfall(pg_result)
+        if shortfall is not None:
+            # Rows the database refused used to be dropped at DEBUG and the
+            # run reported success with nothing inserted. Fail it, say how
+            # much landed, and leave Qdrant / Redis alone: their points and
+            # keys point at Postgres rows that are not all there, and every
+            # step here is idempotent, so the operator can fix the cause and
+            # run the restore again.
+            msg = f"PG restore from {input.snapshot_manifest_uri} incomplete: {shortfall}"
+            log.error("restore_workspace dry_run=False failed: %s", msg)
+            return RestoreWorkspaceOutput(
+                success=False,
+                failure_stage="pg_restore",
+                failure_reason=msg,
+                consistency_check_results={
+                    "restore_mode": "pg_restore_incomplete",
+                    **pg_counts,
+                    "extras": {"note": "skipped -- the Postgres restore was incomplete"},
+                },
+            )
+
         # §11.3-v2 — Qdrant / Redis restore from the same manifest.
-        # Fetch the manifest body once and parse out the per-section rows.
         stores_restored: list[str] = ["postgres"]
         extras_summary: dict[str, Any] = {}
         try:
-            from app.hatchet_workflows._restore_pg_from_export import (
-                _fetch_manifest_bytes,
-            )
-            body = await _fetch_manifest_bytes(input.snapshot_manifest_uri)
-
             from app.hatchet_workflows._restore_extras import (
-                parse_export_jsonl_gz,
                 restore_qdrant,
                 restore_redis,
             )
-            manifest, _pg_tables, sections = parse_export_jsonl_gz(body)
-            manifest_version = manifest.get("manifest_version", "1.0")
+            manifest_version = pg_result["manifest_version"]
             extras_summary["manifest_version"] = manifest_version
 
             # Only attempt extras when the manifest claims to carry them
@@ -426,9 +463,7 @@ async def execute(
                                             if "qdrant" in stores_restored
                                             or "redis" in stores_restored
                                             else "pg_only_from_workspace_export",
-                "tables_restored":          pg_result["tables"],
-                "rows_inserted":            pg_result["rows_inserted"],
-                "manifest_workspace_id":    pg_result["manifest_workspace_id"],
+                **pg_counts,
                 "extras":                   extras_summary,
             },
         )

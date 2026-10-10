@@ -19,6 +19,18 @@ import { test, expect } from '@playwright/test';
  * Selectors match the production UI conventions established by
  * chat-citation.spec.ts: `data-role="assistant"`,
  * `data-streaming="false"`, `data-citation-marker`.
+ *
+ * STATUS 2026-10-10: this spec cannot pass yet, and the reasons are not in this file.
+ *   - It drives `/chat`. There is no such route; the chat page is
+ *     `/projects/{slug}/chat` (routes/web.php), so it needs a project slug.
+ *   - It selects `[data-role]`, `[data-streaming]`, `[data-citation-marker]` and
+ *     `[data-source-chunk-id]`. None of them exists in resources/js: the page exposes
+ *     aria-labels ("Ask a question", "Send") and a few data-testid values
+ *     (no-citations-warning, evidence-inspector, evidence-inspector-text).
+ *   - .github/workflows/e2e.yml has no seeded project with ingested documents for it to cite.
+ * Only the post-login wait was corrected here: Login.tsx navigates to `/projects`, and the old
+ * pattern `/(dashboard|chat|portfolio)/` never matched, so every test timed out first.
+ * A rewrite needs the page to carry those hooks, which is frontend work.
  */
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:8888';
@@ -41,7 +53,7 @@ async function login(page: import('@playwright/test').Page) {
     await page.getByLabel(/email/i).fill(TEST_EMAIL);
     await page.getByLabel(/password/i).fill(TEST_PASSWORD);
     await page.getByRole('button', { name: /log in|sign in/i }).click();
-    await page.waitForURL(/\/(dashboard|chat|portfolio)/, { timeout: 10_000 });
+    await page.waitForURL(/\/projects/, { timeout: 10_000 });
 }
 
 test.describe('Chat audit — Part B (B1, B3, B5, B6)', () => {

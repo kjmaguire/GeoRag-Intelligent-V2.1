@@ -65,6 +65,11 @@ export function humanizeCode(code: string): string {
 const FAILED_HEADINGS: Record<string, string> = {
     access_check_failed: 'Could not check your access',
     service_unavailable: 'Service busy, try again',
+    // FastAPI's project-lifecycle refusals, mapped by StreamQueryFromFastApi.
+    // A retry fails the same way until the project's state changes.
+    project_hibernated: 'Project is hibernated',
+    project_archived: 'Project is archived',
+    project_past_due: 'Project is paused',
 };
 
 interface Props {

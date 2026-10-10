@@ -24,7 +24,9 @@ Pool: ``ingestion``. Action: ``ingest_pdf``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import gzip
 import hashlib
 import json
 import logging
@@ -36,7 +38,12 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from georag_object_storage import Bucket, get_async_storage_client, get_storage_client
+from georag_object_storage import (
+    Bucket,
+    StorageConfig,
+    get_async_storage_client,
+    get_storage_client,
+)
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -590,11 +597,22 @@ def _run_parser_subprocess(
             if isinstance(_w, dict) and _w.get("code") == "pdf_parse_mode_summary":
                 _engine_text_pages.update(int(x) for x in _w.get("engine_text_pages") or [])
         _page_image_warnings: list[dict] = []
+        # The parser's EXACT set of pages that produced text. Without it the
+        # `figures` scope infers one from the sections' page spans, which marks
+        # every page of a multi-page chunk as text (audit finding 14). Passed
+        # only when the result carries it, so a result/double without the
+        # field still stages the old way.
+        _exact_text_pages = getattr(result, "text_pages", None)
+        _exact_kwargs = (
+            {"text_pages": {int(p) for p in _exact_text_pages}}
+            if _exact_text_pages is not None else {}
+        )
         try:
             _page_images = stage_page_images(
                 cached_path, sha256, _sections_out,
                 engine_text_pages=_engine_text_pages,
                 warnings_out=_page_image_warnings,
+                **_exact_kwargs,
             )
         except Exception as _pi_exc:  # noqa: BLE001
             log.warning(
@@ -768,6 +786,105 @@ class ParseOut(BaseModel):
     page_image_warnings: list[dict] = Field(default_factory=list)
     parse_duration_ms: int = 0
     is_scanned: bool = False
+    #: Set when the heavy fields above were too big to ship as task output and
+    #: were packed here (gzip + base64 of their JSON), leaving them empty. See
+    #: :func:`_pack_parse_output`; persist reads through
+    #: :func:`_unpack_parse_output`.
+    heavy_gz_b64: str | None = None
+
+
+#: The fields that carry a document's bulk. Everything else on ParseOut is a
+#: few bytes and always stays inline (``parser_used`` is read by embed_verify).
+_PARSE_HEAVY_FIELDS = frozenset({
+    "sections", "resource_tables", "figures", "page_image_manifest",
+    "warnings", "page_image_warnings", "page_languages",
+})
+
+#: A task's output travels to the engine, and on to every child task, as one
+#: gRPC message, and hatchet_sdk caps those at 4 MiB by default
+#: (config.grpc_max_send_message_length / _recv_). parse used to return the whole
+#: document as that output. A 500-page report with tables can exceed 4 MiB; the
+#: send then failed at the END of a 4-hour task that had already paid for every
+#: OCR page, and retries=1 re-ran the parse (and the OCR bill) for the same
+#: failure. Up to INLINE the output is returned exactly as before; above it the
+#: heavy fields are packed; if even packed the output would not fit, the parse
+#: fails once, with the reason, instead of failing opaquely and again.
+def _env_bytes(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name) or default))
+    except ValueError:
+        log.warning("ingest_pdf: %s=%r is not an integer; using %d", name, os.environ.get(name), default)
+        return default
+
+
+PARSE_OUTPUT_INLINE_MAX_BYTES = _env_bytes("PARSE_OUTPUT_INLINE_MAX_BYTES", 2 * 1024 * 1024)
+PARSE_OUTPUT_MAX_BYTES = _env_bytes("PARSE_OUTPUT_MAX_BYTES", 3 * 1024 * 1024)
+
+
+def _bronze_bucket_name() -> str:
+    """The bronze bucket the object storage layer actually reads and writes.
+
+    ``AWS_BUCKET_BRONZE`` (``georag-bronze-<account>`` on AWS), through the same
+    resolution as every storage call. The OCR review rows recorded
+    ``s3://$MINIO_BUCKET_BRONZE/...``, and Terraform sets AWS_BUCKET_BRONZE, not
+    the MINIO_ name, so on AWS they pointed at a bucket called ``bronze`` that does
+    not exist.
+    """
+    try:
+        return StorageConfig.from_env().bucket_name(Bucket.BRONZE)
+    except ValueError as exc:
+        # Half a credential pair. Every storage call will say so; a URI that is
+        # only a record of where the file is must not be what fails persist.
+        log.debug("bronze bucket name for a review URI: storage config unreadable (%s)", exc)
+        return os.environ.get("AWS_BUCKET_BRONZE") or Bucket.BRONZE.value
+
+
+def _serialised_size(out: BaseModel) -> int:
+    return len(out.model_dump_json().encode("utf-8"))
+
+
+def _pack_parse_output(out: ParseOut) -> ParseOut:
+    """Make a ParseOut small enough to be a task output, losslessly.
+
+    Unchanged below ``PARSE_OUTPUT_INLINE_MAX_BYTES``. Above it the heavy fields
+    are gzipped into ``heavy_gz_b64`` (extracted text compresses five- to
+    tenfold) and emptied. If the packed result still exceeds
+    ``PARSE_OUTPUT_MAX_BYTES``, raises NonRetryableException: a retry would
+    re-OCR every page and fail the same way.
+    """
+    raw = _serialised_size(out)
+    if raw <= PARSE_OUTPUT_INLINE_MAX_BYTES:
+        return out
+    heavy = out.model_dump(mode="json", include=set(_PARSE_HEAVY_FIELDS))
+    blob = base64.b64encode(
+        gzip.compress(json.dumps(heavy, separators=(",", ":")).encode("utf-8"), compresslevel=6)
+    ).decode("ascii")
+    packed = out.model_copy(
+        update={**{field: [] for field in _PARSE_HEAVY_FIELDS}, "heavy_gz_b64": blob},
+    )
+    size = _serialised_size(packed)
+    if size > PARSE_OUTPUT_MAX_BYTES:
+        raise NonRetryableException(
+            f"parse output is {raw} bytes ({size} compressed), over the {PARSE_OUTPUT_MAX_BYTES}-byte "
+            "limit a task output can carry; not retried, a retry would re-OCR every page and fail "
+            "the same way. Raise PARSE_OUTPUT_MAX_BYTES together with the Hatchet client's "
+            "HATCHET_CLIENT_GRPC_MAX_SEND/RECV_MESSAGE_LENGTH if documents this large are expected."
+        )
+    log.warning(
+        "ingest_pdf.parse: output %d bytes exceeded the %d-byte inline limit; packed to %d bytes",
+        raw, PARSE_OUTPUT_INLINE_MAX_BYTES, size,
+    )
+    return packed
+
+
+def _unpack_parse_output(parsed: dict[str, Any]) -> dict[str, Any]:
+    """The inverse of :func:`_pack_parse_output`, on a ``model_dump()``. A no-op
+    for an output that was never packed."""
+    blob = parsed.get("heavy_gz_b64")
+    if not blob:
+        return parsed
+    heavy = json.loads(gzip.decompress(base64.b64decode(blob)))
+    return {**parsed, **heavy, "heavy_gz_b64": None}
 
 
 class IngestPdfFinalOut(BaseModel):
@@ -860,7 +977,17 @@ ingest_pdf = hatchet.workflow(
 # ~20 MB blob download + sha256, but on a saturated worker (concurrent parse
 # using all cores) the event loop starves and the old 60s budget expired 3×
 # in a row, terminally failing a whole workflow (Madsen, 2026-08-07 11:32Z).
-@ingest_pdf.task(execution_timeout="180s", schedule_timeout="2h", retries=2)
+#
+# backoff_* on this task and the three below (2026-10-10): every one of them
+# calls something remote (S3, Postgres, Qdrant/Cohere through the embed
+# dispatch), and Hatchet retries IMMEDIATELY unless it is given a backoff, so a
+# transient outage spent the whole retry budget in a few milliseconds. The delay
+# before a retry is factor ** (retries so far), capped: about 1-8 s before the
+# first retry and up to a minute before the second.
+@ingest_pdf.task(
+    execution_timeout="180s", schedule_timeout="2h", retries=2,
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
     """Stream from S3 to disk, hash it, validate magic bytes + size + encryption.
 
@@ -1076,7 +1203,10 @@ def _parse_wall_cap_s(page_count: int | None) -> int:
 # here has confirmed the pinned hatchet-lite engine honours a refresh, and a
 # silently ignored refresh would let Hatchet kill the task mid-parse with a
 # poisoned pool, the exact failure the in-process cap exists to prevent.
-@ingest_pdf.task(execution_timeout="4h", schedule_timeout="2h", retries=1, parents=[preflight])
+@ingest_pdf.task(
+    execution_timeout="4h", schedule_timeout="2h", retries=1, parents=[preflight],
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
     """Call the canonical v1.49 ``parse_pdf_report`` end to end.
 
@@ -1295,7 +1425,7 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
         # 1.5 GB atlases is a full disk.
         with contextlib.suppress(Exception):
             os.unlink(body_path)
-    return ParseOut(**result_dict)
+    return _pack_parse_output(ParseOut(**result_dict))
 
 
 # ---- Step 3: persist ---------------------------------------------------------
@@ -1814,7 +1944,10 @@ def build_run_warnings(
     return out
 
 
-@ingest_pdf.task(execution_timeout="15m", schedule_timeout="2h", retries=2, parents=[parse])
+@ingest_pdf.task(
+    execution_timeout="15m", schedule_timeout="2h", retries=2, parents=[parse],
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def persist(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOut:
     """Write silver.reports + silver.shadow_runs + audit.audit_ledger."""
     if input.project_id and input.workspace_id:
@@ -1940,6 +2073,8 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     pre = pre.model_dump() if hasattr(pre, "model_dump") else dict(pre)
     parsed = ctx.task_output(parse)
     parsed = parsed.model_dump() if hasattr(parsed, "model_dump") else dict(parsed)
+    # parse packs an output too big for a task output (see _pack_parse_output).
+    parsed = _unpack_parse_output(parsed)
 
     # Preflight rejection is its own phase and lives in its own function
     # (L1097). parse() short-circuits with parser_used="skipped" when
@@ -2154,12 +2289,99 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         report_id=report_id,
         workspace_id=workspace_id_str,
         project_id=str(input.project_id),
-        bronze_uri=(
-            f"s3://{os.environ.get('MINIO_BUCKET_BRONZE', 'bronze')}/"
-            f"{input.minio_key}"
-        ),
+        bronze_uri=f"s3://{_bronze_bucket_name()}/{input.minio_key}",
     )
     ocr_review_pages = _ocr_review_pages(parsed)
+
+    # Page-image finalisation, step 1 of 2: copy each staged render to its final
+    # key. This is object-store work only, so it runs BEFORE any database
+    # connection exists. It used to run inside persist's single transaction,
+    # where a 400-page report (scope=all) held a database transaction and a
+    # pooled connection open across 400 sequential S3 round trips, on the same
+    # Postgres that runs the Hatchet queue (Hatchet audit 2026-10, finding 13).
+    # Step 2, the rows, is inside the transaction below.
+    #
+    # Retry correctness is unchanged. The copy is idempotent (same source, same
+    # destination); `_pending_page_keys` are deleted only AFTER the transaction
+    # commits, never before (persist has retries=2, and a rollback followed by a
+    # retry needs the pending object to still exist to copy again); and a retry
+    # after a commit finds the final keys already in place (below).
+    # `_image_failed_pages` are pages that lost their image, reported on the run.
+    #
+    # Fail-soft per page, deliberately: a page whose copy or insert fails is
+    # skipped with a warning rather than aborting the document. The text passages
+    # are the product; image passages are additive coverage, and losing one
+    # page's render must not cost the document its text.
+    _pending_page_keys: list[str] = []
+    _image_failed_pages: list[int] = []
+    _img_store = None
+    #: (page number, final key) for every render that is in place, in order.
+    _pages_to_record: list[tuple[int, str]] = []
+    _page_images = parsed.get("page_image_manifest") or []
+    if _page_images:
+        from app.services.ingest.page_image import (
+            final_key as _page_final_key,
+        )
+
+        # Deliberately NOT reusing a `store` name from elsewhere in this
+        # function: the one in the figure block is bound inside
+        # `if pending_manifest:`, and the figure manifest is unconditionally
+        # empty (docling removed 2026-07-29), so it is never actually assigned
+        # on any live run. Depending on it would NameError on the first
+        # document with page images.
+        _img_store = get_storage_client()
+        for entry in _page_images:
+            page_no = entry.get("page_number")
+            pending = entry.get("pending_key")
+            if not page_no or not pending:
+                continue
+            dest = _page_final_key(str(report_id), int(page_no))
+            try:
+                await asyncio.to_thread(
+                    _img_store.copy,
+                    Bucket.BRONZE_RASTER,
+                    pending,
+                    Bucket.BRONZE_RASTER,
+                    dest,
+                    metadata={
+                        "report_id": str(report_id),
+                        "page": str(page_no),
+                    },
+                    content_type="image/png",
+                )
+            except Exception as _copy_exc:  # noqa: BLE001
+                # A persist RETRY after a commit finds the pending object
+                # already deleted (it is removed post-commit), so EVERY copy
+                # fails even though every page is already in place under its
+                # final key - which used to be reported as
+                # page_image_persist_failed for the whole document. The
+                # destination existing IS the copy having happened.
+                _dest_present = False
+                try:
+                    _dest_present = bool(await asyncio.to_thread(
+                        _img_store.exists, Bucket.BRONZE_RASTER, dest,
+                    ))
+                except Exception as _exists_exc:  # noqa: BLE001
+                    log.warning(
+                        "ingest_pdf: page-image existence check failed "
+                        "page=%s key=%s err=%s", page_no, dest, _exists_exc,
+                    )
+                if not _dest_present:
+                    log.warning(
+                        "ingest_pdf: page-image copy failed page=%s "
+                        "key=%s err=%s", page_no, pending, _copy_exc,
+                    )
+                    _image_failed_pages.append(int(page_no))
+                    continue
+                log.info(
+                    "ingest_pdf: page-image copy failed (%s) but %s "
+                    "already exists - treating page %s as finalised "
+                    "(retry after commit)", _copy_exc, dest, page_no,
+                )
+            # The copy landed: the pending object has done its job. Deleted
+            # post-commit (see _pending_page_keys).
+            _pending_page_keys.append(pending)
+            _pages_to_record.append((int(page_no), dest))
 
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2, statement_cache_size=0)
     try:
@@ -2178,15 +2400,9 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             # (their Qdrant points are deleted after the transaction commits).
             current_text_hashes: list[str] = []
             stale_passage_rows: list = []
-            # Page-image bookkeeping. `_pending_page_keys` are the staged
-            # renders whose copy to the final key succeeded; they are deleted
-            # AFTER the transaction commits (never inside it: persist has
-            # retries=2, and a rollback followed by a retry needs the pending
-            # object to still exist to copy again). `_image_failed_pages` are
-            # pages that lost their image here, reported on the run.
-            _pending_page_keys: list[str] = []
-            _image_failed_pages: list[int] = []
-            _img_store = None
+            # (Page-image bookkeeping -- `_pending_page_keys`,
+            # `_image_failed_pages`, `_pages_to_record` -- is built before the
+            # connection exists; see the copy phase above.)
             # The run's verdict, built INSIDE the transaction (below) so it
             # commits with the passages it describes.
             run_warnings: list[dict] = []
@@ -2266,87 +2482,22 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     if status.endswith(" 1"):
                         passages_written += 1
 
-                # Page-image passages. The renders were staged under
-                # _pending keys by the parse task (report_id wasn't known
-                # yet); rename each into place, then write its row.
-                #
-                # Fail-soft per page, deliberately: a page whose copy or
-                # insert fails is skipped with a warning rather than
-                # aborting the transaction. The text passages above are the
-                # product; image passages are additive coverage, and losing
-                # one page's render must not cost the document its text.
-                _page_images = parsed.get("page_image_manifest") or []
-                if _page_images:
-                    from app.services.ingest.page_image import (
-                        final_key as _page_final_key,
-                    )
+                # Page-image passages, step 2 of 2: the rows. The renders were
+                # staged under _pending keys by the parse task (report_id
+                # wasn't known yet) and copied into place BEFORE this
+                # transaction opened (see the copy phase above); each page
+                # that is in place gets its row. A page whose row insert
+                # fails is skipped with a warning rather than aborting the
+                # transaction, for the reason given there.
+                if _pages_to_record:
                     from app.services.ingest.page_image import (
                         placeholder_text as _page_placeholder_text,
                     )
 
-                    # Deliberately NOT reusing the `store` above: that name is
-                    # bound inside `if pending_manifest:`, and the figure
-                    # manifest is unconditionally empty (docling removed
-                    # 2026-07-29), so `store` is never actually assigned on
-                    # any live run. Depending on it would NameError on the
-                    # first document with page images.
-                    _img_store = get_storage_client()
                     _images_written = 0
-                    for entry in _page_images:
-                        page_no = entry.get("page_number")
-                        pending = entry.get("pending_key")
-                        if not page_no or not pending:
-                            continue
-                        dest = _page_final_key(str(report_id), int(page_no))
-                        try:
-                            await asyncio.to_thread(
-                                _img_store.copy,
-                                Bucket.BRONZE_RASTER,
-                                pending,
-                                Bucket.BRONZE_RASTER,
-                                dest,
-                                metadata={
-                                    "report_id": str(report_id),
-                                    "page": str(page_no),
-                                },
-                                content_type="image/png",
-                            )
-                        except Exception as _copy_exc:  # noqa: BLE001
-                            # A persist RETRY after a commit finds the pending
-                            # object already deleted (it is removed post-commit),
-                            # so EVERY copy fails even though every page is
-                            # already in place under its final key - which used
-                            # to be reported as page_image_persist_failed for
-                            # the whole document. The destination existing IS
-                            # the copy having happened.
-                            _dest_present = False
-                            try:
-                                _dest_present = bool(await asyncio.to_thread(
-                                    _img_store.exists, Bucket.BRONZE_RASTER, dest,
-                                ))
-                            except Exception as _exists_exc:  # noqa: BLE001
-                                log.warning(
-                                    "ingest_pdf: page-image existence check failed "
-                                    "page=%s key=%s err=%s", page_no, dest, _exists_exc,
-                                )
-                            if not _dest_present:
-                                log.warning(
-                                    "ingest_pdf: page-image copy failed page=%s "
-                                    "key=%s err=%s", page_no, pending, _copy_exc,
-                                )
-                                _image_failed_pages.append(int(page_no))
-                                continue
-                            log.info(
-                                "ingest_pdf: page-image copy failed (%s) but %s "
-                                "already exists - treating page %s as finalised "
-                                "(retry after commit)", _copy_exc, dest, page_no,
-                            )
-                        # The copy landed: the pending object has done its
-                        # job. Deleted post-commit (see _pending_page_keys).
-                        _pending_page_keys.append(pending)
-
+                    for page_no, dest in _pages_to_record:
                         _img_text = _page_placeholder_text(
-                            int(page_no), parsed.get("title"),
+                            page_no, parsed.get("title"),
                         )
                         # HAT-10 (2026-09-29): a SAVEPOINT per row. This
                         # loop runs inside persist's single transaction, and
@@ -2746,7 +2897,10 @@ async def _scoped_acquire(pool: Any, workspace_id: str, site: str):
 # unembedded passage count and re-dispatches the embed workflow if anything
 # is still pending. This is belt-and-suspenders alongside the every-10-min
 # cron — gives users near-realtime "I just uploaded this and chat sees it".
-@ingest_pdf.task(execution_timeout="60s", schedule_timeout="2h", retries=1, parents=[persist])
+@ingest_pdf.task(
+    execution_timeout="60s", schedule_timeout="2h", retries=1, parents=[persist],
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
     """Phase 8 (2026-05-22) — single check + dispatch, no polling loop.
 

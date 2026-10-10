@@ -17,21 +17,26 @@ vi.mock('@inertiajs/react', () => ({
 
 import NewProject from '../NewProject';
 
-type Call = { url: string; body: unknown };
+type Call = { url: string; body: unknown; headers: Record<string, string> };
 
 let calls: Call[];
 let uploadResponses: Array<() => Response>;
+// Queued answers for POST /api/v1/projects; empty means the usual 201.
+let createResponses: Array<() => Response>;
 let hrefSets: string[];
 const realLocation = window.location;
 
 beforeEach(() => {
     calls = [];
+    createResponses = [];
     hrefSets = [];
     page.props = { upload_limit: { bytes: 10_000, human: '10 KB' } };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        calls.push({ url, body: init?.body });
+        calls.push({ url, body: init?.body, headers: (init?.headers ?? {}) as Record<string, string> });
         if (url === '/api/v1/projects') {
+            const queued = createResponses.shift();
+            if (queued) return queued();
             return new Response(JSON.stringify({ data: { project_id: 'p-1', slug: 'red-star' } }), { status: 201 });
         }
         const next = uploadResponses.shift();
@@ -123,6 +128,28 @@ describe('NewProject', () => {
         expect(uploads().map((c) => ((c.body as FormData).get('file') as File).name)).toEqual(['report.pdf']);
     });
 
+    it('sends the live XSRF cookie token on the create and on every upload, never the stale csrf meta tag', async () => {
+        // The <meta> token is rendered once at page load and is dead after an
+        // SPA sign-out/sign-in; Laravel prefers X-CSRF-TOKEN over the cookie.
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        document.cookie = 'XSRF-TOKEN=live-token; path=/';
+        try {
+            uploadResponses = [];
+            await queueFilesAndReview([new File(['%PDF-1.4'], 'report.pdf', { type: 'application/pdf' })]);
+            fireEvent.click(screen.getByRole('button', { name: /next/i }));
+            fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+            await waitFor(() => expect(hrefSets).toHaveLength(1));
+
+            for (const call of [projectCreates()[0], uploads()[0]]) {
+                expect(call.headers['X-XSRF-TOKEN']).toBe('live-token');
+                expect(call.headers).not.toHaveProperty('X-CSRF-TOKEN');
+            }
+        } finally {
+            document.head.innerHTML = '';
+            document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        }
+    });
+
     it('describes the upload flow with the server limit, not the retired Dagster/bronze wording', () => {
         render(<NewProject />);
         fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'Red Star' } });
@@ -197,5 +224,87 @@ describe('NewProject', () => {
             await waitFor(() => expect(projectCreates()).toHaveLength(1));
             expect(createBody().orientation_reference).toBe('true');
         });
+    });
+});
+
+describe('NewProject — project code (FE-10)', () => {
+    const createBody = () => JSON.parse(String(projectCreates()[0].body));
+
+    /** Name (and optionally a code) on the first step, then forward to Review. */
+    function toReview(code?: string) {
+        render(<NewProject />);
+        fireEvent.change(screen.getAllByRole('textbox')[0], { target: { value: 'Red Star' } });
+        if (code !== undefined) fireEvent.change(screen.getByLabelText('Project code'), { target: { value: code } });
+        for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: /next/i }));
+    }
+
+    it('sends the code, trimmed, in the create body', async () => {
+        toReview('  RS-01 ');
+        fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+
+        await waitFor(() => expect(projectCreates()).toHaveLength(1));
+        expect(createBody().project_code).toBe('RS-01');
+        expect(createBody().project_name).toBe('Red Star');
+    });
+
+    it.each([[''], ['   ']])('omits project_code when the field is blank (%j)', async (blank) => {
+        toReview(blank);
+        fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+
+        await waitFor(() => expect(projectCreates()).toHaveLength(1));
+        expect(createBody()).not.toHaveProperty('project_code');
+    });
+
+    it('shows the 422 on the code field, takes the user back to it, and uploads nothing', async () => {
+        createResponses = [
+            () =>
+                new Response(
+                    JSON.stringify({
+                        message: 'This project code is already used in your workspace.',
+                        errors: { project_code: ['This project code is already used in your workspace.'] },
+                    }),
+                    { status: 422 },
+                ),
+        ];
+        toReview('RS-01');
+        fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+
+        // Back on the step that owns the field, with the server's words under it.
+        // (The message sits inside the field's <label>, so match the name loosely.)
+        const field = await screen.findByLabelText(/Project code/);
+        await waitFor(() => expect(field).toHaveAttribute('aria-invalid', 'true'));
+        expect(screen.getByText('This project code is already used in your workspace.')).toBeInTheDocument();
+        expect(screen.getByText(/Step 1 of 4: Identity/)).toBeInTheDocument();
+        // Not also reported as a generic banner, and nothing was uploaded.
+        expect(screen.getAllByRole('alert')).toHaveLength(1);
+        expect(uploads()).toHaveLength(0);
+        expect(hrefSets).toEqual([]);
+
+        // Editing the code withdraws the message; creating again then works.
+        fireEvent.change(field, { target: { value: 'RS-02' } });
+        expect(screen.queryByText('This project code is already used in your workspace.')).toBeNull();
+        expect(field).not.toHaveAttribute('aria-invalid');
+        for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: /next/i }));
+        fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+        await waitFor(() => expect(projectCreates()).toHaveLength(2));
+        expect(JSON.parse(String(projectCreates()[1].body)).project_code).toBe('RS-02');
+    });
+
+    it('keeps other 422s as the usual message under the form', async () => {
+        createResponses = [
+            () =>
+                new Response(
+                    JSON.stringify({
+                        message: 'The project name has already been taken.',
+                        errors: { project_name: ['The project name has already been taken.'] },
+                    }),
+                    { status: 422 },
+                ),
+        ];
+        toReview('RS-01');
+        fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('The project name has already been taken.');
+        expect(screen.getByText(/Step 4 of 4: Review/)).toBeInTheDocument();
     });
 });

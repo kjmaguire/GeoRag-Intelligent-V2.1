@@ -134,8 +134,8 @@ def test_workspace_export_output_carries_v2_fields():
     out = WorkspaceExportOutput(
         run_id=str(uuid.uuid4()),
         workspace_id="ws-1",
-        bucket="workspace-exports",
-        object_key="ws-1/file.jsonl.gz",
+        bucket="georag-exports-000000000000",
+        object_key="workspace-exports/ws-1/file.jsonl.gz",
         bytes=1024,
         rows_exported=5,
         per_table={"silver_workspaces": 1},

@@ -151,7 +151,7 @@ jobs:
             exit 1
           fi
           if [ "$STATE" != "available" ]; then
-            echo "::error::$DB_IDENTIFIER is '$STATE'. The nightly sweep stops it at 23:00 and starts it at 06:00 America/Los_Angeles. Re-run when it is 'available'."
+            echo "::error::$DB_IDENTIFIER is '$STATE'. The nightly sweep stops it at 17:00 and starts it at 08:30 America/Vancouver. Re-run when it is 'available'."
             exit 1
           fi
 
@@ -300,7 +300,7 @@ jobs:
                   --start-from-head --limit 10000 --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
               else
                 resp=$(aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" \
-                  --start-from-head --limit 10000 --next-forward-token "$token" --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
+                  --start-from-head --limit 10000 --next-token "$token" --output json 2>&1) || { echo "(could not read the log stream: $resp)"; return 1; }
               fi
               echo "$resp" | jq -r '.events[].message' >> "$RAW"
               next=$(echo "$resp" | jq -r '.nextForwardToken')

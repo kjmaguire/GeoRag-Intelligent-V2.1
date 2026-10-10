@@ -396,6 +396,9 @@ class TileProxyTest extends TestCase
         $this->assertStringContainsString('max-age=86400', $cc);
         $this->assertStringContainsString('must-revalidate', $cc);
         $this->assertStringNotContainsString('max-age=300', $cc);
+        // Tenant data: browser cache only, never a shared one.
+        $this->assertStringContainsString('private', $cc);
+        $this->assertStringNotContainsString('public', $cc);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

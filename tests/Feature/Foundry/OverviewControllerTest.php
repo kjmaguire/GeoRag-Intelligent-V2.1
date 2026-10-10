@@ -539,6 +539,55 @@ final class OverviewControllerTest extends TestCase
             });
     }
 
+    public function test_a_long_multibyte_question_is_cut_on_a_character_not_a_byte(): void
+    {
+        // THE BUG: substr($text, 0, 120) cuts at byte 120. Here that is inside
+        // the three-byte "日" (bytes 120-122), leaving a stray lead byte --
+        // malformed UTF-8 -- and json_encode refuses it, so the Inertia
+        // response for the whole landing page was a 500.
+        $project = $this->makeProject();
+        $question = str_repeat('a', 119).'日本語の質問';
+        QueryAuditLog::create([
+            'user_id' => $this->user->id,
+            'project_id' => $project->project_id,
+            'query_id' => (string) Str::uuid(),
+            'query_text' => $question,
+            'ip_address' => '127.0.0.1',
+            'llm_model' => 'command-a-plus-05-2026',
+        ]);
+
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertOk()
+            ->assertInertia(function (AssertableInertia $page) {
+                $text = $page->toArray()['props']['recent_activity'][0]['text'];
+
+                $this->assertSame(str_repeat('a', 119).'日', $text, '120 characters, the last of them whole');
+                $this->assertTrue(mb_check_encoding($text, 'UTF-8'));
+            });
+    }
+
+    public function test_a_short_question_is_shown_whole(): void
+    {
+        $project = $this->makeProject();
+        QueryAuditLog::create([
+            'user_id' => $this->user->id,
+            'project_id' => $project->project_id,
+            'query_id' => (string) Str::uuid(),
+            'query_text' => 'Où sont les forages à plus de 3 g/t Au ?',
+            'ip_address' => '127.0.0.1',
+            'llm_model' => 'command-a-plus-05-2026',
+        ]);
+
+        $this->actingAs($this->user)
+            ->get('/projects/'.$project->slug)
+            ->assertOk()
+            ->assertInertia(fn (AssertableInertia $page) => $this->assertSame(
+                'Où sont les forages à plus de 3 g/t Au ?',
+                $page->toArray()['props']['recent_activity'][0]['text'],
+            ));
+    }
+
     /**
      * @return array<string, array{0: string}>
      */

@@ -27,16 +27,34 @@ async def test_broadcast_swallows_unreachable_laravel(monkeypatch):
 
 async def test_broadcast_noop_when_service_key_missing(monkeypatch):
     """If FASTAPI_SERVICE_KEY isn't set, skip the call — symmetric to
-    the ingestion helper's behaviour."""
-    monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
-    monkeypatch.setenv("LARAVEL_INTERNAL_URL", "http://127.0.0.1:1")
+    the ingestion helper's behaviour. "Skip" is asserted, not assumed: the
+    helper swallows every failure and the old target was a dead port, so a
+    helper that dialled Laravel with an empty key still passed."""
+    import httpx
 
-    await post_workspace_data_updated(
+    calls: list[str] = []
+
+    async def _stub_post(self, url, json=None, headers=None):
+        calls.append(url)
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _stub_post)
+    monkeypatch.setenv("LARAVEL_INTERNAL_URL", "http://laravel-stub:8000")
+    args = dict(
         workspace_id="00000000-0000-0000-0000-000000000001",
         project_id="00000000-0000-0000-0000-000000000002",
         pipeline_run_id="00000000-0000-0000-0000-000000000003",
         affected_types=["targets"],
     )
+
+    monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
+    await post_workspace_data_updated(**args)
+    assert calls == [], f"the helper dialled Laravel without a service key: {calls}"
+
+    # Control: the same call with a key reaches the stub, so the empty list above means "skipped".
+    monkeypatch.setenv("FASTAPI_SERVICE_KEY", "test-key-32-bytes-or-longer-for-validator-ok")
+    await post_workspace_data_updated(**args)
+    assert len(calls) == 1
 
 
 async def test_broadcast_handles_500_response(monkeypatch):

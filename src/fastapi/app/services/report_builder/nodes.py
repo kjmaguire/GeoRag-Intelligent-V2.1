@@ -29,6 +29,7 @@ LLM content is the stubbed part.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -916,7 +917,12 @@ async def export_package(state: ReportBuilderState) -> ReportBuilderState:
         from app.services.report_builder.renderers.pdf_renderer import (
             render_pdf_from_markdown,
         )
-        pdf_bytes = render_pdf_from_markdown(
+        # WeasyPrint is synchronous and CPU-bound (HTML layout, font loading,
+        # PDF serialisation: seconds for a long report). Called inline it held
+        # the event loop for all of it, stalling every other request and the
+        # SSE heartbeats on this worker. A worker thread keeps the loop free.
+        pdf_bytes = await asyncio.to_thread(
+            render_pdf_from_markdown,
             markdown,
             title=f"{state.report_type.replace('_', ' ').title()} — {state.report_id}",
         )

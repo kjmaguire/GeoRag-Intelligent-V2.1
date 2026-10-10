@@ -78,17 +78,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: FASTAPI_SERVICE_KEY
-            - name: HATCHET_CLIENT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-secrets
-                  key: HATCHET_CLIENT_TOKEN
+            # Triggering a workflow (/internal/v1/shadow/*/trigger) goes through
+            # the Hatchet client: token, gRPC address and TLS strategy.
+            {{- include "georag.hatchetClientEnv" . | nindent 12 }}
             # COHERE_API_KEY: chat (LLM_BACKEND=cohere, the default) and Cohere
             # Parse OCR both read it, and the API process runs the production-
-            # posture check that logs CRITICAL when it is empty. The worker gets
-            # the whole Secret through envFrom; this Deployment lists its keys,
-            # so the key must be named here or an on-prem install that set it
-            # reaches only the worker. optional: true - an air-gapped install
+            # posture check that logs CRITICAL when it is empty. This
+            # Deployment and the worker both name the key explicitly (neither
+            # takes the whole Secret). optional: true - an air-gapped install
             # (`ocr.engine: tesseract`, no egress) has no such key, and a
             # required reference would hold the pod in CreateContainerConfigError.
             - name: COHERE_API_KEY
@@ -112,6 +109,27 @@ spec:
             # air-gapped site sets `ocr.engine: tesseract` in values.
             - name: OCR_ENGINE
               value: {{ .Values.ocr.engine | quote }}
+            # Capped; the image default is 6. See fastapi.uvicornWorkers.
+            - name: UVICORN_WORKERS
+              value: {{ .Values.fastapi.uvicornWorkers | quote }}
+            # app/services/laravel_bridge.py falls back to http://laravel.test
+            # (the Herd local default) and dies on DNS: ingestion progress,
+            # workspace-data-updated and report-build progress all go through
+            # it, and the only symptom is a per-call "Name or service not
+            # known" while every pod stays healthy. Laravel's Service port, not
+            # the container's.
+            - name: LARAVEL_INTERNAL_URL
+              value: http://{{ .Release.Name }}-laravel-octane:{{ .Values.laravelOctane.service.port }}
+            - name: FASTAPI_INTERNAL_URL
+              value: http://{{ .Release.Name }}-fastapi:{{ .Values.fastapi.service.port }}
+            # The shared model sidecars; without these every uvicorn process
+            # loads its own copy of each model and the pod is OOM-killed.
+            {{- with (include "georag.modelServiceEnv" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.fastapi.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources: {{- toYaml .Values.fastapi.resources | nindent 12 }}
           readinessProbe:
             httpGet:

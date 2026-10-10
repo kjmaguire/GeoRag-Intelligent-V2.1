@@ -48,19 +48,18 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from io import StringIO
 from pathlib import Path
 from typing import IO, Any
-
-import polars as pl
 
 from georag_geoparsers._csv_io import (
     DEFAULT_NULL_VALUES,
     detect_delimiter,
     open_csv_with_encoding,
+    read_csv_checked,
     transform_decimal_comma,
 )
 from georag_geoparsers._depth_units import convert_feet_columns
+from georag_geoparsers._encoding import decode_warnings
 from georag_geoparsers._geology_columns import (
     FAMILY_ALTERATION,
     FAMILY_MINERALIZATION,
@@ -757,15 +756,11 @@ def parse_family(
     try:
         stream, encoding, sha256_hex, _byte_count = open_csv_with_encoding(source)
         content = stream.getvalue()
-        if encoding.lower().replace("-", "") not in ("utf8", "utf-8", "ascii"):
-            warnings.append({
-                "row": None, "code": _CODE_ENCODING_NON_UTF8,
-                "message": (
-                    f"detected encoding '{encoding}' (not UTF-8) — decoded with "
-                    f"replacement"
-                ),
-                "context": {"encoding": encoding},
-            })
+        # decode_warnings, not the inline `name.replace("-", "")` test this
+        # used to carry: charset-normalizer's "utf_8" never matched it, so a
+        # UTF-8 file with one accented letter was reported as not UTF-8 (the
+        # five drill parsers were fixed for that on 2026-09-29; this was not).
+        warnings.extend(decode_warnings(encoding, content))
         delimiter = detect_delimiter(content, default=",")
         if delimiter != ",":
             warnings.append({
@@ -776,11 +771,16 @@ def parse_family(
                 ),
                 "context": {"delimiter": delimiter},
             })
-        df = pl.read_csv(
-            StringIO(content), separator=delimiter, infer_schema=False,
-            null_values=all_nulls, truncate_ragged_lines=True,
+        df, ragged = read_csv_checked(
+            content, separator=delimiter, null_values=all_nulls,
         )
+        if not companion:
+            # A companion parse reads the same rows the primary parse already
+            # reported; saying it twice would double the count on the run.
+            warnings.extend(ragged.warnings())
         df, transformed = transform_decimal_comma(df)
+        if not companion:
+            warnings.extend(transformed.ambiguity_warnings())
         if transformed:
             warnings.append({
                 "row": None, "code": _CODE_DECIMAL_COMMA,
@@ -866,6 +866,12 @@ def parse_family(
     source_rows = 0
 
     for row_num, raw in enumerate(df.to_dicts(), start=2):
+        if row_num in ragged.rows:
+            # Wider than the header: its values are shifted. The primary
+            # parse reports the row; a companion parse just leaves it out.
+            if not companion:
+                ragged.skip(row_num, skipped)
+            continue
         geom, rejection = _geometry(row_num, raw, plan.key_map)
         if geom is None:
             if companion:

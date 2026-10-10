@@ -16,7 +16,6 @@ Each test below fails on the code as deployed.
 from __future__ import annotations
 
 import re
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +23,7 @@ import pytest
 
 TAB = chr(9)
 NL = chr(10)
+XLS_FIXTURES = Path(__file__).parent / "fixtures" / "xls"
 
 
 class TestMapInfoIsAnArchiveMember:
@@ -151,21 +151,13 @@ class TestLegacyXlsReachesTheTextFallback:
         and so does this test, without anyone having to predict which
         version number does it.
         """
-        xlrd = pytest.importorskip("xlrd")
-        xlwt = pytest.importorskip("xlwt")
+        # A committed BIFF8 file: xlwt (the only writer) is not a project
+        # dependency, so building it here meant `importorskip("xlwt")` and a
+        # test that never ran in CI. Regenerate with
+        # src/georag_geoparsers/tests/fixtures/make_legacy_xls_fixtures.py.
+        import xlrd
 
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("collars")
-        for col, name in enumerate(("hole_id", "easting", "northing")):
-            sheet.write(0, col, name)
-        sheet.write(1, 0, "TR002")
-        sheet.write(1, 1, 400807.0)
-        sheet.write(1, 2, 6117291.0)
-
-        target = Path(tempfile.mkdtemp()) / "legacy.xls"
-        book.save(str(target))
-
-        opened = xlrd.open_workbook(str(target))
+        opened = xlrd.open_workbook(str(XLS_FIXTURES / "legacy_collars.xls"))
         read = opened.sheet_by_index(0)
         assert read.nrows == 2, f"xlrd {xlrd.__version__} did not read the rows"
         assert read.cell_value(0, 0) == "hole_id"
@@ -213,21 +205,11 @@ class TestLegacyXlsReachesTheTextFallback:
             f"a .xls must be read by xlrd, not openpyxl; got {result.skipped_reason}"
         )
 
-    def test_it_reads_a_real_xls(self, tmp_path: Path):
-        """Full round trip when xlwt is available to build a fixture."""
-        pytest.importorskip("xlrd")
-        xlwt = pytest.importorskip("xlwt")
+    def test_it_reads_a_real_xls(self):
+        """Full round trip on a committed legacy workbook (see above)."""
         from app.services.ingest.xlsx_ingester import _xls_sheet_texts
 
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("Ages")
-        for c, v in enumerate(["Sample", "Age Ma", "method"]):
-            sheet.write(0, c, v)
-        for c, v in enumerate(["82ASh014", 37.1, "K-Ar"]):
-            sheet.write(1, c, v)
-        book.add_sheet("Empty")
-        path = tmp_path / "ages.xls"
-        book.save(str(path))
+        path = XLS_FIXTURES / "legacy_ages.xls"
 
         out = _xls_sheet_texts(str(path))
         assert [name for name, _ in out] == ["Ages"], "an empty sheet adds nothing"

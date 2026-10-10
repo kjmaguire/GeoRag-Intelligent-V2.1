@@ -240,6 +240,158 @@ resource "aws_cloudfront_distribution" "this" {
 }
 TF
 
+# --- policy documents are not gated, the resources they name are -----------
+# iam.tf kept the scheduler role across power cycles but listed the ECS
+# services with `[for s in aws_ecs_service.this : s.id]`. Under power=off that
+# is [], IAM rejects a statement with no Resource, and the power-off apply dies
+# part-way through. Only coalescelist() with a real fallback survives.
+
+run 1 "an ungated policy document looping over a GATED resource fails" <<'TF'
+resource "aws_ecs_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+  name     = each.key
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions   = ["ecs:UpdateService"]
+    resources = [for s in aws_ecs_service.this : s.id]
+  }
+}
+TF
+
+run 0 "...wrapped in coalescelist with a match-nothing fallback it passes" <<'TF'
+resource "aws_ecs_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+  name     = each.key
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions = ["ecs:UpdateService"]
+    resources = coalescelist(
+      [for s in aws_ecs_service.this : s.id],
+      ["arn:aws:ecs:::service/none"],
+    )
+  }
+}
+TF
+
+run 1 "...coalescelist with an EMPTY fallback still fails" <<'TF'
+resource "aws_ecs_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+  name     = each.key
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions   = ["ecs:UpdateService"]
+    resources = coalescelist([for s in aws_ecs_service.this : s.id], [])
+  }
+}
+TF
+
+run 1 "...the loop AS the fallback is not a fallback" <<'TF'
+resource "aws_ecs_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+  name     = each.key
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions   = ["ecs:UpdateService"]
+    resources = coalescelist([], [for s in aws_ecs_service.this : s.id])
+  }
+}
+TF
+
+run 1 "...try() does not turn an empty list into a value" <<'TF'
+resource "aws_ecs_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+  name     = each.key
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions   = ["ecs:UpdateService"]
+    resources = try([for s in aws_ecs_service.this : s.id], ["arn:aws:ecs:::service/none"])
+  }
+}
+TF
+
+run 1 "a [*] splat of a count-gated resource in a policy document fails" <<'TF'
+resource "aws_lb_target_group" "web" {
+  count = local.on
+  name  = "x"
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions   = ["elasticloadbalancing:DescribeTargetHealth"]
+    resources = aws_lb_target_group.web[*].arn
+  }
+}
+TF
+
+run 0 "...and the same splat wrapped in coalescelist passes" <<'TF'
+resource "aws_lb_target_group" "web" {
+  count = local.on
+  name  = "x"
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions   = ["elasticloadbalancing:DescribeTargetHealth"]
+    resources = coalescelist(aws_lb_target_group.web[*].arn, ["arn:aws:elasticloadbalancing:::targetgroup/none"])
+  }
+}
+TF
+
+run 0 "a loop over an UNGATED resource needs no wrapper -- S3 is always there" <<'TF'
+resource "aws_s3_bucket" "this" {
+  for_each = toset(["a", "b"])
+  bucket   = each.key
+}
+
+data "aws_iam_policy_document" "task" {
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = [for b in aws_s3_bucket.this : b.arn]
+  }
+}
+TF
+
+run 0 "a policy document that is itself gated is exempt -- it is gone too" <<'TF'
+resource "aws_ecs_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+  name     = each.key
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  count = local.on
+
+  statement {
+    actions   = ["ecs:UpdateService"]
+    resources = [for s in aws_ecs_service.this : s.id]
+  }
+}
+TF
+
+run 0 "a commented-out loop is not a loop" <<'TF'
+resource "aws_ecs_service" "this" {
+  for_each = local.on == 1 ? local.services : {}
+  name     = each.key
+}
+
+data "aws_iam_policy_document" "sweeps" {
+  statement {
+    actions = ["ecs:UpdateService"]
+    # resources = [for s in aws_ecs_service.this : s.id]
+    resources = ["arn:aws:ecs:::service/none"]
+  }
+}
+TF
+
 run 0 "the committed tree passes" <<'TF'
 TF
 python3 "$CHECK" >/dev/null 2>&1 \

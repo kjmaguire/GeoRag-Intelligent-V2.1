@@ -48,8 +48,9 @@ def test_default_tenant_literal_purged_from_agent_directory():
     Scope is intentionally narrow — ``app/agent/`` is what audit
     item B2 migrated. The same literal still appears in
     ``app/agents/phase10/``, ``app/services/support_cockpit/``,
-    ``app/hatchet_workflows/``, ``app/routers/visualizations.py``,
-    and ``app/services/tool_gateway/impls.py``. Those are tracked
+    ``app/hatchet_workflows/`` and ``app/services/tool_gateway/impls.py``
+    (``app/routers/visualizations.py`` resolves its workspace from the JWT
+    since GIS audit 2026-10 finding 13). Those are tracked
     as a Theme I extension follow-up in
     ``docs/handover/AUDIT_AND_FIX_REPORT.md`` — each needs the same
     ``WorkspaceContext.from_state`` migration.

@@ -130,6 +130,13 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          # The task is polled for up to 80 minutes and its log read afterwards;
+          # the default session is one hour, so the poll would die on
+          # ExpiredToken part-way through and take the report with it. The
+          # deploy role must allow this: max_session_duration in ci.tf has to be
+          # APPLIED first, or AssumeRole itself is refused ("DurationSeconds
+          # exceeds the MaxSessionDuration") and this workflow never starts.
+          role-duration-seconds: 5400
 
       - name: Postgres gate (nightly stop window / power flag)
         run: |
@@ -139,7 +146,7 @@ jobs:
             --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "absent")
           echo "postgres state: $STATE"
           if [ "$STATE" != "available" ]; then
-            echo "::error::$DB_IDENTIFIER is '$STATE' (absent = powered off; the nightly sweep stops it 23:00-06:00 America/Los_Angeles). Re-run when it is 'available'."
+            echo "::error::$DB_IDENTIFIER is '$STATE' (absent = powered off; the nightly sweep stops it 17:00-08:30 America/Vancouver). Re-run when it is 'available'."
             exit 1
           fi
 

@@ -50,6 +50,8 @@ class FakeConn:
         self.rows = rows
         self.embedded: dict[str, str] = {}
         self.queries: list[tuple[str, tuple]] = []
+        #: (sql, args) of every embedding_id writeback.
+        self.writebacks: list[tuple[str, list[tuple]]] = []
         self.closed = False
 
     async def execute(self, *a: Any, **k: Any) -> str:
@@ -75,7 +77,11 @@ class FakeConn:
         return pending[:limit]
 
     async def executemany(self, sql: str, args: list[tuple]) -> None:
-        for point_id, passage_id in args:
+        # (point_id, passage_id, the contextualized_content that was encoded) -
+        # the writeback is conditional on that content (audit finding 19); no
+        # row is enriched in these tests, so every condition holds.
+        self.writebacks.append((sql, list(args)))
+        for point_id, passage_id, _encoded in args:
             self.embedded[passage_id] = point_id
 
     async def close(self) -> None:
@@ -308,3 +314,34 @@ def test_the_failure_log_set_is_bounded(monkeypatch) -> None:
     for i in range(10):
         pe._log_sparse_failure_once(f"p{i}")
     assert len(pe._SPARSE_FAILURE_LOGGED) <= 3
+
+
+# ---------------------------------------------------------------------------
+# Audit finding 19: the writeback must not undo an enrichment reset
+# ---------------------------------------------------------------------------
+
+
+def test_the_writeback_is_conditional_on_the_content_that_was_encoded() -> None:
+    sql = " ".join(pe._WRITEBACK_SQL.split())
+
+    assert "WHERE passage_id = $2::uuid AND contextualized_content IS NOT DISTINCT FROM $3" in sql
+    assert sql.startswith("UPDATE silver.document_passages SET embedding_id = $1")
+
+
+@pytest.mark.asyncio
+async def test_each_writeback_carries_the_content_its_vector_was_made_from(harness) -> None:
+    plain, enriched = _row(0), _row(1)
+    enriched["contextualized_content"] = "Context header. passage 1 text about the Austin zone"
+    conn, model, qdrant = harness([plain, enriched])
+
+    await _run(conn, model, qdrant)
+
+    (sql, args), = conn.writebacks
+    assert sql == pe._WRITEBACK_SQL
+    by_passage = {passage_id: encoded for _point, passage_id, encoded in args}
+    assert by_passage == {
+        plain["passage_id"]: None,                              # encoded from the bare text
+        enriched["passage_id"]: enriched["contextualized_content"],
+    }
+    # ... and the text that was actually encoded is that same content.
+    assert qdrant.points[1].payload["text"] == enriched["text"]

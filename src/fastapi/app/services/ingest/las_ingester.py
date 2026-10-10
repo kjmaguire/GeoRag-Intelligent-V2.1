@@ -41,7 +41,6 @@ only collar geometry since the 32613 `geom` column was retired 2026-09-29).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import math
 import re
@@ -52,10 +51,19 @@ from typing import Any
 
 import asyncpg
 import lasio
+from georag_geoparsers._area_of_use import within_area
 from georag_geoparsers.las_parser import (
     las_depth_unit_warning,
     resolve_las_depth_unit,
     unit_to_metres_factor,
+)
+
+from app.services.ingest.file_hash import sha256_file
+from app.services.ingest.las_curve_conflicts import (
+    CurveDecision,
+    decide,
+    fetch_stored_curves,
+    replacement_warnings,
 )
 
 log = logging.getLogger("georag.ingest.las")
@@ -213,13 +221,10 @@ def _within_crs_area(epsg: int, x: float, y: float) -> bool:
     if abs(lat) > 90 or abs(lon) > 180:
         return False
     area = crs.area_of_use
-    if area is not None:
-        slack = 3.0
-        if not (
-            area.west - slack <= lon <= area.east + slack
-            and area.south - slack <= lat <= area.north + slack
-        ):
-            return False
+    # Antimeridian-aware (NAD83's area is west 167.65 / east -40.73): a plain
+    # west <= lon <= east refused every point of such a CRS (GIS audit 2026-10).
+    if area is not None and not within_area(area, lon, lat, slack_deg=3.0):
+        return False
     return True
 
 
@@ -532,6 +537,18 @@ async def _create_collar(
     return row["collar_id"]
 
 
+def _depth_range(depths: list[float]) -> tuple[float, float]:
+    """``(min, max)`` of the depths a curve is stored with.
+
+    Leading negative depths (an above-ground tool reference) are dropped
+    first, exactly as ``_insert_curve`` does, so the range judged BEFORE the
+    write (``las_curve_conflicts``) is the range that is written.
+    """
+    if depths and depths[0] < 0:
+        depths = depths[next((i for i, d in enumerate(depths) if d >= 0), len(depths)):]
+    return (min(depths), max(depths)) if depths else (0.0, 0.0)
+
+
 async def _insert_curve(
     conn: asyncpg.Connection,
     *,
@@ -561,8 +578,7 @@ async def _insert_curve(
         )
         depths = depths[first_pos_idx:]
         values = values[first_pos_idx:]
-    min_d = min(depths) if depths else 0.0
-    max_d = max(depths) if depths else 0.0
+    min_d, max_d = _depth_range(depths)
     if max_d <= min_d:
         log.warning(
             "las_ingester.curve_skip_invalid_depth collar=%s curve=%s min=%.3f max=%.3f",
@@ -806,8 +822,10 @@ async def ingest_las_file(
                 placement.warning["code"], p.name, hole_id, placement.georef_method,
             )
 
-    # Compute source file sha256 once
-    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    # Compute source file sha256 once - off the event loop (ING-18): the whole
+    # file was read and hashed here, inside the coroutine, stalling every other
+    # task on the worker for a multi-hundred-MB LAS.
+    sha = await asyncio.to_thread(sha256_file, p)
 
     # Curves — skip the DEPT curve itself (it's the index); insert others
     curves_inserted = 0
@@ -817,8 +835,36 @@ async def ingest_las_file(
     # the row tells derive_intervals so.
     depths = [float(d) * depth_unit.factor for d in las.index.tolist()]
 
+    # A same-named curve already stored from a DIFFERENT file is not a re-upload
+    # (audit finding 5): judge each one before _insert_curve's ON CONFLICT
+    # would silently replace it (las_curve_conflicts).
+    curve_names = [
+        c.mnemonic[:50] for c in las.curves
+        if c.mnemonic.upper() not in ("DEPT", "DEPTH")
+    ]
+    new_min, new_max = _depth_range(depths)
+    decisions: dict[str, CurveDecision] = {}
+    if new_max > new_min:         # otherwise _insert_curve stores nothing at all
+        stored_curves = await fetch_stored_curves(conn, collar_id, curve_names)
+        decisions = {
+            name: decide(
+                name, stored_curves.get(name),
+                new_file=p.name, new_min=new_min, new_max=new_max,
+            )
+            for name in curve_names
+        }
+        warnings.extend(replacement_warnings(
+            decisions, dict.fromkeys(curve_names, (new_min, new_max)),
+            new_file=p.name, structured=False,
+        ))
+
     for curve in las.curves:
         if curve.mnemonic.upper() in ("DEPT", "DEPTH"):
+            continue
+        if (
+            curve.mnemonic[:50] in decisions
+            and decisions[curve.mnemonic[:50]].action == "refuse"
+        ):
             continue
         # lasio returns numpy arrays; convert to list[float] for asyncpg
         try:

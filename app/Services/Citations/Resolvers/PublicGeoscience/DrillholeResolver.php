@@ -45,7 +45,9 @@ final class DrillholeResolver extends AbstractPgeoResolver
             $entity->project_name ?? 'unspecified project',
             $entity->company ?? 'unknown operator',
             $entity->date_drilled ?? 'date unknown',
-            $entity->total_length_m !== null ? number_format((float) $entity->total_length_m, 1) : '—',
+            // Null-safe like every other read here: the entity is null when
+            // the citation is malformed or the row has since left the source.
+            $entity?->total_length_m !== null ? number_format((float) $entity->total_length_m, 1) : '—',
             $commodities ? implode(', ', $commodities) : 'not listed',
             $entity->core_availability ?? 'unknown',
         );

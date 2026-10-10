@@ -29,7 +29,8 @@ def test_cold_tier_archive_in_ai_pool() -> None:
 def test_cold_tier_input_defaults_match_kickoff_lock() -> None:
     inp = cta.ColdTierArchiveInput()
     assert inp.retention_days == 90  # 30/90/indef policy
-    assert inp.archive_bucket == "audit-cold-tier"
+    assert inp.archive_bucket == "audit-cold-tier"  # the key PREFIX, inside the backups bucket
+    assert inp.bucket is None  # resolved to AWS_BUCKET_BACKUPS when the run starts
     assert inp.chunk_rows == 10_000
     assert inp.workspace_id_scope is None
 
@@ -119,3 +120,174 @@ def test_cold_tier_run_model_minimum_fields() -> None:
         created_at=datetime.now(tz=UTC),
     )
     assert r.payload == {}
+
+
+# ---------------------------------------------------------------------------
+# The run: watermark in, failure out (2026-10 Hatchet audit, finding 9)
+# ---------------------------------------------------------------------------
+from app.audit.cold_tier_archive import ArchiveRun  # noqa: E402
+from app.hatchet_workflows.audit_ledger_verify import AUDIT_CHAIN_BREAK_MARKER  # noqa: E402
+
+_WATERMARK = datetime(2026, 7, 1, tzinfo=UTC)
+
+
+class _Conn:
+    def __init__(self, watermark: datetime | None = _WATERMARK, *, fail: bool = False) -> None:
+        self.watermark = watermark
+        self.fail = fail
+        self.fetchval_calls: list[tuple[str, tuple]] = []
+
+    async def fetchval(self, sql: str, *args):
+        self.fetchval_calls.append((sql, args))
+        if self.fail:
+            raise RuntimeError("permission denied for table audit_ledger")
+        return self.watermark
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.fixture
+def archive_run(monkeypatch):
+    """Drive run_archive with a fake connection, archive_window and anchor writer."""
+    seen: dict = {"anchors": [], "window": None, "conn": None}
+
+    async def _noop(**_kw):
+        return None
+
+    monkeypatch.setattr("app.services.laravel_bridge.post_admin_surface_updated", _noop)
+
+    async def _run(
+        *, window_result: ArchiveRun, watermark: datetime | None = _WATERMARK,
+        fail_watermark: bool = False, bucket: str | None = None,
+    ):
+        conn = _Conn(watermark, fail=fail_watermark)
+        seen["conn"] = conn
+
+        async def _connect(*_a, **_kw):
+            return conn
+
+        async def _archive_window(_conn, **kwargs):
+            seen["window"] = kwargs
+            return window_result
+
+        async def _emit(_conn, **kwargs):
+            seen["anchors"].append(kwargs)
+
+        monkeypatch.setattr(cta.asyncpg, "connect", _connect)
+        monkeypatch.setattr(cta, "archive_window", _archive_window)
+        monkeypatch.setattr(cta, "emit_audit", _emit)
+        return await cta.run_archive.aio_mock_run(cta.ColdTierArchiveInput(bucket=bucket))
+
+    return seen, _run
+
+
+def _ok(rows: int = 3) -> ArchiveRun:
+    return ArchiveRun(
+        rows_archived=rows, cold_tier_uri="s3://b/m.json", hot_tier_remaining=9,
+        verification_passed=True, manifest_key="b/m.json", chunks=({"rows": rows},),
+        chain_heads={"ws-A": "0a", "system": "0b"},
+    )
+
+
+async def test_run_archive_continues_from_the_last_completed_run(archive_run) -> None:
+    seen, run = archive_run
+
+    out = await run(window_result=_ok())
+
+    assert out.status == "completed" and out.rows_archived == 3
+    assert seen["window"]["cutoff_after"] == _WATERMARK
+    (anchor,) = seen["anchors"]
+    assert anchor["action_type"] == "audit.cold_tier.archive.completed"
+    assert anchor["payload"]["window_start"] == _WATERMARK.isoformat()
+    assert anchor["payload"]["chains"] == 2
+    # ...and that anchor is what the next run reads its watermark from.
+    sql, args = seen["conn"].fetchval_calls[0]
+    assert "audit.cold_tier.archive.completed" in sql and "max(" in sql
+    assert args == (None,)
+
+
+async def test_run_archive_writes_to_the_configured_backups_bucket_under_the_prefix(
+    archive_run, monkeypatch,
+) -> None:
+    """'audit-cold-tier' was a bucket of its own, which Terraform never creates
+    (it provisions bronze, bronze-raster, exports and backups): every archive on
+    AWS ended in NoSuchBucket. It is now the key prefix inside the BACKUPS bucket."""
+    monkeypatch.setenv("AWS_BUCKET_BACKUPS", "georag-backups-123456789012")
+    seen, run = archive_run
+
+    await run(window_result=_ok())
+
+    window = seen["window"]
+    assert window["cold_tier"]._bucket == "georag-backups-123456789012"
+    assert window["archive_bucket"] == "audit-cold-tier"
+
+
+async def test_an_operator_can_name_another_bucket(archive_run, monkeypatch) -> None:
+    monkeypatch.setenv("AWS_BUCKET_BACKUPS", "georag-backups-123456789012")
+    seen, run = archive_run
+
+    await run(window_result=_ok(), bucket="drill-bucket")
+
+    assert seen["window"]["cold_tier"]._bucket == "drill-bucket"
+
+
+async def test_run_archive_with_no_earlier_run_archives_from_the_beginning(archive_run) -> None:
+    seen, run = archive_run
+
+    await run(window_result=_ok(), watermark=None)
+
+    assert seen["window"]["cutoff_after"] is None
+    assert seen["anchors"][0]["payload"]["window_start"] is None
+
+
+async def test_an_unreadable_watermark_archives_more_not_less(archive_run, caplog) -> None:
+    seen, run = archive_run
+
+    with caplog.at_level("WARNING", logger="georag.hatchet.cold_tier_archive"):
+        out = await run(window_result=_ok(), fail_watermark=True)
+
+    assert out.status == "completed"
+    assert seen["window"]["cutoff_after"] is None
+    assert any("could not read the watermark" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_verification_failure_fails_the_run_and_raises_the_chain_break_alarm(
+    archive_run, caplog,
+) -> None:
+    """It used to return status='failed' as an ordinary result, so Hatchet
+    recorded a green run for a ledger that had failed its own hash chain."""
+    seen, run = archive_run
+    failed = ArchiveRun(
+        rows_archived=12, cold_tier_uri="", hot_tier_remaining=9, verification_passed=False,
+        failure_reason="chain break in ws-B at id=row-7 created_at=x: previous_hash='ff' != prior.hash='07'",
+    )
+
+    with caplog.at_level("ERROR", logger="georag.hatchet.cold_tier_archive"), pytest.raises(
+        RuntimeError, match="verification failed, nothing archived.*chain break in ws-B",
+    ):
+        await run(window_result=failed)
+
+    (anchor,) = seen["anchors"]
+    assert anchor["action_type"] == "audit.cold_tier.archive.failed"
+    assert anchor["payload"]["verification_passed"] is False
+    lines = [r.getMessage() for r in caplog.records if AUDIT_CHAIN_BREAK_MARKER in r.getMessage()]
+    assert len(lines) == 1
+    assert lines[0].startswith(AUDIT_CHAIN_BREAK_MARKER)
+    assert "source=cold_tier_archive" in lines[0] and "chain break in ws-B" in lines[0]
+
+
+async def test_a_run_that_raises_does_not_advance_the_watermark(archive_run) -> None:
+    """The watermark is read from COMPLETED anchors only; a failure writes a
+    .failed one, so the next night retries the same window."""
+    seen, run = archive_run
+
+    with pytest.raises(RuntimeError):
+        await run(window_result=ArchiveRun(
+            rows_archived=1, cold_tier_uri="", hot_tier_remaining=0,
+            verification_passed=False, failure_reason="chain break in x",
+        ))
+
+    assert [a["action_type"] for a in seen["anchors"]] == ["audit.cold_tier.archive.failed"]
+    sql, _ = seen["conn"].fetchval_calls[0]
+    assert "archive.completed" in sql and "archive.failed" not in sql

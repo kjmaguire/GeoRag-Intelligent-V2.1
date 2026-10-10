@@ -280,7 +280,11 @@ async def run_ingest_geophysics(
                     ),
                 )
     except Exception as exc:
-        if run_id:
+        # Close the row HERE only when Hatchet will not run this task again
+        # (see _progress.is_final_attempt): a row marked 'failed' on the first
+        # attempt is terminal, so a retry that succeeds could neither complete
+        # it nor fire the completion broadcast.
+        if run_id and _progress.is_final_attempt(ctx, exc):
             await _progress.mark_failed_by_run(run_id=run_id, error=str(exc)[:1000])
         log.exception("ingest_geophysics failed for %s", input.minio_key)
         raise

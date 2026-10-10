@@ -7,7 +7,7 @@
     "AttributeError+ImportError": 1,
     "AttributeError+TypeError+ValueError": 1,
     "CancelledError": 1,
-    "Exception": 85,
+    "Exception": 84,
     "FileNotFoundError": 1,
     "HTTPError+ValueError": 2,
     "ImportError": 30,
@@ -19,10 +19,10 @@
     "JSONDecodeError+UnicodeDecodeError+ValueError": 1,
     "KeyError+TypeError+ValueError": 1,
     "LookupError": 1,
-    "LookupError+UnicodeDecodeError": 1,
     "OSError": 2,
     "OSError+OverflowError+ValueError": 1,
     "OSError+ValueError": 1,
+    "OverflowError+ValueError+XLDateError": 1,
     "PasswordError": 1,
     "QueueEmpty": 1,
     "RuntimeError": 2,
@@ -31,7 +31,7 @@
     "TypeError": 1,
     "TypeError+ValueError": 32,
     "UniqueViolationError": 1,
-    "ValueError": 33
+    "ValueError": 31
   },
   "files": {
     "src/fastapi/app/agent/agentic_retrieval/nodes.py": 3,
@@ -106,10 +106,9 @@
     "src/fastapi/app/services/tool_gateway/policies.py": 1,
     "src/fastapi/app/services/trace_writer.py": 1,
     "src/fastapi/app/services/visualizations/additional_charts.py": 1,
-    "src/fastapi/app/sidecar_auth.py": 2,
-    "src/georag_geoparsers/georag_geoparsers/_encoding.py": 1,
+    "src/fastapi/app/sidecar_auth.py": 1,
     "src/georag_geoparsers/georag_geoparsers/_unit_ambiguity.py": 1,
-    "src/georag_geoparsers/georag_geoparsers/csv_collar.py": 2,
+    "src/georag_geoparsers/georag_geoparsers/csv_collar.py": 1,
     "src/georag_geoparsers/georag_geoparsers/csv_geochronology.py": 1,
     "src/georag_geoparsers/georag_geoparsers/csv_lithology.py": 1,
     "src/georag_geoparsers/georag_geoparsers/csv_sample.py": 3,
@@ -120,5 +119,5 @@
     "src/georag_geoparsers/georag_geoparsers/xlsx_parser.py": 1,
     "src/georag_geoparsers/georag_geoparsers/xyz_parser.py": 1
   },
-  "total": 213
+  "total": 210
 }

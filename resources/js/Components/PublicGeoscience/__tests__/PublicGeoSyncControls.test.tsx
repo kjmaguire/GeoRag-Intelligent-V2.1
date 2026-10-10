@@ -27,6 +27,13 @@ const STATUS = {
     last_seen_at: '2026-09-27T20:00:00+00:00',
 };
 
+function clearCookies() {
+    for (const part of document.cookie.split(';')) {
+        const name = part.split('=')[0].trim();
+        if (name) document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+    }
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
@@ -70,6 +77,31 @@ describe('<PublicGeoSyncControls />', () => {
         expect(toast.detail).not.toMatch(/run-42|Hatchet/);
         const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
         expect(post?.[0]).toBe('/api/v1/public-geoscience/sync');
+    });
+
+    it('sends the live XSRF cookie token on the sync POST, never the stale csrf meta tag', async () => {
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        document.cookie = 'XSRF-TOKEN=live-token; path=/';
+        try {
+            fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+                Promise.resolve(
+                    init?.method === 'POST'
+                        ? jsonResponse({ workflow_run_id: 'run-1', feeds: 1 }, 202)
+                        : jsonResponse(STATUS),
+                ),
+            );
+            render(<PublicGeoSyncControls isAdmin />);
+            fireEvent.click(screen.getByRole('button', { name: /sync now/i }));
+            await waitFor(() => expect(pushToast).toHaveBeenCalled());
+
+            const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+            const headers = (post?.[1] as RequestInit).headers as Record<string, string>;
+            expect(headers['X-XSRF-TOKEN']).toBe('live-token');
+            expect(headers).not.toHaveProperty('X-CSRF-TOKEN');
+        } finally {
+            document.head.innerHTML = '';
+            clearCookies();
+        }
     });
 
     it('explains a cooldown 429 with the run already queued', async () => {

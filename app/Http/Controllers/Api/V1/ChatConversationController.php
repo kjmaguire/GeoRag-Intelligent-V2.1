@@ -39,7 +39,7 @@ use Illuminate\Support\Str;
 class ChatConversationController extends Controller
 {
     /** Upper bound on messages in one full-replace sync (LAR-18). */
-    private const MAX_MESSAGES = 500;
+    public const MAX_MESSAGES = 500;
 
     /** Upper bound on one message's text, in characters (LAR-18). */
     private const MAX_CONTENT_CHARS = 100_000;

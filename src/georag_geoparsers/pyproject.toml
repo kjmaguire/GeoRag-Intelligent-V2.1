@@ -21,6 +21,12 @@ dependencies = [
     # Raster (GeoTIFF) — CRS, transform and band metadata.
     "rasterio>=1.4",
 
+    # ERDAS .rrd pyramids to TIFF (erdas_rrd.rrd_to_tiff_bytes imports it).
+    # Undeclared until 2026-10-10: every test that reached it needed the
+    # client delivery and skipped, so an install without Pillow went
+    # unnoticed. Same floor as src/fastapi's.
+    "Pillow>=12.3",
+
     # Well logs.
     "lasio>=0.31",
 

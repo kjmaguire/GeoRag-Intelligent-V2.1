@@ -10,17 +10,32 @@
 --   await conn.execute("SET LOCAL app.workspace_id = $1", workspace_id)
 --
 -- Tables that get RLS (per kickoff §Step 2):
---   workspace.workspace_memberships, workspace.workspace_roles
---   workspace.workspace_agent_config, workspace.idempotency_keys, workspace.dry_run_outputs
+--   workspace.workspace_roles, workspace.idempotency_keys
 --   audit.audit_ledger
 --   (audit.audit_ledger_verification_runs intentionally omitted — system-wide
 --    table with no workspace_id column; admin-RBAC-gated at the app layer.
 --    Spec inconsistency in kickoff §Step 2; surface for v2.4.3 doc revision.)
 --   workflow.workflow_runs, workflow.workflow_run_events
---   outbox.pending_propagations, outbox.propagation_attempts
 --   usage.usage_events, usage.usage_aggregates_daily, usage.workspace_cost_ceilings
 --   silver.store_reconciliation_findings, silver.corpus_health_findings
 --   silver.storage_tier_policy (dedicated nullable-aware policy — see below)
+--
+-- NO LONGER re-created here (database audit 2026-10): five tables whose
+-- fail-CLOSED `tenant_isolation` the migration chain installs, and which this
+-- file used to DROP and re-create in the fail-open shape on every deploy
+-- (the ECS migrate task runs `migrate` THEN `db:apply-raw`, so this file always
+-- had the last word):
+--   workspace.workspace_memberships, workspace.workspace_agent_config,
+--   workspace.dry_run_outputs, outbox.pending_propagations,
+--   outbox.propagation_attempts
+-- Their policy now belongs to the migration chain alone
+-- (2026_10_10_100300_restore_fail_closed_rls_reopened_by_raw_95, which also
+-- repairs clusters this file had already opened). Do not add them back: a
+-- policy written by two layers is decided by whichever ran last, and
+-- permissive policies OR together, so a second one can only widen access.
+-- tests/Unit/RawRlsReopensNothingTest.php fails if one comes back, and
+-- src/fastapi/tests/test_rls_after_raw.py (CI job cron-sweeps-app-role, which
+-- builds the database the production way) checks the result.
 --
 -- Tables that DO NOT get RLS:
 --   public.users (cross-workspace identity)
@@ -34,16 +49,26 @@
 DO $$
 DECLARE
     target_tables text[][] := ARRAY[
-        ARRAY['workspace', 'workspace_memberships'],
-        ARRAY['workspace', 'workspace_agent_config'],
+        -- workspace.workspace_memberships, workspace.workspace_agent_config,
+        -- workspace.dry_run_outputs, outbox.pending_propagations and
+        -- outbox.propagation_attempts are deliberately ABSENT: see the header.
         ARRAY['workspace', 'idempotency_keys'],
-        ARRAY['workspace', 'dry_run_outputs'],
         ARRAY['audit',     'audit_ledger'],
         -- audit.audit_ledger_verification_runs has no workspace_id; skip RLS.
         ARRAY['workflow',  'workflow_runs'],
         ARRAY['workflow',  'workflow_run_events'],
-        ARRAY['outbox',    'pending_propagations'],
-        ARRAY['outbox',    'propagation_attempts'],
+        -- usage.usage_events and usage.workspace_cost_ceilings are still here ON
+        -- PURPOSE, and this is a known gap, not a decision: migrations make both
+        -- strict (usage_events_tenant_isolation, workspace_cost_ceilings_
+        -- tenant_isolation) and the policy this loop adds beside them is
+        -- fail-open, so they are open for an unbound session. Removing them from
+        -- this list is the one-line fix, but it silently stops cost metering until
+        -- three unbound code paths bind a workspace: the chat persist INSERT
+        -- (agent/agentic_retrieval/nodes.py _write_chat_usage_event), the
+        -- @georag_agent wrapper's INSERT (agents/wrapper.py _write_usage_event) and
+        -- model_cost_summary's cross-tenant reads (agents/phase0/model_cost_
+        -- summary.py). tests/Unit/RawRlsReopensNothingTest.php pins this list so it
+        -- can only shrink.
         ARRAY['usage',     'usage_events'],
         ARRAY['usage',     'usage_aggregates_daily'],
         ARRAY['usage',     'workspace_cost_ceilings'],

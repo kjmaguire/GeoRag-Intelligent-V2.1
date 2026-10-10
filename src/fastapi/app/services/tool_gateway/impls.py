@@ -112,7 +112,11 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
     # encoder, but as a starting point return points filtered by payload
     # match-string rather than vector similarity. Real embedding wiring
     # is wave 2 (would call services/qdrant_service.retrieve()).
-    client = AsyncQdrantClient(**qdrant_client_kwargs())
+    # An agent tool call a user is waiting on: the query path's own timeout,
+    # not the 60 s default a bulk writer gets.
+    from app.config import settings  # noqa: PLC0415
+
+    client = AsyncQdrantClient(**qdrant_client_kwargs(timeout=int(settings.TIMEOUT_QDRANT_S)))
     try:
         # `flt = None` used to be reachable here when workspace_id was
         # absent, which did not mean "unscoped query" — it meant "scroll

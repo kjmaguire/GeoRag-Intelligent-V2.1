@@ -25,13 +25,49 @@ async def test_workspace_activity_swallows_unreachable_laravel(monkeypatch):
 
 
 async def test_workspace_activity_noop_when_service_key_missing(monkeypatch):
-    monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
-    monkeypatch.setenv("LARAVEL_INTERNAL_URL", "http://127.0.0.1:1")
+    """No key, no request. Asserted on the HTTP client: the helper swallows every failure,
+    so a call to the old dead-port target could not be told from a skipped one."""
+    import httpx
 
-    await post_workspace_activity(
-        workspace_id="11111111-1111-1111-1111-111111111111",
-        affected_types=["cost"],
-    )
+    calls: list[str] = []
+
+    async def _stub_post(self, url, json=None, headers=None):
+        calls.append(url)
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _stub_post)
+    monkeypatch.setenv("LARAVEL_INTERNAL_URL", "http://laravel-stub:8000")
+    args = dict(workspace_id="11111111-1111-1111-1111-111111111111", affected_types=["cost"])
+
+    monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
+    await post_workspace_activity(**args)
+    assert calls == [], f"the helper dialled Laravel without a service key: {calls}"
+
+    monkeypatch.setenv("FASTAPI_SERVICE_KEY", "test-key-32-bytes-or-longer-for-validator-ok")
+    await post_workspace_activity(**args)
+    assert len(calls) == 1
+
+
+async def test_user_inbox_updated_noop_when_service_key_missing(monkeypatch):
+    """The inbox helper had no key-missing test at all."""
+    import httpx
+
+    calls: list[str] = []
+
+    async def _stub_post(self, url, json=None, headers=None):
+        calls.append(url)
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _stub_post)
+    monkeypatch.setenv("LARAVEL_INTERNAL_URL", "http://laravel-stub:8000")
+
+    monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
+    await post_user_inbox_updated(user_id=42, kind="mention")
+    assert calls == [], f"the helper dialled Laravel without a service key: {calls}"
+
+    monkeypatch.setenv("FASTAPI_SERVICE_KEY", "test-key-32-bytes-or-longer-for-validator-ok")
+    await post_user_inbox_updated(user_id=42, kind="mention")
+    assert len(calls) == 1
 
 
 async def test_workspace_activity_payload_shape(monkeypatch):

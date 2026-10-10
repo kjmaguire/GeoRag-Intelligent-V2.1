@@ -162,12 +162,20 @@ NOT_FILE_DERIVED: dict[str, str] = {
 #: a live database to verify against.
 NO_LINEAGE_YET: dict[str, str] = {
     "hatchet_workflows/ingest_tabular.py":
-        "writes silver.collars / surveys / lithology_logs / samples with "
-        "no provenance row and no inline source columns. The same drill "
-        "file gets lineage when it arrives inside a ZIP "
-        "(cameco_log_ingester, derive_intervals) and none when uploaded "
-        "directly. Recorded in the bronze.provenance table COMMENT by "
-        "migration 2026_08_21_040000",
+        "writes no bronze.provenance row. Every table it fills EXCEPT "
+        "silver.collars now carries the file on the row itself: "
+        "surveys / lithology_logs / samples / structure / alteration / "
+        "mineralization / assays_v2 (source_file + source_file_sha256, "
+        "migration 2026_10_04_100000), geochemistry (source_file + "
+        "source_file_sha256 + row_index, 2026_10_10_110000) and "
+        "attribute_tables (its replace key). silver.collars is the open "
+        "gap: a collar upserted by ON CONFLICT (project_id, "
+        "hole_id_canonical) has no single source file to record, because "
+        "several files describe one hole and each re-upload updates it. "
+        "The same drill file gets lineage when it arrives inside a ZIP "
+        "(cameco_log_ingester, derive_intervals) and none for its collars "
+        "when uploaded directly. Recorded in the bronze.provenance table "
+        "COMMENT by migration 2026_08_21_040000",
 }
 
 ALL_DECIDED = (

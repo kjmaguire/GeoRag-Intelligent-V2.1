@@ -165,20 +165,71 @@ def test_field_mode_intersects_user_data_sources() -> None:
     )
     # geophysics was intersected away — only project-corpus sources remain.
     assert "geophysics" not in f.allowed_data_sources
-    # Project-corpus sources are still present? No — intersection of
-    # ["geophysics"] ∩ project-corpus = empty. The result is an empty
-    # allowed set, which (per is_tool_allowed) means "no narrowing" —
-    # which is the wrong outcome.
-    #
-    # The expected behaviour per the plan: field mode restricts to
-    # project corpus; if the user asked for ONLY geophysics, the
-    # intersection is empty and we should treat that as "user contradicted
-    # the mode, mode wins" — i.e. force the project-corpus set.
-    #
-    # Today's implementation falls to empty-allowed = all-tools. The test
-    # documents the current behaviour as a known gap; a follow-up should
-    # tighten field mode to force-override conflicting user data_sources.
+    # The intersection of ["geophysics"] and the project corpus is empty. An
+    # empty allowed set used to read as "no narrowing", so the narrowest
+    # request ran EVERY tool (2026-10-10 audit, finding 13). It is now an
+    # explicit "narrowed to nothing" state that denies: the user's sources
+    # and Field mode contradict, and nothing satisfies both.
     assert f.allowed_data_sources == frozenset()
+    assert f.no_data_source_allowed is True
+    for tool in TOOL_DATA_SOURCE_MAP:
+        assert f.is_tool_allowed(tool) is False, tool
+    assert f.is_tool_allowed("a_tool_nobody_mapped") is False
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        ContextEnvelope(),
+        ContextEnvelope(mode="office"),
+        ContextEnvelope(mode="office", data_sources=[]),
+    ],
+)
+def test_no_narrowing_still_allows_every_tool(envelope: ContextEnvelope) -> None:
+    """The other half of the distinction: nothing was restricted."""
+    f = preprocess_envelope(envelope)
+    assert f.allowed_data_sources == frozenset()
+    assert f.no_data_source_allowed is False
+    assert all(f.is_tool_allowed(tool) for tool in TOOL_DATA_SOURCE_MAP)
+    assert f.is_tool_allowed("a_tool_nobody_mapped") is True
+
+
+def test_a_narrowing_that_leaves_something_is_unchanged() -> None:
+    f = preprocess_envelope(ContextEnvelope(mode="field", data_sources=["assays", "geophysics"]))
+    assert f.allowed_data_sources == frozenset({"assays"})
+    assert f.no_data_source_allowed is False
+    assert f.is_tool_allowed("query_assay_data") is True
+    assert f.is_tool_allowed("search_documents") is False
+
+
+def test_office_mode_narrowed_to_one_source_is_not_a_denial() -> None:
+    f = preprocess_envelope(ContextEnvelope(data_sources=["public_geoscience"]))
+    assert f.no_data_source_allowed is False
+    assert f.is_tool_allowed("search_public_geoscience") is True
+    assert f.is_tool_allowed("query_assay_data") is False
+
+
+def test_loosening_a_repair_drops_the_denial_too() -> None:
+    """repair_apply's LOOSEN_FILTERS empties allowed_data_sources; with the
+    denial flag left set that would keep refusing every tool."""
+    from app.agent.repair_apply import apply_retrieval_strategy
+    from app.agent.repair_strategy import RepairStrategy
+
+    snapshot = {
+        "retrieval_filters": {
+            "allowed_data_sources": [],
+            "no_data_source_allowed": True,
+            "mode": "field",
+        }
+    }
+    patch = apply_retrieval_strategy(RepairStrategy.LOOSEN_FILTERS, snapshot)
+    assert patch["retrieval_filters"]["no_data_source_allowed"] is False
+    assert patch["retrieval_filters"]["allowed_data_sources"] == []
+    # a snapshot that never carried the flag is not given one
+    plain = apply_retrieval_strategy(
+        RepairStrategy.LOOSEN_FILTERS, {"retrieval_filters": {"allowed_data_sources": ["assays"]}}
+    )
+    assert "no_data_source_allowed" not in plain["retrieval_filters"]
 
 
 def test_office_mode_does_not_cap_chunks() -> None:
@@ -322,3 +373,44 @@ async def test_execute_node_skips_filtered_out_tools(monkeypatch) -> None:
     assert "query_assay_data" in tool_names
     assert "search_documents" not in tool_names
     assert "query_spatial_collars" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_execute_node_runs_nothing_when_the_narrowing_left_nothing(monkeypatch) -> None:
+    """2026-10-10 audit, finding 13. Field mode plus ``data_sources=["geophysics"]``
+    used to leave an empty allowed set, read as "no narrowing", and the
+    synthesis profile ran its whole primary tool set: the narrowest request
+    ran the widest search."""
+    from app.agent.agentic_retrieval.nodes import execute_node
+
+    calls: list[str] = []
+
+    async def fake_search_documents(ctx, query_text: str, project_id: str):
+        calls.append("search_documents")
+        return {"chunks": [{"text": "x"}], "count": 1}
+
+    async def fake_project_id_only(ctx, project_id: str, **_kwargs):
+        calls.append("structured")
+        return {"chunks": [{"text": "x"}], "count": 1}
+
+    import app.agent.tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "search_documents", fake_search_documents, raising=False)
+    for t in ("query_spatial_collars", "query_assay_data", "query_project_overview"):
+        monkeypatch.setattr(_tools_mod, t, fake_project_id_only, raising=False)
+
+    class _Deps:
+        project_id = "00000000-0000-0000-0000-000000000001"
+
+    envelope = ContextEnvelope(mode="field", data_sources=["geophysics"])
+    state = AgenticRetrievalState(query="x", deps=_Deps(), context_envelope=envelope)
+    state = state.model_copy(
+        update={
+            "intent": "synthesis",
+            "retrieval_profile": profile_for_intent("synthesis"),
+            "retrieval_filters": preprocess_envelope(envelope),
+        }
+    )
+    update = await execute_node(state)
+    assert calls == []
+    assert update["tool_results"] == []

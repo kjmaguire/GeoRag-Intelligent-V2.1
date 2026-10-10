@@ -134,8 +134,10 @@ def test_migrated_sites_import_the_constant() -> None:
         # imports entirely. Pinned by tests/test_lookup_and_rescope.py
         # + tests/test_scoped_connection.py.
         APP / "hatchet_workflows" / "train_target_model.py",
-        # router + service (2)
-        APP / "routers" / "visualizations.py",
+        # routers/visualizations.py resolves its workspace from the JWT
+        # (resolve_workspace_id, GIS audit 2026-10 finding 13) and no longer
+        # imports LEGACY_DEFAULT_TENANT_UUID at all. Pinned by
+        # tests/test_viz_chart_workspace.py.
         APP / "services" / "tool_gateway" / "impls.py",
     ]
 
@@ -173,7 +175,8 @@ def test_runtime_fallback_sites_emit_resolution_metric() -> None:
         # lookup_and_rescope (which counts elevation via its own
         # bootstrap_reason allowlist + metric). 2026-06-04 ADR-0014 swap.
         APP / "hatchet_workflows" / "train_target_model.py",
-        APP / "routers" / "visualizations.py",
+        # routers/visualizations.py no longer falls back (finding 13), so it has
+        # nothing to count: an unresolvable workspace is a 401/403 now.
         APP / "services" / "tool_gateway" / "impls.py",
     ]
     missing = []
