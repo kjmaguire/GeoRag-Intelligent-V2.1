@@ -55,6 +55,11 @@ tests/test_phase8_embed_verify.py
 # ── Audit / tenancy ───────────────────────────────────────────────────
 tests/test_support_access_audit.py
 tests/test_workspace_export_rls_scope.py
+# The restore half: exact per-table counts through run_export -> archive ->
+# restore, idempotent re-run, a rejected row reported, and the same under a
+# NOBYPASSRLS role. Added 2026-10-10 after the restore was found to insert no
+# rows while reporting success -- the file's integration tests had never run.
+tests/test_workspace_export_restore.py
 # test_citation_feedback_integration.py (PG-7) runs in the cron-sweeps-app-role
 # job instead: it needs db:apply-raw (source_trust_features.workspace_id is
 # added by raw phase0/97), which this job does not apply.

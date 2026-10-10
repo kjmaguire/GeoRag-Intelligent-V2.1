@@ -290,6 +290,12 @@ async def _stream_table(
     if qualified_table == "silver.workspaces" or "workspace_id" in columns:
         # silver.workspaces is keyed on workspace_id (its PK).
         query = f"SELECT {select_list} FROM {qualified_table} WHERE workspace_id = $1::uuid"
+        if qualified_table == "audit.audit_ledger":
+            # The ledger is hash-chained by a BEFORE INSERT trigger that rebuilds
+            # previous_hash/hash from the newest existing row, so a restore
+            # reproduces the chain only if rows are replayed oldest-first -- the
+            # same (created_at, id) order the trigger and the verifier use.
+            query += " ORDER BY created_at, id"
         args: tuple[Any, ...] = (workspace_id,)
     else:
         query = f"SELECT {select_list} FROM {qualified_table}"
