@@ -166,7 +166,8 @@ three times and will move again.
 | `external_notification`, `public_geoscience_pull` | — | The two rows in `workflow.flow_registry`, reachable through the integrations endpoint (§2.3); no caller since Kestra went |
 | `phase2_smoke` | — | Placeholder |
 | `generate_report`, `score_targets` | — | Report Builder and Target Recommendation graphs; `execution_timeout="24h"` on a 20-slot single-replica worker. Started by a project member through the workflow trigger endpoint (§2.3). `score_targets` cannot be a cron: every run needs a user, an AOI and candidate zones |
-| `what_changed_detector`, `train_target_model`, `train_source_trust` | — | Learning-loop workflows; all three are only ever run inline (§2.4) |
+| `what_changed_detector` | — | Learning-loop workflow; only ever run inline (§2.4) |
+| `train_target_model`, `train_source_trust` | — | **Manual only** (Hatchet UI, `retries=0`). Their one caller, `routers/ml_training.py`, was removed 2026-10-06; nothing schedules them and the trigger endpoint does not list them. A failure fails the run: the body re-raises after the best-effort admin-surface failure broadcast, where it used to return `success=False`, which Hatchet records as a completed task. `train_target_model` writes the new `target_model_versions` row and the "only one active" flip in one transaction |
 | `field_outcome_learning` | — | **Manual only** (Hatchet UI). Not scheduled, not triggerable: nothing writes `targeting.target_outcomes`, and each run appends a fresh `target_backtests` row (plus a lesson row) for every outcome in the project, so repeating it duplicates. `continuous_learning_loop` does not call it |
 | `support_replay`, `restore_workspace`, `workspace_export` | — | Diagnosis replay (dispatched `dry_run=true` only; a dry run writes nothing to the ticket — its own `ops.support_replay_runs` row and `support.replay.completed` anchor aside — and is idempotent on `replay_request_id`; the trigger route puts the authorised `workspace_id` in the input so the worker, which is NOBYPASSRLS on AWS, never rediscovers it under the default tenant), manifest-backed restore (own-workspace `s3://<exports bucket>/workspace-exports/<ws>/` manifests only, where the bucket is `AWS_BUCKET_EXPORTS`; a live restore needs `confirm_workspace_id`), per-workspace JSONL.gz export written to that bucket under the `workspace-exports/<ws>/` key prefix (it used to be a bucket of its own, which Terraform never creates). `cold_tier_archive` likewise writes under the `audit-cold-tier/` prefix of the `AWS_BUCKET_BACKUPS` bucket. Admin-triggered through §2.3 |
 | `lineage_walk`, `llm_incident_diagnosis_run`, `support_packet_assemble` | — | On-demand Phase 0 agents, admin-triggered through §2.3 (`llm_incident_diagnosis_run` platform-wide, the other two workspace-scoped). `routers/phase0_ops.py` also runs the last two inline, with no Laravel caller |
@@ -218,13 +219,28 @@ bearer from `app/Services/FastApiJwtMinter.php` (signed with the same
   2026-09-29 `promote_silver_to_gold` at 1, among them).
   The `HatchetDispatchThrottle` docstring still says `ingest_pdf` is
   `max_runs=1`; it was raised to 2 on 2026-08-07.
-- **Three call sites bypass the engine.** `routers/ml_training.py`
-  (`train_target_model`, `train_source_trust`) and
+- **Call sites that bypass the engine.**
   `services/report_builder/whatchanged_integration.py`
-  (`what_changed_detector`) call `aio_mock_run`, the SDK's test helper:
-  the task body runs inline with no run record, retry or durability. Their
-  registration on the worker is decorative. (`what_changed_weekly` was
+  (`what_changed_detector`) calls `aio_mock_run`, the SDK's test helper:
+  the task body runs inline with no run record, retry or durability. Its
+  registration on the worker is decorative. (`routers/ml_training.py`, which
+  ran `train_target_model` and `train_source_trust` the same way, was removed
+  2026-10-06; they are Hatchet-UI-only now. `what_changed_weekly` was
   fixed after the review.)
+- **A workflow reports failure by raising.** A returned value is a completed
+  task as far as Hatchet is concerned: no failed run, no retry, nothing for
+  `stale_run_detector` or an operator to see. `continuous_learning_loop`,
+  `field_outcome_learning`, `train_source_trust` and `train_target_model`
+  used to catch everything and return `success=False`, and
+  `external_notification` logged a failed audit write and reported the
+  notification as recorded (`audit_id=None`); all five re-raise now (the
+  audit row is the only record of a notification, and its `retries=1`
+  re-attempt is safe because `_already_recorded` runs first). Because a
+  failure now retries or gets re-run, `field_outcome_learning` writes its
+  backtest rows and lesson in one transaction. (`restore_workspace` still
+  returns `success=False` with a `failure_stage` for a restore it refused or
+  could not complete: that is its documented output, and Hatchet shows such a
+  run as completed.)
 
 ### 2.5 The outbox
 

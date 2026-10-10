@@ -359,10 +359,11 @@ async def execute(
                 "failure path) workspace=%s err=%s", ws, broadcast_exc,
             )
 
-        return TrainSourceTrustOutput(
-            success=False,
-            failure_reason=f"{type(exc).__name__}: {str(exc)[:200]}",
-        )
+        # Fail the run, after the broadcast above. It used to return
+        # success=False, which Hatchet records as a completed task. The per-source
+        # upserts are keyed on (workspace, source, model_version), so a re-run
+        # after a partial pass converges.
+        raise
     finally:
         await conn.close()
 

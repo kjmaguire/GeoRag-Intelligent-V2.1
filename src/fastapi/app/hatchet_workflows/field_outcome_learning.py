@@ -176,65 +176,71 @@ async def execute(
             if version is not None:
                 buckets.setdefault(version, []).append(o)
 
+        # The backtest rows and the lesson are ONE unit of work. Every INSERT
+        # here appends, and a failure now raises, so Hatchet retries the task
+        # (retries=1): outside a transaction, a run that died on its second model
+        # version, or on the lesson, kept the rows it had already written and the
+        # retry wrote them again.
         backtest_ids: list[str] = []
-        for model_version_id, bucket in sorted(buckets.items()):
-            b_hits = sum(1 for o in bucket if o["hit_or_miss"] == "hit")
-            b_total = len(bucket)
-            recorded = [o["recorded_at"] for o in bucket if o["recorded_at"]]
-            window_start = min(recorded) if recorded else datetime.now(tz=UTC)
-            window_end = max(recorded) if recorded else window_start
-            if window_end <= window_start:
-                # CHECK (window_end > window_start): a single outcome, or
-                # several recorded at one instant, is a zero-width window.
-                window_end = window_start + timedelta(seconds=1)
-            backtest_ids.append(await conn.fetchval(
+        lessons_written = 0
+        async with conn.transaction():
+            for model_version_id, bucket in sorted(buckets.items()):
+                b_hits = sum(1 for o in bucket if o["hit_or_miss"] == "hit")
+                b_total = len(bucket)
+                recorded = [o["recorded_at"] for o in bucket if o["recorded_at"]]
+                window_start = min(recorded) if recorded else datetime.now(tz=UTC)
+                window_end = max(recorded) if recorded else window_start
+                if window_end <= window_start:
+                    # CHECK (window_end > window_start): a single outcome, or
+                    # several recorded at one instant, is a zero-width window.
+                    window_end = window_start + timedelta(seconds=1)
+                backtest_ids.append(await conn.fetchval(
+                    """
+                    INSERT INTO targeting.target_backtests
+                        (backtest_id, model_version_id, workspace_id,
+                         window_start, window_end, metrics_payload, computed_at)
+                    VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5::jsonb, NOW())
+                    RETURNING backtest_id::text
+                    """,
+                    model_version_id, workspace_id,
+                    window_start, window_end,
+                    json.dumps({
+                        "total": b_total,
+                        "hits": b_hits,
+                        "misses": sum(1 for o in bucket if o["hit_or_miss"] == "miss"),
+                        "hit_rate": (b_hits / b_total) if b_total else 0.0,
+                    }),
+                ))
+
+            # Optionally write a lessons-learned row if a parent decision exists
+            # for this project's targeting sign-offs (lookup by project + type)
+            decision_row = await conn.fetchrow(
                 """
-                INSERT INTO targeting.target_backtests
-                    (backtest_id, model_version_id, workspace_id,
-                     window_start, window_end, metrics_payload, computed_at)
-                VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5::jsonb, NOW())
-                RETURNING backtest_id::text
+                SELECT decision_id::text
+                  FROM silver.decision_records
+                 WHERE workspace_id = $1::uuid
+                   AND decision_type = 'target_signoff'
+                 ORDER BY decided_at DESC
+                 LIMIT 1
                 """,
-                model_version_id, workspace_id,
-                window_start, window_end,
-                json.dumps({
-                    "total": b_total,
-                    "hits": b_hits,
-                    "misses": sum(1 for o in bucket if o["hit_or_miss"] == "miss"),
-                    "hit_rate": (b_hits / b_total) if b_total else 0.0,
-                }),
-            ))
+                workspace_id,
+            )
+            if decision_row:
+                await conn.execute(
+                    """
+                    INSERT INTO silver.decision_lessons_learned
+                        (lesson_id, decision_id, workspace_id, lesson_markdown,
+                         captured_at)
+                    VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, NOW())
+                    ON CONFLICT DO NOTHING
+                    """,
+                    decision_row["decision_id"], workspace_id,
+                    f"Field outcomes folded — total={total} hits={hits} "
+                    f"misses={misses} hit_rate={hit_rate:.2%}",
+                )
+                lessons_written = 1
         backtests_written = len(backtest_ids)
         backtest_id = backtest_ids[0] if backtest_ids else None
-
-        # Optionally write a lessons-learned row if a parent decision exists
-        # for this project's targeting sign-offs (lookup by project + type)
-        lessons_written = 0
-        decision_row = await conn.fetchrow(
-            """
-            SELECT decision_id::text
-              FROM silver.decision_records
-             WHERE workspace_id = $1::uuid
-               AND decision_type = 'target_signoff'
-             ORDER BY decided_at DESC
-             LIMIT 1
-            """,
-            workspace_id,
-        )
-        if decision_row:
-            await conn.execute(
-                """
-                INSERT INTO silver.decision_lessons_learned
-                    (lesson_id, decision_id, workspace_id, lesson_markdown,
-                     captured_at)
-                VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, NOW())
-                ON CONFLICT DO NOTHING
-                """,
-                decision_row["decision_id"], workspace_id,
-                f"Field outcomes folded — total={total} hits={hits} misses={misses} "
-                f"hit_rate={hit_rate:.2%}",
-            )
-            lessons_written = 1
 
         # Audit emit
         try:
@@ -309,12 +315,12 @@ async def execute(
             lessons_written=lessons_written,
             retraining_triggered=retraining_triggered,
         )
-    except Exception as e:
+    except Exception:
+        # Fail the run (it used to return success=False, which Hatchet records
+        # as a completed task, and `retries=1` could never fire). The writes
+        # above are one transaction, so the retry starts from nothing.
         log.exception("field_outcome_learning.failed")
-        return FieldOutcomeLearningOutput(
-            success=False,
-            error=f"{type(e).__name__}: {str(e)[:200]}",
-        )
+        raise
     finally:
         await conn.close()
 

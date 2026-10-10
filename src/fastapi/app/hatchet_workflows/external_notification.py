@@ -405,7 +405,14 @@ async def receive(
                 )
 
             # First delivery — emit_audit returns an AuditLedgerEntry.
-            audit_id: str | None = None
+            #
+            # The audit row IS the record of the delivery: Phase 2 builds no
+            # notifications table, and `_already_recorded` reads this row to
+            # de-dupe. A failed write used to be logged and then reported as a
+            # recorded notification (skipped=False, audit_id=None), so the sender
+            # saw success and the delivery existed nowhere. It fails the run now;
+            # `retries=1` re-attempts it, and `_already_recorded` makes that
+            # re-attempt safe if the row landed after all.
             try:
                 entry = await emit_audit(
                     conn,
@@ -425,9 +432,14 @@ async def receive(
                     },
                     trace_id=ctx.workflow_run_id,
                 )
-                audit_id = str(entry.id)
-            except Exception as e:
-                log.warning("external_notification audit emit failed: %s", e)
+            except Exception:
+                log.exception(
+                    "external_notification audit emit failed — notification NOT "
+                    "recorded notification_id=%s source=%s kind=%s",
+                    input.notification_id, input.source, input.kind,
+                )
+                raise
+            audit_id = str(entry.id)
 
             log.info(
                 "external_notification recorded notification_id=%s source=%s kind=%s",

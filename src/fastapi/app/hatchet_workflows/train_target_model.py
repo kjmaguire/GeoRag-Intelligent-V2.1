@@ -262,36 +262,41 @@ async def execute(
             conn, workspace_id=workspace_id,
             site="hatchet.train_target_model", is_local=False,
         )
-        await conn.execute(
-            """
-            INSERT INTO targeting.target_model_versions (
-                version_id, target_model_id, version, scoring_kind,
-                factor_weights, constraint_payload, is_active, created_at
-            )
-            VALUES ($1::uuid, $2::uuid, $3, $4,
-                    $5::jsonb, $6::jsonb, $7, NOW())
-            """,
-            str(version_id),
-            str(input.target_model_id),
-            int(next_version),
-            scoring_kind,
-            json.dumps(weights),
-            json.dumps({}),  # empty constraints — real xgboost path
-                             # writes serialised model bytes here
-            bool(input.activate_on_success),
-        )
-
-        # If activating, deactivate other versions for the same model
-        # so only one is active at a time.
-        if input.activate_on_success:
+        # The new version and the "only one is active" flip are one change. The
+        # INSERT writes is_active = activate_on_success, so if the UPDATE below
+        # failed on its own, the run (which now fails loudly) would leave two
+        # active versions of the same model behind.
+        async with conn.transaction():
             await conn.execute(
                 """
-                UPDATE targeting.target_model_versions
-                   SET is_active = (version_id = $1::uuid)
-                 WHERE target_model_id = $2::uuid
+                INSERT INTO targeting.target_model_versions (
+                    version_id, target_model_id, version, scoring_kind,
+                    factor_weights, constraint_payload, is_active, created_at
+                )
+                VALUES ($1::uuid, $2::uuid, $3, $4,
+                        $5::jsonb, $6::jsonb, $7, NOW())
                 """,
-                str(version_id), str(input.target_model_id),
+                str(version_id),
+                str(input.target_model_id),
+                int(next_version),
+                scoring_kind,
+                json.dumps(weights),
+                json.dumps({}),  # empty constraints — real xgboost path
+                                 # writes serialised model bytes here
+                bool(input.activate_on_success),
             )
+
+            # If activating, deactivate other versions for the same model
+            # so only one is active at a time.
+            if input.activate_on_success:
+                await conn.execute(
+                    """
+                    UPDATE targeting.target_model_versions
+                       SET is_active = (version_id = $1::uuid)
+                     WHERE target_model_id = $2::uuid
+                    """,
+                    str(version_id), str(input.target_model_id),
+                )
 
         # Audit anchor.
         try:
@@ -396,10 +401,9 @@ async def execute(
                 input.target_model_id, broadcast_exc,
             )
 
-        return TrainTargetModelOutput(
-            success=False,
-            failure_reason=f"{type(exc).__name__}: {str(exc)[:200]}",
-        )
+        # Fail the run, after the broadcast above. It used to return
+        # success=False, which Hatchet records as a completed task.
+        raise
     finally:
         await conn.close()
 
