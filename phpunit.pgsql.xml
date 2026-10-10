@@ -244,6 +244,10 @@
                  rows) and PG-1 (mv_collar_summary no longer multiplies its
                  counts by the samples x lithology cross product). -->
             <file>tests/Feature/Api/V1/ProjectControllerDeleteTypedDrillDataTest.php</file>
+            <!-- 2026-10-10 audit FE-10: the wizard's project code is stored
+                 and unique per workspace. project_code is a Postgres-only
+                 column (2026_05_20_060100 returns early on SQLite). -->
+            <file>tests/Feature/Api/V1/ProjectCodeTest.php</file>
             <file>tests/Feature/Database/MvCollarSummaryAggregatesTest.php</file>
             <!-- 2026-09-29 database audit PG-4: the audit PII / golden-set
                  commands under production's search_path=public. -->

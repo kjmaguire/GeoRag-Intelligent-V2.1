@@ -60,6 +60,30 @@ class QueryControllerTest extends TestCase
         Queue::assertPushed(StreamQueryFromFastApi::class, 1);
     }
 
+    public function test_thirty_queries_a_minute_fit_the_shared_throttle(): void
+    {
+        // Reserve and start share one bucket, hit once per request: the
+        // documented 30 queries a minute is 60 hits, not 30.
+        Queue::fake();
+
+        $project = Project::factory()->create();
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        for ($i = 0; $i < 30; $i++) {
+            $queryId = $this->postJson('/api/v1/queries', [
+                'query' => "Question {$i}",
+                'project_id' => $project->project_id,
+            ])->assertAccepted()->json('query_id');
+
+            $this->postJson("/api/v1/queries/{$queryId}/start")->assertAccepted();
+        }
+
+        $this->postJson('/api/v1/queries', [
+            'query' => 'One too many',
+            'project_id' => $project->project_id,
+        ])->assertTooManyRequests();
+    }
+
     public function test_store_returns_422_when_query_is_missing(): void
     {
         $project = Project::factory()->create();

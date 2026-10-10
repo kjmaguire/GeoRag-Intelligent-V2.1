@@ -111,9 +111,12 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(5)->by($bucket.'|'.$ip);
         });
 
-        // queries: 30 queries / minute PER authenticated user. Shared
-        // bucket across POST /queries (reserve) and POST /queries/{id}/start
-        // (dispatch) so a single logical RAG query costs 1 slot, not 2.
+        // queries: 30 queries / minute PER authenticated user. One bucket
+        // shared by POST /queries (reserve) and POST /queries/{id}/start
+        // (dispatch). ThrottleRequests hits the bucket once per REQUEST, and
+        // a logical query is two requests, so the limit is 60 hits: this
+        // used to say 30 and admit 15 queries a minute, with the 429 often
+        // landing on /start after the query had been reserved.
         // Unauthenticated requests would never reach this route (it's behind
         // auth:sanctum) but fall back to IP just in case.
         RateLimiter::for('queries', function (Request $request): Limit {
@@ -121,7 +124,7 @@ class AppServiceProvider extends ServiceProvider
                 ?? $request->ip()
                 ?? 'anonymous-unknown';
 
-            return Limit::perMinute(30)->by((string) $key);
+            return Limit::perMinute(60)->by((string) $key);
         });
 
         // public-geoscience-tiles: 600 req/min per authenticated user.

@@ -376,11 +376,21 @@ class StreamQueryFromFastApi implements ShouldQueue
                 // unavailable, with Retry-After): transient and
                 // retryable, and "the answer service returned an error"
                 // says nothing about what to do.
+                // 402/403 with a lifecycle detail is FastAPI refusing a
+                // hibernated, archived or past-due project before it streams
+                // (middleware/project_lifecycle.py). "Returned an error,
+                // please try again" invited a Retry that fails the same way
+                // every time; say what the state is instead.
+                $lifecycle = in_array($statusCode, [402, 403], true)
+                    ? (self::PROJECT_LIFECYCLE_REFUSALS[$this->errorDetail($body)] ?? null)
+                    : null;
                 if ($statusCode === 503) {
                     $this->broadcastError(
                         'The project could not be checked right now. Please try again in a few seconds.',
                         'SERVICE_UNAVAILABLE',
                     );
+                } elseif ($lifecycle !== null) {
+                    $this->broadcastError($lifecycle['message'], $lifecycle['code']);
                 } else {
                     $this->broadcastError(
                         "The answer service returned an error (HTTP {$statusCode}). Please try again.",
@@ -394,7 +404,7 @@ class StreamQueryFromFastApi implements ShouldQueue
                 $this->failedPayload = [
                     'event' => 'failed',
                     'query_id' => $this->queryId,
-                    'code' => (string) $statusCode,
+                    'code' => $lifecycle['code'] ?? (string) $statusCode,
                     'error' => 'FastAPI returned HTTP '.$statusCode.': '.substr($body, 0, 480),
                 ];
             }
@@ -571,7 +581,7 @@ class StreamQueryFromFastApi implements ShouldQueue
                 // re-render this answer in a tab that lost the `completed`
                 // frame (reconnect, oversize, watchdog): the verdicts and
                 // the run id, not just text + citations.
-                foreach (['validation_state', 'answer_run_id', 'refusal_payload'] as $key) {
+                foreach (['validation_state', 'answer_run_id', 'refusal_payload', 'degraded_sources'] as $key) {
                     if (array_key_exists($key, $this->completedPayload)) {
                         $existing[$key] = $this->completedPayload[$key];
                     }
@@ -960,7 +970,42 @@ class StreamQueryFromFastApi implements ShouldQueue
         'text', 'citations', 'confidence', 'validation_state', 'answer_run_id',
         'refusal_payload', 'guard_error_codes', 'llm_model', 'sources_used',
         'multi_turn_resolution', 'validation_warnings',
+        // Sources that failed for this answer ("Document ranking
+        // (temporarily unavailable)"). Without it a partial answer renders
+        // exactly like a complete one.
+        'degraded_sources',
     ];
+
+    /**
+     * FastAPI's project-lifecycle refusals (`detail` of its 402/403), as the
+     * code and message the chat shows. Codes match RefusalPanel's headings.
+     *
+     * @var array<string, array{code: string, message: string}>
+     */
+    private const PROJECT_LIFECYCLE_REFUSALS = [
+        'project_hibernated' => [
+            'code' => 'PROJECT_HIBERNATED',
+            'message' => 'This project is hibernated, so it cannot answer questions until it is reactivated.',
+        ],
+        'project_archived' => [
+            'code' => 'PROJECT_ARCHIVED',
+            'message' => 'This project is archived and no longer answers questions.',
+        ],
+        'project_past_due' => [
+            'code' => 'PROJECT_PAST_DUE',
+            'message' => 'Questions are paused for this project until its account is brought up to date.',
+        ],
+    ];
+
+    /**
+     * The `detail` string of a FastAPI error body, or '' when there is none.
+     */
+    private function errorDetail(string $body): string
+    {
+        $decoded = json_decode($body, true);
+
+        return is_array($decoded) && is_string($decoded['detail'] ?? null) ? $decoded['detail'] : '';
+    }
 
     /** Citation cap for a slim frame that is still over budget. */
     private const COMPLETED_FRAME_MAX_CITATIONS = 100;

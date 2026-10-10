@@ -100,6 +100,16 @@ describe('RefusalPanel', () => {
         expect(screen.getByTestId('refusal-panel')).toHaveAttribute('data-variant', 'failed');
     });
 
+    it.each([
+        ['PROJECT_HIBERNATED', 'Project is hibernated'],
+        ['PROJECT_ARCHIVED', 'Project is archived'],
+        ['PROJECT_PAST_DUE', 'Project is paused'],
+    ])('names the project state for %s instead of "Query failed"', (code, heading) => {
+        render(<RefusalPanel variant="failed" message="This project is not answering questions." code={code} />);
+        expect(screen.getByText(heading)).toBeInTheDocument();
+        expect(screen.queryByText('Query failed')).not.toBeInTheDocument();
+    });
+
     it('says the access check could not complete for ACCESS_CHECK_FAILED, keeping the server message as the body', () => {
         const message = 'We could not verify your access to this project right now. Please try again in a few seconds.';
         render(<RefusalPanel variant="failed" message={message} code="ACCESS_CHECK_FAILED" />);

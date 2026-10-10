@@ -340,6 +340,7 @@ class QueryController extends Controller
             'answer_run_id' => $metadata['answer_run_id'] ?? null,
             'refusal_payload' => $metadata['refusal_payload'] ?? null,
             'guard_error_codes' => $metadata['guard_error_codes'] ?? [],
+            'degraded_sources' => $metadata['degraded_sources'] ?? [],
             'llm_model' => $row->llm_model,
         ]);
     }

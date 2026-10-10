@@ -62,6 +62,9 @@ class StoreProjectRequest extends FormRequest
             // fresh deployment). See ProjectController::resolveWorkspaceId().
             'workspace_id' => ['nullable', 'uuid'],
             'crs_datum' => ['nullable', 'string', 'max:50'],
+            // The wizard's "Project code". Unique per workspace, which
+            // ProjectController::store() checks once it knows the workspace.
+            'project_code' => ['nullable', 'string', 'max:64'],
             // The project's coordinate system as an EPSG CODE, and the
             // fallback ingest_tabular reads when a CSV or spreadsheet does
             // not carry its own. Same 1024-32767 bound as

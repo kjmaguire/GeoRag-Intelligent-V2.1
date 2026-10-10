@@ -14,6 +14,7 @@ use App\Support\AuthorizationAuditLogger;
 use App\Support\PaginationLimit;
 use App\Support\SafeErrorMessage;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -87,6 +88,12 @@ class ProjectController extends Controller
             ], 422);
         }
 
+        $code = $request->validated('project_code');
+        if (is_string($code) && $code !== ''
+            && Project::query()->where('workspace_id', $workspaceId)->where('project_code', $code)->exists()) {
+            return $this->duplicateProjectCode();
+        }
+
         try {
             // One transaction: a project saved without its owner row is
             // invisible to everyone (membership is the access rule), so it
@@ -111,6 +118,13 @@ class ProjectController extends Controller
                 ->response()
                 ->setStatusCode(201);
         } catch (Throwable $e) {
+            // Two creates racing past the check above with the same code:
+            // silver_projects_workspace_code_idx is the real guarantee.
+            if ($e instanceof UniqueConstraintViolationException
+                && str_contains($e->getMessage(), 'silver_projects_workspace_code_idx')) {
+                return $this->duplicateProjectCode();
+            }
+
             report($e);
 
             return response()->json([
@@ -461,6 +475,13 @@ class ProjectController extends Controller
      *
      * @param 'created'|'updated'|'deleted' $verb
      */
+    private function duplicateProjectCode(): JsonResponse
+    {
+        $message = 'This project code is already used in your workspace.';
+
+        return response()->json(['message' => $message, 'errors' => ['project_code' => [$message]]], 422);
+    }
+
     private function broadcastProjectMutation(string $workspaceId, string $verb, string $projectId): void
     {
         try {
