@@ -1,0 +1,11 @@
+{
+    // Type-checks the Playwright specs and config without widening the frontend program:
+    //   npx tsc -p tests/e2e/tsconfig.json
+    // The root tsconfig.json covers resources/js only, so these files were checked by nothing.
+    "extends": "../../tsconfig.json",
+    "compilerOptions": {
+        "noEmit": true,
+        "types": []
+    },
+    "include": ["./**/*.ts", "../../playwright.config.ts"]
+}

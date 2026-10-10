@@ -127,8 +127,47 @@ async def test_r0_tool_with_impl_executes(pg_pool: asyncpg.Pool):
     )
     assert r.allowed is True
     assert r.outcome == "allowed"
-    assert r.output == {"echoed": {"silver_pk": "abc"}}
+    # The gateway hands the implementation the tenant it authenticated
+    # (gateway.py: "ctx is AUTHORITATIVE for the tenant", since 2026-09-23).
+    # This assertion predates that and expected the caller's dict back
+    # unchanged; it sat in a module no CI job ran, so the drift went unseen.
+    assert r.output == {
+        "echoed": {"silver_pk": "abc", "workspace_id": str(TEST_WORKSPACE_ID)},
+    }
     assert r.duration_ms is not None and r.duration_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_caller_cannot_override_the_tenant_the_gateway_authenticated(
+    pg_pool: asyncpg.Pool,
+):
+    """A caller-supplied workspace_id never reaches the implementation.
+
+    The gateway injects ctx.workspace_id LAST, so an agent cannot aim a tool at
+    another tenant by putting a different workspace_id in its inputs, and one
+    that omits it still gets its own.
+    """
+    seen: list[dict] = []
+
+    async def spy_impl(inputs):
+        seen.append(dict(inputs))
+        return {"ok": True}
+    register_tool("audit_provenance", spy_impl)
+
+    other_workspace = "b0b0b0b0-0000-4000-8000-00000000dead"
+    r = await invoke_tool(
+        ctx=ToolGatewayContext(
+            pg_pool=pg_pool, workspace_id=TEST_WORKSPACE_ID,
+            actor_user_id=999, actor_kind="agent",
+        ),
+        tool_name="audit_provenance",
+        inputs={"silver_pk": "abc", "workspace_id": other_workspace},
+    )
+
+    assert r.allowed is True
+    assert seen == [
+        {"silver_pk": "abc", "workspace_id": str(TEST_WORKSPACE_ID)},
+    ], seen
 
 
 @pytest.mark.asyncio

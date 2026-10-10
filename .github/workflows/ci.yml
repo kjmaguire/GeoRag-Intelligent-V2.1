@@ -1316,7 +1316,8 @@ jobs:
         run: |
           uv run python scripts/ci/e2e_smoke_query.py \
             --project-id "${{ steps.ingest.outputs.project_id }}" \
-            --workspace-id "${{ steps.ingest.outputs.workspace_id }}"
+            --workspace-id "${{ steps.ingest.outputs.workspace_id }}" \
+            --report-id "${{ steps.ingest.outputs.report_id }}"
 
       - name: Dump FastAPI log on failure
         if: failure()
@@ -1484,6 +1485,13 @@ jobs:
       POSTGRES_DB: georag_test
       POSTGRES_HOST: localhost
       POSTGRES_PORT: "5432"
+      # A skip here is a failure (tests/_live_db.py). These modules skip when
+      # the database, a role or a relation is missing, which is right on a
+      # laptop; in the job that provisions all three it meant a Postgres that
+      # never came up, or a renamed table, produced a green run of skips.
+      # Only the skips that depend on what is IN the database (no
+      # target_models rows, no RedStar delivery) are tolerated, by name.
+      REQUIRE_LIVE_DB: "1"
       # The DIRECT pair is not redundant. app/db/dsn.py builds the direct
       # DSN from POSTGRES_DIRECT_HOST/PORT (PgBouncer cannot carry the
       # session-scoped work these sweeps do), and leaving them unset points
@@ -1545,9 +1553,13 @@ jobs:
             exit 1
           fi
           echo "manifest files: $(echo $FILES | wc -w)"
-          # -p no:randomly: several of these modules share a bootstrapped
-          # workspace/project that the state-machine module provisions, so
-          # order is load-bearing.
+          # -p no:randomly is belt and braces now. Order used to be
+          # load-bearing: test_embed_pending_completion_sweep and
+          # test_stale_run_detector SKIPPED unless the state-machine module
+          # had provisioned their workspace/project first. Each provisions it
+          # idempotently now (tests/_live_db.py), and the manifest passes in
+          # reverse order. pytest-randomly is not a dependency, so the flag
+          # is a no-op today; it keeps the order fixed if one is ever added.
           uv run pytest -v --tb=short -m integration -p no:randomly $FILES
 
   # ─── Cron sweeps under the worker's AWS role ──────────────────────────
@@ -1584,6 +1596,16 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
+      # test_cross_workspace_audit.py talks to a real Redis (its idempotency
+      # window and the fail-open case are Redis behaviours).
+      redis:
+        image: redis:8-alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
 
     env:
       PG_DSN: postgresql://georag:test_password@localhost:5432/georag_test
@@ -1596,6 +1618,14 @@ jobs:
       POSTGRES_DIRECT_HOST: localhost
       POSTGRES_DIRECT_PORT: "5432"
       POSTGRES_SSLMODE: disable
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      # A skip here is a failure (tests/_live_db.py). The HAT-1 regression
+      # test skips when the DSN is unreachable, when a relation the raw layer
+      # creates is missing, or when the login cannot SET ROLE georag_app. In
+      # THIS job each of those means the job did not do its one job, and a
+      # green run of skips is exactly the state the job exists to rule out.
+      REQUIRE_LIVE_DB: "1"
       FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
       # Same module-level ClientConfig() singleton as python-test — needs a
       # JWT-*shaped* token at import even though nothing dials Hatchet.
@@ -1645,13 +1675,33 @@ jobs:
       # (phase0/95 re-created five fail-closed policies fail-open on every deploy
       # and nothing saw it), so a policy test that only sees the migrate-only state
       # cannot catch that class.
+      #
+      # The three tenancy modules after the first two were in NO job at all:
+      # `integration`-marked, so deselected from python-test, and in neither
+      # the integration-postgres manifest nor this job. They need the raw RLS
+      # layer, so this is where they belong. Measured against migrate +
+      # db:apply-raw on 2026-10-10: workspace_settings_rls (4), cross_workspace_
+      # audit (4) and tool_gateway (13, after a stale expectation was fixed)
+      # pass.
+      #
+      # NOT here, on purpose:
+      #   * tests/test_tenant_isolation_auditor.py. 5 of its 7 tests FAIL on
+      #     the current schema (tables with workspace_id but no FK to
+      #     silver.workspaces, tables with no workspace_id or no RLS, missing
+      #     workspace indexes), which is a schema decision, not a test fix. Its
+      #     two passing tests are config-only, or pass vacuously (a superuser
+      #     reading an empty silver.collars), so wiring them would add a
+      #     green tick and no protection.
       - name: Run the sweeps as georag_app
         working-directory: src/fastapi
         run: |
           uv run pytest -v --tb=short -m integration -p no:randomly \
             tests/test_cron_sweeps_under_app_role.py \
             tests/test_citation_feedback_integration.py \
-            tests/test_rls_after_raw.py
+            tests/test_rls_after_raw.py \
+            tests/test_workspace_settings_rls_integration.py \
+            tests/test_cross_workspace_audit.py \
+            tests/test_tool_gateway.py
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:

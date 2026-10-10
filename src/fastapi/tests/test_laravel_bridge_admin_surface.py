@@ -23,13 +23,27 @@ async def test_broadcast_swallows_unreachable_laravel(monkeypatch):
 
 
 async def test_broadcast_noop_when_service_key_missing(monkeypatch):
-    monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
-    monkeypatch.setenv("LARAVEL_INTERNAL_URL", "http://127.0.0.1:1")
+    """No FASTAPI_SERVICE_KEY: nothing is sent. Asserted on the HTTP client, because the
+    helper swallows every failure and a dead-port target made a dialled call look the same."""
+    import httpx
 
-    await post_admin_surface_updated(
-        surface="ml-training",
-        affected_props=["runs"],
-    )
+    calls: list[str] = []
+
+    async def _stub_post(self, url, json=None, headers=None):
+        calls.append(url)
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _stub_post)
+    monkeypatch.setenv("LARAVEL_INTERNAL_URL", "http://laravel-stub:8000")
+
+    monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
+    await post_admin_surface_updated(surface="ml-training", affected_props=["runs"])
+    assert calls == [], f"the helper dialled Laravel without a service key: {calls}"
+
+    # Control: with a key the same call goes out, so the empty list means "skipped".
+    monkeypatch.setenv("FASTAPI_SERVICE_KEY", "test-key-32-bytes-or-longer-for-validator-ok")
+    await post_admin_surface_updated(surface="ml-training", affected_props=["runs"])
+    assert len(calls) == 1
 
 
 async def test_broadcast_handles_500_response(monkeypatch):

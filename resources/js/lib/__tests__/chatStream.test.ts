@@ -4,6 +4,7 @@ import {
     createDeltaBuffer,
     isHeartbeat,
     isRetryableFailure,
+    isEmptySourceId,
     isUncitedAnswer,
     normaliseValidationState,
     readPromptParam,
@@ -68,15 +69,112 @@ describe('createDeltaBuffer (CHAT-15)', () => {
     });
 });
 
+/**
+ * What GeoRAGResponse.citations really holds when nothing was retrieved. The
+ * field has min_length=1, so the producer cannot send `[]`: response_assembler
+ * appends this placeholder, and an empty document search yields the
+ * `georag_reports:empty` id. The old tests sent `citations: []`, a frame that
+ * never reaches the browser, so the warning they pinned could not fire.
+ */
+const placeholder = (sourceChunkId: string) => ({
+    citation_id: '[DATA-1]',
+    citation_type: 'DATA',
+    source_chunk_id: sourceChunkId,
+    document_title: 'No source retrieved',
+    section: null,
+    page: null,
+    relevance_score: 0,
+    corpus: 'internal_archive',
+});
+const REPORT_CHUNK =
+    'georag_reports:5d0c4e0e-6f8e-5a64-9c3f-1f6f7b2f0a11:section=7:chunk=3f2c9d1e-0000-4000-8000-000000000001';
+const chunkCitation = (sourceChunkId: string) => ({
+    ...placeholder(sourceChunkId),
+    citation_id: '[NI43-1]',
+    citation_type: 'NI43',
+});
+
 describe('isUncitedAnswer (CHAT-16)', () => {
-    it('flags a non-refused answer with no citations', () => {
-        expect(isUncitedAnswer([], null)).toBe(true);
-        expect(isUncitedAnswer(undefined, null)).toBe(true);
+    it('flags an answer whose only citation is the no-tool-call placeholder', () => {
+        expect(isUncitedAnswer([placeholder('no-tool-call')], null)).toBe(true);
     });
 
-    it('does not flag a cited answer or a refusal', () => {
-        expect(isUncitedAnswer([{ citation_id: '[DATA-1]' }], null)).toBe(false);
+    it('flags an answer whose only citation is the empty-retrieval sentinel', () => {
+        expect(isUncitedAnswer([placeholder('georag_reports:empty')], null)).toBe(true);
+        expect(isUncitedAnswer([placeholder('pg_public_geoscience:empty')], null)).toBe(true);
+    });
+
+    it('flags an answer whose citations all point at zero-row tool results', () => {
+        expect(isUncitedAnswer([placeholder('silver.samples:element=U3O8:count=0')], null)).toBe(true);
+        expect(isUncitedAnswer([placeholder('silver.collars:miss'), placeholder('silver.collars:count=0')], null)).toBe(
+            true,
+        );
+    });
+
+    it('still flags the shapes the producer cannot send but a defect could', () => {
+        expect(isUncitedAnswer([], null)).toBe(true);
+        expect(isUncitedAnswer(undefined, null)).toBe(true);
+        expect(isUncitedAnswer(null, null)).toBe(true);
+        expect(isUncitedAnswer([{ citation_id: '[DATA-1]' }], null)).toBe(true); // no source_chunk_id at all
+        expect(isUncitedAnswer([placeholder('')], null)).toBe(true);
+    });
+
+    it('does not flag an answer with a citation that points at evidence', () => {
+        expect(isUncitedAnswer([chunkCitation(REPORT_CHUNK)], null)).toBe(false);
+        expect(isUncitedAnswer([placeholder('silver.collars:count=7:first=abc')], null)).toBe(false);
+    });
+
+    it('does not flag a mixed frame: one real citation beside the sentinels', () => {
+        expect(isUncitedAnswer([placeholder('silver.collars:miss'), chunkCitation(REPORT_CHUNK)], null)).toBe(false);
+    });
+
+    it('does not flag a refusal, whatever placeholder it carries', () => {
+        expect(isUncitedAnswer([placeholder('no-tool-call')], { type: 'refusal' })).toBe(false);
+        expect(
+            isUncitedAnswer([placeholder('citation-rejected')], {
+                type: 'refusal',
+                reason_code: 'unsupported_by_sources',
+            }),
+        ).toBe(false);
         expect(isUncitedAnswer([], { type: 'refusal' })).toBe(false);
+    });
+});
+
+describe('isEmptySourceId', () => {
+    it.each([
+        'no-tool-call',
+        'georag_reports:empty',
+        'pg_public_geoscience:empty',
+        'silver.collars:miss',
+        'citation-rejected',
+        'provenance-rejected',
+        'silver.samples:element=U3O8:count=0',
+        'silver.collars:count=0',
+        'silver.project_summary:project=p:rows=0:first_row=none',
+        'silver.drill_traces:project=p:holes=0:first_collar=none:hole_filter=all',
+        'silver.projects:slug=x:company=y:curves=0:reports=0',
+        'silver.lithology_logs:intervals=0',
+        'silver.coverage_gap:project=p:indexed=0:processed=0:attrs=0',
+        '',
+    ])('treats %j as evidence-free', (id) => {
+        expect(isEmptySourceId(id)).toBe(true);
+    });
+
+    it.each([
+        REPORT_CHUNK,
+        'silver.collars:count=7:first=abc',
+        'silver.lithology_logs:hole=PLS-22-08:collar=abc:intervals=0',
+        'silver.samples:element=U3O8:count=12',
+        'silver.coverage_gap:project=p:indexed=40:processed=31:attrs=0',
+        'pg_mineral_occurrence:src:feature=1:pg_id=abc',
+    ])('treats %j as evidence', (id) => {
+        expect(isEmptySourceId(id)).toBe(false);
+    });
+
+    it('treats a non-string as evidence-free', () => {
+        expect(isEmptySourceId(undefined)).toBe(true);
+        expect(isEmptySourceId(null)).toBe(true);
+        expect(isEmptySourceId(42)).toBe(true);
     });
 });
 

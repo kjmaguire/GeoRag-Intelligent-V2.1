@@ -205,6 +205,7 @@ async def main() -> int:
         if not final.report_id or final.passages_written < 1:
             log.error("ingest: persist produced no report/passages -- aborting")
             return 1
+        report_id = str(final.report_id)
     finally:
         await pool.close()
 
@@ -222,14 +223,18 @@ async def main() -> int:
         return 1
 
     # Hand the project_id to the query leg via GITHUB_OUTPUT (or stdout as
-    # a fallback for local runs).
+    # a fallback for local runs). report_id is what lets the query leg prove
+    # its citation names the document THIS run ingested (e2e_smoke_query.py
+    # `--report-id`) rather than accept any non-empty source_chunk_id.
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a", encoding="utf-8") as f:
             f.write(f"project_id={project_id}\n")
             f.write(f"workspace_id={workspace_id}\n")
+            f.write(f"report_id={report_id}\n")
     print(f"E2E_SMOKE_PROJECT_ID={project_id}")
     print(f"E2E_SMOKE_WORKSPACE_ID={workspace_id}")
+    print(f"E2E_SMOKE_REPORT_ID={report_id}")
     return 0
 
 

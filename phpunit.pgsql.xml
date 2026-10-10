@@ -244,10 +244,11 @@
             <file>tests/Feature/Tenancy/PooledRlsBindingTest.php</file>
             <file>tests/Feature/Tenancy/TargetBacktestsRlsTest.php</file>
             <!-- 2026-08-25: storage_tier_policy platform-default visibility
-                 (2026_08_25_200000). Self-skips on migrate-only clusters
-                 like georag_test — the table exists only where the phase0
-                 raw SQL ran — but must be registered here so the manifest
-                 test sees it and raw-SQL-provisioned clusters exercise it. -->
+                 (2026_08_25_200000). This note used to say the test self-skips
+                 on migrate-only clusters because the table exists only where
+                 the phase0 raw SQL ran. Not since 2026_08_28_100500 creates
+                 the table: measured 2026-10-10 on a migrate:fresh-only
+                 database, all 4 tests RUN and pass. -->
             <file>tests/Feature/Tenancy/StorageTierPolicyPlatformDefaultsTest.php</file>
             <!-- 2026-08-28: the fifteen operational-core objects ported out of
                  database/raw/ into the migration chain. Unlike the file above,
@@ -309,6 +310,11 @@
                  2026-08-17 pass. -->
             <file>tests/Feature/Foundry/ReportControllerTest.php</file>
             <file>tests/Feature/Foundry/SourcesControllerTest.php</file>
+            <!-- 2026-10-10: the project-scoped half of the Foundry routes
+                 smoke test. It used to sit in FoundryRoutesSmokeTest under
+                 `Project::query()->first()` + markTestSkipped, where no
+                 project exists, so every case skipped on every run. -->
+            <file>tests/Feature/Foundry/FoundryProjectRoutesSmokeTest.php</file>
             <!-- Deliberately last: does NOT use RefreshDatabase, asserts
                  against whatever project already exists after the
                  RefreshDatabase group above has run — see its own docblock. -->
@@ -331,6 +337,12 @@
                  safe here; it needs the RefreshDatabase group above to have
                  built the schema first. -->
             <file>tests/Feature/Tenancy/ProjectUserPivotRlsExemptionTest.php</file>
+            <!-- 2026-10-10: the lifecycle_state NOT NULL / DEFAULT / CHECK /
+                 index contract on silver.projects. Catalog reads only. It used
+                 to connect to `pgsql_migrations` and skip when it could not,
+                 which the manifest guard did not recognise as a Postgres gate,
+                 so it was in no suite at all. -->
+            <file>tests/Feature/ProjectLifecycleTest.php</file>
         </testsuite>
     </testsuites>
     <source>
