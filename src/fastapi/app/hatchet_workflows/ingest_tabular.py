@@ -83,7 +83,7 @@ from typing import Any
 
 import asyncpg
 from georag_object_storage import Bucket, get_storage_client
-from hatchet_sdk import Context
+from hatchet_sdk import Context, NonRetryableException
 from pydantic import BaseModel, Field, field_validator
 
 from app.db import bind_workspace_scope
@@ -2216,6 +2216,15 @@ def _oversize_refusal(size: int | None, *, filename: str) -> str | None:
     )
 
 
+class _TabularFileTooLarge(NonRetryableException, ValueError):
+    """The ``_oversize_refusal`` error. A retry would read the same object at
+    the same size and refuse it again, so Hatchet must not schedule one; being
+    non-retryable is also what lets the task body close the progress row on
+    this attempt (``_progress.is_final_attempt``) rather than leave it open for
+    a retry that cannot succeed. Still a ValueError for code that catches the
+    refusal by type."""
+
+
 def _csv_headers(path: str) -> list[str]:
     """Read a CSV's header row, honouring its real encoding and delimiter.
 
@@ -3368,7 +3377,7 @@ async def run_ingest_tabular(
             await _declared_object_size(store, input.minio_key), filename=filename,
         )
         if oversize:
-            raise ValueError(oversize)
+            raise _TabularFileTooLarge(oversize)
 
         with tempfile.TemporaryDirectory(prefix="georag_tabular_") as tmpdir:
             local = str(Path(tmpdir) / filename)
@@ -3383,7 +3392,7 @@ async def run_ingest_tabular(
                 arrived = None      # nothing to measure; the reader reports a missing file
             oversize = _oversize_refusal(arrived, filename=filename)
             if oversize:
-                raise ValueError(oversize)
+                raise _TabularFileTooLarge(oversize)
             #: Lineage + replace key stamped on every drill row this run
             #: writes (see _write_intervals): the logical file name scopes
             #: the per-hole replace to THIS file, the hash records which

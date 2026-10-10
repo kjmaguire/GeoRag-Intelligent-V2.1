@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hatchet_sdk import NonRetryableException
 
 from app.config import settings
 from app.hatchet_workflows import ingest_tabular as it
@@ -82,9 +83,12 @@ class TestWorkflowRefusesBeforeDownloading:
         store = _SizedStore(declared=200 * MIB)
         monkeypatch.setattr(it, "get_storage_client", lambda: store)
 
-        with pytest.raises(ValueError, match="INGEST_TABULAR_MAX_BYTES"):
+        with pytest.raises(ValueError, match="INGEST_TABULAR_MAX_BYTES") as refused:
             await env.run("huge.csv")
 
+        # The same object refuses the same way on a retry, so Hatchet must not
+        # schedule one, and the row is closed now rather than left open for it.
+        assert isinstance(refused.value, NonRetryableException)
         assert store.downloads == 0
         assert len(env.failed) == 1
         assert "200 MB" in env.failed[0]["error"] and "150 MB" in env.failed[0]["error"]
