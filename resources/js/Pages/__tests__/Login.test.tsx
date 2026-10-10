@@ -1,6 +1,8 @@
 /**
- * Login — Sanctum SPA sign-in. Pins the CSRF handshake: prime the XSRF cookie,
- * then sign in with that live token (never the <meta> one rendered at page load).
+ * Login — Sanctum SPA sign-in. Pins the CSRF handshake (prime the XSRF cookie,
+ * then sign in with that live token — never the <meta> one rendered at page
+ * load) and that the form offers only what works: the "Microsoft SSO" / "SAML"
+ * buttons it used to show had no handler, and no SSO route exists anywhere.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +43,20 @@ function fillAndSubmit(container: HTMLElement) {
 }
 
 describe('Login', () => {
+    it('offers no SSO or SAML buttons: nothing is wired behind them', () => {
+        render(<Login />);
+
+        expect(screen.queryByRole('button', { name: /sso/i })).toBeNull();
+        expect(screen.queryByRole('button', { name: /saml/i })).toBeNull();
+        expect(screen.queryByText(/microsoft/i)).toBeNull();
+        // ...nor a divider promising alternatives, nor copy recommending SSO.
+        expect(screen.queryByText(/or continue with/i)).toBeNull();
+        expect(screen.queryByText(/SSO is recommended/i)).toBeNull();
+        // The one real way in is still there, and it is the only button that submits.
+        expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
+        expect(screen.getAllByRole('button')).toHaveLength(1);
+    });
+
     it('primes the XSRF cookie, then signs in with that token and goes on to the projects list', async () => {
         // A stale token rendered at page load must never be the one sent.
         document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
