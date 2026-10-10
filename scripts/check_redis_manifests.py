@@ -21,6 +21,13 @@ RULE 1 -- persistence requires a durable path.
     mounts EFS at /data with AOF on. The rule stays, and now guards the
     fix rather than documenting the wound.
 
+    The `--save ""` half of that port is checked too, and was not until
+    2026-10-10: `--appendonly yes` with no --save at all is flagged. Silence
+    is not "off" -- Redis's default RDB save points stay active beside the
+    AOF -- and the Helm chart and the three k8s renders ran that way, the
+    check passing, because it only looked for a missing --save when AOF was
+    OFF.
+
 RULE 2 -- a container memory limit requires a reachable maxmemory cap.
     Redis's maxmemory bounds its own dataset accounting. Client output
     buffers, allocator fragmentation and the copy-on-write of every fork
@@ -303,6 +310,16 @@ def check_terraform(problems: list) -> None:
             "Azure too, and that is why every restart and every nightly "
             "scale-to-zero dropped all sessions and any queued Horizon job. "
             "Turning it back off needs a recorded reason, not a default.")
+    # Read off the raw list, not off `save`: the quote-stripping above turns
+    # `"--save ''"` into `--save` followed by the NEXT flag, so `flag()` reports
+    # a value for it, and cannot tell "emptied" from "absent".
+    if appendonly == "yes" and "--save" not in block.group(1):
+        problems.append(
+            f"{TERRAFORM_SERVICES}: redis runs --appendonly yes with no --save. "
+            "Silence is not 'off': Redis's default RDB save points stay active "
+            "beside the AOF, so the same dataset is snapshotted by a second "
+            "fork against a task memory sized for one. Set --save '' "
+            "explicitly.")
 
     # --- rule 2: a memory limit requires a reachable cap ---------------
     limit_match = re.search(r"redis\s*=\s*\{[^}]*memory\s*=\s*(\d+)", sizing)
@@ -392,6 +409,14 @@ def check(target: Target, problems: list) -> None:
             f"{target.path}: --appendonly is not 'yes' and --save is absent, so Redis's "
             "default RDB save points are silently active. Set --save \"\" to "
             "state the intent.")
+    if appendonly == "yes" and save is None:
+        problems.append(
+            f"{target.path}: --appendonly yes but --save is absent. Silence is not "
+            "'off': Redis's default RDB save points stay active beside the AOF, so "
+            "the same dataset is snapshotted by a second fork (a second "
+            "copy-on-write spike against a memory limit sized for one) and a "
+            "second durability mechanism nobody chose is running. Set --save \"\" "
+            "explicitly, as compose and the AWS task do.")
 
     # --- rule 2: a memory limit requires a reachable cap ---------------
     limit_match = re.search(target.limit_pattern, scope, re.MULTILINE)
