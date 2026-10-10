@@ -206,6 +206,12 @@ async def route_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     # Phase 3 / Step 3.1 — pre-process envelope into retrieval filters.
     filters = preprocess_envelope(state.context_envelope)
+    if filters.no_data_source_allowed:
+        _sources_label: object = "(none: the narrowing left nothing)"
+    elif filters.allowed_data_sources:
+        _sources_label = sorted(filters.allowed_data_sources)
+    else:
+        _sources_label = "(all)"
     logger.info(
         "agentic_retrieval.route: intent=%s effective_intent=%s primary_tools=%s "
         "adversarial=%s conflict_detection=%s require_regulatory=%s mode=%s "
@@ -218,7 +224,7 @@ async def route_node(state: AgenticRetrievalState) -> dict[str, Any]:
         profile.require_regulatory_constraints,
         filters.mode,
         filters.crs_epsg,
-        sorted(filters.allowed_data_sources) if filters.allowed_data_sources else "(all)",
+        _sources_label,
     )
     return {
         "retrieval_profile": profile,

@@ -125,8 +125,18 @@ class RetrievalFilters:
 
     # Allowed data-source surfaces. Empty set = no narrowing (every primary
     # tool may run). Non-empty set = the execute node skips tools whose
-    # surfaces don't intersect this.
+    # surfaces don't intersect this. An empty set is ambiguous on its own:
+    # "nothing was restricted" and "restricted to nothing" both look like it,
+    # and the second used to be read as the first -- see the next field.
     allowed_data_sources: frozenset[DataSource] = field(default_factory=frozenset)
+
+    # True when the data sources WERE narrowed and nothing is left: the user
+    # asked for sources Field mode excludes (``data_sources=["geophysics"]``
+    # in Field mode, whose project-corpus surfaces are drill logs, assays and
+    # technical reports). The empty ``allowed_data_sources`` that results must
+    # deny, not allow -- it used to mean "every tool", so the narrowest
+    # request ran the widest search (2026-10-10 audit, finding 13).
+    no_data_source_allowed: bool = False
 
     # Reporting code + whether it was defaulted.
     reporting_code: ReportingCode = "NI 43-101"
@@ -148,10 +158,14 @@ class RetrievalFilters:
         """Return True if *tool_name* is permitted under this filter.
 
         Empty ``allowed_data_sources`` means no narrowing → every tool is
-        allowed. When set, a tool is allowed only when at least one of its
-        mapped data-source surfaces is in the allowed set. Tools the map
-        doesn't recognise are allowed by default (don't break unknown tools).
+        allowed -- unless ``no_data_source_allowed`` says the narrowing left
+        nothing, in which case no tool is. When set, a tool is allowed only
+        when at least one of its mapped data-source surfaces is in the
+        allowed set. Tools the map doesn't recognise are allowed by default
+        (don't break unknown tools) under a narrowing that leaves something.
         """
+        if self.no_data_source_allowed:
+            return False
         if not self.allowed_data_sources:
             return True
         surfaces = TOOL_DATA_SOURCE_MAP.get(tool_name)
@@ -186,6 +200,7 @@ def preprocess_envelope(envelope: ContextEnvelope | None) -> RetrievalFilters:
         crs = None
 
     allowed = frozenset(envelope.data_sources)
+    narrowed = bool(allowed)
 
     mode = envelope.mode
     is_field_mode = mode == "field"
@@ -197,6 +212,12 @@ def preprocess_envelope(envelope: ContextEnvelope | None) -> RetrievalFilters:
             {"drill_logs", "assays", "technical_reports"}
         )
         allowed = allowed & project_corpus_sources if allowed else project_corpus_sources
+        narrowed = True
+
+    # Narrowed, and the narrowing left nothing (the user asked only for
+    # sources Field mode excludes): that is "no tool", and has to be said as
+    # such, because an empty allowed set reads as "no narrowing at all".
+    nothing_left = narrowed and not allowed
 
     prompt_suffixes: list[str] = [_reporting_code_instruction(code, was_defaulted)]
     if is_field_mode:
@@ -206,6 +227,7 @@ def preprocess_envelope(envelope: ContextEnvelope | None) -> RetrievalFilters:
         crs_epsg=crs,
         depth_reference=envelope.depth_reference,
         allowed_data_sources=allowed,
+        no_data_source_allowed=nothing_left,
         reporting_code=code,
         reporting_code_was_defaulted=was_defaulted,
         mode=mode,
