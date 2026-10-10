@@ -150,7 +150,7 @@ async def test_the_failed_frame_carries_the_egress_code_end_to_end(monkeypatch: 
     state = _state()
     state.pg_pool = _Pool()
     request = SimpleNamespace(app=SimpleNamespace(state=state), state=SimpleNamespace())
-    body = SimpleNamespace(query="how deep is PLS-22-08?", project_id=PROJECT, context_envelope=None, history=None)
+    body = q.QueryRequest(query="how deep is PLS-22-08?", project_id=PROJECT)
     user = UserContext(user_id="u1", project_id=PROJECT, workspace_id=None, roles=())
 
     response = await q.post_query(body, request, user=user)
