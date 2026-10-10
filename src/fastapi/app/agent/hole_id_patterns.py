@@ -18,6 +18,7 @@ Formats seen in real projects:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 #: Lettered IDs. Safe to match anywhere: the letter prefix makes a false
@@ -165,6 +166,157 @@ def find_numeric_hole_ids(text: str) -> list[NumericHoleIdCandidate]:
             continue
         out.append(NumericHoleIdCandidate(value, start, end, near))
     return out
+
+
+# ---------------------------------------------------------------------------
+# What the lettered pattern matches that is not a hole, and the holes it misses
+# (2026-10-10 audit, findings 7-9)
+# ---------------------------------------------------------------------------
+#
+# HOLE_ID_RE is "two or more letters, a dash, digits", and ordinary prose is
+# full of that shape: "Pre-2010", "Post-2015", "mid-2019", "Zone-3", "Lens-2",
+# "Oct-2011", "ISO-9001", "Pb-206". Layer 4 treats an unmatched hole ID as a
+# fabricated one -- critical on its own, which floors the answer's confidence
+# and forces a retry -- and the retrieval side turns one into an assay filter
+# that matches no rows and a forced factual_lookup intent.
+#
+# The pattern itself stays as it is (Layers 3 and 6 use it to MASK digits, where
+# over-matching is harmless). Everything that ACTS on a match goes through
+# iter_hole_id_matches() below, so the exclusions live in one place.
+
+#: Lettered prefixes that are words, not hole series. Matched against the
+#: letters in front of the first digit, case-insensitively.
+_NOT_HOLE_PREFIXES: frozenset[str] = frozenset((
+    # affixes in front of a year or a number: "pre-2010", "post-2015", "mid-2019"
+    "pre", "post", "mid", "sub", "non", "co", "semi", "multi", "inter", "intra",
+    "ultra", "anti",
+    # calendar shorthand: "Oct-2011", "June-2021", "Yr-2"
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct",
+    "nov", "dec", "june", "july", "march", "april", "august", "yr", "year", "day",
+    "week", "wk",
+    # report nouns that take a number: "Zone-3", "Lens-2", "Phase-2"
+    "zone", "lens", "unit", "phase", "stage", "level", "area", "block", "vein",
+    "target", "type", "class", "layer", "seam", "lode", "cycle", "series",
+    "group", "bench", "stope", "grid", "line", "step", "case", "item",
+    "fig", "figure", "table", "tab", "page",
+    # standards, codes and datums: "ISO-9001", "NAD-83", "WGS-84"
+    "iso", "astm", "jorc", "cim", "csa", "nad", "wgs", "utm", "epsg", "srid", "crs",
+))
+
+#: Fiscal-year prefixes always carry their digits ("FY2021-22"), so unlike the
+#: words above they are not a hole prefix even with digits embedded.
+_NOT_HOLE_EVEN_WITH_DIGITS: frozenset[str] = frozenset(("fy", "cy"))
+
+#: Two-letter element symbols, for isotope notation: "Pb-206", "Sr-87", "Nd-143".
+#: Matched CASE-SENSITIVELY ("Pb", not "PB"): a hole series is written in capitals
+#: ("PB-206"), a symbol is not.
+_ELEMENT_SYMBOLS: frozenset[str] = frozenset((
+    "He", "Li", "Be", "Ne", "Na", "Mg", "Al", "Si", "Cl", "Ar", "Ca", "Sc", "Ti",
+    "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr",
+    "Rb", "Sr", "Zr", "Nb", "Mo", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb",
+    "Te", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Sm", "Eu", "Gd", "Tb", "Dy",
+    "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Tl", "Pb", "Bi", "Ra", "Rn", "Th",
+))
+_ISOTOPE_RE = re.compile(r"^([A-Z][a-z])-[1-9]\d{0,2}$")
+_LEADING_LETTERS_RE = re.compile(r"[A-Za-z]+")
+
+#: A hole word this close in front of a token names it a hole whatever it
+#: looks like ("hole CO-12", "drill hole Sub-3"), the same allowance a year
+#: range gets for "hole 2011-14".
+_NAMED_AS_HOLE_WINDOW = 3
+
+
+def _is_not_a_hole(token: str) -> bool:
+    """Whether a lettered ``HOLE_ID_RE`` match is a word, date, standard or
+    isotope rather than a hole series."""
+    letters = _LEADING_LETTERS_RE.match(token)
+    if letters is None:
+        return False
+    prefix = letters.group().lower()
+    embedded_digits = token[letters.end():letters.end() + 1].isdigit()
+    if prefix in _NOT_HOLE_EVEN_WITH_DIGITS:
+        return True
+    if prefix in _NOT_HOLE_PREFIXES and not embedded_digits:
+        return True
+    isotope = _ISOTOPE_RE.match(token)
+    return bool(isotope) and isotope.group(1) in _ELEMENT_SYMBOLS
+
+
+def iter_hole_id_matches(text: str) -> Iterator[re.Match[str]]:
+    """``HOLE_ID_RE`` matches in ``text`` that can be a drill hole.
+
+    Drops the lettered shapes that are not holes -- "Pre-2010", "Post-2015",
+    "mid-2019", "Zone-3", "Lens-2", "Oct-2011", "ISO-9001", "Pb-206" -- unless
+    a hole word sits right in front of the token ("hole SUB-3"). Real series
+    ("DDH-1234", "BH-21", "PLS-22-08", "GH08-212", "SRE09-12", "IC-11") pass.
+    Group 1 is the ID, as for ``HOLE_ID_RE.finditer``.
+    """
+    contexts = [m.end() for m in HOLE_CONTEXT_RE.finditer(text)]
+    for match in HOLE_ID_RE.finditer(text):
+        start = match.start(1)
+        if _is_not_a_hole(match.group(1)) and not any(
+            0 <= start - c <= _NAMED_AS_HOLE_WINDOW for c in contexts
+        ):
+            continue
+        yield match
+
+
+def find_lettered_hole_ids(text: str) -> list[str]:
+    """The IDs of :func:`iter_hole_id_matches`, in order of appearance."""
+    return [m.group(1) for m in iter_hole_id_matches(text)]
+
+
+#: Compact IDs: letters then digits with no separator -- "BH21", "DDH0023",
+#: "SRE0912". HOLE_ID_RE requires a dash, so these were never extracted on
+#: either side (finding 9), although identifier_boost recognises the shape.
+#: Two digits minimum ("CO2", "SO4", "NO3" are formulas), and not the head of a
+#: dashed ID ("SRE09" in "SRE09-12", which HOLE_ID_RE owns).
+HOLE_ID_COMPACT_RE = re.compile(
+    r"(?<![\w.-])([A-Z]{2,5}\d{2,7})(?!\w|-\d)",
+    re.IGNORECASE,
+)
+
+#: Drill-type abbreviations. A compact token that starts with one is a hole
+#: name wherever it appears: diamond (DDH, DD), reverse circulation (RC, RCD),
+#: rotary air blast (RAB), aircore (AC), borehole (BH), drill hole (DH).
+DRILL_TYPE_PREFIXES: frozenset[str] = frozenset(
+    ("DDH", "DD", "DH", "BH", "RC", "RCD", "RAB", "AC", "CDH")
+)
+
+#: Any other compact token counts only with a hole word this close in front of
+#: it ("holes SRE0912, SRE0913 and SRE0914" puts the third ~28 characters on).
+COMPACT_HOLE_CONTEXT_WINDOW = 32
+
+#: Letters that begin a compact token which is never a hole: standards,
+#: datums, coordinate systems and fiscal shorthand ("NI43", "WGS84", "EPSG4326",
+#: "NAD83", "UTM13", "ISO9001", "FY2021", "JORC2012").
+_NOT_COMPACT_HOLE_PREFIXES: frozenset[str] = frozenset((
+    "NI", "ISO", "JORC", "SK", "NAD", "WGS", "EPSG", "SRID", "UTM", "ITRF", "NTS",
+    "CRS", "ASTM", "CSA", "CIM", "SEC", "NSR", "FY", "CY", "PH",
+))
+
+
+def iter_compact_hole_id_matches(text: str) -> Iterator[re.Match[str]]:
+    """Compact hole IDs ("BH21", "DDH0023", "SRE0912") in ``text``.
+
+    The shape alone matches too much ("NI43", "WGS84", "ISO9001"), so a match
+    must also either start with a drill-type abbreviation
+    (:data:`DRILL_TYPE_PREFIXES`) or follow a hole word within
+    :data:`COMPACT_HOLE_CONTEXT_WINDOW` characters -- and never start with a
+    standards / datum prefix. Group 1 is the ID.
+    """
+    contexts = [m.end() for m in HOLE_CONTEXT_RE.finditer(text)]
+    for match in HOLE_ID_COMPACT_RE.finditer(text):
+        token = match.group(1)
+        letters = _LEADING_LETTERS_RE.match(token)
+        prefix = letters.group().upper() if letters else ""
+        if prefix in _NOT_COMPACT_HOLE_PREFIXES:
+            continue
+        if prefix in DRILL_TYPE_PREFIXES or any(
+            0 <= match.start(1) - c <= COMPACT_HOLE_CONTEXT_WINDOW for c in contexts
+        ):
+            yield match
 
 
 _CANONICAL_SEPARATORS_RE = re.compile(r"[\s\-_./]+")

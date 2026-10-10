@@ -52,8 +52,10 @@ from app.agent.hole_id_patterns import (
     HOLE_ID_RE,
     NUMERIC_HOLE_ID_RE,
     canonical_hole_id,
+    find_lettered_hole_ids,
     find_numeric_hole_ids,
     hole_id_key,
+    iter_compact_hole_id_matches,
 )
 from app.config import settings
 from app.models.rag import GeoRAGResponse
@@ -1758,7 +1760,20 @@ async def verify_entities(
     # Standard designations first: "NI43-101" would match the lettered
     # pattern and the "43-101" of "NI 43-101" the numeric one.
     clean = DESIGNATION_RE.sub(" ", clean)
-    candidates = list(_HOLE_ID_RE.findall(clean))
+    # Lettered IDs, minus the shapes that are words, dates, standards or
+    # isotopes ("Pre-2010", "Zone-3", "Oct-2011", "Pb-206"): each used to be
+    # reported as a critical fabricated drill hole (2026-10-10 audit,
+    # finding 8). A hole word right in front of the token still makes it one.
+    candidates = find_lettered_hole_ids(clean)
+    # Compact IDs ("BH21", "DDH0023", "SRE0912") have no dash for HOLE_ID_RE to
+    # find; they count with a drill-type prefix or a hole word in front, and a
+    # compact spelling of a hole already named with its dash is the same hole
+    # (finding 9).
+    _named = {hole_id_key(c) for c in candidates}
+    for _m in iter_compact_hole_id_matches(clean):
+        if hole_id_key(_m.group(1)) not in _named:
+            candidates.append(_m.group(1))
+            _named.add(hole_id_key(_m.group(1)))
     # Bare numeric IDs (36-1085, the Cameco Shirley Basin shape), only when
     # the answer talks about holes, and never the numeric tail of an
     # alphanumeric ID already matched above: "22-08" inside "PLS-22-08" was
