@@ -476,6 +476,92 @@ async def test_a_stale_in_flight_row_is_reclaimed(app_pool, seed, owner_conn) ->
 
 
 # ---------------------------------------------------------------------------
+# The outbox lag gauge (2026-10 Hatchet audit): every scope, not just one
+# ---------------------------------------------------------------------------
+async def _enqueued(conn, ws: str | None, store: str, age_min: int) -> str:
+    return str(await conn.fetchval(
+        "INSERT INTO outbox.pending_propagations (workspace_id, source_schema, "
+        "source_table, source_id, target_store, operation, idempotency_key, "
+        "status, enqueued_at) VALUES ($1::uuid, 'silver', 't', $2, $3, 'upsert', $2, "
+        "'pending', now() - make_interval(mins => $4)) RETURNING id",
+        ws, f"hat-{uuid.uuid4()}", store, age_min,
+    ))
+
+
+async def _delete_outbox(owner_conn, ids: list[str]) -> None:
+    async with _scoped(owner_conn, "") as c:
+        await c.execute(
+            "DELETE FROM outbox.pending_propagations WHERE id = ANY($1::uuid[])", ids,
+        )
+
+
+async def test_the_outbox_lag_gauge_sees_every_tenants_backlog(
+    app_pool, seed, owner_conn, monkeypatch,
+) -> None:
+    """georag_outbox_lag_seconds was read on an unbound connection. Once the
+    outbox tables are fail-closed (2026_10_10_100300) that read sees platform
+    rows only, so a tenant whose outbox had been stuck for hours reported no
+    lag. As the worker's role, with two tenants holding backlogs of different
+    ages in one store, the gauge must report the worse."""
+    from app.hatchet_workflows import _progress
+    from app.hatchet_workflows import reliability_metrics_publisher as pub
+    from app.metrics import OUTBOX_LAG_SECONDS
+
+    async def _pool():
+        return app_pool
+
+    monkeypatch.setattr(_progress, "get_pool", _pool)
+    monkeypatch.setattr(pub, "_published_outbox_stores", set())
+    OUTBOX_LAG_SECONDS.labels(target_store="seaweedfs").set(-1.0)
+
+    stuck_ws, other_ws = seed.workspaces
+    ids = []
+    async with _scoped(owner_conn, stuck_ws) as c:
+        ids.append(await _enqueued(c, stuck_ws, "seaweedfs", age_min=120))
+    async with _scoped(owner_conn, other_ws) as c:
+        ids.append(await _enqueued(c, other_ws, "seaweedfs", age_min=10))
+    try:
+        await pub.publish_now()
+        lag = OUTBOX_LAG_SECONDS.labels(target_store="seaweedfs")._value.get()
+        assert lag >= 120 * 60 - 5, f"the stuck tenant's two-hour backlog read as {lag}s"
+    finally:
+        await _delete_outbox(owner_conn, ids)
+
+
+async def test_the_outbox_lag_gauge_sees_platform_rows(
+    app_pool, owner_conn, monkeypatch,
+) -> None:
+    from app.hatchet_workflows import _progress
+    from app.hatchet_workflows import reliability_metrics_publisher as pub
+    from app.metrics import OUTBOX_LAG_SECONDS
+
+    async def _pool():
+        return app_pool
+
+    monkeypatch.setattr(_progress, "get_pool", _pool)
+    monkeypatch.setattr(pub, "_published_outbox_stores", set())
+    OUTBOX_LAG_SECONDS.labels(target_store="redis").set(-1.0)
+
+    async with _scoped(owner_conn, "") as c:
+        row = await _enqueued(c, None, "redis", age_min=90)
+    try:
+        async with app_pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('app.workspace_id', '', true)")
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM outbox.pending_propagations WHERE id = $1::uuid", row,
+            )
+        if not visible:
+            pytest.skip(
+                "this database's outbox policy hides platform rows from a cleared "
+                "scope (before 2026_10_10_100300), so there is nothing to measure"
+            )
+        await pub.publish_now()
+        assert OUTBOX_LAG_SECONDS.labels(target_store="redis")._value.get() >= 90 * 60 - 5
+    finally:
+        await _delete_outbox(owner_conn, [row])
+
+
+# ---------------------------------------------------------------------------
 # HAT-7: Pass 2 bumps both counters
 # ---------------------------------------------------------------------------
 async def test_pass_2_bumps_the_workspace_and_the_project(app_pool, seed, owner_conn) -> None:
