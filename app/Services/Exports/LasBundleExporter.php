@@ -12,8 +12,9 @@ use Illuminate\Support\Facades\Log;
 /**
  * Exports well-log data as LAS 2.0 files bundled into a ZIP archive.
  *
- * One LAS file is produced per collar that has curves in silver.well_log_curves.
- * Collars with no curves are silently skipped. If only one collar has curves,
+ * One LAS file is produced per collar and depth index that has curves in
+ * silver.well_log_curves (a hole logged in two runs at different depths gets
+ * two files). Collars with no curves are silently skipped. If only one collar has curves,
  * the ZIP still wraps it for consistency.
  *
  * Each file's ~WELL section names the collar's position in a stated CRS:
@@ -110,10 +111,15 @@ class LasBundleExporter
                     $unplaced++;
                 }
 
-                $entries[$this->entryName((string) $collar->hole_id, $entryNames)] = $this->writeTempFile(
-                    $tmpDir,
-                    $this->buildLas2($collar, $curves),
-                );
+                // One LAS file per depth index. Curves share an ~A table only
+                // when they were sampled at the same depths in the same unit;
+                // a hole logged in two runs gets two files.
+                foreach ($this->depthGroups($curves) as $group) {
+                    $entries[$this->entryName((string) $collar->hole_id, $entryNames)] = $this->writeTempFile(
+                        $tmpDir,
+                        $this->buildLas2($collar, $group),
+                    );
+                }
             }
 
             // If no curves were found for any collar, add a notice file.
@@ -172,6 +178,34 @@ class LasBundleExporter
         return $name;
     }
 
+    /**
+     * The collar's curves split by the depth index they were sampled on.
+     *
+     * The ~A section is one depth column and one column per curve, so curves
+     * can only be written side by side when their depth arrays are the same.
+     * Writing them together regardless (the old behaviour) paired each value
+     * with the i-th depth of whichever curve came first: a gamma log at 0.1 m
+     * steps and a density log from another run at 0.05 m steps came out with
+     * the density values at the wrong depths. Groups keep the order in which
+     * their first curve appears.
+     *
+     * @param Collection<int, WellLogCurve> $curves
+     *
+     * @return list<Collection<int, WellLogCurve>>
+     */
+    private function depthGroups(Collection $curves): array
+    {
+        $groups = [];
+
+        foreach ($curves as $curve) {
+            $key = ($curve->depth_unit ?? '?').'|'.sha1((string) json_encode($this->parsePostgresArray($curve->depths)));
+            $groups[$key] ??= new Collection;
+            $groups[$key]->push($curve);
+        }
+
+        return array_values($groups);
+    }
+
     // -------------------------------------------------------------------------
     // LAS 2.0 builder
     // -------------------------------------------------------------------------
@@ -179,7 +213,8 @@ class LasBundleExporter
     /**
      * Build the text content of a LAS 2.0 file for a single collar.
      *
-     * @param Collection $curves All WellLogCurve rows for this collar.
+     * @param Collection $curves WellLogCurve rows for this collar that share one
+     *                           depth index (see depthGroups()).
      */
     private function buildLas2(Collar $collar, Collection $curves): string
     {
@@ -188,6 +223,18 @@ class LasBundleExporter
         $step = $firstCurve->step ?? 0.1;
         $nullValue = $firstCurve->null_value ?? -999.25;
         $lasVersion = $firstCurve->las_version ?? '2.0';
+
+        // The unit the depths are stored in. Every row written since
+        // 2026-09-29 is metres; a NULL is a legacy row in its source file's
+        // unrecorded unit, so the header names no unit rather than claim
+        // metres it may not be (derive_intervals skips those rows for the
+        // same reason).
+        $depthUnit = match ($firstCurve->depth_unit ?? null) {
+            'm' => 'M',
+            'ft' => 'F',
+            default => '',
+        };
+        $unitNote = $depthUnit === '' ? ' (unit not recorded; re-ingest the source LAS file)' : '';
 
         $lines = [];
 
@@ -199,9 +246,9 @@ class LasBundleExporter
 
         // ---- ~WELL section ----
         $lines[] = '~WELL INFORMATION';
-        $lines[] = sprintf('STRT.M                 %.4f : Start depth', $firstCurve->min_depth);
-        $lines[] = sprintf('STOP.M                 %.4f : Stop depth', $firstCurve->max_depth);
-        $lines[] = sprintf('STEP.M                 %.4f : Depth increment', $step);
+        $lines[] = sprintf('%-23s%.4f : Start depth%s', 'STRT.'.$depthUnit, $firstCurve->min_depth, $unitNote);
+        $lines[] = sprintf('%-23s%.4f : Stop depth%s', 'STOP.'.$depthUnit, $firstCurve->max_depth, $unitNote);
+        $lines[] = sprintf('%-23s%.4f : Depth increment%s', 'STEP.'.$depthUnit, $step, $unitNote);
         $lines[] = sprintf('NULL.                  %.2f : Null value', $nullValue);
         $lines[] = sprintf('COMP.                  GeoRAG : Company');
         $lines[] = sprintf('WELL.                  %s : Well name', $collar->hole_id);
@@ -216,13 +263,17 @@ class LasBundleExporter
         } else {
             $lines[] = 'LOC .                  UNKNOWN : Location (collar has no recorded position)';
         }
-        $lines[] = sprintf('ELEV.M                 %.2f : Elevation', $collar->elevation ?? 0.0);
+        // No line at all for a collar with no recorded elevation: 0.00 would
+        // read as sea level.
+        if ($collar->elevation !== null) {
+            $lines[] = sprintf('ELEV.M                 %.2f : Elevation', $collar->elevation);
+        }
         $lines[] = sprintf('DATE.                  %s : Export date', now()->format('Y-m-d'));
         $lines[] = '';
 
         // ---- ~CURVE section ----
         $lines[] = '~CURVE INFORMATION';
-        $lines[] = 'DEPT.M                  : Depth';
+        $lines[] = sprintf('%-24s: Depth%s', 'DEPT.'.$depthUnit, $unitNote);
 
         foreach ($curves as $curve) {
             $unit = $curve->curve_unit ?? '';
@@ -235,7 +286,8 @@ class LasBundleExporter
         // ---- ~A (ASCII data) section ----
         $lines[] = '~ASCII LOG DATA';
 
-        // Zip depths from the first curve (all curves for same collar share depths).
+        // Zip depths from the first curve: depthGroups() put only curves with
+        // this exact depth index in the group.
         // Depths are stored as PostgreSQL DOUBLE PRECISION[] — retrieved as comma-separated string
         // or already as PHP array depending on the driver. Handle both.
         $depths = $this->parsePostgresArray($firstCurve->depths);
@@ -294,8 +346,8 @@ GeoRAG Export — LAS Bundle
 
 No well-log curves were found for this project's collars (project_id: {$projectId}).
 
-Well-log curve data is ingested from .las source files via the Dagster pipeline.
-Once LAS files have been ingested, re-request the LAS bundle export.
+Well-log curve data is ingested from .las source files by the ingest_well_logs
+workflow. Once LAS files have been ingested, re-request the LAS bundle export.
 
 TEXT;
     }

@@ -34,7 +34,7 @@ final class LasBundleExporterTest extends TestCase
 
     private const AT = ['x' => 500000.0, 'y' => 6000000.0, 'srid' => 26913];
 
-    private function curve(Project $project, string $collarId, string $name, string $depths = '{0,1,2}', string $values = '{10,11,12}'): void
+    private function curve(Project $project, string $collarId, string $name, string $depths = '{0,1,2}', string $values = '{10,11,12}', ?string $depthUnit = null): void
     {
         DB::table('silver.well_log_curves')->insert([
             'curve_id' => (string) Str::uuid(),
@@ -45,11 +45,71 @@ final class LasBundleExporterTest extends TestCase
             'min_depth' => 0,
             'max_depth' => 2,
             'step' => 1,
-            'sample_count' => 3,
+            'sample_count' => count(explode(',', trim($depths, '{}'))),
             'las_version' => '2.0',
             'depths' => $depths,
             'values' => $values,
+            'depth_unit' => $depthUnit,
         ]);
+    }
+
+    public function test_curves_logged_on_different_depths_are_not_zipped_into_one_table(): void
+    {
+        // Two runs: GR at 1 m and DEN at 0.5 m. Written side by side, DEN's
+        // third value (at 1.0 m) used to land on GR's third depth (2.0 m).
+        $project = $this->exportProject(26913);
+        $collar = $this->exportCollar($project, 'RUNS-1', self::AT);
+        $this->curve($project, $collar, 'GR', '{0,1,2}', '{10,11,12}', 'm');
+        $this->curve($project, $collar, 'DEN', '{0,0.5,1,1.5,2}', '{2.1,2.2,2.3,2.4,2.5}', 'm');
+
+        $path = (new LasBundleExporter)->export($project->project_id)['path'];
+        $entries = $this->zipEntries($path);
+        sort($entries);
+        $files = array_map(fn (string $entry): string => $this->zipEntry($path, $entry), $entries);
+        @unlink($path);
+
+        $this->assertSame(['RUNS-1-2.las', 'RUNS-1.las'], $entries);
+        $den = str_contains($files[0], 'DEN.') ? $files[0] : $files[1];
+        $gr = $den === $files[0] ? $files[1] : $files[0];
+        $this->assertStringNotContainsString('GR.', $den);
+        $this->assertStringNotContainsString('DEN.', $gr);
+        $this->assertStringContainsString("1.0000    2.3000\n", $den);
+        $this->assertStringContainsString("2.0000    12.0000\n", $gr);
+    }
+
+    public function test_the_depth_unit_header_follows_the_stored_unit(): void
+    {
+        $project = $this->exportProject(26913);
+        $metric = $this->exportCollar($project, 'UNIT-M', self::AT);
+        $legacy = $this->exportCollar($project, 'UNIT-X', self::AT);
+        $this->curve($project, $metric, 'GR', depthUnit: 'm');
+        $this->curve($project, $legacy, 'GR');
+
+        $path = (new LasBundleExporter)->export($project->project_id)['path'];
+        $metres = $this->zipEntry($path, 'UNIT-M.las');
+        $unknown = $this->zipEntry($path, 'UNIT-X.las');
+        @unlink($path);
+
+        $this->assertStringContainsString('STRT.M ', $metres);
+        $this->assertStringContainsString('DEPT.M ', $metres);
+        // A legacy row's depths are in its source file's unrecorded unit:
+        // the header must not claim metres for them.
+        $this->assertStringNotContainsString('STRT.M', $unknown);
+        $this->assertStringNotContainsString('DEPT.M', $unknown);
+        $this->assertStringContainsString('unit not recorded', $unknown);
+    }
+
+    public function test_a_collar_with_no_elevation_writes_no_elevation(): void
+    {
+        $project = $this->exportProject(26913);
+        $collar = $this->exportCollar($project, 'NO-ELEV', self::AT, ['elevation' => null]);
+        $this->curve($project, $collar, 'GR', depthUnit: 'm');
+
+        $path = (new LasBundleExporter)->export($project->project_id)['path'];
+        $las = $this->zipEntry($path, 'NO-ELEV.las');
+        @unlink($path);
+
+        $this->assertStringNotContainsString('ELEV.', $las);
     }
 
     public function test_a_hole_id_with_a_slash_and_a_space_becomes_a_safe_entry_name(): void
