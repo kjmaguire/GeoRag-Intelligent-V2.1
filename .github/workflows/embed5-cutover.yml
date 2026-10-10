@@ -139,7 +139,7 @@ jobs:
             --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || echo "absent")
           echo "postgres state: $STATE"
           if [ "$STATE" != "available" ]; then
-            echo "::error::$DB_IDENTIFIER is '$STATE' (absent = powered off; the nightly sweep stops it 23:00-06:00 America/Los_Angeles). Re-run when it is 'available'."
+            echo "::error::$DB_IDENTIFIER is '$STATE' (absent = powered off; the nightly sweep stops it 17:00-08:30 America/Vancouver). Re-run when it is 'available'."
             exit 1
           fi
 
